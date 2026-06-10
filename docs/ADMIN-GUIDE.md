@@ -119,7 +119,7 @@ curl http://localhost:3051/api/health
 | `FRONTEND_URL` | `http://localhost:5273` | CORS origin **and** the origin the post-login OIDC redirect is built from. Behind a reverse proxy with SSO, set this to your public origin (see [OIDC / SSO](#oidc--sso)). |
 | `FRONTEND_PORT` | `5273` | Host port mapped to the frontend container (Docker Compose only) |
 | `LOG_LEVEL` | `info` | Pino log level: `fatal`, `error`, `warn`, `info`, `debug`, `trace` |
-| `ACCESS_TOKEN_EXPIRY` | `1h` | JWT access token lifetime (jose duration format: `30m`, `1h`, `2h`) |
+| `ACCESS_TOKEN_EXPIRY` | `1h` | JWT access token lifetime (jose duration format: `30m`, `1h`, `2h`). Maximum `24h` — a longer value is clamped to `24h` at startup and a warning is logged, since the token lifetime is the worst-case window a deactivated or demoted account could retain API access. An invalid format (e.g. `banana`) still fails startup. Deactivation and role changes normally take effect within seconds (≤ 30s) via the per-user security check. |
 
 ### LLM Provider
 

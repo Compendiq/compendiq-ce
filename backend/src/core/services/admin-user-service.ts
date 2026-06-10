@@ -11,6 +11,7 @@ import { randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { query, getPool } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
+import { invalidateUserSecurityState } from './user-security-cache.js';
 import type { AdminUser, AdminUserRole } from '@compendiq/contracts';
 
 const BCRYPT_ROUNDS = 10;
@@ -179,6 +180,7 @@ export async function updateUser(id: string, patch: UpdateUserOptions): Promise<
     const updates: string[] = [];
     const values: unknown[] = [];
     let i = 1;
+    let roleChanged = false;
 
     if (patch.email !== undefined) {
       updates.push(`email = $${i++}`);
@@ -192,6 +194,7 @@ export async function updateUser(id: string, patch: UpdateUserOptions): Promise<
       if (existing.role === 'admin' && patch.role !== 'admin') {
         await assertNotLastActiveAdminTx(client, id);
       }
+      roleChanged = patch.role !== existing.role;
       updates.push(`role = $${i++}`);
       values.push(patch.role);
     }
@@ -213,7 +216,21 @@ export async function updateUser(id: string, patch: UpdateUserOptions): Promise<
     if (res.rows.length === 0) {
       throw new AdminUserServiceError('NOT_FOUND', 'User not found');
     }
+    if (roleChanged) {
+      // #737: a role change crosses a privilege boundary — revoke every
+      // refresh token (mirrors deactivateUser) so the user cannot silently
+      // refresh back to a token carrying the old role. Already-issued
+      // access tokens are rejected by the user-security check in
+      // `authenticate` (cache invalidated below, after COMMIT).
+      await client.query(
+        `DELETE FROM refresh_tokens WHERE user_id = $1`,
+        [id],
+      );
+    }
     await client.query('COMMIT');
+    if (roleChanged) {
+      await invalidateUserSecurityState(id);
+    }
     return rowToAdminUser(res.rows[0]!);
   } catch (err: unknown) {
     await client.query('ROLLBACK').catch(() => {});
@@ -280,6 +297,10 @@ export async function deactivateUser(
       [targetUserId],
     );
     await client.query('COMMIT');
+    // #737: drop the cached security state (local + cache-bus) so the
+    // per-request check in `authenticate` rejects already-issued access
+    // tokens immediately instead of after the cache TTL.
+    await invalidateUserSecurityState(targetUserId);
     return rowToAdminUser(updated.rows[0]!);
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
@@ -304,6 +325,10 @@ export async function reactivateUser(targetUserId: string): Promise<AdminUser> {
   if (res.rows.length === 0) {
     throw new AdminUserServiceError('NOT_FOUND', 'User not found');
   }
+  // #737: clear the cached 'deactivated' state so the user regains access
+  // immediately (they still need to log in again — refresh tokens were
+  // deleted on deactivation).
+  await invalidateUserSecurityState(targetUserId);
   return rowToAdminUser(res.rows[0]!);
 }
 
@@ -366,6 +391,9 @@ export async function deleteUser(
       throw new AdminUserServiceError('NOT_FOUND', 'User not found');
     }
     await client.query('COMMIT');
+    // #737: reject any still-circulating access token for the deleted user
+    // immediately (the per-request check maps a missing row to 401).
+    await invalidateUserSecurityState(targetUserId);
     logger.info(
       { targetUserId, actor: opts.actorUserId },
       'admin-user-service: deleted user',

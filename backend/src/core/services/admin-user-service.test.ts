@@ -98,6 +98,58 @@ describe.skipIf(!dbAvailable)('admin-user-service (#304)', () => {
     expect(patched.role).toBe('user');
   });
 
+  it('updateUser role change revokes all refresh tokens for the target (#737)', async () => {
+    await seedAdmin('other-admin'); // so demotion below passes the last-admin guard
+    const targetId = await seedAdmin('demotee');
+    await query(
+      `INSERT INTO refresh_tokens (jti, user_id, family, expires_at)
+       VALUES ($1, $2, $3, NOW() + INTERVAL '7 days')`,
+      ['role-change-jti', targetId, 'role-change-family'],
+    );
+
+    const patched = await updateUser(targetId, { role: 'user' });
+    expect(patched.role).toBe('user');
+
+    const tokens = await query(`SELECT 1 FROM refresh_tokens WHERE user_id = $1`, [targetId]);
+    expect(tokens.rows.length).toBe(0);
+  });
+
+  it('updateUser without a role change keeps refresh tokens (#737)', async () => {
+    const { user: target } = await createUser({
+      username: 'keep-tokens',
+      role: 'user',
+      password: 'x12345678',
+    });
+    await query(
+      `INSERT INTO refresh_tokens (jti, user_id, family, expires_at)
+       VALUES ($1, $2, $3, NOW() + INTERVAL '7 days')`,
+      ['keep-jti', target.id, 'keep-family'],
+    );
+
+    await updateUser(target.id, { displayName: 'Still Here' });
+
+    const tokens = await query(`SELECT 1 FROM refresh_tokens WHERE user_id = $1`, [target.id]);
+    expect(tokens.rows.length).toBe(1);
+  });
+
+  it('updateUser with the same role value keeps refresh tokens (#737)', async () => {
+    const { user: target } = await createUser({
+      username: 'same-role',
+      role: 'user',
+      password: 'x12345678',
+    });
+    await query(
+      `INSERT INTO refresh_tokens (jti, user_id, family, expires_at)
+       VALUES ($1, $2, $3, NOW() + INTERVAL '7 days')`,
+      ['same-role-jti', target.id, 'same-role-family'],
+    );
+
+    await updateUser(target.id, { role: 'user' });
+
+    const tokens = await query(`SELECT 1 FROM refresh_tokens WHERE user_id = $1`, [target.id]);
+    expect(tokens.rows.length).toBe(1);
+  });
+
   it('deactivateUser self-deactivate refused', async () => {
     const adminId = await seedAdmin();
     await expect(
