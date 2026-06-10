@@ -93,6 +93,21 @@ describe('getRedisConnectionOpts', () => {
     });
   });
 
+  it('falls back to localhost defaults on malformed percent-encoding instead of throwing', () => {
+    // WHATWG URL parsing accepts an invalid %-sequence in the userinfo, but
+    // decodeURIComponent throws URIError on it. Per the documented contract
+    // the parser must degrade to the localhost fallback, never throw at
+    // Queue/Worker construction time.
+    const fallback = {
+      host: 'localhost',
+      port: 6379,
+      maxRetriesPerRequest: null,
+    };
+    expect(() => getRedisConnectionOpts('redis://:pa%zzword@host:6390')).not.toThrow();
+    expect(getRedisConnectionOpts('redis://:pa%zzword@host:6390')).toEqual(fallback);
+    expect(getRedisConnectionOpts('redis://bad%user:pw@host:6390')).toEqual(fallback);
+  });
+
   it('always sets maxRetriesPerRequest: null (required by BullMQ)', () => {
     expect(getRedisConnectionOpts('redis://h:1').maxRetriesPerRequest).toBeNull();
     expect(getRedisConnectionOpts('://broken').maxRetriesPerRequest).toBeNull();
