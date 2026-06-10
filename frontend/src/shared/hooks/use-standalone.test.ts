@@ -116,10 +116,12 @@ describe('use-standalone hooks', () => {
 
   describe('useTrash', () => {
     it('fetches trashed pages', async () => {
-      mockFetch({ items: [{ id: 1, title: 'Deleted Page' }], total: 1 });
+      const mock = mockFetch({ items: [{ id: '1', title: 'Deleted Page' }], total: 1 });
       const { result } = renderHook(() => useTrash(), { wrapper: createWrapper() });
       await waitFor(() => expect(result.current.isSuccess).toBe(true));
       expect(result.current.data?.items).toHaveLength(1);
+      const [url] = mock.mock.calls[0] as [string];
+      expect(url).toContain('/pages/trash');
     });
   });
 
@@ -127,9 +129,9 @@ describe('use-standalone hooks', () => {
     it('posts restore request', async () => {
       const mock = mockFetch({ message: 'restored' });
       const { result } = renderHook(() => useRestorePage(), { wrapper: createWrapper() });
-      await result.current.mutateAsync(7);
+      await result.current.mutateAsync('7');
       const [url, opts] = mock.mock.calls[0] as [string, RequestInit];
-      expect(url).toContain('/trash/7/restore');
+      expect(url).toContain('/pages/7/restore');
       expect(opts.method).toBe('POST');
     });
   });

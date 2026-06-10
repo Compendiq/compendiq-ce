@@ -69,15 +69,15 @@ export function useComments(pageId: number) {
 export function useTrash() {
   return useQuery({
     queryKey: ['trash'],
-    queryFn: () => apiFetch<{ items: TrashItem[]; total: number }>('/trash'),
+    queryFn: () => apiFetch<{ items: TrashItem[]; total: number }>('/pages/trash'),
   });
 }
 
 export function useRestorePage() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (pageId: number) =>
-      apiFetch(`/trash/${pageId}/restore`, {
+    mutationFn: (pageId: string) =>
+      apiFetch(`/pages/${pageId}/restore`, {
         method: 'POST',
       }),
     onSuccess: () => {
@@ -364,10 +364,14 @@ interface Comment {
   reactions: { emoji: string; count: number; userReacted: boolean }[];
 }
 
+// Mirrors GET /api/pages/trash response items (backend returns id as string)
 interface TrashItem {
-  id: number;
+  id: string;
   title: string;
+  source: string;
+  visibility: string;
   deletedAt: string;
+  createdAt: string;
   deletedBy: string;
   autoPurgeAt: string;
 }

@@ -9,7 +9,7 @@ export function TrashPage() {
   const { data: trashData, isLoading } = useTrash();
   const restoreMutation = useRestorePage();
 
-  const handleRestore = async (pageId: number) => {
+  const handleRestore = async (pageId: string) => {
     try {
       await restoreMutation.mutateAsync(pageId);
       toast.success('Page restored');
