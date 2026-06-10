@@ -1,13 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { VersionHistory } from './VersionHistory';
 import { useAuthStore } from '../../stores/auth-store';
 
-function createWrapper() {
-  const queryClient = new QueryClient({
+function createWrapper(externalQueryClient?: QueryClient) {
+  const queryClient = externalQueryClient ?? new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
   return function Wrapper({ children }: { children: React.ReactNode }) {
@@ -212,6 +212,50 @@ describe('VersionHistory', () => {
       expect(screen.getByText('v3')).toBeInTheDocument();
     });
     expect(fetchSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('keeps the loaded list and shows an inline notice when a background refetch fails (#763 review follow-up)', async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(mockVersionsResponse())
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ message: 'upstream hiccup' }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+      .mockResolvedValue(mockVersionsResponse());
+
+    render(
+      <VersionHistory pageId="page-1" model="qwen3.5" />,
+      { wrapper: createWrapper(queryClient) },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+    await waitFor(() => expect(screen.getByText('v3')).toBeInTheDocument());
+
+    // Simulate a background refetch that fails — same path as the
+    // invalidateQueries after a restore or a window-focus refetch.
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ['pages', 'page-1', 'versions'], exact: true });
+    });
+
+    // The observer notifies asynchronously after refetchQueries resolves.
+    await waitFor(() => {
+      expect(screen.getByText(/Could not refresh version history/)).toBeInTheDocument();
+    });
+    // The loaded list survives; the full-panel error does NOT replace it.
+    expect(screen.getByText('v3')).toBeInTheDocument();
+    expect(screen.queryByText('Failed to load version history.')).not.toBeInTheDocument();
+
+    // The inline Retry recovers and clears the notice.
+    fireEvent.click(screen.getByText('Retry'));
+    await waitFor(() => {
+      expect(screen.queryByText(/Could not refresh version history/)).not.toBeInTheDocument();
+    });
+    expect(screen.getByText('v3')).toBeInTheDocument();
   });
 
   it('shows the no-credentials hint alongside the list when backfillStatus is skipped_no_credentials (#763)', async () => {

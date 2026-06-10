@@ -351,6 +351,28 @@ describe('GET /api/pages/:id/versions', () => {
     const body = r.json();
     expect(body.backfillStatus).toBe('failed');
     expect(body.backfillDetail).toMatch(/incomplete/i);
+    // Confluence WAS contacted here — the detail blames the import, not the
+    // stored credentials (distinct from the client-construction failure below).
+    expect(body.backfillDetail).toMatch(/Importing historical versions from Confluence failed/);
+    expect(body.backfillDetail).not.toMatch(/credentials could not be used/i);
+    expect(body.versions).toHaveLength(1);
+    expect(body.versions[0]).toMatchObject({ versionNumber: 5, isCurrent: true });
+  });
+
+  it('reports "failed" with a credentials-specific detail when client construction throws — Confluence never contacted (#763 follow-up)', async () => {
+    mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'DEV', version: 5 });
+    // e.g. PAT decryption failure after a PAT_ENCRYPTION_KEY change.
+    mockGetClientForUser.mockRejectedValue(new Error('Invalid encrypted PAT format'));
+    mockGetVersionHistory.mockResolvedValue([]);
+
+    const r = await app.inject({ method: 'GET', url: '/api/pages/page-1/versions' });
+    expect(r.statusCode).toBe(200);
+    const body = r.json();
+    expect(body.backfillStatus).toBe('failed');
+    expect(body.backfillDetail).toMatch(/credentials could not be used/i);
+    expect(body.backfillDetail).not.toMatch(/Importing historical versions from Confluence failed/);
+    // The import itself never ran.
+    expect(mockBackfillVersionHistory).not.toHaveBeenCalled();
     expect(body.versions).toHaveLength(1);
     expect(body.versions[0]).toMatchObject({ versionNumber: 5, isCurrent: true });
   });

@@ -51,6 +51,10 @@ vi.mock('../../shared/hooks/use-settings', () => ({
     },
     isLoading: false,
   }),
+  useUpdateSettings: () => ({
+    mutate: vi.fn(),
+    mutateAsync: vi.fn().mockResolvedValue({}),
+  }),
 }));
 
 // Stub api-fetch so lazy-loaded panels don't explode on mount in JSDOM.

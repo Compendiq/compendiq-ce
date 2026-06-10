@@ -113,21 +113,32 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
     let backfillStatus: VersionBackfillStatus | undefined;
     let backfillDetail: string | undefined;
     if (ctx.confluenceId) {
+      // Two distinct failure paths: constructing the client (stored-credential
+      // lookup / PAT decryption) throwing means Confluence was never contacted,
+      // so the detail points at the stored credentials rather than the import.
+      let client: Awaited<ReturnType<typeof getClientForUser>> = null;
       try {
-        const client = await getClientForUser(userId);
-        if (client) {
-          await backfillVersionHistory(ctx.id, ctx.confluenceId, client);
-          backfillStatus = 'ok';
-        } else {
-          backfillStatus = 'skipped_no_credentials';
-          backfillDetail =
-            'No Confluence credentials are configured for your account, so historical versions could not be imported. Add your Confluence URL and PAT in Settings → Confluence.';
-        }
+        client = await getClientForUser(userId);
       } catch (err) {
         backfillStatus = 'failed';
         backfillDetail =
-          'Importing historical versions from Confluence failed — the list below may be incomplete.';
-        request.log.warn({ err, pageId: id }, '#722: version backfill failed (Confluence unavailable)');
+          'Your stored Confluence credentials could not be used, so historical versions were not imported — the list below may be incomplete. Re-save your PAT in Settings → Confluence.';
+        request.log.warn({ err, pageId: id }, '#763: version backfill skipped (Confluence client construction failed)');
+      }
+      if (client) {
+        try {
+          await backfillVersionHistory(ctx.id, ctx.confluenceId, client);
+          backfillStatus = 'ok';
+        } catch (err) {
+          backfillStatus = 'failed';
+          backfillDetail =
+            'Importing historical versions from Confluence failed — the list below may be incomplete.';
+          request.log.warn({ err, pageId: id }, '#722: version backfill failed (Confluence unavailable)');
+        }
+      } else if (backfillStatus === undefined) {
+        backfillStatus = 'skipped_no_credentials';
+        backfillDetail =
+          'No Confluence credentials are configured for your account, so historical versions could not be imported. Add your Confluence URL and PAT in Settings → Confluence.';
       }
     }
 

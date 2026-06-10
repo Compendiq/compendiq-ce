@@ -1,10 +1,7 @@
 import { useState } from 'react';
 import { m } from 'framer-motion';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { toast } from 'sonner';
-import { apiFetch } from '../../shared/lib/api';
 import { useAuthStore } from '../../stores/auth-store';
-import { useSettings } from '../../shared/hooks/use-settings';
+import { useSettings, useUpdateSettings } from '../../shared/hooks/use-settings';
 import { SpacesTab } from './SpacesTab';
 import { LabelManager } from './LabelManager';
 import { ErrorDashboard } from './ErrorDashboard';
@@ -43,23 +40,13 @@ import {
 type TabId = 'confluence' | 'sync' | 'sync-conflict-policy' | 'sync-conflicts' | 'ollama' | 'ai-prompts' | 'ai-safety' | 'rate-limits' | 'spaces' | 'theme' | 'labels' | 'errors' | 'embedding' | 'workers' | 'mcp-docs' | 'searxng' | 'email' | 'license' | 'sso' | 'ip-allowlist' | 'webhooks' | 'llm-policy' | 'retention' | 'compliance-reports' | 'llm-audit' | 'ai-reviews' | 'ai-review-policy' | 'pii-policy' | 'scim' | 'system';
 
 export function SettingsPage() {
-  const queryClient = useQueryClient();
   const user = useAuthStore((s) => s.user);
   const isAdmin = user?.role === 'admin';
   const { isEnterprise, hasFeature } = useEnterprise();
   const [activeTab, setActiveTab] = useState<TabId>('confluence');
 
   const { data: settings, isLoading } = useSettings();
-
-  const updateSettings = useMutation({
-    mutationFn: (body: Record<string, unknown>) =>
-      apiFetch('/settings', { method: 'PUT', body: JSON.stringify(body) }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['settings'] });
-      toast.success('Settings saved');
-    },
-    onError: (err) => toast.error(err.message),
-  });
+  const updateSettings = useUpdateSettings();
 
   const tabs: { id: TabId; label: string; adminOnly?: boolean; enterpriseOnly?: boolean; requiresFeature?: string }[] = [
     { id: 'confluence', label: 'Confluence' },

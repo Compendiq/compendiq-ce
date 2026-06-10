@@ -168,6 +168,9 @@ backfill outcome as `backfillStatus` (`ok` | `skipped_no_credentials` | `failed`
 plus a human-readable `backfillDetail`) so the UI can distinguish a complete
 history from one whose Confluence import never ran (viewer has no stored PAT —
 backfill uses the *viewing user's* credentials via `getClientForUser`) or failed.
+For `failed`, the `backfillDetail` wording further distinguishes a client-construction
+failure (stored credentials unusable, e.g. PAT decryption error — Confluence was
+never contacted) from a failed Confluence import call.
 The field is omitted for standalone pages, where no Confluence backfill applies.
 
 The `edited_at` column holds the real Confluence edit timestamp; the existing

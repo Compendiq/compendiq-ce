@@ -145,6 +145,32 @@ describe.skipIf(!dbAvailable)('GET /api/pages/:id/versions — backfillStatus (#
     expect(body.versions[0]).toMatchObject({ versionNumber: 4, isCurrent: true });
   });
 
+  it('"failed" with a credentials-specific detail: corrupt stored PAT → decryption throws, Confluence never contacted (#763 follow-up)', async () => {
+    const pageId = await seedConfluencePage('c-763-badpat', 2);
+    // A stored PAT that is not a valid ciphertext (e.g. written before a
+    // PAT_ENCRYPTION_KEY rotation) makes decryptPat() throw inside
+    // getClientForUser — client construction fails before any HTTP call.
+    await query(
+      `INSERT INTO user_settings (user_id, confluence_url, confluence_pat)
+       VALUES ($1, 'https://confluence.example.com', 'not-a-valid-ciphertext')`,
+      [userId],
+    );
+    const spy = vi
+      .spyOn(ConfluenceClient.prototype, 'getPageVersions')
+      .mockRejectedValue(new Error('must not be called'));
+
+    const r = await app.inject({ method: 'GET', url: `/api/pages/${pageId}/versions` });
+
+    expect(r.statusCode).toBe(200);
+    const body = r.json();
+    expect(body.backfillStatus).toBe('failed');
+    expect(body.backfillDetail).toMatch(/credentials could not be used/i);
+    expect(body.backfillDetail).not.toMatch(/Importing historical versions from Confluence failed/);
+    expect(body.versions).toHaveLength(1);
+    expect(body.versions[0]).toMatchObject({ versionNumber: 2, isCurrent: true });
+    expect(spy).not.toHaveBeenCalled();
+  });
+
   it('standalone page: backfillStatus is omitted entirely', async () => {
     const res = await query<{ id: number }>(
       `INSERT INTO pages (space_key, title, body_html, body_text, version, source, visibility, created_by_user_id, embedding_dirty, embedding_status)

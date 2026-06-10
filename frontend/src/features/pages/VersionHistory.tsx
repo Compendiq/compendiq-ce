@@ -217,9 +217,13 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                 <Loader2 size={14} className="animate-spin" />
                 <span className="text-sm">Loading versions...</span>
               </div>
-            ) : isError ? (
+            ) : isError && !versionsData ? (
               /* #763: a failed request is NOT an empty history — surface the
-                 backend reason (401/403/500) instead of the empty state. */
+                 backend reason (401/403/500) instead of the empty state. Only
+                 when nothing is loaded yet: TanStack Query retains the previous
+                 data on a failed refetch, so transient background failures
+                 (e.g. the invalidation after a restore) fall through to the
+                 inline notice below instead of replacing the rendered list. */
               <div className="flex flex-col items-center gap-2 px-5 py-6 text-center">
                 <div className="flex items-center gap-2 text-destructive">
                   <AlertTriangle size={14} />
@@ -239,13 +243,28 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                   Retry
                 </button>
               </div>
-            ) : versions.length === 0 ? (
+            ) : (
+              <>
+              {isError && (
+                /* Background refetch failed but data is loaded — keep the list. */
+                <div className="flex items-center gap-2 border-b border-border/50 bg-destructive/10 px-5 py-2.5 text-xs text-muted-foreground">
+                  <AlertTriangle size={12} className="shrink-0 text-destructive" />
+                  <span>Could not refresh version history &mdash; showing the last loaded versions.</span>
+                  <button
+                    onClick={() => void refetch()}
+                    className="ml-auto shrink-0 rounded px-2 py-0.5 font-medium text-foreground hover:bg-foreground/5"
+                  >
+                    Retry
+                  </button>
+                </div>
+              )}
+              {versions.length === 0 ? (
               <div className="px-5 py-6 text-center text-sm text-muted-foreground">
                 No version history available yet. Historical versions are imported
                 from Confluence when this dialog opens — importing them requires a
                 Confluence PAT (Settings &rarr; Confluence).
               </div>
-            ) : (
+              ) : (
               <>
               {backfillNotice && (
                 <div className="flex items-start gap-2 border-b border-border/50 bg-warning/10 px-5 py-2.5 text-xs text-muted-foreground">
@@ -348,6 +367,8 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                   </div>
                 ))}
               </div>
+              </>
+              )}
               </>
             )}
 
