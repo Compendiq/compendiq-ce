@@ -317,10 +317,12 @@ services:
 
   redis:
     image: redis:8-alpine
+    # noeviction is a BullMQ requirement: queue/job state lives in this Redis
+    # and any eviction policy silently drops sync/embedding/summary jobs.
     command: >
       redis-server
       --maxmemory 256mb
-      --maxmemory-policy allkeys-lru
+      --maxmemory-policy noeviction
       --requirepass ${REDIS_PASSWORD}
     healthcheck:
       test: ["CMD-SHELL", "REDISCLI_AUTH=${REDIS_PASSWORD} redis-cli ping"]

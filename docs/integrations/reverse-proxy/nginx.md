@@ -111,7 +111,7 @@ sudo nginx -t && sudo systemctl reload nginx
 |---|---|---|
 | `FRONTEND_URL` | `https://compendiq.corp.example.com` | CORS origin allowlist; setup-wizard redirect target. |
 | `FRONTEND_PORT` | `8081` | Leave as default; proxy pass targets this port on loopback. |
-| `BACKEND_HOST_PORT` | `3052` | Only change if 3052 conflicts with another service on the nginx host. |
+| `BACKEND_HOST_PORT` | removed | The backend is no longer published on the host — the frontend container proxies `/api` to it on the internal network, so the reverse proxy only ever targets the frontend port. |
 
 ## Troubleshooting
 

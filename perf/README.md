@@ -236,12 +236,14 @@ Postgres must be reachable from the host and the dev frontend / backend
 must be up. The fastest path on the local dev stack:
 
 ```bash
-# 1. Bring up the dev stack (backend on :3052, frontend on :8081)
+# 1. Bring up the dev stack (frontend on :8081; the backend publishes no
+#    host port — the frontend nginx proxies /api to it)
 docker compose -f docker/docker-compose.yml up -d --build
 
 # 2. Register a benchmark user once. The script does not touch bcrypt
 #    directly — it logs in through /api/auth/login like a real client.
-curl -X POST http://localhost:3052/api/auth/register \
+#    Go through the frontend proxy (the backend is not host-published).
+curl -X POST http://localhost:8081/api/auth/register \
   -H 'Content-Type: application/json' \
   -d '{"username":"benchuser","password":"benchpass123"}'
 
@@ -267,7 +269,7 @@ npx tsx scripts/perf-graph-bench.ts --cleanup
 |------|---------|-------|
 | `--sizes=500,1000,2000,5000` | full sweep | Comma-separated node counts |
 | `--web-url=URL` | `http://localhost:8081` | Frontend origin Playwright navigates to |
-| `--backend-url=URL` | `http://localhost:3052` | Backend used for `/api/auth/login` (matches dev compose's `BACKEND_HOST_PORT` default) |
+| `--backend-url=URL` | `http://localhost:3052` | API origin used for `/api/auth/login`. The compose backend no longer publishes a host port — pass `--backend-url=http://localhost:8081` to go through the frontend proxy, or point at a locally running backend (`:3051`). |
 | `--username=NAME` | `benchuser` | Must already exist (register once) |
 | `--password=PASS` | `benchpass123` | |
 | `--headless=true|false` | `true` | `false` to watch the browser drive |
