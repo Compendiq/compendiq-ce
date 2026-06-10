@@ -220,9 +220,14 @@ Confluence version metadata (edit time, author, commit message) is not fetched
 during the regular sync — only the latest body and version number are written.
 Full version list import is **lazy-on-open**: when a user opens the Version History
 dialog, `GET /api/pages/:id/versions` calls `backfillVersionHistory` which hits
-`GET /rest/api/content/{id}/version?expand=by,message` and upserts each row into
-`page_versions` via `upsertVersionMetadata` (idempotent ON CONFLICT DO UPDATE with
-COALESCE). The historical body (`body_html`) for each old version is fetched even
+`GET /rest/experimental/content/{id}/version?expand=by,message` and upserts each row
+into `page_versions` via `upsertVersionMetadata` (idempotent ON CONFLICT DO UPDATE
+with COALESCE). The experimental path is the only one Confluence **Data Center**
+serves for the version list — on DC, `/rest/api/content/{id}/version` has no GET
+collection (only DELETE of a single version), which used to 404 every backfill and
+collapse the dialog to just the current version (#780). A 404/405 on the
+experimental path falls back to the Cloud-style stable path for forward
+compatibility; whichever path answers is reused for the remaining pagination pages. The historical body (`body_html`) for each old version is fetched even
 more lazily — only when a user previews or compares that specific version
 (`GET /api/pages/:id/versions/:version` triggers `getHistoricalBody` when
 `body_html IS NULL`). Both calls are best-effort: failures never fail the request,
@@ -233,7 +238,9 @@ history from one whose Confluence import never ran (viewer has no stored PAT —
 backfill uses the *viewing user's* credentials via `getClientForUser`) or failed.
 For `failed`, the `backfillDetail` wording further distinguishes a client-construction
 failure (stored credentials unusable, e.g. PAT decryption error — Confluence was
-never contacted) from a failed Confluence import call.
+never contacted) from a failed Confluence import call; for the latter the underlying
+Confluence error message is appended (whitespace-collapsed and truncated to ~200 chars
+for the dialog) so it still shows *why* the import failed (#780).
 The field is omitted for standalone pages, where no Confluence backfill applies.
 
 The `edited_at` column holds the real Confluence edit timestamp; the existing

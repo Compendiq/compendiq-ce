@@ -33,6 +33,24 @@ const SemanticDiffSchema = z.object({
   model: z.string().optional(),
 });
 
+/**
+ * #780: the underlying backfill error is rendered inside the Version History
+ * dialog, so make it dialog-safe before embedding: collapse all whitespace
+ * runs (incl. newlines) to single spaces, trim, and cap the length with an
+ * ellipsis. Returns '' (no parenthesised suffix) when there is nothing usable.
+ */
+const BACKFILL_REASON_MAX_CHARS = 200;
+function formatBackfillFailureReason(err: unknown): string {
+  if (!(err instanceof Error) || !err.message) return '';
+  const collapsed = err.message.replace(/\s+/g, ' ').trim();
+  if (!collapsed) return '';
+  const capped =
+    collapsed.length > BACKFILL_REASON_MAX_CHARS
+      ? `${collapsed.slice(0, BACKFILL_REASON_MAX_CHARS).trimEnd()}…`
+      : collapsed;
+  return ` (${capped})`;
+}
+
 /** Resolved page identity + the fields needed for RBAC and Confluence push. */
 interface PageContext {
   id: number;
@@ -131,8 +149,13 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
           backfillStatus = 'ok';
         } catch (err) {
           backfillStatus = 'failed';
+          // #780: include the underlying Confluence error so the dialog shows
+          // WHY the import failed (e.g. endpoint missing, permissions) instead
+          // of a bare generic hint that leaves the user guessing. Sanitized
+          // (single-line, length-capped) for the dialog surface.
+          const reason = formatBackfillFailureReason(err);
           backfillDetail =
-            'Importing historical versions from Confluence failed — the list below may be incomplete.';
+            `Importing historical versions from Confluence failed — the list below may be incomplete.${reason}`;
           request.log.warn({ err, pageId: id }, '#722: version backfill failed (Confluence unavailable)');
         }
       } else if (backfillStatus === undefined) {

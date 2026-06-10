@@ -359,6 +359,40 @@ describe('GET /api/pages/:id/versions', () => {
     expect(body.versions[0]).toMatchObject({ versionNumber: 5, isCurrent: true });
   });
 
+  it('collapses a multi-line backfill error to a single line in backfillDetail (#780 review)', async () => {
+    mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'DEV', version: 5 });
+    mockGetClientForUser.mockResolvedValue({});
+    mockBackfillVersionHistory.mockRejectedValue(
+      new Error('Confluence call failed:\n  upstream said\n\nHTTP 502'),
+    );
+    mockGetVersionHistory.mockResolvedValue([]);
+
+    const r = await app.inject({ method: 'GET', url: '/api/pages/page-1/versions' });
+    expect(r.statusCode).toBe(200);
+    const body = r.json();
+    expect(body.backfillStatus).toBe('failed');
+    // Dialog-safe: whitespace runs (incl. newlines) collapse to single spaces.
+    expect(body.backfillDetail).not.toMatch(/\n/);
+    expect(body.backfillDetail).toContain('(Confluence call failed: upstream said HTTP 502)');
+  });
+
+  it('truncates an over-long backfill error with a trailing ellipsis (#780 review)', async () => {
+    mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'DEV', version: 5 });
+    mockGetClientForUser.mockResolvedValue({});
+    mockBackfillVersionHistory.mockRejectedValue(new Error('x'.repeat(500)));
+    mockGetVersionHistory.mockResolvedValue([]);
+
+    const r = await app.inject({ method: 'GET', url: '/api/pages/page-1/versions' });
+    expect(r.statusCode).toBe(200);
+    const body = r.json();
+    expect(body.backfillStatus).toBe('failed');
+    // Capped for the dialog: 200 chars of reason + '…', never the raw 500.
+    expect(body.backfillDetail).toContain(`(${'x'.repeat(200)}…)`);
+    expect(body.backfillDetail).not.toContain('x'.repeat(201));
+    // The generic hint still leads the sentence.
+    expect(body.backfillDetail).toMatch(/Importing historical versions from Confluence failed/);
+  });
+
   it('reports "failed" with a credentials-specific detail when client construction throws — Confluence never contacted (#763 follow-up)', async () => {
     mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'DEV', version: 5 });
     // e.g. PAT decryption failure after a PAT_ENCRYPTION_KEY change.

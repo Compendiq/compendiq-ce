@@ -880,8 +880,64 @@ export class ConfluenceClient {
     return ids;
   }
 
-  /** #722: list a page's full version history (metadata only — cheap). Paginates automatically. */
+  /**
+   * #722/#780: list a page's full version history (metadata only — cheap).
+   * Paginates automatically.
+   *
+   * Confluence DATA CENTER serves the version *list* only at the experimental
+   * path `/rest/experimental/content/{id}/version`. On DC, the stable path
+   * `/rest/api/content/{id}/version` has NO GET collection (only DELETE of a
+   * single version), so it answers 404 — which made every backfill fail and
+   * collapsed the Version History dialog to just the current version (#780).
+   * The experimental path is therefore tried first (it is the one that exists
+   * on the supported platform, DC 9.x); a 404/405 there falls back to the
+   * Cloud-style stable path for forward-compatibility (e.g. a future DC
+   * promoting the endpoint, or a gateway exposing Cloud semantics). Whichever
+   * path answers is reused for the remaining pagination pages.
+   */
   async getPageVersions(pageId: string): Promise<ConfluenceVersionMeta[]> {
+    type VersionListPage = {
+      results: Array<{ number: number; when: string; by?: { displayName?: string }; message?: string; minorEdit?: boolean }>;
+      size: number;
+      _links?: { next?: string };
+    };
+
+    const encodedId = encodeURIComponent(pageId);
+    const candidatePaths = [
+      `/rest/experimental/content/${encodedId}/version`,
+      `/rest/api/content/${encodedId}/version`,
+    ] as const;
+    let resolvedPath: string | null = null;
+
+    const fetchPage = async (start: number, limit: number): Promise<VersionListPage> => {
+      const queryString = `?expand=by,message&start=${start}&limit=${limit}`;
+      if (resolvedPath) {
+        return this.fetch<VersionListPage>(`${resolvedPath}${queryString}`, { method: 'GET' });
+      }
+      let lastErr: unknown;
+      for (const path of candidatePaths) {
+        try {
+          const page = await this.fetch<VersionListPage>(`${path}${queryString}`, { method: 'GET' });
+          resolvedPath = path;
+          return page;
+        } catch (err) {
+          // 404/405 = this deployment doesn't serve the path → try the next
+          // one. Any other error (401/403/5xx) is a real failure on a path the
+          // server understands — propagate it instead of masking it with the
+          // other path's inevitable 404.
+          if (err instanceof ConfluenceError && (err.statusCode === 404 || err.statusCode === 405)) {
+            lastErr = err;
+            continue;
+          }
+          throw err;
+        }
+      }
+      throw new ConfluenceError(
+        `Failed to list versions for pageId=${pageId}: neither ${candidatePaths[0]} nor ${candidatePaths[1]} is available (HTTP 404/405 on both)`,
+        lastErr instanceof ConfluenceError ? lastErr.statusCode : 404,
+      );
+    };
+
     const out: ConfluenceVersionMeta[] = [];
     let start = 0;
     const limit = 100;
@@ -890,11 +946,7 @@ export class ConfluenceClient {
     // beyond any real page's history.
     const maxIterations = 1000;
     for (let i = 0; i < maxIterations; i++) {
-      const res = await this.fetch<{
-        results: Array<{ number: number; when: string; by?: { displayName?: string }; message?: string; minorEdit?: boolean }>;
-        size: number;
-        _links?: { next?: string };
-      }>(`/rest/api/content/${encodeURIComponent(pageId)}/version?expand=by,message&start=${start}&limit=${limit}`, { method: 'GET' });
+      const res = await fetchPage(start, limit);
       for (const v of res.results) {
         out.push({ number: v.number, when: v.when, author: v.by?.displayName ?? null, message: v.message ?? null, minorEdit: v.minorEdit ?? false });
       }
