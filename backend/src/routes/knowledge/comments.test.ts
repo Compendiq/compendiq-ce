@@ -385,8 +385,8 @@ describe('Comments routes', () => {
   // --- POST /api/comments/:id/resolve ---
 
   describe('POST /api/comments/:id/resolve', () => {
-    it('should resolve a top-level comment', async () => {
-      mockQuery.mockResolvedValueOnce({ rows: [{ parent_id: null }] });
+    it('should resolve a top-level comment when the user can access the page', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [{ parent_id: null, page_id: 1 }] });
       mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
 
       const response = await app.inject({
@@ -397,10 +397,11 @@ describe('Comments routes', () => {
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
       expect(body.success).toBe(true);
+      expect(mockUserCanAccessPage).toHaveBeenCalledWith(TEST_USER_ID, 1);
     });
 
     it('should reject resolving a reply', async () => {
-      mockQuery.mockResolvedValueOnce({ rows: [{ parent_id: 5 }] });
+      mockQuery.mockResolvedValueOnce({ rows: [{ parent_id: 5, page_id: 1 }] });
 
       const response = await app.inject({
         method: 'POST',
@@ -420,13 +421,33 @@ describe('Comments routes', () => {
 
       expect(response.statusCode).toBe(404);
     });
+
+    // ── #733 RBAC / IDOR regressions ──────────────────────────────────
+
+    it('should return 404 and not update when the user cannot access the comment\'s page (#733)', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [{ parent_id: null, page_id: 42 }] });
+      mockUserCanAccessPage.mockResolvedValue(false);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/comments/1/resolve',
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(mockUserCanAccessPage).toHaveBeenCalledWith(TEST_USER_ID, 42);
+      // Critical: state unchanged — no UPDATE may run for an inaccessible page.
+      const updateCall = mockQuery.mock.calls.find(
+        (call) => typeof call[0] === 'string' && (call[0] as string).includes('UPDATE comments'),
+      );
+      expect(updateCall).toBeUndefined();
+    });
   });
 
   // --- POST /api/comments/:id/unresolve ---
 
   describe('POST /api/comments/:id/unresolve', () => {
-    it('should unresolve a top-level comment', async () => {
-      mockQuery.mockResolvedValueOnce({ rows: [{ parent_id: null }] });
+    it('should unresolve a top-level comment when the user can access the page', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [{ parent_id: null, page_id: 1 }] });
       mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
 
       const response = await app.inject({
@@ -437,10 +458,11 @@ describe('Comments routes', () => {
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
       expect(body.success).toBe(true);
+      expect(mockUserCanAccessPage).toHaveBeenCalledWith(TEST_USER_ID, 1);
     });
 
     it('should reject unresolving a reply', async () => {
-      mockQuery.mockResolvedValueOnce({ rows: [{ parent_id: 3 }] });
+      mockQuery.mockResolvedValueOnce({ rows: [{ parent_id: 3, page_id: 1 }] });
 
       const response = await app.inject({
         method: 'POST',
@@ -449,6 +471,26 @@ describe('Comments routes', () => {
 
       expect(response.statusCode).toBe(400);
     });
+
+    // ── #733 RBAC / IDOR regressions ──────────────────────────────────
+
+    it('should return 404 and not update when the user cannot access the comment\'s page (#733)', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [{ parent_id: null, page_id: 42 }] });
+      mockUserCanAccessPage.mockResolvedValue(false);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/comments/1/unresolve',
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(mockUserCanAccessPage).toHaveBeenCalledWith(TEST_USER_ID, 42);
+      // Critical: state unchanged — no UPDATE may run for an inaccessible page.
+      const updateCall = mockQuery.mock.calls.find(
+        (call) => typeof call[0] === 'string' && (call[0] as string).includes('UPDATE comments'),
+      );
+      expect(updateCall).toBeUndefined();
+    });
   });
 
   // --- POST /api/comments/:id/reactions ---
@@ -456,7 +498,7 @@ describe('Comments routes', () => {
   describe('POST /api/comments/:id/reactions', () => {
     it('should add a reaction when it does not exist', async () => {
       // Comment exists
-      mockQuery.mockResolvedValueOnce({ rows: [{ id: 1 }] });
+      mockQuery.mockResolvedValueOnce({ rows: [{ page_id: 1 }] });
       // No existing reaction
       mockQuery.mockResolvedValueOnce({ rows: [] });
       // INSERT reaction
@@ -472,11 +514,12 @@ describe('Comments routes', () => {
       const body = JSON.parse(response.body);
       expect(body.action).toBe('added');
       expect(body.emoji).toBe('👍');
+      expect(mockUserCanAccessPage).toHaveBeenCalledWith(TEST_USER_ID, 1);
     });
 
     it('should remove a reaction when it already exists (toggle)', async () => {
       // Comment exists
-      mockQuery.mockResolvedValueOnce({ rows: [{ id: 1 }] });
+      mockQuery.mockResolvedValueOnce({ rows: [{ page_id: 1 }] });
       // Existing reaction found
       mockQuery.mockResolvedValueOnce({ rows: [{}] });
       // DELETE reaction
@@ -504,6 +547,28 @@ describe('Comments routes', () => {
       });
 
       expect(response.statusCode).toBe(404);
+    });
+
+    // ── #733 RBAC / IDOR regressions ──────────────────────────────────
+
+    it('should return 404 and not toggle when the user cannot access the comment\'s page (#733)', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [{ page_id: 42 }] });
+      mockUserCanAccessPage.mockResolvedValue(false);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/comments/1/reactions',
+        payload: { emoji: '👍' },
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(mockUserCanAccessPage).toHaveBeenCalledWith(TEST_USER_ID, 42);
+      // Critical: state unchanged — reactions may be neither read, added,
+      // nor removed for comments on an inaccessible page.
+      const reactionTouch = mockQuery.mock.calls.find(
+        (call) => typeof call[0] === 'string' && (call[0] as string).includes('comment_reactions'),
+      );
+      expect(reactionTouch).toBeUndefined();
     });
   });
 
@@ -585,6 +650,8 @@ describe('Comments routes – admin delete', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
+    // The real userCanAccessPage short-circuits to true for system admins.
+    mockUserCanAccessPage.mockResolvedValue(true);
   });
 
   it('should allow admin to delete any comment', async () => {
@@ -600,5 +667,48 @@ describe('Comments routes – admin delete', () => {
     expect(response.statusCode).toBe(200);
     const body = JSON.parse(response.body);
     expect(body.success).toBe(true);
+  });
+
+  // ── #733: admins (page-access bypass) keep full thread moderation ──
+
+  it('should allow admin to resolve a comment (#733)', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ parent_id: null, page_id: 7 }] });
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/comments/1/resolve',
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body).success).toBe(true);
+  });
+
+  it('should allow admin to unresolve a comment (#733)', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ parent_id: null, page_id: 7 }] });
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/comments/1/unresolve',
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body).success).toBe(true);
+  });
+
+  it('should allow admin to toggle a reaction (#733)', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ page_id: 7 }] });
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/comments/1/reactions',
+      payload: { emoji: '👍' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body).action).toBe('added');
   });
 });
