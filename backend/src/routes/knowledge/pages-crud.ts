@@ -21,6 +21,7 @@ import { emitWebhookEvent } from '../../core/services/webhook-emit-hook.js';
 import { processDirtyPages, isProcessingUser } from '../../domains/llm/services/embedding-service.js';
 import { triggerQualityBatch } from '../../domains/knowledge/services/quality-worker.js';
 import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
+import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
 import { PageListQuerySchema, PageTreeQuerySchema, CreatePageSchema, UpdatePageSchema, SaveDraftSchema } from '@compendiq/contracts';
 import { z } from 'zod';
 import { logger } from '../../core/utils/logger.js';
@@ -316,11 +317,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     //   - Shared standalone articles (visible to all)
     //   - Their own private standalone articles
     const accessibleSpaces = await getUserAccessibleSpaces(userId);
-    const whereBase = `WHERE (
-        (cp.source = 'confluence' AND cp.space_key = ANY($1::text[]))
-        OR (cp.source = 'standalone' AND cp.visibility = 'shared')
-        OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $2)
-      )`;
+    const whereBase = `WHERE ${visiblePagesPredicate(1, 2)}`;
     const values: unknown[] = [accessibleSpaces, userId];
     let paramIdx = 3;
 
@@ -594,11 +591,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const localSpaceKeys = localSpacesResult.rows.map((r) => r.space_key);
     const treeSpaces = Array.from(new Set([...rbacSpaces, ...localSpaceKeys]));
     const values: unknown[] = [treeSpaces, userId];
-    let treeWhereClause = `WHERE (
-        (cp.source = 'confluence' AND cp.space_key = ANY($1::text[]))
-        OR (cp.source = 'standalone' AND cp.visibility = 'shared')
-        OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $2)
-      ) AND cp.deleted_at IS NULL`;
+    let treeWhereClause = `WHERE ${visiblePagesPredicate(1, 2)} AND cp.deleted_at IS NULL`;
 
     if (params.spaceKey) {
       treeWhereClause += ' AND cp.space_key = $3';

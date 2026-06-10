@@ -6,6 +6,7 @@ import { htmlToText } from '../../../core/services/content-converter.js';
 import { logger } from '../../../core/utils/logger.js';
 import { invalidateGraphCache, acquireEmbeddingLock, releaseEmbeddingLock, isEmbeddingLocked, getRedisClient, listActiveEmbeddingLocks } from '../../../core/services/redis-cache.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
+import { visiblePagesPredicate } from '../../../core/services/page-visibility.js';
 import { CircuitBreakerOpenError, getProviderBreaker } from '../../../core/services/circuit-breaker.js';
 import { getReembedHistoryRetention } from '../../../core/services/admin-settings-service.js';
 import { enqueueJob } from '../../../core/services/queue-service.js';
@@ -992,7 +993,8 @@ export async function computePageRelationships(changedPageIds?: number[]): Promi
 
 /**
  * Get embedding status scoped to the pages the user can see — the same
- * visibility predicate as the pages tree/list routes:
+ * predicate as the pages list route (tree additionally merges legacy
+ * local-space keys):
  *   - Confluence pages from RBAC-accessible spaces
  *   - shared standalone articles (visible to all)
  *   - the caller's own private standalone articles
@@ -1004,11 +1006,7 @@ export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatu
   const statusSpaces = await getUserAccessibleSpaces(userId);
   // Static SQL fragment shared by the four COUNT queries below; all user
   // input flows through the $1/$2 parameters.
-  const visibleWhere = `(
-         (cp.source = 'confluence' AND cp.space_key = ANY($1::text[]))
-         OR (cp.source = 'standalone' AND cp.visibility = 'shared')
-         OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $2)
-       ) AND cp.deleted_at IS NULL`;
+  const visibleWhere = `${visiblePagesPredicate(1, 2)} AND cp.deleted_at IS NULL`;
   const visibleParams = [statusSpaces, userId];
   const [totalResult, dirtyResult, embeddingResult, embeddedPagesResult, isProcessing, resolvedEmbedding, lastRunAt] = await Promise.all([
     query<{ count: string }>(
