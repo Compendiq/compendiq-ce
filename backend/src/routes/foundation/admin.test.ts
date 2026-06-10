@@ -4,8 +4,11 @@ import sensible from '@fastify/sensible';
 import { ZodError } from 'zod';
 import { adminRoutes } from './admin.js';
 
-// Mock external dependencies
-vi.mock('../../core/utils/crypto.js', () => ({
+// Mock external dependencies. Passthrough keeps the real encryptPat/decryptPat
+// (used by PUT /admin/smtp to encrypt smtp_pass at rest, #738) while stubbing
+// the key-rotation entry point.
+vi.mock('../../core/utils/crypto.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../core/utils/crypto.js')>()),
   reEncryptPat: vi.fn().mockReturnValue(null),
 }));
 
@@ -77,6 +80,7 @@ vi.mock('../../domains/llm/services/llm-queue.js', () => ({
 
 import nodemailer from 'nodemailer';
 import { listErrors, resolveError, getErrorSummary } from '../../core/services/error-tracker.js';
+import { decryptPat, isEncryptedSecretFormat, reEncryptPat } from '../../core/utils/crypto.js';
 import { query as mockQuery } from '../../core/db/postgres.js';
 import { _resetStreamCapCache } from '../../core/services/sse-stream-limiter.js';
 import { _resetCache as _resetRateLimitsCache } from '../../core/services/rate-limit-service.js';
@@ -922,7 +926,168 @@ describe('Admin routes', () => {
       const persistedKeys = upsert?.[1][0] as string[];
       const persistedValues = upsert?.[1][1] as string[];
       expect(persistedKeys).toContain('smtp_pass');
-      expect(persistedValues[persistedKeys.indexOf('smtp_pass')]).toBe('brand-new-password');
+      // issue #738 — smtp_pass is now encrypted at rest, so the persisted
+      // value is a versioned ciphertext that decrypts to the real password,
+      // never the plaintext itself.
+      const stored = persistedValues[persistedKeys.indexOf('smtp_pass')];
+      expect(stored).not.toBe('brand-new-password');
+      expect(isEncryptedSecretFormat(stored)).toBe(true);
+      expect(decryptPat(stored)).toBe('brand-new-password');
+    });
+  });
+
+  // ========================
+  // SMTP settings — smtp_pass encrypted at rest (issue #738)
+  // ========================
+  describe('PUT /api/admin/smtp - smtp_pass encrypted at rest (#738)', () => {
+    const findAdminSettingsUpsert = () => {
+      const calls = (mockQuery as ReturnType<typeof vi.fn>).mock.calls as Array<[string, unknown[]]>;
+      return calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO admin_settings'));
+    };
+
+    it('persists smtp_pass encrypted, never plaintext', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [], rowCount: 0 });
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/smtp',
+        payload: { host: 'smtp.test.local', pass: 'super-secret-smtp', enabled: true },
+      });
+      expect(response.statusCode).toBe(200);
+
+      const upsert = findAdminSettingsUpsert();
+      expect(upsert).toBeDefined();
+      const [, params] = upsert!;
+      const keys = params[0] as string[];
+      const values = params[1] as string[];
+      const stored = values[keys.indexOf('smtp_pass')];
+
+      expect(stored).not.toBe('super-secret-smtp');
+      expect(stored).toMatch(/^h\d+:/); // versioned encryptPat format
+      expect(decryptPat(stored)).toBe('super-secret-smtp');
+    });
+
+    it('persists an empty smtp_pass as an empty string so admins can clear it', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [], rowCount: 0 });
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/smtp',
+        payload: { pass: '' },
+      });
+      expect(response.statusCode).toBe(200);
+
+      const upsert = findAdminSettingsUpsert();
+      expect(upsert).toBeDefined();
+      const [, params] = upsert!;
+      const keys = params[0] as string[];
+      const values = params[1] as string[];
+      expect(values[keys.indexOf('smtp_pass')]).toBe('');
+    });
+  });
+
+  // ========================
+  // Encryption-key rotation must sweep admin_settings.smtp_pass too —
+  // otherwise the documented procedure (rotate, remove old key) strands the
+  // ciphertext and SMTP auth fails silently (#762 review follow-up).
+  // ========================
+  describe('POST /api/admin/rotate-encryption-key - admin_settings.smtp_pass sweep (#762 review)', () => {
+    const mockedReEncryptPat = reEncryptPat as ReturnType<typeof vi.fn>;
+    // Structurally valid h0 ciphertext (passes the real isEncryptedSecretFormat).
+    const storedCipher = `h0:${'a'.repeat(32)}:${'b'.repeat(32)}:cc`;
+
+    const mockRotationQueries = (smtpValue: string | undefined, updateRowCount = 1) => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockImplementation(async (sql: string) => {
+        if (typeof sql === 'string' && sql.includes('FROM user_settings')) {
+          return { rows: [], rowCount: 0 };
+        }
+        if (typeof sql === 'string' && sql.trimStart().startsWith('SELECT') && sql.includes(`'smtp_pass'`)) {
+          return smtpValue === undefined
+            ? { rows: [], rowCount: 0 }
+            : { rows: [{ setting_value: smtpValue }], rowCount: 1 };
+        }
+        return { rows: [], rowCount: updateRowCount };
+      });
+    };
+
+    const findSmtpPassUpdate = () => {
+      const calls = (mockQuery as ReturnType<typeof vi.fn>).mock.calls as Array<[string, unknown[]]>;
+      return calls.find(([sql]) =>
+        typeof sql === 'string' && sql.includes('UPDATE admin_settings') && sql.includes(`'smtp_pass'`),
+      );
+    };
+
+    it('re-encrypts smtp_pass with the latest key, conditional on the value read, and reports it as rotated', async () => {
+      mockRotationQueries(storedCipher);
+      mockedReEncryptPat.mockReturnValueOnce('h1:new-cipher');
+
+      const response = await app.inject({ method: 'POST', url: '/api/admin/rotate-encryption-key' });
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)).toMatchObject({ rotated: 1, skipped: 0, errors: 0, total: 1 });
+
+      const update = findSmtpPassUpdate();
+      expect(update).toBeDefined();
+      const [sql, params] = update!;
+      // Lost-update guard: a concurrent PUT /admin/smtp must never be
+      // clobbered with a re-encryption of the OLD password.
+      expect(sql).toContain('setting_value = $2');
+      expect(params).toEqual(['h1:new-cipher', storedCipher]);
+    });
+
+    it('counts smtp_pass as skipped when already on the latest key (reEncryptPat → null)', async () => {
+      mockRotationQueries(storedCipher);
+      mockedReEncryptPat.mockReturnValueOnce(null);
+
+      const response = await app.inject({ method: 'POST', url: '/api/admin/rotate-encryption-key' });
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)).toMatchObject({ rotated: 0, skipped: 1, errors: 0, total: 1 });
+      expect(findSmtpPassUpdate()).toBeUndefined();
+    });
+
+    it('counts smtp_pass as skipped when the conditional UPDATE matches 0 rows (concurrent change)', async () => {
+      mockRotationQueries(storedCipher, 0);
+      mockedReEncryptPat.mockReturnValueOnce('h1:new-cipher');
+
+      const response = await app.inject({ method: 'POST', url: '/api/admin/rotate-encryption-key' });
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)).toMatchObject({ rotated: 0, skipped: 1, errors: 0, total: 1 });
+    });
+
+    it('encrypts a legacy plaintext smtp_pass outright during the sweep', async () => {
+      mockRotationQueries('plain-old-secret');
+
+      const response = await app.inject({ method: 'POST', url: '/api/admin/rotate-encryption-key' });
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)).toMatchObject({ rotated: 1, skipped: 0, errors: 0, total: 1 });
+
+      const update = findSmtpPassUpdate();
+      expect(update).toBeDefined();
+      const [sql, params] = update!;
+      expect(sql).toContain('setting_value = $2');
+      expect((params as string[])[1]).toBe('plain-old-secret');
+      expect((params as string[])[0]).toMatch(/^h\d+:/);
+      expect(decryptPat((params as string[])[0]!)).toBe('plain-old-secret');
+    });
+
+    it('reports an error when smtp_pass re-encryption throws, without failing the request', async () => {
+      mockRotationQueries(storedCipher);
+      mockedReEncryptPat.mockImplementationOnce(() => {
+        throw new Error('key version 0 not found');
+      });
+
+      const response = await app.inject({ method: 'POST', url: '/api/admin/rotate-encryption-key' });
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)).toMatchObject({ rotated: 0, skipped: 0, errors: 1, total: 1 });
+    });
+
+    it('does not count an absent or empty smtp_pass row', async () => {
+      mockRotationQueries(undefined);
+      const absent = await app.inject({ method: 'POST', url: '/api/admin/rotate-encryption-key' });
+      expect(JSON.parse(absent.body)).toMatchObject({ rotated: 0, skipped: 0, errors: 0, total: 0 });
+
+      mockRotationQueries('');
+      const empty = await app.inject({ method: 'POST', url: '/api/admin/rotate-encryption-key' });
+      expect(JSON.parse(empty.body)).toMatchObject({ rotated: 0, skipped: 0, errors: 0, total: 0 });
     });
   });
 });

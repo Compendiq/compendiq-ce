@@ -14,6 +14,7 @@ import {
 import { initLlmQueue } from './domains/llm/services/llm-queue.js';
 import { initRateLimiter } from './domains/confluence/services/confluence-rate-limiter.js';
 import { initEmailService, closeEmailService } from './core/services/email-service.js';
+import { isValidEncryptionKey } from './core/utils/crypto.js';
 
 const PORT = parseInt(process.env.BACKEND_PORT ?? '3051', 10);
 const HOST = process.env.NODE_ENV === 'production' ? '0.0.0.0' : '127.0.0.1';
@@ -29,8 +30,11 @@ async function start() {
     if (jwtSecret.length < 32 || jwtSecret.startsWith('change-me')) {
       throw new Error('JWT_SECRET must be at least 32 chars and not default in production');
     }
-    if (patKey.length < 32 || patKey.startsWith('change-me')) {
-      throw new Error('PAT_ENCRYPTION_KEY must be at least 32 chars and not default in production');
+    // issue #738 — validate UTF-8 BYTE length (matches what the crypto module
+    // accepts), not UTF-16 char length. Identical to the old check for ASCII
+    // keys, but no longer lets a multi-byte key pass boot only to fail later.
+    if (!isValidEncryptionKey(patKey) || patKey.startsWith('change-me')) {
+      throw new Error('PAT_ENCRYPTION_KEY must be at least 32 bytes (UTF-8) and not default in production');
     }
   }
 
