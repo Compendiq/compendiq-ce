@@ -21,7 +21,7 @@ import { getRateLimits, upsertRateLimits } from '../../core/services/rate-limit-
 import { getStreamCap, invalidateStreamCapCache } from '../../core/services/sse-stream-limiter.js';
 import { sanitizeLlmInput } from '../../core/utils/sanitize-llm-input.js';
 import { ALLOWED_FTS_LANGUAGES } from '../../core/services/fts-language.js';
-import { getSmtpConfig, updateSmtpConfig, sendTestEmail } from '../../core/services/email-service.js';
+import { getSmtpConfig, updateSmtpConfig, sendTestEmail, stripMaskedSmtpPass } from '../../core/services/email-service.js';
 
 const AuditLogQuerySchema = z.object({
   userId: z.string().optional(),
@@ -525,7 +525,9 @@ export async function adminRoutes(fastify: FastifyInstance) {
   });
 
   fastify.put('/admin/smtp', async (request) => {
-    const body = SmtpUpdateSchema.parse(request.body);
+    // #743 — one shared guard: strip the masked-password sentinel round-tripped
+    // by the UI before BOTH the live-transport update and the DB persist below.
+    const body = stripMaskedSmtpPass(SmtpUpdateSchema.parse(request.body));
     updateSmtpConfig(body);
 
     // Persist to admin_settings table
@@ -534,7 +536,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
     if (body.port !== undefined) entries.push({ key: 'smtp_port', value: String(body.port) });
     if (body.secure !== undefined) entries.push({ key: 'smtp_secure', value: String(body.secure) });
     if (body.user !== undefined) entries.push({ key: 'smtp_user', value: body.user });
-    if (body.pass !== undefined && body.pass !== '••••••••') entries.push({ key: 'smtp_pass', value: body.pass });
+    if (body.pass !== undefined) entries.push({ key: 'smtp_pass', value: body.pass });
     if (body.from !== undefined) entries.push({ key: 'smtp_from', value: body.from });
     if (body.enabled !== undefined) entries.push({ key: 'smtp_enabled', value: String(body.enabled) });
 

@@ -39,6 +39,18 @@ vi.mock('../../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
+// issue #743 — mock nodemailer at the boundary so the SMTP route tests can
+// assert which credentials reach the live transport.
+vi.mock('nodemailer', () => {
+  const sendMail = vi.fn().mockResolvedValue({ messageId: 'test-123' });
+  const close = vi.fn();
+  return {
+    default: {
+      createTransport: vi.fn().mockReturnValue({ sendMail, close }),
+    },
+  };
+});
+
 // LLM provider + per-use-case assignment routes have moved to
 // `/admin/llm-providers` + `/admin/llm-usecases` — see the dedicated tests in
 // `backend/src/routes/llm/llm-providers.test.ts` and `.../llm-usecases.test.ts`.
@@ -63,6 +75,7 @@ vi.mock('../../domains/llm/services/llm-queue.js', () => ({
   setLlmMaxQueueDepthClusterWide: vi.fn().mockResolvedValue(undefined),
 }));
 
+import nodemailer from 'nodemailer';
 import { listErrors, resolveError, getErrorSummary } from '../../core/services/error-tracker.js';
 import { query as mockQuery } from '../../core/db/postgres.js';
 import { _resetStreamCapCache } from '../../core/services/sse-stream-limiter.js';
@@ -803,6 +816,113 @@ describe('Admin routes', () => {
         payload: { adminAccessDeniedRetentionDays: 30.5 },
       });
       expect(response.statusCode).toBe(400);
+    });
+  });
+
+  // ========================
+  // SMTP settings — masked password sentinel (issue #743)
+  // ========================
+  // GET /admin/smtp masks the password as '••••••••'; the admin UI round-trips
+  // that value on save. The mask must never reach the live transport nor be
+  // persisted to admin_settings.
+  describe('PUT /api/admin/smtp - masked password sentinel (#743)', () => {
+    const SMTP_MASK = '••••••••';
+
+    it('keeps the real password on the live transport when the masked sentinel is round-tripped', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [], rowCount: 0 });
+
+      // 1. Admin saves real credentials.
+      let response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/smtp',
+        payload: {
+          host: 'smtp.test.local',
+          port: 587,
+          secure: false,
+          user: 'mailer',
+          pass: 'real-secret-password',
+          from: 'noreply@test.local',
+          enabled: true,
+        },
+      });
+      expect(response.statusCode).toBe(200);
+
+      // 2. GET returns the masked password, which the UI round-trips on the
+      //    next save (here: changing the port).
+      const getResponse = await app.inject({ method: 'GET', url: '/api/admin/smtp' });
+      expect(getResponse.statusCode).toBe(200);
+      expect(JSON.parse(getResponse.body).pass).toBe(SMTP_MASK);
+
+      response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/smtp',
+        payload: {
+          host: 'smtp.test.local',
+          port: 2525,
+          secure: false,
+          user: 'mailer',
+          pass: SMTP_MASK,
+          from: 'noreply@test.local',
+          enabled: true,
+        },
+      });
+      expect(response.statusCode).toBe(200);
+
+      // 3. The transport created for the next send must use the real
+      //    password — not the literal mask.
+      const testResponse = await app.inject({
+        method: 'POST',
+        url: '/api/admin/smtp/test',
+        payload: { to: 'admin@test.local' },
+      });
+      expect(testResponse.statusCode).toBe(200);
+      expect(JSON.parse(testResponse.body).success).toBe(true);
+
+      const createCalls = (nodemailer.createTransport as ReturnType<typeof vi.fn>).mock.calls;
+      expect(createCalls.length).toBeGreaterThan(0);
+      const transportOptions = createCalls[createCalls.length - 1][0] as {
+        port: number;
+        auth?: { user: string; pass: string };
+      };
+      expect(transportOptions.port).toBe(2525);
+      expect(transportOptions.auth?.pass).toBe('real-secret-password');
+    });
+
+    it('does not persist the masked sentinel to admin_settings', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [], rowCount: 0 });
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/smtp',
+        payload: { host: 'smtp.other.local', pass: SMTP_MASK, enabled: true },
+      });
+      expect(response.statusCode).toBe(200);
+
+      const calls = (mockQuery as ReturnType<typeof vi.fn>).mock.calls as Array<[string, unknown[]]>;
+      const upsert = calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO admin_settings'));
+      expect(upsert).toBeDefined();
+      const persistedKeys = upsert?.[1][0] as string[];
+      expect(persistedKeys).toContain('smtp_host');
+      expect(persistedKeys).not.toContain('smtp_pass');
+    });
+
+    it('persists a real (non-masked) password to admin_settings', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [], rowCount: 0 });
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/smtp',
+        payload: { pass: 'brand-new-password' },
+      });
+      expect(response.statusCode).toBe(200);
+
+      const calls = (mockQuery as ReturnType<typeof vi.fn>).mock.calls as Array<[string, unknown[]]>;
+      const upsert = calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO admin_settings'));
+      expect(upsert).toBeDefined();
+      const persistedKeys = upsert?.[1][0] as string[];
+      const persistedValues = upsert?.[1][1] as string[];
+      expect(persistedKeys).toContain('smtp_pass');
+      expect(persistedValues[persistedKeys.indexOf('smtp_pass')]).toBe('brand-new-password');
     });
   });
 });
