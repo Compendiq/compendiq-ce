@@ -44,8 +44,12 @@ const INJECTION_PATTERNS: Array<{ pattern: RegExp; description: string }> = [
   // Markdown/format injection for output manipulation
   { pattern: /```\s*(system|assistant)\b/gi, description: 'markdown code block injection' },
 
-  // Delimiter injection
-  { pattern: /---+\s*\n\s*(system|new\s+instructions)/gi, description: 'delimiter injection' },
+  // Delimiter injection. Whitespace runs are bounded: only horizontal
+  // whitespace ([^\S\n]) before the newline and at most 16 whitespace chars
+  // after it. The previous `\s*\n\s*` form had adjacent unbounded quantifiers
+  // that both match newlines, backtracking polynomially over a newline run
+  // (ReDoS: ~7.4s event-loop block on a 20KB adversarial input).
+  { pattern: /-{3,}[^\S\n]*\n\s{0,16}(system|new\s+instructions)/gi, description: 'delimiter injection' },
 ];
 
 interface SanitizeResult {
