@@ -1,6 +1,14 @@
 [botdetection]
 ipv4_prefix = 32
 ipv6_prefix = 48
+# Trusted proxies for bot detection — allows SearXNG to run without a reverse
+# proxy by trusting the Docker internal network (e.g. mcp-docs calls SearXNG
+# directly via Docker DNS at http://searxng:8080).
+trusted_proxies = [
+  '127.0.0.0/8',
+  '::1',
+  '172.18.0.0/16',
+]
 
 [botdetection.ip_limit]
 filter_link_local = false
