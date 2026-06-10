@@ -991,36 +991,48 @@ export async function computePageRelationships(changedPageIds?: number[]): Promi
 }
 
 /**
- * Get embedding status scoped to a user's selected spaces.
+ * Get embedding status scoped to the pages the user can see — the same
+ * visibility predicate as the pages tree/list routes:
+ *   - Confluence pages from RBAC-accessible spaces
+ *   - shared standalone articles (visible to all)
+ *   - the caller's own private standalone articles
+ * Keeps the dashboard KPI counts consistent with what the sidebar tree shows
+ * (previously standalone articles never counted because only `space_key =
+ * ANY(rbac spaces)` was applied, so regular users saw "0 total").
  */
 export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatus> {
   const statusSpaces = await getUserAccessibleSpaces(userId);
+  // Static SQL fragment shared by the four COUNT queries below; all user
+  // input flows through the $1/$2 parameters.
+  const visibleWhere = `(
+         (cp.source = 'confluence' AND cp.space_key = ANY($1::text[]))
+         OR (cp.source = 'standalone' AND cp.visibility = 'shared')
+         OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $2)
+       ) AND cp.deleted_at IS NULL`;
+  const visibleParams = [statusSpaces, userId];
   const [totalResult, dirtyResult, embeddingResult, embeddedPagesResult, isProcessing, resolvedEmbedding, lastRunAt] = await Promise.all([
     query<{ count: string }>(
       `SELECT COUNT(*) as count FROM pages cp
-       WHERE cp.space_key = ANY($1::text[])
-         AND cp.deleted_at IS NULL`,
-      [statusSpaces],
+       WHERE ${visibleWhere}`,
+      visibleParams,
     ),
     query<{ count: string }>(
       `SELECT COUNT(*) as count FROM pages cp
-       WHERE cp.space_key = ANY($1::text[])
-         AND cp.deleted_at IS NULL AND cp.embedding_dirty = TRUE`,
-      [statusSpaces],
+       WHERE ${visibleWhere}
+         AND cp.embedding_dirty = TRUE`,
+      visibleParams,
     ),
     query<{ count: string }>(
       `SELECT COUNT(*) as count FROM page_embeddings pe
        JOIN pages cp ON pe.page_id = cp.id
-       WHERE cp.space_key = ANY($1::text[])
-         AND cp.deleted_at IS NULL`,
-      [statusSpaces],
+       WHERE ${visibleWhere}`,
+      visibleParams,
     ),
     query<{ count: string }>(
       `SELECT COUNT(DISTINCT pe.page_id) as count FROM page_embeddings pe
        JOIN pages cp ON pe.page_id = cp.id
-       WHERE cp.space_key = ANY($1::text[])
-         AND cp.deleted_at IS NULL`,
-      [statusSpaces],
+       WHERE ${visibleWhere}`,
+      visibleParams,
     ),
     isEmbeddingLocked(userId),
     resolveUsecase('embedding').catch(() => null),

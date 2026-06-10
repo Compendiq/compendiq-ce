@@ -1249,7 +1249,14 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
           : [id, body.title, body.bodyHtml, bodyText, newVersion, userId],
       );
 
-      await cache.invalidate(userId, 'pages');
+      // A visibility change alters what OTHER users can see — their cached
+      // trees/lists would serve stale data for up to the cache TTL (15 min)
+      // if we only invalidated the editor's own cache.
+      if (body.visibility && body.visibility !== existingPage.visibility) {
+        await cache.invalidateAcrossUsers('pages');
+      } else {
+        await cache.invalidate(userId, 'pages');
+      }
       await logAuditEvent(userId, 'PAGE_UPDATED', 'page', String(id), { source: 'standalone', title: body.title }, request);
 
       emitWebhookEvent({
