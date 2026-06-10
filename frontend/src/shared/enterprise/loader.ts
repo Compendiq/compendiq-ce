@@ -5,7 +5,7 @@ let loaded = false;
 
 // The EE backend serves the overlay bundle at this path.
 // CE nginx already proxies /api/ → backend, so no separate EE frontend image is needed.
-// In CE deployments the backend returns 404 — the script fails silently and ui stays null.
+// In CE deployments the backend returns 404 — the HEAD probe fails silently and ui stays null.
 const ENTERPRISE_BUNDLE_URL = '/api/enterprise/frontend.js';
 
 // Global name the IIFE bundle registers itself under (matches vite.lib.config.ts `name`)
@@ -17,19 +17,43 @@ const DEPS_GLOBAL = '__COMPENDIQ_DEPS__';
 // Pluggable script loader — replaced in tests
 type ScriptLoader = (url: string) => Promise<void>;
 
-const defaultScriptLoader: ScriptLoader = (url) =>
+// Script-element injection, separated from the probe so tests can stub
+// injection (which jsdom can't complete) without bypassing the probe.
+type ScriptInjector = (url: string) => Promise<void>;
+
+const defaultScriptInjector: ScriptInjector = (url) =>
   new Promise<void>((resolve, reject) => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    if ((window as any)[EE_UI_GLOBAL]) {
-      resolve(); // Already loaded (e.g. hot-reload)
-      return;
-    }
     const script = document.createElement('script');
     script.src = url;
     script.onload = () => resolve();
     script.onerror = () => reject(new Error(`EE bundle not available at ${url}`));
     document.head.appendChild(script);
   });
+
+let _scriptInjector: ScriptInjector = defaultScriptInjector;
+
+// The probe lives here (inside the default loader) rather than in
+// loadEnterpriseUI so the _setScriptLoaderForTesting seam keeps replacing
+// probe + injection together — tests that stub the loader never touch the
+// network, preserving the existing seam semantics.
+const defaultScriptLoader: ScriptLoader = async (url) => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  if ((window as any)[EE_UI_GLOBAL]) {
+    return; // Already loaded (e.g. hot-reload)
+  }
+
+  // Probe before injecting a <script> tag: in CE deployments the bundle URL
+  // intentionally 404s, and a failed <script src> logs a 404 plus a
+  // MIME-type refusal to the console on every navigation. fetch() of a 404
+  // logs nothing, so probing first keeps community mode silent.
+  const res = await fetch(url, { method: 'HEAD' });
+  const type = res.headers.get('content-type') ?? '';
+  if (!res.ok || !/javascript|ecmascript/.test(type)) {
+    throw new Error(`EE bundle not available at ${url}`);
+  }
+
+  await _scriptInjector(url);
+};
 
 let _scriptLoader: ScriptLoader = defaultScriptLoader;
 
@@ -94,6 +118,7 @@ export function _resetForTesting(): void {
   cached = null;
   loaded = false;
   _scriptLoader = defaultScriptLoader;
+  _scriptInjector = defaultScriptInjector;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   delete (window as any)[DEPS_GLOBAL];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -106,4 +131,14 @@ export function _resetForTesting(): void {
  */
 export function _setScriptLoaderForTesting(loader: ScriptLoader): void {
   _scriptLoader = loader;
+}
+
+/**
+ * Override the script injector used by the default loader, so the probe can
+ * be tested without jsdom needing to execute a real <script>. Exposed only
+ * for testing.
+ * @internal
+ */
+export function _setScriptInjectorForTesting(injector: ScriptInjector): void {
+  _scriptInjector = injector;
 }

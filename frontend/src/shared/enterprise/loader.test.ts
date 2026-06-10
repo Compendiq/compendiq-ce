@@ -1,13 +1,29 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   loadEnterpriseUI,
   _resetForTesting,
   _setScriptLoaderForTesting,
+  _setScriptInjectorForTesting,
 } from './loader';
+
+const BUNDLE_URL = '/api/enterprise/frontend.js';
+
+/** Minimal fetch Response stand-in for the HEAD probe. */
+function probeResponse(ok: boolean, contentType: string | null) {
+  return {
+    ok,
+    status: ok ? 200 : 404,
+    headers: { get: (name: string) => (name.toLowerCase() === 'content-type' ? contentType : null) },
+  };
+}
 
 describe('Enterprise frontend loader', () => {
   beforeEach(() => {
     _resetForTesting();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it('should return null when /api/enterprise/frontend.js is not available', async () => {
@@ -45,5 +61,63 @@ describe('Enterprise frontend loader', () => {
     const ui = await loadEnterpriseUI();
     expect(ui).not.toBeNull();
     expect(ui?.LicenseStatusCard).toBe(mockCard);
+  });
+
+  describe('HEAD probe (default loader)', () => {
+    it('should not inject a script tag when the probe returns 404', async () => {
+      const fetchMock = vi.fn().mockResolvedValue(probeResponse(false, 'application/json'));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const ui = await loadEnterpriseUI();
+
+      expect(ui).toBeNull();
+      expect(fetchMock).toHaveBeenCalledWith(BUNDLE_URL, { method: 'HEAD' });
+      expect(document.head.querySelector(`script[src="${BUNDLE_URL}"]`)).toBeNull();
+    });
+
+    it('should not reach the script injector when the probe returns a non-JS content type', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(probeResponse(true, 'application/json; charset=utf-8')),
+      );
+      const injector = vi.fn().mockResolvedValue(undefined);
+      _setScriptInjectorForTesting(injector);
+
+      const ui = await loadEnterpriseUI();
+
+      expect(ui).toBeNull();
+      expect(injector).not.toHaveBeenCalled();
+      expect(document.head.querySelector(`script[src="${BUNDLE_URL}"]`)).toBeNull();
+    });
+
+    it('should proceed to script injection when the probe returns 200 with a JS content type', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(probeResponse(true, 'text/javascript; charset=utf-8')),
+      );
+      const mockCard = () => null;
+      const injector = vi.fn().mockImplementation(async () => {
+        // Simulate IIFE bundle: registers itself on window global
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (window as any).__COMPENDIQ_UI__ = {
+          LicenseStatusCard: mockCard,
+          version: '1.0.0',
+        };
+      });
+      _setScriptInjectorForTesting(injector);
+
+      const ui = await loadEnterpriseUI();
+
+      expect(injector).toHaveBeenCalledWith(BUNDLE_URL);
+      expect(ui).not.toBeNull();
+      expect(ui?.LicenseStatusCard).toBe(mockCard);
+    });
+
+    it('should resolve null when the probe itself rejects (network error)', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('network error')));
+
+      await expect(loadEnterpriseUI()).resolves.toBeNull();
+      expect(document.head.querySelector(`script[src="${BUNDLE_URL}"]`)).toBeNull();
+    });
   });
 });

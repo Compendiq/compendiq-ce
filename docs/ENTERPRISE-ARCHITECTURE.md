@@ -755,7 +755,11 @@ export function isFeatureAvailable(
 ### 7.1 Frontend Plugin Loader
 
 The EE overlay bundle is served at `/api/enterprise/frontend.js` by the EE backend.
-CE deployments return 404 — the script tag errors silently and `ui` stays null.
+CE deployments return 404 — the loader first probes the URL with a `fetch` HEAD request
+(a fetched 404 logs nothing to the browser console, unlike a failed `<script src>`, which
+logs a 404 plus a MIME-type refusal on every navigation); on 404 or a non-JavaScript
+content type it fails silently and `ui` stays null. Only when the probe succeeds is the
+`<script>` tag injected.
 Both CE and EE deployments use the same CE frontend image; no separate EE frontend image is needed.
 
 **Why IIFE, not an ES module**: ES modules with bare-specifier externals (e.g. `import React from 'react'`)
@@ -788,8 +792,9 @@ export async function loadEnterpriseUI(): Promise<EnterpriseUI | null> {
       ...(jsxRuntime as any), ...(ReactQuery as any), ...(FramerMotion as any),
     };
 
-    // Inject <script> tag; IIFE runs and registers window.__COMPENDIQ_UI__
-    await injectScript(ENTERPRISE_BUNDLE_URL);
+    // HEAD-probe first (silent in CE), then inject <script> tag;
+    // IIFE runs and registers window.__COMPENDIQ_UI__
+    await probeAndInjectScript(ENTERPRISE_BUNDLE_URL);
 
     const ui = (window as any)[EE_UI_GLOBAL];
     if (ui && typeof ui.LicenseStatusCard === 'function') {
