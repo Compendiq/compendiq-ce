@@ -1398,9 +1398,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     //   4. on upstream failure (non-404), clear the soft-delete so NEITHER side
     //      changed.
     // A crash between 1 and 2 leaves a hidden row for a page that still exists
-    // upstream — the sync upsert (`ON CONFLICT … DO UPDATE … deleted_at = NULL`)
-    // restores it. A failure after 2 leaves at worst a hidden soft-deleted row
-    // that `purgeDeletedPages` converges — never the live orphan from #766.
+    // upstream — deletion reconciliation revives it: the page is still in the
+    // live listing, and once the soft-delete is older than the revival grace
+    // window the cross-check in `detectDeletedPages` clears `deleted_at`. (The
+    // sync upsert also restores it, but only if the page is modified upstream
+    // or a full sync runs — incremental sync never re-upserts an unmodified
+    // page.) A failure after 2 leaves at worst a hidden soft-deleted row that
+    // `purgeDeletedPages` converges — never the live orphan from #766.
     const intent = await query<{ id: number }>(
       'UPDATE pages SET deleted_at = NOW() WHERE id = $1 AND deleted_at IS NULL RETURNING id',
       [existingPage.id],
@@ -1431,11 +1435,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
             await query('UPDATE pages SET deleted_at = NULL WHERE id = $1', [existingPage.id]);
           } catch (restoreErr) {
             // Worst case: the page stays hidden although it still exists in
-            // Confluence. The sync upsert clears `deleted_at` for pages that
-            // still exist upstream, so this self-heals on the next sync cycle.
+            // Confluence. Deletion reconciliation revives soft-deleted rows
+            // whose page is still in the live listing (once the soft-delete is
+            // older than the revival grace window), so this self-heals within
+            // a couple of sync cycles.
             logger.error(
               { pageId: existingPage.id, err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) },
-              'Failed to clear delete intent after Confluence delete failure — sync will restore the page',
+              'Failed to clear delete intent after Confluence delete failure — sync reconciliation will revive the page',
             );
           }
         }
@@ -1827,11 +1833,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
             await query('UPDATE pages SET deleted_at = NULL WHERE id = ANY($1::int[])', [restoreIds]);
           } catch (restoreErr) {
             // Worst case: pages stay hidden although they still exist upstream.
-            // The sync upsert clears `deleted_at` for pages that still exist in
-            // Confluence, so this self-heals on the next sync cycle.
+            // Deletion reconciliation revives soft-deleted rows whose pages are
+            // still in the live listing (once the soft-delete is older than the
+            // revival grace window), so this self-heals within a couple of
+            // sync cycles.
             logger.error(
               { pageIds: restoreIds, err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) },
-              'Failed to clear bulk delete intent after Confluence failures — sync will restore the pages',
+              'Failed to clear bulk delete intent after Confluence failures — sync reconciliation will revive the pages',
             );
           }
         }

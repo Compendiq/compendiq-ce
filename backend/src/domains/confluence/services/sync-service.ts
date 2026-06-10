@@ -60,6 +60,32 @@ const SYNC_STATUS_TTL = 86_400; // 24 h
 const MAX_DELETION_CONFIRMATIONS = 200;
 
 /**
+ * Grace window (seconds) before deletion reconciliation may REVIVE a locally
+ * soft-deleted row whose page is present in the live Confluence listing again
+ * (#766 review).
+ *
+ * Why revival exists: a page restored from the Confluence trash does NOT get a
+ * new version (`lastmodified` is unchanged), so the incremental sync's
+ * `lastmodified >=` CQL window never re-upserts it — without this cross-check
+ * the local row would stay hidden until `purgeDeletedPages` hard-deletes it
+ * (with all local enrichment) at 30 days. The upsert path only revives a row
+ * when the page is modified upstream or a full sync (≥24h-stale `last_synced`)
+ * happens to run.
+ *
+ * Why the grace window exists: the delete routes record their delete INTENT as
+ * a soft-delete BEFORE calling Confluence (#766) — until that upstream DELETE
+ * lands, the page is still in the live listing, so a reconciliation running
+ * concurrently would see "soft-deleted locally but live upstream" and revive a
+ * row that is mid-delete. Reviving only rows whose `deleted_at` is older than
+ * this window keeps the in-flight intent untouched: the route's
+ * Confluence call is bounded by the client's HTTP timeouts (30–120s), far
+ * below this window. A genuine trash-restore is unaffected — its row was
+ * soft-deleted in an earlier reconciliation cycle, so `deleted_at` is already
+ * older than the window by the time an admin restores the page.
+ */
+const REVIVAL_GRACE_SECONDS = 15 * 60;
+
+/**
  * Per-space dedupe window for deletion reconciliation (#706).
  *
  * Reconciliation is invoked once per (user × space) per sync cycle: a space
@@ -365,10 +391,13 @@ async function syncSpace(
   // id list from Confluence (the incremental `pages` list only holds *modified*
   // pages, so it can't be used to infer deletions) and confirms each candidate is
   // genuinely gone before soft-deleting, which makes it safe in shared spaces.
+  // It also revives soft-deleted rows that are live upstream again (e.g. restored
+  // from the Confluence trash — see the revival cross-check, #766 review).
   await detectDeletedPages(client, spaceKey, counts);
 
-  // Purge pages that have been soft-deleted for more than 30 days
-  await purgeDeletedPages(spaceKey);
+  // Purge pages that have been soft-deleted for more than 30 days, re-confirming
+  // each is still gone upstream first (purge is irreversible — #766 review).
+  await purgeDeletedPages(client, spaceKey);
 
   // Update space sync timestamp (shared table)
   await query(
@@ -1277,7 +1306,10 @@ async function syncMissingAttachments(
 
 /**
  * Reconcile pages that were deleted in Confluence by soft-deleting their local
- * rows (#706).
+ * rows (#706), and REVIVE soft-deleted rows whose page is live upstream again
+ * (#766 review — e.g. restored from the Confluence trash; restore creates no
+ * new version, so only this cross-check converges it — the sync upsert revives
+ * a row only when the page is also modified upstream or a full sync runs).
  *
  * Runs on every sync (incremental and full). The authoritative live id set comes
  * from a dedicated lightweight listing (`getAllPageIds`) rather than the modified-
@@ -1324,6 +1356,33 @@ async function detectDeletedPages(
       'Skipping deletion reconciliation: failed to list live Confluence page ids',
     );
     return;
+  }
+
+  // Revival cross-check (#766 review): clear `deleted_at` for soft-deleted rows
+  // whose page is back in the live listing — the page was restored from the
+  // Confluence trash (or the earlier soft-delete was otherwise stale). The
+  // incremental-sync upsert can NOT do this: a trash-restore creates no new
+  // version, so the page never matches the `lastmodified >=` CQL window and is
+  // never re-upserted; without this cross-check the hidden row would sit out
+  // the 30-day clock and be hard-purged with all its local enrichment. The
+  // grace window keeps an in-flight delete-route INTENT (soft-deleted seconds
+  // ago, upstream DELETE not landed yet, page therefore still listed) from
+  // being resurrected mid-delete — see `REVIVAL_GRACE_SECONDS`.
+  const revived = await query<{ confluence_id: string }>(
+    `UPDATE pages
+        SET deleted_at = NULL
+      WHERE space_key = $1
+        AND deleted_at IS NOT NULL
+        AND deleted_at < NOW() - make_interval(secs => $2)
+        AND confluence_id = ANY($3::text[])
+      RETURNING confluence_id`,
+    [spaceKey, REVIVAL_GRACE_SECONDS, [...liveIds]],
+  );
+  if (revived.rows.length > 0) {
+    logger.info(
+      { spaceKey, revived: revived.rows.map((r) => r.confluence_id) },
+      'Revived soft-deleted pages that are live in Confluence again (e.g. restored from trash)',
+    );
   }
 
   // Local non-deleted rows for this space.
@@ -1400,14 +1459,74 @@ async function detectDeletedPages(
 /**
  * Permanently remove pages that were soft-deleted more than 30 days ago.
  * page_embeddings are removed by CASCADE on the pages table FK.
+ *
+ * Purge is the point of no return — it irreversibly destroys the local row and
+ * every piece of local enrichment hanging off it (embeddings, version history
+ * via FK cascade). So before deleting, each candidate is RE-CONFIRMED gone
+ * upstream with a direct `GET /content/{id}` (#766 review):
+ *   - 404 or 200 `status: 'trashed'` → confirmed gone, purge proceeds;
+ *   - 200 `status: 'current'`        → the page exists upstream (e.g. restored
+ *     from the trash but hidden from this principal's listing, so the revival
+ *     cross-check never saw it) — do NOT purge; the row stays soft-deleted for
+ *     reconciliation to sort out;
+ *   - anything else (403/5xx/network) → inconclusive — defer to a later cycle.
+ * Rows without a `confluence_id` have no upstream to consult; for them the
+ * 30-day local-trash window remains the only authority.
+ *
+ * Confirmation fetches are bounded per run: at most `MAX_DELETION_CONFIRMATIONS`
+ * candidates (oldest first) are processed each cycle; a larger backlog converges
+ * over subsequent cycles.
  */
-async function purgeDeletedPages(spaceKey: string): Promise<void> {
-  const result = await query<{ confluence_id: string }>(
-    `DELETE FROM pages WHERE space_key = $1 AND deleted_at < NOW() - INTERVAL '30 days' RETURNING confluence_id`,
-    [spaceKey],
+async function purgeDeletedPages(client: ConfluenceClient, spaceKey: string): Promise<void> {
+  const candidates = await query<{ id: number; confluence_id: string | null }>(
+    `SELECT id, confluence_id FROM pages
+      WHERE space_key = $1 AND deleted_at < NOW() - INTERVAL '30 days'
+      ORDER BY deleted_at
+      LIMIT $2`,
+    [spaceKey, MAX_DELETION_CONFIRMATIONS],
+  );
+  if (candidates.rows.length === 0) return;
+
+  const confirmedIds: number[] = [];
+  for (const row of candidates.rows) {
+    if (row.confluence_id === null) {
+      confirmedIds.push(row.id);
+      continue;
+    }
+    try {
+      const remote = await client.getPage(row.confluence_id);
+      if (remote.status === 'trashed') {
+        confirmedIds.push(row.id);
+      } else {
+        logger.warn(
+          { spaceKey, confluenceId: row.confluence_id },
+          'Purge candidate still exists upstream (200 current) — skipping permanent delete',
+        );
+      }
+    } catch (err) {
+      if (err instanceof ConfluenceError && err.statusCode === 404) {
+        confirmedIds.push(row.id);
+      } else {
+        logger.debug(
+          { spaceKey, confluenceId: row.confluence_id, status: err instanceof ConfluenceError ? err.statusCode : 'unknown' },
+          'Purge candidate not confirmed gone upstream — deferring to a later cycle',
+        );
+      }
+    }
+  }
+  if (confirmedIds.length === 0) return;
+
+  // Re-assert the 30-day precondition inside the DELETE: a row revived between
+  // the SELECT and here has `deleted_at = NULL` and falls out of the predicate.
+  const result = await query<{ confluence_id: string | null }>(
+    `DELETE FROM pages
+      WHERE id = ANY($1::int[]) AND deleted_at < NOW() - INTERVAL '30 days'
+      RETURNING confluence_id`,
+    [confirmedIds],
   );
   if (result.rowCount && result.rowCount > 0) {
     for (const { confluence_id } of result.rows) {
+      if (!confluence_id) continue;
       await cleanPageAttachments('', confluence_id);
       await clearPageFailures(confluence_id);
     }
@@ -1712,13 +1831,14 @@ export const __internal = {
   // snapshot writer just to reach this branch via syncUser.
   applyConflictPolicyForExistingPage,
   // Exposed for the #706 deletion-reconciliation integration tests so the
-  // live-id listing + per-candidate 404 confirmation can be exercised against
-  // a real Postgres (real `pages` rows, real soft-delete + count tracking)
-  // with only the ConfluenceClient stubbed.
+  // live-id listing + per-candidate 404 confirmation + revival cross-check
+  // can be exercised against a real Postgres (real `pages` rows, real
+  // soft-delete + count tracking) with only the ConfluenceClient stubbed.
   detectDeletedPages,
   // Exposed for the #766 delete-atomicity integration tests: after a
   // post-upstream local failure the row is left soft-deleted, and the test
-  // proves the standard sync lifecycle (30-day purge) converges it fully
-  // without driving an entire syncSpace run.
+  // proves the standard sync lifecycle (30-day purge, with its upstream
+  // gone-confirmation) converges it fully without driving an entire
+  // syncSpace run.
   purgeDeletedPages,
 };

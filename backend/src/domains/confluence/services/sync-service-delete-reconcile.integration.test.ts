@@ -1,5 +1,10 @@
 /**
- * Integration tests for deletion reconciliation (#706).
+ * Integration tests for deletion reconciliation (#706) and its #766 follow-ups:
+ * the revival cross-check (a page live upstream again — e.g. restored from the
+ * Confluence trash — gets its local soft-delete cleared, guarded by a grace
+ * window so an in-flight delete-route intent is never resurrected) and the
+ * purge upstream gone-confirmation (purge is irreversible, so candidates are
+ * re-confirmed 404/trashed before the local hard-delete).
  *
  * `detectDeletedPages` soft-deletes local rows for pages that were removed in
  * Confluence. These tests exercise the real PostgreSQL `pages` table via
@@ -24,7 +29,7 @@ import { query } from '../../../core/db/postgres.js';
 import { ConfluenceError } from './confluence-client.js';
 
 const { __internal } = await import('./sync-service.js');
-const { detectDeletedPages } = __internal;
+const { detectDeletedPages, purgeDeletedPages } = __internal;
 
 const dbAvailable = await isDbAvailable();
 
@@ -87,6 +92,19 @@ async function getDeletedAt(confluenceId: string): Promise<Date | null> {
     [confluenceId],
   );
   return res.rows[0]?.deleted_at ?? null;
+}
+
+/** Backdate a row's soft-delete by `seconds` (0 = soft-deleted right now). */
+async function softDelete(confluenceId: string, seconds = 0): Promise<void> {
+  await query(
+    'UPDATE pages SET deleted_at = NOW() - make_interval(secs => $2) WHERE confluence_id = $1',
+    [confluenceId, seconds],
+  );
+}
+
+async function rowExists(confluenceId: string): Promise<boolean> {
+  const res = await query('SELECT 1 FROM pages WHERE confluence_id = $1', [confluenceId]);
+  return (res.rowCount ?? 0) > 0;
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────
@@ -260,5 +278,163 @@ describe.skipIf(!dbAvailable)('sync-service deletion reconciliation (#706)', () 
 
     expect(client.getPageCalls).toHaveLength(200);
     expect(counts.pagesDeleted).toBe(200);
+  });
+
+  // ── revival cross-check (#766 review) ────────────────────────────────────
+
+  it('revives a soft-deleted page that is live in Confluence again (trash restore)', async () => {
+    // A trash-restore creates no new version, so the incremental upsert never
+    // re-upserts the page — the cross-check against the live listing is the only
+    // path that converges it. The row was soft-deleted in an earlier cycle, so
+    // `deleted_at` is comfortably older than the revival grace window.
+    await insertPage('restored-1', 'DEV');
+    await softDelete('restored-1', 60 * 60); // soft-deleted an hour ago
+
+    const client = makeClient({ liveIds: ['restored-1'] });
+    const counts = { pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 };
+
+    await detectDeletedPages(client as never, 'DEV', counts);
+
+    expect(await getDeletedAt('restored-1')).toBeNull();
+    // A revived page is in the live listing, so it is never a deletion candidate.
+    expect(client.getPageCalls).toEqual([]);
+    expect(counts.pagesDeleted).toBe(0);
+  });
+
+  it('does NOT revive a row soft-deleted within the grace window (in-flight delete intent)', async () => {
+    // Interleaving guard: the delete routes record their delete INTENT as a
+    // soft-delete BEFORE calling Confluence — until that upstream DELETE lands,
+    // the page is still in the live listing. A reconciliation running in that
+    // window must NOT resurrect the row mid-delete; the grace window (deleted_at
+    // must be older than REVIVAL_GRACE_SECONDS) keeps the intent untouched.
+    await insertPage('mid-delete', 'DEV');
+    await softDelete('mid-delete', 0); // intent recorded "just now" by a delete route
+
+    const client = makeClient({ liveIds: ['mid-delete'] }); // upstream delete not landed yet
+    const counts = { pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 };
+
+    await detectDeletedPages(client as never, 'DEV', counts);
+
+    // Still hidden: the in-flight delete proceeds undisturbed.
+    expect(await getDeletedAt('mid-delete')).not.toBeNull();
+    expect(client.getPageCalls).toEqual([]);
+    expect(counts.pagesDeleted).toBe(0);
+  });
+
+  it('does not revive soft-deleted rows absent from the live listing (still deleted)', async () => {
+    await insertPage('still-gone', 'DEV');
+    await softDelete('still-gone', 60 * 60);
+
+    const client = makeClient({ liveIds: [] });
+    const counts = { pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 };
+
+    await detectDeletedPages(client as never, 'DEV', counts);
+
+    expect(await getDeletedAt('still-gone')).not.toBeNull();
+    expect(client.getPageCalls).toEqual([]);
+  });
+
+  it('revival is space-scoped: a live id in another space does not revive rows elsewhere', async () => {
+    await insertPage('other-space', 'OTHER');
+    await softDelete('other-space', 60 * 60);
+
+    const client = makeClient({ liveIds: ['other-space'] });
+    const counts = { pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 };
+
+    await detectDeletedPages(client as never, 'DEV', counts);
+
+    expect(await getDeletedAt('other-space')).not.toBeNull();
+  });
+});
+
+// ── purge upstream confirmation (#766 review) ───────────────────────────────
+
+describe.skipIf(!dbAvailable)('purgeDeletedPages upstream gone-confirmation (#766 review)', () => {
+  beforeAll(async () => {
+    await setupTestDb();
+  });
+  afterAll(async () => {
+    await teardownTestDb();
+  });
+  beforeEach(async () => {
+    await truncateAllTables();
+  });
+
+  const THIRTY_ONE_DAYS = 31 * 24 * 60 * 60;
+
+  it('purges a 30-day-old soft-deleted row once upstream confirms gone (404)', async () => {
+    await insertPage('purge-404', 'DEV');
+    await softDelete('purge-404', THIRTY_ONE_DAYS);
+
+    const client = makeClient({ liveIds: [], goneForGetPage: ['purge-404'] });
+    await purgeDeletedPages(client as never, 'DEV');
+
+    expect(await rowExists('purge-404')).toBe(false);
+    expect(client.getPageCalls).toEqual(['purge-404']);
+  });
+
+  it('purges when upstream still serves the page as trashed (200 trashed)', async () => {
+    await insertPage('purge-trashed', 'DEV');
+    await softDelete('purge-trashed', THIRTY_ONE_DAYS);
+
+    const client = makeClient({ liveIds: [], trashedForGetPage: ['purge-trashed'] });
+    await purgeDeletedPages(client as never, 'DEV');
+
+    expect(await rowExists('purge-trashed')).toBe(false);
+  });
+
+  it('does NOT purge a row whose page is current upstream (diverged — left for reconciliation)', async () => {
+    // E.g. restored from the trash but hidden from this principal's listing, so
+    // the revival cross-check never saw it. Purge is irreversible, so a live
+    // upstream answer must veto the local hard-delete.
+    await insertPage('purge-current', 'DEV');
+    await softDelete('purge-current', THIRTY_ONE_DAYS);
+
+    const client = makeClient({ liveIds: [], presentForGetPage: ['purge-current'] });
+    await purgeDeletedPages(client as never, 'DEV');
+
+    expect(await rowExists('purge-current')).toBe(true);
+    expect(await getDeletedAt('purge-current')).not.toBeNull(); // stays soft-deleted
+  });
+
+  it('does NOT purge on an inconclusive confirmation (403/5xx) — deferred to a later cycle', async () => {
+    await insertPage('purge-403', 'DEV');
+    await softDelete('purge-403', THIRTY_ONE_DAYS);
+
+    const client = makeClient({
+      liveIds: [],
+      getPageError: () => new ConfluenceError('Insufficient permissions', 403),
+    });
+    await purgeDeletedPages(client as never, 'DEV');
+
+    expect(await rowExists('purge-403')).toBe(true);
+  });
+
+  it('leaves rows younger than 30 days untouched (no confirmation fetch)', async () => {
+    await insertPage('purge-young', 'DEV');
+    await softDelete('purge-young', 24 * 60 * 60); // 1 day
+
+    const client = makeClient({ liveIds: [], goneForGetPage: ['purge-young'] });
+    await purgeDeletedPages(client as never, 'DEV');
+
+    expect(await rowExists('purge-young')).toBe(true);
+    expect(client.getPageCalls).toEqual([]);
+  });
+
+  it('purges only the confirmed-gone subset of a mixed candidate batch', async () => {
+    await insertPage('mix-gone', 'DEV');
+    await insertPage('mix-live', 'DEV');
+    await softDelete('mix-gone', THIRTY_ONE_DAYS);
+    await softDelete('mix-live', THIRTY_ONE_DAYS);
+
+    const client = makeClient({
+      liveIds: [],
+      goneForGetPage: ['mix-gone'],
+      presentForGetPage: ['mix-live'],
+    });
+    await purgeDeletedPages(client as never, 'DEV');
+
+    expect(await rowExists('mix-gone')).toBe(false);
+    expect(await rowExists('mix-live')).toBe(true);
   });
 });

@@ -262,8 +262,15 @@ describe.skipIf(!dbAvailable)('delete atomicity — no local/Confluence divergen
 
     // Convergence: the standard sync lifecycle purges soft-deleted rows after
     // 30 days — prove the leftover row is fully removed by the real purge path.
+    // Purge re-confirms the page is gone upstream before the irreversible local
+    // delete (#766 review); here the upstream GET answers 404 (page trashed and
+    // hidden / purged), so the purge proceeds.
     await query("UPDATE pages SET deleted_at = NOW() - INTERVAL '31 days' WHERE confluence_id = 'conf-strand'");
-    await purgeDeletedPages('DEV');
+    const purgeClient = {
+      getPage: vi.fn().mockRejectedValue(new ConfluenceError('Resource not found', 404)),
+    };
+    await purgeDeletedPages(purgeClient as never, 'DEV');
+    expect(purgeClient.getPage).toHaveBeenCalledWith('conf-strand');
     expect(await getRow('conf-strand')).toBeNull();
   });
 
