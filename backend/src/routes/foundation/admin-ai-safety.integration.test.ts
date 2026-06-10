@@ -16,6 +16,7 @@ import {
   isDbAvailable,
 } from '../../test-db-helper.js';
 import { query } from '../../core/db/postgres.js';
+import { _resetAiSafetyCachesForTests } from '../../core/services/ai-safety-service.js';
 import { adminRoutes } from './admin.js';
 
 /**
@@ -67,6 +68,12 @@ describe.skipIf(!dbAvailable)(
     });
 
     beforeEach(async () => {
+      // ai-safety-service keeps in-process 60s TTL caches (guardrailCache /
+      // outputRuleCache). Reset them so every test starts cold and the suite
+      // stays order-independent — without this, a GET in one test primes the
+      // cache that a later test's "initial GET returns the default" step
+      // would silently read.
+      _resetAiSafetyCachesForTests();
       await truncateAllTables();
       const r = await query<{ id: string }>(
         `INSERT INTO users (username, password_hash, role)
