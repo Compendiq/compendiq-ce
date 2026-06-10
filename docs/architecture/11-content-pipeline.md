@@ -57,7 +57,9 @@ Custom turndown rules handle Confluence-specific macros:
 | `ac:structured-macro[include]`       | `<div class="confluence-include-macro" data-page-title="…">[Include: …]</div>` | `[Include: …]` placeholder |
 | `ac:structured-macro[excerpt-include]` | `<div class="confluence-include-macro" data-macro-name="excerpt-include">[Excerpt: …]</div>` | `[Excerpt: …]` placeholder |
 | `ac:structured-macro[toc]`           | `<div class="confluence-toc" data-maxlevel="…">[Table of Contents]</div>` | `[Table of Contents]` placeholder |
-| `ac:structured-macro[labels]`        | dropped on import (page metadata, no body)                   | — (not rendered)              |
+| `ac:structured-macro[labels]`        | `<div class="confluence-labels-macro" data-showlabels="…">[Labels]</div>` (#765; was dropped per #348) | `[Labels]` placeholder; opaque-protected on Improve |
+| `ac:layout` / `ac:layout-section` / `ac:layout-cell` | `div.confluence-layout` / `div.confluence-layout-section[data-layout-type]` / `div.confluence-layout-cell` | flattened content (default); `[[[LAYOUT]]]` / `[[[LAYOUT-SECTION type]]]` / `[[[LAYOUT-CELL]]]` boundary tokens with `{ layoutTokens: true }` (#765, Improve only) |
+| `ac:structured-macro[section]` / `[column]` (legacy) | `div.confluence-section[data-border]` / `div.confluence-column[data-cell-width]` | flattened content (default); `[[[SECTION border=…]]]` / `[[[COLUMN width=…]]]` boundary tokens with `{ layoutTokens: true }` (#765, Improve only) |
 
 ### Round-trip notes (issue #300)
 
@@ -126,18 +128,26 @@ flowchart LR
 
 The `/llm/improve` → Accept round-trip runs `body_html` through
 `htmlToMarkdown()` before the LLM and `markdownToHtml()` after — a lossy
-path that discards `<img>` attributes, draw.io wrappers, and layout
-structure. Two safeguards prevent media from being destroyed:
+path that would discard `<img>` attributes, draw.io wrappers, and layout
+structure. Two safeguards prevent media from being destroyed (layout
+structure has its own mechanism — see the next section):
 
 ### Placeholder protection (Improve request)
 
 `protectMedia(html)` (exported from `content-converter.ts`) replaces every
 `img`, `div.confluence-drawio`, `div.confluence-mermaid`, `div.mermaid`,
-`div.confluence-section`, and `div.confluence-column` with an opaque token
+and `div.confluence-labels-macro` with an opaque token
 `CQ_MEDIA_PLACEHOLDER_<N>` before `htmlToMarkdown()`. Tokens use only
 `[A-Z_0-9]` so they survive turndown, `sanitizeLlmInput`, and the LLM
 verbatim. The replacement map is returned alongside the protected HTML; the
-index is document order, making it deterministic.
+index is document order, making it deterministic. (#765: legacy
+`div.confluence-section` / `div.confluence-column` were removed from this
+selector — opaque protection froze the prose inside them; they now use
+layout boundary tokens instead so the LLM can still edit the content.
+Exception: a legacy section/column nested inside a `td`, `th`, `li`,
+`blockquote`, or panel div **stays opaque-frozen** — a boundary token line
+inside such a construct would be ripped out of it by the token
+normalization, e.g. splitting a GFM table row.)
 
 `assembleContextIfNeeded` in `_helpers.ts` applies `protectMedia` when the
 caller passes `opts.protectMedia = true` (set by `llmImproveRoutes`).
@@ -168,6 +178,80 @@ non-Improve callers (copy/paste, export) also round-trip draw.io losslessly.
 | Custom rule | HTML form | Markdown form |
 |-------------|-----------|---------------|
 | `confluenceDrawio` | `<div class="confluence-drawio" data-diagram-name="…">` | ` ```drawio\nNAME\n``` ` |
+
+## AI Improve layout preservation — boundary tokens (#765)
+
+Confluence row/column layouts (modern `ac:layout` grids and the legacy
+`section` / `column` macros) have no Markdown representation, so the Improve
+round-trip used to flatten them to a single column. They cannot use the
+opaque `protectMedia` tokens because — unlike media — layout cells contain
+**prose the LLM must still be able to improve**.
+
+Instead, `htmlToMarkdown()` — **only when called with
+`{ layoutTokens: true }`** — emits **boundary tokens** as standalone lines
+around the (still fully editable) cell content:
+
+```text
+[[[LAYOUT]]]
+[[[LAYOUT-SECTION two_equal]]]
+[[[LAYOUT-CELL]]]
+…normal editable Markdown…
+[[[/LAYOUT-CELL]]]
+[[[/LAYOUT-SECTION]]]
+[[[/LAYOUT]]]
+
+[[[SECTION border=true]]] … [[[/SECTION]]]   ← legacy ac:section macro
+[[[COLUMN width=50%]]]    … [[[/COLUMN]]]    ← legacy ac:column macro
+```
+
+`layoutTokens` is set solely by the Improve route's main-page conversion
+(`assembleContextIfNeeded` in `routes/llm/_helpers.ts`). Every other
+`htmlToMarkdown` caller — quality scoring, auto-tagging, diagram context,
+version-compare summaries, sub-page context, page imports — keeps the
+default flattened output, so raw `[[[…]]]` tokens never leak into prompts
+or user-visible text. Sub-page context in particular must stay token-free
+even within the Improve flow: a truncated sub-page token sequence could be
+echoed by the model into the parent page's output and build layout that
+never existed on the parent. Legacy sections/columns nested inside
+markdown-constrained containers (`td`/`th`/`li`/`blockquote`/panels) never
+emit tokens either — they stay opaque-frozen via `protectMedia` (see above).
+
+Tokens carry the structural attributes (`data-layout-type`, `data-border`,
+`data-cell-width`). `markdownToHtml()` then:
+
+1. normalizes the Markdown so every token sits in its own paragraph (in case
+   the LLM merged adjacent token lines), skipping fenced/inline code so
+   literal token text in code is never touched;
+2. validates the whole token sequence for **balance and nesting** (a
+   `LAYOUT-SECTION` may only open directly inside a `LAYOUT`, a `COLUMN`
+   only inside a `SECTION`, …);
+3. if valid, converts the token paragraphs back into the
+   `div.confluence-layout*` / `div.confluence-section` /
+   `div.confluence-column` wrappers (which `htmlToConfluence()` already maps
+   losslessly to `ac:layout*` / `section` / `column`);
+4. **drop-guard:** if the LLM mangled the tokens (unbalanced, reordered,
+   case-changed), ALL tokens are stripped instead — the content degrades to
+   the old flattened form, but the page is never corrupted and raw
+   `[[[…]]]` text never reaches the saved page.
+
+Steps 2–4 operate only **outside `<pre>`/`<code>` elements**: literal token
+text inside code blocks (e.g. documentation about the token syntax) is
+data, never rebuilt into layout divs, never stripped, and never able to
+poison the balance validation of the real tokens.
+
+`/llm/improve` appends `STRUCTURE_PRESERVATION_INSTRUCTION` (from
+`prompts.ts`) to the system prompt whenever the markdown contains boundary
+or media tokens, instructing the model to keep them verbatim.
+
+The in-body **labels macro** is the opposite case: it is atomic (no editable
+prose), so since #765 it is kept as a
+`<div class="confluence-labels-macro">` placeholder on sync-in (it was
+previously dropped per #348, which silently deleted the widget from the
+Confluence page on any write-back) and opaque-protected through Improve via
+`protectMedia`. Page-label *metadata* (`pages.labels`) is unaffected by
+Improve: the apply handler never touches the column and the Confluence
+`updatePage` call sends only title+body, which does not modify labels
+server-side.
 
 ## Attachments
 

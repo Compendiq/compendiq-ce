@@ -205,3 +205,122 @@ describe('POST /api/llm/improvements/apply — drop-guard with REAL restoreMedia
     expect(savedHtml.split('/api/attachments/42/q.png').length - 1).toBe(1);
   });
 });
+
+describe('POST /api/llm/improvements/apply — layout boundary tokens with REAL markdownToHtml (#765)', () => {
+  let app: ReturnType<typeof Fastify>;
+
+  beforeAll(async () => {
+    app = Fastify({ logger: false });
+    await app.register(sensible);
+    app.decorate('authenticate', async () => {});
+    app.decorate('requireAdmin', async () => {});
+    app.decorate('redis', {});
+    app.decorateRequest('userId', '');
+    app.addHook('onRequest', async (request) => {
+      request.userId = 'user-123';
+      request.userCan = async () => true;
+    });
+    await app.register(llmConversationRoutes, { prefix: '/api' });
+    await app.ready();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const layoutBodyHtml =
+    '<div class="confluence-layout"><div class="confluence-layout-section" data-layout-type="two_equal">' +
+    '<div class="confluence-layout-cell"><p>Left column content</p></div>' +
+    '<div class="confluence-layout-cell"><p>Right column content</p></div>' +
+    '</div></div>';
+
+  function mockPageWith(bodyHtml: string): void {
+    mockQuery.mockImplementation((sql: string) => {
+      if (sql.includes('SELECT id, version, title, space_key, source, confluence_id')) {
+        return Promise.resolve({
+          rows: [{
+            id: 42, version: 5, title: 'My Article', space_key: 'OPS',
+            source: 'standalone', confluence_id: null, body_html: bodyHtml,
+            created_by_user_id: 'user-123', visibility: 'private',
+          }],
+        });
+      }
+      return Promise.resolve({ rows: [] });
+    });
+  }
+
+  function captureUpdatedBodyHtml(): string {
+    const updateCall = (mockQuery.mock.calls as unknown[][]).find(
+      (args) => typeof args[0] === 'string' && (args[0] as string).includes('UPDATE pages'),
+    );
+    expect(updateCall).toBeDefined();
+    return (updateCall as unknown[])[1]![2] as string;
+  }
+
+  it('rebuilds the layout when the LLM kept the boundary tokens and edited the prose', async () => {
+    mockPageWith(layoutBodyHtml);
+
+    const improvedMarkdown = [
+      '[[[LAYOUT]]]', '',
+      '[[[LAYOUT-SECTION two_equal]]]', '',
+      '[[[LAYOUT-CELL]]]', '',
+      'Left column content, improved by the model.', '',
+      '[[[/LAYOUT-CELL]]]', '',
+      '[[[LAYOUT-CELL]]]', '',
+      'Right column content stays.', '',
+      '[[[/LAYOUT-CELL]]]', '',
+      '[[[/LAYOUT-SECTION]]]', '',
+      '[[[/LAYOUT]]]',
+    ].join('\n');
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/llm/improvements/apply',
+      payload: { pageId: '42', improvedMarkdown, version: 5, title: 'My Article' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const savedHtml = captureUpdatedBodyHtml();
+    expect(savedHtml).toContain('class="confluence-layout"');
+    expect(savedHtml).toContain('data-layout-type="two_equal"');
+    expect((savedHtml.match(/class="confluence-layout-cell"/g) ?? []).length).toBe(2);
+    expect(savedHtml).toContain('Left column content, improved by the model.');
+    expect(savedHtml).not.toContain('[[[');
+  });
+
+  it('drop-guard: mangled tokens flatten gracefully — no raw [[[…]]] and no unbalanced divs', async () => {
+    mockPageWith(layoutBodyHtml);
+
+    // The LLM dropped one closing token and lower-cased another.
+    const improvedMarkdown = [
+      '[[[LAYOUT]]]', '',
+      '[[[LAYOUT-SECTION two_equal]]]', '',
+      '[[[LAYOUT-CELL]]]', '',
+      'Left prose survives.', '',
+      '[[[/layout-cell]]]', '',
+      '[[[LAYOUT-CELL]]]', '',
+      'Right prose survives.', '',
+      '[[[/LAYOUT-SECTION]]]', '',
+      '[[[/LAYOUT]]]',
+    ].join('\n');
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/llm/improvements/apply',
+      payload: { pageId: '42', improvedMarkdown, version: 5, title: 'My Article' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const savedHtml = captureUpdatedBodyHtml();
+    expect(savedHtml).not.toContain('[[[');
+    expect(savedHtml).not.toContain('confluence-layout');
+    expect(savedHtml).toContain('Left prose survives.');
+    expect(savedHtml).toContain('Right prose survives.');
+    // No dangling open/close divs.
+    expect((savedHtml.match(/<div/g) ?? []).length).toBe((savedHtml.match(/<\/div>/g) ?? []).length);
+  });
+});

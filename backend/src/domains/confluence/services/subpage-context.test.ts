@@ -204,6 +204,32 @@ describe('subpage-context', () => {
       // Should include parent + at most 1-2 child pages within 600 chars
       expect(result.pageCount).toBeLessThanOrEqual(3);
     });
+
+    it('never requests layout boundary tokens — sub-page context stays flattened (#765 review)', async () => {
+      // Truncated sub-page token sequences could be echoed by the model into
+      // the parent page's output, so neither the parent nor any sub-page
+      // conversion may opt in to layoutTokens here.
+      mockQuery.mockResolvedValueOnce({
+        rows: [
+          { confluence_id: 'child-1', title: 'Child 1', body_html: '<div class="confluence-layout"><p>Sub</p></div>' },
+        ],
+      });
+      mockQuery.mockResolvedValueOnce({ rows: [] });
+
+      await assembleSubPageContext(
+        'user-1',
+        'parent-1',
+        '<div class="confluence-layout"><p>Parent</p></div>',
+        'Parent',
+      );
+
+      const { htmlToMarkdown } = await import('../../../core/services/content-converter.js');
+      const calls = vi.mocked(htmlToMarkdown).mock.calls;
+      expect(calls.length).toBeGreaterThanOrEqual(2); // parent + sub-page
+      for (const call of calls) {
+        expect(call[1]).toBeUndefined();
+      }
+    });
   });
 
   describe('getMultiPagePromptSuffix', () => {

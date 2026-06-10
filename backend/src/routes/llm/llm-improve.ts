@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
-import { SystemPromptKey } from '../../domains/llm/services/prompts.js';
+import { SystemPromptKey, STRUCTURE_PRESERVATION_INSTRUCTION } from '../../domains/llm/services/prompts.js';
 import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
 import { streamChat } from '../../domains/llm/services/openai-compatible-client.js';
 import { LlmCache, buildLlmCacheKey } from '../../domains/llm/services/llm-cache.js';
@@ -49,7 +49,9 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.badRequest(`Content too large (max ${MAX_INPUT_LENGTH} characters)`);
     }
 
-    const { markdown, multiPageSuffix } = await assembleContextIfNeeded(userId, body.pageId, content, includeSubPages, { protectMedia: true });
+    // #765: layoutTokens applies only to the main-page conversion — the
+    // sub-page branch inside assembleContextIfNeeded never emits tokens.
+    const { markdown, multiPageSuffix } = await assembleContextIfNeeded(userId, body.pageId, content, includeSubPages, { protectMedia: true, layoutTokens: true });
 
     // Sanitize before sending to LLM
     const { sanitized, warnings } = sanitizeLlmInput(markdown);
@@ -86,6 +88,12 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
     }
 
     let systemPrompt = await resolveSystemPrompt(userId, `improve_${type}` as SystemPromptKey) + multiPageSuffix;
+    // #765: when the markdown carries layout boundary tokens or media
+    // placeholders, instruct the model to keep them verbatim. (Deterministic
+    // per content, so it composes safely with the cache key below.)
+    if (/\[\[\[|CQ\\?_MEDIA\\?_PLACEHOLDER/.test(markdown)) {
+      systemPrompt += `\n\n${STRUCTURE_PRESERVATION_INSTRUCTION}`;
+    }
     if (sanitizedInstruction) {
       systemPrompt += `\n\nADDITIONAL USER INSTRUCTIONS:\n${sanitizedInstruction}`;
     }
