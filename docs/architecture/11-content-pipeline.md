@@ -158,7 +158,11 @@ On `POST /llm/improvements/apply` the route:
 
 1. Re-derives the same token map from the **current** `body_html` stored in
    the DB (same deterministic order — no token map needs to be persisted).
-2. Calls `markdownToHtml(improvedMarkdown)` on the LLM output.
+2. Calls `markdownToHtml(improvedMarkdown, { layoutSkeleton })` on the LLM
+   output, where the skeleton is re-derived from the same `body_html`
+   (#781, see "Skeleton-guided token recovery" below). An unrecoverable
+   layout throws and the apply is rejected with **422** — nothing is saved
+   or pushed.
 3. Calls `restoreMedia(html, media)` to replace tokens (and their
    turndown-escaped variants `CQ\_MEDIA\_PLACEHOLDER\_N`) with the original
    HTML verbatim.
@@ -229,10 +233,10 @@ Tokens carry the structural attributes (`data-layout-type`, `data-border`,
    `div.confluence-layout*` / `div.confluence-section` /
    `div.confluence-column` wrappers (which `htmlToConfluence()` already maps
    losslessly to `ac:layout*` / `section` / `column`);
-4. **drop-guard:** if the LLM mangled the tokens (unbalanced, reordered,
-   case-changed), ALL tokens are stripped instead — the content degrades to
-   the old flattened form, but the page is never corrupted and raw
-   `[[[…]]]` text never reaches the saved page.
+4. **drop-guard (no skeleton — markdown imports etc.):** if the LLM mangled
+   the tokens (unbalanced, reordered, case-changed), ALL tokens are stripped
+   instead — the content degrades to the old flattened form, but the page is
+   never corrupted and raw `[[[…]]]` text never reaches the saved page.
 
 Steps 2–4 operate only **outside `<pre>`/`<code>` elements**: literal token
 text inside code blocks (e.g. documentation about the token syntax) is
@@ -241,7 +245,54 @@ poison the balance validation of the real tokens.
 
 `/llm/improve` appends `STRUCTURE_PRESERVATION_INSTRUCTION` (from
 `prompts.ts`) to the system prompt whenever the markdown contains boundary
-or media tokens, instructing the model to keep them verbatim.
+or media tokens, instructing the model — with a few-shot example (#781) —
+to keep them verbatim.
+
+### Skeleton-guided token recovery + 422 fallback (#781)
+
+The #765 drop-guard was all-or-nothing: one token mangled by the model
+(real local models routinely lower-case, merge, translate, or drop the
+unusual `[[[…]]]` lines) silently flattened the whole layout — and the
+flattened body was pushed back to Confluence. #781 replaces silence with a
+layered defense built on one invariant: **never silently flatten**.
+
+The key insight: the system *knows* the exact expected token sequence — it
+generated it from the original document. Recovery therefore never trusts
+the LLM's echo; it aligns whatever came back against the known skeleton:
+
+1. `extractLayoutSkeleton(bodyHtml)` derives the expected open/close token
+   sequence (with section types / column widths) from the page's **current**
+   `body_html` — deterministic, exactly like the #723 media-token
+   re-derivation, so nothing is persisted. Frozen legacy wrappers are
+   skipped (they travel opaquely, see above).
+2. The apply route passes it to
+   `markdownToHtml(improvedMarkdown, { layoutSkeleton })`, which scans the
+   markdown (outside code) with a *tolerant* token matcher — lower/mixed
+   case, 2–4 bracket runs, markdown-escaped `\[`, `\` instead of `/` closes,
+   `LAYOUT_CELL` / `LAYOUT SECTION` kind variants, emphasis-wrapped tokens,
+   junk attrs — plus two unwrapping fallbacks for token-only code fences and
+   a fence wrapped around the entire output.
+3. Found tokens are **greedily aligned, in order, onto the skeleton**. Close
+   tokens and pure container opens (`LAYOUT`, `LAYOUT-SECTION`) are
+   re-derivable and may be dropped by the model; every **prose-bearing open**
+   (`LAYOUT-CELL`, `COLUMN`, `SECTION`) must be found — otherwise a cell
+   boundary is genuinely lost (e.g. two cells' prose merged).
+4. The markdown is rewritten with **canonical tokens from the skeleton**
+   (section types and widths always come from the skeleton, never from the
+   echo), unmatched token debris is stripped, and prose that would land in a
+   storage-format-invalid slot (e.g. between two cells) is deferred into the
+   next cell. The result is verified token-for-token against the skeleton
+   before use — any residual mismatch fails closed.
+5. **Hard fallback:** when alignment is impossible, `markdownToHtml` throws
+   `LayoutRecoveryError` and `POST /llm/improvements/apply` responds
+   **422 Unprocessable Entity** with a human-readable message (surfaced as a
+   toast by the frontend). The page is **not** modified locally and nothing
+   is pushed to Confluence — a flattened body can never be saved silently.
+   An empty skeleton (layout-free page) also strips any *hallucinated*
+   tokens instead of building layout that never existed.
+
+Callers without an expected structure (markdown page imports, the summary
+worker) keep the legacy no-skeleton drop-guard semantics of step 4 above.
 
 The in-body **labels macro** is the opposite case: it is atomic (no editable
 prose), so since #765 it is kept as a

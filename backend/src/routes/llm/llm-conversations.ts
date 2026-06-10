@@ -3,7 +3,7 @@ import { query } from '../../core/db/postgres.js';
 import { ChatMessage } from '../../domains/llm/services/prompts.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { ApplyImprovementRequestSchema } from '@compendiq/contracts';
-import { confluenceToHtml, htmlToConfluence, htmlToText, markdownToHtml, protectMedia, restoreMedia } from '../../core/services/content-converter.js';
+import { confluenceToHtml, htmlToConfluence, htmlToText, markdownToHtml, protectMedia, restoreMedia, extractLayoutSkeleton, LayoutRecoveryError } from '../../core/services/content-converter.js';
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { IdParamSchema, ImprovementsQuerySchema } from './_helpers.js';
@@ -157,8 +157,31 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     // is the backstop: any media original not present after restoreMedia
     // (including the worst case where restoreMedia was a complete no-op because
     // no tokens survived) is re-appended, so media is never silently lost.
-    const { media } = protectMedia(existingPage.body_html ?? '');
-    let bodyHtml = await markdownToHtml(improvedMarkdown);
+    const { html: protectedCurrentHtml, media } = protectMedia(existingPage.body_html ?? '');
+
+    // #781: derive the expected layout-token skeleton from the page's CURRENT
+    // body_html (deterministic, same re-derivation idea as the media tokens
+    // above) and let markdownToHtml align the LLM's — possibly mangled —
+    // boundary tokens against it. When the layout is unrecoverable (e.g. the
+    // model merged two cells' prose or dropped every token), the apply is
+    // REJECTED with a 422 instead of silently flattening the page and
+    // pushing the flattened body back to Confluence.
+    const layoutSkeleton = extractLayoutSkeleton(protectedCurrentHtml);
+    let bodyHtml: string;
+    try {
+      bodyHtml = await markdownToHtml(improvedMarkdown, { layoutSkeleton });
+    } catch (err) {
+      if (err instanceof LayoutRecoveryError) {
+        fastify.log.warn(
+          { pageId, ...err.details },
+          '#781: AI Improve output lost the page layout — apply rejected, page not modified',
+        );
+        throw fastify.httpErrors.unprocessableEntity(
+          "The AI response lost this page's column layout and it could not be recovered, so the change was not applied. The page is unchanged — run AI Improve again, or edit the page manually.",
+        );
+      }
+      throw err;
+    }
     bodyHtml = restoreMedia(bodyHtml, media);
     const dropped = media.filter((m) => !bodyHtml.includes(m.html));
     if (dropped.length > 0) {

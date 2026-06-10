@@ -292,10 +292,11 @@ describe('POST /api/llm/improvements/apply — layout boundary tokens with REAL 
     expect(savedHtml).not.toContain('[[[');
   });
 
-  it('drop-guard: mangled tokens flatten gracefully — no raw [[[…]]] and no unbalanced divs', async () => {
+  it('#781: mangled tokens are recovered against the page skeleton — layout survives (was silently flattened)', async () => {
     mockPageWith(layoutBodyHtml);
 
-    // The LLM dropped one closing token and lower-cased another.
+    // The LLM dropped one closing token and lower-cased another — the exact
+    // failure mode #781 reported from real local models.
     const improvedMarkdown = [
       '[[[LAYOUT]]]', '',
       '[[[LAYOUT-SECTION two_equal]]]', '',
@@ -317,10 +318,65 @@ describe('POST /api/llm/improvements/apply — layout boundary tokens with REAL 
     expect(response.statusCode).toBe(200);
     const savedHtml = captureUpdatedBodyHtml();
     expect(savedHtml).not.toContain('[[[');
-    expect(savedHtml).not.toContain('confluence-layout');
+    // The layout is rebuilt from the page's own skeleton, not flattened.
+    expect(savedHtml).toContain('class="confluence-layout"');
+    expect(savedHtml).toContain('data-layout-type="two_equal"');
+    expect((savedHtml.match(/class="confluence-layout-cell"/g) ?? []).length).toBe(2);
     expect(savedHtml).toContain('Left prose survives.');
     expect(savedHtml).toContain('Right prose survives.');
-    // No dangling open/close divs.
     expect((savedHtml.match(/<div/g) ?? []).length).toBe((savedHtml.match(/<\/div>/g) ?? []).length);
+  });
+
+  it('#781: unrecoverable token loss rejects the apply with 422 — the page is NOT modified or pushed', async () => {
+    mockPageWith(layoutBodyHtml);
+
+    // The model rewrote the markers in German prose — nothing to align.
+    const improvedMarkdown = [
+      'Beginn des Seitenlayouts.', '',
+      'Linke Spalte: Left prose.', '',
+      'Rechte Spalte: Right prose.', '',
+      'Ende des Seitenlayouts.',
+    ].join('\n');
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/llm/improvements/apply',
+      payload: { pageId: '42', improvedMarkdown, version: 5, title: 'My Article' },
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.json().message).toContain('column layout');
+    // Predictable failure: NO page write happened — flattened content can
+    // never be saved locally nor pushed back to Confluence.
+    const updateCall = (mockQuery.mock.calls as unknown[][]).find(
+      (args) => typeof args[0] === 'string' && (args[0] as string).includes('UPDATE pages'),
+    );
+    expect(updateCall).toBeUndefined();
+  });
+
+  it('#781: hallucinated layout tokens on a layout-free page are stripped, never built', async () => {
+    mockPageWith('<h1>Plain page</h1><p>No layout here.</p>');
+
+    const improvedMarkdown = [
+      '[[[LAYOUT]]]', '',
+      '[[[LAYOUT-SECTION two_equal]]]', '',
+      '[[[LAYOUT-CELL]]]', '',
+      'Hallucinated structure around real prose.', '',
+      '[[[/LAYOUT-CELL]]]', '',
+      '[[[/LAYOUT-SECTION]]]', '',
+      '[[[/LAYOUT]]]',
+    ].join('\n');
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/llm/improvements/apply',
+      payload: { pageId: '42', improvedMarkdown, version: 5, title: 'My Article' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const savedHtml = captureUpdatedBodyHtml();
+    expect(savedHtml).not.toContain('[[[');
+    expect(savedHtml).not.toContain('confluence-layout');
+    expect(savedHtml).toContain('Hallucinated structure around real prose.');
   });
 });
