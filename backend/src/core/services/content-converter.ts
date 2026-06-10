@@ -1363,16 +1363,473 @@ function transformOutsideHtmlCode(html: string, transform: (segment: string) => 
   return transform(masked).replace(/\u0000CQ_CODE_REGION_(\d+)\u0000/g, (m, i) => regions[Number(i)] ?? m);
 }
 
+// ---------------------------------------------------------------------------
+// #781: skeleton-guided recovery of LLM-mangled layout tokens.
+//
+// #774's all-or-nothing drop-guard silently flattened the layout whenever a
+// real model mangled a single [[[…]]] token — which local models do routinely
+// (case changes, merged lines, dropped closes, dropped section args, code
+// fences around tokens, translations). The fix exploits the one thing the
+// LLM cannot corrupt: the system KNOWS the expected token skeleton, because
+// it generated it from the original document. Recovery therefore never
+// trusts the LLM's echo — it ALIGNS whatever came back against the known
+// skeleton:
+//
+//   1. extractLayoutSkeleton() derives the expected open/close token sequence
+//      (with section types / column widths) from the page's own body HTML —
+//      deterministic, like #723's media tokens, so nothing is persisted.
+//   2. Strictness ladder (#785 review): candidates are first scanned with
+//      scanStrictLayoutTokenSpans() (canonical spellings only) — when the
+//      echo's real tokens are intact, token lookalikes in user prose (e.g.
+//      a literal "[[[layout]]]") survive as prose. Only when the strict scan
+//      cannot align the FULL skeleton does scanLooseLayoutTokens() run,
+//      recognizing realistic mangled spellings (outside code constructs).
+//   3. alignLayoutTokens() greedily maps them, in order, onto the skeleton.
+//      Close tokens and pure container opens (LAYOUT, LAYOUT-SECTION) are
+//      re-derivable, so they may be dropped; every PROSE-BEARING open
+//      (LAYOUT-CELL / COLUMN / SECTION) must be found — otherwise cell
+//      boundaries are genuinely lost (e.g. the model merged two cells).
+//   4. reconstructLayoutMarkdown() rewrites the markdown with CANONICAL
+//      tokens from the skeleton (types/widths always from the skeleton,
+//      never from the echo), strips unmatched token debris, and keeps prose
+//      out of slots where the storage format allows none.
+//   5. The result is verified token-for-token against the skeleton before
+//      use. Any residual mismatch — and any unrecoverable mangling — throws
+//      LayoutRecoveryError so the caller can reject the apply instead of
+//      silently flattening the page. Exception (#785 review): a skeleton
+//      with exactly ONE prose-bearing slot is unambiguous even when every
+//      token was dropped — wrapProseInSingleSlot() places all prose in it.
+// ---------------------------------------------------------------------------
+
+export interface LayoutSkeletonToken { kind: string; isClose: boolean; attrs: string; }
+
+export class LayoutRecoveryError extends Error {
+  constructor(
+    public readonly details: { expectedTokens: number; recoveredTokens: number },
+  ) {
+    super('AI output lost the page layout: boundary tokens could not be recovered');
+    this.name = 'LayoutRecoveryError';
+  }
+}
+
+const LAYOUT_SECTION_TYPE_RE = /^[a-z_]+$/;
+const COLUMN_WIDTH_RE = /^[\d.]+(%|px|em|rem)?$/;
+
+/** Token kind + canonical attrs for a layout wrapper element (else null). */
+function layoutWrapperKind(el: Element): { kind: string; attrs: string } | null {
+  const cls = el.classList;
+  if (cls.contains('confluence-layout')) return { kind: 'LAYOUT', attrs: '' };
+  if (cls.contains('confluence-layout-section')) {
+    const raw = el.getAttribute('data-layout-type') ?? 'single';
+    return { kind: 'LAYOUT-SECTION', attrs: LAYOUT_SECTION_TYPE_RE.test(raw) ? raw : 'single' };
+  }
+  if (cls.contains('confluence-layout-cell')) return { kind: 'LAYOUT-CELL', attrs: '' };
+  if (cls.contains('confluence-section')) {
+    const border = el.getAttribute('data-border');
+    return { kind: 'SECTION', attrs: border === 'true' || border === 'false' ? `border=${border}` : '' };
+  }
+  if (cls.contains('confluence-column')) {
+    let width = el.getAttribute('data-cell-width');
+    if (!width) {
+      const m = (el.getAttribute('style') ?? '').match(/flex:\s*0\s+0\s+(\S+)/);
+      if (m) width = m[1] ?? null;
+    }
+    return { kind: 'COLUMN', attrs: width && COLUMN_WIDTH_RE.test(width) ? `width=${width}` : '' };
+  }
+  return null;
+}
+
+/**
+ * Derive the expected layout-token skeleton from body HTML. Mirrors the
+ * token emission rules of htmlToMarkdown({ layoutTokens: true }) exactly:
+ * same kinds, same attrs validation, and frozen legacy wrappers (nested in
+ * markdown-constrained containers — see protectMedia) are skipped because
+ * they travel opaquely, never as boundary tokens.
+ */
+export function extractLayoutSkeleton(html: string): LayoutSkeletonToken[] {
+  const dom = new JSDOM(`<body>${html}</body>`);
+  const tokens: LayoutSkeletonToken[] = [];
+  const visit = (el: Element): void => {
+    if (isFrozenLegacyWrapper(el)) return; // opaque-protected whole — no tokens
+    const wrapper = layoutWrapperKind(el);
+    if (wrapper) tokens.push({ kind: wrapper.kind, isClose: false, attrs: wrapper.attrs });
+    for (const child of Array.from(el.children)) visit(child);
+    // Close tokens carry no attrs (matching their canonical [[[/KIND]]] form).
+    if (wrapper) tokens.push({ kind: wrapper.kind, isClose: true, attrs: '' });
+  };
+  for (const child of Array.from(dom.window.document.body.children)) visit(child);
+  return tokens;
+}
+
+// Tolerant recognition of mangled token spellings: 2–4 bracket runs (incl.
+// markdown-escaped \[), optional emphasis wrappers, `/` or `\` closes,
+// hyphen→underscore/space kind variants, arbitrary junk attrs, lower/mixed
+// case. Prose collisions (e.g. "[[Section 2]]" wiki-style links) are kept
+// out by requiring EXACTLY three brackets for case-insensitive matches —
+// other bracket counts only count when the kind is spelled all-uppercase.
+const LAYOUT_KIND_LOOSE = 'LAYOUT[-_ ]SECTION|LAYOUT[-_ ]CELL|LAYOUT|SECTION|COLUMN';
+const LAYOUT_TOKEN_LOOSE_SRC =
+  String.raw`(?:\*{1,2}|_{1,2})?` +
+  String.raw`((?:\\?\[){2,4})` +
+  String.raw`[ \t]*([/\\])?[ \t]*` +
+  String.raw`(${LAYOUT_KIND_LOOSE})` +
+  String.raw`((?:[^\]\n\\]|\\[^\]\n])*)` +
+  String.raw`(?:\\?\]){2,4}` +
+  String.raw`(?:\*{1,2}|_{1,2})?`;
+
+interface ScannedLayoutToken { start: number; end: number; kind: string; isClose: boolean; }
+
+/** Scan markdown (outside code constructs) for mangled-token candidates. */
+function scanLooseLayoutTokens(markdown: string): ScannedLayoutToken[] {
+  const tokens: ScannedLayoutToken[] = [];
+  let offset = 0;
+  for (const [i, part] of markdown.split(MARKDOWN_CODE_SEGMENT).entries()) {
+    if (i % 2 === 0) {
+      for (const m of part.matchAll(new RegExp(LAYOUT_TOKEN_LOOSE_SRC, 'gi'))) {
+        const brackets = (m[1]!.match(/\[/g) ?? []).length;
+        const rawKind = m[3]!;
+        // Non-3-bracket spellings must be all-uppercase to count as tokens.
+        if (brackets !== 3 && rawKind !== rawKind.toUpperCase()) continue;
+        tokens.push({
+          start: offset + m.index,
+          end: offset + m.index + m[0].length,
+          kind: rawKind.toUpperCase().replace(/[_ ]/g, '-'),
+          isClose: m[2] !== undefined,
+        });
+      }
+    }
+    offset += part.length;
+  }
+  return tokens;
+}
+
+// #785 review (strictness ladder): canonical-spelling-only spans — exactly
+// `[[[`, optional `/`, UPPERCASE kind, optional attrs, `]]]`. The lookarounds
+// reject tokens touching emphasis/bracket/escape decoration (e.g.
+// **[[[LAYOUT-CELL]]]** or [[[[/LAYOUT]]]]): a decorated token counts as
+// MANGLED — handled by the loose pass, which consumes the decoration too —
+// instead of leaving the stray `**` / `[` behind as prose.
+const LAYOUT_TOKEN_STRICT_SPAN_SRC = String.raw`(?<![*_\[\\])${LAYOUT_TOKEN_CAPTURE}(?![*_\]])`;
+
+/**
+ * Position-aware STRICT scan (outside code constructs): canonical token
+ * spellings only. Same shape as scanLooseLayoutTokens so both can feed
+ * alignLayoutTokens — see the strictness ladder in recoverLayoutMarkdown.
+ */
+function scanStrictLayoutTokenSpans(markdown: string): ScannedLayoutToken[] {
+  const tokens: ScannedLayoutToken[] = [];
+  let offset = 0;
+  for (const [i, part] of markdown.split(MARKDOWN_CODE_SEGMENT).entries()) {
+    if (i % 2 === 0) {
+      for (const m of part.matchAll(new RegExp(LAYOUT_TOKEN_STRICT_SPAN_SRC, 'g'))) {
+        tokens.push({
+          start: offset + m.index,
+          end: offset + m.index + m[0].length,
+          kind: m[2]!,
+          isClose: m[1] === '/',
+        });
+      }
+    }
+    offset += part.length;
+  }
+  return tokens;
+}
+
+/** Does this line consist of exactly one loose token? */
+function isLooseTokenLine(line: string): boolean {
+  return new RegExp(`^(?:${LAYOUT_TOKEN_LOOSE_SRC})$`, 'i').test(line);
+}
+
+/**
+ * Unwrap code constructs whose ENTIRE content is layout-token lines — the
+ * "model fenced the tokens" failure mode. Genuine token documentation in
+ * code blocks always carries surrounding prose lines and is left alone; and
+ * candidate selection (below) prefers the un-unwrapped markdown whenever it
+ * aligns equally well, so code-as-data is only consumed when the alternative
+ * is losing the layout.
+ */
+function unwrapTokenOnlyCode(markdown: string): string {
+  return markdown.replace(MARKDOWN_CODE_SEGMENT, (seg) => {
+    let inner: string | undefined;
+    let m = seg.match(/^(?:```|~~~)[^\n]*\n([\s\S]*?)(?:```|~~~)?\s*$/);
+    if (m) inner = m[1];
+    else if ((m = seg.match(/^``([\s\S]+)``$/) ?? seg.match(/^`([^`\n]+)`$/))) inner = m[1];
+    if (inner === undefined) return seg;
+    const lines = inner.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
+    if (lines.length === 0 || !lines.every(isLooseTokenLine)) return seg;
+    return `\n\n${lines.join('\n\n')}\n\n`;
+  });
+}
+
+/** Unwrap a single code fence spanning the whole document, if present. */
+function unwrapFullDocumentFence(markdown: string): string | null {
+  const m = markdown.trim().match(/^```[^\n]*\n([\s\S]*?)\n?```$/);
+  return m ? m[1]! : null;
+}
+
+// Opens that carry prose: if one of these cannot be aligned, a cell boundary
+// is genuinely lost and recovery must fail. LAYOUT / LAYOUT-SECTION opens
+// are pure containers (the storage format puts nothing between them and
+// their first child), so their positions are re-derivable from neighbors.
+const PROSE_BEARING_KINDS = new Set(['LAYOUT-CELL', 'COLUMN', 'SECTION']);
+
+/** Greedy in-order alignment of scanned tokens onto the skeleton. */
+function alignLayoutTokens(
+  found: ScannedLayoutToken[],
+  skeleton: LayoutSkeletonToken[],
+): { matched: number[]; ok: boolean; matchedCount: number } {
+  const matched: number[] = new Array<number>(skeleton.length).fill(-1);
+  let s = 0;
+  for (let f = 0; f < found.length; f++) {
+    let k = s;
+    while (k < skeleton.length && !(skeleton[k]!.kind === found[f]!.kind && skeleton[k]!.isClose === found[f]!.isClose)) k++;
+    if (k < skeleton.length) {
+      matched[k] = f;
+      s = k + 1;
+    }
+    // else: unmatched echo — debris, stripped during reconstruction.
+  }
+  const ok = skeleton.every((t, i) => matched[i] !== -1 || t.isClose || !PROSE_BEARING_KINDS.has(t.kind));
+  return { matched, ok, matchedCount: matched.filter((f) => f !== -1).length };
+}
+
+function canonicalLayoutToken(t: LayoutSkeletonToken): string {
+  return t.isClose ? `[[[/${t.kind}]]]` : `[[[${t.kind}${t.attrs ? ` ${t.attrs}` : ''}]]]`;
+}
+
+/** Prose may live at top level and inside cells/columns/legacy sections. */
+function proseAllowedIn(stack: string[]): boolean {
+  const top = stack[stack.length - 1];
+  return top === undefined || top === 'LAYOUT-CELL' || top === 'COLUMN' || top === 'SECTION';
+}
+
+/**
+ * Rewrite the markdown with canonical skeleton tokens at the aligned
+ * positions. Dropped tokens are re-inserted just before the next aligned
+ * anchor (or at the end); unmatched token debris is stripped; prose that
+ * would land in a slot the storage format forbids (e.g. between two cells,
+ * directly inside a section) is deferred into the next valid slot.
+ */
+function reconstructLayoutMarkdown(
+  markdown: string,
+  found: ScannedLayoutToken[],
+  matched: number[],
+  skeleton: LayoutSkeletonToken[],
+): string {
+  const matchedFound = new Set(matched.filter((f) => f !== -1));
+  const debris = found.filter((_, i) => !matchedFound.has(i));
+  const sliceWithoutDebris = (from: number, to: number): string => {
+    let out = '';
+    let pos = from;
+    for (const d of debris) {
+      if (d.end <= from || d.start >= to) continue;
+      out += markdown.slice(pos, Math.max(d.start, from));
+      pos = Math.min(d.end, to);
+    }
+    return out + markdown.slice(pos, to);
+  };
+
+  const out: string[] = [];
+  const stack: string[] = [];
+  let pendingText = '';
+  let pendingDropped: LayoutSkeletonToken[] = [];
+  let cursor = 0;
+
+  const placeText = (raw: string): void => {
+    const seg = raw.replace(/^\n+|\n+$/g, ''); // outer newlines only — keep code indentation
+    if (seg.trim().length === 0) return;
+    if (proseAllowedIn(stack)) out.push(`\n\n${seg}\n\n`);
+    else pendingText += (pendingText ? '\n\n' : '') + seg;
+  };
+  const placeToken = (t: LayoutSkeletonToken): void => {
+    out.push(`\n\n${canonicalLayoutToken(t)}\n\n`);
+    if (t.isClose) stack.pop();
+    else stack.push(t.kind);
+    if (pendingText && proseAllowedIn(stack)) {
+      out.push(`\n\n${pendingText}\n\n`);
+      pendingText = '';
+    }
+  };
+
+  for (let i = 0; i < skeleton.length; i++) {
+    const f = matched[i]!;
+    if (f === -1) {
+      pendingDropped.push(skeleton[i]!);
+      continue;
+    }
+    const tok = found[f]!;
+    placeText(sliceWithoutDebris(cursor, tok.start));
+    cursor = tok.end;
+    for (const d of pendingDropped) placeToken(d);
+    pendingDropped = [];
+    placeToken(skeleton[i]!);
+  }
+  placeText(sliceWithoutDebris(cursor, markdown.length));
+  for (const d of pendingDropped) placeToken(d);
+  if (pendingText) out.push(`\n\n${pendingText}\n\n`);
+  return out.join('');
+}
+
+/** Strict token sequence (outside code constructs) of a markdown string. */
+function scanStrictLayoutTokens(markdown: string): LayoutToken[] {
+  const tokens: LayoutToken[] = [];
+  for (const [i, part] of markdown.split(MARKDOWN_CODE_SEGMENT).entries()) {
+    if (i % 2 !== 0) continue;
+    for (const m of part.matchAll(new RegExp(LAYOUT_TOKEN_CAPTURE, 'g'))) {
+      tokens.push({ isClose: m[1] === '/', kind: m[2]!, attrs: (m[3] ?? '').trim() });
+    }
+  }
+  return tokens;
+}
+
+/** Fail-closed verification: strict token sequence equals the skeleton. */
+function matchesSkeleton(markdown: string, skeleton: LayoutSkeletonToken[]): boolean {
+  const strict = scanStrictLayoutTokens(markdown);
+  return (
+    strict.length === skeleton.length &&
+    strict.every(
+      (t, i) => t.kind === skeleton[i]!.kind && t.isClose === skeleton[i]!.isClose && t.attrs === skeleton[i]!.attrs,
+    )
+  );
+}
+
+/**
+ * Last-resort recovery for skeletons with exactly ONE prose-bearing slot
+ * (#785 review): even when alignment found nothing — the model dropped
+ * every token — there is no ambiguity about where the prose belongs. Emit
+ * the skeleton's canonical tokens in order and place ALL (debris-stripped)
+ * prose inside that single slot. Multi-slot skeletons stay unrecoverable:
+ * assigning prose to one of several cells would be a guess.
+ *
+ * Built explicitly rather than via reconstructLayoutMarkdown: its
+ * trailing-dropped-token path appends unmatched tokens AFTER the prose,
+ * which would leave the prose at top level and the rebuilt layout empty.
+ */
+function wrapProseInSingleSlot(markdown: string, skeleton: LayoutSkeletonToken[]): string {
+  // Alignment already failed, so every token-shaped fragment is debris.
+  const debris = scanLooseLayoutTokens(markdown);
+  let prose = '';
+  let pos = 0;
+  for (const d of debris) {
+    prose += markdown.slice(pos, d.start);
+    pos = d.end;
+  }
+  prose += markdown.slice(pos);
+  prose = prose.replace(/^\n+|\n+$/g, '');
+
+  const out: string[] = [];
+  for (const t of skeleton) {
+    out.push(`\n\n${canonicalLayoutToken(t)}\n\n`);
+    if (!t.isClose && PROSE_BEARING_KINDS.has(t.kind)) out.push(`\n\n${prose}\n\n`);
+  }
+  return out.join('');
+}
+
+/**
+ * Recover the LLM's (possibly mangled) layout tokens against the known
+ * skeleton and return canonical markdown, or throw LayoutRecoveryError.
+ * Strictness ladder (#785 review): candidates are evaluated with the strict
+ * canonical scan first — only when that cannot align the FULL skeleton does
+ * the tolerant loose scan run, so token lookalikes in user prose survive
+ * intact echoes. Fail-closed: the reconstruction is verified token-for-token
+ * against the skeleton before it is accepted, so no edge case can silently
+ * flatten. Note: alignment is greedy and in-order — it guards layout
+ * STRUCTURE, not prose-to-cell assignment; a model that swaps two cells'
+ * content yields the swapped prose inside the preserved structure.
+ */
+function recoverLayoutMarkdown(markdown: string, skeleton: LayoutSkeletonToken[]): string {
+  const rawFound = scanLooseLayoutTokens(markdown);
+  // Fast path: layout-free page and a clean echo — nothing to do.
+  if (skeleton.length === 0 && rawFound.length === 0) return markdown;
+
+  const candidates: string[] = [markdown];
+  const unwrappedCode = unwrapTokenOnlyCode(markdown);
+  if (unwrappedCode !== markdown) candidates.push(unwrappedCode);
+  const unfenced = unwrapFullDocumentFence(markdown);
+  if (unfenced !== null) {
+    candidates.push(unfenced);
+    const unfencedUnwrapped = unwrapTokenOnlyCode(unfenced);
+    if (unfencedUnwrapped !== unfenced) candidates.push(unfencedUnwrapped);
+  }
+
+  // Evaluate every candidate with the given scanner; prefer the one aligning
+  // the most skeleton tokens, tie-broken toward the LEAST-transformed
+  // markdown so code-as-data is only consumed when it rescues the layout.
+  // Attempts aligning fewer than `minMatched` skeleton tokens are rejected.
+  const tryRecover = (
+    scan: (md: string) => ScannedLayoutToken[],
+    minMatched: number,
+  ): { rebuilt: string | null; bestMatched: number } => {
+    const attempts = candidates
+      .map((candidate, order) => {
+        const found = scan(candidate);
+        return { candidate, found, order, ...alignLayoutTokens(found, skeleton) };
+      })
+      .sort((a, b) => b.matchedCount - a.matchedCount || a.order - b.order);
+    for (const attempt of attempts) {
+      if (!attempt.ok || attempt.matchedCount < minMatched) continue;
+      const rebuilt = reconstructLayoutMarkdown(attempt.candidate, attempt.found, attempt.matched, skeleton);
+      if (matchesSkeleton(rebuilt, skeleton)) return { rebuilt, bestMatched: attempt.matchedCount };
+    }
+    return { rebuilt: null, bestMatched: attempts[0]?.matchedCount ?? 0 };
+  };
+
+  // Strict pass: when some candidate's CANONICAL tokens already cover the
+  // whole skeleton, the echo is intact — tolerant matching would only
+  // consume prose lookalikes (e.g. a literal "[[[layout]]]" in cell text)
+  // as token debris. Requiring the FULL skeleton (not just prose-bearing
+  // opens) matters: a partially-strict echo means something WAS mangled,
+  // and accepting it here would leave the mangled token behind as prose.
+  const strictPass = tryRecover(scanStrictLayoutTokenSpans, skeleton.length);
+  if (strictPass.rebuilt !== null) return strictPass.rebuilt;
+
+  // Loose pass: the echo is mangled — tolerant matching rescues it,
+  // accepting that lookalikes may now be consumed as debris.
+  const loosePass = tryRecover(scanLooseLayoutTokens, 0);
+  if (loosePass.rebuilt !== null) return loosePass.rebuilt;
+
+  // Single-slot wrap (#785 review): with exactly one prose-bearing open the
+  // assignment is unambiguous even when nothing aligned at all.
+  const proseSlots = skeleton.filter((t) => !t.isClose && PROSE_BEARING_KINDS.has(t.kind));
+  if (proseSlots.length === 1) {
+    const wrapped = wrapProseInSingleSlot(markdown, skeleton);
+    if (matchesSkeleton(wrapped, skeleton)) return wrapped;
+  }
+
+  throw new LayoutRecoveryError({
+    expectedTokens: skeleton.length,
+    recoveredTokens: loosePass.bestMatched,
+  });
+}
+
+export interface MarkdownToHtmlOptions {
+  /**
+   * #781: the expected layout-token skeleton of the document being edited
+   * (from extractLayoutSkeleton on the page's CURRENT body HTML). When set,
+   * mangled tokens in the markdown are recovered against it — and when
+   * recovery is impossible, LayoutRecoveryError is thrown instead of
+   * silently flattening. When omitted, the legacy #774 all-or-nothing
+   * drop-guard applies (markdown imports, no expected structure).
+   */
+  layoutSkeleton?: LayoutSkeletonToken[];
+}
+
 /**
  * Converts Markdown to HTML (for LLM output -> editor).
  */
-export async function markdownToHtml(markdown: string): Promise<string> {
+export async function markdownToHtml(markdown: string, options?: MarkdownToHtmlOptions): Promise<string> {
+  // #781: with a known skeleton, align the LLM's echo against it first —
+  // throws LayoutRecoveryError when the layout is unrecoverable.
+  const input = options?.layoutSkeleton
+    ? recoverLayoutMarkdown(markdown, options.layoutSkeleton)
+    : markdown;
+
   // #765: force every layout boundary token onto its own paragraph so marked
   // wraps it in a lone <p>, even when the LLM merged adjacent token lines or
   // pulled a token into surrounding prose. Code constructs are skipped —
   // literal token text in a fenced block must survive verbatim.
   const tokenLine = new RegExp(`[ \\t]*(${LAYOUT_TOKEN_BARE})[ \\t]*`, 'g');
-  const normalized = transformOutsideMarkdownCode(markdown, (segment) =>
+  const normalized = transformOutsideMarkdownCode(input, (segment) =>
     segment.replace(tokenLine, '\n\n$1\n\n'),
   );
 
@@ -1394,9 +1851,16 @@ export async function markdownToHtml(markdown: string): Promise<string> {
 
     // #765 drop-guard backstop: strip any token-shaped remnant that failed
     // structural matching (e.g. the LLM lower-cased a marker) — raw [[[…]]]
-    // text must never reach the saved page.
+    // text must never reach the saved page. With a skeleton (#781) recovery
+    // has already rewritten every real token canonically and consumed all
+    // mangled debris, so the strip stays case-SENSITIVE there: a surviving
+    // lower-case token shape is a prose lookalike the strictness ladder
+    // deliberately preserved, not a failed marker (#785 review).
     out = out.replace(
-      new RegExp(`<p>\\s*${LAYOUT_TOKEN_BARE}\\s*</p>|${LAYOUT_TOKEN_BARE}`, 'gi'),
+      new RegExp(
+        `<p>\\s*${LAYOUT_TOKEN_BARE}\\s*</p>|${LAYOUT_TOKEN_BARE}`,
+        options?.layoutSkeleton ? 'g' : 'gi',
+      ),
       '',
     );
     return out;

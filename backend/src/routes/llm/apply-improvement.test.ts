@@ -45,6 +45,10 @@ vi.mock('../../core/services/content-converter.js', () => ({
   markdownToHtml: (...args: unknown[]) => mockMarkdownToHtml(...args),
   protectMedia: (...args: unknown[]) => mockProtectMedia(...args),
   restoreMedia: (...args: unknown[]) => mockRestoreMedia(...args),
+  // #781: the apply route derives the layout skeleton and matches the
+  // recovery error by instance — keep the class real-ish in the mock.
+  extractLayoutSkeleton: vi.fn(() => []),
+  LayoutRecoveryError: class LayoutRecoveryError extends Error {},
 }));
 
 vi.mock('../../domains/llm/services/embedding-service.js', () => ({
@@ -236,7 +240,10 @@ describe('POST /api/llm/improvements/apply', () => {
     expect(response.statusCode).toBe(200);
 
     // Markdown → HTML conversion
-    expect(mockMarkdownToHtml).toHaveBeenCalledWith('## Improved\n\nBetter content.');
+    expect(mockMarkdownToHtml).toHaveBeenCalledWith(
+      '## Improved\n\nBetter content.',
+      { layoutSkeleton: [] }, // #781: skeleton from the page's current body
+    );
 
     // HTML → Confluence XHTML conversion
     expect(mockHtmlToConfluence).toHaveBeenCalledWith('<p>Improved HTML content</p>');
