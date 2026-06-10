@@ -26,16 +26,21 @@ vi.mock('./confluence-rate-limiter.js', () => ({
 }));
 
 import { request } from 'undici';
-import { ConfluenceClient } from './confluence-client.js';
+import { ConfluenceClient, ConfluenceError } from './confluence-client.js';
 
 const mockRequest = vi.mocked(request);
 
-function jsonResponse(data: unknown): { statusCode: number; headers: Record<string, string>; body: { text: () => Promise<string> } } {
+function jsonResponse(data: unknown, statusCode = 200): { statusCode: number; headers: Record<string, string>; body: { text: () => Promise<string> } } {
   return {
-    statusCode: 200,
+    statusCode,
     headers: {},
     body: { text: async () => JSON.stringify(data) },
   };
+}
+
+/** URL (first positional arg) of the n-th `request()` call. */
+function calledUrl(n: number): string {
+  return String(mockRequest.mock.calls[n]?.[0]);
 }
 
 describe('ConfluenceClient version methods (#722)', () => {
@@ -65,6 +70,81 @@ describe('ConfluenceClient version methods (#722)', () => {
     expect(versions.map((v) => v.number)).toEqual([3, 2]);
     expect(versions[0]).toMatchObject({ author: 'A', message: 'm3' });
     expect(versions[1]).toMatchObject({ author: 'B', message: null });
+  });
+
+  it('getPageVersions queries the Data Center (experimental) version endpoint, for every pagination page (#780)', async () => {
+    // Confluence DC has NO `GET /rest/api/content/{id}/version` (only DELETE of
+    // a single version) — the list lives at /rest/experimental/... only. Hitting
+    // the stable path 404s on DC, which made every backfill fail (#780).
+    mockRequest
+      .mockResolvedValueOnce(jsonResponse({
+        results: [{ number: 2, when: '2026-01-02T00:00:00Z' }],
+        size: 1,
+        _links: { next: '/next' },
+      }) as never)
+      .mockResolvedValueOnce(jsonResponse({
+        results: [{ number: 1, when: '2026-01-01T00:00:00Z' }],
+        size: 1,
+        _links: {},
+      }) as never);
+
+    const client = new ConfluenceClient(baseUrl, pat);
+    const versions = await client.getPageVersions('123');
+
+    expect(versions.map((v) => v.number)).toEqual([2, 1]);
+    expect(calledUrl(0)).toContain('/rest/experimental/content/123/version?');
+    expect(calledUrl(0)).toContain('start=0');
+    // Pagination must keep using the path that worked — no re-probing.
+    expect(calledUrl(1)).toContain('/rest/experimental/content/123/version?');
+    expect(calledUrl(1)).toContain('start=100');
+  });
+
+  it('getPageVersions falls back to the stable (Cloud-style) path when the experimental one 404s (#780)', async () => {
+    mockRequest
+      // experimental → 404 (deployment without the experimental resource)
+      .mockResolvedValueOnce(jsonResponse({ message: 'no such resource' }, 404) as never)
+      // stable path → works, paginated
+      .mockResolvedValueOnce(jsonResponse({
+        results: [{ number: 2, when: '2026-01-02T00:00:00Z', by: { displayName: 'A' } }],
+        size: 1,
+        _links: { next: '/next' },
+      }) as never)
+      .mockResolvedValueOnce(jsonResponse({
+        results: [{ number: 1, when: '2026-01-01T00:00:00Z' }],
+        size: 1,
+        _links: {},
+      }) as never);
+
+    const client = new ConfluenceClient(baseUrl, pat);
+    const versions = await client.getPageVersions('123');
+
+    expect(versions.map((v) => v.number)).toEqual([2, 1]);
+    expect(calledUrl(0)).toContain('/rest/experimental/content/123/version?');
+    expect(calledUrl(1)).toContain('/rest/api/content/123/version?');
+    // Page 2 reuses the stable path directly — the experimental one is not re-probed.
+    expect(calledUrl(2)).toContain('/rest/api/content/123/version?');
+    expect(calledUrl(2)).toContain('start=100');
+    expect(mockRequest).toHaveBeenCalledTimes(3);
+  });
+
+  it('getPageVersions throws a combined ConfluenceError when both paths 404 (#780)', async () => {
+    mockRequest.mockResolvedValue(jsonResponse({ message: 'nope' }, 404) as never);
+
+    const client = new ConfluenceClient(baseUrl, pat);
+    await expect(client.getPageVersions('123')).rejects.toThrow(
+      /rest\/experimental\/content\/123\/version.*rest\/api\/content\/123\/version/s,
+    );
+    expect(mockRequest).toHaveBeenCalledTimes(2);
+  });
+
+  it('getPageVersions does NOT fall back on non-404 errors (e.g. 403) — the real error propagates', async () => {
+    mockRequest.mockResolvedValue(jsonResponse({ message: 'forbidden' }, 403) as never);
+
+    const client = new ConfluenceClient(baseUrl, pat);
+    await expect(client.getPageVersions('123')).rejects.toThrow(ConfluenceError);
+    await expect(client.getPageVersions('123')).rejects.toThrow(/permission/i);
+    // 403 is not retried and not fallback-eligible: exactly one HTTP call per attempt.
+    expect(mockRequest).toHaveBeenCalledTimes(2);
   });
 
   it('getPageVersions stops on an empty page even when a next link persists (pagination guard)', async () => {

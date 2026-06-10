@@ -131,8 +131,12 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
           backfillStatus = 'ok';
         } catch (err) {
           backfillStatus = 'failed';
+          // #780: include the underlying Confluence error so the dialog shows
+          // WHY the import failed (e.g. endpoint missing, permissions) instead
+          // of a bare generic hint that leaves the user guessing.
+          const reason = err instanceof Error && err.message ? ` (${err.message})` : '';
           backfillDetail =
-            'Importing historical versions from Confluence failed — the list below may be incomplete.';
+            `Importing historical versions from Confluence failed — the list below may be incomplete.${reason}`;
           request.log.warn({ err, pageId: id }, '#722: version backfill failed (Confluence unavailable)');
         }
       } else if (backfillStatus === undefined) {
