@@ -16,6 +16,8 @@
  * items without touching the underlying panel components.
  */
 
+import { CONFLUENCE_SETTINGS_PATH } from '../../shared/lib/routes';
+
 type SettingsCategoryId =
   | 'personal'
   | 'knowledge'
@@ -147,5 +149,5 @@ export function firstVisiblePath(ctx: AccessContext): string {
     }
   }
   // Fallback — should be unreachable because `confluence` is always visible.
-  return '/settings/personal/confluence';
+  return CONFLUENCE_SETTINGS_PATH;
 }

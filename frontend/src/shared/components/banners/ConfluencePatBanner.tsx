@@ -4,9 +4,7 @@ import { KeyRound, X } from 'lucide-react';
 import type { SettingsResponse } from '@compendiq/contracts';
 import { apiFetch } from '../../lib/api';
 import { useSettings } from '../../hooks/use-settings';
-
-/** Settings → Confluence tab — always visible to every role (see settings-nav.ts). */
-export const CONFLUENCE_SETTINGS_PATH = '/settings/personal/confluence';
+import { CONFLUENCE_SETTINGS_PATH } from '../../lib/routes';
 
 /**
  * Onboarding banner prompting users without a Confluence PAT to configure one

@@ -3,7 +3,8 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { SettingsResponse } from '@compendiq/contracts';
-import { ConfluencePatBanner, CONFLUENCE_SETTINGS_PATH } from './ConfluencePatBanner';
+import { ConfluencePatBanner } from './ConfluencePatBanner';
+import { CONFLUENCE_SETTINGS_PATH } from '../../lib/routes';
 
 const baseSettings: SettingsResponse = {
   confluenceUrl: null,
