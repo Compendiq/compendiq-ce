@@ -5,7 +5,8 @@ let loaded = false;
 
 // The EE backend serves the overlay bundle at this path.
 // CE nginx already proxies /api/ → backend, so no separate EE frontend image is needed.
-// In CE deployments the backend returns 404 — the HEAD probe fails silently and ui stays null.
+// On CE backends this URL is never requested at all: EnterpriseProvider only calls
+// loadEnterpriseUI() when the license response marks the backend EE (canUpdate: true).
 const ENTERPRISE_BUNDLE_URL = '/api/enterprise/frontend.js';
 
 // Global name the IIFE bundle registers itself under (matches vite.lib.config.ts `name`)
@@ -42,10 +43,11 @@ const defaultScriptLoader: ScriptLoader = async (url) => {
     return; // Already loaded (e.g. hot-reload)
   }
 
-  // Probe before injecting a <script> tag: in CE deployments the bundle URL
-  // intentionally 404s, and a failed <script src> logs a 404 plus a
-  // MIME-type refusal to the console on every navigation. fetch() of a 404
-  // logs nothing, so probing first keeps community mode silent.
+  // Defense-in-depth probe for EE backends that lack the bundle route:
+  // a failed <script src> logs a 404 plus a MIME-type refusal to the console,
+  // whereas a fetched 404 logs only a single network-level 404 line (browsers
+  // still log that — there is no fully silent way to request a missing URL).
+  // CE never reaches this code: the load is license-gated in context.tsx.
   const res = await fetch(url, { method: 'HEAD' });
   const type = res.headers.get('content-type') ?? '';
   if (!res.ok || !/javascript|ecmascript/.test(type)) {
@@ -62,9 +64,12 @@ let _scriptLoader: ScriptLoader = defaultScriptLoader;
  *
  * The EE overlay is compiled as an IIFE (not an ES module) so it can receive
  * shared module instances via window globals instead of requiring an import map.
- * This lets both CE and EE deployments use the same CE frontend image — in EE the
- * EE backend serves the bundle at /api/enterprise/frontend.js; in CE the backend
- * returns 404 and this function returns null silently.
+ * This lets both CE and EE deployments use the same CE frontend image — the EE
+ * backend serves the bundle at /api/enterprise/frontend.js. On CE backends this
+ * function is never called (EnterpriseProvider gates it on the license response's
+ * canUpdate flag), so CE produces no bundle traffic and no console noise. If an
+ * EE backend lacks the bundle route, the HEAD probe fails and this resolves null
+ * at the cost of a single network 404 log line.
  *
  * Shared instances (react, framer-motion, react-query) are exposed on
  * window.__COMPENDIQ_DEPS__ before the script loads so the IIFE's externals

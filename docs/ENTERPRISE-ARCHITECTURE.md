@@ -755,11 +755,15 @@ export function isFeatureAvailable(
 ### 7.1 Frontend Plugin Loader
 
 The EE overlay bundle is served at `/api/enterprise/frontend.js` by the EE backend.
-CE deployments return 404 — the loader first probes the URL with a `fetch` HEAD request
-(a fetched 404 logs nothing to the browser console, unlike a failed `<script src>`, which
-logs a 404 plus a MIME-type refusal on every navigation); on 404 or a non-JavaScript
-content type it fails silently and `ui` stays null. Only when the probe succeeds is the
-`<script>` tag injected.
+On CE backends the bundle URL is **never requested at all**: `EnterpriseProvider` fetches
+`/api/admin/license` first and only calls `loadEnterpriseUI()` when the response marks the
+backend as EE (`canUpdate: true`; the CE noop omits it) — zero extra requests, zero console
+noise in community deployments. As defense-in-depth for EE backends that lack the bundle
+route, the loader HEAD-probes the URL before injecting the `<script>` tag; on 404 or a
+non-JavaScript content type it resolves `ui = null`. Note browsers still log a single
+network-level 404 line for a fetched 404 (there is no fully silent way to request a missing
+URL) — the probe only avoids the additional MIME-type refusal and script error that a failed
+`<script src>` would produce.
 Both CE and EE deployments use the same CE frontend image; no separate EE frontend image is needed.
 
 **Why IIFE, not an ES module**: ES modules with bare-specifier externals (e.g. `import React from 'react'`)
@@ -792,8 +796,8 @@ export async function loadEnterpriseUI(): Promise<EnterpriseUI | null> {
       ...(jsxRuntime as any), ...(ReactQuery as any), ...(FramerMotion as any),
     };
 
-    // HEAD-probe first (silent in CE), then inject <script> tag;
-    // IIFE runs and registers window.__COMPENDIQ_UI__
+    // HEAD-probe (defense-in-depth; only ever runs against EE backends),
+    // then inject <script> tag; IIFE runs and registers window.__COMPENDIQ_UI__
     await probeAndInjectScript(ENTERPRISE_BUNDLE_URL);
 
     const ui = (window as any)[EE_UI_GLOBAL];
@@ -814,6 +818,7 @@ export async function loadEnterpriseUI(): Promise<EnterpriseUI | null> {
 Key design decisions:
 - **`isEnterprise` from backend, not from whether the overlay loaded**: `license.edition !== 'community' && license.valid === true`. This means even without the overlay bundle, the CE can correctly report its tier.
 - **Always fetch `/admin/license`**: CE returns `{ edition:'community', valid:true, features:[] }`. The fetch is silently swallowed for unauthenticated users.
+- **License response gates the bundle load**: the provider fetches the license first and only calls `loadEnterpriseUI()` when the response carries `canUpdate: true` (EE backend marker). CE backends therefore generate no bundle traffic. The UI stays non-blocking — every consumer handles `ui === null`.
 - **`LicenseStatusCard` is self-fetching** (zero props): it calls the license API internally. The `license` state in context is for routing/gating decisions only.
 
 ```typescript
@@ -833,21 +838,26 @@ export function EnterpriseProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
 
     async function init() {
-      // Load enterprise UI module (fast, just a dynamic import attempt)
-      const enterpriseUi = await loadEnterpriseUI();
-      if (cancelled) return;
-      setUi(enterpriseUi);
-
-      // Always fetch license info — CE returns edition:'community', EE returns actual tier.
+      // License first — CE returns edition:'community', EE returns actual tier.
       // Silently swallowed for unauthenticated/non-admin users.
+      let info: LicenseInfo | null = null;
       try {
-        const info = await apiFetch<LicenseInfo>('/admin/license');
-        if (!cancelled) setLicense(info);
+        info = await apiFetch<LicenseInfo>('/admin/license');
       } catch {
         // Not admin or endpoint not available — license stays null
       }
+      if (cancelled) return;
+      if (info) setLicense(info);
 
-      if (!cancelled) setIsLoading(false);
+      // Only an EE backend (marked by canUpdate: true) can serve the overlay
+      // bundle — CE never requests the bundle URL at all.
+      if (info?.canUpdate === true) {
+        const enterpriseUi = await loadEnterpriseUI();
+        if (cancelled) return;
+        setUi(enterpriseUi);
+      }
+
+      setIsLoading(false);
     }
 
     init();
