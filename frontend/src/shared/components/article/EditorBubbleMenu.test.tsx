@@ -12,7 +12,11 @@ vi.mock('../../lib/sse', () => ({
   streamSSE: (...args: unknown[]) => streamSSE(...args),
 }));
 
-import { BubbleMenuContent, selectionShouldShow } from './EditorBubbleMenu';
+import {
+  BubbleMenuContent,
+  selectionShouldShow,
+  editorBubbleMenuPluginKey,
+} from './EditorBubbleMenu';
 import { IMPROVE_DECORATION_CLASS } from './improve-decoration';
 
 function gen(chunks: Array<Record<string, unknown>>) {
@@ -40,12 +44,9 @@ beforeAll(() => {
 function Harness({
   content,
   onReady,
-  scrollable,
 }: {
   content: string;
   onReady: (editor: EditorType) => void;
-  /** Wrap the editor in an overflow container (mimics AppLayout's `data-scroll-container`). */
-  scrollable?: boolean;
 }) {
   const editor = useEditor({
     extensions: [StarterKit, Highlight.configure({ multicolor: true })],
@@ -58,25 +59,17 @@ function Harness({
   }, [editor, onReady]);
 
   if (!editor) return null;
-  const body = (
+  return (
     <>
       <EditorContent editor={editor} />
       <BubbleMenuContent editor={editor} />
     </>
   );
-  return scrollable
-    ? <div data-testid="scroll-container" style={{ overflow: 'auto' }}>{body}</div>
-    : body;
 }
 
-async function mountEditor(
-  content: string,
-  opts?: { scrollable?: boolean },
-): Promise<EditorType> {
+async function mountEditor(content: string): Promise<EditorType> {
   let editor: EditorType | null = null;
-  render(
-    <Harness content={content} onReady={(e) => { editor = e; }} scrollable={opts?.scrollable} />,
-  );
+  render(<Harness content={content} onReady={(e) => { editor = e; }} />);
   await waitFor(() => expect(editor).not.toBeNull());
   return editor!;
 }
@@ -109,7 +102,7 @@ describe('selectionShouldShow', () => {
     expect(selectionShouldShow(editor, false)).toBe(false);
   });
 
-  it('stays shown while the AI popover is open, regardless of selection', async () => {
+  it('stays shown while the AI section is open, regardless of selection', async () => {
     const editor = await mountEditor('<p>Hello world</p>');
     act(() => { editor.commands.setTextSelection(2); }); // collapsed
     expect(selectionShouldShow(editor, true)).toBe(true);
@@ -238,7 +231,7 @@ describe('BubbleMenuContent — selection decoration lifecycle (#764)', () => {
   const decorated = (editor: EditorType) =>
     editor.view.dom.querySelector(`.${IMPROVE_DECORATION_CLASS}`);
 
-  it('decorates the captured range while the Improve popover is open, without mutating the doc', async () => {
+  it('decorates the captured range while the Improve section is open, without mutating the doc', async () => {
     const editor = await mountEditor('<p>Hello world</p>');
     act(() => { editor.commands.setTextSelection({ from: 1, to: 6 }); });
 
@@ -252,7 +245,7 @@ describe('BubbleMenuContent — selection decoration lifecycle (#764)', () => {
     expect(editor.getHTML()).toBe('<p>Hello world</p>');
   });
 
-  it('clears the decoration when the popover closes via Escape', async () => {
+  it('clears the decoration when the AI section closes via Escape', async () => {
     const editor = await mountEditor('<p>Hello world</p>');
     act(() => { editor.commands.setTextSelection({ from: 1, to: 6 }); });
 
@@ -342,45 +335,161 @@ describe('BubbleMenuContent — selection decoration lifecycle (#764)', () => {
   });
 });
 
-describe('BubbleMenuContent — AI popover scroll tracking (#764)', () => {
+describe('BubbleMenuContent — single merged surface (#782)', () => {
   beforeEach(() => streamSSE.mockReset());
 
-  it('attaches a scroll listener to the article scroll container via the virtual anchor', async () => {
-    const editor = await mountEditor('<p>Hello world</p>', { scrollable: true });
-    act(() => { editor.commands.setTextSelection({ from: 1, to: 6 }); });
-
-    const container = screen.getByTestId('scroll-container');
-    const addListener = vi.spyOn(container, 'addEventListener');
-
-    fireEvent.click(screen.getByTestId('bubble-ai-trigger'));
-    await screen.findByTestId('bubble-ai-popover');
-
-    // The popover is portalled to <body>, so the article's scroll container
-    // is reachable only through the virtual reference's `contextElement`.
-    // Floating UI's autoUpdate must derive a scroll listener from it —
-    // without `contextElement` no reference-side listeners attach and the
-    // popover would stay put while the decorated text scrolls away.
-    await waitFor(() => {
-      expect(addListener.mock.calls.some(([type]) => type === 'scroll')).toBe(true);
-    });
-  });
-});
-
-describe('BubbleMenuContent — AI popover placement (#764)', () => {
-  beforeEach(() => streamSSE.mockReset());
-
-  it('opens below the selection anchor (side bottom, align start)', async () => {
+  it('expands the AI section INSIDE the bubble-menu container — no detached popover', async () => {
     const editor = await mountEditor('<p>Hello world</p>');
     act(() => { editor.commands.setTextSelection({ from: 1, to: 6 }); });
 
     fireEvent.click(screen.getByTestId('bubble-ai-trigger'));
 
-    const popover = await screen.findByTestId('bubble-ai-popover');
-    // Radix reflects the resolved placement as data attributes. `bottom` +
-    // the selection-rect virtual anchor stacks the popover under the bubble
-    // menu (which floats above the selection) instead of over the text.
-    await waitFor(() => expect(popover).toHaveAttribute('data-side', 'bottom'));
-    expect(popover).toHaveAttribute('data-align', 'start');
+    const panel = await screen.findByTestId('bubble-ai-panel');
+    // One container: the AI section is a child of the bubble menu, sharing its
+    // single Floating UI anchor on the selection.
+    expect(screen.getByTestId('editor-bubble-menu')).toContainElement(panel);
+    // The old #764 layout portalled a Radix popover to <body> on the opposite
+    // side of the selection — it must be gone.
+    expect(screen.queryByTestId('bubble-ai-popover')).not.toBeInTheDocument();
+    expect(document.querySelector('[data-radix-popper-content-wrapper]')).toBeNull();
+  });
+
+  it('marks the trigger expanded while open and collapses (clearing the decoration) on second click', async () => {
+    const editor = await mountEditor('<p>Hello world</p>');
+    act(() => { editor.commands.setTextSelection({ from: 1, to: 6 }); });
+
+    const trigger = screen.getByTestId('bubble-ai-trigger');
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+
+    fireEvent.click(trigger);
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    expect(editor.view.dom.querySelector(`.${IMPROVE_DECORATION_CLASS}`)).not.toBeNull();
+
+    fireEvent.click(trigger);
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByTestId('bubble-ai-panel')).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(editor.view.dom.querySelector(`.${IMPROVE_DECORATION_CLASS}`)).toBeNull();
+    });
+  });
+
+  it('expands in place on Cmd/Ctrl+J', async () => {
+    const editor = await mountEditor('<p>Hello world</p>');
+    act(() => { editor.commands.setTextSelection({ from: 1, to: 6 }); });
+
+    fireEvent.keyDown(document, { key: 'j', ctrlKey: true });
+
+    const panel = await screen.findByTestId('bubble-ai-panel');
+    expect(screen.getByTestId('editor-bubble-menu')).toContainElement(panel);
+    expect(editor.view.dom.querySelector(`.${IMPROVE_DECORATION_CLASS}`)).not.toBeNull();
+  });
+
+  it('focuses the prompt input on open while the menu stays mounted (focus-retention, #764)', async () => {
+    const editor = await mountEditor('<p>Hello world</p>');
+    act(() => { editor.commands.setTextSelection({ from: 1, to: 6 }); });
+
+    fireEvent.click(screen.getByTestId('bubble-ai-trigger'));
+
+    const input = await screen.findByLabelText('Ask AI to edit the selection');
+    expect(input).toHaveFocus();
+    // The editor lost focus to the input, but the shouldShow contract keeps
+    // the (single) panel mounted while the AI section is open.
+    expect(selectionShouldShow(editor, true)).toBe(true);
+    expect(screen.getByTestId('editor-bubble-menu')).toBeInTheDocument();
+  });
+
+  it('collapses and clears the decoration on outside pointerdown', async () => {
+    const editor = await mountEditor('<p>Hello world</p>');
+    act(() => { editor.commands.setTextSelection({ from: 1, to: 6 }); });
+
+    fireEvent.click(screen.getByTestId('bubble-ai-trigger'));
+    await screen.findByTestId('bubble-ai-panel');
+
+    fireEvent.pointerDown(document.body);
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('bubble-ai-panel')).not.toBeInTheDocument();
+    });
+    expect(editor.view.dom.querySelector(`.${IMPROVE_DECORATION_CLASS}`)).toBeNull();
+    expect(editor.getHTML()).toBe('<p>Hello world</p>'); // never mutated
+  });
+
+  it('does NOT collapse on pointerdown inside the panel (e.g. quick actions, toolbar row)', async () => {
+    const editor = await mountEditor('<p>Hello world</p>');
+    act(() => { editor.commands.setTextSelection({ from: 1, to: 6 }); });
+
+    fireEvent.click(screen.getByTestId('bubble-ai-trigger'));
+    const panel = await screen.findByTestId('bubble-ai-panel');
+
+    fireEvent.pointerDown(panel);
+    fireEvent.pointerDown(screen.getByTitle('Bold (Ctrl+B)'));
+
+    expect(screen.getByTestId('bubble-ai-panel')).toBeInTheDocument();
+  });
+});
+
+describe('BubbleMenuContent — Floating UI repositioning on panel growth (#782)', () => {
+  beforeEach(() => streamSSE.mockReset());
+
+  /** Collect `updatePosition` requests dispatched to the BubbleMenu plugin. */
+  function trackPositionUpdates(editor: EditorType): { count: () => number } {
+    let n = 0;
+    editor.on('transaction', ({ transaction }) => {
+      if (transaction.getMeta(editorBubbleMenuPluginKey) === 'updatePosition') n += 1;
+    });
+    return { count: () => n };
+  }
+
+  it('requests a position update when the AI section expands', async () => {
+    const editor = await mountEditor('<p>Hello world</p>');
+    act(() => { editor.commands.setTextSelection({ from: 1, to: 6 }); });
+
+    const updates = trackPositionUpdates(editor);
+    const before = updates.count();
+    fireEvent.click(screen.getByTestId('bubble-ai-trigger'));
+
+    // The plugin only repositions on selection/doc/scroll/resize by itself —
+    // expanding the panel must explicitly ask Floating UI to recompute so the
+    // grown container is re-anchored (flip/shift re-evaluate) instead of
+    // growing over the decorated selection.
+    await waitFor(() => expect(updates.count()).toBeGreaterThan(before));
+  });
+
+  it('requests position updates as streamed content grows the preview', async () => {
+    streamSSE.mockReturnValue(gen([{ content: 'How' }, { content: 'dy' }]));
+    const editor = await mountEditor('<p>Hello world</p>');
+    act(() => { editor.commands.setTextSelection({ from: 1, to: 6 }); });
+
+    fireEvent.click(screen.getByTestId('bubble-ai-trigger'));
+    const updates = trackPositionUpdates(editor);
+    const before = updates.count();
+
+    fireEvent.click(await screen.findByText('Improve writing'));
+    await waitFor(() => expect(screen.getByTestId('bubble-ai-preview')).toHaveTextContent('Howdy'));
+
+    await waitFor(() => expect(updates.count()).toBeGreaterThan(before));
+  });
+});
+
+describe('BubbleMenuContent — error state', () => {
+  beforeEach(() => streamSSE.mockReset());
+
+  it('surfaces the stream error with retry, inside the merged panel', async () => {
+    streamSSE.mockReturnValue(gen([{ error: 'LLM unavailable' }]));
+    const editor = await mountEditor('<p>Hello world</p>');
+    act(() => { editor.commands.setTextSelection({ from: 1, to: 6 }); });
+
+    fireEvent.click(screen.getByTestId('bubble-ai-trigger'));
+    fireEvent.click(await screen.findByText('Improve writing'));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('LLM unavailable');
+    expect(screen.getByTestId('editor-bubble-menu')).toContainElement(alert);
+
+    // Retry from the error state streams again into the same panel.
+    streamSSE.mockReturnValue(gen([{ content: 'Recovered' }]));
+    fireEvent.click(screen.getByText('Try again'));
+    await waitFor(() => expect(screen.getByTestId('bubble-ai-preview')).toHaveTextContent('Recovered'));
   });
 });
 
