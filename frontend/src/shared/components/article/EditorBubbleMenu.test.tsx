@@ -13,6 +13,7 @@ vi.mock('../../lib/sse', () => ({
 }));
 
 import { BubbleMenuContent, selectionShouldShow } from './EditorBubbleMenu';
+import { IMPROVE_DECORATION_CLASS } from './improve-decoration';
 
 function gen(chunks: Array<Record<string, unknown>>) {
   return (async function* () {
@@ -217,6 +218,104 @@ describe('BubbleMenuContent — try-again replays the chosen action', () => {
     await waitFor(() => expect(streamSSE).toHaveBeenCalledTimes(2));
     const [, secondBody] = streamSSE.mock.calls[1]!;
     expect((secondBody as { instruction: string }).instruction).toContain('more concise');
+  });
+});
+
+describe('BubbleMenuContent — selection decoration lifecycle (#764)', () => {
+  beforeEach(() => streamSSE.mockReset());
+
+  const decorated = (editor: EditorType) =>
+    editor.view.dom.querySelector(`.${IMPROVE_DECORATION_CLASS}`);
+
+  it('decorates the captured range while the Improve popover is open, without mutating the doc', async () => {
+    const editor = await mountEditor('<p>Hello world</p>');
+    act(() => { editor.commands.setTextSelection({ from: 1, to: 6 }); });
+
+    expect(decorated(editor)).toBeNull();
+    fireEvent.click(screen.getByTestId('bubble-ai-trigger'));
+
+    const el = decorated(editor);
+    expect(el).not.toBeNull();
+    expect(el!.textContent).toBe('Hello');
+    // The highlight is a view decoration, not a mark — document unchanged.
+    expect(editor.getHTML()).toBe('<p>Hello world</p>');
+  });
+
+  it('clears the decoration when the popover closes via Escape', async () => {
+    const editor = await mountEditor('<p>Hello world</p>');
+    act(() => { editor.commands.setTextSelection({ from: 1, to: 6 }); });
+
+    fireEvent.click(screen.getByTestId('bubble-ai-trigger'));
+    expect(decorated(editor)).not.toBeNull();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    await waitFor(() => expect(decorated(editor)).toBeNull());
+    expect(editor.getHTML()).toBe('<p>Hello world</p>');
+  });
+
+  it('clears the decoration on Discard', async () => {
+    streamSSE.mockReturnValue(gen([{ content: 'Howdy' }]));
+    const editor = await mountEditor('<p>Hello world</p>');
+    act(() => { editor.commands.setTextSelection({ from: 1, to: 6 }); });
+
+    fireEvent.click(screen.getByTestId('bubble-ai-trigger'));
+    fireEvent.click(await screen.findByText('Improve writing'));
+    await waitFor(() => expect(screen.getByTestId('bubble-ai-preview')).toHaveTextContent('Howdy'));
+    expect(decorated(editor)).not.toBeNull();
+
+    fireEvent.click(screen.getByTitle('Discard'));
+
+    await waitFor(() => expect(decorated(editor)).toBeNull());
+    expect(editor.getHTML()).toBe('<p>Hello world</p>'); // discarded, untouched
+  });
+
+  it('clears the decoration after Replace', async () => {
+    streamSSE.mockReturnValue(gen([{ content: 'Howdy' }]));
+    const editor = await mountEditor('<p>Hello world</p>');
+    act(() => { editor.commands.setTextSelection({ from: 1, to: 6 }); });
+
+    fireEvent.click(screen.getByTestId('bubble-ai-trigger'));
+    fireEvent.click(await screen.findByText('Improve writing'));
+    await waitFor(() => expect(screen.getByTestId('bubble-ai-preview')).toHaveTextContent('Howdy'));
+
+    fireEvent.click(screen.getByTitle('Replace selection'));
+
+    await waitFor(() => expect(editor.getHTML()).toContain('Howdy world'));
+    expect(decorated(editor)).toBeNull();
+  });
+
+  it('clears the decoration after Insert below', async () => {
+    streamSSE.mockReturnValue(gen([{ content: 'Extra detail' }]));
+    const editor = await mountEditor('<p>Hello world</p>');
+    act(() => { editor.commands.setTextSelection({ from: 1, to: 12 }); });
+
+    fireEvent.click(screen.getByTestId('bubble-ai-trigger'));
+    fireEvent.click(await screen.findByText('Make longer'));
+    await waitFor(() => expect(screen.getByTestId('bubble-ai-preview')).toHaveTextContent('Extra detail'));
+
+    fireEvent.click(screen.getByTitle('Insert below selection'));
+
+    await waitFor(() => expect(editor.getHTML()).toContain('Extra detail'));
+    expect(decorated(editor)).toBeNull();
+  });
+});
+
+describe('BubbleMenuContent — AI popover placement (#764)', () => {
+  beforeEach(() => streamSSE.mockReset());
+
+  it('opens below the selection anchor (side bottom, align start)', async () => {
+    const editor = await mountEditor('<p>Hello world</p>');
+    act(() => { editor.commands.setTextSelection({ from: 1, to: 6 }); });
+
+    fireEvent.click(screen.getByTestId('bubble-ai-trigger'));
+
+    const popover = await screen.findByTestId('bubble-ai-popover');
+    // Radix reflects the resolved placement as data attributes. `bottom` +
+    // the selection-rect virtual anchor stacks the popover under the bubble
+    // menu (which floats above the selection) instead of over the text.
+    await waitFor(() => expect(popover).toHaveAttribute('data-side', 'bottom'));
+    expect(popover).toHaveAttribute('data-align', 'start');
   });
 });
 
