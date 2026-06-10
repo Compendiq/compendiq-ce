@@ -88,12 +88,14 @@ describe('DuplicateDetector', () => {
       // Restore pool mock after reset
       mocks.mockPool.connect.mockResolvedValue(mocks.mockClient);
       mocks.mockClient.release.mockResolvedValue(undefined);
+      // #733: findDuplicates now resolves the caller's accessible spaces
+      mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
     });
 
     it('should return duplicate candidates when source page exists and neighbors found', async () => {
       // Step 1: preliminary query — source page found
       mocks.mockQuery.mockResolvedValueOnce({
-        rows: [{ id: 42, title: 'Source Page' }],
+        rows: [{ id: 42, title: 'Source Page', space_key: 'DEV' }],
       });
       // Step 2: client.query('BEGIN')
       mocks.mockClientQuery.mockResolvedValueOnce(undefined);
@@ -141,7 +143,7 @@ describe('DuplicateDetector', () => {
     it('should return [] when source page has no embeddings (CTE returns empty)', async () => {
       // Step 1: preliminary query — source page found
       mocks.mockQuery.mockResolvedValueOnce({
-        rows: [{ id: 42, title: 'Source Page' }],
+        rows: [{ id: 42, title: 'Source Page', space_key: 'DEV' }],
       });
       // Step 2: client.query('BEGIN')
       mocks.mockClientQuery.mockResolvedValueOnce(undefined);
@@ -161,7 +163,7 @@ describe('DuplicateDetector', () => {
     it('should use sourcePageId (integer) in CTE params, not confluenceId string', async () => {
       // Source page found with id=99
       mocks.mockQuery.mockResolvedValueOnce({
-        rows: [{ id: 99, title: 'Source Page' }],
+        rows: [{ id: 99, title: 'Source Page', space_key: 'DEV' }],
       });
       mocks.mockClientQuery.mockResolvedValueOnce(undefined); // BEGIN
       mocks.mockClientQuery.mockResolvedValueOnce(undefined); // SET LOCAL
@@ -172,7 +174,8 @@ describe('DuplicateDetector', () => {
 
       // The CTE query call is the 3rd client.query call (index 2)
       const cteCall = mocks.mockClientQuery.mock.calls[2];
-      expect(cteCall[1]).toEqual([99, 15]); // [sourcePageId=99, limit*3=5*3=15]
+      // [sourcePageId=99, limit*3=15, accessibleSpaces, userId] (#733)
+      expect(cteCall[1]).toEqual([99, 15, ['DEV'], 'user-1']);
       // First param should be integer 99 (not the string 'conf-source')
       expect(typeof cteCall[1][0]).toBe('number');
 
@@ -185,9 +188,46 @@ describe('DuplicateDetector', () => {
       expect(cteSQL).not.toContain('pe2.confluence_id');
     });
 
+    // ── #733 RBAC regressions ───────────────────────────────────────────
+
+    it('returns [] when the source page is in an inaccessible space (#733)', async () => {
+      mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
+      mocks.mockQuery.mockResolvedValueOnce({
+        rows: [{ id: 42, title: 'Restricted Page', space_key: 'SECRET' }],
+      });
+
+      const result = await findDuplicates('user-1', 'conf-restricted');
+
+      expect(result).toEqual([]);
+      // Critical: the kNN query must never run for an inaccessible source.
+      expect(mocks.mockPool.connect).not.toHaveBeenCalled();
+    });
+
+    it('applies the RBAC space/visibility filter to the kNN query (#733)', async () => {
+      mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
+      mocks.mockQuery.mockResolvedValueOnce({
+        rows: [{ id: 42, title: 'Source Page', space_key: 'DEV' }],
+      });
+      mocks.mockClientQuery.mockResolvedValueOnce(undefined); // BEGIN
+      mocks.mockClientQuery.mockResolvedValueOnce(undefined); // SET LOCAL
+      mocks.mockClientQuery.mockResolvedValueOnce({ rows: [] }); // CTE
+      mocks.mockClientQuery.mockResolvedValueOnce(undefined); // COMMIT
+
+      await findDuplicates('user-1', 'conf-source');
+
+      const cteCall = mocks.mockClientQuery.mock.calls[2];
+      const cteSQL = cteCall[0] as string;
+      // Same retrieval scope as rag-service: Confluence pages restricted to
+      // accessible spaces; standalone pages by shared/own-private visibility.
+      expect(cteSQL).toContain("cp2.source = 'confluence' AND cp2.space_key = ANY($3::text[])");
+      expect(cteSQL).toContain("cp2.source = 'standalone' AND cp2.visibility = 'shared'");
+      expect(cteSQL).toContain("cp2.visibility = 'private' AND cp2.created_by_user_id = $4");
+      expect(cteCall[1]).toEqual([42, 30, ['DEV', 'OPS'], 'user-1']);
+    });
+
     it('should filter out candidates exceeding distanceThreshold', async () => {
       mocks.mockQuery.mockResolvedValueOnce({
-        rows: [{ id: 42, title: 'Source Page' }],
+        rows: [{ id: 42, title: 'Source Page', space_key: 'DEV' }],
       });
       mocks.mockClientQuery.mockResolvedValueOnce(undefined); // BEGIN
       mocks.mockClientQuery.mockResolvedValueOnce(undefined); // SET LOCAL
@@ -237,7 +277,7 @@ describe('DuplicateDetector', () => {
 
       // findDuplicates for 'page-a': preliminary SELECT
       mocks.mockQuery.mockResolvedValueOnce({
-        rows: [{ id: 10, title: 'Page A' }],
+        rows: [{ id: 10, title: 'Page A', space_key: 'DEV' }],
       });
       // findDuplicates: BEGIN, SET LOCAL, CTE (1 neighbor), COMMIT
       mocks.mockClientQuery.mockResolvedValueOnce(undefined); // BEGIN
@@ -267,7 +307,7 @@ describe('DuplicateDetector', () => {
       });
 
       // findDuplicates for 'page-a' → finds page-b
-      mocks.mockQuery.mockResolvedValueOnce({ rows: [{ id: 10, title: 'Page A' }] });
+      mocks.mockQuery.mockResolvedValueOnce({ rows: [{ id: 10, title: 'Page A', space_key: 'DEV' }] });
       mocks.mockClientQuery
         .mockResolvedValueOnce(undefined) // BEGIN
         .mockResolvedValueOnce(undefined) // SET LOCAL
@@ -277,7 +317,7 @@ describe('DuplicateDetector', () => {
         .mockResolvedValueOnce(undefined); // COMMIT
 
       // findDuplicates for 'page-b' → finds page-a (same pair, should be deduplicated)
-      mocks.mockQuery.mockResolvedValueOnce({ rows: [{ id: 20, title: 'Page B' }] });
+      mocks.mockQuery.mockResolvedValueOnce({ rows: [{ id: 20, title: 'Page B', space_key: 'DEV' }] });
       mocks.mockClientQuery
         .mockResolvedValueOnce(undefined) // BEGIN
         .mockResolvedValueOnce(undefined) // SET LOCAL
