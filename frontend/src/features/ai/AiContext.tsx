@@ -3,7 +3,7 @@ import { createContext, useContext, useState, useRef, useEffect, useCallback, ty
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { UsecaseDefault } from '@compendiq/contracts';
-import { apiFetch } from '../../shared/lib/api';
+import { apiFetch, ApiError } from '../../shared/lib/api';
 import { streamSSE } from '../../shared/lib/sse';
 import { usePage, useEmbeddingStatus, type EmbeddingStatusData } from '../../shared/hooks/use-pages';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
@@ -26,6 +26,9 @@ export interface Message {
   role: 'user' | 'assistant';
   content: string;
   sources?: Source[];
+  /** True when this assistant message reports a failed request (rendered with
+   * destructive styling instead of the regular bubble). */
+  isError?: boolean;
 }
 
 interface Conversation {
@@ -73,6 +76,10 @@ interface AiContextValue {
   model: string;
   setModel: (m: string) => void;
   models: Array<{ name: string }>;
+  /** True when the models fetch failed (e.g. LLM provider down) — the UI must
+   * surface a retry affordance instead of spinning forever. */
+  modelsError: boolean;
+  refetchModels: () => void;
 
   // Streaming state
   input: string;
@@ -524,10 +531,23 @@ export function AiProvider({ children }: { children: ReactNode }) {
         commitToMessages();
         return;
       }
-      toast.error(err instanceof Error ? err.message : 'Request failed');
-      // Always remove the empty assistant message on error — runStream unconditionally
-      // adds a placeholder assistant message, regardless of whether userMessage was passed.
-      setMessages((prev) => prev.slice(0, -1));
+      // Surface the failure INLINE: replace the placeholder assistant message
+      // with an error message instead of silently removing it (the user
+      // previously saw a bubble appear and then vanish with no explanation).
+      const isForbidden = err instanceof ApiError && err.statusCode === 403;
+      const friendly = isForbidden
+        ? 'You don\'t have permission to use AI features (permission "llm:query"). Ask an administrator to assign you a role that includes it.'
+        : err instanceof Error ? err.message : 'Request failed';
+      // 403 is fully explained inline — keep the toast only for other errors.
+      if (!isForbidden) toast.error(friendly);
+      setMessages((prev) => {
+        const updated = [...prev];
+        const lastMsg = updated[updated.length - 1];
+        if (lastMsg && lastMsg.role === 'assistant') {
+          updated[updated.length - 1] = { ...lastMsg, content: friendly, isError: true };
+        }
+        return updated;
+      });
     } finally {
       streamingFinish();
       isStreamingRef.current = false;
@@ -556,6 +576,8 @@ export function AiProvider({ children }: { children: ReactNode }) {
     model,
     setModel,
     models,
+    modelsError: modelsQuery.isError,
+    refetchModels: modelsQuery.refetch,
     input,
     setInput,
     isStreaming,

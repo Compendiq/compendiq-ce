@@ -1,5 +1,6 @@
 import { useState, useCallback } from 'react';
-import { ChevronDown, ChevronRight, Sparkles, RefreshCw, AlertCircle, Clock } from 'lucide-react';
+import { ChevronDown, ChevronRight, Sparkles, RefreshCw, AlertCircle, Clock, CloudOff } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { cn } from '../../lib/cn';
 import { formatRelativeTime } from '../../lib/format-relative-time';
@@ -15,6 +16,12 @@ interface ArticleSummaryProps {
   summaryGeneratedAt: string | null;
   summaryModel: string | null;
   summaryError: string | null;
+}
+
+interface HealthStatus {
+  services?: {
+    llm?: boolean;
+  };
 }
 
 const COLLAPSE_KEY = 'article-summary-collapsed';
@@ -50,6 +57,18 @@ export function ArticleSummary({
   // visible-but-403ing control to viewers.
   const isAdmin = useAuthStore((s) => s.user?.role === 'admin');
 
+  // While a summary is pending we promise it "will be generated shortly" —
+  // a promise that can't be kept when the LLM provider is down. /api/health
+  // is public and carries the services payload on both 200 (ok) and 503
+  // (degraded), so parse the body regardless of status.
+  const { data: health } = useQuery<HealthStatus>({
+    queryKey: ['health'],
+    queryFn: () => fetch('/api/health').then((r) => r.json() as Promise<HealthStatus>),
+    staleTime: 30_000,
+    retry: false,
+    enabled: summaryStatus === 'pending',
+  });
+
   const toggleCollapse = useCallback(() => {
     setCollapsed((prev) => {
       const next = !prev;
@@ -80,6 +99,22 @@ export function ArticleSummary({
 
   // Pending / summarizing states: show a subtle indicator
   if (summaryStatus === 'pending' || summaryStatus === 'summarizing') {
+    // Pending + LLM provider down: "will be generated shortly" never
+    // materializes — say so instead of dangling the promise. An in-flight
+    // generation ('summarizing') already left the queue, so keep its text.
+    if (summaryStatus === 'pending' && health?.services?.llm === false) {
+      return (
+        <div
+          className="mb-6 flex items-center gap-2 rounded-lg border border-border/40 bg-foreground/[0.03] px-4 py-3"
+          data-testid="article-summary-offline"
+        >
+          <CloudOff size={16} className="text-muted-foreground" />
+          <span className="text-sm text-muted-foreground">
+            AI summary unavailable — LLM provider offline
+          </span>
+        </div>
+      );
+    }
     return (
       <div
         className="mb-6 flex items-center gap-2 rounded-lg border border-purple-500/20 bg-purple-500/5 px-4 py-3"

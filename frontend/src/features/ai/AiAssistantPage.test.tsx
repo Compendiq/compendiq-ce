@@ -4,14 +4,18 @@ import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { AiAssistantPage } from './AiAssistantPage';
+import { ApiError } from '../../shared/lib/api';
 import { useAuthStore } from '../../stores/auth-store';
 
 // scrollIntoView is not available in jsdom
 Element.prototype.scrollIntoView = vi.fn();
 
-// Keep reference to original apiFetch mock to control per-test
+// Keep reference to original apiFetch mock to control per-test. Spread the
+// real module so the ApiError class stays available — runStream branches on
+// `err instanceof ApiError` for 403 handling.
 const apiFetchMock = vi.fn();
-vi.mock('../../shared/lib/api', () => ({
+vi.mock('../../shared/lib/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../shared/lib/api')>()),
   apiFetch: (...args: unknown[]) => apiFetchMock(...args),
 }));
 
@@ -162,6 +166,76 @@ describe('AiAssistantPage', () => {
     render(<AiAssistantPage />, { wrapper: createWrapper() });
 
     await waitFor(() => {
+      expect(screen.queryByText('Loading models...')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('models error chip (degraded LLM provider)', () => {
+    it('shows "Models unavailable — retry" instead of the loading spinner when the models fetch fails', async () => {
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: '', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.reject(new Error('LLM provider unreachable'));
+        }
+        if (path === '/llm/conversations') {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve([]);
+      });
+
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.getByText('Models unavailable — retry')).toBeInTheDocument();
+      });
+      // The infinite spinner must not keep rendering once the fetch has failed.
+      expect(screen.queryByText('Loading models...')).not.toBeInTheDocument();
+    });
+
+    it('refetches models when the retry chip is clicked and recovers to the dropdown', async () => {
+      let modelsDown = true;
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: '', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return modelsDown
+            ? Promise.reject(new Error('LLM provider unreachable'))
+            : Promise.resolve([{ name: 'llama3' }]);
+        }
+        if (path === '/llm/conversations') {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve([]);
+      });
+
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.getByText('Models unavailable — retry')).toBeInTheDocument();
+      });
+
+      const modelsCalls = () => apiFetchMock.mock.calls
+        .map((args) => args[0])
+        .filter((p): p is string => typeof p === 'string' && p.startsWith('/ollama/models'))
+        .length;
+      const callsBefore = modelsCalls();
+
+      // Provider comes back up; clicking the chip must fire another fetch.
+      modelsDown = false;
+      fireEvent.click(screen.getByText('Models unavailable — retry'));
+
+      await waitFor(() => {
+        expect(modelsCalls()).toBeGreaterThan(callsBefore);
+      });
+
+      // Recovered: the chip is replaced by the model dropdown.
+      await waitFor(() => {
+        expect(document.querySelector('select')).not.toBeNull();
+      });
+      expect(screen.queryByText('Models unavailable — retry')).not.toBeInTheDocument();
       expect(screen.queryByText('Loading models...')).not.toBeInTheDocument();
     });
   });
@@ -537,7 +611,7 @@ describe('AiAssistantPage', () => {
       }
     });
 
-    it('removes empty assistant message when ask stream throws an error', async () => {
+    it('replaces the placeholder assistant message with an inline error when the ask stream throws', async () => {
       apiFetchMock.mockImplementation((path: string) => {
         if (path === '/settings') {
           return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
@@ -574,7 +648,7 @@ describe('AiAssistantPage', () => {
 
       fireEvent.keyDown(input, { key: 'Enter' });
 
-      // Wait for the error toast
+      // The toast still fires for generic (non-403) errors
       await waitFor(() => {
         expect(toastErrorMock).toHaveBeenCalledWith('Connection lost');
       });
@@ -582,17 +656,63 @@ describe('AiAssistantPage', () => {
       // The user message should still be visible
       expect(screen.getByText('What is Confluence?')).toBeInTheDocument();
 
-      // The empty assistant message should have been removed.
-      // AskMode adds the user message directly via setMessages (not via runStream's
-      // userMessage option), so this test specifically verifies the fix: runStream
-      // must always remove the placeholder assistant message on error.
-      // If there were an assistant bubble, it would contain a Bot icon or typing indicator.
-      expect(screen.queryByTestId('typing-indicator')).not.toBeInTheDocument();
+      // The placeholder assistant message must NOT be silently removed: it is
+      // replaced with a visible inline error bubble carrying destructive styling.
+      const errorBubble = screen.getByTestId('message-error');
+      expect(errorBubble.textContent).toContain('Connection lost');
+      expect(errorBubble.className).toContain('destructive');
 
-      // Verify there is exactly 1 message bubble (the user message), not 2
-      // User messages have "justify-end" class on their container
-      const messageBubbles = document.querySelectorAll('.max-w-\\[80\\%\\]');
-      expect(messageBubbles.length).toBe(1);
+      // No lingering typing indicator
+      expect(screen.queryByTestId('typing-indicator')).not.toBeInTheDocument();
+    });
+
+    it('shows an inline permission explanation without a toast when ask is rejected with 403', async () => {
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.resolve([{ name: 'llama3' }]);
+        }
+        if (path === '/llm/conversations') {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve([]);
+      });
+
+      // Backend rejects POST /api/llm/ask with 403 when the user lacks the
+      // llm:query RBAC permission — streamSSE surfaces it as an ApiError.
+      // eslint-disable-next-line require-yield
+      async function* fakeForbiddenStream() {
+        throw new ApiError(403, 'Permission "llm:query" required');
+      }
+      streamSSEMock.mockReturnValue(fakeForbiddenStream());
+
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.queryByText('Loading models...')).not.toBeInTheDocument();
+      });
+
+      const input = screen.getByPlaceholderText('Ask a question...');
+      fireEvent.change(input, { target: { value: 'What is Confluence?' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+
+      // The chat shows what happened inline, in the assistant's bubble.
+      await waitFor(() => {
+        expect(screen.getByTestId('message-error')).toBeInTheDocument();
+      });
+      const errorBubble = screen.getByTestId('message-error');
+      expect(errorBubble.textContent).toContain('permission');
+      expect(errorBubble.textContent).toContain('llm:query');
+      expect(errorBubble.textContent).toContain('administrator');
+      expect(errorBubble.className).toContain('destructive');
+
+      // 403 is fully explained inline — no redundant toast.
+      expect(toastErrorMock).not.toHaveBeenCalled();
+
+      // The user message stays visible above the explanation.
+      expect(screen.getByText('What is Confluence?')).toBeInTheDocument();
     });
 
     it('enables send button when model is loaded and input is provided', async () => {
