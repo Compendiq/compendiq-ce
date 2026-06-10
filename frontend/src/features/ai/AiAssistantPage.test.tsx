@@ -1529,6 +1529,9 @@ describe('AiAssistantPage', () => {
         // content edge; overflow past the block-end edge adds phantom
         // scrollable height. The mask must keep all four edges on the bar.
         expect(mask.className).not.toMatch(/-(top|bottom|left|right|inset(-[xy])?)-\[/);
+        // Tailwind also accepts the arbitrary-negative-value spelling
+        // (top-[-100px]) — forbid that form too.
+        expect(mask.className).not.toMatch(/\b(top|bottom|left|right|inset(-[xy])?)-\[-/);
         expect(mask.style.top).toBe('');
         expect(mask.style.bottom).toBe('');
       }
