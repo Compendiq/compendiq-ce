@@ -1,8 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { BubbleMenu } from '@tiptap/react/menus';
 import { useEditorState } from '@tiptap/react';
-import { posToDOMRect } from '@tiptap/core';
-import * as Popover from '@radix-ui/react-popover';
+import { PluginKey } from '@tiptap/pm/state';
 import type { Editor as EditorType } from '@tiptap/react';
 import {
   Bold, Italic, Underline, Strikethrough, Code, Highlighter,
@@ -21,11 +20,29 @@ import {
 } from './improve-decoration';
 
 /**
- * #708 — Notion-style selection bubble menu for the article editor (edit mode
- * only). Shows core inline-formatting actions plus an "Improve" entry that
- * streams an AI rewrite of ONLY the selected fragment into a popover preview.
- * The document is never mutated until the user accepts (Replace / Insert).
+ * #708 / #782 — Notion-style selection bubble menu for the article editor
+ * (edit mode only). A SINGLE floating panel: core inline-formatting actions in
+ * a toolbar row, plus an "Improve" entry that expands the SAME container in
+ * place into the AI section (prompt input, quick actions, streamed preview,
+ * accept controls). The AI rewrite targets ONLY the selected fragment and the
+ * document is never mutated until the user accepts (Replace / Insert).
+ *
+ * Before #782 the AI section was a separate Radix Popover portalled to <body>
+ * and anchored below the selection — two disconnected popups stacked around
+ * the selected text. Now everything rides the one TipTap BubbleMenu container
+ * (Floating UI: placement top, flip/shift on collision); the selection stays
+ * visible below the panel via the #764 decoration.
  */
+
+/**
+ * Plugin key for the bubble-menu Floating UI plugin. Exported so the content
+ * can ask the plugin to recompute its position when the panel changes size
+ * (the plugin repositions on selection/doc/scroll/resize, but does not observe
+ * the floating element itself). Documented mechanism:
+ * `editor.view.dispatch(editor.state.tr.setMeta(pluginKey, 'updatePosition'))`.
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export const editorBubbleMenuPluginKey = new PluginKey('editorBubbleMenu');
 
 interface QuickAction {
   key: string;
@@ -121,7 +138,7 @@ function MenuButton({
  * The visible menu body. Split out from `EditorBubbleMenu` so it can be tested
  * directly with an editor instance, independent of the TipTap BubbleMenu
  * wrapper (which relies on Floating UI + a ProseMirror plugin that does not
- * render in jsdom). `onAiOpenChange` lets the wrapper mirror AI-popover state
+ * render in jsdom). `onAiOpenChange` lets the wrapper mirror AI-section state
  * into `shouldShow`.
  */
 export function BubbleMenuContent({
@@ -140,6 +157,8 @@ export function BubbleMenuContent({
   // replays the user's actual choice rather than a hardcoded default.
   const lastRunRef = useRef<{ action: QuickAction; freeForm: string } | null>(null);
   const stream = useImproveStream();
+  const rootRef = useRef<HTMLDivElement>(null);
+  const aiPanelId = useId();
 
   // #764 — register the non-destructive selection-decoration plugin for the
   // life of the menu. It stays inert (empty DecorationSet) until `openAi`
@@ -150,43 +169,6 @@ export function BubbleMenuContent({
     editor.registerPlugin(createImproveDecorationPlugin());
     return () => { editor.unregisterPlugin(improveDecorationKey); };
   }, [editor]);
-
-  // Latest-ref so the stable virtual-anchor object below always measures the
-  // current editor. Assigned in an effect rather than during render for
-  // concurrent-rendering safety.
-  const editorRef = useRef(editor);
-  useEffect(() => { editorRef.current = editor; }, [editor]);
-
-  // #764 — Radix virtual anchor that measures the captured selection rect, so
-  // the AI popover positions relative to the SELECTION rather than the Improve
-  // trigger. The bubble menu floats above the selection, so `side="bottom"`
-  // from the trigger would land the popover exactly on top of the selected
-  // text; anchored to the selection rect instead, the stack reads predictably
-  // top-to-bottom as bubble menu → decorated selection → popover.
-  const selectionAnchorRef = useRef({
-    getBoundingClientRect: (): DOMRect => {
-      const range = rangeRef.current;
-      const e = editorRef.current;
-      if (range && !e.isDestroyed) {
-        try {
-          return posToDOMRect(e.view, range.from, range.to);
-        } catch {
-          // jsdom / detached view — fall through to the zero rect below.
-        }
-      }
-      const zero = { top: 0, right: 0, bottom: 0, left: 0, width: 0, height: 0, x: 0, y: 0 };
-      return { ...zero, toJSON: () => zero } as DOMRect;
-    },
-    // Floating UI's `autoUpdate` unwraps virtual references via
-    // `contextElement` to derive scroll/move listeners. The popover is
-    // portalled to <body> while the article scrolls in an inner container, so
-    // without this the popover would stay put as the decorated text scrolls
-    // away. Extra properties pass through Radix's `Measurable` untouched.
-    get contextElement(): HTMLElement | undefined {
-      const e = editorRef.current;
-      return e.isDestroyed ? undefined : e.view.dom;
-    },
-  });
 
   // Subscribe to active marks so the formatting buttons re-render their
   // active/pressed state on selection and toggle changes (mirrors EditorToolbar).
@@ -229,7 +211,7 @@ export function BubbleMenuContent({
     lastRunRef.current = null;
   }, [editor, stream, setAi]);
 
-  // Cmd/Ctrl+J opens the AI popover on the current selection (#708 optional
+  // Cmd/Ctrl+J expands the AI section on the current selection (#708 optional
   // keyboard trigger).
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -243,10 +225,70 @@ export function BubbleMenuContent({
     return () => document.removeEventListener('keydown', handler);
   }, [editor, openAi]);
 
+  // #782 — dismissal was previously Radix Popover's job. Escape and
+  // outside-pointerdown collapse the AI section (abort + clear decoration);
+  // clicks inside the merged panel (toolbar row included) never dismiss.
+  useEffect(() => {
+    if (!aiOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      // A layer stacked above us (modal, dropdown) already consumed this
+      // Escape — don't double-dismiss.
+      if (e.defaultPrevented) return;
+      // The Escape belongs to a foreign floating layer (dialog / Radix popper
+      // portalled to <body>) that is open above the editor — let it close
+      // itself instead of swallowing the key here.
+      const root = rootRef.current;
+      const foreignLayer = (e.target as Element | null)?.closest?.(
+        '[role="dialog"], [role="alertdialog"], [data-radix-popper-content-wrapper]',
+      );
+      if (foreignLayer && !(root && root.contains(foreignLayer))) return;
+      e.preventDefault();
+      closeAi();
+    };
+    const onPointerDown = (e: PointerEvent) => {
+      const root = rootRef.current;
+      if (root && e.target instanceof Node && !root.contains(e.target)) closeAi();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('pointerdown', onPointerDown);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('pointerdown', onPointerDown);
+    };
+  }, [aiOpen, closeAi]);
+
+  // #782 — the BubbleMenu plugin repositions on selection/doc changes, scroll
+  // and window resize, but it does NOT observe the floating element's own
+  // size. Expanding/collapsing the AI section and the preview growing while
+  // streaming change the panel height, so ask the plugin to re-run Floating UI
+  // (flip/shift re-pick the side with room) via its documented
+  // `updatePosition` transaction meta. Layout effect so the reposition happens
+  // in the same frame as the DOM growth (no flash over the selection).
+  useLayoutEffect(() => {
+    if (editor.isDestroyed) return;
+    editor.view.dispatch(editor.state.tr.setMeta(editorBubbleMenuPluginKey, 'updatePosition'));
+  }, [editor, aiOpen, stream.status]);
+
+  // The streamed preview grows on EVERY SSE chunk; dispatching a reposition
+  // transaction per chunk would run a full state apply + Floating UI
+  // computePosition each time. Coalesce via requestAnimationFrame — at most
+  // one dispatch per frame (re-scheduling within a frame keeps the same
+  // next-paint slot), cancelled on unmount. Open/close and status transitions
+  // above stay layout-effect-synchronous so expansion never flashes over the
+  // selection; only this high-frequency path is throttled.
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      if (editor.isDestroyed) return;
+      editor.view.dispatch(editor.state.tr.setMeta(editorBubbleMenuPluginKey, 'updatePosition'));
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [editor, stream.output]);
+
   // #764 — the decoration set is remapped through every transaction (see
   // improve-decoration.ts), while `rangeRef` keeps the offsets captured when
-  // the popover opened. Read the live range from the decoration so actions
-  // track the passage even if the document changed while the popover was
+  // the AI section opened. Read the live range from the decoration so actions
+  // track the passage even if the document changed while the section was
   // open; fall back to the captured range when no decoration exists.
   const currentRange = useCallback((): { from: number; to: number } | null => {
     if (!editor.isDestroyed) {
@@ -308,253 +350,247 @@ export function BubbleMenuContent({
 
   return (
     <div
+      ref={rootRef}
       data-testid="editor-bubble-menu"
       className={cn(
-        'flex items-center gap-0.5 rounded-lg border border-border bg-card p-1 shadow-lg',
+        'flex flex-col rounded-lg border border-border bg-card shadow-lg',
         'motion-safe:animate-in motion-safe:fade-in-0 motion-safe:zoom-in-95',
       )}
-      role="toolbar"
-      aria-label="Selection formatting"
     >
-      <MenuButton
-        onClick={() => editor.chain().focus().toggleBold().run()}
-        active={active.bold}
-        title="Bold (Ctrl+B)"
+      <div
+        role="toolbar"
+        aria-label="Selection formatting"
+        className="flex items-center gap-0.5 p-1"
       >
-        <Bold size={15} />
-      </MenuButton>
-      <MenuButton
-        onClick={() => editor.chain().focus().toggleItalic().run()}
-        active={active.italic}
-        title="Italic (Ctrl+I)"
-      >
-        <Italic size={15} />
-      </MenuButton>
-      <MenuButton
-        onClick={() => editor.chain().focus().toggleUnderline().run()}
-        active={active.underline}
-        title="Underline (Ctrl+U)"
-      >
-        <Underline size={15} />
-      </MenuButton>
-      <MenuButton
-        onClick={() => editor.chain().focus().toggleStrike().run()}
-        active={active.strike}
-        title="Strikethrough (Ctrl+Shift+X)"
-      >
-        <Strikethrough size={15} />
-      </MenuButton>
-      <MenuButton
-        onClick={() => editor.chain().focus().toggleCode().run()}
-        active={active.code}
-        title="Inline code (Ctrl+E)"
-      >
-        <Code size={15} />
-      </MenuButton>
-      <MenuButton
-        onClick={() => editor.chain().focus().toggleHighlight().run()}
-        active={active.highlight}
-        title="Highlight (Ctrl+Shift+H)"
-      >
-        <Highlighter size={15} />
-      </MenuButton>
+        <MenuButton
+          onClick={() => editor.chain().focus().toggleBold().run()}
+          active={active.bold}
+          title="Bold (Ctrl+B)"
+        >
+          <Bold size={15} />
+        </MenuButton>
+        <MenuButton
+          onClick={() => editor.chain().focus().toggleItalic().run()}
+          active={active.italic}
+          title="Italic (Ctrl+I)"
+        >
+          <Italic size={15} />
+        </MenuButton>
+        <MenuButton
+          onClick={() => editor.chain().focus().toggleUnderline().run()}
+          active={active.underline}
+          title="Underline (Ctrl+U)"
+        >
+          <Underline size={15} />
+        </MenuButton>
+        <MenuButton
+          onClick={() => editor.chain().focus().toggleStrike().run()}
+          active={active.strike}
+          title="Strikethrough (Ctrl+Shift+X)"
+        >
+          <Strikethrough size={15} />
+        </MenuButton>
+        <MenuButton
+          onClick={() => editor.chain().focus().toggleCode().run()}
+          active={active.code}
+          title="Inline code (Ctrl+E)"
+        >
+          <Code size={15} />
+        </MenuButton>
+        <MenuButton
+          onClick={() => editor.chain().focus().toggleHighlight().run()}
+          active={active.highlight}
+          title="Highlight (Ctrl+Shift+H)"
+        >
+          <Highlighter size={15} />
+        </MenuButton>
 
-      <div role="separator" aria-orientation="vertical" className="mx-0.5 h-5 w-px bg-border" />
+        <div role="separator" aria-orientation="vertical" className="mx-0.5 h-5 w-px bg-border" />
 
-      <Popover.Root open={aiOpen} onOpenChange={(o) => (o ? openAi() : closeAi())}>
-        <Popover.Trigger asChild>
-          <button
-            type="button"
-            onMouseDown={(e) => e.preventDefault()}
-            title="Improve with AI"
-            aria-label="Improve with AI"
-            data-testid="bubble-ai-trigger"
-            className={cn(
-              'flex h-8 items-center gap-1 rounded px-2 text-sm font-medium transition-colors',
-              'text-primary hover:bg-primary/10',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
-            )}
-          >
-            <Sparkles size={15} />
-            <span>Improve</span>
-          </button>
-        </Popover.Trigger>
-        {/* #764 — virtual anchor on the captured selection rect (see
-            selectionAnchorRef above); renders no DOM node of its own.
-            MUST come after Popover.Trigger: on the first render Radix's
-            `hasCustomAnchor` is still false, so the Trigger wraps itself in
-            its own popper Anchor whose mount effect would otherwise run last
-            and permanently override the virtual anchor with the trigger
-            button (nothing re-asserts the virtual anchor afterwards). */}
-        <Popover.Anchor virtualRef={selectionAnchorRef} />
-        <Popover.Portal>
-          <Popover.Content
-            // #764 — anchored to the selection rect (virtual anchor above):
-            // `side="bottom"` opens BELOW the selection, i.e. under the bubble
-            // menu (which floats above it) without covering the decorated text.
-            align="start"
-            side="bottom"
-            sideOffset={8}
-            collisionPadding={12}
-            data-testid="bubble-ai-popover"
-            // Keep focus inside; closing is explicit (Discard / Escape).
-            onOpenAutoFocus={(e) => { if (hasResult || isStreaming) e.preventDefault(); }}
-            className={cn(
-              'z-50 w-80 rounded-lg border border-border bg-card p-3 shadow-xl outline-none',
-              'motion-safe:animate-in motion-safe:fade-in-0 motion-safe:zoom-in-95',
-            )}
-          >
-            {!hasResult && !isStreaming && !emptyResult && stream.status !== 'error' && (
-              <div className="flex flex-col gap-2">
-                <input
-                  type="text"
-                  value={freeForm}
-                  autoFocus
-                  onChange={(e) => setFreeForm(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && freeForm.trim()) {
-                      e.preventDefault();
-                      runAction(QUICK_ACTIONS[0]!, freeForm);
-                    }
-                  }}
-                  placeholder="Ask AI to edit the selection…"
-                  aria-label="Ask AI to edit the selection"
-                  className="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                />
-                <div className="flex flex-col gap-0.5">
-                  {QUICK_ACTIONS.map((action) => (
-                    <button
-                      key={action.key}
-                      type="button"
-                      onClick={() => runAction(action, freeForm)}
-                      className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-foreground hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                    >
-                      <Sparkles size={14} className="text-primary" />
-                      {action.label}
-                    </button>
-                  ))}
-                </div>
+        <button
+          type="button"
+          onMouseDown={(e) => e.preventDefault()} // keep editor selection on click
+          onClick={() => (aiOpen ? closeAi() : openAi())}
+          title="Improve with AI"
+          aria-label="Improve with AI"
+          aria-expanded={aiOpen}
+          aria-controls={aiOpen ? aiPanelId : undefined}
+          data-testid="bubble-ai-trigger"
+          className={cn(
+            'flex h-8 items-center gap-1 rounded px-2 text-sm font-medium transition-colors',
+            'text-primary hover:bg-primary/10',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
+            aiOpen && 'bg-primary/10',
+          )}
+        >
+          <Sparkles size={15} />
+          <span>Improve</span>
+        </button>
+      </div>
+
+      {/* #782 — the AI section expands the SAME container in place (below the
+          toolbar row) instead of opening a second portalled popover on the
+          other side of the selection. The container floats above the selection
+          (placement 'top' on the wrapper), so growing downward is re-anchored
+          by the updatePosition effect and never covers the decorated text. */}
+      {aiOpen && (
+        <div
+          id={aiPanelId}
+          role="group"
+          aria-label="Improve selection with AI"
+          data-testid="bubble-ai-panel"
+          className="w-80 border-t border-border p-3"
+        >
+          {!hasResult && !isStreaming && !emptyResult && stream.status !== 'error' && (
+            <div className="flex flex-col gap-2">
+              <input
+                type="text"
+                value={freeForm}
+                autoFocus
+                onChange={(e) => setFreeForm(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && freeForm.trim()) {
+                    e.preventDefault();
+                    runAction(QUICK_ACTIONS[0]!, freeForm);
+                  }
+                }}
+                placeholder="Ask AI to edit the selection…"
+                aria-label="Ask AI to edit the selection"
+                className="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+              />
+              <div className="flex flex-col gap-0.5">
+                {QUICK_ACTIONS.map((action) => (
+                  <button
+                    key={action.key}
+                    type="button"
+                    onClick={() => runAction(action, freeForm)}
+                    className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-foreground hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                  >
+                    <Sparkles size={14} className="text-primary" />
+                    {action.label}
+                  </button>
+                ))}
               </div>
-            )}
+            </div>
+          )}
 
-            {(isStreaming || hasResult) && (
-              <div className="flex flex-col gap-2">
-                <div
-                  data-testid="bubble-ai-preview"
-                  aria-live="polite"
-                  className={cn(
-                    'prose prose-sm max-h-56 max-w-none overflow-y-auto rounded-md border border-border/60 bg-background p-2 text-sm',
-                    isStreaming && !hasResult && 'motion-safe:animate-pulse',
-                  )}
+          {(isStreaming || hasResult) && (
+            <div className="flex flex-col gap-2">
+              <div
+                data-testid="bubble-ai-preview"
+                aria-live="polite"
+                className={cn(
+                  'prose prose-sm max-h-56 max-w-none overflow-y-auto rounded-md border border-border/60 bg-background p-2 text-sm',
+                  isStreaming && !hasResult && 'motion-safe:animate-pulse',
+                )}
+              >
+                {hasResult
+                  ? <SanitizedHtml html={previewHtml} />
+                  : <span className="text-muted-foreground">Improving selection…</span>}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-1">
+                <button
+                  type="button"
+                  onClick={replaceSelection}
+                  disabled={!hasResult || isStreaming}
+                  title="Replace selection"
+                  className="flex items-center gap-1 rounded-md bg-primary/15 px-2 py-1 text-xs font-medium text-primary hover:bg-primary/25 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
                 >
-                  {hasResult
-                    ? <SanitizedHtml html={previewHtml} />
-                    : <span className="text-muted-foreground">Improving selection…</span>}
-                </div>
-
-                <div className="flex flex-wrap items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={replaceSelection}
-                    disabled={!hasResult || isStreaming}
-                    title="Replace selection"
-                    className="flex items-center gap-1 rounded-md bg-primary/15 px-2 py-1 text-xs font-medium text-primary hover:bg-primary/25 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                  >
-                    <Check size={13} /> Replace
-                  </button>
-                  <button
-                    type="button"
-                    onClick={insertBelow}
-                    disabled={!hasResult || isStreaming}
-                    title="Insert below selection"
-                    className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-foreground/5 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                  >
-                    <ArrowDownToLine size={13} /> Insert below
-                  </button>
-                  <button
-                    type="button"
-                    onClick={retry}
-                    disabled={isStreaming}
-                    title="Try again"
-                    className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-foreground/5 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                  >
-                    <RotateCcw size={13} /> Try again
-                  </button>
-                  <button
-                    type="button"
-                    onClick={closeAi}
-                    title="Discard"
-                    className="ml-auto flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                  >
-                    <X size={13} /> Discard
-                  </button>
-                </div>
+                  <Check size={13} /> Replace
+                </button>
+                <button
+                  type="button"
+                  onClick={insertBelow}
+                  disabled={!hasResult || isStreaming}
+                  title="Insert below selection"
+                  className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-foreground/5 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                >
+                  <ArrowDownToLine size={13} /> Insert below
+                </button>
+                <button
+                  type="button"
+                  onClick={retry}
+                  disabled={isStreaming}
+                  title="Try again"
+                  className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-foreground/5 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                >
+                  <RotateCcw size={13} /> Try again
+                </button>
+                <button
+                  type="button"
+                  onClick={closeAi}
+                  title="Discard"
+                  className="ml-auto flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                >
+                  <X size={13} /> Discard
+                </button>
               </div>
-            )}
+            </div>
+          )}
 
-            {isStreaming && (
-              <div className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground">
-                <Loader2 size={13} className="motion-safe:animate-spin" />
-                Streaming…
-              </div>
-            )}
+          {isStreaming && (
+            <div className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Loader2 size={13} className="motion-safe:animate-spin" />
+              Streaming…
+            </div>
+          )}
 
-            {emptyResult && (
-              <div className="flex flex-col gap-2" data-testid="bubble-ai-empty">
-                <p className="text-sm text-muted-foreground" role="status">
-                  No changes returned. Try again or adjust your request.
-                </p>
-                <div className="flex gap-1">
-                  <button
-                    type="button"
-                    onClick={retry}
-                    title="Try again"
-                    className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                  >
-                    <RotateCcw size={13} /> Try again
-                  </button>
-                  <button
-                    type="button"
-                    onClick={closeAi}
-                    title="Discard"
-                    className="ml-auto flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                  >
-                    <X size={13} /> Discard
-                  </button>
-                </div>
+          {emptyResult && (
+            <div className="flex flex-col gap-2" data-testid="bubble-ai-empty">
+              <p className="text-sm text-muted-foreground" role="status">
+                No changes returned. Try again or adjust your request.
+              </p>
+              <div className="flex gap-1">
+                <button
+                  type="button"
+                  onClick={retry}
+                  title="Try again"
+                  className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                >
+                  <RotateCcw size={13} /> Try again
+                </button>
+                <button
+                  type="button"
+                  onClick={closeAi}
+                  title="Discard"
+                  className="ml-auto flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                >
+                  <X size={13} /> Discard
+                </button>
               </div>
-            )}
+            </div>
+          )}
 
-            {stream.status === 'error' && (
-              <div className="flex flex-col gap-2">
-                <p className="text-sm text-destructive" role="alert">{stream.error}</p>
-                <div className="flex gap-1">
-                  <button
-                    type="button"
-                    onClick={retry}
-                    className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                  >
-                    <RotateCcw size={13} /> Try again
-                  </button>
-                  <button
-                    type="button"
-                    onClick={closeAi}
-                    className="ml-auto flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                  >
-                    <X size={13} /> Close
-                  </button>
-                </div>
+          {stream.status === 'error' && (
+            <div className="flex flex-col gap-2">
+              <p className="text-sm text-destructive" role="alert">{stream.error}</p>
+              <div className="flex gap-1">
+                <button
+                  type="button"
+                  onClick={retry}
+                  className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                >
+                  <RotateCcw size={13} /> Try again
+                </button>
+                <button
+                  type="button"
+                  onClick={closeAi}
+                  className="ml-auto flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                >
+                  <X size={13} /> Close
+                </button>
               </div>
-            )}
-          </Popover.Content>
-        </Popover.Portal>
-      </Popover.Root>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
 export function EditorBubbleMenu({ editor }: { editor: EditorType }) {
-  // Mirror the AI-popover open state in a ref so the stable `shouldShow`
+  // Mirror the AI-section open state in a ref so the stable `shouldShow`
   // closure passed to the BubbleMenu plugin keeps the menu mounted while the
   // AI input has focus.
   const aiOpenRef = useRef(false);
@@ -567,8 +603,19 @@ export function EditorBubbleMenu({ editor }: { editor: EditorType }) {
   return (
     <BubbleMenu
       editor={editor}
+      pluginKey={editorBubbleMenuPluginKey}
       shouldShow={shouldShow}
-      options={{ placement: 'top' }}
+      // #782 — single merged panel, single Floating UI anchor (the selection).
+      // Primary side is 'top' so the decorated passage stays readable below
+      // the panel; `flip` drops it below the selection when the expanded panel
+      // runs out of room above, and `shift` keeps it on-screen horizontally.
+      // 8px viewport padding mirrors the old Radix collisionPadding intent.
+      options={{
+        placement: 'top',
+        offset: 8,
+        flip: { padding: 8 },
+        shift: { padding: 8 },
+      }}
       updateDelay={100}
     >
       <BubbleMenuContent editor={editor} onAiOpenChange={(open) => { aiOpenRef.current = open; }} />
