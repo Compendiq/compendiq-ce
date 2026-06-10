@@ -307,6 +307,87 @@ describe('GET /api/pages/:id/versions', () => {
     const r = await app.inject({ method: 'GET', url: '/api/pages/page-1/versions' });
     expect(r.statusCode).toBe(200);
   });
+
+  // ── #763: backfillStatus — distinguish "complete" / "never ran" / "failed" ──
+
+  it('reports backfillStatus "ok" when the backfill ran (#763)', async () => {
+    mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'DEV', version: 5 });
+    mockGetClientForUser.mockResolvedValue({});
+    mockBackfillVersionHistory.mockResolvedValue({ imported: 2 });
+    mockGetVersionHistory.mockResolvedValue([]);
+
+    const r = await app.inject({ method: 'GET', url: '/api/pages/page-1/versions' });
+    expect(r.statusCode).toBe(200);
+    const body = r.json();
+    expect(body.backfillStatus).toBe('ok');
+    expect(body.backfillDetail).toBeUndefined();
+  });
+
+  it('reports "skipped_no_credentials" AND still returns the current row when the user has no PAT (#763)', async () => {
+    mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'DEV', version: 5 });
+    mockGetClientForUser.mockResolvedValue(null); // no stored Confluence credentials
+    mockGetVersionHistory.mockResolvedValue([]);
+
+    const r = await app.inject({ method: 'GET', url: '/api/pages/page-1/versions' });
+    expect(r.statusCode).toBe(200);
+    const body = r.json();
+    expect(body.backfillStatus).toBe('skipped_no_credentials');
+    expect(body.backfillDetail).toMatch(/Settings/);
+    // The synthetic current row is still returned — the list is never empty
+    // for a resolvable page.
+    expect(body.versions).toHaveLength(1);
+    expect(body.versions[0]).toMatchObject({ versionNumber: 5, isCurrent: true });
+    expect(mockBackfillVersionHistory).not.toHaveBeenCalled();
+  });
+
+  it('reports "failed" AND still returns the current row when the backfill throws (#763)', async () => {
+    mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'DEV', version: 5 });
+    mockGetClientForUser.mockResolvedValue({});
+    mockBackfillVersionHistory.mockRejectedValue(new Error('Confluence down'));
+    mockGetVersionHistory.mockResolvedValue([]);
+
+    const r = await app.inject({ method: 'GET', url: '/api/pages/page-1/versions' });
+    expect(r.statusCode).toBe(200);
+    const body = r.json();
+    expect(body.backfillStatus).toBe('failed');
+    expect(body.backfillDetail).toMatch(/incomplete/i);
+    // Confluence WAS contacted here — the detail blames the import, not the
+    // stored credentials (distinct from the client-construction failure below).
+    expect(body.backfillDetail).toMatch(/Importing historical versions from Confluence failed/);
+    expect(body.backfillDetail).not.toMatch(/credentials could not be used/i);
+    expect(body.versions).toHaveLength(1);
+    expect(body.versions[0]).toMatchObject({ versionNumber: 5, isCurrent: true });
+  });
+
+  it('reports "failed" with a credentials-specific detail when client construction throws — Confluence never contacted (#763 follow-up)', async () => {
+    mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'DEV', version: 5 });
+    // e.g. PAT decryption failure after a PAT_ENCRYPTION_KEY change.
+    mockGetClientForUser.mockRejectedValue(new Error('Invalid encrypted PAT format'));
+    mockGetVersionHistory.mockResolvedValue([]);
+
+    const r = await app.inject({ method: 'GET', url: '/api/pages/page-1/versions' });
+    expect(r.statusCode).toBe(200);
+    const body = r.json();
+    expect(body.backfillStatus).toBe('failed');
+    expect(body.backfillDetail).toMatch(/credentials could not be used/i);
+    expect(body.backfillDetail).not.toMatch(/Importing historical versions from Confluence failed/);
+    // The import itself never ran.
+    expect(mockBackfillVersionHistory).not.toHaveBeenCalled();
+    expect(body.versions).toHaveLength(1);
+    expect(body.versions[0]).toMatchObject({ versionNumber: 5, isCurrent: true });
+  });
+
+  it('omits backfillStatus for standalone pages — no Confluence backfill applies (#763)', async () => {
+    mockResolvedPage({ id: 11, source: 'standalone', visibility: 'shared', created_by_user_id: TEST_USER, version: 1 });
+    mockGetVersionHistory.mockResolvedValue([]);
+
+    const r = await app.inject({ method: 'GET', url: '/api/pages/11/versions' });
+    expect(r.statusCode).toBe(200);
+    const body = r.json();
+    expect(body.backfillStatus).toBeUndefined();
+    expect(body.backfillDetail).toBeUndefined();
+    expect(mockGetClientForUser).not.toHaveBeenCalled();
+  });
 });
 
 // =============================================================================

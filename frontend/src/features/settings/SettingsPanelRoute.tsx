@@ -2,11 +2,8 @@ import { lazy, type ComponentType, type ReactElement } from 'react';
 import { Navigate, useOutletContext, useParams } from 'react-router-dom';
 import { SETTINGS_NAV, canSeeItem, firstVisiblePath } from './settings-nav';
 import type { AccessContextWithLoading } from './SettingsLayout';
-import { useSettings } from '../../shared/hooks/use-settings';
+import { useSettings, useUpdateSettings } from '../../shared/hooks/use-settings';
 import { useAuthStore } from '../../stores/auth-store';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { apiFetch } from '../../shared/lib/api';
-import { toast } from 'sonner';
 import { SkeletonFormFields } from '../../shared/components/feedback/Skeleton';
 import type { SettingsResponse } from '@compendiq/contracts';
 
@@ -98,18 +95,8 @@ export function SettingsPanelRoute() {
   const key = `${category ?? ''}/${item ?? ''}`;
 
   const user = useAuthStore((s) => s.user);
-  const queryClient = useQueryClient();
   const { data: settings, isLoading } = useSettings();
-
-  const updateSettings = useMutation({
-    mutationFn: (body: Record<string, unknown>) =>
-      apiFetch('/settings', { method: 'PUT', body: JSON.stringify(body) }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['settings'] });
-      toast.success('Settings saved');
-    },
-    onError: (err: Error) => toast.error(err.message),
-  });
+  const updateSettings = useUpdateSettings();
 
   // Gating check against the live nav config.
   const groupId = category;

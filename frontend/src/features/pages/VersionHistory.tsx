@@ -1,14 +1,14 @@
 import { useState, useEffect, type ReactNode } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, m } from 'framer-motion';
-import { History, Eye, GitCompare, Sparkles, Loader2, X, RotateCcw } from 'lucide-react';
+import { History, Eye, GitCompare, Sparkles, Loader2, X, RotateCcw, AlertTriangle, Info } from 'lucide-react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { toast } from 'sonner';
 import type {
   PageVersionsResponse,
   PageVersionDetail,
 } from '@compendiq/contracts';
-import { apiFetch } from '../../shared/lib/api';
+import { apiFetch, ApiError } from '../../shared/lib/api';
 import { DiffView } from '../../shared/components/article/DiffView';
 import { cn } from '../../shared/lib/cn';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
@@ -85,7 +85,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
   const [compareVersions, setCompareVersions] = useState<[number, number] | null>(null);
   const [showSemanticDiff, setShowSemanticDiff] = useState(false);
 
-  const { data: versionsData, isLoading } = useVersionHistory(pageId, open);
+  const { data: versionsData, isLoading, isError, error, refetch } = useVersionHistory(pageId, open);
   const { data: selectedVersionData } = useVersionDetail(
     pageId,
     selectedVersion,
@@ -101,6 +101,16 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
 
   const versions = versionsData?.versions ?? [];
   const currentVersionNumber = versions.find((v) => v.isCurrent)?.versionNumber;
+  // #763: non-ok backfill means the historical Confluence import never ran or
+  // failed — the list still renders, but with a hint that it may be incomplete.
+  const backfillStatus = versionsData?.backfillStatus;
+  const backfillNotice =
+    backfillStatus === 'skipped_no_credentials' || backfillStatus === 'failed'
+      ? versionsData?.backfillDetail ??
+        (backfillStatus === 'skipped_no_credentials'
+          ? 'Historical versions could not be imported: no Confluence credentials are configured for your account. Add your PAT in Settings → Confluence.'
+          : 'Importing historical versions from Confluence failed — the list below may be incomplete.')
+      : null;
 
   const restoreMutation = useMutation({
     mutationFn: ({ version, expected }: { version: number; expected?: number }) =>
@@ -207,11 +217,61 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                 <Loader2 size={14} className="animate-spin" />
                 <span className="text-sm">Loading versions...</span>
               </div>
-            ) : versions.length === 0 ? (
-              <div className="py-6 text-center text-sm text-muted-foreground">
-                No version history available. Versions are saved during sync.
+            ) : isError && !versionsData ? (
+              /* #763: a failed request is NOT an empty history — surface the
+                 backend reason (401/403/500) instead of the empty state. Only
+                 when nothing is loaded yet: TanStack Query retains the previous
+                 data on a failed refetch, so transient background failures
+                 (e.g. the invalidation after a restore) fall through to the
+                 inline notice below instead of replacing the rendered list. */
+              <div className="flex flex-col items-center gap-2 px-5 py-6 text-center">
+                <div className="flex items-center gap-2 text-destructive">
+                  <AlertTriangle size={14} />
+                  <span className="text-sm font-medium">Failed to load version history.</span>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {error instanceof ApiError
+                    ? `${error.message} (HTTP ${error.statusCode})`
+                    : error instanceof Error
+                      ? error.message
+                      : 'Unknown error'}
+                </p>
+                <button
+                  onClick={() => void refetch()}
+                  className="nm-card mt-1 px-3 py-1.5 text-xs hover:bg-foreground/5"
+                >
+                  Retry
+                </button>
               </div>
             ) : (
+              <>
+              {isError && (
+                /* Background refetch failed but data is loaded — keep the list. */
+                <div className="flex items-center gap-2 border-b border-border/50 bg-destructive/10 px-5 py-2.5 text-xs text-muted-foreground">
+                  <AlertTriangle size={12} className="shrink-0 text-destructive" />
+                  <span>Could not refresh version history &mdash; showing the last loaded versions.</span>
+                  <button
+                    onClick={() => void refetch()}
+                    className="ml-auto shrink-0 rounded px-2 py-0.5 font-medium text-foreground hover:bg-foreground/5"
+                  >
+                    Retry
+                  </button>
+                </div>
+              )}
+              {versions.length === 0 ? (
+              <div className="px-5 py-6 text-center text-sm text-muted-foreground">
+                No version history available yet. Historical versions are imported
+                from Confluence when this dialog opens — importing them requires a
+                Confluence PAT (Settings &rarr; Confluence).
+              </div>
+              ) : (
+              <>
+              {backfillNotice && (
+                <div className="flex items-start gap-2 border-b border-border/50 bg-warning/10 px-5 py-2.5 text-xs text-muted-foreground">
+                  <Info size={12} className="mt-0.5 shrink-0 text-warning" />
+                  <span>{backfillNotice}</span>
+                </div>
+              )}
               <div className="max-h-72 overflow-y-auto">
                 {versions.map((version, i) => (
                   <div
@@ -307,6 +367,9 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                   </div>
                 ))}
               </div>
+              </>
+              )}
+              </>
             )}
 
             {/* Version preview */}
