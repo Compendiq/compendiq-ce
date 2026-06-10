@@ -1388,6 +1388,25 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.badRequest('Confluence not configured');
     }
 
+    // #766: record the delete intent locally FIRST (soft-delete), so a failure at
+    // any later step can never leave a user-visible local article whose Confluence
+    // counterpart is already gone. Ordering:
+    //   1. soft-delete the row (single atomic UPDATE — hides it from every
+    //      list/tree/search query, all of which filter `deleted_at IS NULL`);
+    //   2. propagate the delete to Confluence (irreversible upstream side-effect);
+    //   3. on upstream success/404, finish hard local cleanup in ONE transaction;
+    //   4. on upstream failure (non-404), clear the soft-delete so NEITHER side
+    //      changed.
+    // A crash between 1 and 2 leaves a hidden row for a page that still exists
+    // upstream — the sync upsert (`ON CONFLICT … DO UPDATE … deleted_at = NULL`)
+    // restores it. A failure after 2 leaves at worst a hidden soft-deleted row
+    // that `purgeDeletedPages` converges — never the live orphan from #766.
+    const intent = await query<{ id: number }>(
+      'UPDATE pages SET deleted_at = NOW() WHERE id = $1 AND deleted_at IS NULL RETURNING id',
+      [existingPage.id],
+    );
+    const intentRecordedHere = (intent.rowCount ?? 0) > 0;
+
     // Propagate the delete to Confluence. A 404 means the page is already gone
     // remotely — the desired end state is already true, so we treat it as success
     // and fall through to local cleanup rather than leaving an orphaned, undeletable
@@ -1404,15 +1423,63 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
           'Confluence page already deleted remotely (404) — cleaning up locally',
         );
       } else {
+        // Upstream genuinely failed: roll back the delete intent so neither side
+        // changed. Only clear a soft-delete WE set — a row that was already
+        // soft-deleted (e.g. by sync reconciliation) must stay that way.
+        if (intentRecordedHere) {
+          try {
+            await query('UPDATE pages SET deleted_at = NULL WHERE id = $1', [existingPage.id]);
+          } catch (restoreErr) {
+            // Worst case: the page stays hidden although it still exists in
+            // Confluence. The sync upsert clears `deleted_at` for pages that
+            // still exist upstream, so this self-heals on the next sync cycle.
+            logger.error(
+              { pageId: existingPage.id, err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) },
+              'Failed to clear delete intent after Confluence delete failure — sync will restore the page',
+            );
+          }
+        }
         throw err;
       }
     }
 
-    // Clean up local data (page_embeddings cascade-deleted via FK)
-    await query('DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = $2', [userId, existingPage.id]);
-    await query('DELETE FROM pages WHERE id = $1', [existingPage.id]);
+    // Upstream is gone (deleted now, or already 404). Finish the local cleanup in
+    // ONE transaction on a dedicated client — pool.query() draws a random
+    // connection per call, so separate statements would not be atomic
+    // (page_embeddings/page_versions cascade-delete via FK; pinned_pages also
+    // cascades, deleted explicitly for clarity).
+    const txClient = await getPool().connect();
+    try {
+      await txClient.query('BEGIN');
+      await txClient.query('DELETE FROM pinned_pages WHERE page_id = $1', [existingPage.id]);
+      await txClient.query('DELETE FROM pages WHERE id = $1', [existingPage.id]);
+      await txClient.query('COMMIT');
+    } catch (cleanupErr) {
+      await txClient.query('ROLLBACK').catch(() => undefined);
+      // The upstream delete already happened and cannot be rolled back. The row
+      // stays soft-deleted (hidden everywhere) and `purgeDeletedPages` removes it
+      // within the standard 30-day window, so the stores never diverge visibly.
+      // The user-visible outcome (page gone on both sides) is achieved — log
+      // loudly instead of failing the request.
+      logger.error(
+        { pageId: existingPage.id, confluenceId: existingPage.confluence_id, err: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr) },
+        'Local cleanup failed after successful Confluence delete — row left soft-deleted for sync to purge',
+      );
+    } finally {
+      txClient.release();
+    }
+
+    // Attachment files live on the filesystem and cannot participate in the DB
+    // transaction — best-effort, never fatal (same pattern as unsyncSpace).
     if (existingPage.confluence_id) {
-      await cleanPageAttachments(userId, existingPage.confluence_id);
+      try {
+        await cleanPageAttachments(userId, existingPage.confluence_id);
+      } catch (attachErr) {
+        logger.warn(
+          { pageId: existingPage.id, confluenceId: existingPage.confluence_id, err: attachErr instanceof Error ? attachErr.message : String(attachErr) },
+          'Attachment cleanup failed after page delete (orphaned files only — DB is consistent)',
+        );
+      }
     }
 
     // Invalidate cache
@@ -1706,12 +1773,24 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
           errors.push(`Page ${p.confluence_id ?? p.id}: Confluence not configured`);
         });
       } else {
+        // #766: record the delete intent locally FIRST (soft-delete) for every
+        // candidate, mirroring the single-delete route: a failure after the
+        // upstream deletes can then never strand a user-visible local article.
+        // Only rows whose soft-delete WE set are restored on upstream failure.
+        const confluenceNumericIds = confluencePages.map((p) => p.id);
+        const intent = await query<{ id: number }>(
+          'UPDATE pages SET deleted_at = NOW() WHERE id = ANY($1::int[]) AND deleted_at IS NULL RETURNING id',
+          [confluenceNumericIds],
+        );
+        const intentRecordedHere = new Set(intent.rows.map((r) => r.id));
+
         const deleteResults = await Promise.allSettled(
           confluencePages.map((p) => bulkLimit(() => client.deletePage(p.confluence_id!))),
         );
 
         const deletedConfluenceIds: string[] = [];
         const deletedConfluenceNumericIds: number[] = [];
+        const failedNumericIds: number[] = [];
         for (let i = 0; i < deleteResults.length; i++) {
           const result = deleteResults[i]!;
           // A 404 rejection means the page is already gone in Confluence — the
@@ -1733,18 +1812,52 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
             confluenceSucceeded++;
           } else {
             failed++;
+            failedNumericIds.push(confluencePages[i]!.id);
             errors.push(
               `Page ${confluencePages[i]!.confluence_id}: ${result.reason instanceof Error ? result.reason.message : 'Unknown error'}`,
             );
           }
         }
 
-        // Batch cleanup: page_embeddings cascade-deleted via FK
+        // Upstream genuinely failed for these (non-404): roll back the delete
+        // intent so neither side changed for them.
+        const restoreIds = failedNumericIds.filter((id) => intentRecordedHere.has(id));
+        if (restoreIds.length > 0) {
+          try {
+            await query('UPDATE pages SET deleted_at = NULL WHERE id = ANY($1::int[])', [restoreIds]);
+          } catch (restoreErr) {
+            // Worst case: pages stay hidden although they still exist upstream.
+            // The sync upsert clears `deleted_at` for pages that still exist in
+            // Confluence, so this self-heals on the next sync cycle.
+            logger.error(
+              { pageIds: restoreIds, err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) },
+              'Failed to clear bulk delete intent after Confluence failures — sync will restore the pages',
+            );
+          }
+        }
+
+        // Upstream is gone for these. Finish the local cleanup in ONE transaction
+        // (page_embeddings/page_versions cascade-delete via FK; pinned_pages also
+        // cascades, deleted explicitly for clarity).
         if (deletedConfluenceNumericIds.length > 0) {
-          await Promise.all([
-            query('DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = ANY($2::int[])', [userId, deletedConfluenceNumericIds]),
-            query('DELETE FROM pages WHERE confluence_id = ANY($1)', [deletedConfluenceIds]),
-          ]);
+          const txClient = await getPool().connect();
+          try {
+            await txClient.query('BEGIN');
+            await txClient.query('DELETE FROM pinned_pages WHERE page_id = ANY($1::int[])', [deletedConfluenceNumericIds]);
+            await txClient.query('DELETE FROM pages WHERE id = ANY($1::int[])', [deletedConfluenceNumericIds]);
+            await txClient.query('COMMIT');
+          } catch (cleanupErr) {
+            await txClient.query('ROLLBACK').catch(() => undefined);
+            // Upstream deletes already happened — the rows stay soft-deleted
+            // (hidden) and `purgeDeletedPages` converges them; never a live orphan.
+            logger.error(
+              { pageIds: deletedConfluenceNumericIds, err: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr) },
+              'Bulk local cleanup failed after successful Confluence deletes — rows left soft-deleted for sync to purge',
+            );
+          } finally {
+            txClient.release();
+          }
+          // Filesystem attachment cleanup cannot join the DB transaction — best-effort.
           await Promise.allSettled(deletedConfluenceIds.map((id) => bulkLimit(() => cleanPageAttachments(userId, id))));
           // Confluence bulk delete is always a hard delete (Confluence API + local row removal).
           for (const pageId of deletedConfluenceNumericIds) {

@@ -33,18 +33,23 @@ const dbAvailable = await isDbAvailable();
 /**
  * Minimal ConfluenceClient stub for the reconciler. `getAllPageIds` returns the
  * authoritative live set for the space; `getPage` resolves for ids the caller
- * configures as "still present" and rejects with a 404 ConfluenceError for ids
- * configured as "gone". Any id not in either set rejects with the supplied error
- * (used to exercise the "inconclusive — do not delete" branch with a 403/5xx).
+ * configures as "still present" (200 `status: 'current'`), resolves with
+ * `status: 'trashed'` for ids configured as trashed (#766 — DC's DELETE trashes
+ * rather than purges, and some DC versions still serve trashed content on a
+ * direct GET), and rejects with a 404 ConfluenceError for ids configured as
+ * "gone". Any id not in those sets rejects with the supplied error (used to
+ * exercise the "inconclusive — do not delete" branch with a 403/5xx).
  */
 function makeClient(opts: {
   liveIds: string[];
   presentForGetPage?: string[];
+  trashedForGetPage?: string[];
   goneForGetPage?: string[];
   getPageError?: (id: string) => Error;
   failListing?: boolean;
 }) {
   const present = new Set(opts.presentForGetPage ?? []);
+  const trashed = new Set(opts.trashedForGetPage ?? []);
   const gone = new Set(opts.goneForGetPage ?? []);
   const getPageCalls: string[] = [];
   return {
@@ -56,10 +61,11 @@ function makeClient(opts: {
     async getPage(id: string): Promise<unknown> {
       getPageCalls.push(id);
       if (gone.has(id)) throw new ConfluenceError('Resource not found', 404);
-      if (present.has(id)) return { id };
+      if (trashed.has(id)) return { id, status: 'trashed' };
+      if (present.has(id)) return { id, status: 'current' };
       if (opts.getPageError) throw opts.getPageError(id);
       // Default: treat as present so an unconfigured id is never deleted.
-      return { id };
+      return { id, status: 'current' };
     },
   };
 }
@@ -113,6 +119,28 @@ describe.skipIf(!dbAvailable)('sync-service deletion reconciliation (#706)', () 
     expect(counts.pagesDeleted).toBe(1);
     // The reconciler only confirms candidates absent from the live set.
     expect(client.getPageCalls).toEqual(['gone-1']);
+  });
+
+  it('soft-deletes a page Confluence reports as trashed (200, not 404) — #766', async () => {
+    // Confluence DC's DELETE on a current page moves it to the space trash; on
+    // some DC versions a direct GET then answers 200 {status:'trashed'} rather
+    // than 404. The reconciler must treat that as deleted, otherwise pages
+    // removed via Compendiq's own Delete button are never converged.
+    await insertPage('keep-2', 'DEV');
+    await insertPage('trashed-1', 'DEV');
+
+    const client = makeClient({
+      liveIds: ['keep-2'], // trashed content is absent from the live listing
+      trashedForGetPage: ['trashed-1'], // direct GET answers 200 {status:'trashed'}
+    });
+    const counts = { pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 };
+
+    await detectDeletedPages(client as never, 'DEV', counts);
+
+    expect(await getDeletedAt('trashed-1')).not.toBeNull();
+    expect(await getDeletedAt('keep-2')).toBeNull();
+    expect(counts.pagesDeleted).toBe(1);
+    expect(client.getPageCalls).toEqual(['trashed-1']);
   });
 
   it('does NOT delete a page absent from this view but still present remotely (shared-space safety)', async () => {

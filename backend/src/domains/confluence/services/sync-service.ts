@@ -1287,10 +1287,13 @@ async function syncMissingAttachments(
  * Shared-space correctness: rather than gating on "exactly one user owns the space"
  * (which meant shared-space deletions were never reconciled), each candidate — a
  * local page missing from this principal's listing — is confirmed genuinely gone via
- * a direct `GET /content/{id}` that returns 404 before we soft-delete it. A page that
- * still exists but is merely hidden from this principal answers 200/403, not 404, so
- * one user's restricted view can no longer nuke pages others can still see. The number
- * of confirmation fetches per run is capped (`MAX_DELETION_CONFIRMATIONS`).
+ * a direct `GET /content/{id}` before we soft-delete it: a 404 **or** a 200 with
+ * `status: 'trashed'` (#766 — Confluence DC's DELETE trashes rather than purges, and
+ * some DC versions still serve trashed content on a direct GET) counts as gone. A page
+ * that still exists but is merely hidden from this principal answers 200 `current`
+ * or 403, so one user's restricted view can no longer nuke pages others can still
+ * see. The number of confirmation fetches per run is capped
+ * (`MAX_DELETION_CONFIRMATIONS`).
  *
  * Per-cycle fan-out: this runs once per (user × space). A shared space would
  * otherwise re-run the listing + confirmation fetches once per user each cycle, so
@@ -1350,12 +1353,28 @@ async function detectDeletedPages(
   }
 
   for (const confluenceId of candidates) {
-    // Confirm the page is genuinely gone (404) before soft-deleting. Any other
-    // outcome means "still there / not visible to me" — leave it untouched.
+    // Confirm the page is genuinely gone before soft-deleting. Two outcomes
+    // count as "gone" (#706, #766):
+    //   - 404: the content no longer exists for this DC (purged, or the DC
+    //     version hides trashed content from a plain GET);
+    //   - 200 with `status: 'trashed'`: Confluence DC's DELETE on a current
+    //     page moves it to the space trash rather than purging it, and some
+    //     DC versions still serve that trashed content on a direct GET. A
+    //     trashed page is already absent from the live listing (only `current`
+    //     content is listed), so a trashed answer here means the page was
+    //     deleted — not restricted from this principal. Without this branch,
+    //     pages deleted via Compendiq's own Delete button (which trashes
+    //     upstream) would never be reconciled (#766).
+    // Any other outcome means "still there / not visible to me" — leave it
+    // untouched. The local soft-delete mirrors the trash's recoverability:
+    // the row survives (hidden) for 30 days before `purgeDeletedPages`.
     try {
-      await client.getPage(confluenceId);
-      // 200: page still exists for this principal — not deleted.
-      continue;
+      const remote = await client.getPage(confluenceId);
+      if (remote.status !== 'trashed') {
+        // 200 current: page still exists for this principal — not deleted.
+        continue;
+      }
+      // 200 trashed: fall through to the soft-delete below.
     } catch (err) {
       if (!(err instanceof ConfluenceError && err.statusCode === 404)) {
         // 403/401/5xx/network: inconclusive — do not delete.
@@ -1697,4 +1716,9 @@ export const __internal = {
   // a real Postgres (real `pages` rows, real soft-delete + count tracking)
   // with only the ConfluenceClient stubbed.
   detectDeletedPages,
+  // Exposed for the #766 delete-atomicity integration tests: after a
+  // post-upstream local failure the row is left soft-deleted, and the test
+  // proves the standard sync lifecycle (30-day purge) converges it fully
+  // without driving an entire syncSpace run.
+  purgeDeletedPages,
 };
