@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { query } from '../../core/db/postgres.js';
 import { invalidateRbacCache, userHasPermission, getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
+import { SYSTEM_USER_ID } from '../../core/services/admin-user-service.js';
 
 // ---- Zod schemas ----
 
@@ -705,6 +706,8 @@ export async function rbacRoutes(fastify: FastifyInstance) {
     // GET /api/users -- list all users (for admin assignment UIs)
     // #307 Finding #1: expose `last_login_at` so the user-admin UI (#304)
     // needs no backend follow-up. Column added by migration 062.
+    // The system sentinel user (migration 032) is excluded — it cannot log
+    // in and must not be assignable as a principal (UX-fix Task 4).
     admin.get('/users', RBAC_RATE_LIMIT, async () => {
       const result = await query<{
         id: string;
@@ -713,7 +716,8 @@ export async function rbacRoutes(fastify: FastifyInstance) {
         created_at: string;
         last_login_at: string | null;
       }>(
-        'SELECT id, username, role, created_at, last_login_at FROM users ORDER BY username',
+        'SELECT id, username, role, created_at, last_login_at FROM users WHERE id <> $1 ORDER BY username',
+        [SYSTEM_USER_ID],
       );
 
       return result.rows.map((r) => ({

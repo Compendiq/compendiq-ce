@@ -20,8 +20,11 @@ const BCRYPT_ROUNDS = 10;
  * System sentinel user that owns built-in templates (migration 032). When a
  * real user is hard-deleted we reassign their `templates.created_by` rows
  * to this UUID rather than blocking the delete on the NOT NULL FK.
+ *
+ * Exported so other user-listing endpoints (e.g. the rbac principal picker)
+ * can exclude it the same way `listUsers()` does.
  */
-const SYSTEM_USER_ID = '00000000-0000-0000-0000-000000000000';
+export const SYSTEM_USER_ID = '00000000-0000-0000-0000-000000000000';
 
 /**
  * Errors thrown by the service. Routes map them to HTTP status codes.
