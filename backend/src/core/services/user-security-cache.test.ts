@@ -16,6 +16,11 @@
  *   - invalidateUserSecurityState(userId) clears the local entry AND
  *     publishes on the 'user:security:changed' cache-bus channel so peer
  *     pods invalidate too.
+ *   - Invalidation fences in-flight loads (per-user generation counter): a
+ *     load whose SELECT was already running when the invalidation landed may
+ *     have snapshotted pre-COMMIT state, so its result must NOT be cached —
+ *     otherwise the stale "active/old-role" answer would be re-cached for a
+ *     full TTL window on the very pod that handled the admin action.
  *   - initUserSecurityCacheBus() wires the subscriber (clear one entry per
  *     message) + an onReconnect handler (clear everything — missed pub/sub
  *     messages are not replayed). Idempotent.
@@ -188,6 +193,70 @@ describe('user-security-cache (#737)', () => {
       expect(state).toEqual({ kind: 'deactivated' });
       expect(mockQuery).toHaveBeenCalledTimes(2);
     });
+
+    // #756 review: TOCTOU between invalidation and an in-flight load. The
+    // load's SELECT may have snapshotted pre-COMMIT state; if it resolves
+    // AFTER the invalidation, caching its result would re-extend the stale
+    // "active" answer for a full TTL window on the acting pod.
+    it('does not re-cache a stale in-flight load that resolves after an invalidation', async () => {
+      let resolveSlow: (v: unknown) => void;
+      mockQuery.mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveSlow = resolve;
+        }),
+      );
+      const staleLoad = getUserSecurityState(USER_ID);
+
+      // Admin deactivation COMMITs and invalidates while the SELECT is in flight.
+      await invalidateUserSecurityState(USER_ID);
+
+      // The stale "still active" row arrives AFTER the invalidation ran.
+      resolveSlow!(activeRow('admin'));
+      await expect(staleLoad).resolves.toEqual({ kind: 'active', role: 'admin' });
+
+      // The stale result must NOT have been cached: the next call re-reads
+      // the DB and sees the committed deactivation.
+      mockQuery.mockResolvedValueOnce({
+        rows: [{ role: 'admin', deactivated_at: new Date() }],
+      });
+      const after = await getUserSecurityState(USER_ID);
+      expect(after).toEqual({ kind: 'deactivated' });
+      expect(mockQuery).toHaveBeenCalledTimes(2);
+
+      // …and the fresh 'deactivated' entry stays cached (the stale load did
+      // not overwrite it).
+      const cached = await getUserSecurityState(USER_ID);
+      expect(cached).toEqual({ kind: 'deactivated' });
+      expect(mockQuery).toHaveBeenCalledTimes(2);
+    });
+
+    it('a lookup arriving after the invalidation starts a fresh load instead of joining the stale one', async () => {
+      let resolveSlow: (v: unknown) => void;
+      mockQuery.mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveSlow = resolve;
+        }),
+      );
+      const staleLoad = getUserSecurityState(USER_ID);
+
+      await invalidateUserSecurityState(USER_ID);
+
+      // The post-invalidation lookup must hit the DB (fresh, post-COMMIT
+      // read) rather than being deduplicated onto the stale in-flight load.
+      mockQuery.mockResolvedValueOnce({
+        rows: [{ role: 'user', deactivated_at: new Date() }],
+      });
+      const fresh = await getUserSecurityState(USER_ID);
+      expect(fresh).toEqual({ kind: 'deactivated' });
+
+      // The slow stale load resolves last — it must not clobber the fresh entry.
+      resolveSlow!(activeRow('user'));
+      await staleLoad;
+
+      const cached = await getUserSecurityState(USER_ID);
+      expect(cached).toEqual({ kind: 'deactivated' });
+      expect(mockQuery).toHaveBeenCalledTimes(2);
+    });
   });
 
   describe('cache-bus subscriber', () => {
@@ -222,6 +291,33 @@ describe('user-security-cache (#737)', () => {
       expect(mockQuery).toHaveBeenCalledTimes(2);
     });
 
+    it('fences an in-flight load against a bus invalidation from a peer pod', async () => {
+      initUserSecurityCacheBus();
+      const handler = mockSubscribe.mock.calls[0]![1] as (payload: unknown) => void;
+
+      let resolveSlow: (v: unknown) => void;
+      mockQuery.mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveSlow = resolve;
+        }),
+      );
+      const staleLoad = getUserSecurityState(USER_ID);
+
+      // A peer pod deactivated the user while our SELECT was in flight.
+      handler({ userId: USER_ID });
+
+      resolveSlow!(activeRow('user'));
+      await expect(staleLoad).resolves.toEqual({ kind: 'active', role: 'user' });
+
+      // The stale result must not have been cached.
+      mockQuery.mockResolvedValueOnce({
+        rows: [{ role: 'user', deactivated_at: new Date() }],
+      });
+      const after = await getUserSecurityState(USER_ID);
+      expect(after).toEqual({ kind: 'deactivated' });
+      expect(mockQuery).toHaveBeenCalledTimes(2);
+    });
+
     it('clears the whole cache on a malformed bus payload (fail safe)', async () => {
       initUserSecurityCacheBus();
       mockQuery.mockResolvedValueOnce(activeRow('admin'));
@@ -245,6 +341,32 @@ describe('user-security-cache (#737)', () => {
 
       mockQuery.mockResolvedValueOnce(activeRow('admin'));
       await getUserSecurityState(USER_ID);
+      expect(mockQuery).toHaveBeenCalledTimes(2);
+    });
+
+    it('fences in-flight loads against a full-cache clear (bus reconnect)', async () => {
+      initUserSecurityCacheBus();
+      const reconnect = mockOnReconnect.mock.calls[0]![0] as () => void;
+
+      let resolveSlow: (v: unknown) => void;
+      mockQuery.mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveSlow = resolve;
+        }),
+      );
+      const staleLoad = getUserSecurityState(USER_ID);
+
+      // The bus reconnects mid-load → missed invalidations may exist, so the
+      // whole cache is cleared; the in-flight result may be stale too.
+      reconnect();
+
+      resolveSlow!(activeRow('admin'));
+      await staleLoad;
+
+      // Next lookup must re-read the DB, not serve the fenced stale result.
+      mockQuery.mockResolvedValueOnce({ rows: [] });
+      const after = await getUserSecurityState(USER_ID);
+      expect(after).toEqual({ kind: 'missing' });
       expect(mockQuery).toHaveBeenCalledTimes(2);
     });
   });

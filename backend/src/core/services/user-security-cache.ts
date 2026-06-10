@@ -19,10 +19,15 @@
  *     precedent).
  *
  * Revocation-latency bound: on the pod that handles the admin action, and on
- * every pod reachable via the cache-bus, invalidation is immediate (the next
- * request re-reads from Postgres). Pods without a working bus fall back to
- * the TTL — at most USER_SECURITY_CACHE_TTL_MS (30s) of staleness, far below
- * any permitted access-token lifetime (capped at 24h in auth.ts).
+ * every pod reachable via the cache-bus, invalidation is immediate — the
+ * next lookup re-reads from Postgres, and a per-user generation fence stops
+ * an in-flight load (whose SELECT may have snapshotted pre-COMMIT state)
+ * from re-caching the stale result after the invalidation ran. Requests
+ * already awaiting that in-flight load may still see the pre-mutation state
+ * once — they raced the admin action either way — but it is never cached.
+ * Pods without a working bus fall back to the TTL — at most
+ * USER_SECURITY_CACHE_TTL_MS (30s) of staleness, far below any permitted
+ * access-token lifetime (clamped to 24h in auth.ts).
  *
  * Soft-fail: DB errors return the stale last-known state when one exists,
  * otherwise 'unknown'. Callers treat 'unknown' as "proceed on token claims"
@@ -59,6 +64,55 @@ const cache = new Map<string, CacheEntry>();
 const pending = new Map<string, Promise<UserSecurityState>>();
 let busWired = false;
 
+// Invalidation fence (#756 review). An invalidation that lands while a
+// loadFromDb SELECT is in flight cannot recall that query — and the row it
+// read may predate the invalidating transaction's COMMIT. Without a fence
+// the load would `cache.set` the stale "active/old-role" result AFTER the
+// invalidation ran, re-caching it for a full TTL window on the very pod
+// that handled the admin action. Every invalidation therefore bumps a
+// per-user generation (full-cache clears bump `clearGeneration`); a load
+// snapshots the fence before its SELECT and skips `cache.set` when the
+// fence moved. `userGenerations` is never pruned — it only grows via
+// admin privilege mutations on real user ids, so its size is bounded by
+// the user count.
+const userGenerations = new Map<string, number>();
+let clearGeneration = 0;
+
+interface InvalidationFence {
+  userGeneration: number;
+  clearGeneration: number;
+}
+
+function snapshotFence(userId: string): InvalidationFence {
+  return {
+    userGeneration: userGenerations.get(userId) ?? 0,
+    clearGeneration,
+  };
+}
+
+function fenceMoved(userId: string, before: InvalidationFence): boolean {
+  return (
+    (userGenerations.get(userId) ?? 0) !== before.userGeneration ||
+    clearGeneration !== before.clearGeneration
+  );
+}
+
+/** Local-pod part of an invalidation: drop the entry, fence the in-flight
+ * load (its result may be a pre-COMMIT snapshot) and detach it from
+ * `pending` so the next lookup starts a fresh post-COMMIT read instead of
+ * joining the stale one. */
+function invalidateLocal(userId: string): void {
+  cache.delete(userId);
+  pending.delete(userId);
+  userGenerations.set(userId, (userGenerations.get(userId) ?? 0) + 1);
+}
+
+function clearAllLocal(): void {
+  cache.clear();
+  pending.clear();
+  clearGeneration += 1;
+}
+
 export async function getUserSecurityState(userId: string): Promise<UserSecurityState> {
   const entry = cache.get(userId);
   if (entry && entry.expiresAt > Date.now()) {
@@ -70,12 +124,17 @@ export async function getUserSecurityState(userId: string): Promise<UserSecurity
   const inFlight = pending.get(userId);
   if (inFlight) return inFlight;
 
-  const load = loadFromDb(userId);
+  const load = loadFromDb(userId).finally(() => {
+    // Only deregister our own load — an invalidation may have already
+    // removed it and a newer (post-COMMIT) load may have taken the slot.
+    if (pending.get(userId) === load) pending.delete(userId);
+  });
   pending.set(userId, load);
   return load;
 }
 
 async function loadFromDb(userId: string): Promise<UserSecurityState> {
+  const fence = snapshotFence(userId);
   try {
     const res = await query<{ role: string; deactivated_at: Date | null }>(
       'SELECT role, deactivated_at FROM users WHERE id = $1',
@@ -88,8 +147,14 @@ async function loadFromDb(userId: string): Promise<UserSecurityState> {
         ? { kind: 'deactivated' }
         : { kind: 'active', role: row.role };
 
-    if (cache.size >= MAX_ENTRIES) evictForSpace();
-    cache.set(userId, { state, expiresAt: Date.now() + USER_SECURITY_CACHE_TTL_MS });
+    // An invalidation landed while the SELECT was in flight → our row may be
+    // a pre-COMMIT snapshot. Return it to the callers that were already
+    // waiting (they raced the admin action either way) but do NOT cache it;
+    // the next lookup re-reads the committed state.
+    if (!fenceMoved(userId, fence)) {
+      if (cache.size >= MAX_ENTRIES) evictForSpace();
+      cache.set(userId, { state, expiresAt: Date.now() + USER_SECURITY_CACHE_TTL_MS });
+    }
     return state;
   } catch (err) {
     logger.warn(
@@ -101,8 +166,6 @@ async function loadFromDb(userId: string): Promise<UserSecurityState> {
     // claims ('unknown') — same behaviour as before #737.
     const stale = cache.get(userId);
     return stale ? stale.state : { kind: 'unknown' };
-  } finally {
-    pending.delete(userId);
   }
 }
 
@@ -121,12 +184,14 @@ function evictForSpace(): void {
 /**
  * Drop the cached state for a user and broadcast the invalidation to peer
  * pods. Call after any privilege-boundary mutation (deactivate, reactivate,
- * role change, delete). The local delete makes the change effective on this
- * pod immediately; the publish covers the rest of the cluster (no-op in
+ * role change, delete). The local invalidation makes the change effective on
+ * this pod immediately — it also fences any in-flight DB load whose SELECT
+ * may have snapshotted pre-COMMIT state, so the stale result cannot be
+ * re-cached afterwards. The publish covers the rest of the cluster (no-op in
  * single-pod mode, where the TTL is the backstop).
  */
 export async function invalidateUserSecurityState(userId: string): Promise<void> {
-  cache.delete(userId);
+  invalidateLocal(userId);
   await publish('user:security:changed', { userId });
 }
 
@@ -145,21 +210,23 @@ export function initUserSecurityCacheBus(): void {
         ? payload.userId
         : null;
     if (userId) {
-      cache.delete(userId);
+      invalidateLocal(userId);
     } else {
       // Malformed advice — fail safe by re-reading everyone on next request.
-      cache.clear();
+      clearAllLocal();
     }
   });
 
   // Redis pub/sub does not replay messages missed during a disconnect, so
   // cold-flush everything once the bus is back.
-  onReconnect(() => cache.clear());
+  onReconnect(() => clearAllLocal());
 }
 
 /** Test seam: clear cached state so tests don't leak entries across cases. */
 export function _resetForTests(): void {
   cache.clear();
   pending.clear();
+  userGenerations.clear();
+  clearGeneration = 0;
   busWired = false;
 }

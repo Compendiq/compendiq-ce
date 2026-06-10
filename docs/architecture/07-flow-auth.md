@@ -94,7 +94,7 @@ sequenceDiagram
         BE->>BE: proceed (RBAC scope, route handler)
     end
 
-    Note over RB,UC: Admin deactivates / demotes / deletes a user →<br/>admin-user-service deletes refresh_tokens,<br/>clears the local cache entry and publishes<br/>`user:security:changed` — peer pods drop their entry too.
+    Note over RB,UC: Admin deactivates / demotes / deletes a user →<br/>admin-user-service deletes refresh_tokens,<br/>invalidates the local cache entry (and fences any<br/>in-flight DB load) and publishes<br/>`user:security:changed` — peer pods drop their entry too.
 ```
 
 Properties:
@@ -104,8 +104,14 @@ Properties:
   (`USER_SECURITY_CACHE_TTL_MS`).
 - **Revocation latency bound**: immediate on the pod that handled the admin
   action and on every pod subscribed to the cache-bus; ≤ 30s on pods without
-  a working bus (single-pod soft-fail mode). `ACCESS_TOKEN_EXPIRY` is capped
-  at 24h as the absolute worst-case backstop.
+  a working bus (single-pod soft-fail mode). Invalidation bumps a per-user
+  generation that fences in-flight loads: a `SELECT` that snapshotted
+  pre-COMMIT state cannot re-cache the stale "active/old-role" answer after
+  the invalidation ran (requests already awaiting that load may see the
+  pre-mutation state once — they raced the admin action — but it is never
+  cached). `ACCESS_TOKEN_EXPIRY` is capped at 24h as the absolute worst-case
+  backstop; values above 24h are clamped at startup with a warning (an
+  invalid format still fails startup).
 - **Role change = privilege boundary**: `updateUser` revokes all refresh
   tokens (mirroring deactivation), so a demoted admin cannot refresh back to
   an admin token — they must log in again.

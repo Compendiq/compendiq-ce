@@ -10,27 +10,35 @@ import { logAuditEvent } from '../services/audit-service.js';
 import { getUserSecurityState } from '../services/user-security-cache.js';
 
 const JWT_ISSUER = 'compendiq';
-const ACCESS_TOKEN_EXPIRY = process.env.ACCESS_TOKEN_EXPIRY ?? '1h';
+const CONFIGURED_ACCESS_TOKEN_EXPIRY = process.env.ACCESS_TOKEN_EXPIRY ?? '1h';
 // Validate expiry format at startup — jose accepts: Ns, Nm, Nh, Nd
-const ACCESS_TOKEN_EXPIRY_MATCH = /^(\d+)([smhd])$/.exec(ACCESS_TOKEN_EXPIRY);
+const ACCESS_TOKEN_EXPIRY_MATCH = /^(\d+)([smhd])$/.exec(CONFIGURED_ACCESS_TOKEN_EXPIRY);
 if (!ACCESS_TOKEN_EXPIRY_MATCH) {
   throw new Error(
-    `Invalid ACCESS_TOKEN_EXPIRY format: "${ACCESS_TOKEN_EXPIRY}". Expected format: <number><s|m|h|d> (e.g., "1h", "30m", "7d")`,
+    `Invalid ACCESS_TOKEN_EXPIRY format: "${CONFIGURED_ACCESS_TOKEN_EXPIRY}". Expected format: <number><s|m|h|d> (e.g., "1h", "30m", "7d")`,
   );
 }
 // #737: cap the access-token lifetime at 24h. The lifetime is the worst-case
 // window a deactivated/demoted account keeps API access if every faster
 // invalidation layer (user-security cache + cache-bus) failed, so it must
 // not be effectively unbounded (the old regex admitted e.g. '999d').
+// Over-cap values are CLAMPED with a loud warning rather than failing boot
+// (#756 review) — '48h' or '7d' were valid configs before the cap, and an
+// unattended upgrade must not take an existing deployment down. An invalid
+// FORMAT still fails fast above.
 const EXPIRY_UNIT_SECONDS: Record<string, number> = { s: 1, m: 60, h: 3_600, d: 86_400 };
 const MAX_ACCESS_TOKEN_EXPIRY_SECONDS = 24 * 3_600;
-if (
+const ACCESS_TOKEN_EXPIRY =
   Number(ACCESS_TOKEN_EXPIRY_MATCH[1]) * EXPIRY_UNIT_SECONDS[ACCESS_TOKEN_EXPIRY_MATCH[2]!]! >
   MAX_ACCESS_TOKEN_EXPIRY_SECONDS
-) {
-  throw new Error(
-    `ACCESS_TOKEN_EXPIRY "${ACCESS_TOKEN_EXPIRY}" exceeds the maximum of 24h. ` +
-      'Long-lived access tokens defeat deactivation/role-change revocation (#737) — use the 7-day refresh token for session longevity instead.',
+    ? '24h'
+    : CONFIGURED_ACCESS_TOKEN_EXPIRY;
+if (ACCESS_TOKEN_EXPIRY !== CONFIGURED_ACCESS_TOKEN_EXPIRY) {
+  logger.warn(
+    { configured: CONFIGURED_ACCESS_TOKEN_EXPIRY, effective: ACCESS_TOKEN_EXPIRY },
+    `SECURITY: ACCESS_TOKEN_EXPIRY "${CONFIGURED_ACCESS_TOKEN_EXPIRY}" exceeds the 24h cap — clamping to 24h. ` +
+      'The access-token lifetime bounds how long a deactivated or demoted account could keep API access ' +
+      'if every faster revocation layer failed (#737); use the 7-day refresh token for session longevity instead.',
   );
 }
 const REFRESH_TOKEN_EXPIRY_DAYS = 7;
