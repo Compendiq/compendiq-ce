@@ -178,6 +178,33 @@ describe('LoginPage', () => {
       expect(registerCall).toBeUndefined();
     });
 
+    it('clears the mismatch error as soon as the user retypes either password field', async () => {
+      const { apiFetch } = await import('../../shared/lib/api');
+      vi.mocked(apiFetch).mockRejectedValue(new Error('no oidc'));
+
+      renderLoginPage();
+      switchToRegister();
+
+      fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'newuser' } });
+      fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'password123' } });
+      fireEvent.change(screen.getByLabelText('Confirm password'), { target: { value: 'password124' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Create Account' }));
+
+      expect(await screen.findByText("Passwords don't match")).toBeInTheDocument();
+
+      // Correcting the confirm field must dismiss the stale error immediately.
+      fireEvent.change(screen.getByLabelText('Confirm password'), { target: { value: 'password123' } });
+      expect(screen.queryByText("Passwords don't match")).not.toBeInTheDocument();
+
+      // Same when editing the password field after a fresh mismatch.
+      fireEvent.change(screen.getByLabelText('Confirm password'), { target: { value: 'password124' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Create Account' }));
+      expect(await screen.findByText("Passwords don't match")).toBeInTheDocument();
+
+      fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'password124' } });
+      expect(screen.queryByText("Passwords don't match")).not.toBeInTheDocument();
+    });
+
     it('submits the registration when the passwords match', async () => {
       const { apiFetch } = await import('../../shared/lib/api');
       vi.mocked(apiFetch).mockImplementation(async (url: string) => {

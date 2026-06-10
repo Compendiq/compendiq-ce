@@ -849,6 +849,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       summaryError: row.summary_error,
       source: row.source,
       visibility: row.visibility,
+      // Creator's user id (standalone pages only; null for Confluence-synced).
+      // Benign for viewers — lets the UI detect "own page" (e.g. to hide the
+      // helpfulness widget on pages the current user authored).
+      createdByUserId: row.created_by_user_id,
       hasDraft: row.has_draft,
       draftUpdatedAt: row.draft_updated_at?.toISOString() ?? null,
     };

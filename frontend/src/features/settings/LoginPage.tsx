@@ -139,7 +139,10 @@ export function LoginPage() {
               id="login-password"
               type="password"
               value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              onChange={(e) => {
+                setPassword(e.target.value);
+                setConfirmError(null);
+              }}
               required
               minLength={8}
               className="nm-input"
@@ -157,7 +160,10 @@ export function LoginPage() {
                 id="login-confirm-password"
                 type="password"
                 value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
+                onChange={(e) => {
+                  setConfirmPassword(e.target.value);
+                  setConfirmError(null);
+                }}
                 required
                 minLength={8}
                 className="nm-input"

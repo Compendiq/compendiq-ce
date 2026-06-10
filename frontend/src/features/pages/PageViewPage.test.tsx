@@ -192,6 +192,9 @@ const mockPage = {
   summaryGeneratedAt: null,
   summaryModel: null,
   summaryError: null,
+  source: 'confluence' as string,
+  visibility: 'shared' as string,
+  createdByUserId: null as string | number | null,
 };
 
 let currentMockPage: typeof mockPage | undefined = mockPage;
@@ -266,6 +269,32 @@ describe('PageViewPage', () => {
 
     expect(screen.getByText('Engineering Handbook')).toBeInTheDocument();
     expect(screen.getByText('ENG')).toBeInTheDocument();
+  });
+
+  describe('feedback widget visibility', () => {
+    it('hides "Was this page helpful?" on a standalone page created by the current user', () => {
+      // Auth user id is '1' (set in beforeEach).
+      currentMockPage = { ...mockPage, source: 'standalone', visibility: 'private', createdByUserId: '1' };
+      render(<PageViewPage />, { wrapper: createWrapper() });
+
+      expect(screen.queryByTestId('feedback-widget')).not.toBeInTheDocument();
+      expect(screen.queryByText('Was this page helpful?')).not.toBeInTheDocument();
+    });
+
+    it('shows the widget on a standalone page created by another user', () => {
+      currentMockPage = { ...mockPage, source: 'standalone', visibility: 'shared', createdByUserId: '2' };
+      render(<PageViewPage />, { wrapper: createWrapper() });
+
+      expect(screen.getByTestId('feedback-widget')).toBeInTheDocument();
+      expect(screen.getByText('Was this page helpful?')).toBeInTheDocument();
+    });
+
+    it('shows the widget on Confluence-synced pages', () => {
+      currentMockPage = { ...mockPage, source: 'confluence', createdByUserId: null };
+      render(<PageViewPage />, { wrapper: createWrapper() });
+
+      expect(screen.getByTestId('feedback-widget')).toBeInTheDocument();
+    });
   });
 
   it('renders the Edit button in the header (action buttons moved to right pane)', () => {

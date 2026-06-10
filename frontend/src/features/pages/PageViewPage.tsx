@@ -19,6 +19,7 @@ import { useAuthenticatedSrc } from '../../shared/hooks/use-authenticated-src';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { useKeyboardShortcuts, type ShortcutDefinition } from '../../shared/hooks/use-keyboard-shortcuts';
 import { useArticleViewStore } from '../../stores/article-view-store';
+import { useAuthStore } from '../../stores/auth-store';
 import { cn } from '../../shared/lib/cn';
 import { FeatureErrorBoundary } from '../../shared/components/feedback/FeatureErrorBoundary';
 import { QualityScoreBadge } from '../../shared/components/badges/QualityScoreBadge';
@@ -121,6 +122,16 @@ export function PageViewPage() {
   const deleteMutation_page = useDeletePage();
 
   const isPinned = pinnedData?.items.some((item) => item.id === id) ?? false;
+
+  // Hide the helpfulness widget on standalone pages the current user authored
+  // — rating your own page is noise. Confluence-synced pages (createdByUserId
+  // is null) and other users' pages keep the widget.
+  const currentUserId = useAuthStore((s) => s.user?.id);
+  const isOwnStandalonePage =
+    page?.source === 'standalone' &&
+    page.createdByUserId != null &&
+    currentUserId != null &&
+    String(page.createdByUserId) === String(currentUserId);
 
 
   // Fetch the configured draw.io embed URL (falls back to default inside DrawioEditor if undefined)
@@ -740,8 +751,8 @@ export function PageViewPage() {
               />
             </FeatureErrorBoundary>
 
-            {/* Feedback widget */}
-            <FeedbackWidget pageId={id} />
+            {/* Feedback widget — hidden on the author's own standalone pages */}
+            {!isOwnStandalonePage && <FeedbackWidget pageId={id} />}
           </div>
         )}
       </div>

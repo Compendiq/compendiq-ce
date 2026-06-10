@@ -154,4 +154,33 @@ describe.skipIf(!dbAvailable)('GET /api/pages/trash + standalone auto-purge (DB)
     // Second run finds nothing — count is per-run, not cumulative.
     expect(await purgeExpiredStandalonePages()).toBe(0);
   });
+
+  // Nested here to reuse the real-DB app bootstrap + seeders (this file is
+  // the pagesCrudRoutes-against-real-Postgres harness).
+  describe('GET /api/pages/:id — createdByUserId exposure', () => {
+    it('exposes createdByUserId for a standalone page so the UI can detect own pages', async () => {
+      const pageId = await insertStandalonePage('My own note', 'private', userA, 'NOTES');
+
+      currentUserId = userA;
+      const response = await app.inject({ method: 'GET', url: `/api/pages/${pageId}` });
+      expect(response.statusCode).toBe(200);
+
+      const body = response.json() as { source: string; createdByUserId: string | null };
+      expect(body.source).toBe('standalone');
+      expect(body.createdByUserId).toBe(userA);
+    });
+
+    it('returns null createdByUserId for a synced Confluence page', async () => {
+      const pageId = await insertConfluencePage('conf-own-1', 'Conf page', 'DEV');
+      mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
+
+      currentUserId = userA;
+      const response = await app.inject({ method: 'GET', url: `/api/pages/${pageId}` });
+      expect(response.statusCode).toBe(200);
+
+      const body = response.json() as { source: string; createdByUserId: string | null };
+      expect(body.source).toBe('confluence');
+      expect(body.createdByUserId).toBeNull();
+    });
+  });
 });

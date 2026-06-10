@@ -91,6 +91,26 @@ describe('LicenseStatusCard', () => {
     expect(screen.getByText('50')).toBeInTheDocument();
   });
 
+  it('renders the stats-grid expiry date formatted in UTC', async () => {
+    // '2027-12-31T23:59:59.999Z' is Jan 1 in east-of-UTC locales when
+    // formatted in local time — the card must format in UTC.
+    mockFetch({
+      edition: 'enterprise',
+      tier: 'enterprise',
+      seats: 50,
+      expiresAt: '2027-12-31T23:59:59.999Z',
+      features: ['oidc'],
+      valid: true,
+      canUpdate: true,
+    });
+
+    render(<LicenseStatusCard />, { wrapper: createWrapper() });
+
+    await screen.findByText('Enterprise Edition');
+    const utcDateText = new Date('2027-12-31T23:59:59.999Z').toLocaleDateString(undefined, { timeZone: 'UTC' });
+    expect(screen.getByText(utcDateText)).toBeInTheDocument();
+  });
+
   it('shows feature availability based on license', async () => {
     mockFetch({
       edition: 'enterprise',
