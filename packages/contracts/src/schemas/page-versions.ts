@@ -11,9 +11,29 @@ export const PageVersionSummarySchema = z.object({
 });
 export type PageVersionSummary = z.infer<typeof PageVersionSummarySchema>;
 
+/**
+ * #763: outcome of the lazy on-open Confluence version-list backfill.
+ *
+ * - `ok` — the historical list was (re)imported; the response is complete.
+ * - `skipped_no_credentials` — the viewing user has no stored Confluence
+ *   URL/PAT, so the import never ran; historical versions may be missing.
+ * - `failed` — the import was attempted but errored (Confluence unreachable,
+ *   auth rejected, …); the list may be incomplete.
+ */
+export const VersionBackfillStatusSchema = z.enum(['ok', 'skipped_no_credentials', 'failed']);
+export type VersionBackfillStatus = z.infer<typeof VersionBackfillStatusSchema>;
+
 export const PageVersionsResponseSchema = z.object({
   versions: z.array(PageVersionSummarySchema),
   pageId: z.string(),
+  /**
+   * Optional for backward compatibility; absent for standalone pages (no
+   * Confluence backfill applies) and for older backends. Clients must treat
+   * a missing value as "no signal", not as a failure.
+   */
+  backfillStatus: VersionBackfillStatusSchema.optional(),
+  /** Human-readable detail accompanying a non-`ok` backfillStatus. */
+  backfillDetail: z.string().optional(),
 });
 export type PageVersionsResponse = z.infer<typeof PageVersionsResponseSchema>;
 

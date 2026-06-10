@@ -156,6 +156,137 @@ describe('VersionHistory', () => {
     });
   });
 
+  it('empty-state copy describes lazy-on-open import, not sync (#763 regression)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({ versions: [], pageId: 'page-1' }),
+        { headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    render(
+      <VersionHistory pageId="page-1" model="qwen3.5" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+
+    await waitFor(() => {
+      expect(screen.getByText(/No version history available/)).toBeInTheDocument();
+    });
+    // The stale post-#728 copy must be gone — backfill is lazy-on-open, syncing cannot help.
+    expect(screen.queryByText(/saved during sync/i)).not.toBeInTheDocument();
+    // The new copy explains the lazy import and the PAT requirement.
+    expect(screen.getByText(/imported\s+from Confluence when this dialog opens/i)).toBeInTheDocument();
+    expect(screen.getByText(/Confluence PAT/i)).toBeInTheDocument();
+  });
+
+  it('renders the error branch (with reason + retry) instead of the empty state on a failed request (#763)', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ message: 'Access denied to this space' }), {
+          status: 403,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+      .mockResolvedValue(mockVersionsResponse());
+
+    render(
+      <VersionHistory pageId="page-1" model="qwen3.5" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+
+    await waitFor(() => {
+      expect(screen.getByText('Failed to load version history.')).toBeInTheDocument();
+    });
+    // The backend reason is surfaced, and the error is NOT masked as "no data".
+    expect(screen.getByText(/Access denied to this space \(HTTP 403\)/)).toBeInTheDocument();
+    expect(screen.queryByText(/No version history available/)).not.toBeInTheDocument();
+
+    // Retry refetches and renders the list.
+    fireEvent.click(screen.getByText('Retry'));
+    await waitFor(() => {
+      expect(screen.getByText('v3')).toBeInTheDocument();
+    });
+    expect(fetchSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('shows the no-credentials hint alongside the list when backfillStatus is skipped_no_credentials (#763)', async () => {
+    const base = JSON.parse(await mockVersionsResponse().text());
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({ ...base, backfillStatus: 'skipped_no_credentials' }),
+        { headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    render(
+      <VersionHistory pageId="page-1" model="qwen3.5" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+
+    await waitFor(() => {
+      expect(screen.getByText('v3')).toBeInTheDocument();
+    });
+    // The list still renders, with a hint pointing the user at Settings → Confluence.
+    expect(screen.getByText(/no Confluence credentials/i)).toBeInTheDocument();
+    expect(screen.getByText(/Settings → Confluence/)).toBeInTheDocument();
+  });
+
+  it('prefers the server-provided backfillDetail and shows a failed-import hint (#763)', async () => {
+    const base = JSON.parse(await mockVersionsResponse().text());
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ...base,
+          backfillStatus: 'failed',
+          backfillDetail: 'Importing historical versions from Confluence failed — the list below may be incomplete.',
+        }),
+        { headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    render(
+      <VersionHistory pageId="page-1" model="qwen3.5" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+
+    await waitFor(() => {
+      expect(screen.getByText('v3')).toBeInTheDocument();
+    });
+    expect(screen.getByText(/may be incomplete/i)).toBeInTheDocument();
+  });
+
+  it('shows no backfill hint when backfillStatus is ok (#763)', async () => {
+    const base = JSON.parse(await mockVersionsResponse().text());
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({ ...base, backfillStatus: 'ok' }),
+        { headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    render(
+      <VersionHistory pageId="page-1" model="qwen3.5" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+
+    await waitFor(() => {
+      expect(screen.getByText('v3')).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/could not be imported/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/may be incomplete/i)).not.toBeInTheDocument();
+  });
+
   it('shows loading state in dialog', async () => {
     vi.spyOn(globalThis, 'fetch').mockReturnValue(
       new Promise(() => {}),

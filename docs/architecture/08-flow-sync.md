@@ -162,8 +162,13 @@ dialog, `GET /api/pages/:id/versions` calls `backfillVersionHistory` which hits
 COALESCE). The historical body (`body_html`) for each old version is fetched even
 more lazily — only when a user previews or compares that specific version
 (`GET /api/pages/:id/versions/:version` triggers `getHistoricalBody` when
-`body_html IS NULL`). Both calls are best-effort: failures are logged and swallowed
-so the dialog still opens.
+`body_html IS NULL`). Both calls are best-effort: failures never fail the request,
+so the dialog still opens. Since #763 the list endpoint additionally reports the
+backfill outcome as `backfillStatus` (`ok` | `skipped_no_credentials` | `failed`,
+plus a human-readable `backfillDetail`) so the UI can distinguish a complete
+history from one whose Confluence import never ran (viewer has no stored PAT —
+backfill uses the *viewing user's* credentials via `getClientForUser`) or failed.
+The field is omitted for standalone pages, where no Confluence backfill applies.
 
 The `edited_at` column holds the real Confluence edit timestamp; the existing
 `synced_at` column records when Compendiq last ingested the row. The frontend

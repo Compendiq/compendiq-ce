@@ -21,6 +21,7 @@ import {
   RestoreVersionSchema,
   PageVersionsResponseSchema,
   PageVersionDetailSchema,
+  type VersionBackfillStatus,
 } from '@compendiq/contracts';
 import { z } from 'zod';
 
@@ -105,12 +106,28 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
     if (!ctx) return PageVersionsResponseSchema.parse({ versions: [], pageId: id });
 
     // #722: Best-effort backfill of Confluence version list on dialog open.
+    // #763: the outcome is surfaced as `backfillStatus` so the UI can tell
+    // "history is complete" from "historical import never ran / failed"
+    // instead of silently rendering an incomplete list. Stays undefined for
+    // standalone pages, where no Confluence backfill applies.
+    let backfillStatus: VersionBackfillStatus | undefined;
+    let backfillDetail: string | undefined;
     if (ctx.confluenceId) {
       try {
         const client = await getClientForUser(userId);
-        if (client) await backfillVersionHistory(ctx.id, ctx.confluenceId, client);
+        if (client) {
+          await backfillVersionHistory(ctx.id, ctx.confluenceId, client);
+          backfillStatus = 'ok';
+        } else {
+          backfillStatus = 'skipped_no_credentials';
+          backfillDetail =
+            'No Confluence credentials are configured for your account, so historical versions could not be imported. Add your Confluence URL and PAT in Settings → Confluence.';
+        }
       } catch (err) {
-        request.log.warn({ err, pageId: id }, '#722: version backfill skipped (Confluence unavailable)');
+        backfillStatus = 'failed';
+        backfillDetail =
+          'Importing historical versions from Confluence failed — the list below may be incomplete.';
+        request.log.warn({ err, pageId: id }, '#722: version backfill failed (Confluence unavailable)');
       }
     }
 
@@ -160,6 +177,8 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
         })),
       ],
       pageId: id,
+      backfillStatus,
+      backfillDetail,
     });
   });
 
