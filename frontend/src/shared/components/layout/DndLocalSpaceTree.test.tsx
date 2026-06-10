@@ -140,4 +140,31 @@ describe('DndLocalSpaceTree', () => {
     const active = document.querySelector('[data-active="true"]');
     expect(active?.getAttribute('data-page-id')).toBe('p2-c1');
   });
+
+  // #767: tree titles intermittently rendered faux-bold (synthesized weight
+  // during variable-font load / compositing re-rasterization). The weight is
+  // now pinned per-state on the title span so it can never float: exactly one
+  // of font-normal / font-medium, never both (Tailwind class order between the
+  // two utilities is unspecified, so conditional classes are mandatory).
+  it('pins font-normal on inactive titles and font-medium on the active title (#767)', () => {
+    renderTree({ activePageId: 'p1' });
+
+    const activeTitle = screen.getByText('Page One');
+    expect(activeTitle.className).toContain('font-medium');
+    expect(activeTitle.className).not.toContain('font-normal');
+
+    const inactiveTitle = screen.getByText('Page Two');
+    expect(inactiveTitle.className).toContain('font-normal');
+    expect(inactiveTitle.className).not.toContain('font-medium');
+  });
+
+  it('pins font-normal on every title when no page is active (#767)', () => {
+    renderTree({ activePageId: undefined });
+
+    for (const title of ['Page One', 'Page Two']) {
+      const span = screen.getByText(title);
+      expect(span.className).toContain('font-normal');
+      expect(span.className).not.toContain('font-medium');
+    }
+  });
 });

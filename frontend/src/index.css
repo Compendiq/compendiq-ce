@@ -47,6 +47,15 @@ body {
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
   font-feature-settings: "liga" 1, "kern" 1;
+  /* #767: the variable fonts above load async (@fontsource, font-display:
+     swap). During the swap window the browser renders system fallbacks and
+     may synthesize faux-bold glyphs, making random sidebar/tree text flash
+     heavier between loads. `style` allows only italic synthesis (we ship no
+     italic cut of IBM Plex Sans, so the `italic` utility and the editor's
+     Italic mark rely on oblique synthesis) while disabling weight and
+     small-caps synthesis. Shorthand over `font-synthesis-weight: none` for
+     wider browser support (Safari 9+/Firefox 34+ vs 16.4+/111+). */
+  font-synthesis: style;
 }
 
 /* Headings share the body's sans stack (IBM Plex Sans Variable) so the UI
