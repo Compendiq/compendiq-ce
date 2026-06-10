@@ -442,14 +442,25 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey
     layout.replaceWith(div);
   }
 
-  // Drop labels macro (#348). Labels are page metadata fetched via
-  // expand=metadata.labels — never parse them out of the body. The macro is
-  // a rendering placeholder with no body, so dropping it (rather than
-  // round-tripping) is safe; htmlToConfluence's "labels" output is currently
-  // unused.
+  // Labels macro (#348 → #765). Label *metadata* still comes exclusively from
+  // expand=metadata.labels — never parse label names out of the body. But the
+  // macro itself must round-trip: #348 dropped it outright, which was safe
+  // when nothing pushed bodies back to Confluence. Now that AI-Improve apply
+  // and editor saves DO push the converted body back, dropping the macro here
+  // would permanently delete the in-body labels widget from the Confluence
+  // page on the first write-back (#765). Keep it as a placeholder instead,
+  // mirroring the toc/children pattern.
+  const labelsParamNames = ['max', 'spaces', 'excludedLabels', 'showLabels'];
   for (const macro of byTag(doc, 'ac:structured-macro')) {
     if (getMacroName(macro) !== 'labels') continue;
-    macro.remove();
+    const div = doc.createElement('div');
+    div.className = 'confluence-labels-macro';
+    for (const paramName of labelsParamNames) {
+      const val = getParamValue(macro, paramName);
+      if (val !== null && val !== undefined) div.setAttribute(`data-${paramName.toLowerCase()}`, val);
+    }
+    div.textContent = '[Labels]';
+    macro.replaceWith(div);
   }
 
   // Remove remaining unknown macros - preserve as data attributes
@@ -655,6 +666,29 @@ export function htmlToConfluence(html: string): string {
       param.setAttribute('ac:name', 'old');
       param.textContent = old;
       macro.appendChild(param);
+    }
+    div.replaceWith(macro);
+  }
+
+  // Convert labels macro placeholders back to ac:structured-macro[name=labels]
+  // (#765) so write-back doesn't delete the widget from the Confluence page.
+  for (const div of doc.querySelectorAll('div.confluence-labels-macro')) {
+    const macro = doc.createElement('ac:structured-macro');
+    macro.setAttribute('ac:name', 'labels');
+    const labelsReverseParams: Record<string, string> = {
+      'max': 'max',
+      'spaces': 'spaces',
+      'excludedlabels': 'excludedLabels',
+      'showlabels': 'showLabels',
+    };
+    for (const [dataAttr, paramName] of Object.entries(labelsReverseParams)) {
+      const val = div.getAttribute(`data-${dataAttr}`);
+      if (val !== null) {
+        const p = doc.createElement('ac:parameter');
+        p.setAttribute('ac:name', paramName);
+        p.textContent = val;
+        macro.appendChild(p);
+      }
     }
     div.replaceWith(macro);
   }
@@ -871,13 +905,18 @@ function pathBasename(urlString: string): string {
 export interface ProtectedMedia { token: string; html: string; }
 
 const MEDIA_TOKEN_PREFIX = 'CQ_MEDIA_PLACEHOLDER_';
+// #765: legacy section/column wrappers are NO LONGER opaque-protected here.
+// #723 froze them whole (token swap), which preserved them but made the prose
+// inside uneditable by the LLM. They now round-trip via layout boundary
+// tokens in htmlToMarkdown/markdownToHtml (see LAYOUT_TOKEN_* below) so the
+// inner content stays improvable. The labels macro placeholder IS opaque —
+// it is atomic (no prose inside) so the token pattern fits it exactly.
 const MEDIA_SELECTOR = [
   'img',
   'div.confluence-drawio',
   'div.confluence-mermaid',
   'div.mermaid',
-  'div.confluence-section',
-  'div.confluence-column',
+  'div.confluence-labels-macro',
 ].join(',');
 
 /**
@@ -989,18 +1028,70 @@ export function htmlToMarkdown(html: string): string {
     },
   });
 
-  // Custom rule for section containers — render content inline
+  // #765: layout containers — emit boundary tokens as standalone lines so the
+  // wrapper structure survives the markdown round-trip while the prose inside
+  // stays editable by the LLM. markdownToHtml() rebuilds the divs from the
+  // tokens (with a drop-guard if the LLM mangled them).
+  turndownService.addRule('confluenceLayout', {
+    filter: (node) =>
+      node.nodeName === 'DIV' && node.classList.contains('confluence-layout'),
+    replacement: (content) => `\n\n[[[LAYOUT]]]\n\n${content.trim()}\n\n[[[/LAYOUT]]]\n\n`,
+  });
+
+  turndownService.addRule('confluenceLayoutSection', {
+    filter: (node) =>
+      node.nodeName === 'DIV' && node.classList.contains('confluence-layout-section'),
+    replacement: (content, node) => {
+      const raw = (node as HTMLElement).getAttribute('data-layout-type') ?? 'single';
+      // Confluence layout types are lowercase identifiers (single, two_equal,
+      // three_with_sidebars, …) — anything else would break the token line.
+      const layoutType = /^[a-z_]+$/.test(raw) ? raw : 'single';
+      return `\n\n[[[LAYOUT-SECTION ${layoutType}]]]\n\n${content.trim()}\n\n[[[/LAYOUT-SECTION]]]\n\n`;
+    },
+  });
+
+  turndownService.addRule('confluenceLayoutCell', {
+    filter: (node) =>
+      node.nodeName === 'DIV' && node.classList.contains('confluence-layout-cell'),
+    replacement: (content) => `\n\n[[[LAYOUT-CELL]]]\n\n${content.trim()}\n\n[[[/LAYOUT-CELL]]]\n\n`,
+  });
+
+  // #765: legacy section/column containers — same boundary-token treatment
+  // (previously these dropped the wrapper and emitted only trimmed content).
   turndownService.addRule('confluenceSection', {
     filter: (node) =>
       node.nodeName === 'DIV' && node.classList.contains('confluence-section'),
-    replacement: (content) => `\n${content.trim()}\n\n`,
+    replacement: (content, node) => {
+      const border = (node as HTMLElement).getAttribute('data-border');
+      const attrs = border === 'true' || border === 'false' ? ` border=${border}` : '';
+      return `\n\n[[[SECTION${attrs}]]]\n\n${content.trim()}\n\n[[[/SECTION]]]\n\n`;
+    },
   });
 
-  // Custom rule for column containers — separate with divider
   turndownService.addRule('confluenceColumn', {
     filter: (node) =>
       node.nodeName === 'DIV' && node.classList.contains('confluence-column'),
-    replacement: (content) => `\n${content.trim()}\n`,
+    replacement: (content, node) => {
+      const el = node as HTMLElement;
+      // Prefer data-cell-width; fall back to the inline flex style (mirrors
+      // htmlToConfluence). Only token-safe width values are carried.
+      let width = el.getAttribute('data-cell-width');
+      if (!width) {
+        const m = (el.getAttribute('style') ?? '').match(/flex:\s*0\s+0\s+(\S+)/);
+        if (m) width = m[1] ?? null;
+      }
+      const attrs = width && /^[\d.]+(%|px|em|rem)?$/.test(width) ? ` width=${width}` : '';
+      return `\n\n[[[COLUMN${attrs}]]]\n\n${content.trim()}\n\n[[[/COLUMN]]]\n\n`;
+    },
+  });
+
+  // Custom rule for the labels macro placeholder (#765). Only reached by
+  // non-Improve flows (quality/auto-tag/diagram context) — the Improve path
+  // opaque-protects the div via protectMedia before turndown runs.
+  turndownService.addRule('confluenceLabels', {
+    filter: (node) =>
+      node.nodeName === 'DIV' && node.classList.contains('confluence-labels-macro'),
+    replacement: () => '\n[Labels]\n\n',
   });
 
   // Custom rule for children macro placeholder
@@ -1041,11 +1132,143 @@ export function htmlToMarkdown(html: string): string {
   return turndownService.turndown(html);
 }
 
+// ---------------------------------------------------------------------------
+// #765: Confluence layout boundary tokens.
+//
+// Row/column structure (modern `ac:layout` grids and legacy section/column
+// macros) has no Markdown representation, so the AI-Improve round-trip
+// (htmlToMarkdown → LLM → markdownToHtml) used to flatten it. Unlike media
+// (#723's opaque CQ_MEDIA_PLACEHOLDER swap), layout cells contain prose the
+// LLM must still be able to edit — so htmlToMarkdown emits BOUNDARY tokens as
+// standalone lines around the (still editable) cell content:
+//
+//   [[[LAYOUT]]] … [[[/LAYOUT]]]
+//   [[[LAYOUT-SECTION two_equal]]] … [[[/LAYOUT-SECTION]]]
+//   [[[LAYOUT-CELL]]] … [[[/LAYOUT-CELL]]]
+//   [[[SECTION border=true]]] … [[[/SECTION]]]    (legacy ac:section macro)
+//   [[[COLUMN width=50%]]] … [[[/COLUMN]]]        (legacy ac:column macro)
+//
+// markdownToHtml() rebuilds the corresponding div.confluence-* wrappers from
+// the tokens, which htmlToConfluence then maps losslessly back to ac:layout*
+// / section / column. Drop-guard: if the LLM mangled the tokens (unbalanced
+// or invalid nesting), ALL tokens are stripped instead — content degrades to
+// the pre-#765 flattened form, but the page is never corrupted and raw
+// [[[…]]] text never reaches the saved page.
+// ---------------------------------------------------------------------------
+
+// Longest-first so LAYOUT never shadows LAYOUT-SECTION / LAYOUT-CELL.
+const LAYOUT_TOKEN_KINDS = 'LAYOUT-SECTION|LAYOUT-CELL|LAYOUT|SECTION|COLUMN';
+const LAYOUT_TOKEN_BARE = String.raw`\[\[\[\/?(?:${LAYOUT_TOKEN_KINDS})(?:[ \t][^\]\n]*)?\]\]\]`;
+const LAYOUT_TOKEN_CAPTURE = String.raw`\[\[\[(\/?)(${LAYOUT_TOKEN_KINDS})((?:[ \t][^\]\n]*)?)\]\]\]`;
+
+interface LayoutToken { isClose: boolean; kind: string; attrs: string; }
+
+// Fresh instance per use — global regexes are stateful via lastIndex.
+function layoutTokenRegex(): RegExp {
+  // Paragraph-wrapped form first so the lone wrapping <p> is consumed too.
+  return new RegExp(`<p>\\s*${LAYOUT_TOKEN_CAPTURE}\\s*</p>|${LAYOUT_TOKEN_CAPTURE}`, 'g');
+}
+
+function parseLayoutToken(m: RegExpMatchArray): LayoutToken {
+  return {
+    isClose: (m[1] ?? m[4]) === '/',
+    kind: (m[2] ?? m[5])!,
+    attrs: (m[3] ?? m[6] ?? '').trim(),
+  };
+}
+
+/**
+ * Where each token kind may open, mirroring what htmlToConfluence can emit as
+ * valid Confluence storage (ac:layout-section only directly inside ac:layout,
+ * ac:layout-cell only inside a section, legacy column only inside a legacy
+ * section, layouts only at top level). Anything else means the LLM rearranged
+ * the tokens — flatten instead of risking invalid storage format.
+ */
+function layoutOpenAllowed(kind: string, stack: string[]): boolean {
+  const top = stack[stack.length - 1];
+  switch (kind) {
+    case 'LAYOUT': return stack.length === 0;
+    case 'LAYOUT-SECTION': return top === 'LAYOUT';
+    case 'LAYOUT-CELL': return top === 'LAYOUT-SECTION';
+    case 'SECTION': return top === undefined || top === 'LAYOUT-CELL' || top === 'COLUMN';
+    case 'COLUMN': return top === 'SECTION';
+    default: return false;
+  }
+}
+
+function layoutOpenTag(kind: string, attrs: string): string {
+  switch (kind) {
+    case 'LAYOUT':
+      return '<div class="confluence-layout">';
+    case 'LAYOUT-SECTION': {
+      const layoutType = /^[a-z_]+$/.test(attrs) ? attrs : 'single';
+      return `<div class="confluence-layout-section" data-layout-type="${layoutType}">`;
+    }
+    case 'LAYOUT-CELL':
+      return '<div class="confluence-layout-cell">';
+    case 'SECTION': {
+      const m = attrs.match(/^border=(true|false)$/);
+      return m ? `<div class="confluence-section" data-border="${m[1]}">` : '<div class="confluence-section">';
+    }
+    case 'COLUMN': {
+      const m = attrs.match(/^width=([\d.]+(?:%|px|em|rem)?)$/);
+      if (!m) return '<div class="confluence-column">';
+      const width = m[1]!;
+      // Same safe-width rule as confluenceToHtml: only digits + unit get a style.
+      const style = /^\d+(%|px|em|rem)$/.test(width) ? ` style="flex: 0 0 ${width}"` : '';
+      return `<div class="confluence-column" data-cell-width="${width}"${style}>`;
+    }
+    // Unreachable: kinds are constrained by LAYOUT_TOKEN_KINDS in the regex.
+    default:
+      return '<div>';
+  }
+}
+
+/**
+ * Rebuild div.confluence-layout* / -section / -column wrappers from boundary
+ * tokens in marked's HTML output. All-or-nothing: the token sequence is
+ * validated for balance + nesting first, so a single mangled token can never
+ * produce unbalanced divs — instead every token is stripped (graceful
+ * flatten) while the prose is kept.
+ */
+function rebuildLayoutStructure(html: string): string {
+  const tokens = [...html.matchAll(layoutTokenRegex())].map(parseLayoutToken);
+  if (tokens.length === 0) return html;
+
+  let valid = true;
+  const stack: string[] = [];
+  for (const t of tokens) {
+    if (!t.isClose) {
+      if (!layoutOpenAllowed(t.kind, stack)) { valid = false; break; }
+      stack.push(t.kind);
+    } else if (stack.pop() !== t.kind) {
+      valid = false;
+      break;
+    }
+  }
+  if (stack.length > 0) valid = false;
+
+  let i = 0;
+  return html.replace(layoutTokenRegex(), () => {
+    const t = tokens[i++]!;
+    if (!valid) return ''; // drop-guard: strip the token, keep the prose
+    return t.isClose ? '</div>' : layoutOpenTag(t.kind, t.attrs);
+  });
+}
+
 /**
  * Converts Markdown to HTML (for LLM output -> editor).
  */
 export async function markdownToHtml(markdown: string): Promise<string> {
-  let html = await marked(markdown) as string;
+  // #765: force every layout boundary token onto its own paragraph so marked
+  // wraps it in a lone <p>, even when the LLM merged adjacent token lines or
+  // pulled a token into surrounding prose.
+  const normalized = markdown.replace(
+    new RegExp(`[ \\t]*(${LAYOUT_TOKEN_BARE})[ \\t]*`, 'g'),
+    '\n\n$1\n\n',
+  );
+
+  let html = await marked(normalized) as string;
 
   // #723: rebuild draw.io wrappers from ```drawio fences.
   // marked emits: <pre><code class="language-drawio">NAME\n</code></pre>
@@ -1055,6 +1278,17 @@ export async function markdownToHtml(markdown: string): Promise<string> {
       const safe = String(name).trim();
       return `<div class="confluence-drawio" data-diagram-name="${safe.replace(/"/g, '&quot;')}"></div>`;
     },
+  );
+
+  // #765: rebuild layout/section/column wrappers from boundary tokens.
+  html = rebuildLayoutStructure(html);
+
+  // #765 drop-guard backstop: strip any token-shaped remnant that failed
+  // structural matching (e.g. the LLM lower-cased a marker) — raw [[[…]]]
+  // text must never reach the saved page.
+  html = html.replace(
+    new RegExp(`<p>\\s*${LAYOUT_TOKEN_BARE}\\s*</p>|${LAYOUT_TOKEN_BARE}`, 'gi'),
+    '',
   );
 
   return html;

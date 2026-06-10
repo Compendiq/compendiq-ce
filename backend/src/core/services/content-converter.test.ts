@@ -5,6 +5,8 @@ import {
   htmlToMarkdown,
   markdownToHtml,
   htmlToText,
+  protectMedia,
+  restoreMedia,
 } from './content-converter.js';
 import {
   SIMPLE_PAGE,
@@ -187,7 +189,7 @@ describe('content-converter', () => {
       expect(html).toContain('Embedded widget');
     });
 
-    it('drops the labels macro and never leaks "[Confluence macro: labels]" (#348)', () => {
+    it('converts the labels macro to a placeholder and never leaks "[Confluence macro: labels]" (#348, #765)', () => {
       const xhtml = `<p>Before</p>
         <ac:structured-macro ac:name="labels" ac:schema-version="1">
           <ac:parameter ac:name="showLabels">true</ac:parameter>
@@ -197,6 +199,10 @@ describe('content-converter', () => {
       expect(html).not.toContain('[Confluence macro: labels]');
       expect(html).not.toContain('confluence-macro-unknown');
       expect(html).not.toContain('ac:structured-macro');
+      // #765: kept as a placeholder (was: dropped) so write-back does not
+      // delete the widget from the Confluence page body.
+      expect(html).toContain('class="confluence-labels-macro"');
+      expect(html).toContain('data-showlabels="true"');
       expect(html).toContain('Before');
       expect(html).toContain('After');
     });
@@ -775,7 +781,7 @@ describe('content-converter', () => {
       expect(md).not.toContain('confluence-attachments-macro');
     });
 
-    it('converts section/column to markdown preserving column content', () => {
+    it('converts section/column to markdown with boundary tokens around editable content (#765)', () => {
       const html = confluenceToHtml(SECTION_COLUMN_PAGE);
       const md = htmlToMarkdown(html);
       expect(md).toContain('Left column content');
@@ -783,6 +789,26 @@ describe('content-converter', () => {
       expect(md).not.toMatch(/<div[^>]*>/);
       expect(md).not.toContain('confluence-section');
       expect(md).not.toContain('confluence-column');
+      // #765: wrappers are no longer dropped — boundary tokens carry them.
+      expect(md).toContain('[[[SECTION]]]');
+      expect(md).toContain('[[[COLUMN width=30%]]]');
+      expect(md).toContain('[[[COLUMN width=70%]]]');
+      expect(md).toContain('[[[/COLUMN]]]');
+      expect(md).toContain('[[[/SECTION]]]');
+    });
+
+    it('converts modern layout divs to markdown with boundary tokens (#765)', () => {
+      const html = confluenceToHtml(LAYOUT_TWO_EQUAL_PAGE);
+      const md = htmlToMarkdown(html);
+      expect(md).toContain('[[[LAYOUT]]]');
+      expect(md).toContain('[[[LAYOUT-SECTION two_equal]]]');
+      expect(md).toContain('[[[LAYOUT-CELL]]]');
+      expect(md).toContain('[[[/LAYOUT-CELL]]]');
+      expect(md).toContain('[[[/LAYOUT-SECTION]]]');
+      expect(md).toContain('[[[/LAYOUT]]]');
+      expect(md).toContain('Left column content');
+      expect(md).toContain('Right column content');
+      expect(md).not.toMatch(/<div[^>]*>/);
     });
 
     it('produces clean markdown for LLM consumption from complex page', () => {
@@ -1143,5 +1169,192 @@ describe('content-converter: index block stripping (#13)', () => {
     const html = '<div class="figure-index">figures</div><p>Content</p>';
     const result = confluenceToHtml(html);
     expect(result).toContain('figure-index');
+  });
+});
+
+// ==========================================================================
+// #765 — layout / section / column preservation through the AI Improve
+// markdown round-trip, exercised over the FULL Improve path:
+//   protectMedia → htmlToMarkdown → (LLM edit) → markdownToHtml →
+//   restoreMedia → htmlToConfluence
+// ==========================================================================
+
+describe('content-converter: #765 layout preservation through AI Improve round-trip', () => {
+  /** Run the full Improve pipeline, optionally editing the markdown like an LLM would. */
+  async function improveRoundTrip(
+    storageXhtml: string,
+    editMarkdown: (md: string) => string = (md) => md,
+  ): Promise<{ md: string; html: string; xhtml: string }> {
+    const bodyHtml = confluenceToHtml(storageXhtml);
+    const { html: protectedHtml, media } = protectMedia(bodyHtml);
+    const md = editMarkdown(htmlToMarkdown(protectedHtml));
+    const html = restoreMedia(await markdownToHtml(md), media);
+    return { md, html, xhtml: htmlToConfluence(html) };
+  }
+
+  it('preserves a two-column (two_equal) layout end to end', async () => {
+    const { html, xhtml } = await improveRoundTrip(LAYOUT_TWO_EQUAL_PAGE);
+    expect(html).toContain('class="confluence-layout"');
+    expect(html).toContain('data-layout-type="two_equal"');
+    expect((html.match(/class="confluence-layout-cell"/g) ?? []).length).toBe(2);
+    expect(xhtml).toContain('<ac:layout>');
+    expect(xhtml).toContain('ac:type="two_equal"');
+    expect((xhtml.match(/<ac:layout-cell>/g) ?? []).length).toBe(2);
+    expect(xhtml).toContain('Left column content');
+    expect(xhtml).toContain('Right column content');
+    expect(xhtml).not.toContain('[[[');
+  });
+
+  it('preserves a three-column (three_equal) layout end to end', async () => {
+    const { xhtml } = await improveRoundTrip(LAYOUT_THREE_EQUAL_PAGE);
+    expect(xhtml).toContain('ac:type="three_equal"');
+    expect((xhtml.match(/<ac:layout-cell>/g) ?? []).length).toBe(3);
+    expect(xhtml).toContain('Column one');
+    expect(xhtml).toContain('Column two');
+    expect(xhtml).toContain('Column three');
+  });
+
+  it('preserves stacked layout sections with distinct types', async () => {
+    const { xhtml } = await improveRoundTrip(LAYOUT_STACKED_SECTIONS_PAGE);
+    expect(xhtml).toContain('ac:type="single"');
+    expect(xhtml).toContain('ac:type="two_equal"');
+    expect(xhtml).toContain('ac:type="three_equal"');
+    expect((xhtml.match(/<ac:layout>/g) ?? []).length).toBe(1);
+    expect(xhtml).toContain('Welcome to the guide.');
+    expect(xhtml).toContain('Feature C');
+  });
+
+  it('preserves legacy section/column with border and width parameters', async () => {
+    const { xhtml } = await improveRoundTrip(SECTION_BORDER_PAGE);
+    expect(xhtml).toContain('ac:name="section"');
+    expect(xhtml).toContain('<ac:parameter ac:name="border">true</ac:parameter>');
+    expect((xhtml.match(/ac:name="column"/g) ?? []).length).toBe(2);
+    expect(xhtml).toContain('Column A');
+    expect(xhtml).toContain('Column B');
+
+    const widths = await improveRoundTrip(SECTION_COLUMN_PAGE);
+    expect(widths.xhtml).toContain('<ac:parameter ac:name="width">30%</ac:parameter>');
+    expect(widths.xhtml).toContain('<ac:parameter ac:name="width">70%</ac:parameter>');
+  });
+
+  it('keeps prose inside cells editable — an LLM-style text edit survives with the layout', async () => {
+    const { md, xhtml } = await improveRoundTrip(LAYOUT_TWO_EQUAL_PAGE, (markdown) =>
+      markdown.replace('Left column content', 'Left column content, now much clearer.'),
+    );
+    // The prose was exposed as plain markdown (NOT hidden in an opaque token).
+    expect(md).toContain('Left column content');
+    expect(xhtml).toContain('Left column content, now much clearer.');
+    expect(xhtml).toContain('ac:type="two_equal"');
+    expect((xhtml.match(/<ac:layout-cell>/g) ?? []).length).toBe(2);
+  });
+
+  it('preserves rich nested content (lists, code, tables) inside layout cells', async () => {
+    const { xhtml } = await improveRoundTrip(LAYOUT_NESTED_CONTENT_PAGE);
+    expect(xhtml).toContain('<ac:layout>');
+    expect(xhtml).toContain('ac:type="two_equal"');
+    expect(xhtml).toContain('ac:name="code"');
+    expect(xhtml).toContain('echo "hello"');
+    expect(xhtml).toContain('<li>Item 1</li>');
+    expect(xhtml).toContain('<td>Name</td>');
+    // Panels are still lossy through the markdown boundary (blockquote form —
+    // pre-existing, unrelated to #765) but their text stays inside the cell.
+    expect(xhtml).toContain('Important note');
+  });
+
+  it('protects media inside layout cells via tokens and restores it in place', async () => {
+    const storage = `<ac:layout><ac:layout-section ac:type="two_equal"><ac:layout-cell><p>Intro</p><ac:image><ri:attachment ri:filename="photo.png"></ri:attachment></ac:image></ac:layout-cell><ac:layout-cell><p>Other</p></ac:layout-cell></ac:layout-section></ac:layout>`;
+    const bodyHtml = confluenceToHtml(storage, '42');
+    const { html: protectedHtml, media } = protectMedia(bodyHtml);
+    expect(media).toHaveLength(1);
+    const md = htmlToMarkdown(protectedHtml);
+    // The media token sits INSIDE the cell boundary tokens.
+    expect(md.indexOf('[[[LAYOUT-CELL]]]')).toBeLessThan(md.indexOf('CQ\\_MEDIA\\_PLACEHOLDER\\_0'));
+    const html = restoreMedia(await markdownToHtml(md), media);
+    const xhtml = htmlToConfluence(html);
+    expect(xhtml).toContain('ri:filename="photo.png"');
+    // Image is still inside the first layout cell.
+    const firstCell = xhtml.slice(xhtml.indexOf('<ac:layout-cell>'), xhtml.indexOf('</ac:layout-cell>'));
+    expect(firstCell).toContain('ri:filename="photo.png"');
+  });
+
+  describe('drop-guard', () => {
+    it('flattens gracefully when the LLM drops a closing token (unbalanced)', async () => {
+      const bodyHtml = confluenceToHtml(LAYOUT_TWO_EQUAL_PAGE);
+      const md = htmlToMarkdown(bodyHtml).replace('[[[/LAYOUT-CELL]]]', '');
+      const html = await markdownToHtml(md);
+      expect(html).not.toContain('[[[');
+      expect(html).not.toContain('confluence-layout');
+      expect(html).toContain('Left column content');
+      expect(html).toContain('Right column content');
+      // The flattened HTML still converts to valid (layout-free) storage.
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).not.toContain('ac:layout');
+      expect(xhtml).not.toContain('[[[');
+    });
+
+    it('flattens gracefully when the LLM reorders tokens into invalid nesting', async () => {
+      // LAYOUT-CELL outside any LAYOUT-SECTION — balanced but invalid.
+      const md = '[[[LAYOUT-CELL]]]\n\nOrphan prose\n\n[[[/LAYOUT-CELL]]]';
+      const html = await markdownToHtml(md);
+      expect(html).not.toContain('[[[');
+      expect(html).not.toContain('confluence-layout');
+      expect(html).toContain('Orphan prose');
+    });
+
+    it('rebuilds even when the LLM merges token lines without blank lines', async () => {
+      const md =
+        '[[[LAYOUT]]]\n[[[LAYOUT-SECTION two_equal]]]\n[[[LAYOUT-CELL]]]\nLeft prose\n[[[/LAYOUT-CELL]]]\n[[[LAYOUT-CELL]]]\nRight prose\n[[[/LAYOUT-CELL]]]\n[[[/LAYOUT-SECTION]]]\n[[[/LAYOUT]]]';
+      const html = await markdownToHtml(md);
+      expect(html).toContain('data-layout-type="two_equal"');
+      expect((html.match(/class="confluence-layout-cell"/g) ?? []).length).toBe(2);
+      expect(html).toContain('Left prose');
+      expect(html).not.toContain('[[[');
+    });
+
+    it('strips case-mangled token remnants instead of leaking them into the page', async () => {
+      const md = '[[[layout]]]\n\n[[[layout-section two_equal]]]\n\nProse survives\n\n[[[/layout-section]]]\n\n[[[/layout]]]';
+      const html = await markdownToHtml(md);
+      expect(html).not.toContain('[[[');
+      expect(html).not.toContain('confluence-layout');
+      expect(html).toContain('Prose survives');
+    });
+
+    it('leaves ordinary bracketed prose untouched', async () => {
+      const md = 'See [the docs](https://example.com) and \\[citation\\] plus [[wiki-style]] links.';
+      const html = await markdownToHtml(md);
+      expect(html).toContain('the docs');
+      expect(html).toContain('[citation]');
+      expect(html).toContain('[[wiki-style]]');
+    });
+
+    it('falls back to single for an invalid layout-section type', async () => {
+      const md = '[[[LAYOUT]]]\n\n[[[LAYOUT-SECTION <script>alert(1)</script>]]]\n\n[[[LAYOUT-CELL]]]\n\nX\n\n[[[/LAYOUT-CELL]]]\n\n[[[/LAYOUT-SECTION]]]\n\n[[[/LAYOUT]]]';
+      const html = await markdownToHtml(md);
+      // Injected attrs never reach the output; type falls back to single.
+      expect(html).not.toContain('script');
+      expect(html).toContain('data-layout-type="single"');
+    });
+  });
+
+  describe('labels macro (#765 triage fix)', () => {
+    const LABELS_PAGE = `<p>Before</p><ac:structured-macro ac:name="labels" ac:schema-version="1"><ac:parameter ac:name="showLabels">true</ac:parameter></ac:structured-macro><p>After</p>`;
+
+    it('round-trips the in-body labels macro at the Confluence⇄HTML boundary', () => {
+      const html = confluenceToHtml(LABELS_PAGE);
+      expect(html).toContain('class="confluence-labels-macro"');
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).toContain('ac:name="labels"');
+      expect(xhtml).toContain('<ac:parameter ac:name="showLabels">true</ac:parameter>');
+      expect(xhtml).not.toContain('confluence-labels-macro');
+    });
+
+    it('survives the full Improve path via opaque media protection', async () => {
+      const { md, xhtml } = await improveRoundTrip(LABELS_PAGE);
+      // Atomic placeholder — protected as an opaque token, not boundary tokens.
+      expect(md).toContain('CQ\\_MEDIA\\_PLACEHOLDER\\_0');
+      expect(xhtml).toContain('ac:name="labels"');
+      expect(xhtml).toContain('Before');
+      expect(xhtml).toContain('After');
+    });
   });
 });
