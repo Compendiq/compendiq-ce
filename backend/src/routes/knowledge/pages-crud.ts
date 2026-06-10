@@ -580,18 +580,28 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const cached = await cache.get(userId, 'pages', cacheKey);
     if (cached) return cached;
 
-    // Access control via RBAC + local spaces (local spaces bypass RBAC)
+    // Access control: same visibility predicate as the list route —
+    //   - Confluence pages from user's accessible spaces (via RBAC)
+    //   - Shared standalone articles (visible to all)
+    //   - Their own private standalone articles
+    // Local-space pages are always standalone, so they surface through the
+    // visibility branches (#527/#528); local space keys are still merged into
+    // the Confluence branch as belt-and-braces against legacy data drift.
     const rbacSpaces = await getUserAccessibleSpaces(userId);
     const localSpacesResult = await query<{ space_key: string }>(
       `SELECT space_key FROM spaces WHERE source = 'local'`,
     );
     const localSpaceKeys = localSpacesResult.rows.map((r) => r.space_key);
     const treeSpaces = Array.from(new Set([...rbacSpaces, ...localSpaceKeys]));
-    const values: unknown[] = [treeSpaces];
-    let treeWhereClause = 'WHERE cp.space_key = ANY($1::text[]) AND cp.deleted_at IS NULL';
+    const values: unknown[] = [treeSpaces, userId];
+    let treeWhereClause = `WHERE (
+        (cp.source = 'confluence' AND cp.space_key = ANY($1::text[]))
+        OR (cp.source = 'standalone' AND cp.visibility = 'shared')
+        OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $2)
+      ) AND cp.deleted_at IS NULL`;
 
     if (params.spaceKey) {
-      treeWhereClause += ' AND cp.space_key = $2';
+      treeWhereClause += ' AND cp.space_key = $3';
       values.push(params.spaceKey);
     }
 
