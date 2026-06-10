@@ -271,7 +271,14 @@ the LLM's echo; it aligns whatever came back against the known skeleton:
    case, 2–4 bracket runs, markdown-escaped `\[`, `\` instead of `/` closes,
    `LAYOUT_CELL` / `LAYOUT SECTION` kind variants, emphasis-wrapped tokens,
    junk attrs — plus two unwrapping fallbacks for token-only code fences and
-   a fence wrapped around the entire output.
+   a fence wrapped around the entire output. The tolerant matcher is an
+   **escalation**, not the default: candidates are first evaluated with the
+   strict canonical matcher, and only when no candidate's intact canonical
+   tokens cover the full skeleton does the loose scan run. So when the
+   echo's real tokens are intact, token lookalikes in user prose (e.g. a
+   literal `[[[layout]]]` in a sentence about the syntax) survive as prose
+   instead of being consumed as debris — only exact-canonical lookalikes
+   remain exposed, the pre-#781 status quo.
 3. Found tokens are **greedily aligned, in order, onto the skeleton**. Close
    tokens and pure container opens (`LAYOUT`, `LAYOUT-SECTION`) are
    re-derivable and may be dropped by the model; every **prose-bearing open**
@@ -289,7 +296,19 @@ the LLM's echo; it aligns whatever came back against the known skeleton:
    toast by the frontend). The page is **not** modified locally and nothing
    is pushed to Confluence — a flattened body can never be saved silently.
    An empty skeleton (layout-free page) also strips any *hallucinated*
-   tokens instead of building layout that never existed.
+   tokens instead of building layout that never existed. One exception:
+   a skeleton with exactly **one** prose-bearing slot (a `single`-layout
+   page) is recovered even when the model dropped every token — all prose
+   can only belong in that one cell, so it is wrapped there (debris
+   stripped, same token-for-token verification). With two or more slots the
+   assignment would be a guess, and the 422 stands.
+
+Note that greedy in-order alignment guards the layout **structure**, not the
+prose-to-cell **assignment**: a model that swaps two cells' content yields
+the swapped prose inside the correctly preserved structure — every boundary
+still aligns, so the 422 cannot (and does not try to) detect it. The
+guarantee is "never flatten, never corrupt the grid", not "every paragraph
+is in the cell the model meant".
 
 Callers without an expected structure (markdown page imports, the summary
 worker) keep the legacy no-skeleton drop-guard semantics of step 4 above.

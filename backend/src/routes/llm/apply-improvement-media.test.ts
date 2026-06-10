@@ -354,6 +354,35 @@ describe('POST /api/llm/improvements/apply — layout boundary tokens with REAL 
     expect(updateCall).toBeUndefined();
   });
 
+  it('#785: single-cell layout page applies even when the LLM dropped every token (unambiguous wrap recovery)', async () => {
+    mockPageWith(
+      '<div class="confluence-layout"><div class="confluence-layout-section" data-layout-type="single">' +
+      '<div class="confluence-layout-cell"><p>Full width content</p></div>' +
+      '</div></div>',
+    );
+
+    // Token-free echo: with exactly ONE prose-bearing cell there is no
+    // ambiguity — the apply must succeed with the prose wrapped in the cell.
+    const improvedMarkdown = '## Improved heading\n\nFresh single-column prose, no tokens at all.';
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/llm/improvements/apply',
+      payload: { pageId: '42', improvedMarkdown, version: 5, title: 'My Article' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const savedHtml = captureUpdatedBodyHtml();
+    expect(savedHtml).not.toContain('[[[');
+    expect(savedHtml).toContain('data-layout-type="single"');
+    expect((savedHtml.match(/class="confluence-layout-cell"/g) ?? []).length).toBe(1);
+    // The prose landed INSIDE the cell (before the layout's closing divs),
+    // not at top level after an empty rebuilt layout.
+    const proseIdx = savedHtml.indexOf('Fresh single-column prose');
+    expect(proseIdx).toBeGreaterThan(savedHtml.indexOf('confluence-layout-cell'));
+    expect(savedHtml.lastIndexOf('</div>')).toBeGreaterThan(proseIdx);
+  });
+
   it('#781: hallucinated layout tokens on a layout-free page are stripped, never built', async () => {
     mockPageWith('<h1>Plain page</h1><p>No layout here.</p>');
 

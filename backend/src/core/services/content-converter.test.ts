@@ -1827,6 +1827,78 @@ describe('content-converter: #781 layout-token resilience', () => {
   });
 
   // ------------------------------------------------------------------
+  // Strictness ladder: loose matching only when the echo needs it
+  // (#785 review — finding 1)
+  // ------------------------------------------------------------------
+  describe('strictness ladder — prose lookalikes vs mangled echoes (#785 review)', () => {
+    it('keeps token lookalikes in prose as literal text when every real token is intact', async () => {
+      const { skeleton, md } = prepare(LAYOUT_TWO_EQUAL_PAGE);
+      const withLookalikes = md.replace(
+        'Left column content',
+        'Left column content — see [[[layout]]] and [[[section intro]]] in the style guide',
+      );
+      const html = await markdownToHtml(withLookalikes, { layoutSkeleton: skeleton });
+      // Every real token aligned strictly, so the loose scan never ran: the
+      // non-canonical lookalikes are prose and must reach the output verbatim.
+      expect(html).toContain('[[[layout]]]');
+      expect(html).toContain('[[[section intro]]]');
+      expect(html).toContain('data-layout-type="two_equal"');
+      expect((html.match(/class="confluence-layout-cell"/g) ?? []).length).toBe(2);
+    });
+
+    it('still escalates to loose matching when the echo is mangled (lookalike exposure accepted)', async () => {
+      const { skeleton, md } = prepare(LAYOUT_TWO_EQUAL_PAGE);
+      const mangled = md
+        .replace('[[[/LAYOUT-CELL]]]', '[[[/layout-cell]]]') // first close lower-cased by the model
+        .replace('Left column content', 'Left column content mentions [[[layout]]]');
+      const html = await markdownToHtml(mangled, { layoutSkeleton: skeleton });
+      // Loose escalation rescued the layout; the lookalike was consumed as
+      // token debris — the accepted price of recovering a mangled echo.
+      expect(html).toContain('data-layout-type="two_equal"');
+      expect((html.match(/class="confluence-layout-cell"/g) ?? []).length).toBe(2);
+      expect(html).toContain('Left column content mentions');
+      expect(html).not.toContain('[[[');
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // Unambiguous single-slot recovery (#785 review — finding 2)
+  // ------------------------------------------------------------------
+  describe('single prose-bearing slot — wrap recovery without any tokens (#785 review)', () => {
+    it('recovers a single-cell layout when the model dropped every token (prose can only belong in the one cell)', async () => {
+      const { skeleton, md } = prepare(LAYOUT_SINGLE_PAGE);
+      const tokenFree = md.replace(/\[\[\[[^\]]+\]\]\]\n*/g, '');
+      expect(tokenFree).not.toContain('[[[');
+      const html = await markdownToHtml(tokenFree, { layoutSkeleton: skeleton });
+      expect(html).toContain('data-layout-type="single"');
+      expect((html.match(/class="confluence-layout-cell"/g) ?? []).length).toBe(1);
+      expect(html).not.toContain('[[[');
+      // The prose must land INSIDE the one cell, not at top level next to an
+      // empty rebuilt layout.
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).toMatch(/<ac:layout-cell>[\s\S]*Full width content[\s\S]*<\/ac:layout-cell>/);
+    });
+
+    it('strips stray mangled-token debris and still wraps the prose into the single slot', async () => {
+      const { skeleton, md } = prepare(LAYOUT_SINGLE_PAGE);
+      const mangled = md
+        .replace(/\[\[\[[^\]]+\]\]\]\n*/g, '')
+        .replace('Full width content', 'Full width content\n\n[[[/layout cell]]]');
+      const html = await markdownToHtml(mangled, { layoutSkeleton: skeleton });
+      expect(html).not.toContain('[[[');
+      expect((html.match(/class="confluence-layout-cell"/g) ?? []).length).toBe(1);
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).toMatch(/<ac:layout-cell>[\s\S]*Full width content[\s\S]*<\/ac:layout-cell>/);
+    });
+
+    it('still throws for multi-slot skeletons with all tokens dropped (prose-to-cell assignment would be a guess)', async () => {
+      const { skeleton, md } = prepare(LAYOUT_TWO_EQUAL_PAGE);
+      const tokenFree = md.replace(/\[\[\[[^\]]+\]\]\]\n*/g, '');
+      await expect(markdownToHtml(tokenFree, { layoutSkeleton: skeleton })).rejects.toThrow(LayoutRecoveryError);
+    });
+  });
+
+  // ------------------------------------------------------------------
   // Hard fallback: unrecoverable mangling must throw, never flatten
   // ------------------------------------------------------------------
   describe('predictable failure when recovery is impossible', () => {
