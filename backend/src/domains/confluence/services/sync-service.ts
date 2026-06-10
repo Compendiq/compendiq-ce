@@ -1437,15 +1437,21 @@ async function purgeDeletedPages(spaceKey: string): Promise<void> {
 export async function unsyncSpace(spaceKey: string): Promise<{ pagesDeleted: number }> {
   // Best-effort, non-transactional filesystem cleanup BEFORE the DB
   // transaction. A failure here must never abort the row deletes.
-  const pages = await query<{ id: number }>(
-    'SELECT id FROM pages WHERE space_key = $1',
+  // Attachment directories are keyed by confluence_id for synced pages
+  // (syncImageAttachments, the serving route in routes/confluence/attachments.ts)
+  // and by the integer PK only for standalone pages (confluence_id IS NULL) —
+  // passing the SERIAL id for a synced page would delete nothing and orphan
+  // the real data/attachments/<confluence_id> directory (#746).
+  const pages = await query<{ id: number; confluence_id: string | null }>(
+    'SELECT id, confluence_id FROM pages WHERE space_key = $1',
     [spaceKey],
   );
   for (const p of pages.rows) {
+    const attachmentKey = p.confluence_id ?? String(p.id);
     try {
-      await cleanPageAttachments('', String(p.id));
+      await cleanPageAttachments('', attachmentKey);
     } catch (err) {
-      logger.warn({ err, pageId: p.id, spaceKey }, 'unsyncSpace: attachment cleanup failed (continuing)');
+      logger.warn({ err, pageId: p.id, attachmentKey, spaceKey }, 'unsyncSpace: attachment cleanup failed (continuing)');
     }
   }
 
