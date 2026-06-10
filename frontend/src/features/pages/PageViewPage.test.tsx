@@ -606,6 +606,48 @@ describe('PageViewPage', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/ai?mode=improve&pageId=page-1');
   });
 
+  // #703 / #769 — the sticky edit toolbar carries an opaque bg-background
+  // under-mask (z-[-1]) covering exactly the toolbar's box (inset-0), the
+  // same pattern as /ai's sticky bars. The toolbar pins flush at the
+  // scrollport top, so the mask must not extend past the toolbar's box:
+  // negative inset offsets push the absolutely positioned mask outside the
+  // scroll container's content edge (the pattern that caused /ai's phantom
+  // vertical scroll).
+  describe('sticky edit-toolbar under-mask (#703, #769)', () => {
+    it('renders an opaque under-mask behind the edit toolbar covering exactly its box', () => {
+      const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByText('Edit'));
+
+      // The sticky toolbar wrapper establishes its own stacking context
+      // (isolate) so the negative-z mask sits behind it, not behind the page.
+      const toolbar = container.querySelector('.sticky.top-0');
+      expect(toolbar).not.toBeNull();
+      expect(toolbar!.className).toContain('isolate');
+
+      const mask = toolbar!.querySelector('[aria-hidden]');
+      expect(mask).not.toBeNull();
+      expect(mask!.className).toContain('bg-background');
+      expect(mask!.className).not.toContain('bg-background/');
+      expect(mask!.className).toContain('z-[-1]');
+      expect(mask!.className).toContain('inset-0');
+      expect(mask!.className).toContain('pointer-events-none');
+    });
+
+    it('the under-mask does not extend past the toolbar (regression: #769 phantom scroll)', () => {
+      const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByText('Edit'));
+
+      const mask = container.querySelector('.sticky.top-0 [aria-hidden]') as HTMLElement;
+      expect(mask).not.toBeNull();
+      // Forbid both negative-utility (-top-[100px]) and arbitrary-negative
+      // (top-[-100px]) spellings, plus inline style offsets.
+      expect(mask.className).not.toMatch(/-(top|bottom|left|right|inset(-[xy])?)-\[/);
+      expect(mask.className).not.toMatch(/\b(top|bottom|left|right|inset(-[xy])?)-\[-/);
+      expect(mask.style.top).toBe('');
+      expect(mask.style.bottom).toBe('');
+    });
+  });
+
   // Task 5 — drafts read as a personal/private state, not an AI affordance, so
   // the Draft badge must use the neutral private-tier palette (no
   // orange/amber/primary). The Playwright contrast spec in Task 6 will catch

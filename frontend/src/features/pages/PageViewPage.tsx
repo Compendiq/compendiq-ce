@@ -467,22 +467,22 @@ export function PageViewPage() {
       transition={{ duration: 0.18 }}
       data-testid="article-page"
     >
-      {/* Sticky toolbar with a UNDER-mask that sits behind the toolbar at
-          a lower z-index. The mask is bg-background and reaches from the
-          top of the scroll container (flush against the AppLayout top bar
-          when scrolled) down to the bottom of the toolbar — masking any
-          content that would otherwise be visible through the toolbar's
-          rounded-corner cutouts. */}
+      {/* Sticky toolbar with an UNDER-mask that sits behind the toolbar at
+          a lower z-index. The mask is opaque bg-background, so article
+          content scrolling under the translucent toolbar is fully occluded
+          rather than showing through its rounded-corner cutouts. */}
       {editing && (
         <div className="sticky top-0 z-30 isolate">
-          {/* Under-mask: behind the toolbar (z-[-1]), extends up by 100px so
-              it always reaches the top bar above. Bottom matches toolbar
-              height so mask never extends past the toolbar visually. Rounded
-              bottom corners give the mask its own card-like silhouette. */}
+          {/* Under-mask: behind the toolbar (z-[-1]), covering exactly the
+              toolbar's box (inset-0). The toolbar pins flush at the
+              scrollport top — same situation as /ai's sub-header (#769) —
+              so there is no gap above it to mask, and the former
+              -top-[100px] upward bleed was dead paint (clipped at the
+              scrollport edge when stuck). Rounded bottom corners keep the
+              mask inside the toolbar's card silhouette. */}
           <div
             aria-hidden
-            className="pointer-events-none absolute inset-x-0 -top-[100px] z-[-1] bg-background rounded-b-xl"
-            style={{ bottom: 0 }}
+            className="pointer-events-none absolute inset-0 z-[-1] bg-background rounded-b-xl"
           />
         <div className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm">
           {editorInstance && (

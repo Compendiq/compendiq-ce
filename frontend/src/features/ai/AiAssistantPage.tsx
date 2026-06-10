@@ -227,8 +227,11 @@ function AiAssistantInner() {
           messages grow. backdrop-blur on the inner card keeps the surface
           legible against the live content scrolling under it. An opaque
           UNDER-mask (bg-background, z-[-1]) sits behind the translucent bar
-          and extends 100px UPWARD so chat content scrolling up is fully
-          occluded above the tab row — mirroring PageViewPage's edit toolbar.
+          so chat content scrolling up is fully occluded above the tab row
+          (#703). The mask covers exactly the bar's box (inset-0): the bar
+          pins flush at the scrollport top, so there is no gap above it to
+          mask, and extending past the bar's box adds absolute overflow that
+          inflates the page's scrollable height (#769).
 
           Visual grammar: two clear groups separated by a thin divider.
           Group A (left): which mode are we in. Inset segmented control.
@@ -237,8 +240,7 @@ function AiAssistantInner() {
       <div className="sticky top-0 z-20 isolate -mx-1 space-y-3 bg-background/85 px-1 py-1 backdrop-blur">
       <div
         aria-hidden
-        className="pointer-events-none absolute inset-x-0 -top-[100px] z-[-1] bg-background"
-        style={{ bottom: 0 }}
+        className="pointer-events-none absolute inset-0 z-[-1] bg-background"
       />
       <div className="flex flex-wrap items-center gap-x-2 gap-y-2 rounded-xl border border-border/40 bg-card/50 px-3 py-2 backdrop-blur-sm">
         {/* Group A — mode segmented control */}
@@ -427,14 +429,17 @@ function AiAssistantInner() {
       {/* Mode-specific input bar — sticky at the bottom of the scroll
           container, with a translucent backdrop so chat content scrolls
           legibly behind it. An opaque UNDER-mask (bg-background, z-[-1]) sits
-          behind the translucent bar and extends 100px DOWNWARD so chat content
-          scrolling down is fully occluded below the input field + submit
-          button — mirroring PageViewPage's edit toolbar (inverted vertically). */}
+          behind the translucent bar so chat content scrolling down is fully
+          occluded below the input field + submit button (#703). The mask
+          covers exactly the bar's box (inset-0): the bar pins flush at the
+          scrollport bottom, so nothing can show below it, and an absolutely
+          positioned mask overflowing the block-end edge grows the scroll
+          container's scrollable overflow region — the former -bottom-[100px]
+          extension added ~100px of phantom scroll on every mode (#769). */}
       <div className="sticky bottom-0 z-20 isolate -mx-1 bg-background/85 px-1 py-1 backdrop-blur">
         <div
           aria-hidden
-          className="pointer-events-none absolute inset-x-0 -bottom-[100px] z-[-1] bg-background"
-          style={{ top: 0 }}
+          className="pointer-events-none absolute inset-0 z-[-1] bg-background"
         />
         {mode === 'ask' && <AskModeInput />}
         {mode === 'improve' && <ImproveModeInput />}
