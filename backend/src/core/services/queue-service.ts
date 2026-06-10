@@ -8,9 +8,10 @@
  * Uses ioredis (BullMQ's native client) which coexists with the existing node-redis client.
  */
 
-import { Queue, Worker, type Job, type ConnectionOptions } from 'bullmq';
+import { Queue, Worker, type Job } from 'bullmq';
 import { query } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
+import { getRedisConnectionOpts } from '../utils/redis-connection.js';
 
 // ─── Feature flag ────────────────────────────────────────────────────────────
 
@@ -21,27 +22,10 @@ export function isBullMQEnabled(): boolean {
 }
 
 // ─── Connection ──────────────────────────────────────────────────────────────
-
-function getRedisConnectionOpts(): ConnectionOptions {
-  const url = process.env.REDIS_URL ?? 'redis://localhost:6379';
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return {
-      host: 'localhost',
-      port: 6379,
-      maxRetriesPerRequest: null,
-    };
-  }
-
-  return {
-    host: parsed.hostname,
-    port: parseInt(parsed.port || '6379', 10),
-    password: parsed.password || undefined,
-    maxRetriesPerRequest: null, // Required by BullMQ
-  };
-}
+//
+// REDIS_URL parsing lives in core/utils/redis-connection.ts (shared with the
+// webhook outbox poller) so TLS (`rediss://`), ACL username, and db index are
+// honored consistently across every BullMQ connection (issue #742).
 
 // ─── Queue / Worker registry ─────────────────────────────────────────────────
 

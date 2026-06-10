@@ -38,6 +38,7 @@ import {
   __resetWebhookOutboxPollerForTests,
   __closeWebhookDeliveryQueueForTests,
 } from './webhook-outbox-poller.js';
+import { getRedisConnectionOpts } from '../utils/redis-connection.js';
 
 // ─── Environment probe ───────────────────────────────────────────────────
 
@@ -74,19 +75,6 @@ async function checkRedisReachable(): Promise<boolean> {
 const dbAvailable = await isDbAvailable();
 const redisAvailable = dbAvailable ? await checkRedisReachable() : false;
 const canRun = dbAvailable && redisAvailable;
-
-// ─── Redis connection opts (mirror the service under test) ───────────────
-
-function getRedisConnectionOpts() {
-  const url = process.env.REDIS_URL ?? 'redis://localhost:6379';
-  const parsed = new URL(url);
-  return {
-    host: parsed.hostname,
-    port: parseInt(parsed.port || '6379', 10),
-    password: parsed.password || undefined,
-    maxRetriesPerRequest: null,
-  };
-}
 
 // ─── Helpers ────────────────────────────────────────────────────────────
 
