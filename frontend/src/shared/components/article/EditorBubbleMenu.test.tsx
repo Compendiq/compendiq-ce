@@ -426,6 +426,51 @@ describe('BubbleMenuContent — single merged surface (#782)', () => {
 
     expect(screen.getByTestId('bubble-ai-panel')).toBeInTheDocument();
   });
+
+  it('does NOT collapse on Escape targeted at a foreign overlay (e.g. a dialog stacked above)', async () => {
+    const editor = await mountEditor('<p>Hello world</p>');
+    act(() => { editor.commands.setTextSelection({ from: 1, to: 6 }); });
+
+    fireEvent.click(screen.getByTestId('bubble-ai-trigger'));
+    await screen.findByTestId('bubble-ai-panel');
+
+    // A modal portalled to <body> above the editor — its Escape must close the
+    // modal, not also collapse the AI section underneath.
+    const dialog = document.createElement('div');
+    dialog.setAttribute('role', 'dialog');
+    const dialogInput = document.createElement('input');
+    dialog.appendChild(dialogInput);
+    document.body.appendChild(dialog);
+    try {
+      fireEvent.keyDown(dialogInput, { key: 'Escape' });
+
+      expect(screen.getByTestId('bubble-ai-panel')).toBeInTheDocument();
+      expect(editor.view.dom.querySelector(`.${IMPROVE_DECORATION_CLASS}`)).not.toBeNull();
+    } finally {
+      dialog.remove();
+    }
+  });
+
+  it('does NOT collapse on an Escape a higher-priority handler already consumed (defaultPrevented)', async () => {
+    const editor = await mountEditor('<p>Hello world</p>');
+    act(() => { editor.commands.setTextSelection({ from: 1, to: 6 }); });
+
+    fireEvent.click(screen.getByTestId('bubble-ai-trigger'));
+    await screen.findByTestId('bubble-ai-panel');
+
+    // Simulate an overlay's capture-phase handler claiming the Escape before
+    // our document-level listener sees it.
+    const consume = (e: KeyboardEvent) => { if (e.key === 'Escape') e.preventDefault(); };
+    document.addEventListener('keydown', consume, { capture: true });
+    try {
+      fireEvent.keyDown(document.body, { key: 'Escape' });
+
+      expect(screen.getByTestId('bubble-ai-panel')).toBeInTheDocument();
+      expect(editor.view.dom.querySelector(`.${IMPROVE_DECORATION_CLASS}`)).not.toBeNull();
+    } finally {
+      document.removeEventListener('keydown', consume, { capture: true });
+    }
+  });
 });
 
 describe('BubbleMenuContent — Floating UI repositioning on panel growth (#782)', () => {
@@ -468,6 +513,61 @@ describe('BubbleMenuContent — Floating UI repositioning on panel growth (#782)
     await waitFor(() => expect(screen.getByTestId('bubble-ai-preview')).toHaveTextContent('Howdy'));
 
     await waitFor(() => expect(updates.count()).toBeGreaterThan(before));
+  });
+
+  it('coalesces per-chunk reposition requests into one animation frame (no dispatch per SSE chunk)', async () => {
+    streamSSE.mockReturnValue(gen([
+      { content: 'How' }, { content: 'dy ' }, { content: 'part' }, { content: 'ner' },
+    ]));
+    const editor = await mountEditor('<p>Hello world</p>');
+    act(() => { editor.commands.setTextSelection({ from: 1, to: 6 }); });
+
+    fireEvent.click(screen.getByTestId('bubble-ai-trigger'));
+    await screen.findByTestId('bubble-ai-panel');
+    // Let any reposition frame scheduled by opening the panel fire before
+    // stubbing rAF (frame callbacks run in registration order, so awaiting a
+    // fresh frame guarantees earlier ones have run).
+    await act(async () => {
+      await new Promise<void>((resolve) => { requestAnimationFrame(() => resolve()); });
+    });
+
+    // Deterministic rAF: frames only run when flushed manually.
+    const pendingFrames = new Map<number, FrameRequestCallback>();
+    let nextFrameId = 1;
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => {
+      const id = nextFrameId++;
+      pendingFrames.set(id, cb);
+      return id;
+    });
+    const caf = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((id) => {
+      pendingFrames.delete(id);
+    });
+
+    try {
+      const updates = trackPositionUpdates(editor);
+      fireEvent.click(screen.getByText('Improve writing'));
+      await waitFor(() => expect(screen.getByTestId('bubble-ai-preview')).toHaveTextContent('Howdy partner'));
+
+      // Only the immediate (layout-effect) path dispatched so far: one for
+      // idle→streaming and one for streaming→done. The four chunks did NOT
+      // dispatch per-chunk transactions.
+      await waitFor(() => expect(updates.count()).toBe(2));
+
+      // The four output changes coalesced into a single pending frame
+      // (earlier frames were cancelled on re-schedule).
+      expect(pendingFrames.size).toBe(1);
+
+      act(() => {
+        const frames = [...pendingFrames.values()];
+        pendingFrames.clear();
+        for (const cb of frames) cb(performance.now());
+      });
+      // The coalesced frame dispatched exactly one position update.
+      expect(updates.count()).toBe(3);
+    } finally {
+      raf.mockRestore();
+      caf.mockRestore();
+    }
   });
 });
 

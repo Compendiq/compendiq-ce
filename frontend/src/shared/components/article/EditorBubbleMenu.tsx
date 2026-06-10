@@ -231,10 +231,20 @@ export function BubbleMenuContent({
   useEffect(() => {
     if (!aiOpen) return;
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        closeAi();
-      }
+      if (e.key !== 'Escape') return;
+      // A layer stacked above us (modal, dropdown) already consumed this
+      // Escape — don't double-dismiss.
+      if (e.defaultPrevented) return;
+      // The Escape belongs to a foreign floating layer (dialog / Radix popper
+      // portalled to <body>) that is open above the editor — let it close
+      // itself instead of swallowing the key here.
+      const root = rootRef.current;
+      const foreignLayer = (e.target as Element | null)?.closest?.(
+        '[role="dialog"], [role="alertdialog"], [data-radix-popper-content-wrapper]',
+      );
+      if (foreignLayer && !(root && root.contains(foreignLayer))) return;
+      e.preventDefault();
+      closeAi();
     };
     const onPointerDown = (e: PointerEvent) => {
       const root = rootRef.current;
@@ -258,7 +268,22 @@ export function BubbleMenuContent({
   useLayoutEffect(() => {
     if (editor.isDestroyed) return;
     editor.view.dispatch(editor.state.tr.setMeta(editorBubbleMenuPluginKey, 'updatePosition'));
-  }, [editor, aiOpen, stream.status, stream.output]);
+  }, [editor, aiOpen, stream.status]);
+
+  // The streamed preview grows on EVERY SSE chunk; dispatching a reposition
+  // transaction per chunk would run a full state apply + Floating UI
+  // computePosition each time. Coalesce via requestAnimationFrame — at most
+  // one dispatch per frame (re-scheduling within a frame keeps the same
+  // next-paint slot), cancelled on unmount. Open/close and status transitions
+  // above stay layout-effect-synchronous so expansion never flashes over the
+  // selection; only this high-frequency path is throttled.
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      if (editor.isDestroyed) return;
+      editor.view.dispatch(editor.state.tr.setMeta(editorBubbleMenuPluginKey, 'updatePosition'));
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [editor, stream.output]);
 
   // #764 — the decoration set is remapped through every transaction (see
   // improve-decoration.ts), while `rangeRef` keeps the offsets captured when
