@@ -10,10 +10,39 @@ export interface ShutdownStep {
 export interface ShutdownHandlerOptions {
   /** Cleanup steps, executed sequentially in array order. */
   steps: ShutdownStep[];
-  /** Hard deadline before the process force-exits (default 30s). */
+  /** Hard deadline before the process force-exits (default 50s, see ADR-024). */
   timeoutMs?: number;
   /** Exit function, injectable for tests. Defaults to process.exit. */
   exit?: (code: number) => void;
+}
+
+/**
+ * Default hard deadline for the in-process shutdown timer. ADR-024 budgets the
+ * drain (LLM summary/quality/sync jobs awaited by `stopQueueWorkers()` can
+ * legitimately run for tens of seconds) against the EE compose
+ * `stop_grace_period: 60s`; 50s keeps Docker's SIGKILL backstop a 10s margin.
+ */
+export const DEFAULT_SHUTDOWN_TIMEOUT_MS = 50_000;
+
+/**
+ * Resolves the shutdown hard deadline from `SHUTDOWN_TIMEOUT_MS` (positive
+ * integer of milliseconds). Invalid or absent values fall back to the 50s
+ * default. Operators tuning this should keep it below their container
+ * runtime's stop grace period so the in-process timer fires first.
+ */
+export function resolveShutdownTimeoutMs(
+  raw: string | undefined = process.env.SHUTDOWN_TIMEOUT_MS,
+): number {
+  if (raw === undefined || raw === '') return DEFAULT_SHUTDOWN_TIMEOUT_MS;
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    logger.warn(
+      { SHUTDOWN_TIMEOUT_MS: raw },
+      'Invalid SHUTDOWN_TIMEOUT_MS (expected a positive integer of milliseconds), using default',
+    );
+    return DEFAULT_SHUTDOWN_TIMEOUT_MS;
+  }
+  return parsed;
 }
 
 /**
@@ -26,13 +55,14 @@ export interface ShutdownHandlerOptions {
  *   `quit()` against a server that is already gone) no longer aborts the
  *   chain and leaves pools open.
  * - The process always exits: code 0 on a clean run, 1 if any step failed,
- *   and a hard-deadline timer (unref'ed so it never keeps the process alive)
- *   force-exits with 1 if a step hangs, instead of waiting for SIGKILL.
+ *   and a hard-deadline timer (unref'ed so it never keeps the process alive,
+ *   default 50s / `SHUTDOWN_TIMEOUT_MS`) force-exits with 1 if a step hangs,
+ *   instead of waiting for SIGKILL.
  */
 export function createShutdownHandler(
   options: ShutdownHandlerOptions,
 ): (signal: string) => Promise<void> {
-  const { steps, timeoutMs = 30_000 } = options;
+  const { steps, timeoutMs = DEFAULT_SHUTDOWN_TIMEOUT_MS } = options;
   const exit = options.exit ?? ((code: number) => process.exit(code));
 
   let shuttingDown = false;

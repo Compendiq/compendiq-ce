@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { createShutdownHandler } from './graceful-shutdown.js';
+import {
+  createShutdownHandler,
+  resolveShutdownTimeoutMs,
+  DEFAULT_SHUTDOWN_TIMEOUT_MS,
+} from './graceful-shutdown.js';
 
 describe('createShutdownHandler (issue #745)', () => {
   afterEach(() => {
@@ -105,6 +109,25 @@ describe('createShutdownHandler (issue #745)', () => {
     expect(exit).toHaveBeenCalledExactlyOnceWith(1);
   });
 
+  // Review follow-up (PR #757): 30s halved the drain window ADR-024 budgets
+  // (EE compose stop_grace_period: 60s) — LLM summary/quality/sync jobs
+  // awaited by stopQueueWorkers() can exceed 30s and were force-exited.
+  it('defaults the hard deadline to 50s (ADR-024 drain budget)', async () => {
+    vi.useFakeTimers();
+    const exit = vi.fn();
+    const shutdown = createShutdownHandler({
+      steps: [{ name: 'hung', run: () => new Promise<void>(() => {}) }],
+      exit,
+    });
+
+    void shutdown('SIGTERM');
+    await vi.advanceTimersByTimeAsync(49_999);
+    expect(exit).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(exit).toHaveBeenCalledExactlyOnceWith(1);
+  });
+
   it('does not fire the deadline exit after a completed shutdown', async () => {
     vi.useFakeTimers();
     const exit = vi.fn();
@@ -119,4 +142,23 @@ describe('createShutdownHandler (issue #745)', () => {
 
     expect(exit).toHaveBeenCalledExactlyOnceWith(0);
   });
+});
+
+describe('resolveShutdownTimeoutMs (review follow-up, PR #757)', () => {
+  it('returns the 50s default when SHUTDOWN_TIMEOUT_MS is unset', () => {
+    expect(resolveShutdownTimeoutMs(undefined)).toBe(DEFAULT_SHUTDOWN_TIMEOUT_MS);
+    expect(DEFAULT_SHUTDOWN_TIMEOUT_MS).toBe(50_000);
+  });
+
+  it('parses a positive integer of milliseconds', () => {
+    expect(resolveShutdownTimeoutMs('15000')).toBe(15_000);
+    expect(resolveShutdownTimeoutMs('120000')).toBe(120_000);
+  });
+
+  it.each(['', '0', '-5000', 'abc', '1.5', '30s', 'NaN', 'Infinity'])(
+    'falls back to the default for invalid value %j',
+    (raw) => {
+      expect(resolveShutdownTimeoutMs(raw)).toBe(DEFAULT_SHUTDOWN_TIMEOUT_MS);
+    },
+  );
 });

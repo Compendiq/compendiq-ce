@@ -7,7 +7,10 @@ import { runMigrations, closePool, closeVectorPool } from './core/db/postgres.js
 import { startQueueWorkers, stopQueueWorkers } from './core/services/queue-service.js';
 import { markStartupComplete } from './routes/foundation/health.js';
 import { logger } from './core/utils/logger.js';
-import { createShutdownHandler } from './core/utils/graceful-shutdown.js';
+import {
+  createShutdownHandler,
+  resolveShutdownTimeoutMs,
+} from './core/utils/graceful-shutdown.js';
 import { initLlmQueue } from './domains/llm/services/llm-queue.js';
 import { initRateLimiter } from './domains/confluence/services/confluence-rate-limiter.js';
 import { initEmailService, closeEmailService } from './core/services/email-service.js';
@@ -60,8 +63,11 @@ async function start() {
 
   // Graceful shutdown (issue #745): re-entrancy-guarded, each step isolated
   // so one failure (e.g. Redis already gone inside app.close()) cannot skip
-  // the remaining cleanup, with a hard deadline before forcing exit.
+  // the remaining cleanup, with a hard deadline (default 50s, tunable via
+  // SHUTDOWN_TIMEOUT_MS — keep below the container stop grace period, see
+  // ADR-024) before forcing exit.
   const shutdown = createShutdownHandler({
+    timeoutMs: resolveShutdownTimeoutMs(),
     steps: [
       { name: 'queue-workers', run: () => stopQueueWorkers() },
       { name: 'email-service', run: () => closeEmailService() },

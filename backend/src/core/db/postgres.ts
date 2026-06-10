@@ -80,6 +80,19 @@ const MIGRATIONS_ADVISORY_LOCK_ID = 745_001;
 export async function runMigrations(): Promise<void> {
   const client = await getPool().connect();
   try {
+    // The blocking pg_advisory_lock() wait below counts as statement execution
+    // time, so the pool-wide PG_STATEMENT_TIMEOUT (applied to every connection
+    // via startup `options` in getPool()) would cancel replicas waiting on a
+    // slow migration winner — and a server/role-level lock_timeout would do
+    // the same to the lock wait and to DDL inside the migrations. Exempt this
+    // session for the duration of the run. Plain `SET` (not `SET LOCAL`) is
+    // deliberate: the advisory lock is taken outside any transaction, and the
+    // exemption must also cover the long-running migration statements
+    // themselves. Both settings are session-scoped, so they are RESET in the
+    // outer finally before the client returns to the shared pool.
+    await client.query('SET statement_timeout = 0');
+    await client.query('SET lock_timeout = 0');
+
     // Serialize replicas booting concurrently (rolling deploy / HPA scale-up):
     // exactly one pod runs the migration loop; the rest block here until the
     // winner finishes, then re-read _migrations below and see its work.
@@ -130,7 +143,19 @@ export async function runMigrations(): Promise<void> {
         });
     }
   } finally {
-    client.release();
+    try {
+      // RESET restores each parameter to its session default — for
+      // statement_timeout that is the value from the pool's startup `options`
+      // (PG_STATEMENT_TIMEOUT, when set), NOT Postgres' compiled-in default —
+      // so the client re-enters the shared pool with the configured timeouts.
+      await client.query('RESET statement_timeout; RESET lock_timeout');
+      client.release();
+    } catch (err) {
+      // Connection is unusable: destroy it rather than return a session with
+      // disabled timeouts to the pool.
+      logger.warn({ err }, 'Failed to restore timeouts on migration client, discarding connection');
+      client.release(err instanceof Error ? err : new Error(String(err)));
+    }
   }
 }
 
