@@ -747,6 +747,52 @@ describe('GenerateMode', () => {
       });
     });
 
+    it('sanitizes generated markdown before sending bodyHtml (#747)', async () => {
+      // LLM output may carry raw HTML through markdown — it must be sanitized
+      // with the shared DOMPurify-backed helper before being sent to /pages.
+      const maliciousMarkdown =
+        '# Title\n\n<script>alert("xss")</script>\n\n<img src="x" onerror="alert(1)">\n\nSafe **bold** text.';
+
+      apiFetchMock.mockImplementation((path: string, opts?: RequestInit) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.resolve([{ name: 'llama3' }]);
+        }
+        if (path === '/llm/conversations') {
+          return Promise.resolve([]);
+        }
+        if (path === '/pages' && opts?.method === 'POST') {
+          return Promise.resolve({ id: 'new-page-4', title: 'Title', version: 1 });
+        }
+        return Promise.resolve([]);
+      });
+
+      render(
+        <GenerateSavePanel generatedContent={maliciousMarkdown} onSaved={onSavedMock} />,
+        { wrapper: createWrapper() },
+      );
+
+      fireEvent.change(screen.getByTestId('generate-space-select'), { target: { value: 'DEV' } });
+      fireEvent.click(screen.getByTestId('generate-save-button'));
+
+      await waitFor(() => {
+        const postCall = apiFetchMock.mock.calls.find(
+          (args: unknown[]) =>
+            args[0] === '/pages' && (args[1] as RequestInit | undefined)?.method === 'POST',
+        );
+        expect(postCall).toBeDefined();
+        const body = JSON.parse((postCall![1] as RequestInit).body as string);
+
+        // Dangerous markup is stripped...
+        expect(body.bodyHtml).not.toContain('<script>');
+        expect(body.bodyHtml).not.toContain('onerror');
+        // ...while legitimate formatting is preserved.
+        expect(body.bodyHtml).toContain('<strong>bold</strong>');
+      });
+    });
+
     it('shows "Save Locally" button when a local space is selected (#528)', () => {
       render(
         <GenerateSavePanel generatedContent={sampleMarkdown} onSaved={onSavedMock} />,

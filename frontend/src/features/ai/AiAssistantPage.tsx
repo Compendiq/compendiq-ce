@@ -8,10 +8,10 @@ import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { cn } from '../../shared/lib/cn';
 import { ConfidenceBadge } from '../../shared/components/badges/ConfidenceBadge';
-import { StreamingCursor } from '../../shared/components/feedback/StreamingCursor';
 import { AIThinkingBlob } from '../../shared/components/feedback/AIThinkingBlob';
 import { SourceCitations } from './SourceCitations';
 import { CitationChips } from './CitationChips';
+import { StreamingMessage } from './StreamingMessage';
 import { AiProvider, useAiContext, type Mode, type Message } from './AiContext';
 import {
   AskModeInput, AskExamplePrompts, ASK_EMPTY_TITLE, ASK_EMPTY_SUBTITLE,
@@ -56,15 +56,19 @@ interface MessageBubbleProps {
   thinkingElapsed: boolean;
   isLight: boolean;
   shouldReduceMotion: boolean | null;
+  /**
+   * rAF-batched content of the in-flight answer (#747). Only passed to the
+   * last message bubble while streaming; committed messages render msg.content.
+   */
+  streamingContent?: string;
 }
 
 const MessageBubble = memo(function MessageBubble({
-  msg, index, isLast, isStreaming, isThinking, thinkingElapsed, isLight, shouldReduceMotion,
+  msg, index, isLast, isStreaming, isThinking, thinkingElapsed, isLight, shouldReduceMotion, streamingContent,
 }: MessageBubbleProps) {
   const isLastAssistant = msg.role === 'assistant' && isLast;
   const isStreamingThis = isStreaming && isLastAssistant;
-  const effectiveContent = msg.content;
-  const showStreamingCursor = isStreamingThis && !!effectiveContent;
+  const effectiveContent = isStreamingThis ? (streamingContent ?? msg.content) : msg.content;
   const showThinkingBlob = isThinking && isLastAssistant && !effectiveContent && thinkingElapsed;
   const showTypingIndicator = isThinking && isLastAssistant && !effectiveContent && !thinkingElapsed;
 
@@ -95,16 +99,24 @@ const MessageBubble = memo(function MessageBubble({
       >
         {showThinkingBlob && <AIThinkingBlob active />}
         {showTypingIndicator && <TypingIndicator />}
-        <div className={cn('prose prose-sm max-w-none', !isLight && 'prose-invert')}>
-          {msg.content ? (
-            <>
+        {isStreamingThis ? (
+          // #747: the in-flight answer renders through the rAF-batched
+          // StreamingMessage, so the Markdown re-parse happens at most once
+          // per animation frame instead of once per SSE chunk.
+          effectiveContent ? (
+            <StreamingMessage content={effectiveContent} isStreaming />
+          ) : (!showThinkingBlob && !showTypingIndicator ? (
+            <div className={cn('prose prose-sm max-w-none', !isLight && 'prose-invert')}>
+              <TypingIndicator />
+            </div>
+          ) : null)
+        ) : (
+          <div className={cn('prose prose-sm max-w-none', !isLight && 'prose-invert')}>
+            {msg.content ? (
               <Markdown remarkPlugins={[remarkGfm]}>{msg.content}</Markdown>
-              {showStreamingCursor && <StreamingCursor />}
-            </>
-          ) : (!showThinkingBlob && !showTypingIndicator && isStreamingThis ? (
-            <TypingIndicator />
-          ) : null)}
-        </div>
+            ) : null}
+          </div>
+        )}
         {msg.role === 'assistant' && msg.sources && msg.sources.length > 0 && (
           <div className="mt-3 space-y-2">
             <div className="flex items-center gap-2">
@@ -135,6 +147,7 @@ const MessageBubble = memo(function MessageBubble({
   if (prev.msg.sources !== next.msg.sources) return false;
   if (prev.isLast !== next.isLast) return false;
   if (prev.isStreaming !== next.isStreaming) return false;
+  if (prev.streamingContent !== next.streamingContent) return false;
   if (prev.isThinking !== next.isThinking) return false;
   if (prev.thinkingElapsed !== next.thinkingElapsed) return false;
   if (prev.isLight !== next.isLight) return false;
@@ -189,6 +202,7 @@ function AiAssistantInner() {
   const {
     mode, setMode, page, pageHasChildren,
     messages, messagesEndRef, isStreaming, isThinking, thinkingElapsed,
+    streamingContent,
     model, models, setModel, isLight,
     includeSubPages, setIncludeSubPages,
     thinkingMode, setThinkingMode,
@@ -396,6 +410,10 @@ function AiAssistantInner() {
               thinkingElapsed={thinkingElapsed}
               isLight={isLight}
               shouldReduceMotion={shouldReduceMotion}
+              // #747: only the last bubble receives the batched in-flight
+              // content; earlier (committed) bubbles keep a stable prop so
+              // the memo comparator skips re-rendering them per flush.
+              streamingContent={i === messages.length - 1 ? streamingContent : undefined}
             />
           ))}
           <div ref={messagesEndRef} />

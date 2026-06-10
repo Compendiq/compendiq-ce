@@ -557,6 +557,102 @@ describe('ArticleViewer', () => {
     expect(container.querySelector('.mermaid-container')).toBeNull();
   });
 
+  // Regression for #747 item 2: `useEditor({ content })` already parses the
+  // document once on creation; the isReady-triggered setContent effect must
+  // not re-parse identical content a second time on mount.
+  describe('#747 double-parse on mount', () => {
+    it('parses the document into ProseMirror only once on mount', async () => {
+      // TipTap's elementFromString wraps HTML strings as `<body>…</body>`
+      // before handing them to DOMParser — count those calls to count parses.
+      const parseSpy = vi.spyOn(window.DOMParser.prototype, 'parseFromString');
+
+      const html = '<p>Parse once marker</p>';
+      const { container } = render(<ArticleViewer content={html} />);
+
+      await waitFor(() => {
+        expect(container.querySelector('.tiptap p')).toBeTruthy();
+      });
+
+      // Let the isReady-triggered effects (which schedule rAF work) settle.
+      await new Promise((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(resolve));
+      });
+
+      const tiptapParses = parseSpy.mock.calls.filter(
+        ([src]) =>
+          typeof src === 'string' &&
+          src.startsWith('<body>') &&
+          src.includes('Parse once marker'),
+      );
+      expect(tiptapParses).toHaveLength(1);
+    });
+
+    it('still applies genuine content changes after mount', async () => {
+      const { container, rerender } = render(<ArticleViewer content="<p>First version</p>" />);
+
+      await waitFor(() => {
+        expect(container.textContent).toContain('First version');
+      });
+
+      rerender(<ArticleViewer content="<p>Second version</p>" />);
+
+      await waitFor(() => {
+        expect(container.textContent).toContain('Second version');
+      });
+      expect(container.textContent).not.toContain('First version');
+    });
+  });
+
+  // Regression for #747 item 3: the drawio-edit-link rewrite effect must
+  // re-run when the content changes in place (e.g. after a sync refresh),
+  // like every sibling DOM-patching effect keyed on sanitizedContent.
+  describe('#747 drawio edit link rewrite after content refresh', () => {
+    const confluenceUrl = 'https://conf.example.com/';
+    const confluencePageId = '12345';
+    const expectedHref = 'https://conf.example.com/pages/viewpage.action?pageId=12345';
+    const editLink = '<a class="drawio-edit-link" href="#">Edit in Confluence</a>';
+
+    it('rewrites drawio edit links again after in-place content refresh', async () => {
+      const { container, rerender } = render(
+        <ArticleViewer
+          content={`<p>Diagram A ${editLink}</p>`}
+          confluenceUrl={confluenceUrl}
+          confluencePageId={confluencePageId}
+        />,
+      );
+
+      // Initial mount: the link is rewritten to the Confluence page URL.
+      await waitFor(() => {
+        const link = container.querySelector('a.drawio-edit-link');
+        expect(link?.getAttribute('href')).toBe(expectedHref);
+      });
+
+      // In-place refresh (e.g. sync pulled a new revision that adds a second
+      // diagram) — the refreshed DOM contains a fresh, unpatched `#` link.
+      rerender(
+        <ArticleViewer
+          content={`<p>Diagram A ${editLink}</p><p>Diagram B ${editLink}</p>`}
+          confluenceUrl={confluenceUrl}
+          confluencePageId={confluencePageId}
+        />,
+      );
+
+      await waitFor(() => {
+        expect(container.textContent).toContain('Diagram B');
+      });
+
+      // The rewrite effect must run again for the refreshed DOM — every
+      // drawio edit link (including the newly rendered one) gets rewritten.
+      await waitFor(() => {
+        const links = container.querySelectorAll('a.drawio-edit-link');
+        expect(links.length).toBe(2);
+        links.forEach((link) => {
+          expect(link.getAttribute('href')).toBe(expectedHref);
+        });
+      });
+    });
+  });
+
   // Regression for #349: wide tables must scroll inside their own container
   // (display:block + overflow-x:auto on the table) while the article-viewer
   // pane stays at the default `overflow: visible` so future wide non-table

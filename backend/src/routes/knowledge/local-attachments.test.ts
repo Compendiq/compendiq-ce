@@ -184,6 +184,83 @@ describe('Local Attachment Routes', () => {
     expect(serviceMocks.putLocalAttachment).not.toHaveBeenCalled();
   });
 
+  // ── upload MIME allowlist (#735 stored-XSS hardening) ──────────────────
+
+  it('rejects a text/html data URI with 400 UNSUPPORTED_CONTENT_TYPE', async () => {
+    const html = '<script>alert(document.domain)</script>';
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/api/local-attachments/42/evil.html',
+      payload: { dataUri: `data:text/html;base64,${Buffer.from(html).toString('base64')}` },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe('UNSUPPORTED_CONTENT_TYPE');
+    expect(serviceMocks.putLocalAttachment).not.toHaveBeenCalled();
+  });
+
+  it('rejects a text/javascript data URI with 400 UNSUPPORTED_CONTENT_TYPE', async () => {
+    const js = 'fetch("/steal?t="+localStorage.token)';
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/api/local-attachments/42/x.js',
+      payload: { dataUri: `data:text/javascript;base64,${Buffer.from(js).toString('base64')}` },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe('UNSUPPORTED_CONTENT_TYPE');
+    expect(serviceMocks.putLocalAttachment).not.toHaveBeenCalled();
+  });
+
+  it('rejects MIME allowlist bypass attempts via uppercase (TEXT/HTML)', async () => {
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/api/local-attachments/42/evil.html',
+      payload: { dataUri: 'data:TEXT/HTML;base64,AAAA' },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe('UNSUPPORTED_CONTENT_TYPE');
+    expect(serviceMocks.putLocalAttachment).not.toHaveBeenCalled();
+  });
+
+  it('rejects an application/octet-stream data URI (not on the allowlist)', async () => {
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/api/local-attachments/42/blob.bin',
+      payload: { dataUri: 'data:application/octet-stream;base64,AAAA' },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe('UNSUPPORTED_CONTENT_TYPE');
+    expect(serviceMocks.putLocalAttachment).not.toHaveBeenCalled();
+  });
+
+  it('accepts an application/pdf data URI', async () => {
+    serviceMocks.putLocalAttachment.mockResolvedValueOnce({
+      id: 10,
+      pageId: 42,
+      filename: 'doc.pdf',
+      contentType: 'application/pdf',
+      sizeBytes: 8,
+      sha256: 'sha',
+      createdBy: 'test-user-id',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/api/local-attachments/42/doc.pdf',
+      payload: { dataUri: `data:application/pdf;base64,${Buffer.from('%PDF-1.4').toString('base64')}` },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(serviceMocks.putLocalAttachment).toHaveBeenCalledWith(
+      expect.objectContaining({ contentType: 'application/pdf' }),
+    );
+  });
+
   // ── GET one: SVG response hardening ────────────────────────────────────
 
   it('sets CSP sandbox + content-disposition=attachment on SVG responses', async () => {
@@ -238,6 +315,133 @@ describe('Local Attachment Routes', () => {
     expect(res.headers['content-type']).toContain('png');
     expect(res.headers['content-disposition']).toBe('inline');
     expect(res.headers['content-security-policy']).toBeUndefined();
+  });
+
+  // ── GET one: server-derived Content-Type (#735 stored-XSS hardening) ───
+  //
+  // The stored (client-supplied) content_type must never be echoed for
+  // inline rendering. Content-Type is derived server-side from the filename
+  // extension; anything that is not a safe raster image is forced to
+  // download (`content-disposition: attachment`) with CSP `sandbox`, and
+  // every response carries `x-content-type-options: nosniff`.
+
+  const baseRecord = {
+    id: 100,
+    pageId: 42,
+    sizeBytes: 10,
+    sha256: 'sha',
+    createdBy: 'test-user-id',
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+
+  it('does not serve a previously-stored text/html row inline as text/html', async () => {
+    serviceMocks.getLocalAttachment.mockResolvedValueOnce({
+      data: Buffer.from('<script>alert(1)</script>'),
+      record: { ...baseRecord, filename: 'evil.html', contentType: 'text/html' },
+    });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/local-attachments/42/evil.html',
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).not.toContain('text/html');
+    expect(res.headers['content-type']).toContain('application/octet-stream');
+    expect(res.headers['content-disposition']).toBe('attachment');
+    expect(res.headers['x-content-type-options']).toBe('nosniff');
+    expect(res.headers['content-security-policy']).toBe('sandbox');
+  });
+
+  it('does not serve a previously-stored text/javascript row as JavaScript', async () => {
+    serviceMocks.getLocalAttachment.mockResolvedValueOnce({
+      data: Buffer.from('fetch("/steal")'),
+      record: { ...baseRecord, filename: 'x.js', contentType: 'text/javascript' },
+    });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/local-attachments/42/x.js',
+    });
+
+    expect(res.statusCode).toBe(200);
+    // With nosniff + a non-JS Content-Type, <script src> refuses to execute.
+    expect(res.headers['content-type']).not.toContain('javascript');
+    expect(res.headers['content-type']).toContain('application/octet-stream');
+    expect(res.headers['content-disposition']).toBe('attachment');
+    expect(res.headers['x-content-type-options']).toBe('nosniff');
+  });
+
+  it('derives Content-Type from the filename, not the stored MIME', async () => {
+    // Stored MIME claims image/png but the filename is .html — the
+    // extension allowlist wins and the file is forced to download.
+    serviceMocks.getLocalAttachment.mockResolvedValueOnce({
+      data: Buffer.from('<script>alert(1)</script>'),
+      record: { ...baseRecord, filename: 'spoofed.html', contentType: 'image/png' },
+    });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/local-attachments/42/spoofed.html',
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toContain('application/octet-stream');
+    expect(res.headers['content-disposition']).toBe('attachment');
+  });
+
+  it('serves raster images inline with nosniff', async () => {
+    serviceMocks.getLocalAttachment.mockResolvedValueOnce({
+      data: Buffer.from(VALID_PNG_B64, 'base64'),
+      record: { ...baseRecord, filename: 'photo.png', contentType: 'image/png' },
+    });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/local-attachments/42/photo.png',
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toContain('image/png');
+    expect(res.headers['content-disposition']).toBe('inline');
+    expect(res.headers['x-content-type-options']).toBe('nosniff');
+  });
+
+  it('serves PDFs as attachment with a server-derived application/pdf type', async () => {
+    serviceMocks.getLocalAttachment.mockResolvedValueOnce({
+      data: Buffer.from('%PDF-1.4'),
+      record: { ...baseRecord, filename: 'doc.pdf', contentType: 'application/pdf' },
+    });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/local-attachments/42/doc.pdf',
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toContain('application/pdf');
+    expect(res.headers['content-disposition']).toBe('attachment');
+    expect(res.headers['x-content-type-options']).toBe('nosniff');
+  });
+
+  it('serves .drawio XML siblings as attachment with CSP sandbox', async () => {
+    serviceMocks.getLocalAttachment.mockResolvedValueOnce({
+      data: Buffer.from('<mxfile/>'),
+      record: { ...baseRecord, filename: 'diagram.drawio', contentType: 'application/xml' },
+    });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/local-attachments/42/diagram.drawio',
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toContain('application/xml');
+    // XML can smuggle XHTML/script — never render it inline.
+    expect(res.headers['content-disposition']).toBe('attachment');
+    expect(res.headers['content-security-policy']).toBe('sandbox');
+    expect(res.headers['x-content-type-options']).toBe('nosniff');
   });
 
   // ── XML sibling: filename transform + write ────────────────────────────

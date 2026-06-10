@@ -88,6 +88,10 @@ export function ArticleViewer({
   const [isReady, setIsReady] = useState(false);
   const isLight = useIsLightTheme();
   const headerNumbering = localStorage.getItem('editor-header-numbering') === 'true';
+  // #747: tracks the content last parsed into the editor so the setContent
+  // effect can skip the no-op re-parse that used to happen on mount (the
+  // initial `useEditor({ content })` parse already covers it).
+  const lastAppliedContentRef = useRef<string | null>(null);
 
   const sanitizedContent = useMemo(
     () =>
@@ -156,14 +160,21 @@ export function ArticleViewer({
         'aria-readonly': 'true',
       },
     },
-    onCreate: () => setIsReady(true),
+    onCreate: () => {
+      // Record the content the editor was created with — `useEditor` already
+      // parsed it, so the setContent effect below must not re-parse it.
+      lastAppliedContentRef.current = sanitizedContent;
+      setIsReady(true);
+    },
   });
 
-  // Update content when it changes (e.g., navigating between pages)
+  // Update content when it changes (e.g., navigating between pages), skipping
+  // the no-op setContent for content the editor has already parsed (#747).
   useEffect(() => {
-    if (editor && isReady && sanitizedContent) {
-      editor.commands.setContent(sanitizedContent);
-    }
+    if (!editor || !isReady || !sanitizedContent) return;
+    if (lastAppliedContentRef.current === sanitizedContent) return;
+    lastAppliedContentRef.current = sanitizedContent;
+    editor.commands.setContent(sanitizedContent);
   }, [editor, isReady, sanitizedContent]);
 
   // Generate heading IDs and expose them for ToC
@@ -396,7 +407,9 @@ export function ArticleViewer({
     });
 
     return () => cancelAnimationFrame(raf);
-  }, [isReady, confluenceUrl, confluencePageId]);
+    // sanitizedContent keeps the rewrite in sync after in-place content
+    // refreshes (#747), matching the sibling DOM-patching effects above.
+  }, [isReady, sanitizedContent, confluenceUrl, confluencePageId]);
 
   // Add inline "Edit Diagram" overlay buttons on draw.io containers
   useEffect(() => {

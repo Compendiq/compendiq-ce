@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
+import { userCanAccessPage, getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 import { z } from 'zod';
 
 const CreateLocalSpaceSchema = z.object({
@@ -304,8 +305,35 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
     }
 
     const page = existing.rows[0]!;
+
+    // #733: the caller must be able to access the page being moved. 404 (not
+    // 403) so restricted pages are indistinguishable from nonexistent ones.
+    if (!(await userCanAccessPage(userId, page.id))) {
+      throw fastify.httpErrors.notFound('Page not found');
+    }
+
     const newParentId = body.parentId !== undefined ? body.parentId : page.parent_id;
     const newSpaceKey = body.spaceKey ?? page.space_key;
+
+    // #733: when the move changes the page's space, the target space must
+    // exist and be writable by the caller. Confluence-synced spaces require
+    // an RBAC space assignment; local spaces are accessible to all
+    // authenticated users (same model as POST /api/pages and the page tree).
+    if (newSpaceKey !== null && newSpaceKey !== page.space_key) {
+      const targetSpace = await query<{ source: string }>(
+        'SELECT source FROM spaces WHERE space_key = $1',
+        [newSpaceKey],
+      );
+      if (targetSpace.rows.length === 0) {
+        throw fastify.httpErrors.badRequest('Target space not found');
+      }
+      if (targetSpace.rows[0]!.source !== 'local') {
+        const accessibleSpaces = await getUserAccessibleSpaces(userId);
+        if (!accessibleSpaces.includes(newSpaceKey)) {
+          throw fastify.httpErrors.forbidden('You do not have access to the target space');
+        }
+      }
+    }
 
     // If new parent is specified, verify it exists
     if (newParentId !== null) {
@@ -386,6 +414,11 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.notFound('Page not found');
     }
 
+    // #733: the caller must be able to access the page being reordered.
+    if (!(await userCanAccessPage(userId, existing.rows[0]!.id))) {
+      throw fastify.httpErrors.notFound('Page not found');
+    }
+
     await query(
       'UPDATE pages SET sort_order = $1 WHERE id = $2',
       [body.sortOrder, id],
@@ -400,6 +433,7 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
 
   // GET /api/pages/:id/breadcrumb - get parent chain for breadcrumb display
   fastify.get('/pages/:id/breadcrumb', async (request) => {
+    const userId = request.userId;
     const { id } = IdParamSchema.parse(request.params);
 
     const page = await query<{
@@ -414,6 +448,12 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
     );
 
     if (page.rows.length === 0) {
+      throw fastify.httpErrors.notFound('Page not found');
+    }
+
+    // #733: the breadcrumb leaks titles/structure of the page and all its
+    // ancestors — require page access; 404 to avoid an existence oracle.
+    if (!(await userCanAccessPage(userId, page.rows[0]!.id))) {
       throw fastify.httpErrors.notFound('Page not found');
     }
 

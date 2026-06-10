@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { query } from '../../core/db/postgres.js';
+import { userCanAccessPage } from '../../core/services/rbac-service.js';
 import { logger } from '../../core/utils/logger.js';
 
 // --- Zod schemas ---
@@ -113,9 +114,18 @@ export async function commentsRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
 
   // GET /api/pages/:pageId/comments — list threads for a page
-  fastify.get('/pages/:pageId/comments', async (request) => {
+  fastify.get('/pages/:pageId/comments', async (request, reply) => {
     const { pageId } = PageIdParamSchema.parse(request.params);
     const { includeResolved } = ListCommentsQuerySchema.parse(request.query);
+    const userId = request.userId;
+
+    // #733: only users who can access the page may read its comment threads
+    // (bodies, authors, reactions). userCanAccessPage is false for missing
+    // pages too — 404 in both cases so restricted pages are
+    // indistinguishable from nonexistent ones.
+    if (!(await userCanAccessPage(userId, pageId))) {
+      return reply.notFound('Page not found');
+    }
 
     let resolvedFilter = '';
     if (includeResolved === 'false') {
@@ -194,9 +204,10 @@ export async function commentsRoutes(fastify: FastifyInstance) {
     const { body, bodyHtml, parentId, anchorType, anchorData } = CreateCommentSchema.parse(request.body);
     const userId = request.userId;
 
-    // Verify page exists
-    const pageCheck = await query('SELECT id FROM pages WHERE id = $1', [pageId]);
-    if (pageCheck.rows.length === 0) {
+    // #733: verify the page exists AND the caller can access it — posting
+    // onto a restricted page would also fan out @mention notifications.
+    // userCanAccessPage is false for missing pages too; 404 in both cases.
+    if (!(await userCanAccessPage(userId, pageId))) {
       return reply.notFound('Page not found');
     }
 
@@ -317,12 +328,19 @@ export async function commentsRoutes(fastify: FastifyInstance) {
     const { id } = CommentIdParamSchema.parse(request.params);
     const userId = request.userId;
 
-    const existing = await query<{ parent_id: number | null }>(
-      'SELECT parent_id FROM comments WHERE id = $1 AND deleted_at IS NULL',
+    const existing = await query<{ parent_id: number | null; page_id: number }>(
+      'SELECT parent_id, page_id FROM comments WHERE id = $1 AND deleted_at IS NULL',
       [id],
     );
 
     if (existing.rows.length === 0) {
+      return reply.notFound('Comment not found');
+    }
+
+    // #733: only users who can access the parent page may resolve its
+    // threads. 404 (before the top-level check) so inaccessible comments
+    // are indistinguishable from nonexistent ones — no existence oracle.
+    if (!(await userCanAccessPage(userId, existing.rows[0]!.page_id))) {
       return reply.notFound('Comment not found');
     }
 
@@ -344,12 +362,17 @@ export async function commentsRoutes(fastify: FastifyInstance) {
     const { id } = CommentIdParamSchema.parse(request.params);
     const userId = request.userId;
 
-    const existing = await query<{ parent_id: number | null }>(
-      'SELECT parent_id FROM comments WHERE id = $1 AND deleted_at IS NULL',
+    const existing = await query<{ parent_id: number | null; page_id: number }>(
+      'SELECT parent_id, page_id FROM comments WHERE id = $1 AND deleted_at IS NULL',
       [id],
     );
 
     if (existing.rows.length === 0) {
+      return reply.notFound('Comment not found');
+    }
+
+    // #733: same page-access gate as /resolve — 404, no existence oracle.
+    if (!(await userCanAccessPage(userId, existing.rows[0]!.page_id))) {
       return reply.notFound('Comment not found');
     }
 
@@ -373,11 +396,18 @@ export async function commentsRoutes(fastify: FastifyInstance) {
     const userId = request.userId;
 
     // Verify comment exists
-    const commentCheck = await query(
-      'SELECT id FROM comments WHERE id = $1 AND deleted_at IS NULL',
+    const commentCheck = await query<{ page_id: number }>(
+      'SELECT page_id FROM comments WHERE id = $1 AND deleted_at IS NULL',
       [id],
     );
     if (commentCheck.rows.length === 0) {
+      return reply.notFound('Comment not found');
+    }
+
+    // #733: only users who can access the parent page may react to its
+    // comments. 404 so inaccessible comments are indistinguishable from
+    // nonexistent ones — no existence oracle.
+    if (!(await userCanAccessPage(userId, commentCheck.rows[0]!.page_id))) {
       return reply.notFound('Comment not found');
     }
 

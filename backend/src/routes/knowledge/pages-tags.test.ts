@@ -52,6 +52,12 @@ vi.mock('../../core/db/postgres.js', () => ({
   closePool: vi.fn(),
 }));
 
+// --- Mock: rbac-service (#733 per-page access checks) ---
+const mockUserCanAccessPage = vi.fn();
+vi.mock('../../core/services/rbac-service.js', () => ({
+  userCanAccessPage: (...args: unknown[]) => mockUserCanAccessPage(...args),
+}));
+
 // =============================================================================
 // Test Suite 1: Auth-required tests
 // =============================================================================
@@ -149,6 +155,7 @@ describe('POST /api/pages/:id/apply-tags', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockQueryFn.mockResolvedValue({ rows: [{ id: 1, confluence_id: 'conf-1', labels: ['existing'] }], rowCount: 1 });
+    mockUserCanAccessPage.mockResolvedValue(true);
   });
 
   it('should apply valid tags and return merged labels', async () => {
@@ -253,6 +260,7 @@ describe('PUT /api/pages/:id/labels - tag CRUD', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockUserCanAccessPage.mockResolvedValue(true);
   });
 
   it('should add a tag to a page', async () => {
@@ -372,6 +380,9 @@ describe('POST /api/pages/:id/auto-tag — resolver fallback (#214)', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // #733: the route now resolves the page and checks access before tagging
+    mockQueryFn.mockResolvedValue({ rows: [{ id: 1 }], rowCount: 1 });
+    mockUserCanAccessPage.mockResolvedValue(true);
   });
 
   it('consults the resolver when the client omits `model` and routes with the resolved model', async () => {
@@ -444,5 +455,103 @@ describe('POST /api/pages/:id/auto-tag — resolver fallback (#214)', () => {
 
     expect(response.statusCode).toBe(400);
     expect(mockAutoTagPage).not.toHaveBeenCalled();
+  });
+});
+
+// =============================================================================
+// Test Suite 5: #733 RBAC / IDOR — per-page access checks
+// =============================================================================
+
+describe('pages-tags routes — RBAC access checks (#733)', () => {
+  let app: ReturnType<typeof Fastify>;
+
+  beforeAll(async () => {
+    app = Fastify({ logger: false });
+    await app.register(sensible);
+
+    app.setErrorHandler((error, _request, reply) => {
+      if (error instanceof ZodError) {
+        reply.status(400).send({
+          error: 'ValidationError',
+          message: error.issues.map((e) => `${e.path.join('.')}: ${e.message}`).join('; '),
+          statusCode: 400,
+        });
+        return;
+      }
+      reply.status(error.statusCode ?? 500).send({ error: error.message, statusCode: error.statusCode ?? 500 });
+    });
+
+    app.decorate('authenticate', async (request: { userId: string }) => {
+      request.userId = 'test-user-id';
+    });
+    app.decorate('requireAdmin', async () => {});
+    app.decorate('redis', {});
+    app.decorateRequest('userId', '');
+
+    await app.register(pagesTagRoutes, { prefix: '/api' });
+    await app.ready();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Page exists, but the caller cannot access it.
+    mockQueryFn.mockResolvedValue({ rows: [{ id: 77, confluence_id: 'conf-77', labels: [] }], rowCount: 1 });
+    mockUserCanAccessPage.mockResolvedValue(false);
+  });
+
+  it('POST /pages/:id/auto-tag returns 404 for an inaccessible page and never reaches the LLM', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/77/auto-tag',
+      payload: { model: 'm' },
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(mockUserCanAccessPage).toHaveBeenCalledWith('test-user-id', 77);
+    expect(mockAutoTagPage).not.toHaveBeenCalled();
+  });
+
+  it('POST /pages/:id/apply-tags returns 404 for an inaccessible page and never mutates labels', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/77/apply-tags',
+      payload: { tags: ['architecture'] },
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(mockApplyTags).not.toHaveBeenCalled();
+  });
+
+  it('PUT /pages/:id/labels returns 404 for an inaccessible page and never updates or syncs upstream', async () => {
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/pages/77/labels',
+      payload: { addLabels: ['leaked'] },
+    });
+
+    expect(response.statusCode).toBe(404);
+    // Critical: no UPDATE may run (which would also push labels to Confluence).
+    const updateCall = mockQueryFn.mock.calls.find(
+      (c) => typeof c[0] === 'string' && (c[0] as string).includes('UPDATE pages'),
+    );
+    expect(updateCall).toBeUndefined();
+  });
+
+  it('resolves confluence_id-style ids before the access check (apply-tags)', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/conf-77/apply-tags',
+      payload: { tags: ['architecture'] },
+    });
+
+    expect(response.statusCode).toBe(404);
+    // The lookup must use confluence_id for non-numeric ids.
+    const lookupCall = mockQueryFn.mock.calls[0];
+    expect(lookupCall[0]).toContain('confluence_id = $1');
+    expect(mockUserCanAccessPage).toHaveBeenCalledWith('test-user-id', 77);
   });
 });

@@ -10,8 +10,10 @@ vi.mock('nodemailer', () => {
   };
 });
 
+const mockDbQuery = vi.fn().mockResolvedValue({ rows: [] });
+
 vi.mock('../db/postgres.js', () => ({
-  query: vi.fn().mockResolvedValue({ rows: [] }),
+  query: (...args: unknown[]) => mockDbQuery(...args),
 }));
 
 vi.mock('../utils/logger.js', () => ({
@@ -50,5 +52,66 @@ describe('email-service', () => {
     const result = await sendTestEmail('admin@test.com');
     expect(result.success).toBe(false);
     expect(result.error).toContain('not configured');
+  });
+
+  // issue #743 — the masked-password sentinel round-tripped by the admin UI
+  // must never overwrite the real password (live transport or DB persist).
+  describe('stripMaskedSmtpPass (#743)', () => {
+    it('removes the masked sentinel from a config patch', async () => {
+      const { stripMaskedSmtpPass, SMTP_PASS_MASK } = await import('./email-service.js');
+      const stripped = stripMaskedSmtpPass({ host: 'smtp.test.com', pass: SMTP_PASS_MASK });
+      expect(stripped.pass).toBeUndefined();
+      expect(stripped.host).toBe('smtp.test.com');
+    });
+
+    it('keeps a real password untouched', async () => {
+      const { stripMaskedSmtpPass } = await import('./email-service.js');
+      expect(stripMaskedSmtpPass({ pass: 'real-secret' }).pass).toBe('real-secret');
+    });
+
+    it('keeps an empty password so admins can still clear it', async () => {
+      const { stripMaskedSmtpPass } = await import('./email-service.js');
+      expect(stripMaskedSmtpPass({ pass: '' }).pass).toBe('');
+    });
+
+    it('leaves a patch without pass untouched', async () => {
+      const { stripMaskedSmtpPass } = await import('./email-service.js');
+      expect(stripMaskedSmtpPass({ host: 'smtp.test.com' })).toEqual({ host: 'smtp.test.com' });
+    });
+  });
+
+  // issue #743 — the DB value must be authoritative when present; previously
+  // `smtp_enabled === 'true' || _config.enabled` meant SMTP_ENABLED=true in
+  // env could never be disabled via the admin UI across restarts.
+  describe('initEmailService smtp_enabled precedence (#743)', () => {
+    it('smtp_enabled=false in DB disables SMTP even when env enabled it', async () => {
+      const { initEmailService, updateSmtpConfig, getSmtpConfig } = await import('./email-service.js');
+      updateSmtpConfig({ enabled: true }); // simulates SMTP_ENABLED=true bootstrap
+      mockDbQuery.mockResolvedValueOnce({
+        rows: [{ setting_key: 'smtp_enabled', setting_value: 'false' }],
+      });
+      await initEmailService();
+      expect(getSmtpConfig().enabled).toBe(false);
+    });
+
+    it('smtp_enabled=true in DB enables SMTP even when env did not', async () => {
+      const { initEmailService, updateSmtpConfig, getSmtpConfig } = await import('./email-service.js');
+      updateSmtpConfig({ enabled: false });
+      mockDbQuery.mockResolvedValueOnce({
+        rows: [{ setting_key: 'smtp_enabled', setting_value: 'true' }],
+      });
+      await initEmailService();
+      expect(getSmtpConfig().enabled).toBe(true);
+    });
+
+    it('falls back to the current (env) value when smtp_enabled is absent from DB', async () => {
+      const { initEmailService, updateSmtpConfig, getSmtpConfig } = await import('./email-service.js');
+      updateSmtpConfig({ enabled: true });
+      mockDbQuery.mockResolvedValueOnce({
+        rows: [{ setting_key: 'smtp_host', setting_value: 'db.example.com' }],
+      });
+      await initEmailService();
+      expect(getSmtpConfig().enabled).toBe(true);
+    });
   });
 });

@@ -49,11 +49,12 @@
  *     `getWebhookDeliveryQueue()` to keep the keyspace in sync.
  */
 
-import { Worker, type Job, type ConnectionOptions } from 'bullmq';
+import { Worker, type Job } from 'bullmq';
 import { Agent, fetch as undiciFetch } from 'undici';
 
 import { getPool } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
+import { getRedisConnectionOpts } from '../utils/redis-connection.js';
 import { assertNonSsrfUrl, SsrfError } from '../utils/ssrf-guard.js';
 import { decryptPat } from '../utils/crypto.js';
 import { logAuditEvent } from './audit-service.js';
@@ -166,27 +167,13 @@ interface RuntimeConfig {
   userAgent: string;
 }
 
-// ─── Redis connection (mirror poller + queue-service) ────────────────────
-
-function getRedisConnectionOpts(): ConnectionOptions {
-  const url = process.env.REDIS_URL ?? 'redis://localhost:6379';
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return {
-      host: 'localhost',
-      port: 6379,
-      maxRetriesPerRequest: null,
-    };
-  }
-  return {
-    host: parsed.hostname,
-    port: parseInt(parsed.port || '6379', 10),
-    password: parsed.password || undefined,
-    maxRetriesPerRequest: null,
-  };
-}
+// ─── Redis connection ────────────────────────────────────────────────────
+//
+// REDIS_URL parsing lives in core/utils/redis-connection.ts — shared with
+// the outbox poller (producer) and queue-service so this consumer Worker
+// always lands on the same Redis db / TLS / credentials as the queue it
+// consumes (issue #742). Regression-guarded by
+// webhook-delivery.worker-connection.test.ts.
 
 // ─── Module state ────────────────────────────────────────────────────────
 

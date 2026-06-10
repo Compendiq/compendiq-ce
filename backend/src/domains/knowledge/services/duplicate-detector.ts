@@ -39,6 +39,10 @@ function tokenJaccardSimilarity(a: string, b: string): number {
 /**
  * Find duplicate/near-duplicate pages for a given page using pgvector kNN.
  * Computes average embedding for the source page, then finds nearest neighbors.
+ *
+ * RBAC (#733): both the source page and the candidate set are restricted to
+ * what `userId` can read — Confluence pages in accessible spaces plus shared
+ * or own-private standalone articles. An inaccessible source returns [].
  */
 export async function findDuplicates(
   userId: string,
@@ -50,16 +54,27 @@ export async function findDuplicates(
 ): Promise<DuplicateCandidate[]> {
   const { distanceThreshold = 0.15, limit = 10 } = options;
 
+  // #733: resolve the caller's readable space set once — it gates both the
+  // source page and the kNN candidates (mirrors scanAllDuplicates and the
+  // rag-service retrieval filters).
+  const accessibleSpaces = await getUserAccessibleSpaces(userId);
+
   // Get the source page id and title for title similarity comparison
-  const sourcePageResult = await query<{ id: number; title: string }>(
-    'SELECT id, title FROM pages WHERE confluence_id = $1 AND deleted_at IS NULL',
+  const sourcePageResult = await query<{ id: number; title: string; space_key: string | null }>(
+    'SELECT id, title, space_key FROM pages WHERE confluence_id = $1 AND deleted_at IS NULL',
     [confluenceId],
   );
   if (sourcePageResult.rows.length === 0) {
     return [];
   }
-  const sourceTitle = sourcePageResult.rows[0]!.title;
-  const sourcePageId = sourcePageResult.rows[0]!.id;
+  const sourcePage = sourcePageResult.rows[0]!;
+  // #733: a source page outside the caller's accessible spaces behaves
+  // exactly like a nonexistent one — no existence oracle, no neighbor leak.
+  if (!sourcePage.space_key || !accessibleSpaces.includes(sourcePage.space_key)) {
+    return [];
+  }
+  const sourceTitle = sourcePage.title;
+  const sourcePageId = sourcePage.id;
 
   // Use a dedicated client for SET LOCAL
   const client = await getPool().connect();
@@ -89,9 +104,17 @@ export async function findDuplicates(
        source_avg
        WHERE pe2.page_id != $1
          AND source_avg.avg_embedding IS NOT NULL
+         AND (
+           (cp2.source = 'confluence' AND cp2.space_key = ANY($3::text[]))
+           OR (cp2.source = 'standalone' AND cp2.visibility = 'shared')
+           OR (cp2.source = 'standalone' AND cp2.visibility = 'private' AND cp2.created_by_user_id = $4)
+         )
        ORDER BY cp2.confluence_id, pe2.embedding <=> source_avg.avg_embedding
        LIMIT $2`,
-      [sourcePageId, limit * 3], // Over-fetch to filter later
+      // #733: over-fetch to filter later; candidates restricted to the same
+      // retrieval scope as rag-service (accessible Confluence spaces +
+      // shared / own-private standalone articles).
+      [sourcePageId, limit * 3, accessibleSpaces, userId],
     );
 
     await client.query('COMMIT');

@@ -62,6 +62,29 @@ function getTransporter(): Transporter | null {
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 /**
+ * Masked-password sentinel returned by `getSmtpConfig()` and round-tripped
+ * by the admin UI on save.
+ */
+export const SMTP_PASS_MASK = '••••••••';
+
+/**
+ * Strip the masked-password sentinel from a config patch (issue #743).
+ *
+ * The admin UI round-trips the mask from `GET /admin/smtp` when saving other
+ * settings. Apply this guard once, before BOTH the live `updateSmtpConfig()`
+ * call and the admin_settings persist, so the literal mask never overwrites
+ * the real password. An empty string is kept so admins can still clear it.
+ */
+export function stripMaskedSmtpPass(config: Partial<SmtpConfig>): Partial<SmtpConfig> {
+  if (config.pass !== SMTP_PASS_MASK) {
+    return config;
+  }
+  const stripped = { ...config };
+  delete stripped.pass;
+  return stripped;
+}
+
+/**
  * Update SMTP configuration at runtime (from admin settings).
  */
 export function updateSmtpConfig(config: Partial<SmtpConfig>): void {
@@ -91,7 +114,7 @@ export function updateSmtpConfig(config: Partial<SmtpConfig>): void {
 export function getSmtpConfig(): Omit<SmtpConfig, 'pass'> & { pass: string } {
   return {
     ..._config,
-    pass: _config.pass ? '••••••••' : '',
+    pass: _config.pass ? SMTP_PASS_MASK : '',
   };
 }
 
@@ -179,7 +202,9 @@ export async function initEmailService(): Promise<void> {
         user: settings['smtp_user'] ?? _config.user,
         pass: settings['smtp_pass'] ?? _config.pass,
         from: settings['smtp_from'] ?? _config.from,
-        enabled: settings['smtp_enabled'] === 'true' || _config.enabled,
+        // DB value is authoritative when present (issue #743) — otherwise an
+        // SMTP_ENABLED=true env bootstrap could never be disabled via the UI.
+        enabled: settings['smtp_enabled'] !== undefined ? settings['smtp_enabled'] === 'true' : _config.enabled,
       });
     }
   } catch (err) {

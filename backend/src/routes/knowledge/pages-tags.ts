@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
+import { userCanAccessPage } from '../../core/services/rbac-service.js';
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
 import { autoTagPage, applyTags, autoTagAllPages, ALLOWED_TAGS, AllowedTag } from '../../domains/knowledge/services/auto-tagger.js';
 import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
@@ -8,6 +9,27 @@ import { z } from 'zod';
 import { logger } from '../../core/utils/logger.js';
 
 const IdParamSchema = z.object({ id: z.string().min(1) });
+
+/**
+ * #733: resolve a page id (integer PK or confluence_id — same resolution as
+ * the auto-tagger service) and enforce the caller's RBAC access to it.
+ * Throws 404 for both missing and inaccessible pages so restricted pages are
+ * indistinguishable from nonexistent ones (no existence oracle).
+ */
+async function assertPageAccess(
+  fastify: FastifyInstance,
+  userId: string,
+  pageId: string,
+): Promise<void> {
+  const isNumericId = /^\d+$/.test(pageId);
+  const result = await query<{ id: number }>(
+    `SELECT id FROM pages WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'} AND deleted_at IS NULL`,
+    [isNumericId ? parseInt(pageId, 10) : pageId],
+  );
+  if (result.rows.length === 0 || !(await userCanAccessPage(userId, result.rows[0]!.id))) {
+    throw fastify.httpErrors.notFound('Page not found');
+  }
+}
 // `model` is optional: when omitted, the route resolves the auto_tag use-case
 // assignment from admin settings (issue #214). Frontend can stop asking the
 // user to pick a model for auto-tag once the admin has configured one.
@@ -35,6 +57,10 @@ export async function pagesTagRoutes(fastify: FastifyInstance) {
     const { id } = IdParamSchema.parse(request.params);
     const userId = request.userId;
     const { model: bodyModel } = AutoTagBodySchema.parse(request.body);
+
+    // #733: RBAC — reject before reading page content or shipping it to the LLM.
+    await assertPageAccess(fastify, userId, id);
+
     // Resolve the use-case to determine the concrete model when the caller
     // omits one. The auto-tagger itself resolves the provider config
     // internally, so we only need to surface the model name here for the
@@ -82,6 +108,9 @@ export async function pagesTagRoutes(fastify: FastifyInstance) {
     const userId = request.userId;
     const { tags } = ApplyTagsBodySchema.parse(request.body);
 
+    // #733: RBAC — reject before mutating labels or syncing to Confluence.
+    await assertPageAccess(fastify, userId, id);
+
     // Validate tags against allowed list
     const allowedSet = new Set<string>(ALLOWED_TAGS);
     const validTags = tags.filter((t) => allowedSet.has(t)) as AllowedTag[];
@@ -119,6 +148,12 @@ export async function pagesTagRoutes(fastify: FastifyInstance) {
     }
 
     const page = existing.rows[0]!;
+
+    // #733: RBAC — reject before mutating labels or pushing them upstream.
+    if (!(await userCanAccessPage(userId, page.id))) {
+      throw fastify.httpErrors.notFound('Page not found');
+    }
+
     let labels = page.labels || [];
 
     // Remove labels

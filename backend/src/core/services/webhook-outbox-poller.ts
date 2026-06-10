@@ -47,10 +47,11 @@
  * bootstrap registration.
  */
 
-import { Queue, type ConnectionOptions } from 'bullmq';
+import { Queue } from 'bullmq';
 import type { PoolClient } from 'pg';
 import { getPool } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
+import { getRedisConnectionOpts } from '../utils/redis-connection.js';
 
 // ─── Tunables ────────────────────────────────────────────────────────────
 
@@ -60,28 +61,6 @@ const DEFAULT_STALE_DISPATCH_THRESHOLD_MS = 5 * 60 * 1_000; // 5 min
 
 /** Queue name shared with the Phase D delivery worker. */
 export const WEBHOOK_DELIVERY_QUEUE = 'webhook-delivery';
-
-// ─── Redis connection (mirror queue-service.ts — one source of truth) ───
-
-function getRedisConnectionOpts(): ConnectionOptions {
-  const url = process.env.REDIS_URL ?? 'redis://localhost:6379';
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return {
-      host: 'localhost',
-      port: 6379,
-      maxRetriesPerRequest: null,
-    };
-  }
-  return {
-    host: parsed.hostname,
-    port: parseInt(parsed.port || '6379', 10),
-    password: parsed.password || undefined,
-    maxRetriesPerRequest: null,
-  };
-}
 
 // ─── Singleton queue handle ──────────────────────────────────────────────
 //
