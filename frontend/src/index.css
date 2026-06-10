@@ -2511,3 +2511,25 @@ pre:hover .code-copy-btn {
   background-color: rgba(255, 130, 0, 0.6);
   border-radius: 2px;
 }
+
+/* ============================================
+   AI Improve — selection decoration (#764)
+   Keeps the captured passage visibly marked while the bubble menu's Improve
+   popover holds focus (a blurred editor stops painting its native selection).
+   Applied via a ProseMirror inline decoration — never a document mark. Honey
+   primary at low alpha reads as a highlight on both Graphite Honey (dark) and
+   Honey Linen (light) without hurting text contrast.
+   ============================================ */
+.ai-improve-selection {
+  background-color: color-mix(in srgb, var(--color-primary) 30%, transparent);
+  border-radius: 2px;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+@media (forced-colors: active) {
+  .ai-improve-selection {
+    background-color: Highlight;
+    color: HighlightText;
+  }
+}

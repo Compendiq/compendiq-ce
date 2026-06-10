@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { BubbleMenu } from '@tiptap/react/menus';
 import { useEditorState } from '@tiptap/react';
+import { posToDOMRect } from '@tiptap/core';
 import * as Popover from '@radix-ui/react-popover';
 import type { Editor as EditorType } from '@tiptap/react';
 import {
@@ -12,6 +13,12 @@ import { cn } from '../../lib/cn';
 import { SanitizedHtml } from '../SanitizedHtml';
 import { useImproveStream } from './use-improve-stream';
 import { buildImproveHtml } from './improve-markdown';
+import {
+  createImproveDecorationPlugin,
+  improveDecorationKey,
+  setImproveDecoration,
+  clearImproveDecoration,
+} from './improve-decoration';
 
 /**
  * #708 — Notion-style selection bubble menu for the article editor (edit mode
@@ -134,6 +141,53 @@ export function BubbleMenuContent({
   const lastRunRef = useRef<{ action: QuickAction; freeForm: string } | null>(null);
   const stream = useImproveStream();
 
+  // #764 — register the non-destructive selection-decoration plugin for the
+  // life of the menu. It stays inert (empty DecorationSet) until `openAi`
+  // dispatches the captured range. TipTap guards `unregisterPlugin` against a
+  // destroyed editor internally, but not `registerPlugin` — hence the check.
+  useEffect(() => {
+    if (editor.isDestroyed) return;
+    editor.registerPlugin(createImproveDecorationPlugin());
+    return () => { editor.unregisterPlugin(improveDecorationKey); };
+  }, [editor]);
+
+  // Latest-ref so the stable virtual-anchor object below always measures the
+  // current editor. Assigned in an effect rather than during render for
+  // concurrent-rendering safety.
+  const editorRef = useRef(editor);
+  useEffect(() => { editorRef.current = editor; }, [editor]);
+
+  // #764 — Radix virtual anchor that measures the captured selection rect, so
+  // the AI popover positions relative to the SELECTION rather than the Improve
+  // trigger. The bubble menu floats above the selection, so `side="bottom"`
+  // from the trigger would land the popover exactly on top of the selected
+  // text; anchored to the selection rect instead, the stack reads predictably
+  // top-to-bottom as bubble menu → decorated selection → popover.
+  const selectionAnchorRef = useRef({
+    getBoundingClientRect: (): DOMRect => {
+      const range = rangeRef.current;
+      const e = editorRef.current;
+      if (range && !e.isDestroyed) {
+        try {
+          return posToDOMRect(e.view, range.from, range.to);
+        } catch {
+          // jsdom / detached view — fall through to the zero rect below.
+        }
+      }
+      const zero = { top: 0, right: 0, bottom: 0, left: 0, width: 0, height: 0, x: 0, y: 0 };
+      return { ...zero, toJSON: () => zero } as DOMRect;
+    },
+    // Floating UI's `autoUpdate` unwraps virtual references via
+    // `contextElement` to derive scroll/move listeners. The popover is
+    // portalled to <body> while the article scrolls in an inner container, so
+    // without this the popover would stay put as the decorated text scrolls
+    // away. Extra properties pass through Radix's `Measurable` untouched.
+    get contextElement(): HTMLElement | undefined {
+      const e = editorRef.current;
+      return e.isDestroyed ? undefined : e.view.dom;
+    },
+  });
+
   // Subscribe to active marks so the formatting buttons re-render their
   // active/pressed state on selection and toggle changes (mirrors EditorToolbar).
   const active = useEditorState({
@@ -157,6 +211,10 @@ export function BubbleMenuContent({
     const { from, to } = editor.state.selection;
     if (from === to) return;
     rangeRef.current = { from, to };
+    // #764 — the AI input is about to steal focus, which blurs the editor and
+    // hides the native selection highlight. Decorate the captured range so the
+    // passage stays visibly marked (no document mutation).
+    setImproveDecoration(editor, { from, to });
     setFreeForm('');
     stream.reset();
     setAi(true);
@@ -165,10 +223,11 @@ export function BubbleMenuContent({
   const closeAi = useCallback(() => {
     stream.abort();
     stream.reset();
+    clearImproveDecoration(editor);
     setAi(false);
     rangeRef.current = null;
     lastRunRef.current = null;
-  }, [stream, setAi]);
+  }, [editor, stream, setAi]);
 
   // Cmd/Ctrl+J opens the AI popover on the current selection (#708 optional
   // keyboard trigger).
@@ -184,16 +243,29 @@ export function BubbleMenuContent({
     return () => document.removeEventListener('keydown', handler);
   }, [editor, openAi]);
 
+  // #764 — the decoration set is remapped through every transaction (see
+  // improve-decoration.ts), while `rangeRef` keeps the offsets captured when
+  // the popover opened. Read the live range from the decoration so actions
+  // track the passage even if the document changed while the popover was
+  // open; fall back to the captured range when no decoration exists.
+  const currentRange = useCallback((): { from: number; to: number } | null => {
+    if (!editor.isDestroyed) {
+      const deco = improveDecorationKey.getState(editor.state)?.find()[0];
+      if (deco) return { from: deco.from, to: deco.to };
+    }
+    return rangeRef.current;
+  }, [editor]);
+
   const runAction = useCallback(
     (action: QuickAction, freeFormText: string) => {
-      const range = rangeRef.current;
+      const range = currentRange();
       if (!range) return;
       const text = editor.state.doc.textBetween(range.from, range.to, '\n');
       if (!text.trim()) return;
       lastRunRef.current = { action, freeForm: freeFormText };
       void stream.run(text, action.type, buildInstruction(action, freeFormText));
     },
-    [editor, stream],
+    [editor, stream, currentRange],
   );
 
   // "Try again" replays the last action with its captured free-form text,
@@ -205,15 +277,15 @@ export function BubbleMenuContent({
   }, [runAction, freeForm]);
 
   const replaceSelection = useCallback(() => {
-    const range = rangeRef.current;
+    const range = currentRange();
     if (!range || !stream.output) return;
     const { inline } = buildImproveHtml(stream.output);
     editor.chain().focus().insertContentAt({ from: range.from, to: range.to }, inline).run();
     closeAi();
-  }, [editor, stream.output, closeAi]);
+  }, [editor, stream.output, closeAi, currentRange]);
 
   const insertBelow = useCallback(() => {
-    const range = rangeRef.current;
+    const range = currentRange();
     if (!range || !stream.output) return;
     const { html } = buildImproveHtml(stream.output);
     // Insert block HTML at the end of the selection so the original passage is
@@ -225,7 +297,7 @@ export function BubbleMenuContent({
     // than constraining selections to block boundaries.
     editor.chain().focus().insertContentAt(range.to, html).run();
     closeAi();
-  }, [editor, stream.output, closeAi]);
+  }, [editor, stream.output, closeAi, currentRange]);
 
   const isStreaming = stream.status === 'streaming';
   const hasResult = stream.output.length > 0;
@@ -307,11 +379,23 @@ export function BubbleMenuContent({
             <span>Improve</span>
           </button>
         </Popover.Trigger>
+        {/* #764 — virtual anchor on the captured selection rect (see
+            selectionAnchorRef above); renders no DOM node of its own.
+            MUST come after Popover.Trigger: on the first render Radix's
+            `hasCustomAnchor` is still false, so the Trigger wraps itself in
+            its own popper Anchor whose mount effect would otherwise run last
+            and permanently override the virtual anchor with the trigger
+            button (nothing re-asserts the virtual anchor afterwards). */}
+        <Popover.Anchor virtualRef={selectionAnchorRef} />
         <Popover.Portal>
           <Popover.Content
+            // #764 — anchored to the selection rect (virtual anchor above):
+            // `side="bottom"` opens BELOW the selection, i.e. under the bubble
+            // menu (which floats above it) without covering the decorated text.
             align="start"
             side="bottom"
-            sideOffset={6}
+            sideOffset={8}
+            collisionPadding={12}
             data-testid="bubble-ai-popover"
             // Keep focus inside; closing is explicit (Discard / Escape).
             onOpenAutoFocus={(e) => { if (hasResult || isStreaming) e.preventDefault(); }}
