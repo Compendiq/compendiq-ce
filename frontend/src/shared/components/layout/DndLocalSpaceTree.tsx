@@ -97,7 +97,12 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
           <span className="w-[20px] shrink-0" />
         )}
         <FileText size={15} className={cn('shrink-0', isActive ? 'text-action/80' : 'text-muted-foreground/70')} />
-        <span className="truncate text-sm">{node.page.title}</span>
+        {/* #767: pin the weight explicitly (conditional, never both classes)
+            so titles can't inherit or synthesize a heavier weight while the
+            variable font loads or the row sits on a composited layer. */}
+        <span className={cn('truncate text-sm', isActive ? 'font-medium' : 'font-normal')}>
+          {node.page.title}
+        </span>
       </div>
 
       {hasChildren && isExpanded && (

@@ -274,6 +274,36 @@ describe('SidebarTreeView', () => {
     expect(row.className).toContain('text-action-foreground');
   });
 
+  // #767: tree titles intermittently rendered faux-bold (synthesized weight
+  // during variable-font load / compositing re-rasterization). The weight is
+  // now pinned per-state on the title span so it can never float: exactly one
+  // of font-normal / font-medium, never both (Tailwind class order between the
+  // two utilities is unspecified, so conditional classes are mandatory).
+  it('pins font-normal on inactive tree titles and font-medium on the active title (#767)', () => {
+    // OPS has no homepage, so the full tree (incl. "Getting Started") renders.
+    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: 'OPS' });
+    render(<SidebarTreeView />, { wrapper: createWrapper('/pages/root-2') });
+
+    const activeTitle = screen.getByText('API Reference');
+    expect(activeTitle.className).toContain('font-medium');
+    expect(activeTitle.className).not.toContain('font-normal');
+
+    const inactiveTitle = screen.getByText('Getting Started');
+    expect(inactiveTitle.className).toContain('font-normal');
+    expect(inactiveTitle.className).not.toContain('font-medium');
+  });
+
+  it('pins font-normal on every title when no page is active (#767)', () => {
+    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: 'OPS' });
+    render(<SidebarTreeView />, { wrapper: createWrapper('/') });
+
+    for (const title of ['Getting Started', 'API Reference']) {
+      const span = screen.getByText(title);
+      expect(span.className).toContain('font-normal');
+      expect(span.className).not.toContain('font-medium');
+    }
+  });
+
   it('shows collapsed state with expand toggle and nav icons when treeSidebarCollapsed is true', () => {
     useUiStore.setState({ treeSidebarCollapsed: true });
     render(<SidebarTreeView />, { wrapper: createWrapper() });
