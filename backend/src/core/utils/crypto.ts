@@ -254,6 +254,13 @@ function isHexOfLength(value: string | undefined, length: number): boolean {
  * `smtp_pass` in `admin_settings`). A plaintext secret can only collide by
  * containing colon-separated lowercase-hex groups of the exact IV / auth-tag
  * sizes, which is implausible for a human- or generator-chosen password.
+ *
+ * Limitation: rejects the output of `encryptPat('')` — an empty plaintext
+ * yields an EMPTY ciphertext segment (`h{N}:iv:tag:`), and every segment
+ * here must be non-empty hex. Unreachable today (callers persist empty
+ * secrets as `''` instead of encrypting them), but a future caller must not
+ * rely on this predicate to recognise an encrypted-empty secret — it would
+ * be misclassified as plaintext and double-encrypted.
  */
 export function isEncryptedSecretFormat(value: string): boolean {
   const parts = value.split(':');

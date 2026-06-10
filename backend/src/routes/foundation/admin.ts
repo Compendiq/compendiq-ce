@@ -1,7 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { query } from '../../core/db/postgres.js';
-import { encryptPat, reEncryptPat } from '../../core/utils/crypto.js';
+import { encryptPat, isEncryptedSecretFormat, reEncryptPat } from '../../core/utils/crypto.js';
 import { getAuditLog, logAuditEvent } from '../../core/services/audit-service.js';
 import { listErrors, resolveError, getErrorSummary } from '../../core/services/error-tracker.js';
 import { logger } from '../../core/utils/logger.js';
@@ -57,7 +57,8 @@ export async function adminRoutes(fastify: FastifyInstance) {
   // All admin routes require admin role
   fastify.addHook('onRequest', fastify.requireAdmin);
 
-  // POST /api/admin/rotate-encryption-key - re-encrypt all PATs with the latest key
+  // POST /api/admin/rotate-encryption-key - re-encrypt all PATs and
+  // admin_settings secrets (smtp_pass) with the latest key
   fastify.post('/admin/rotate-encryption-key', ADMIN_RATE_LIMIT, async (request) => {
     const userId = request.userId;
 
@@ -71,6 +72,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
     let rotated = 0;
     let skipped = 0;
     let errors = 0;
+    let total = result.rows.length;
 
     for (const row of result.rows) {
       try {
@@ -90,12 +92,56 @@ export async function adminRoutes(fastify: FastifyInstance) {
       }
     }
 
+    // issue #738 / #762 review follow-up — admin_settings.smtp_pass is a
+    // versioned ciphertext too. Sweeping only user_settings would strand it
+    // on the old key once the operator follows the documented procedure
+    // (rotate, then remove the old key) → silent SMTP auth failures.
+    // NOTE: llm_providers.api_key and webhook secret_enc have the same
+    // pre-existing gap — tracked as a follow-up, deliberately not widened
+    // into this sweep here.
+    const smtpRow = await query<{ setting_value: string }>(
+      `SELECT setting_value FROM admin_settings WHERE setting_key = 'smtp_pass'`,
+    );
+    const storedSmtpPass = smtpRow.rows[0]?.setting_value;
+    if (storedSmtpPass) {
+      total++;
+      try {
+        // Legacy plaintext rows (pre-#738) are encrypted outright; ciphertexts
+        // are upgraded only when their key version / derivation is stale.
+        const reEncrypted = isEncryptedSecretFormat(storedSmtpPass)
+          ? reEncryptPat(storedSmtpPass)
+          : encryptPat(storedSmtpPass);
+        if (reEncrypted) {
+          // Conditional on the exact value read so a concurrent
+          // PUT /admin/smtp is never clobbered with a re-encryption of the
+          // OLD password (lost-update guard).
+          const updated = await query(
+            `UPDATE admin_settings SET setting_value = $1, updated_at = NOW()
+             WHERE setting_key = 'smtp_pass' AND setting_value = $2`,
+            [reEncrypted, storedSmtpPass],
+          );
+          if ((updated.rowCount ?? 0) > 0) {
+            rotated++;
+          } else {
+            // Concurrently replaced — PUT /admin/smtp already wrote the new
+            // value encrypted with the latest key.
+            skipped++;
+          }
+        } else {
+          skipped++; // Already using latest key + derivation
+        }
+      } catch (err) {
+        errors++;
+        logger.error({ err }, 'Failed to re-encrypt smtp_pass in admin_settings');
+      }
+    }
+
     await logAuditEvent(
       userId,
       'ENCRYPTION_KEY_ROTATED',
       'system',
       undefined,
-      { rotated, skipped, errors, totalPats: result.rows.length },
+      { rotated, skipped, errors, totalPats: result.rows.length, total },
       request,
     );
 
@@ -106,7 +152,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
       rotated,
       skipped,
       errors,
-      total: result.rows.length,
+      total,
     };
   });
 

@@ -274,6 +274,15 @@ describe('isEncryptedSecretFormat (#738)', () => {
     expect(isEncryptedSecretFormat('')).toBe(false);
     expect(isEncryptedSecretFormat('••••••••')).toBe(false);
   });
+
+  it('limitation (pinned): rejects the ciphertext of the EMPTY string', () => {
+    // `encryptPat('')` yields `h{N}:iv:tag:` with an empty ciphertext
+    // segment, which this predicate rejects. Unreachable today — callers
+    // persist empty secrets as `''` — but pinned so a future caller does
+    // not rely on it to recognise an encrypted-empty secret (it would be
+    // treated as plaintext and double-encrypted). See crypto.ts.
+    expect(isEncryptedSecretFormat(encryptPat(''))).toBe(false);
+  });
 });
 
 // issue #738 — a malformed PAT_ENCRYPTION_KEYS used to be swallowed silently,
