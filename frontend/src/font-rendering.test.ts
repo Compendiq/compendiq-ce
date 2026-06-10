@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
+import { extractBlock } from './test-utils';
 
 /**
  * Regression tests for stable text weight during async font load (#767).
@@ -18,22 +19,6 @@ import { resolve } from 'path';
  */
 
 const css = readFileSync(resolve(__dirname, 'index.css'), 'utf-8');
-
-function extractBlock(source: string, openingLine: string): string {
-  const startIndex = source.indexOf(openingLine);
-  if (startIndex === -1) return '';
-  const braceStart = source.indexOf('{', startIndex);
-  if (braceStart === -1) return '';
-  let depth = 0;
-  for (let i = braceStart; i < source.length; i++) {
-    if (source[i] === '{') depth++;
-    else if (source[i] === '}') {
-      depth--;
-      if (depth === 0) return source.slice(braceStart, i + 1);
-    }
-  }
-  return '';
-}
 
 describe('font-synthesis guard against faux-bold during font swap (#767)', () => {
   const bodyBlock = extractBlock(css, '\nbody {');

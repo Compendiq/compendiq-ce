@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
+import { extractBlock } from './test-utils';
 import {
   THEMES,
   THEME_IDS,
@@ -26,22 +27,6 @@ import {
 
 const cssPath = resolve(__dirname, 'index.css');
 const css = readFileSync(cssPath, 'utf-8');
-
-function extractBlock(source: string, openingLine: string): string {
-  const startIndex = source.indexOf(openingLine);
-  if (startIndex === -1) return '';
-  const braceStart = source.indexOf('{', startIndex);
-  if (braceStart === -1) return '';
-  let depth = 0;
-  for (let i = braceStart; i < source.length; i++) {
-    if (source[i] === '{') depth++;
-    else if (source[i] === '}') {
-      depth--;
-      if (depth === 0) return source.slice(braceStart, i + 1);
-    }
-  }
-  return '';
-}
 
 const themeBlock = extractBlock(css, '@theme {');
 const honeyLinenBlock = extractBlock(css, '[data-theme="honey-linen"] {');
