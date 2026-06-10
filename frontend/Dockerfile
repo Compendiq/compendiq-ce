@@ -25,6 +25,11 @@ RUN --mount=type=cache,target=/root/.npm npm ci -w frontend -w @compendiq/contra
 COPY packages/contracts/ ./packages/contracts/
 RUN npm run build -w @compendiq/contracts
 COPY frontend/index.html frontend/vite.config.ts frontend/tsconfig.json frontend/tsconfig.node.json ./frontend/
+# The prebuild CSP-hash guard (scripts/check-csp-hash.mjs) compares the
+# index.html inline script against nginx-security-headers.conf, so both
+# must exist in the builder stage, not just the runtime image.
+COPY frontend/scripts/ frontend/scripts/
+COPY frontend/nginx-security-headers.conf ./frontend/
 COPY frontend/public/ frontend/public/
 COPY frontend/src/ frontend/src/
 # Build-time metadata (edition + commit hash). Ships as a committed
