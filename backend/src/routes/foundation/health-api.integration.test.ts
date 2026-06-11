@@ -129,7 +129,8 @@ describe.skipIf(!dbAvailable)('health-api integration — Compendiq/compendiq-ee
     // truncateAllTables wipes it, so re-seed it exactly as the migration does.
     await query(
       `INSERT INTO users (id, username, password_hash, role)
-       VALUES ('${SYSTEM_USER_ID}', '__system__', 'nologin', 'admin')`,
+       VALUES ($1, '__system__', 'nologin', 'admin')`,
+      [SYSTEM_USER_ID],
     );
     await query(
       `INSERT INTO users (username, password_hash, role) VALUES ('real1', 'x', 'user')`,

@@ -245,6 +245,7 @@ export async function purgeExpiredStandalonePages(): Promise<number> {
     const { rowCount } = await pool.query(
       `DELETE FROM pages
         WHERE source = 'standalone'
+          AND deleted_at IS NOT NULL
           AND deleted_at < NOW() - INTERVAL '1 day' * $1`,
       [STANDALONE_TRASH_RETENTION_DAYS],
     );
