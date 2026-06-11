@@ -214,6 +214,21 @@ npm run dev
 # View traces at http://localhost:16686
 ```
 
+In addition to the HTTP/Fastify/pg/Redis auto-instrumentation, the backend
+emits custom spans around every outbound LLM call
+(`backend/src/domains/llm/services/openai-compatible-client.ts`):
+
+| Span | Covers | Attributes |
+|------|--------|------------|
+| `llm.chat` | queue wait + circuit breaker + completion request | `llm.provider_id`, `llm.model` |
+| `llm.stream_chat.dispatch` | breaker + initial streaming request (not stream consumption) | `llm.provider_id`, `llm.model` |
+| `llm.embeddings` | queue wait + breaker + embeddings request | `llm.provider_id`, `llm.model`, `llm.input_count` |
+| `llm.list_models` | queue wait + breaker + model listing | `llm.provider_id` |
+
+The undici auto-instrumentation nests the actual HTTP round-trip as a child
+span, so queue wait time is the difference between the `llm.*` span and its
+HTTP child.
+
 ## Monitoring & Alerting
 
 ### Key Indicators to Watch

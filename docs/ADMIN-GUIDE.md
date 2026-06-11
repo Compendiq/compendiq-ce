@@ -590,6 +590,12 @@ In CE-only deployments the `/api/admin/compliance-reports` and `/api/admin/compl
 | `OTEL_SERVICE_NAME` | `compendiq-backend` | Service name reported to the OTLP collector |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | *(none)* | OTLP collector endpoint (e.g., `http://localhost:4318`) |
 
+When tracing is enabled, every outbound LLM call additionally emits a custom
+span (`llm.chat`, `llm.stream_chat.dispatch`, `llm.embeddings`,
+`llm.list_models`) tagged with the provider id and model, covering queue wait
+plus the upstream request. See `docs/PERFORMANCE.md` → "OpenTelemetry Tracing"
+for the full span reference.
+
 ### Docker Compose Only
 
 | Variable | Default | Description |
