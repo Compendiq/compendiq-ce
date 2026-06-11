@@ -60,11 +60,16 @@ const mockUsers = [
   },
 ];
 
+// Mutable list returned by the fetch mock — tests can override before render
+// (e.g. to simulate an instance where no user has an email address).
+let mockUsersList: typeof mockUsers = mockUsers;
+
 describe('UsersAdminPage', () => {
   beforeEach(() => {
     // Default: bulk feature OFF. Tests that need the bulk UI flip this
     // before render.
     mockHasFeature = () => false;
+    mockUsersList = mockUsers;
 
     // Pretend we're logged in as alice so self-actions are hidden.
     useAuthStore.setState({
@@ -79,7 +84,7 @@ describe('UsersAdminPage', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = typeof input === 'string' ? input : (input as Request).url;
       if (url.endsWith('/api/admin/users') && (input as Request).method !== 'POST') {
-        return new Response(JSON.stringify({ users: mockUsers }), {
+        return new Response(JSON.stringify({ users: mockUsersList }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
         });
@@ -131,6 +136,82 @@ describe('UsersAdminPage', () => {
     // Cancel + Create submit buttons are rendered in the dialog
     expect(screen.getByText('Cancel')).toBeInTheDocument();
     expect(screen.getByText('Create', { selector: 'button[type="submit"]' })).toBeInTheDocument();
+  });
+
+  it('delete opens a ConfirmDialog naming the user; confirming sends the DELETE', async () => {
+    render(<UsersAdminPage />, { wrapper: createWrapper() });
+    await waitFor(() => screen.getByText('bob'));
+
+    fireEvent.click(screen.getByText('Delete'));
+
+    // ConfirmDialog replaces native confirm() — user deletion really IS permanent.
+    expect(await screen.findByText('Permanently delete "bob"?')).toBeInTheDocument();
+    expect(screen.getByText('This cannot be undone.')).toBeInTheDocument();
+    expect(screen.getByTestId('confirm-dialog-confirm')).toHaveTextContent('Delete user');
+
+    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
+
+    await waitFor(() => {
+      const deleteCall = vi
+        .mocked(globalThis.fetch)
+        .mock.calls.find(
+          ([input, init]) =>
+            String(input).includes('/api/admin/users/bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb') &&
+            init?.method === 'DELETE',
+        );
+      expect(deleteCall).toBeDefined();
+    });
+    // Dialog closes after confirm
+    await waitFor(() => {
+      expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
+    });
+  });
+
+  it('cancelling the delete ConfirmDialog does not send a DELETE', async () => {
+    render(<UsersAdminPage />, { wrapper: createWrapper() });
+    await waitFor(() => screen.getByText('bob'));
+
+    fireEvent.click(screen.getByText('Delete'));
+    await screen.findByTestId('confirm-dialog');
+    fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
+    });
+    const deleteCall = vi
+      .mocked(globalThis.fetch)
+      .mock.calls.find(([, init]) => init?.method === 'DELETE');
+    expect(deleteCall).toBeUndefined();
+  });
+
+  it('styles the role select with the design-system nm-select-md utility', async () => {
+    render(<UsersAdminPage />, { wrapper: createWrapper() });
+    await waitFor(() => screen.getByText('bob'));
+
+    const roleSelect = screen.getByTestId(
+      'user-role-select-bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb',
+    );
+    expect(roleSelect.tagName).toBe('SELECT');
+    expect(roleSelect.className).toContain('nm-select-md');
+    expect(roleSelect).toHaveValue('user');
+  });
+
+  it('shows the Email column when at least one user has an email', async () => {
+    render(<UsersAdminPage />, { wrapper: createWrapper() });
+    await waitFor(() => screen.getByText('alice'));
+
+    expect(screen.getByText('Email')).toBeInTheDocument();
+    expect(screen.getByText('alice@example.com')).toBeInTheDocument();
+  });
+
+  it('hides the Email column entirely when no user has an email', async () => {
+    mockUsersList = mockUsers.map((u) => ({ ...u, email: null })) as unknown as typeof mockUsers;
+    render(<UsersAdminPage />, { wrapper: createWrapper() });
+    await waitFor(() => screen.getByText('alice'));
+
+    // Neither the header nor the "—" placeholder cells render.
+    expect(screen.queryByText('Email')).not.toBeInTheDocument();
+    expect(screen.queryByText('—')).not.toBeInTheDocument();
   });
 
   // ── EE #116 — bulk UI gating ───────────────────────────────────────────

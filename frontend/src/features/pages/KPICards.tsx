@@ -120,7 +120,7 @@ export function KPICards({ embeddingStatus, spacesCount, lastSynced }: KPICardsP
   const cards: KPICard[] = [
     {
       icon: FileText,
-      label: 'Total Articles',
+      label: 'Total Pages',
       value: embeddingStatus ? String(totalPages) : '--',
       numericValue: embeddingStatus ? totalPages : undefined,
       color: 'text-success',
@@ -171,7 +171,7 @@ export function KPICards({ embeddingStatus, spacesCount, lastSynced }: KPICardsP
                 <Icon size={16} />
               </div>
               <div className="min-w-0">
-                <p className="truncate text-xs text-muted-foreground">{label}</p>
+                <p className="line-clamp-2 text-xs text-muted-foreground" title={label}>{label}</p>
                 <p className="text-base font-semibold">
                   {numericValue != null ? (
                     <AnimatedCounter value={numericValue} suffix={suffix} />
@@ -197,7 +197,7 @@ export function KPICards({ embeddingStatus, spacesCount, lastSynced }: KPICardsP
               isProcessing={embeddingStatus?.isProcessing ?? false}
             />
             <div className="min-w-0">
-              <p className="truncate text-xs text-muted-foreground">Embedding Coverage</p>
+              <p className="line-clamp-2 text-xs text-muted-foreground" title="Embedding Coverage">Embedding Coverage</p>
               <p className="text-base font-semibold">
                 {embeddingStatus ? `${coveragePercent}%` : '--'}
               </p>

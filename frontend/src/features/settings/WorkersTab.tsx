@@ -1,9 +1,11 @@
+import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Play, RotateCcw, AlertTriangle, CheckCircle, Clock, Loader2 } from 'lucide-react';
 import { m, useReducedMotion } from 'framer-motion';
 import { apiFetch } from '../../shared/lib/api';
 import { AnimatedCounter } from '../../shared/components/effects/AnimatedCounter';
+import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
 import { cn } from '../../shared/lib/cn';
 
 // ---------------------------------------------------------------------------
@@ -217,12 +219,14 @@ function ProgressBar({ completed, total }: { completed: number; total: number })
 // Worker card
 // ---------------------------------------------------------------------------
 
-function WorkerCard({ title, statusKey, statusEndpoint, runEndpoint, rescanEndpoint, resetFailedEndpoint, normalize }: {
+function WorkerCard({ title, statusKey, statusEndpoint, runEndpoint, rescanEndpoint, rescanDescription, resetFailedEndpoint, normalize }: {
   title: string;
   statusKey: string;
   statusEndpoint: string;
   runEndpoint: string;
   rescanEndpoint: string;
+  /** Per-worker ConfirmDialog copy — must match what the backend rescan route actually does. */
+  rescanDescription: string;
   resetFailedEndpoint?: string;
   normalize: StatusNormalizer;
 }) {
@@ -231,6 +235,8 @@ function WorkerCard({ title, statusKey, statusEndpoint, runEndpoint, rescanEndpo
   const rescan = useWorkerAction(rescanEndpoint, `${title} rescan started`);
   const resetFailed = useWorkerAction(resetFailedEndpoint ?? '', 'Failed items reset to pending');
   const hasResetFailed = !!resetFailedEndpoint;
+  // Rescan-all guard (ConfirmDialog replaces native confirm()).
+  const [confirmRescanOpen, setConfirmRescanOpen] = useState(false);
 
   const workerState = status ? deriveWorkerState(status) : 'idle';
 
@@ -254,11 +260,7 @@ function WorkerCard({ title, statusKey, statusEndpoint, runEndpoint, rescanEndpo
             Run Now
           </button>
           <button
-            onClick={() => {
-              if (window.confirm(`Reset all pages for ${title.toLowerCase()} re-processing?`)) {
-                rescan.mutate();
-              }
-            }}
+            onClick={() => setConfirmRescanOpen(true)}
             disabled={rescan.isPending}
             className="flex items-center gap-1 rounded-lg bg-foreground/5 px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-foreground/10 transition-colors disabled:opacity-50"
             title="Reset all pages to re-process"
@@ -319,6 +321,20 @@ function WorkerCard({ title, statusKey, statusEndpoint, runEndpoint, rescanEndpo
           </div>
         </>
       ) : null}
+
+      {/* Rescan-all guard. No destructive styling: everything the rescan
+          clears is recomputed automatically by the background worker. */}
+      <ConfirmDialog
+        open={confirmRescanOpen}
+        title={`Reset all pages for ${title.toLowerCase()}?`}
+        description={rescanDescription}
+        confirmLabel="Rescan all"
+        onConfirm={() => {
+          setConfirmRescanOpen(false);
+          rescan.mutate();
+        }}
+        onCancel={() => setConfirmRescanOpen(false)}
+      />
     </div>
   );
 }
@@ -337,12 +353,18 @@ export function WorkersTab() {
         </p>
       </div>
 
+      {/* rescanDescription strings mirror the backend routes in
+          knowledge-admin.ts — keep them in sync:
+          - quality-rescan → forceQualityRescan(): quality_score = NULL + pending
+          - summary-rescan → rescanAllSummaries(): pending; old summary_html kept
+          - embedding-rescan → reEmbedAll(): DELETE FROM page_embeddings + dirty */}
       <WorkerCard
         title="Quality Analysis"
         statusKey="quality"
         statusEndpoint="/llm/quality-status"
         runEndpoint="/llm/quality-run-now"
         rescanEndpoint="/llm/quality-rescan"
+        rescanDescription="Every page is reset to pending and existing quality scores are cleared, then the background worker re-analyzes all pages. This can take a while and uses LLM capacity."
         normalize={normalizeQuality}
       />
 
@@ -352,6 +374,7 @@ export function WorkersTab() {
         statusEndpoint="/llm/summary-status"
         runEndpoint="/llm/summary-run-now"
         rescanEndpoint="/llm/summary-rescan"
+        rescanDescription="Every page is reset to pending and re-summarized by the background worker. Existing summaries stay visible until they are replaced. This can take a while and uses LLM capacity."
         normalize={normalizeSummary}
       />
 
@@ -361,6 +384,7 @@ export function WorkersTab() {
         statusEndpoint="/llm/embedding-status"
         runEndpoint="/llm/embedding-run-now"
         rescanEndpoint="/llm/embedding-rescan"
+        rescanDescription="All stored embeddings are deleted and every page is re-embedded by the background worker. Semantic search results are degraded until re-embedding completes."
         resetFailedEndpoint="/llm/embedding-reset-failed"
         normalize={normalizeEmbedding}
       />

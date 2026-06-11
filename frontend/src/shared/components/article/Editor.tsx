@@ -500,7 +500,7 @@ export function EditorToolbar({ editor, headerNumbering, onToggleHeaderNumbering
     // overflow into article content).
     <div
       role="toolbar"
-      aria-label="Article editor toolbar"
+      aria-label="Page editor toolbar"
       className="flex flex-wrap items-center gap-0.5 px-2 py-1.5"
     >
       <ToolbarGroup name="inline">

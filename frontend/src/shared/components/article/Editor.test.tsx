@@ -864,7 +864,7 @@ describe('EditorToolbar — header numbering toggle', () => {
   it('exposes the toolbar landmark with an accessible name (#353)', () => {
     const editor = createMockEditor();
     render(<EditorToolbar editor={editor} />);
-    const toolbar = screen.getByRole('toolbar', { name: 'Article editor toolbar' });
+    const toolbar = screen.getByRole('toolbar', { name: 'Page editor toolbar' });
     expect(toolbar).toBeInTheDocument();
   });
 });

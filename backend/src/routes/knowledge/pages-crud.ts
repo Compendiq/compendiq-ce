@@ -18,10 +18,12 @@ import {
   type BulkSelection,
 } from '../../core/services/bulk-page-selection.js';
 import { emitWebhookEvent } from '../../core/services/webhook-emit-hook.js';
+import { STANDALONE_TRASH_RETENTION_DAYS } from '../../core/services/data-retention-service.js';
 import { processDirtyPages, isProcessingUser } from '../../domains/llm/services/embedding-service.js';
 import { triggerQualityBatch } from '../../domains/knowledge/services/quality-worker.js';
 import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
-import { PageListQuerySchema, PageTreeQuerySchema, CreatePageSchema, UpdatePageSchema, SaveDraftSchema } from '@compendiq/contracts';
+import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
+import { PageListQuerySchema, PageTreeQuerySchema, CreatePageSchema, UpdatePageSchema, SaveDraftSchema, TrashListResponseSchema } from '@compendiq/contracts';
 import { z } from 'zod';
 import { logger } from '../../core/utils/logger.js';
 import pLimit from 'p-limit';
@@ -316,11 +318,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     //   - Shared standalone articles (visible to all)
     //   - Their own private standalone articles
     const accessibleSpaces = await getUserAccessibleSpaces(userId);
-    const whereBase = `WHERE (
-        (cp.source = 'confluence' AND cp.space_key = ANY($1::text[]))
-        OR (cp.source = 'standalone' AND cp.visibility = 'shared')
-        OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $2)
-      )`;
+    const whereBase = `WHERE ${visiblePagesPredicate(1, 2)}`;
     const values: unknown[] = [accessibleSpaces, userId];
     let paramIdx = 3;
 
@@ -580,18 +578,24 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const cached = await cache.get(userId, 'pages', cacheKey);
     if (cached) return cached;
 
-    // Access control via RBAC + local spaces (local spaces bypass RBAC)
+    // Access control: same visibility predicate as the list route —
+    //   - Confluence pages from user's accessible spaces (via RBAC)
+    //   - Shared standalone articles (visible to all)
+    //   - Their own private standalone articles
+    // Local-space pages are always standalone, so they surface through the
+    // visibility branches (#527/#528); local space keys are still merged into
+    // the Confluence branch as belt-and-braces against legacy data drift.
     const rbacSpaces = await getUserAccessibleSpaces(userId);
     const localSpacesResult = await query<{ space_key: string }>(
       `SELECT space_key FROM spaces WHERE source = 'local'`,
     );
     const localSpaceKeys = localSpacesResult.rows.map((r) => r.space_key);
     const treeSpaces = Array.from(new Set([...rbacSpaces, ...localSpaceKeys]));
-    const values: unknown[] = [treeSpaces];
-    let treeWhereClause = 'WHERE cp.space_key = ANY($1::text[]) AND cp.deleted_at IS NULL';
+    const values: unknown[] = [treeSpaces, userId];
+    let treeWhereClause = `WHERE ${visiblePagesPredicate(1, 2)} AND cp.deleted_at IS NULL`;
 
     if (params.spaceKey) {
-      treeWhereClause += ' AND cp.space_key = $2';
+      treeWhereClause += ' AND cp.space_key = $3';
       values.push(params.spaceKey);
     }
 
@@ -688,28 +692,38 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
   fastify.get('/pages/trash', async (request) => {
     const userId = request.userId;
 
+    // JOIN users for the deleter's username: only the owner can soft-delete a
+    // standalone article (see DELETE /pages/:id), so owner == deleter.
     const result = await query<{
       id: number; title: string; source: string; visibility: string;
-      deleted_at: Date; last_synced: Date;
+      deleted_at: Date; last_synced: Date; deleted_by: string;
     }>(
-      `SELECT id, title, source, visibility, deleted_at, last_synced
-       FROM pages
-       WHERE source = 'standalone' AND deleted_at IS NOT NULL AND created_by_user_id = $1
-       ORDER BY deleted_at DESC`,
+      `SELECT p.id, p.title, p.source, p.visibility, p.deleted_at, p.last_synced,
+              u.username AS deleted_by
+       FROM pages p
+       JOIN users u ON u.id = p.created_by_user_id
+       WHERE p.source = 'standalone' AND p.deleted_at IS NOT NULL AND p.created_by_user_id = $1
+       ORDER BY p.deleted_at DESC`,
       [userId],
     );
 
-    return {
+    return TrashListResponseSchema.parse({
       items: result.rows.map((row) => ({
         id: String(row.id),
         title: row.title,
         source: row.source,
         visibility: row.visibility,
-        deletedAt: row.deleted_at,
-        createdAt: row.last_synced,
+        deletedAt: row.deleted_at.toISOString(),
+        createdAt: row.last_synced.toISOString(),
+        deletedBy: row.deleted_by,
+        // Mirrors the maintenance purge (purgeExpiredStandalonePages) so the
+        // date shown in the Trash UI matches when the row actually disappears.
+        autoPurgeAt: new Date(
+          row.deleted_at.getTime() + STANDALONE_TRASH_RETENTION_DAYS * 24 * 60 * 60 * 1000,
+        ).toISOString(),
       })),
       total: result.rows.length,
-    };
+    });
   });
 
   // GET /api/pages/:id - get page with content
@@ -835,6 +849,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       summaryError: row.summary_error,
       source: row.source,
       visibility: row.visibility,
+      // Creator's user id (standalone pages only; null for Confluence-synced).
+      // Benign for viewers — lets the UI detect "own page" (e.g. to hide the
+      // helpfulness widget on pages the current user authored).
+      createdByUserId: row.created_by_user_id,
       hasDraft: row.has_draft,
       draftUpdatedAt: row.draft_updated_at?.toISOString() ?? null,
     };
@@ -1239,7 +1257,14 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
           : [id, body.title, body.bodyHtml, bodyText, newVersion, userId],
       );
 
-      await cache.invalidate(userId, 'pages');
+      // A visibility change alters what OTHER users can see — their cached
+      // trees/lists would serve stale data for up to the cache TTL (15 min)
+      // if we only invalidated the editor's own cache.
+      if (body.visibility && body.visibility !== existingPage.visibility) {
+        await cache.invalidateAcrossUsers('pages');
+      } else {
+        await cache.invalidate(userId, 'pages');
+      }
       await logAuditEvent(userId, 'PAGE_UPDATED', 'page', String(id), { source: 'standalone', title: body.title }, request);
 
       emitWebhookEvent({

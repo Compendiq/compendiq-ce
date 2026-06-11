@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { LoginPage } from './LoginPage';
@@ -134,5 +134,104 @@ describe('LoginPage', () => {
 
     renderLoginPage();
     expect(await screen.findByRole('button', { name: 'Sign in with OrgSSO' })).toBeInTheDocument();
+  });
+
+  describe('registration confirm password', () => {
+    function switchToRegister() {
+      fireEvent.click(screen.getByRole('button', { name: 'Create one' }));
+    }
+
+    it('shows the confirm-password input and the 8-char hint in register mode only', async () => {
+      const { apiFetch } = await import('../../shared/lib/api');
+      vi.mocked(apiFetch).mockRejectedValue(new Error('no oidc'));
+
+      renderLoginPage();
+
+      // Login mode: neither the confirm field nor the hint is rendered.
+      expect(screen.queryByLabelText('Confirm password')).not.toBeInTheDocument();
+      expect(screen.queryByText('At least 8 characters')).not.toBeInTheDocument();
+
+      switchToRegister();
+
+      expect(screen.getByLabelText('Confirm password')).toBeInTheDocument();
+      expect(screen.getByText('At least 8 characters')).toBeInTheDocument();
+    });
+
+    it('blocks submit and shows an error when the passwords do not match', async () => {
+      const { apiFetch } = await import('../../shared/lib/api');
+      vi.mocked(apiFetch).mockRejectedValue(new Error('no oidc'));
+
+      renderLoginPage();
+      switchToRegister();
+
+      fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'newuser' } });
+      fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'password123' } });
+      fireEvent.change(screen.getByLabelText('Confirm password'), { target: { value: 'password124' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Create Account' }));
+
+      expect(await screen.findByText("Passwords don't match")).toBeInTheDocument();
+
+      // No registration request was fired.
+      const registerCall = vi
+        .mocked(apiFetch)
+        .mock.calls.find(([url]) => String(url).includes('/auth/register'));
+      expect(registerCall).toBeUndefined();
+    });
+
+    it('clears the mismatch error as soon as the user retypes either password field', async () => {
+      const { apiFetch } = await import('../../shared/lib/api');
+      vi.mocked(apiFetch).mockRejectedValue(new Error('no oidc'));
+
+      renderLoginPage();
+      switchToRegister();
+
+      fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'newuser' } });
+      fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'password123' } });
+      fireEvent.change(screen.getByLabelText('Confirm password'), { target: { value: 'password124' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Create Account' }));
+
+      expect(await screen.findByText("Passwords don't match")).toBeInTheDocument();
+
+      // Correcting the confirm field must dismiss the stale error immediately.
+      fireEvent.change(screen.getByLabelText('Confirm password'), { target: { value: 'password123' } });
+      expect(screen.queryByText("Passwords don't match")).not.toBeInTheDocument();
+
+      // Same when editing the password field after a fresh mismatch.
+      fireEvent.change(screen.getByLabelText('Confirm password'), { target: { value: 'password124' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Create Account' }));
+      expect(await screen.findByText("Passwords don't match")).toBeInTheDocument();
+
+      fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'password124' } });
+      expect(screen.queryByText("Passwords don't match")).not.toBeInTheDocument();
+    });
+
+    it('submits the registration when the passwords match', async () => {
+      const { apiFetch } = await import('../../shared/lib/api');
+      vi.mocked(apiFetch).mockImplementation(async (url: string) => {
+        if (String(url).includes('/auth/register')) {
+          return {
+            accessToken: 'tok',
+            user: { id: 'u1', username: 'newuser', role: 'user' },
+          } as never;
+        }
+        throw new Error('no oidc');
+      });
+
+      renderLoginPage();
+      switchToRegister();
+
+      fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'newuser' } });
+      fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'password123' } });
+      fireEvent.change(screen.getByLabelText('Confirm password'), { target: { value: 'password123' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Create Account' }));
+
+      await waitFor(() => {
+        const registerCall = vi
+          .mocked(apiFetch)
+          .mock.calls.find(([url]) => String(url).includes('/auth/register'));
+        expect(registerCall).toBeDefined();
+      });
+      expect(screen.queryByText("Passwords don't match")).not.toBeInTheDocument();
+    });
   });
 });

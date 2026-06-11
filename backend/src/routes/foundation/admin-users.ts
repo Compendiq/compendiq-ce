@@ -56,6 +56,7 @@ function mapServiceError(
       case 'EMAIL_TAKEN':
         throw fastify.httpErrors.conflict(err.message);
       case 'SELF_FORBIDDEN':
+      case 'SYSTEM_USER_PROTECTED':
         throw fastify.httpErrors.badRequest(err.message);
       case 'LAST_ADMIN':
         throw fastify.httpErrors.conflict(err.message);

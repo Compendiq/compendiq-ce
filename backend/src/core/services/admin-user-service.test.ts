@@ -437,6 +437,68 @@ describe.skipIf(!dbAvailable)('admin-user-service (#304)', () => {
     expect(parseInt(after.rows[0]!.c, 10)).toBe(1);
   });
 
+  // UX-fix Task 4 — the system sentinel user (migration 032) must be
+  // invisible to the admin Users page and immune to every mutation. It owns
+  // reassigned templates and cannot log in; deactivating or deleting it
+  // would break the install.
+  describe('system account protection', () => {
+    const SYSTEM_USER_ID = '00000000-0000-0000-0000-000000000000';
+
+    /** Re-seed the sentinel row (truncateAllTables wipes the migration seed). */
+    async function seedSystemUser(): Promise<void> {
+      await query(
+        `INSERT INTO users (id, username, password_hash, role)
+           VALUES ($1, '__system__', 'nologin', 'admin')
+           ON CONFLICT (id) DO NOTHING`,
+        [SYSTEM_USER_ID],
+      );
+    }
+
+    it('listUsers excludes the system sentinel user', async () => {
+      await seedSystemUser();
+      await createUser({ username: 'visible', role: 'user', password: 'x12345678' });
+      const users = await listUsers();
+      expect(users.map((u) => u.id)).not.toContain(SYSTEM_USER_ID);
+      expect(users.map((u) => u.username)).toEqual(['visible']);
+    });
+
+    it('deactivateUser refuses the system user with SYSTEM_USER_PROTECTED', async () => {
+      await seedSystemUser();
+      const adminId = await seedAdmin('sys-deact');
+      await expect(
+        deactivateUser(SYSTEM_USER_ID, { actorUserId: adminId }),
+      ).rejects.toMatchObject({ code: 'SYSTEM_USER_PROTECTED' });
+    });
+
+    it('deleteUser refuses the system user with SYSTEM_USER_PROTECTED', async () => {
+      await seedSystemUser();
+      const adminId = await seedAdmin('sys-del');
+      await expect(
+        deleteUser(SYSTEM_USER_ID, { actorUserId: adminId }),
+      ).rejects.toMatchObject({ code: 'SYSTEM_USER_PROTECTED' });
+      // Row must survive untouched.
+      const res = await query(`SELECT 1 FROM users WHERE id = $1`, [SYSTEM_USER_ID]);
+      expect(res.rows.length).toBe(1);
+    });
+
+    it('updateUser refuses the system user with SYSTEM_USER_PROTECTED', async () => {
+      await seedSystemUser();
+      await expect(
+        updateUser(SYSTEM_USER_ID, { role: 'user' }),
+      ).rejects.toMatchObject({ code: 'SYSTEM_USER_PROTECTED' });
+      await expect(
+        updateUser(SYSTEM_USER_ID, { displayName: 'Sneaky' }),
+      ).rejects.toMatchObject({ code: 'SYSTEM_USER_PROTECTED' });
+    });
+
+    it('reactivateUser refuses the system user with SYSTEM_USER_PROTECTED', async () => {
+      await seedSystemUser();
+      await expect(
+        reactivateUser(SYSTEM_USER_ID),
+      ).rejects.toMatchObject({ code: 'SYSTEM_USER_PROTECTED' });
+    });
+  });
+
   it('concurrent role-demote of two admins leaves at least one active (no TOCTOU)', async () => {
     const aId = await seedAdmin('race-dem-a');
     const bId = await seedAdmin('race-dem-b');

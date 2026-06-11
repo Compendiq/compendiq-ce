@@ -53,7 +53,7 @@ describe('KPICards', () => {
     );
 
     const card = screen.getByTestId('kpi-total-articles');
-    expect(card).toHaveTextContent('Total Articles');
+    expect(card).toHaveTextContent('Total Pages');
     // AnimatedCounter animates from 0 to target via spring physics
     await waitFor(() => {
       expect(card).toHaveTextContent('100');

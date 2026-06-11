@@ -408,7 +408,7 @@ export function PagesPage() {
         </div>
       )}
 
-      {/* Pinned Articles */}
+      {/* Pinned Pages */}
       <PinnedArticlesSection />
 
       {/* Filters */}

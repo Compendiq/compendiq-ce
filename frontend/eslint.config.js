@@ -21,6 +21,16 @@ export default tseslint.config(
     },
   },
   {
+    // Build-time Node scripts (e.g. the CSP hash prebuild guard).
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      globals: {
+        console: 'readonly',
+        process: 'readonly',
+      },
+    },
+  },
+  {
     ignores: ['dist/', 'node_modules/', '*.config.*'],
   },
 );

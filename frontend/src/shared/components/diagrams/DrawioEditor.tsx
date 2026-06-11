@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Loader2, RefreshCw, X } from 'lucide-react';
+import { ConfirmDialog } from '../ConfirmDialog';
 
 /** Self-hosted draw.io served from /drawio/ by the same nginx.
  *  offline=1&stealth=1 disables all cloud integrations (Drive, OneDrive, etc.). */
@@ -41,6 +42,10 @@ export function DrawioEditor({ xml, onSave, onClose, drawioUrl }: DrawioEditorPr
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [phase, setPhase] = useState<EditorPhase>('loading');
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  // Escape-with-unsaved-changes guard (ConfirmDialog replaces native confirm()).
+  // The dialog renders via portal ON TOP of the overlay — the iframe (and the
+  // user's unsaved diagram state) stays mounted while the dialog is open.
+  const [confirmDiscardOpen, setConfirmDiscardOpen] = useState(false);
   // Key used to force-remount the iframe on retry
   const [iframeKey, setIframeKey] = useState(0);
 
@@ -172,11 +177,12 @@ export function DrawioEditor({ xml, onSave, onClose, drawioUrl }: DrawioEditorPr
 
     function handleKeyDown(e: KeyboardEvent) {
       if (e.key === 'Escape') {
+        // While the discard dialog is open, Escape belongs to the dialog
+        // (Radix routes it to onCancel) — don't re-open it from here.
+        if (confirmDiscardOpen) return;
         if (hasUnsavedChanges) {
-          const leave = window.confirm(
-            'You have unsaved changes in the diagram editor. Discard changes and close?',
-          );
-          if (!leave) return;
+          setConfirmDiscardOpen(true);
+          return;
         }
         onClose();
       }
@@ -188,7 +194,7 @@ export function DrawioEditor({ xml, onSave, onClose, drawioUrl }: DrawioEditorPr
       window.removeEventListener('beforeunload', handleBeforeUnload);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [hasUnsavedChanges, onClose]);
+  }, [hasUnsavedChanges, confirmDiscardOpen, onClose]);
 
   const handleRetry = useCallback(() => {
     setPhase('loading');
@@ -252,6 +258,23 @@ export function DrawioEditor({ xml, onSave, onClose, drawioUrl }: DrawioEditorPr
         title="Draw.io Diagram Editor"
         data-testid="drawio-iframe"
         sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-modals allow-downloads"
+      />
+
+      {/* Discard guard for Escape with unsaved changes. Rendered alongside
+          the iframe (the dialog portals to <body>), so the editor never
+          unmounts while the user decides — cancelling returns to the live
+          editor with the diagram state intact. */}
+      <ConfirmDialog
+        open={confirmDiscardOpen}
+        title="Discard unsaved changes?"
+        description="The diagram has unsaved changes. Closing the editor now discards them; use draw.io's Save button to keep them."
+        confirmLabel="Discard and close"
+        destructive
+        onConfirm={() => {
+          setConfirmDiscardOpen(false);
+          onClose();
+        }}
+        onCancel={() => setConfirmDiscardOpen(false)}
       />
     </div>
   );

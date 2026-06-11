@@ -9,10 +9,11 @@ import { useAuthStore } from '../../../stores/auth-store';
 
 Element.prototype.scrollIntoView = vi.fn();
 
+// Replace apiFetch with a controllable mock but keep the real ApiError class
+// available — runStream branches on `err instanceof ApiError` for 403 handling.
 const apiFetchMock = vi.fn();
-vi.mock('../../../shared/lib/api', () => ({
-  apiFetch: (...args: unknown[]) => apiFetchMock(...args),
-}));
+vi.mock('../../../shared/lib/api', async () =>
+  (await import('../../../test-utils')).apiModuleMock(() => apiFetchMock));
 
 const streamSSEMock = vi.fn();
 vi.mock('../../../shared/lib/sse', () => ({
@@ -126,15 +127,15 @@ describe('GenerateMode', () => {
   });
 
   it('exports correct empty state constants', () => {
-    expect(GENERATE_EMPTY_TITLE).toBe('Describe the article you want to generate');
-    expect(GENERATE_EMPTY_SUBTITLE).toBe('AI will create a full article based on your prompt');
+    expect(GENERATE_EMPTY_TITLE).toBe('Describe the page you want to generate');
+    expect(GENERATE_EMPTY_SUBTITLE).toBe('AI will create a full page based on your prompt');
   });
 
   describe('GenerateModeInput', () => {
     it('renders the prompt input, send button, and PDF upload zone', () => {
       render(<GenerateModeInput />, { wrapper: createWrapper() });
 
-      expect(screen.getByPlaceholderText('Describe the article to generate...')).toBeInTheDocument();
+      expect(screen.getByPlaceholderText('Describe the page to generate...')).toBeInTheDocument();
       expect(screen.getByTestId('pdf-upload-zone')).toBeInTheDocument();
       expect(getSendButton()).toBeInTheDocument();
     });
@@ -152,7 +153,7 @@ describe('GenerateMode', () => {
 
       render(<GenerateModeInput />, { wrapper: createWrapper() });
 
-      const input = screen.getByPlaceholderText('Describe the article to generate...');
+      const input = screen.getByPlaceholderText('Describe the page to generate...');
       fireEvent.change(input, { target: { value: 'Write a guide about Docker' } });
 
       await waitFor(() => {
@@ -181,7 +182,7 @@ describe('GenerateMode', () => {
 
       render(<GenerateModeInput />, { wrapper: createWrapper() });
 
-      const input = screen.getByPlaceholderText('Describe the article to generate...');
+      const input = screen.getByPlaceholderText('Describe the page to generate...');
       fireEvent.change(input, { target: { value: 'Write about Docker' } });
 
       await waitFor(() => {
@@ -208,7 +209,7 @@ describe('GenerateMode', () => {
 
       render(<GenerateModeInput />, { wrapper: createWrapper() });
 
-      const input = screen.getByPlaceholderText('Describe the article to generate...');
+      const input = screen.getByPlaceholderText('Describe the page to generate...');
       fireEvent.change(input, { target: { value: 'Write about Docker' } });
 
       await waitFor(() => {
@@ -235,7 +236,7 @@ describe('GenerateMode', () => {
 
       render(<GenerateModeInput />, { wrapper: createWrapper() });
 
-      const input = screen.getByPlaceholderText('Describe the article to generate...');
+      const input = screen.getByPlaceholderText('Describe the page to generate...');
       fireEvent.change(input, { target: { value: 'Write article' } });
 
       await waitFor(() => {
@@ -367,7 +368,7 @@ describe('GenerateMode', () => {
 
       render(<GenerateModeInput />, { wrapper: createWrapper() });
 
-      const input = screen.getByPlaceholderText('Describe the article to generate...');
+      const input = screen.getByPlaceholderText('Describe the page to generate...');
       fireEvent.change(input, { target: { value: 'Write about testing' } });
 
       await waitFor(() => {
@@ -434,7 +435,7 @@ describe('GenerateMode', () => {
       render(<GenerateModeInput />, { wrapper: createWrapper() });
 
       // Before upload: standard placeholder
-      expect(screen.getByPlaceholderText('Describe the article to generate...')).toBeInTheDocument();
+      expect(screen.getByPlaceholderText('Describe the page to generate...')).toBeInTheDocument();
 
       const fileInput = screen.getByTestId('pdf-file-input');
       const pdfFile = new File(['%PDF-1.4'], 'doc.pdf', { type: 'application/pdf' });

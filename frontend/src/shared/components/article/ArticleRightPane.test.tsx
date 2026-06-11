@@ -166,7 +166,7 @@ describe('ArticleRightPane', () => {
   it('collapses to a slim rail when the collapse button is clicked', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    fireEvent.click(screen.getByLabelText('Collapse article sidebar'));
+    fireEvent.click(screen.getByLabelText('Collapse page sidebar'));
 
     expect(screen.getByTestId('article-right-pane-rail')).toBeInTheDocument();
     expect(screen.queryByTestId('article-right-pane')).not.toBeInTheDocument();
@@ -179,7 +179,7 @@ describe('ArticleRightPane', () => {
 
     expect(screen.getByTestId('article-right-pane-rail')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByLabelText('Expand article sidebar'));
+    fireEvent.click(screen.getByLabelText('Expand page sidebar'));
 
     expect(screen.getByTestId('article-right-pane')).toBeInTheDocument();
   });
@@ -363,7 +363,7 @@ describe('ArticleRightPane', () => {
   it('shows empty message when there are no headings', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    expect(screen.getByText('No headings in this article.')).toBeInTheDocument();
+    expect(screen.getByText('No headings on this page.')).toBeInTheDocument();
   });
 
   it('renders version and space key in the footer', () => {
@@ -376,7 +376,7 @@ describe('ArticleRightPane', () => {
   it('has a resize handle', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    expect(screen.getByRole('separator', { name: 'Resize article sidebar' })).toBeInTheDocument();
+    expect(screen.getByRole('separator', { name: 'Resize page sidebar' })).toBeInTheDocument();
   });
 
   it('renders QualityScoreBadge in properties when quality score is present', () => {
@@ -420,6 +420,56 @@ describe('ArticleRightPane', () => {
     // settings mock has no ollamaModel/openaiModel/llmProvider; the button must still appear.
     render(<ArticleRightPane />, { wrapper: createWrapper() });
     expect(await screen.findByTestId('auto-tagger')).toBeInTheDocument();
+  });
+
+  // --- Delete via ConfirmDialog (replaces native confirm()) ---
+  it('Delete opens the move-to-trash dialog; confirming soft-deletes and navigates home', async () => {
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByText('Delete'));
+
+    // Copy must reflect the 30-day soft-delete trash, not the old (false)
+    // "cannot be undone" claim from native confirm().
+    expect(await screen.findByText('Move page to trash?')).toBeInTheDocument();
+    expect(
+      screen.getByText('It can be restored from Trash for 30 days, then it is permanently deleted.'),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('confirm-dialog-confirm')).toHaveTextContent('Move to trash');
+
+    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
+
+    await waitFor(() => {
+      expect(mockDeletePage).toHaveBeenCalledWith('page-1');
+    });
+    expect(mockNavigate).toHaveBeenCalledWith('/');
+  });
+
+  it('cancelling the move-to-trash dialog does not delete', async () => {
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByText('Delete'));
+    await screen.findByTestId('confirm-dialog');
+    fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
+    });
+    expect(mockDeletePage).not.toHaveBeenCalled();
+  });
+
+  it('rail Delete button drives the same move-to-trash dialog', async () => {
+    useUiStore.setState({ articleSidebarCollapsed: true });
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByLabelText('Delete page'));
+
+    expect(await screen.findByText('Move page to trash?')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
+
+    await waitFor(() => {
+      expect(mockDeletePage).toHaveBeenCalledWith('page-1');
+    });
   });
 
   // --- PDF Export ---

@@ -6,7 +6,7 @@ export function CompleteStep() {
   const navigate = useNavigate();
 
   const links = [
-    { label: 'Go to Pages', description: 'Start creating and managing articles', path: '/', testId: 'goto-pages' },
+    { label: 'Go to Pages', description: 'Start creating and managing pages', path: '/', testId: 'goto-pages' },
     { label: 'Admin Settings', description: 'Configure advanced options', path: '/settings', testId: 'goto-settings' },
   ];
 

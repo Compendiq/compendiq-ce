@@ -76,7 +76,7 @@ export function ImproveDiffView() {
           title: page.title,
         }),
       });
-      toast.success('Article updated and synced to Confluence');
+      toast.success('Page updated and synced to Confluence');
       queryClient.invalidateQueries({ queryKey: ['pages', pageId] });
       navigate(`/pages/${pageId}`);
     } catch (err) {

@@ -10,6 +10,7 @@ import type {
 } from '@compendiq/contracts';
 import { apiFetch, ApiError } from '../../shared/lib/api';
 import { DiffView } from '../../shared/components/article/DiffView';
+import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
 import { cn } from '../../shared/lib/cn';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 
@@ -84,6 +85,8 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
   const [selectedVersion, setSelectedVersion] = useState<number | null>(null);
   const [compareVersions, setCompareVersions] = useState<[number, number] | null>(null);
   const [showSemanticDiff, setShowSemanticDiff] = useState(false);
+  // Version awaiting restore confirmation (ConfirmDialog replaces native confirm()).
+  const [pendingRestore, setPendingRestore] = useState<number | null>(null);
 
   const { data: versionsData, isLoading, isError, error, refetch } = useVersionHistory(pageId, open);
   const { data: selectedVersionData } = useVersionDetail(
@@ -139,13 +142,14 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
 
   const handleRestore = (version: number) => {
     if (restoreMutation.isPending) return;
-    if (!window.confirm(
-      `Restore v${version}? This creates a new version containing the old content. ` +
-      `The current version stays in history.`,
-    )) {
-      return;
+    setPendingRestore(version);
+  };
+
+  const handleConfirmRestore = () => {
+    if (pendingRestore !== null) {
+      restoreMutation.mutate({ version: pendingRestore, expected: currentVersionNumber });
     }
-    restoreMutation.mutate({ version, expected: currentVersionNumber });
+    setPendingRestore(null);
   };
 
   // Reset state when dialog closes
@@ -154,6 +158,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
       setSelectedVersion(null);
       setCompareVersions(null);
       setShowSemanticDiff(false);
+      setPendingRestore(null);
     }
   }, [open]);
 
@@ -472,6 +477,22 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
           </div>
         </Dialog.Content>
       </Dialog.Portal>
+
+      {/* Restore confirmation — nested Radix dialog (renders via its own
+          portal above the history dialog). Copy mirrors the backend reality
+          (POST /pages/:id/versions/:version/restore): Confluence-style
+          non-destructive restore — the target snapshot is applied as a NEW
+          live version and the replaced content stays in version history.
+          Destructive styling because the visible page content is replaced. */}
+      <ConfirmDialog
+        open={pendingRestore !== null}
+        title={`Restore v${pendingRestore ?? ''}?`}
+        description={`The current page content will be replaced with the content of v${pendingRestore ?? ''}, saved as a new version. The replaced content stays in version history; Confluence-synced pages are updated in Confluence as well.`}
+        confirmLabel="Restore version"
+        destructive
+        onConfirm={handleConfirmRestore}
+        onCancel={() => setPendingRestore(null)}
+      />
     </Dialog.Root>
   );
 }

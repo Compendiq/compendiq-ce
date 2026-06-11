@@ -228,7 +228,7 @@ export function SearchPage() {
       <div>
         <h1 className="text-2xl font-bold">Search</h1>
         <p className="text-sm text-muted-foreground">
-          Find articles across your knowledge base
+          Find pages across your knowledge base
         </p>
       </div>
 
@@ -246,7 +246,7 @@ export function SearchPage() {
             <input
               ref={inputRef}
               type="text"
-              placeholder="Search articles by title, content, or keywords..."
+              placeholder="Search pages by title, content, or keywords..."
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               className="w-full rounded-lg bg-foreground/5 py-3 pl-11 pr-4 text-sm outline-none placeholder:text-muted-foreground focus:ring-2 focus:ring-primary/50"
@@ -486,7 +486,7 @@ export function SearchPage() {
           </div>
           <p className="text-lg font-medium" data-testid="no-results-title">No results found</p>
           <p className="mt-1 text-sm text-muted-foreground">
-            No articles match &ldquo;{activeQuery}&rdquo;
+            No pages match &ldquo;{activeQuery}&rdquo;
           </p>
           <button
             onClick={() => navigate(`/knowledge-requests?title=${encodeURIComponent(activeQuery)}`)}

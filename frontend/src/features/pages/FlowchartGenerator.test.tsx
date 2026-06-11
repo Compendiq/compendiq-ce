@@ -72,13 +72,13 @@ describe('FlowchartGenerator', () => {
 
   it('renders the Diagram button when closed', () => {
     render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" pageVersion={1} />, { wrapper: createWrapper() });
-    expect(screen.getByTitle('Generate diagram from article')).toBeInTheDocument();
+    expect(screen.getByTitle('Generate diagram from page')).toBeInTheDocument();
   });
 
   it('expands panel when button is clicked', async () => {
     render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" pageVersion={1} />, { wrapper: createWrapper() });
 
-    fireEvent.click(screen.getByTitle('Generate diagram from article'));
+    fireEvent.click(screen.getByTitle('Generate diagram from page'));
 
     await waitFor(() => {
       expect(screen.getByText('Generate Diagram')).toBeInTheDocument();
@@ -90,7 +90,7 @@ describe('FlowchartGenerator', () => {
       <FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" pageVersion={1} renderTriggerOnly />,
       { wrapper: createWrapper() },
     );
-    expect(screen.getByTitle('Generate diagram from article')).toBeInTheDocument();
+    expect(screen.getByTitle('Generate diagram from page')).toBeInTheDocument();
     expect(screen.queryByText('Generate Diagram')).not.toBeInTheDocument();
   });
 
@@ -115,7 +115,7 @@ describe('FlowchartGenerator', () => {
       <FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" pageVersion={1} renderTriggerOnly />,
       { wrapper: createWrapper() },
     );
-    const btn = screen.getByTitle('Generate diagram from article');
+    const btn = screen.getByTitle('Generate diagram from page');
     const label = btn.querySelector('span');
     expect(label).toHaveClass('hidden', 'sm:inline');
   });
@@ -219,11 +219,11 @@ describe('FlowchartGenerator', () => {
   it('shows generate button with title tooltip', () => {
     render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" pageVersion={1} />, { wrapper: createWrapper() });
 
-    const btn = screen.getByTitle('Generate diagram from article');
+    const btn = screen.getByTitle('Generate diagram from page');
     expect(btn).toBeInTheDocument();
   });
 
-  it('shows "Use in article" button after diagram generation completes', async () => {
+  it('shows "Use in page" button after diagram generation completes', async () => {
     async function* fakeStream() {
       yield { content: 'graph TD\n  A --> B' };
     }
@@ -240,11 +240,11 @@ describe('FlowchartGenerator', () => {
     fireEvent.click(screen.getByText('Generate'));
 
     await waitFor(() => {
-      expect(screen.getByText('Use in article')).toBeInTheDocument();
+      expect(screen.getByText('Use in page')).toBeInTheDocument();
     });
   });
 
-  it('does not show "Use in article" button while streaming', async () => {
+  it('does not show "Use in page" button while streaming', async () => {
     // Create a stream that never resolves
     let resolveStream: () => void;
     const streamPromise = new Promise<void>((resolve) => { resolveStream = resolve; });
@@ -265,17 +265,17 @@ describe('FlowchartGenerator', () => {
 
     fireEvent.click(screen.getByText('Generate'));
 
-    // Should show "Generating..." but not "Use in article"
+    // Should show "Generating..." but not "Use in page"
     await waitFor(() => {
       expect(screen.getByText('Generating...')).toBeInTheDocument();
     });
-    expect(screen.queryByText('Use in article')).not.toBeInTheDocument();
+    expect(screen.queryByText('Use in page')).not.toBeInTheDocument();
 
     // Clean up: resolve the promise so the generator finishes
     resolveStream!();
   });
 
-  it('calls PUT /api/pages/:id when "Use in article" is clicked', async () => {
+  it('calls PUT /api/pages/:id when "Use in page" is clicked', async () => {
     async function* fakeStream() {
       yield { content: 'graph TD\n  A --> B' };
     }
@@ -303,10 +303,10 @@ describe('FlowchartGenerator', () => {
     fireEvent.click(screen.getByText('Generate'));
 
     await waitFor(() => {
-      expect(screen.getByText('Use in article')).toBeInTheDocument();
+      expect(screen.getByText('Use in page')).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByText('Use in article'));
+    fireEvent.click(screen.getByText('Use in page'));
 
     await waitFor(() => {
       const putCall = apiFetchMock.mock.calls.find(
@@ -324,7 +324,7 @@ describe('FlowchartGenerator', () => {
 
     // Verify success toast
     await waitFor(() => {
-      expect(toastSuccessMock).toHaveBeenCalledWith('Diagram inserted into article');
+      expect(toastSuccessMock).toHaveBeenCalledWith('Diagram inserted into page');
     });
   });
 
@@ -355,10 +355,10 @@ describe('FlowchartGenerator', () => {
     fireEvent.click(screen.getByText('Generate'));
 
     await waitFor(() => {
-      expect(screen.getByText('Use in article')).toBeInTheDocument();
+      expect(screen.getByText('Use in page')).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByText('Use in article'));
+    fireEvent.click(screen.getByText('Use in page'));
 
     await waitFor(() => {
       expect(toastErrorMock).toHaveBeenCalledWith('Version conflict');

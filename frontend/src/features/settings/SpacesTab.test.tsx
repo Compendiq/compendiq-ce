@@ -230,7 +230,7 @@ describe('SpacesTab', () => {
     expect(screen.getByRole('button', { name: /remove engineering/i })).toBeInTheDocument();
   });
 
-  it('calls DELETE /api/spaces/:key when a space is removed and confirmed (#721)', async () => {
+  it('calls DELETE /api/spaces/:key after confirming the remove dialog (#721)', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(
         new Response(
@@ -246,8 +246,6 @@ describe('SpacesTab', () => {
         }),
       );
 
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
-
     render(<SpacesTab onSave={mockOnSave} />, { wrapper: createWrapper() });
 
     await waitFor(() => {
@@ -255,6 +253,15 @@ describe('SpacesTab', () => {
     });
 
     fireEvent.click(screen.getByRole('button', { name: /remove engineering/i }));
+
+    // ConfirmDialog replaces native confirm(). The copy must reflect the backend
+    // reality (DELETE /spaces/:key → unsyncSpace): the local purge is permanent
+    // (pages cascade to embeddings + version history), Confluence is untouched.
+    expect(await screen.findByText('Remove "Engineering" from Compendiq?')).toBeInTheDocument();
+    expect(screen.getByText(/permanently deletes its synced pages/i)).toBeInTheDocument();
+    expect(screen.getByText(/nothing is deleted in confluence/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
 
     await waitFor(() => {
       const deleteCalled = fetchSpy.mock.calls.some(
@@ -265,5 +272,90 @@ describe('SpacesTab', () => {
       );
       expect(deleteCalled).toBe(true);
     });
+  });
+
+  it('does not DELETE when the remove dialog is cancelled (#721)', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify([
+          { key: 'ENG', name: 'Engineering', lastSynced: '2026-03-01T00:00:00Z', pageCount: 5 },
+        ]),
+        { headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    render(<SpacesTab onSave={mockOnSave} />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByText('Engineering')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /remove engineering/i }));
+    await screen.findByTestId('confirm-dialog');
+    fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
+    });
+    const deleteCalled = fetchSpy.mock.calls.some(
+      ([, opts]) => (opts as RequestInit | undefined)?.method === 'DELETE',
+    );
+    expect(deleteCalled).toBe(false);
+  });
+
+  // ---------- #721: empty-selection save confirmation ----------
+
+  it('asks for confirmation before saving an empty selection, then saves on confirm', async () => {
+    render(<SpacesTab onSave={mockOnSave} />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByText('Save Selection (0)'));
+
+    // Dialog instead of native confirm(); copy must not claim local pages are
+    // deleted (the settings handler only clears the sync selection).
+    expect(await screen.findByText('Remove all spaces from your selection?')).toBeInTheDocument();
+    expect(screen.getByText(/stops syncing/i)).toBeInTheDocument();
+    expect(mockOnSave).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
+
+    await waitFor(() => {
+      expect(mockOnSave).toHaveBeenCalledWith({ selectedSpaces: [] });
+    });
+  });
+
+  it('does not save when the empty-selection dialog is cancelled', async () => {
+    render(<SpacesTab onSave={mockOnSave} />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByText('Save Selection (0)'));
+    await screen.findByTestId('confirm-dialog');
+    fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
+    });
+    expect(mockOnSave).not.toHaveBeenCalled();
+  });
+
+  it('saves a non-empty selection without any confirmation dialog', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify([
+          { key: 'DEV', name: 'Development', lastSynced: '2026-03-01T00:00:00Z', pageCount: 42 },
+        ]),
+        { headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    render(<SpacesTab onSave={mockOnSave} />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByText('Development')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByText('Development'));
+    fireEvent.click(screen.getByText('Save Selection (1)'));
+
+    expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
+    expect(mockOnSave).toHaveBeenCalledWith({ selectedSpaces: ['DEV'] });
   });
 });

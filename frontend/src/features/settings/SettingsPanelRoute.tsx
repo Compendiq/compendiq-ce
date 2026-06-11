@@ -1,5 +1,5 @@
 import { lazy, type ComponentType, type ReactElement } from 'react';
-import { Navigate, useOutletContext, useParams } from 'react-router-dom';
+import { Link, Navigate, useOutletContext, useParams } from 'react-router-dom';
 import { SETTINGS_NAV, canSeeItem, firstVisiblePath } from './settings-nav';
 import type { AccessContextWithLoading } from './SettingsLayout';
 import { useSettings, useUpdateSettings } from '../../shared/hooks/use-settings';
@@ -106,9 +106,25 @@ export function SettingsPanelRoute() {
       ? SETTINGS_NAV.find((g) => g.id === groupId)?.items.find((i) => i.id === itemId)
       : undefined;
 
-  // Unknown path — bounce immediately (nothing to load, nothing to wait for).
+  // Unknown path — no registered nav item matches (regardless of role).
+  // Render a small not-found panel instead of silently redirecting, so a
+  // typoed or stale bookmark is visible rather than confusing. Registered
+  // items the user merely cannot see (adminOnly / EE-gated) keep the
+  // redirect below.
   if (!navItem || !PANELS[key]) {
-    return <Navigate to={firstVisiblePath(ctx)} replace />;
+    return (
+      <section className="space-y-3" data-testid="settings-panel-not-found">
+        <h2 className="text-xl font-semibold tracking-[-0.01em]">
+          {"This settings page doesn't exist."}
+        </h2>
+        <p className="text-sm text-muted-foreground">
+          The address may be mistyped, or the panel may have moved.
+        </p>
+        <Link to={firstVisiblePath(ctx)} className="inline-block text-sm font-medium text-action underline">
+          Go to Settings
+        </Link>
+      </section>
+    );
   }
 
   // Defer the EE-gated redirect until the /admin/license fetch resolves.

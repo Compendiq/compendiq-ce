@@ -4,6 +4,7 @@ import { RefreshCw, CheckSquare, Square, Loader2, Trash2 } from 'lucide-react';
 import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
 import { toast } from 'sonner';
+import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
 import { SpaceHomePicker } from './SpaceHomePicker';
 
 interface AvailableSpace {
@@ -34,6 +35,10 @@ const EMPTY_SPACES: string[] = [];
 export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, showSpaceHomeContent = true, onSave }: SpacesTabProps) {
   const queryClient = useQueryClient();
   const [selected, setSelected] = useState<Set<string>>(new Set(initialSelected));
+  // Space awaiting remove confirmation (#721; ConfirmDialog replaces native confirm()).
+  const [pendingRemove, setPendingRemove] = useState<{ key: string; name: string } | null>(null);
+  // Guard for saving an empty selection (#721).
+  const [confirmClearOpen, setConfirmClearOpen] = useState(false);
 
   // Re-sync local selection when the incoming prop's *contents* change. Keying
   // the effect on a primitive (its JSON serialization) means it only re-runs on real
@@ -101,20 +106,12 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
   };
 
   const handleRemoveSpace = (key: string, name: string) => {
-    if (
-      window.confirm(
-        `Remove "${name}"? This deletes its synced pages locally. It does NOT delete anything in Confluence.`,
-      )
-    ) {
-      removeSpace.mutate(key);
-    }
+    setPendingRemove({ key, name });
   };
 
   const handleSave = async () => {
-    if (
-      selected.size === 0 &&
-      !window.confirm('Remove all synced spaces from your selection?')
-    ) {
+    if (selected.size === 0) {
+      setConfirmClearOpen(true);
       return;
     }
     await onSave({ selectedSpaces: Array.from(selected) });
@@ -267,6 +264,39 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
           Sync Selected
         </button>
       </div>
+
+      {/* #721 remove confirmation. Copy mirrors the backend reality
+          (DELETE /spaces/:key → unsyncSpace): the local purge is permanent —
+          pages cascade-delete their embeddings and version history, cached
+          attachments are removed — but Confluence itself is read-only here
+          and the space can be synced again later. */}
+      <ConfirmDialog
+        open={pendingRemove !== null}
+        title={`Remove "${pendingRemove?.name ?? ''}" from Compendiq?`}
+        description="This permanently deletes its synced pages, embeddings and version history stored in Compendiq. Nothing is deleted in Confluence — you can sync the space again later."
+        confirmLabel="Remove space"
+        destructive
+        onConfirm={() => {
+          if (pendingRemove) removeSpace.mutate(pendingRemove.key);
+          setPendingRemove(null);
+        }}
+        onCancel={() => setPendingRemove(null)}
+      />
+
+      {/* Empty-selection save guard. Saving [] only clears the sync selection
+          (settings.ts removes the per-space editor assignments) — already
+          synced pages are NOT deleted, so the copy must not claim they are. */}
+      <ConfirmDialog
+        open={confirmClearOpen}
+        title="Remove all spaces from your selection?"
+        description="Saving an empty selection stops syncing every space for you. Already-synced pages are not deleted; re-select a space to resume syncing it."
+        confirmLabel="Save empty selection"
+        onConfirm={() => {
+          setConfirmClearOpen(false);
+          void onSave({ selectedSpaces: [] });
+        }}
+        onCancel={() => setConfirmClearOpen(false)}
+      />
     </div>
   );
 }

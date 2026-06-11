@@ -20,6 +20,7 @@
  */
 import { z } from 'zod';
 import { query } from '../db/postgres.js';
+import { visiblePagesPredicate } from './page-visibility.js';
 
 /**
  * Subset of the GET /pages filter shape that's safe + useful for bulk
@@ -245,6 +246,9 @@ export async function resolveBulkSelection(
       source: string;
       labels: string[] | null;
     }>(
+      // Deliberately NOT visiblePagesPredicate(): ids-mode grants owners access
+      // to their private pages regardless of visibility, and the space branch
+      // is not gated on source = 'confluence'.
       `SELECT cp.id, cp.confluence_id, cp.space_key, cp.source, cp.labels FROM pages cp
        WHERE (cp.id = ANY($1::int[]) OR cp.confluence_id = ANY($2::text[]))
          AND cp.deleted_at IS NULL
@@ -293,11 +297,7 @@ export async function resolveBulkSelection(
     baseValues.length + 1,
   );
   const whereParts = ['cp.deleted_at IS NULL', ...parts];
-  const where = `WHERE (
-      (cp.source = 'confluence' AND cp.space_key = ANY($1::text[]))
-      OR (cp.source = 'standalone' AND cp.visibility = 'shared')
-      OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $2)
-    ) AND ${whereParts.join(' AND ')}`;
+  const where = `WHERE ${visiblePagesPredicate(1, 2)} AND ${whereParts.join(' AND ')}`;
 
   const allValues = [...baseValues, ...filterValues];
 

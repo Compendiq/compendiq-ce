@@ -130,6 +130,81 @@ describe('EnterpriseProvider (community mode)', () => {
   });
 });
 
+describe('EnterpriseProvider EE bundle license gate', () => {
+  beforeEach(() => {
+    // Restores the default (probing) script loader — deliberately NOT
+    // replaced here, so any attempt to load the bundle would surface as a
+    // fetch of the bundle URL.
+    _resetForTesting();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('never requests the bundle URL when the license response is CE-shaped (no canUpdate)', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({ edition: 'community', tier: 'community', features: [], valid: false }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    render(
+      <EnterpriseProvider>
+        <TestConsumer />
+      </EnterpriseProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('loading').textContent).toBe('false');
+    });
+
+    expect(screen.getByTestId('ui').textContent).toBe('null');
+    const urls = fetchSpy.mock.calls.map(([input]) =>
+      typeof input === 'string' ? input : input instanceof Request ? input.url : String(input),
+    );
+    expect(urls).toContain('/api/admin/license');
+    expect(urls.some((u) => u.includes('/api/enterprise/frontend.js'))).toBe(false);
+  });
+
+  it('attempts the EE bundle load when the backend marks itself EE (canUpdate: true)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          edition: 'enterprise',
+          tier: 'enterprise',
+          features: ['oidc_sso'],
+          valid: true,
+          canUpdate: true,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+    const mockCard = () => null;
+    const loaderSpy = vi.fn(async () => {
+      // Simulate IIFE bundle registering itself
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (window as any).__COMPENDIQ_UI__ = { LicenseStatusCard: mockCard, version: '1.0.0' };
+    });
+    _setScriptLoaderForTesting(loaderSpy);
+
+    render(
+      <EnterpriseProvider>
+        <TestConsumer />
+      </EnterpriseProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('loading').textContent).toBe('false');
+    });
+
+    expect(loaderSpy).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('ui').textContent).toBe('loaded');
+    expect(screen.getByTestId('enterprise').textContent).toBe('true');
+  });
+});
+
 describe('useEnterprise outside provider', () => {
   it('should return default community values', () => {
     render(<TestConsumer />);

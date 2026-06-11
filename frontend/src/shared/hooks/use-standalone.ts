@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import type { TrashListResponse } from '@compendiq/contracts';
 import { apiFetch, ApiError, refreshAccessTokenOnce } from '../lib/api';
 import { useAuthStore } from '../../stores/auth-store';
 
@@ -69,15 +70,15 @@ export function useComments(pageId: number) {
 export function useTrash() {
   return useQuery({
     queryKey: ['trash'],
-    queryFn: () => apiFetch<{ items: TrashItem[]; total: number }>('/trash'),
+    queryFn: () => apiFetch<TrashListResponse>('/pages/trash'),
   });
 }
 
 export function useRestorePage() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (pageId: number) =>
-      apiFetch(`/trash/${pageId}/restore`, {
+    mutationFn: (pageId: string) =>
+      apiFetch(`/pages/${pageId}/restore`, {
         method: 'POST',
       }),
     onSuccess: () => {
@@ -364,13 +365,7 @@ interface Comment {
   reactions: { emoji: string; count: number; userReacted: boolean }[];
 }
 
-interface TrashItem {
-  id: number;
-  title: string;
-  deletedAt: string;
-  deletedBy: string;
-  autoPurgeAt: string;
-}
+// Trash items are typed by TrashListResponse from @compendiq/contracts.
 
 interface Notification {
   id: number;

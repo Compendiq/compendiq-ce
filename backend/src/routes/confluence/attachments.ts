@@ -111,7 +111,9 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
          AND cp.confluence_id = $2`,
       [attachSpaces, pageId],
     );
-    // Fallback: standalone pages use integer PK as their attachment pageId
+    // Fallback: standalone pages use integer PK as their attachment pageId.
+    // Deliberately NOT visiblePagesPredicate(): this branch is standalone-only
+    // by construction (Confluence pages were handled by the query above).
     if (pageResult.rows.length === 0 && /^\d+$/.test(pageId)) {
       pageResult = await query<{ body_storage: string | null; space_key: string; source: string }>(
         `SELECT cp.body_storage, cp.space_key, cp.source

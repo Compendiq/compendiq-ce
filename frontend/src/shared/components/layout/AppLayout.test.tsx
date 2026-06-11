@@ -123,7 +123,7 @@ describe('AppLayout', () => {
       </AppLayout>,
       { wrapper: createWrapper('/') },
     );
-    expect(screen.getByText('Search pages, articles, commands...')).toBeInTheDocument();
+    expect(screen.getByText('Search pages, commands...')).toBeInTheDocument();
   });
 
   it('search bar has role="search" landmark and distinct aria-labels', () => {

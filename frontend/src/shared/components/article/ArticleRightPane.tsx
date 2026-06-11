@@ -45,6 +45,7 @@ import { useExportPdf } from '../../hooks/use-standalone';
 import { useSettings } from '../../hooks/use-settings';
 import { apiFetch } from '../../lib/api';
 import { cn } from '../../lib/cn';
+import { ConfirmDialog } from '../ConfirmDialog';
 import type { TocHeading } from './TableOfContents';
 
 // ---------- Outline tree helpers ----------
@@ -230,7 +231,7 @@ export function ArticleRightPane() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${page?.title?.replace(/[^a-zA-Z0-9-_ ]/g, '').replace(/\s+/g, '-').toLowerCase() ?? 'article'}.pdf`;
+      a.download = `${page?.title?.replace(/[^a-zA-Z0-9-_ ]/g, '').replace(/\s+/g, '-').toLowerCase() ?? 'page'}.pdf`;
       a.click();
       URL.revokeObjectURL(url);
     } catch (err) {
@@ -244,6 +245,7 @@ export function ArticleRightPane() {
   const [collapsedIds, setCollapsedIds] = useState(() => readCollapsedIds(storageKey));
   const [readingProgress, setReadingProgress] = useState(0);
   const [isResizing, setIsResizing] = useState(false);
+  const [confirmTrashOpen, setConfirmTrashOpen] = useState(false);
   const observerRef = useRef<IntersectionObserver | null>(null);
   const sidebarRef = useRef<HTMLElement>(null);
 
@@ -388,14 +390,24 @@ export function ArticleRightPane() {
     });
   }, [id, isPinned, page, pinMutation, unpinMutation]);
 
-  const handleDelete = useCallback(async () => {
-    if (!id || !window.confirm('Delete this article? This cannot be undone.')) return;
+  // Deleting soft-deletes into the 30-day trash, so the confirm copy must
+  // not claim the action "cannot be undone". ConfirmDialog replaces the
+  // native confirm() to match the neumorphic design system. Same flow
+  // and copy as PageViewPage's Alt+Shift+D shortcut.
+  const handleDelete = useCallback(() => {
+    if (!id) return;
+    setConfirmTrashOpen(true);
+  }, [id]);
+
+  const handleConfirmMoveToTrash = useCallback(async () => {
+    if (!id) return;
+    setConfirmTrashOpen(false);
     try {
       await deleteMutation.mutateAsync(id);
       navigate('/');
-      toast.success('Article deleted.');
+      toast.success('Page moved to trash.');
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to delete article.');
+      toast.error(error instanceof Error ? error.message : 'Failed to move page to trash.');
     }
   }, [deleteMutation, id, navigate]);
 
@@ -473,11 +485,26 @@ export function ArticleRightPane() {
 
   if (!id) return null;
 
+  // Shared between the collapsed-rail and expanded returns — Radix portals
+  // the dialog to <body>, so its position in the tree only matters for state.
+  const confirmTrashDialog = (
+    <ConfirmDialog
+      open={confirmTrashOpen}
+      title="Move page to trash?"
+      description="It can be restored from Trash for 30 days, then it is permanently deleted."
+      confirmLabel="Move to trash"
+      destructive
+      onConfirm={handleConfirmMoveToTrash}
+      onCancel={() => setConfirmTrashOpen(false)}
+    />
+  );
+
   // Collapsed rail — glass pill style
   if (collapsed) {
     const railIconBtn =
       'rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors disabled:opacity-50';
     return (
+      <>
       <AnimatePresence mode="wait">
         <m.div
           key="collapsed-rail"
@@ -492,7 +519,7 @@ export function ArticleRightPane() {
             <button
               onClick={toggleSidebar}
               className={railIconBtn}
-              aria-label="Expand article sidebar"
+              aria-label="Expand page sidebar"
               title="Expand sidebar (.)"
             >
               <PanelRight size={16} />
@@ -614,7 +641,7 @@ export function ArticleRightPane() {
                 <button
                   onClick={handleDelete}
                   className="rounded-lg p-1.5 text-destructive/80 transition-colors hover:bg-destructive/8 hover:text-destructive"
-                  aria-label="Delete article"
+                  aria-label="Delete page"
                   title={`Delete (${formatKeysForPlatform(getShortcutHint('delete-page') ?? '', detectMac())})`}
                 >
                   <Trash2 size={16} />
@@ -624,10 +651,13 @@ export function ArticleRightPane() {
           )}
         </m.div>
       </AnimatePresence>
+      {confirmTrashDialog}
+      </>
     );
   }
 
   return (
+    <>
     <m.aside
       ref={sidebarRef}
       key="expanded-sidebar"
@@ -646,7 +676,7 @@ export function ArticleRightPane() {
         <button
           onClick={toggleSidebar}
           className="flex items-center gap-0.5 rounded-lg p-1 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
-          aria-label="Collapse article sidebar"
+          aria-label="Collapse page sidebar"
           title="Collapse sidebar (.)"
         >
           <PanelRightClose size={14} />
@@ -897,7 +927,7 @@ export function ArticleRightPane() {
       <div className="flex-1 overflow-y-auto p-1.5 scroll-mask" data-testid="article-outline-tree">
         {headings.length === 0 ? (
           <div className="px-3 py-6 text-center text-xs text-muted-foreground">
-            No headings in this article.
+            No headings on this page.
           </div>
         ) : (
           <div className="space-y-0.5">
@@ -918,7 +948,7 @@ export function ArticleRightPane() {
       {/* Resize handle */}
       <div
         role="separator"
-        aria-label="Resize article sidebar"
+        aria-label="Resize page sidebar"
         aria-orientation="vertical"
         onMouseDown={handleResizeStart}
         className={cn(
@@ -927,5 +957,7 @@ export function ArticleRightPane() {
         )}
       />
     </m.aside>
+    {confirmTrashDialog}
+    </>
   );
 }

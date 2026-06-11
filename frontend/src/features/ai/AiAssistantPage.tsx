@@ -1,7 +1,7 @@
 import { memo } from 'react';
 import { m, useReducedMotion } from 'framer-motion';
 import {
-  Bot, User, Loader2, MessageSquare, Brain,
+  Bot, User, Loader2, MessageSquare, Brain, AlertTriangle,
   Wand2, ListCollapse, Sparkles, GitBranch, FileText, ShieldCheck, Network,
 } from 'lucide-react';
 import Markdown from 'react-markdown';
@@ -94,8 +94,11 @@ const MessageBubble = memo(function MessageBubble({
           'max-w-[80%] rounded-2xl px-4 py-3 text-sm xl:max-w-2xl',
           msg.role === 'user'
             ? 'bg-primary/10 text-foreground'
-            : 'bg-foreground/5',
+            : msg.isError
+              ? 'border border-destructive/40 bg-destructive/10'
+              : 'bg-foreground/5',
         )}
+        data-testid={msg.isError ? 'message-error' : undefined}
       >
         {showThinkingBlob && <AIThinkingBlob active />}
         {showTypingIndicator && <TypingIndicator />}
@@ -110,6 +113,10 @@ const MessageBubble = memo(function MessageBubble({
               <TypingIndicator />
             </div>
           ) : null)
+        ) : msg.isError ? (
+          // Error messages render as plain text (not Markdown) so the
+          // destructive color isn't overridden by the prose styles.
+          <p className="text-destructive">{msg.content}</p>
         ) : (
           <div className={cn('prose prose-sm max-w-none', !isLight && 'prose-invert')}>
             {msg.content ? (
@@ -144,6 +151,7 @@ const MessageBubble = memo(function MessageBubble({
   // Completed messages (not last or not streaming) will never re-render.
   if (prev.msg.id !== next.msg.id) return false;
   if (prev.msg.content !== next.msg.content) return false;
+  if (prev.msg.isError !== next.msg.isError) return false;
   if (prev.msg.sources !== next.msg.sources) return false;
   if (prev.isLast !== next.isLast) return false;
   if (prev.isStreaming !== next.isStreaming) return false;
@@ -203,7 +211,7 @@ function AiAssistantInner() {
     mode, setMode, page, pageHasChildren,
     messages, messagesEndRef, isStreaming, isThinking, thinkingElapsed,
     streamingContent,
-    model, models, setModel, isLight,
+    model, models, setModel, modelsError, refetchModels, isLight,
     includeSubPages, setIncludeSubPages,
     thinkingMode, setThinkingMode,
   } = ctx;
@@ -290,7 +298,18 @@ function AiAssistantInner() {
             the model dropdown and the toggles separates "infrastructure" the
             user sets once from "context flags" they flip per question. */}
         <div className="flex flex-wrap items-center gap-1.5">
-          {models.length === 0 ? (
+          {modelsError ? (
+            // Models fetch failed (LLM provider down / unreachable): surface
+            // the failure with a retry affordance instead of spinning forever.
+            <button
+              type="button"
+              onClick={() => refetchModels()}
+              title="Failed to load models from the LLM provider — click to retry"
+              className="flex h-7 items-center gap-1.5 rounded-md border border-destructive/40 px-2.5 text-xs text-destructive transition-colors hover:bg-destructive/10"
+            >
+              <AlertTriangle size={12} /> Models unavailable — retry
+            </button>
+          ) : models.length === 0 ? (
             <span className="flex h-7 items-center gap-1.5 rounded-md border border-border/40 px-2.5 text-xs text-muted-foreground">
               <Loader2 size={12} className="animate-spin" /> Loading models...
             </span>
