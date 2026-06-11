@@ -5,6 +5,7 @@ import {
   invalidateProviderBreaker,
 } from '../../../core/services/circuit-breaker.js';
 import { logger } from '../../../core/utils/logger.js';
+import { withSpan } from '../../../telemetry.js';
 
 export interface ProviderConfig {
   providerId: string;
@@ -151,15 +152,19 @@ export interface StreamChatOptions {
 }
 
 export async function listModels(cfg: ProviderConfig): Promise<LlmModel[]> {
-  return enqueue(() =>
-    getProviderBreaker(cfg.providerId).execute(async () => {
-      const res = await undiciFetch(`${cfg.baseUrl}/models`, {
-        headers: headers(cfg), dispatcher: dispatcherFor(cfg),
-      });
-      if (!res.ok) throw new Error(`listModels HTTP ${res.status}`);
-      const body = await res.json() as { data?: Array<{ id: string }> };
-      return (body.data ?? []).map((m) => ({ name: m.id }));
-    }),
+  return withSpan(
+    'llm.list_models',
+    () => enqueue(() =>
+      getProviderBreaker(cfg.providerId).execute(async () => {
+        const res = await undiciFetch(`${cfg.baseUrl}/models`, {
+          headers: headers(cfg), dispatcher: dispatcherFor(cfg),
+        });
+        if (!res.ok) throw new Error(`listModels HTTP ${res.status}`);
+        const body = await res.json() as { data?: Array<{ id: string }> };
+        return (body.data ?? []).map((m) => ({ name: m.id }));
+      }),
+    ),
+    { 'llm.provider_id': cfg.providerId },
   );
 }
 
@@ -175,18 +180,26 @@ export async function checkHealth(cfg: ProviderConfig): Promise<HealthResult> {
 export async function chat(
   cfg: ProviderConfig, model: string, messages: ChatMessage[], opts?: StreamChatOptions,
 ): Promise<string> {
-  return enqueue(() =>
-    getProviderBreaker(cfg.providerId).execute(async () => {
-      const res = await undiciFetch(`${cfg.baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: headers(cfg),
-        body: JSON.stringify({ model, messages, stream: false, ...thinkingExtras(cfg.baseUrl, model, opts?.thinking) }),
-        dispatcher: dispatcherFor(cfg),
-      });
-      if (!res.ok) throw new Error(`chat HTTP ${res.status}`);
-      const body = await res.json() as { choices: Array<{ message: { content: string } }> };
-      return body.choices[0]?.message.content ?? '';
-    }),
+  // The span wraps the queue wait + breaker + HTTP round-trip. With OTel's
+  // undici auto-instrumentation enabled the HTTP call appears as a child
+  // span, so queue wait is derivable as the difference. No-op when OTel is
+  // disabled (withSpan passes straight through).
+  return withSpan(
+    'llm.chat',
+    () => enqueue(() =>
+      getProviderBreaker(cfg.providerId).execute(async () => {
+        const res = await undiciFetch(`${cfg.baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: headers(cfg),
+          body: JSON.stringify({ model, messages, stream: false, ...thinkingExtras(cfg.baseUrl, model, opts?.thinking) }),
+          dispatcher: dispatcherFor(cfg),
+        });
+        if (!res.ok) throw new Error(`chat HTTP ${res.status}`);
+        const body = await res.json() as { choices: Array<{ message: { content: string } }> };
+        return body.choices[0]?.message.content ?? '';
+      }),
+    ),
+    { 'llm.provider_id': cfg.providerId, 'llm.model': model },
   );
 }
 
@@ -202,17 +215,24 @@ export async function chat(
 export async function* streamChat(
   cfg: ProviderConfig, model: string, messages: ChatMessage[], signal?: AbortSignal, opts?: StreamChatOptions,
 ): AsyncGenerator<StreamChunk> {
-  const res = await getProviderBreaker(cfg.providerId).execute(async () => {
-    const r = await undiciFetch(`${cfg.baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: headers(cfg),
-      body: JSON.stringify({ model, messages, stream: true, ...thinkingExtras(cfg.baseUrl, model, opts?.thinking) }),
-      dispatcher: dispatcherFor(cfg),
-      signal,
-    });
-    if (!r.ok || !r.body) throw new Error(`streamChat HTTP ${r.status}`);
-    return r;
-  });
+  // The span covers only the dispatch (breaker + initial HTTP request), not
+  // the stream consumption — a span held open for the whole stream would
+  // outlive minutes-long generations and skew duration percentiles.
+  const res = await withSpan(
+    'llm.stream_chat.dispatch',
+    () => getProviderBreaker(cfg.providerId).execute(async () => {
+      const r = await undiciFetch(`${cfg.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: headers(cfg),
+        body: JSON.stringify({ model, messages, stream: true, ...thinkingExtras(cfg.baseUrl, model, opts?.thinking) }),
+        dispatcher: dispatcherFor(cfg),
+        signal,
+      });
+      if (!r.ok || !r.body) throw new Error(`streamChat HTTP ${r.status}`);
+      return r;
+    }),
+    { 'llm.provider_id': cfg.providerId, 'llm.model': model },
+  );
   const reader = res.body!.getReader();
   const dec = new TextDecoder();
   let buf = '';
@@ -241,17 +261,21 @@ export async function generateEmbedding(
   cfg: ProviderConfig, model: string, text: string | string[],
 ): Promise<number[][]> {
   const input = Array.isArray(text) ? text : [text];
-  return enqueue(() =>
-    getProviderBreaker(cfg.providerId).execute(async () => {
-      const res = await undiciFetch(`${cfg.baseUrl}/embeddings`, {
-        method: 'POST',
-        headers: headers(cfg),
-        body: JSON.stringify({ model, input }),
-        dispatcher: dispatcherFor(cfg),
-      });
-      if (!res.ok) throw new Error(`generateEmbedding HTTP ${res.status}`);
-      const body = await res.json() as { data: Array<{ embedding: number[] }> };
-      return body.data.map((d) => d.embedding);
-    }),
+  return withSpan(
+    'llm.embeddings',
+    () => enqueue(() =>
+      getProviderBreaker(cfg.providerId).execute(async () => {
+        const res = await undiciFetch(`${cfg.baseUrl}/embeddings`, {
+          method: 'POST',
+          headers: headers(cfg),
+          body: JSON.stringify({ model, input }),
+          dispatcher: dispatcherFor(cfg),
+        });
+        if (!res.ok) throw new Error(`generateEmbedding HTTP ${res.status}`);
+        const body = await res.json() as { data: Array<{ embedding: number[] }> };
+        return body.data.map((d) => d.embedding);
+      }),
+    ),
+    { 'llm.provider_id': cfg.providerId, 'llm.model': model, 'llm.input_count': input.length },
   );
 }
