@@ -275,6 +275,7 @@ describe('Neumorphic @utility set', () => {
     'nm-pill-active',
     'nm-button-primary',
     'nm-button-ghost',
+    'nm-button-destructive',
     'nm-icon-button',
     'nm-input',
   ] as const;
@@ -291,6 +292,7 @@ describe('Neumorphic @utility set', () => {
       'nm-card-interactive',
       'nm-button-primary',
       'nm-button-ghost',
+      'nm-button-destructive',
       'nm-icon-button',
       'nm-input',
     ];
@@ -306,6 +308,7 @@ describe('Neumorphic @utility set', () => {
       'nm-card-interactive',
       'nm-button-primary',
       'nm-button-ghost',
+      'nm-button-destructive',
       'nm-icon-button',
       'nm-input',
     ];

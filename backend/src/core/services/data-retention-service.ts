@@ -222,6 +222,13 @@ async function runAdminAccessDeniedRetention(): Promise<number> {
 export const STANDALONE_TRASH_RETENTION_DAYS = 30;
 
 /**
+ * Rows per DELETE batch — same backstop as the ADMIN_ACCESS_DENIED purge:
+ * keeps lock time and WAL volume bounded if a huge backlog ever accumulates
+ * (e.g. the maintenance job was disabled for months).
+ */
+const STANDALONE_TRASH_PURGE_BATCH_SIZE = 10_000;
+
+/**
  * Hard-delete standalone pages whose soft-delete (`pages.deleted_at`) is older
  * than the 30-day trash window (UX review: the Trash UI promised "purged after
  * 30 days" but nothing ever purged standalone pages — the only purge was
@@ -242,14 +249,27 @@ export async function purgeExpiredStandalonePages(): Promise<number> {
   let deleted = 0;
 
   try {
-    const { rowCount } = await pool.query(
-      `DELETE FROM pages
-        WHERE source = 'standalone'
-          AND deleted_at IS NOT NULL
-          AND deleted_at < NOW() - INTERVAL '1 day' * $1`,
-      [STANDALONE_TRASH_RETENTION_DAYS],
-    );
-    deleted = rowCount ?? 0;
+    for (;;) {
+      const { rowCount } = await pool.query(
+        // Explicit `deleted_at IS NOT NULL` guard instead of relying on SQL
+        // NULL-comparison semantics to protect live pages — matches the
+        // Confluence purge in sync-service.
+        `DELETE FROM pages
+          WHERE id IN (
+            SELECT id FROM pages
+             WHERE source = 'standalone'
+               AND deleted_at IS NOT NULL
+               AND deleted_at < NOW() - INTERVAL '1 day' * $1
+             LIMIT $2
+          )`,
+        [STANDALONE_TRASH_RETENTION_DAYS, STANDALONE_TRASH_PURGE_BATCH_SIZE],
+      );
+      const n = rowCount ?? 0;
+      deleted += n;
+      // A short batch signals drained — break out rather than loop again on
+      // a guaranteed-empty DELETE.
+      if (n < STANDALONE_TRASH_PURGE_BATCH_SIZE) break;
+    }
     if (deleted > 0) {
       logger.info(
         { deleted, retentionDays: STANDALONE_TRASH_RETENTION_DAYS },

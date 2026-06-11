@@ -41,6 +41,12 @@ export function EnterpriseProvider({ children }: { children: ReactNode }) {
 
       // Only an EE backend (which marks itself with canUpdate: true) can
       // serve the overlay bundle, so don't even attempt the load otherwise.
+      //
+      // CAVEAT: /admin/license is admin-gated, so non-admins get a 403 above
+      // and `ui` stays null for them even on EE — the bundle loads only in
+      // admin sessions. Fine today (every `ui` consumer is an admin surface);
+      // if a non-admin enterprise UI surface is ever added, the gate needs an
+      // unauthenticated/user-visible EE marker instead of `canUpdate`.
       if (info?.canUpdate === true) {
         const enterpriseUi = await loadEnterpriseUI();
         if (cancelled) return;

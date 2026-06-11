@@ -106,8 +106,17 @@ export async function loadEnterpriseUI(): Promise<EnterpriseUI | null> {
     if (ui && typeof ui.LicenseStatusCard === 'function') {
       cached = ui as EnterpriseUI;
     }
-  } catch {
-    // Not available — community mode. This is not an error.
+  } catch (err) {
+    // Only EE backends reach this code (the load is license-gated in
+    // context.tsx), so a failure here means a real EE deployment lost its
+    // overlay — e.g. a proxy stripping the bundle's content-type, or the
+    // bundle route missing. Warn once (the null result is cached for the
+    // session) so the failure is debuggable instead of silently hiding all
+    // enterprise UI.
+    console.warn(
+      `[enterprise] EE UI bundle failed to load from ${ENTERPRISE_BUNDLE_URL} — enterprise UI disabled for this session.`,
+      err,
+    );
     cached = null;
   }
 

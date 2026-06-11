@@ -125,12 +125,14 @@ describe('data-retention-service', () => {
       expect(deniedCall[0]).toContain('LIMIT $2');
       expect(deniedCall[1]).toEqual([90, 10_000]);
 
-      // Standalone trash purge is source-scoped and parameterized on the
-      // 30-day window — never touches Confluence-synced rows.
+      // Standalone trash purge is source-scoped, parameterized on the
+      // 30-day window, and batched like the ADMIN_ACCESS_DENIED purge —
+      // never touches Confluence-synced rows.
       const trashCall = mockPool.query.mock.calls[4];
       expect(trashCall[0]).toContain('DELETE FROM pages');
       expect(trashCall[0]).toContain(`source = 'standalone'`);
-      expect(trashCall[1]).toEqual([STANDALONE_TRASH_RETENTION_DAYS]);
+      expect(trashCall[0]).toContain('LIMIT $2');
+      expect(trashCall[1]).toEqual([STANDALONE_TRASH_RETENTION_DAYS, 10_000]);
     });
 
     it('uses ROW_NUMBER for count-based page_versions cleanup', async () => {
@@ -240,6 +242,22 @@ describe('data-retention-service', () => {
     });
 
     // ─── Standalone trash purge (UX review) ──────────────────────────────
+    it('loops standalone trash purge batches until a short batch signals drained', async () => {
+      mockPool.query
+        .mockResolvedValueOnce({ rowCount: 0 })      // audit_log
+        .mockResolvedValueOnce({ rowCount: 0 })      // search_analytics
+        .mockResolvedValueOnce({ rowCount: 0 })      // error_log
+        .mockResolvedValueOnce({ rowCount: 0 })      // ADMIN_ACCESS_DENIED drained
+        .mockResolvedValueOnce({ rowCount: 10_000 }) // trash batch 1 full — loop again
+        .mockResolvedValueOnce({ rowCount: 7 })      // trash batch 2 short — drained
+        .mockResolvedValueOnce({ rowCount: 0 });     // page_versions
+
+      const results = await runRetentionCleanup();
+      expect(results.pages_standalone_trash).toBe(10_007);
+      // page_versions still ran after the extra batch.
+      expect(results.page_versions).toBe(0);
+    });
+
     it('swallows errors inside the standalone trash purge and reports 0', async () => {
       mockPool.query
         .mockResolvedValueOnce({ rowCount: 0 }) // audit_log

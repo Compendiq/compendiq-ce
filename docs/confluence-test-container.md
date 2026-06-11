@@ -33,13 +33,20 @@ only asks for a license, deployment type, and an admin account:
    the volume and redo setup.
 2. Deployment type: **Non-clustered (single node)** → Empty Site →
    "Manage users and groups within Confluence".
-3. Admin account (dev-only, never reuse elsewhere): `admin` /
-   `confluence-admin-dev-2026` (email `admin@compendiq.local`).
+3. Admin account: username `admin`, email `admin@compendiq.local`, and a
+   throwaway dev-only password of your choice. Record it in the gitignored
+   `docker/.env` so the seeding commands below can read it (and so it never
+   lands in the repo or your shell history):
+
+   ```bash
+   echo 'CONFLUENCE_ADMIN_PASSWORD=<the password you typed>' >> docker/.env
+   ```
 
 ## Seed test content + PAT (REST)
 
 ```bash
-AUTH="admin:confluence-admin-dev-2026"
+source docker/.env
+AUTH="admin:${CONFLUENCE_ADMIN_PASSWORD}"
 # Space
 curl -fsS -u "$AUTH" -X POST http://localhost:8090/rest/api/space \
   -H 'Content-Type: application/json' \
@@ -89,8 +96,8 @@ selects + syncs one, and asserts synced Confluence pages are served by
 ## Notes
 
 - Ports bind to `127.0.0.1` only (8090 HTTP, 8091 Synchrony).
-- The timebomb license, the dev admin password above, and seeded PATs are
-  throwaway dev credentials for this isolated container — treat anything you
-  paste into a real instance differently.
+- The timebomb license, the dev admin password in `docker/.env`, and seeded
+  PATs are throwaway dev credentials for this isolated container — treat
+  anything you paste into a real instance differently.
 - Confluence DC 9.2 serves XHTML storage format only (see ADR-003); the
   seeded code-block/task-list page exercises the `confluenceToHtml` path.

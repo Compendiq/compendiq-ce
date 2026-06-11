@@ -220,9 +220,9 @@ export function PageViewPage() {
     setEditTitle(page.title);
     const draft = getDraft(`page-${id}`);
     if (draft && draft !== page.bodyHtml) {
-      // Defer edit mode until the user decides in the ConfirmDialog below.
-      // Matches the old native confirm() semantics: either choice enters edit
-      // mode — confirm restores the draft, cancel edits the published copy.
+      // Defer edit mode until the user decides in the ConfirmDialog below:
+      // confirm restores the draft, the labeled cancel action edits the
+      // published copy, and Escape/overlay dismissal stays in view mode.
       setPendingDraft(draft);
       return;
     }
@@ -806,18 +806,21 @@ export function PageViewPage() {
       />
 
       {/* Draft restore — drafts are autosaved to localStorage on this device
-          while editing. Restoring is non-destructive; declining opens the
-          editor on the published content (same as the old native confirm()
-          flow, where Cancel also entered edit mode). No destructive styling:
-          the draft is only overwritten by continued editing, never deleted
-          here. */}
+          while editing. Restoring is non-destructive; the labeled cancel
+          action opens the editor on the published content. Escape/overlay
+          stay neutral (onDismiss): entering edit mode would let autosave
+          start overwriting the stored draft, a side effect nobody chose.
+          No destructive styling: the draft is only overwritten by continued
+          editing, never deleted here. */}
       <ConfirmDialog
         open={pendingDraft !== null}
         title="Restore draft?"
-        description="An unsaved draft of this page was found in this browser. Restore it to continue where you left off, or cancel to edit the published version instead (the draft is overwritten as you edit)."
+        description="An unsaved draft of this page was found in this browser. Restore it to continue where you left off, or edit the published version instead (the draft is overwritten as you edit)."
         confirmLabel="Restore draft"
+        cancelLabel="Edit published version"
         onConfirm={handleRestoreDraft}
         onCancel={handleDeclineDraft}
+        onDismiss={() => setPendingDraft(null)}
       />
     </m.div>
   );

@@ -115,6 +115,9 @@ export function NewPagePage() {
   const isCreateDisabled = createMutation.isPending
     || !title.trim()
     || !spaceKey;
+  // Explain WHY create is disabled — but not while a create is in flight
+  // (the button already says "Creating...").
+  const showCreateHint = isCreateDisabled && !createMutation.isPending;
 
   return (
     <div>
@@ -166,16 +169,11 @@ export function NewPagePage() {
                   sets pointer-events:none on :disabled, so a tooltip on the button
                   itself would never show while it is disabled — exactly when the
                   user needs to know why. */}
-              <span
-                title={
-                  isCreateDisabled && !createMutation.isPending
-                    ? 'Enter a title and select a space first'
-                    : undefined
-                }
-              >
+              <span title={showCreateHint ? 'Enter a title and select a space first' : undefined}>
                 <button
                   onClick={handleCreate}
                   disabled={isCreateDisabled}
+                  aria-describedby={showCreateHint ? 'create-page-hint' : undefined}
                   className="nm-button-primary"
                 >
                   <Save size={14} /> {createMutation.isPending ? 'Creating...' : 'Create Page'}
@@ -183,6 +181,15 @@ export function NewPagePage() {
               </span>
             </div>
           </div>
+
+          {/* Visible variant of the tooltip hint: title attributes are
+              mouse-hover-only, so keyboard, touch and screen-reader users
+              need the explanation as real, aria-linked text. */}
+          {showCreateHint && (
+            <p id="create-page-hint" className="text-right text-xs text-muted-foreground">
+              Enter a title and select a space first
+            </p>
+          )}
 
           {/* Metadata bar */}
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2">

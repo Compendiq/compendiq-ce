@@ -42,9 +42,27 @@ describe('Enterprise frontend loader', () => {
     expect(first).toBe(second);
   });
 
-  it('should not throw or log errors in community mode', async () => {
+  it('should not throw when the bundle is unavailable', async () => {
     _setScriptLoaderForTesting(() => Promise.reject(new Error('404')));
     await expect(loadEnterpriseUI()).resolves.toBeNull();
+  });
+
+  it('warns once, naming the bundle URL, when loading fails (EE-only path)', async () => {
+    // loadEnterpriseUI is license-gated to EE backends (context.tsx), so a
+    // failure here means a real EE deployment lost its overlay — e.g. a proxy
+    // stripping the bundle's content-type. That must not stay silent.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    _setScriptLoaderForTesting(() =>
+      Promise.reject(new Error(`EE bundle not available at ${BUNDLE_URL}`)),
+    );
+
+    await expect(loadEnterpriseUI()).resolves.toBeNull();
+    // Second call hits the cached null — no second warning.
+    await expect(loadEnterpriseUI()).resolves.toBeNull();
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(String(warnSpy.mock.calls[0]![0])).toContain(BUNDLE_URL);
+    warnSpy.mockRestore();
   });
 
   it('should return ui when bundle registers on window.__COMPENDIQ_UI__', async () => {

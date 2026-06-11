@@ -779,6 +779,34 @@ describe('PageViewPage', () => {
       });
     });
 
+    it('dismissing with Escape stays in view mode and keeps the draft pending', async () => {
+      // Escape must mean "do nothing": entering edit mode on the published
+      // copy would let autosave start overwriting the stored draft, which is
+      // a side effect nobody chose.
+      mockDraftContent = '<p>Draft content</p>';
+      render(<PageViewPage />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByText('Edit'));
+      await screen.findByTestId('confirm-dialog');
+      fireEvent.keyDown(screen.getByTestId('confirm-dialog'), { key: 'Escape' });
+
+      await waitFor(() => {
+        expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
+      });
+      // Still in view mode — no editor mounted.
+      expect(screen.queryByLabelText('Article editor')).not.toBeInTheDocument();
+
+      // The decision was deferred, not made: Edit prompts again.
+      fireEvent.click(screen.getByText('Edit'));
+      expect(await screen.findByTestId('confirm-dialog')).toBeInTheDocument();
+
+      // Close the portal dialog before teardown (see first test in this block).
+      fireEvent.keyDown(screen.getByTestId('confirm-dialog'), { key: 'Escape' });
+      await waitFor(() => {
+        expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
+      });
+    });
+
     it('enters edit mode directly when no draft exists', () => {
       mockDraftContent = null;
       render(<PageViewPage />, { wrapper: createWrapper() });

@@ -712,6 +712,94 @@ describe('AiAssistantPage', () => {
       expect(screen.getByText('What is Confluence?')).toBeInTheDocument();
     });
 
+    it('names the permission from the backend 403 message, not a hardcoded one', async () => {
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.resolve([{ name: 'llama3' }]);
+        }
+        if (path === '/llm/conversations') {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve([]);
+      });
+
+      // Each streamed mode has its own permission (llm:improve, llm:generate,
+      // llm:summarize…) — the shared runStream catch must surface whichever
+      // one the backend named, not always "llm:query".
+      // eslint-disable-next-line require-yield
+      async function* fakeForbiddenStream() {
+        throw new ApiError(403, 'Permission "llm:improve" required');
+      }
+      streamSSEMock.mockReturnValue(fakeForbiddenStream());
+
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.queryByText('Loading models...')).not.toBeInTheDocument();
+      });
+
+      const input = screen.getByPlaceholderText('Ask a question...');
+      fireEvent.change(input, { target: { value: 'Improve this' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('message-error')).toBeInTheDocument();
+      });
+      const errorBubble = screen.getByTestId('message-error');
+      expect(errorBubble.textContent).toContain('llm:improve');
+      expect(errorBubble.textContent).not.toContain('llm:query');
+      expect(errorBubble.textContent).toContain('administrator');
+    });
+
+    it('surfaces in-band SSE error events inline instead of leaving an empty bubble', async () => {
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.resolve([{ name: 'llama3' }]);
+        }
+        if (path === '/llm/conversations') {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve([]);
+      });
+
+      // Mid-stream provider failures arrive as `data: {"error": …}` events on
+      // an already-established HTTP 200 stream — the common failure path.
+      async function* fakeErrorEventStream() {
+        yield { error: 'LLM provider exploded' };
+      }
+      streamSSEMock.mockReturnValue(fakeErrorEventStream());
+
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.queryByText('Loading models...')).not.toBeInTheDocument();
+      });
+
+      const input = screen.getByPlaceholderText('Ask a question...');
+      fireEvent.change(input, { target: { value: 'What is Confluence?' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+
+      // Inline error bubble, same treatment as thrown errors…
+      await waitFor(() => {
+        expect(screen.getByTestId('message-error')).toBeInTheDocument();
+      });
+      const errorBubble = screen.getByTestId('message-error');
+      expect(errorBubble.textContent).toContain('LLM provider exploded');
+      expect(errorBubble.className).toContain('destructive');
+
+      // …plus the toast, matching non-403 thrown errors.
+      expect(toastErrorMock).toHaveBeenCalledWith('LLM provider exploded');
+
+      // No lingering typing indicator after the failure.
+      expect(screen.queryByTestId('typing-indicator')).not.toBeInTheDocument();
+    });
+
     it('enables send button when model is loaded and input is provided', async () => {
       apiFetchMock.mockImplementation((path: string) => {
         if (path === '/settings') {
