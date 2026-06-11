@@ -40,6 +40,7 @@ import { logger } from '../../core/utils/logger.js';
 import { APP_VERSION, APP_BUILD_INFO } from '../../core/utils/version.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { getRateLimits } from '../../core/services/rate-limit-service.js';
+import { SYSTEM_USER_ID } from '../../core/services/admin-user-service.js';
 
 /**
  * Admin-route rate limit config. Mirrors the convention used by other
@@ -131,9 +132,14 @@ interface HealthReport {
 async function buildHealthReport(fastify: FastifyInstance): Promise<HealthReport> {
   const [users, dirty, lastSync, errors] = await Promise.all([
     query<{ total: string; active: string }>(
+      // Exclude the nil-UUID `__system__` sentinel (migration 032) — it owns
+      // built-in templates and is not a seat, so counting it would overstate
+      // both metrics by one on every instance.
       `SELECT COUNT(*)::text AS total,
               COUNT(*) FILTER (WHERE deactivated_at IS NULL)::text AS active
-         FROM users`,
+         FROM users
+        WHERE id <> $1`,
+      [SYSTEM_USER_ID],
     ),
     query<{ c: string }>(
       // `pages.embedding_status = 'not_embedded'` is the modern "needs

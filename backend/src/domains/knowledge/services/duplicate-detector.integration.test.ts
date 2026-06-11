@@ -127,6 +127,34 @@ describe.skipIf(!dbAvailable)('duplicate-detector integration — RBAC kNN filte
     expect(results.map((r) => r.confluenceId)).toContain('dup-secret');
   });
 
+  it('excludes soft-deleted (trashed) pages from duplicate candidates', async () => {
+    const vec = fakeVec(19);
+    await seedPage({ confluenceId: 'src-1', source: 'confluence', spaceKey: 'TEAMA', title: 'Deploy guide', vec });
+    await seedPage({ confluenceId: 'dup-live', source: 'confluence', spaceKey: 'TEAMA', title: 'Deploy guide copy', vec });
+    const trashedId = await seedPage({ confluenceId: 'dup-trashed', source: 'confluence', spaceKey: 'TEAMA', title: 'Deploy guide trashed copy', vec });
+    await query(`UPDATE pages SET deleted_at = NOW() WHERE id = $1`, [trashedId]);
+
+    const results = await findDuplicates(USER_A, 'src-1');
+    const ids = results.map((r) => r.confluenceId);
+
+    // Live near-duplicates still surface…
+    expect(ids).toContain('dup-live');
+    // …but trashed pages must never be offered as duplicate candidates.
+    expect(ids).not.toContain('dup-trashed');
+  });
+
+  it('returns [] when the source page itself is trashed', async () => {
+    const vec = fakeVec(23);
+    const srcId = await seedPage({ confluenceId: 'src-trashed', source: 'confluence', spaceKey: 'TEAMA', title: 'Deploy guide', vec });
+    await seedPage({ confluenceId: 'dup-a', source: 'confluence', spaceKey: 'TEAMA', title: 'Deploy guide copy', vec });
+    await query(`UPDATE pages SET deleted_at = NOW() WHERE id = $1`, [srcId]);
+
+    const results = await findDuplicates(USER_A, 'src-trashed');
+
+    // A trashed source behaves like a nonexistent one.
+    expect(results).toEqual([]);
+  });
+
   it('includes the caller-owned private standalone pages as candidates', async () => {
     const vec = fakeVec(17);
     await seedPage({ confluenceId: 'src-1', source: 'confluence', spaceKey: 'TEAMA', title: 'Deploy guide', vec });

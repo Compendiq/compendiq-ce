@@ -21,6 +21,7 @@ import {
 import { query } from '../../core/db/postgres.js';
 import { buildApp } from '../../app.js';
 import { generateAccessToken } from '../../core/plugins/auth.js';
+import { SYSTEM_USER_ID } from '../../core/services/admin-user-service.js';
 import { healthApiRoutes } from './health-api.js';
 
 /**
@@ -121,6 +122,30 @@ describe.skipIf(!dbAvailable)('health-api integration — Compendiq/compendiq-ee
     expect(body.tier).toBe('community');
     expect(body.edition).toBeDefined();
     expect(body.version).toBeDefined();
+  });
+
+  it('excludes the __system__ sentinel user from total/active counts', async () => {
+    // Migration 032 seeds a nil-UUID sentinel that owns built-in templates.
+    // truncateAllTables wipes it, so re-seed it exactly as the migration does.
+    await query(
+      `INSERT INTO users (id, username, password_hash, role)
+       VALUES ('${SYSTEM_USER_ID}', '__system__', 'nologin', 'admin')`,
+    );
+    await query(
+      `INSERT INTO users (username, password_hash, role) VALUES ('real1', 'x', 'user')`,
+    );
+
+    const token = await readToken();
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/internal/health?token=${token}`,
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as Record<string, unknown>;
+    // The sentinel is not a seat — only the real user counts.
+    expect(body.userCount).toBe(1);
+    expect(body.activeUserCount).toBe(1);
   });
 
   it('returns 401 when the token is wrong against a real seeded row', async () => {

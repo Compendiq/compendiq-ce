@@ -105,6 +105,7 @@ export async function findDuplicates(
        source_avg
        WHERE pe2.page_id != $1
          AND source_avg.avg_embedding IS NOT NULL
+         AND cp2.deleted_at IS NULL
          AND ${visiblePagesPredicate(3, 4, 'cp2')}
        ORDER BY cp2.confluence_id, pe2.embedding <=> source_avg.avg_embedding
        LIMIT $2`,
