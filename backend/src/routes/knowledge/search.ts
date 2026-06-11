@@ -7,6 +7,7 @@ import { query } from '../../core/db/postgres.js';
 // ADR-022.
 import { getUserAccessibleSpacesMemoized as getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 import { getFtsLanguage } from '../../core/services/fts-language.js';
+import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
 import {
   vectorSearch,
   hybridSearch,
@@ -95,11 +96,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
            SELECT 1
            FROM page_embeddings pe
            JOIN pages cp ON pe.page_id = cp.id
-           WHERE (
-             (cp.source = 'confluence' AND cp.space_key = ANY($1::text[]))
-             OR (cp.source = 'standalone' AND cp.visibility = 'shared')
-             OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $2)
-           )
+           WHERE ${visiblePagesPredicate(1, 2)}
            AND cp.deleted_at IS NULL
            LIMIT 1
          ) AS exists`,
@@ -213,13 +210,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
 
     // Access control: RBAC-based space access for confluence pages; standalone pages
     // require shared visibility or ownership by the current user
-    conditions.push(
-      `(
-        (cp.source = 'confluence' AND cp.space_key = ANY($2::text[]))
-        OR (cp.source = 'standalone' AND cp.visibility = 'shared')
-        OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $3)
-      )`,
-    );
+    conditions.push(visiblePagesPredicate(2, 3));
 
     // Exclude soft-deleted pages
     conditions.push('cp.deleted_at IS NULL');
@@ -323,11 +314,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
        FROM pages cp
        WHERE similarity(cp.title, $1) > $4
          AND cp.title IS NOT NULL
-         AND (
-           (cp.source = 'confluence' AND cp.space_key = ANY($2::text[]))
-           OR (cp.source = 'standalone' AND cp.visibility = 'shared')
-           OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $3)
-         )
+         AND ${visiblePagesPredicate(2, 3)}
          AND cp.deleted_at IS NULL
        ORDER BY rank DESC
        LIMIT $5`,
@@ -341,11 +328,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
           `SELECT 'space' AS facet, cp.space_key AS value, COUNT(*)::TEXT AS count
            FROM pages cp
            WHERE cp.tsv @@ plainto_tsquery('${ftsLang}', $1)
-             AND (
-               (cp.source = 'confluence' AND cp.space_key = ANY($2::text[]))
-               OR (cp.source = 'standalone' AND cp.visibility = 'shared')
-               OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $3)
-             )
+             AND ${visiblePagesPredicate(2, 3)}
              AND cp.deleted_at IS NULL
              AND cp.space_key IS NOT NULL
            GROUP BY cp.space_key
@@ -353,11 +336,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
            SELECT 'author' AS facet, cp.author AS value, COUNT(*)::TEXT AS count
            FROM pages cp
            WHERE cp.tsv @@ plainto_tsquery('${ftsLang}', $1)
-             AND (
-               (cp.source = 'confluence' AND cp.space_key = ANY($2::text[]))
-               OR (cp.source = 'standalone' AND cp.visibility = 'shared')
-               OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $3)
-             )
+             AND ${visiblePagesPredicate(2, 3)}
              AND cp.deleted_at IS NULL
              AND cp.author IS NOT NULL
            GROUP BY cp.author
@@ -366,11 +345,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
            FROM pages cp
            CROSS JOIN unnest(cp.labels) AS tag
            WHERE cp.tsv @@ plainto_tsquery('${ftsLang}', $1)
-             AND (
-               (cp.source = 'confluence' AND cp.space_key = ANY($2::text[]))
-               OR (cp.source = 'standalone' AND cp.visibility = 'shared')
-               OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $3)
-             )
+             AND ${visiblePagesPredicate(2, 3)}
              AND cp.deleted_at IS NULL
            GROUP BY tag`,
           [q, searchSpaces, userId],

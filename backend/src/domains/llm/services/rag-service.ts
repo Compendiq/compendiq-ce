@@ -9,6 +9,7 @@ import {
 } from '../../../core/services/rbac-service.js';
 import { CircuitBreakerOpenError } from '../../../core/services/circuit-breaker.js';
 import { getFtsLanguage } from '../../../core/services/fts-language.js';
+import { visiblePagesPredicate } from '../../../core/services/page-visibility.js';
 import { isFeatureEnabled } from '../../../core/enterprise/loader.js';
 import { ENTERPRISE_FEATURES } from '../../../core/enterprise/features.js';
 import pgvector from 'pgvector';
@@ -58,11 +59,7 @@ export async function vectorSearch(userId: string, questionEmbedding: number[], 
               pe.embedding <=> $2 AS distance
        FROM page_embeddings pe
        JOIN pages cp ON pe.page_id = cp.id
-       WHERE (
-         (cp.source = 'confluence' AND cp.space_key = ANY($1::text[]))
-         OR (cp.source = 'standalone' AND cp.visibility = 'shared')
-         OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $4)
-       )
+       WHERE ${visiblePagesPredicate(1, 4)}
        AND cp.deleted_at IS NULL
        ORDER BY pe.embedding <=> $2
        LIMIT $3`,
@@ -115,11 +112,7 @@ export async function keywordSearch(userId: string, questionText: string, limit 
             ts_rank(cp.tsv, plainto_tsquery('${ftsLang}', $2)) AS rank
      FROM pages cp
      WHERE cp.tsv @@ plainto_tsquery('${ftsLang}', $2)
-       AND (
-         (cp.source = 'confluence' AND cp.space_key = ANY($1::text[]))
-         OR (cp.source = 'standalone' AND cp.visibility = 'shared')
-         OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $4)
-       )
+       AND ${visiblePagesPredicate(1, 4)}
        AND cp.deleted_at IS NULL
      ORDER BY rank DESC
      LIMIT $3`,

@@ -1,5 +1,6 @@
 import { query, getPool } from '../../../core/db/postgres.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
+import { visiblePagesPredicate } from '../../../core/services/page-visibility.js';
 import { logger } from '../../../core/utils/logger.js';
 
 const RAG_EF_SEARCH = parseInt(process.env.RAG_EF_SEARCH ?? '100', 10);
@@ -104,11 +105,7 @@ export async function findDuplicates(
        source_avg
        WHERE pe2.page_id != $1
          AND source_avg.avg_embedding IS NOT NULL
-         AND (
-           (cp2.source = 'confluence' AND cp2.space_key = ANY($3::text[]))
-           OR (cp2.source = 'standalone' AND cp2.visibility = 'shared')
-           OR (cp2.source = 'standalone' AND cp2.visibility = 'private' AND cp2.created_by_user_id = $4)
-         )
+         AND ${visiblePagesPredicate(3, 4, 'cp2')}
        ORDER BY cp2.confluence_id, pe2.embedding <=> source_avg.avg_embedding
        LIMIT $2`,
       // #733: over-fetch to filter later; candidates restricted to the same

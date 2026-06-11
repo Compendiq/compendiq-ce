@@ -20,6 +20,7 @@
  */
 import { z } from 'zod';
 import { query } from '../db/postgres.js';
+import { visiblePagesPredicate } from './page-visibility.js';
 
 /**
  * Subset of the GET /pages filter shape that's safe + useful for bulk
@@ -293,11 +294,7 @@ export async function resolveBulkSelection(
     baseValues.length + 1,
   );
   const whereParts = ['cp.deleted_at IS NULL', ...parts];
-  const where = `WHERE (
-      (cp.source = 'confluence' AND cp.space_key = ANY($1::text[]))
-      OR (cp.source = 'standalone' AND cp.visibility = 'shared')
-      OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $2)
-    ) AND ${whereParts.join(' AND ')}`;
+  const where = `WHERE ${visiblePagesPredicate(1, 2)} AND ${whereParts.join(' AND ')}`;
 
   const allValues = [...baseValues, ...filterValues];
 
