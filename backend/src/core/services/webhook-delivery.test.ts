@@ -41,7 +41,6 @@ import {
   it,
   vi,
 } from 'vitest';
-import { createClient } from 'redis';
 
 // ─── Mock undici (hoisted before service import) ─────────────────────────
 //
@@ -81,6 +80,7 @@ import {
   teardownTestDb,
   truncateAllTables,
 } from '../../test-db-helper.js';
+import { isRedisAvailable } from '../../test-redis-helper.js';
 import { query } from '../db/postgres.js';
 import { encryptPat } from '../utils/crypto.js';
 import {
@@ -93,35 +93,8 @@ const mockFetch = vi.mocked(undiciFetch);
 
 // ─── Environment probe ──────────────────────────────────────────────────
 
-async function checkRedisReachable(): Promise<boolean> {
-  const url = process.env.REDIS_URL ?? 'redis://localhost:6379';
-  const probe = createClient({
-    url,
-    socket: {
-      connectTimeout: 1_500,
-      reconnectStrategy: () => new Error('probe: no retries'),
-    },
-  });
-  probe.on('error', () => {
-    /* swallow — we only want to know whether connect works */
-  });
-  try {
-    await probe.connect();
-    await probe.ping();
-    await probe.quit();
-    return true;
-  } catch {
-    try {
-      await probe.disconnect();
-    } catch {
-      /* best effort */
-    }
-    return false;
-  }
-}
-
 const dbAvailable = await isDbAvailable();
-const redisAvailable = dbAvailable ? await checkRedisReachable() : false;
+const redisAvailable = dbAvailable ? await isRedisAvailable() : false;
 const canRun = dbAvailable && redisAvailable;
 
 // ─── Helpers ────────────────────────────────────────────────────────────

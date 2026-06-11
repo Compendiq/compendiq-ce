@@ -12,6 +12,7 @@
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { createClient, type RedisClientType } from 'redis';
+import { isRedisAvailable } from '../../test-redis-helper.js';
 import {
   initPresenceBus,
   recordHeartbeat,
@@ -23,22 +24,7 @@ import {
   VIEWERS_TTL_SEC,
 } from './presence-service.js';
 
-async function checkRedisReachable(): Promise<boolean> {
-  const url = process.env.REDIS_URL ?? 'redis://localhost:6379';
-  const probe = createClient({ url });
-  probe.on('error', () => { /* swallow */ });
-  try {
-    await probe.connect();
-    await probe.ping();
-    await probe.quit();
-    return true;
-  } catch {
-    try { await probe.quit(); } catch { /* best effort */ }
-    return false;
-  }
-}
-
-const redisAvailable = await checkRedisReachable();
+const redisAvailable = await isRedisAvailable();
 
 let main: RedisClientType | null = null;
 let teardown: (() => Promise<void>) | null = null;

@@ -66,6 +66,7 @@ vi.mock('./llm-provider-resolver.js', async () => {
 });
 
 import { setupTestDb, teardownTestDb, truncateAllTables, isDbAvailable } from '../../../test-db-helper.js';
+import { isRedisAvailable } from '../../../test-redis-helper.js';
 import { query } from '../../../core/db/postgres.js';
 import {
   setRedisClient,
@@ -75,28 +76,7 @@ import { runReembedAllJob } from './embedding-service.js';
 
 const dbAvailable = await isDbAvailable();
 
-async function checkRedisReachable(): Promise<boolean> {
-  const url = process.env.REDIS_URL ?? 'redis://localhost:6379';
-  const probe = createClient({ url });
-  try {
-    probe.on('error', () => {
-      /* swallow — we only care whether connect works */
-    });
-    await probe.connect();
-    await probe.ping();
-    await probe.quit();
-    return true;
-  } catch {
-    try {
-      await probe.quit();
-    } catch {
-      /* best effort */
-    }
-    return false;
-  }
-}
-
-const redisAvailable = dbAvailable ? await checkRedisReachable() : false;
+const redisAvailable = dbAvailable ? await isRedisAvailable() : false;
 const canRun = dbAvailable && redisAvailable;
 
 let redis: RedisClientType | null = null;

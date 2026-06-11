@@ -58,7 +58,11 @@ export function ConfluenceTab({ settings, onSave }: { settings: SettingsResponse
       </div>
 
       {testResult && (
-        <div className={`rounded-md p-3 text-sm ${testResult.success ? 'bg-success/10 text-success' : 'bg-destructive/10 text-destructive'}`}>
+        <div
+          data-testid="confluence-test-result"
+          data-state={testResult.success ? 'success' : 'error'}
+          className={`rounded-md p-3 text-sm ${testResult.success ? 'bg-success/10 text-success' : 'bg-destructive/10 text-destructive'}`}
+        >
           {testResult.message}
         </div>
       )}
