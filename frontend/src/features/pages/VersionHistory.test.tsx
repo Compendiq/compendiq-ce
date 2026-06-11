@@ -392,8 +392,7 @@ describe('VersionHistory', () => {
     expect(restoreButtons).toHaveLength(2);
   });
 
-  it('restores a version: confirms, POSTs to the restore endpoint with the current version guard', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+  it('restores a version through the ConfirmDialog: POSTs to the restore endpoint with the current version guard', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.includes('/restore')) {
@@ -426,7 +425,14 @@ describe('VersionHistory', () => {
     const restoreButtons = screen.getAllByTitle('Restore this version');
     fireEvent.click(restoreButtons[0]!);
 
-    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('Restore v2?'));
+    // ConfirmDialog replaces native confirm(). The copy must reflect the
+    // backend reality (pages-versions.ts): Confluence-style non-destructive
+    // restore — current content is replaced but stays in version history.
+    expect(await screen.findByText('Restore v2?')).toBeInTheDocument();
+    expect(screen.getByText(/saved as a new version/i)).toBeInTheDocument();
+    expect(screen.getByText(/stays in version history/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
 
     await waitFor(() => {
       const restoreCall = fetchSpy.mock.calls.find(
@@ -441,8 +447,7 @@ describe('VersionHistory', () => {
     });
   });
 
-  it('does not POST when the restore confirm is cancelled', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(false);
+  it('does not POST when the restore dialog is cancelled, and keeps the history dialog open', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockVersionsResponse());
 
     render(
@@ -454,6 +459,15 @@ describe('VersionHistory', () => {
     await waitFor(() => expect(screen.getByText('v2')).toBeInTheDocument());
 
     fireEvent.click(screen.getAllByTitle('Restore this version')[0]!);
+    await screen.findByTestId('confirm-dialog');
+
+    fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
+    });
+    // The outer Version History dialog must survive the nested cancel.
+    expect(screen.getByText('Version History')).toBeInTheDocument();
 
     const restoreCall = fetchSpy.mock.calls.find(
       ([input]) => (typeof input === 'string' ? input : String(input)).includes('/restore'),

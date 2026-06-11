@@ -144,7 +144,7 @@ describe('UsersAdminPage', () => {
 
     fireEvent.click(screen.getByText('Delete'));
 
-    // ConfirmDialog replaces window.confirm — user deletion really IS permanent.
+    // ConfirmDialog replaces native confirm() — user deletion really IS permanent.
     expect(await screen.findByText('Permanently delete "bob"?')).toBeInTheDocument();
     expect(screen.getByText('This cannot be undone.')).toBeInTheDocument();
     expect(screen.getByTestId('confirm-dialog-confirm')).toHaveTextContent('Delete user');

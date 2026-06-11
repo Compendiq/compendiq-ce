@@ -165,6 +165,12 @@ describe('Settings SyncTab', () => {
         });
       }
 
+      if (path.includes('/api/pages/bulk/sync') && options?.method === 'POST') {
+        return new Response(JSON.stringify({ succeeded: 2, failed: 0, errors: [] }), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
       return new Response('{}', {
         headers: { 'Content-Type': 'application/json' },
       });
@@ -306,5 +312,57 @@ describe('Settings SyncTab', () => {
     });
 
     expect(screen.getByTestId('summary-force-rescan')).toBeInTheDocument();
+  });
+
+  // ConfirmDialog replaces the native confirm() guard on Force Re-sync All.
+  describe('Force Re-sync All confirmation dialog', () => {
+    function bulkSyncCalls() {
+      return fetchSpy.mock.calls.filter(([url, opts]) => {
+        const path = typeof url === 'string' ? url : '';
+        return path.includes('/api/pages/bulk/sync') && (opts as RequestInit | undefined)?.method === 'POST';
+      });
+    }
+
+    it('opens a dialog and only POSTs /pages/bulk/sync after confirming', async () => {
+      authState = { user: { role: 'admin' }, accessToken: 'test-token', setAuth: vi.fn(), clearAuth: vi.fn() };
+      mockFetchResponses();
+      await navigateToSyncTab();
+
+      await waitFor(() => {
+        expect(screen.getByTestId('sync-overview-force-resync-all')).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByTestId('sync-overview-force-resync-all'));
+
+      // Honest copy: heavy re-fetch + embeddings marked dirty; nothing deleted.
+      expect(await screen.findByText('Force re-sync every Confluence page?')).toBeInTheDocument();
+      expect(screen.getByText(/even if its Confluence version is unchanged/i)).toBeInTheDocument();
+      expect(bulkSyncCalls()).toHaveLength(0);
+
+      fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
+
+      await waitFor(() => {
+        expect(bulkSyncCalls().length).toBeGreaterThan(0);
+      });
+    });
+
+    it('cancelling does not start the re-sync', async () => {
+      authState = { user: { role: 'admin' }, accessToken: 'test-token', setAuth: vi.fn(), clearAuth: vi.fn() };
+      mockFetchResponses();
+      await navigateToSyncTab();
+
+      await waitFor(() => {
+        expect(screen.getByTestId('sync-overview-force-resync-all')).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByTestId('sync-overview-force-resync-all'));
+      await screen.findByTestId('confirm-dialog');
+      fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+
+      await waitFor(() => {
+        expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
+      });
+      expect(bulkSyncCalls()).toHaveLength(0);
+    });
   });
 });

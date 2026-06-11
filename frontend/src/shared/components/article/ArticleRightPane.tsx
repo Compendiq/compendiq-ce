@@ -392,7 +392,7 @@ export function ArticleRightPane() {
 
   // Deleting soft-deletes into the 30-day trash, so the confirm copy must
   // not claim the action "cannot be undone". ConfirmDialog replaces the
-  // native window.confirm to match the neumorphic design system. Same flow
+  // native confirm() to match the neumorphic design system. Same flow
   // and copy as PageViewPage's Alt+Shift+D shortcut.
   const handleDelete = useCallback(() => {
     if (!id) return;

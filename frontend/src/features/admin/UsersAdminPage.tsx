@@ -40,7 +40,7 @@ export function UsersAdminPage() {
   const [showBulkImport, setShowBulkImport] = useState(false);
   const [showBulkAction, setShowBulkAction] = useState(false);
   const [selectedUserIds, setSelectedUserIds] = useState<Set<string>>(new Set());
-  // User awaiting delete confirmation (ConfirmDialog replaces window.confirm).
+  // User awaiting delete confirmation (ConfirmDialog replaces native confirm()).
   const [pendingDelete, setPendingDelete] = useState<AdminUser | null>(null);
 
   const { data, isLoading } = useQuery<AdminUserListResponse>({

@@ -64,13 +64,16 @@ describe('ConfirmDialog', () => {
     expect(onConfirm).not.toHaveBeenCalled();
   });
 
-  it('applies destructive styling to the confirm button when destructive', () => {
+  it('applies the design-system destructive button when destructive', () => {
     renderDialog({ destructive: true, confirmLabel: 'Delete user' });
 
+    // nm-button-destructive (index.css @utility) replaces the old ad-hoc
+    // bg-destructive recipe so the confirm button matches nm-button-ghost
+    // (Cancel) in height/padding/press behavior.
     const confirmBtn = screen.getByTestId('confirm-dialog-confirm');
-    expect(confirmBtn.className).toContain('bg-destructive');
-    expect(confirmBtn.className).toContain('text-destructive-foreground');
+    expect(confirmBtn.className).toContain('nm-button-destructive');
     expect(confirmBtn.className).not.toContain('nm-button-primary');
+    expect(confirmBtn.className).not.toContain('bg-destructive');
   });
 
   it('uses the primary design-system button when not destructive', () => {
@@ -78,7 +81,7 @@ describe('ConfirmDialog', () => {
 
     const confirmBtn = screen.getByTestId('confirm-dialog-confirm');
     expect(confirmBtn.className).toContain('nm-button-primary');
-    expect(confirmBtn.className).not.toContain('bg-destructive');
+    expect(confirmBtn.className).not.toContain('nm-button-destructive');
   });
 
   it('moves focus inside the dialog on open (focus trap entry)', () => {

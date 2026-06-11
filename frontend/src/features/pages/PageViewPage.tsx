@@ -157,6 +157,9 @@ export function PageViewPage() {
   const [drawioEditingDiagram, setDrawioEditingDiagram] = useState<string | null>(null);
   const [drawioXml, setDrawioXml] = useState<string>('');
   const [confirmTrashOpen, setConfirmTrashOpen] = useState(false);
+  // Draft awaiting a restore decision (ConfirmDialog replaces native confirm()).
+  // While non-null, edit mode is deferred until the user picks a side.
+  const [pendingDraft, setPendingDraft] = useState<string | null>(null);
 
   // Vim mode state — lifted here so we can pass it to the external toolbar
   const [vimEnabled, setVimEnabled] = useState(() =>
@@ -217,13 +220,29 @@ export function PageViewPage() {
     setEditTitle(page.title);
     const draft = getDraft(`page-${id}`);
     if (draft && draft !== page.bodyHtml) {
-      const restoreDraft = window.confirm('A draft was found for this page. Restore it?');
-      setEditHtml(restoreDraft ? draft : page.bodyHtml);
-    } else {
-      setEditHtml(page.bodyHtml);
+      // Defer edit mode until the user decides in the ConfirmDialog below.
+      // Matches the old native confirm() semantics: either choice enters edit
+      // mode — confirm restores the draft, cancel edits the published copy.
+      setPendingDraft(draft);
+      return;
     }
+    setEditHtml(page.bodyHtml);
     setEditing(true);
   }, [id, page]);
+
+  const handleRestoreDraft = useCallback(() => {
+    if (pendingDraft === null) return;
+    setEditHtml(pendingDraft);
+    setPendingDraft(null);
+    setEditing(true);
+  }, [pendingDraft]);
+
+  const handleDeclineDraft = useCallback(() => {
+    setPendingDraft(null);
+    if (!page) return;
+    setEditHtml(page.bodyHtml);
+    setEditing(true);
+  }, [page]);
 
   const handleCancelEditing = useCallback(() => {
     if (draftKey) clearDraft(draftKey);
@@ -368,7 +387,7 @@ export function PageViewPage() {
 
   // Deleting soft-deletes into the 30-day trash, so the confirm copy must
   // not claim the action "cannot be undone". ConfirmDialog replaces the
-  // native window.confirm to match the neumorphic design system.
+  // native confirm() to match the neumorphic design system.
   const handleDeletePage = useCallback(() => {
     if (!id) return;
     setConfirmTrashOpen(true);
@@ -784,6 +803,21 @@ export function PageViewPage() {
         destructive
         onConfirm={handleConfirmMoveToTrash}
         onCancel={() => setConfirmTrashOpen(false)}
+      />
+
+      {/* Draft restore — drafts are autosaved to localStorage on this device
+          while editing. Restoring is non-destructive; declining opens the
+          editor on the published content (same as the old native confirm()
+          flow, where Cancel also entered edit mode). No destructive styling:
+          the draft is only overwritten by continued editing, never deleted
+          here. */}
+      <ConfirmDialog
+        open={pendingDraft !== null}
+        title="Restore draft?"
+        description="An unsaved draft of this page was found in this browser. Restore it to continue where you left off, or cancel to edit the published version instead (the draft is overwritten as you edit)."
+        confirmLabel="Restore draft"
+        onConfirm={handleRestoreDraft}
+        onCancel={handleDeclineDraft}
       />
     </m.div>
   );

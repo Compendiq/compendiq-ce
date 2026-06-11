@@ -19,8 +19,6 @@ describe('DrawioEditor', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    // Mock window.confirm for unsaved changes dialog
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
   });
 
   afterEach(() => {
@@ -244,11 +242,15 @@ describe('DrawioEditor', () => {
     });
 
     expect(defaultOnClose).toHaveBeenCalled();
-    // Should not show confirm dialog when no unsaved changes
-    expect(window.confirm).not.toHaveBeenCalled();
+    // No discard dialog when there is nothing to discard.
+    expect(screen.queryByTestId('confirm-dialog')).toBeNull();
   });
 
-  it('shows confirm dialog on Escape key when there are unsaved changes', async () => {
+  // Escape with unsaved changes opens the shared ConfirmDialog (replaces
+  // native confirm()). Crucially, the dialog must NOT unmount the editor —
+  // the iframe (and the user's unsaved diagram state) stays alive while the
+  // dialog is open.
+  it('shows the discard ConfirmDialog on Escape when there are unsaved changes, keeping the editor mounted', async () => {
     const postMessageSpy = vi.fn();
     render(
       <DrawioEditor xml={defaultXml} onSave={defaultOnSave} onClose={defaultOnClose} />,
@@ -272,14 +274,14 @@ describe('DrawioEditor', () => {
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
     });
 
-    expect(window.confirm).toHaveBeenCalledWith(
-      expect.stringContaining('unsaved changes'),
-    );
+    expect(screen.getByTestId('confirm-dialog')).toBeTruthy();
+    expect(screen.getByText('Discard unsaved changes?')).toBeTruthy();
+    // Editor (and its iframe) must remain mounted behind the dialog.
+    expect(screen.getByTestId('drawio-iframe')).toBeTruthy();
+    expect(defaultOnClose).not.toHaveBeenCalled();
   });
 
-  it('does not close when confirm is cancelled on Escape with unsaved changes', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(false);
-
+  it('confirming the discard dialog closes the editor', async () => {
     const postMessageSpy = vi.fn();
     render(
       <DrawioEditor xml={defaultXml} onSave={defaultOnSave} onClose={defaultOnClose} />,
@@ -297,12 +299,46 @@ describe('DrawioEditor', () => {
     await act(async () => {
       postFromDrawio({ event: 'autosave' });
     });
-
     await act(async () => {
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
     });
 
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
+    });
+
+    expect(defaultOnClose).toHaveBeenCalled();
+  });
+
+  it('does not close when the discard dialog is cancelled; editor stays usable', async () => {
+    const postMessageSpy = vi.fn();
+    render(
+      <DrawioEditor xml={defaultXml} onSave={defaultOnSave} onClose={defaultOnClose} />,
+    );
+
+    const iframe = screen.getByTestId('drawio-iframe') as HTMLIFrameElement;
+    Object.defineProperty(iframe, 'contentWindow', {
+      value: { postMessage: postMessageSpy },
+      writable: true,
+    });
+
+    await act(async () => {
+      postFromDrawio({ event: 'init' });
+    });
+    await act(async () => {
+      postFromDrawio({ event: 'autosave' });
+    });
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+    });
+
     expect(defaultOnClose).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('confirm-dialog')).toBeNull();
+    expect(screen.getByTestId('drawio-iframe')).toBeTruthy();
   });
 
   it('renders iframe with self-hosted draw.io URL', () => {

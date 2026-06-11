@@ -1,5 +1,5 @@
 /**
- * Shared confirmation dialog — replaces native `window.confirm()` so
+ * Shared confirmation dialog — replaces the browser-native confirm() prompt so
  * confirmations match the neumorphic design system (ADR-010) instead of
  * the OS-styled browser dialog.
  *
@@ -8,10 +8,9 @@
  * and overlay-click-to-dismiss for free. Both dismissal paths route
  * through `onCancel` via `onOpenChange(false)`.
  *
- * The confirm button uses the codebase's established destructive recipe
- * (`bg-destructive text-destructive-foreground hover:bg-destructive/90`,
- * cf. DataRetentionTab / WebhooksTab) when `destructive`, otherwise the
- * design-system `nm-button-primary` utility.
+ * The confirm button uses the design-system `nm-button-destructive`
+ * utility when `destructive` (same box metrics as `nm-button-primary` /
+ * `nm-button-ghost`, destructive palette), otherwise `nm-button-primary`.
  */
 
 import * as Dialog from '@radix-ui/react-dialog';
@@ -69,11 +68,7 @@ export function ConfirmDialog({
             <button
               type="button"
               onClick={onConfirm}
-              className={
-                destructive
-                  ? 'inline-flex items-center justify-center gap-2 rounded-md bg-destructive px-4 py-2 text-sm font-medium text-destructive-foreground transition-colors hover:bg-destructive/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:opacity-50'
-                  : 'nm-button-primary'
-              }
+              className={destructive ? 'nm-button-destructive' : 'nm-button-primary'}
               data-testid="confirm-dialog-confirm"
             >
               {confirmLabel}

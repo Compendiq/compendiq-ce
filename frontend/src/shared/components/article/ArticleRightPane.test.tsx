@@ -422,14 +422,14 @@ describe('ArticleRightPane', () => {
     expect(await screen.findByTestId('auto-tagger')).toBeInTheDocument();
   });
 
-  // --- Delete via ConfirmDialog (replaces window.confirm) ---
+  // --- Delete via ConfirmDialog (replaces native confirm()) ---
   it('Delete opens the move-to-trash dialog; confirming soft-deletes and navigates home', async () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
     fireEvent.click(screen.getByText('Delete'));
 
     // Copy must reflect the 30-day soft-delete trash, not the old (false)
-    // "cannot be undone" claim from window.confirm.
+    // "cannot be undone" claim from native confirm().
     expect(await screen.findByText('Move page to trash?')).toBeInTheDocument();
     expect(
       screen.getByText('It can be restored from Trash for 30 days, then it is permanently deleted.'),

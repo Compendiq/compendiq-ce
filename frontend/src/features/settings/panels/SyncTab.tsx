@@ -1,9 +1,11 @@
+import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import type { SyncOverviewResponse, SyncOverviewSpace } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
 import { useAuthStore } from '../../../stores/auth-store';
 import { useSync, useForceResyncAll } from '../../../shared/hooks/use-spaces';
+import { ConfirmDialog } from '../../../shared/components/ConfirmDialog';
 import { SkeletonFormFields } from '../../../shared/components/feedback/Skeleton';
 
 interface QualityStatusResponse {
@@ -32,6 +34,8 @@ export function SyncTab() {
 
   const syncMutation = useSync();
   const forceResyncMutation = useForceResyncAll();
+  // Force Re-sync All guard (ConfirmDialog replaces native confirm()).
+  const [confirmForceResyncOpen, setConfirmForceResyncOpen] = useState(false);
   const { data, isLoading, isFetching, refetch } = useQuery<SyncOverviewResponse>({
     queryKey: ['settings', 'sync-overview'],
     queryFn: () => apiFetch('/settings/sync-overview'),
@@ -98,12 +102,11 @@ export function SyncTab() {
       );
       return;
     }
-    const ok = window.confirm(
-      'Force re-sync every Confluence page?\n\n' +
-        'This re-fetches every page even if its Confluence version is ' +
-        'unchanged, and marks all embeddings dirty. It may take several minutes.',
-    );
-    if (!ok) return;
+    // Heavy-but-safe operation: confirmation via ConfirmDialog below.
+    setConfirmForceResyncOpen(true);
+  };
+
+  const runForceResyncAll = () => {
     forceResyncMutation.mutate(totalPages, {
       onSuccess: (res) => {
         if (res.failed === 0) {
@@ -443,6 +446,22 @@ export function SyncTab() {
           </div>
         )}
       </section>
+
+      {/* Force Re-sync All guard. Copy mirrors POST /pages/bulk/sync with
+          { source: 'confluence' }: a re-fetch of every Confluence page plus
+          embedding_dirty = TRUE — heavy, but nothing is deleted, so no
+          destructive styling and no false destruction claims. */}
+      <ConfirmDialog
+        open={confirmForceResyncOpen}
+        title="Force re-sync every Confluence page?"
+        description="This re-fetches every page from Confluence even if its Confluence version is unchanged, and marks all embeddings for re-embedding. It may take several minutes."
+        confirmLabel="Force re-sync"
+        onConfirm={() => {
+          setConfirmForceResyncOpen(false);
+          runForceResyncAll();
+        }}
+        onCancel={() => setConfirmForceResyncOpen(false)}
+      />
     </div>
   );
 }

@@ -64,6 +64,9 @@ vi.mock('../../shared/components/article/ArticleViewer', async () => {
   };
 });
 
+// Configurable draft content so tests can exercise the restore-draft dialog.
+let mockDraftContent: string | null = null;
+
 vi.mock('../../shared/components/article/Editor', () => ({
   Editor: ({
     content,
@@ -80,7 +83,7 @@ vi.mock('../../shared/components/article/Editor', () => ({
   ),
   EditorToolbar: () => null,
   TableContextToolbar: () => null,
-  getDraft: () => null,
+  getDraft: () => mockDraftContent,
   clearDraft: vi.fn(),
 }));
 
@@ -245,6 +248,7 @@ describe('PageViewPage', () => {
     mockPinMutate.mockReset();
     mockUnpinMutate.mockReset();
     mockDeleteMutateAsync.mockReset().mockResolvedValue(undefined);
+    mockDraftContent = null;
     vi.mocked(apiFetch).mockClear();
     vi.mocked(apiFetch).mockResolvedValue({} as never);
     localStorage.clear();
@@ -616,7 +620,7 @@ describe('PageViewPage', () => {
       deleteShortcut!.action();
     });
 
-    // ConfirmDialog replaces window.confirm — copy must reflect the 30-day
+    // ConfirmDialog replaces native confirm() — copy must reflect the 30-day
     // soft-delete trash, not the old (false) "cannot be undone" claim.
     expect(await screen.findByText('Move page to trash?')).toBeInTheDocument();
     expect(
@@ -722,6 +726,78 @@ describe('PageViewPage', () => {
     } finally {
       currentMockPage = mockPage;
     }
+  });
+
+  // ConfirmDialog replaces the native confirm() draft-restore prompt. Drafts are
+  // autosaved to localStorage on this device; restoring is non-destructive, and
+  // declining simply opens the editor on the published content (matching the
+  // old confirm() semantics — both paths enter edit mode).
+  describe('draft restore dialog', () => {
+    it('opens a restore-draft dialog instead of entering edit mode when a differing draft exists', async () => {
+      mockDraftContent = '<p>Draft content</p>';
+      render(<PageViewPage />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByText('Edit'));
+
+      expect(await screen.findByText('Restore draft?')).toBeInTheDocument();
+      // Honest copy: drafts live in this browser; no false destruction claims.
+      expect(screen.getByText(/unsaved draft of this page was found/i)).toBeInTheDocument();
+      // Edit mode is NOT entered until the user decides.
+      expect(screen.queryByLabelText('Article editor')).not.toBeInTheDocument();
+
+      // Close the portal dialog before teardown — this file's afterEach wipes
+      // document.body, which races React's portal unmount if it's still open.
+      fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+      await waitFor(() => {
+        expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
+      });
+    });
+
+    it('confirming restores the draft into the editor', async () => {
+      mockDraftContent = '<p>Draft content</p>';
+      render(<PageViewPage />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByText('Edit'));
+      await screen.findByTestId('confirm-dialog');
+      fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
+
+      await waitFor(() => {
+        expect(screen.getByLabelText('Article editor')).toHaveValue('<p>Draft content</p>');
+      });
+    });
+
+    it('cancelling opens the editor on the published content instead', async () => {
+      mockDraftContent = '<p>Draft content</p>';
+      render(<PageViewPage />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByText('Edit'));
+      await screen.findByTestId('confirm-dialog');
+      fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+
+      await waitFor(() => {
+        expect(screen.getByLabelText('Article editor')).toHaveValue(mockPage.bodyHtml);
+      });
+    });
+
+    it('enters edit mode directly when no draft exists', () => {
+      mockDraftContent = null;
+      render(<PageViewPage />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByText('Edit'));
+
+      expect(screen.getByLabelText('Article editor')).toBeInTheDocument();
+      expect(screen.queryByText('Restore draft?')).not.toBeInTheDocument();
+    });
+
+    it('enters edit mode directly when the draft matches the published content', () => {
+      mockDraftContent = mockPage.bodyHtml;
+      render(<PageViewPage />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByText('Edit'));
+
+      expect(screen.getByLabelText('Article editor')).toBeInTheDocument();
+      expect(screen.queryByText('Restore draft?')).not.toBeInTheDocument();
+    });
   });
 
 });
