@@ -20,6 +20,7 @@ export default defineConfig({
         'src/**/*.test.ts',
         'src/test-setup.ts',
         'src/test-db-helper.ts',
+        'src/test-redis-helper.ts',
         'src/core/db/migrations/**',
       ],
       // Phase 0 coverage gates. Aggregate-wide floors, not per-file. The
