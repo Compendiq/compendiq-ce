@@ -98,11 +98,11 @@ const MessageBubble = memo(function MessageBubble({
               ? 'border border-destructive/40 bg-destructive/10'
               : 'bg-foreground/5',
         )}
+        // No role="alert" here: the role and the error content would arrive
+        // in the same render, which AT generally does not announce (MDN alert
+        // role). The primed announcer next to the message list handles SR
+        // announcement; this bubble is the visual surface only.
         data-testid={msg.isError ? 'message-error' : undefined}
-        // The 403 path suppresses the toast in favor of this bubble, so the
-        // bubble itself must be the live region — without it, screen-reader
-        // users get no announcement of the failure at all.
-        role={msg.isError ? 'alert' : undefined}
       >
         {showThinkingBlob && <AIThinkingBlob active />}
         {showTypingIndicator && <TypingIndicator />}
@@ -399,6 +399,16 @@ function AiAssistantInner() {
           they stay alongside the tabs while scrolling. */}
       {mode === 'improve' && <ImproveTypeSelector />}
       {mode === 'diagram' && <DiagramTypeSelector />}
+      </div>
+
+      {/* Primed live region for error announcements. It must exist (empty)
+          BEFORE any error so assistive tech watches it for content changes —
+          adding role="alert" together with the message in one render is
+          generally not announced (MDN alert role). The visible error bubble
+          below carries no alert role: this region is the single announcement
+          source (the 403 path suppresses its toast entirely). */}
+      <div role="alert" data-testid="ai-error-announcer" className="sr-only">
+        {[...messages].reverse().find((msg) => msg.isError)?.content ?? ''}
       </div>
 
       {/* Messages — clean document-like surface, no heavy glass.
