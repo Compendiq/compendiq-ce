@@ -23,7 +23,7 @@ import { processDirtyPages, isProcessingUser } from '../../domains/llm/services/
 import { triggerQualityBatch } from '../../domains/knowledge/services/quality-worker.js';
 import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
-import { PageListQuerySchema, PageTreeQuerySchema, CreatePageSchema, UpdatePageSchema, SaveDraftSchema } from '@compendiq/contracts';
+import { PageListQuerySchema, PageTreeQuerySchema, CreatePageSchema, UpdatePageSchema, SaveDraftSchema, TrashListResponseSchema } from '@compendiq/contracts';
 import { z } from 'zod';
 import { logger } from '../../core/utils/logger.js';
 import pLimit from 'p-limit';
@@ -707,14 +707,14 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       [userId],
     );
 
-    return {
+    return TrashListResponseSchema.parse({
       items: result.rows.map((row) => ({
         id: String(row.id),
         title: row.title,
         source: row.source,
         visibility: row.visibility,
-        deletedAt: row.deleted_at,
-        createdAt: row.last_synced,
+        deletedAt: row.deleted_at.toISOString(),
+        createdAt: row.last_synced.toISOString(),
         deletedBy: row.deleted_by,
         // Mirrors the maintenance purge (purgeExpiredStandalonePages) so the
         // date shown in the Trash UI matches when the row actually disappears.
@@ -723,7 +723,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         ).toISOString(),
       })),
       total: result.rows.length,
-    };
+    });
   });
 
   // GET /api/pages/:id - get page with content

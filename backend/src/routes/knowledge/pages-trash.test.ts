@@ -20,6 +20,7 @@ import {
   isDbAvailable,
 } from '../../test-db-helper.js';
 import { query } from '../../core/db/postgres.js';
+import { TrashListResponseSchema } from '@compendiq/contracts';
 import {
   insertUser,
   insertLocalSpace,
@@ -92,17 +93,9 @@ describe.skipIf(!dbAvailable)('GET /api/pages/trash + standalone auto-purge (DB)
     const response = await app.inject({ method: 'GET', url: '/api/pages/trash' });
     expect(response.statusCode).toBe(200);
 
-    const body = response.json() as {
-      items: Array<{
-        title: string;
-        deletedAt: string;
-        deletedBy: string;
-        autoPurgeAt: string;
-        source: string;
-        visibility: string;
-      }>;
-      total: number;
-    };
+    // Wire contract: the body must satisfy the shared schema exactly
+    // (string id, ISO-string dates, enum source/visibility).
+    const body = TrashListResponseSchema.parse(response.json());
     expect(body.total).toBe(2);
 
     // Ordered by deleted_at DESC → freshest first

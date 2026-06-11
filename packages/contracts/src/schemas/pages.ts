@@ -174,6 +174,34 @@ export const PublishDraftSchema = z.object({
   bodyHtml: z.string().optional(),
 });
 
+// ── Trash (GET /api/pages/trash) ──────────────────────────────────────────────
+
+/**
+ * One soft-deleted standalone article as it crosses the wire. The backend
+ * stringifies the integer PK and serializes all dates to ISO strings
+ * (same convention as {@link PageVersionSummarySchema} responses).
+ * `autoPurgeAt` = `deletedAt` + the standalone-trash retention window, so the
+ * Trash UI shows the same date the maintenance purge acts on.
+ */
+export const TrashItemSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  source: PageSourceEnum,
+  visibility: PageVisibilityEnum,
+  deletedAt: z.string(),
+  createdAt: z.string(),
+  deletedBy: z.string(),
+  autoPurgeAt: z.string(),
+});
+export type TrashItem = z.infer<typeof TrashItemSchema>;
+
+/** Response shape of GET /api/pages/trash. */
+export const TrashListResponseSchema = z.object({
+  items: z.array(TrashItemSchema),
+  total: z.number().int().nonnegative(),
+});
+export type TrashListResponse = z.infer<typeof TrashListResponseSchema>;
+
 // -- Duplicates & Export validation schemas (Issue #580) --
 
 export const DuplicatesQuerySchema = z.object({
