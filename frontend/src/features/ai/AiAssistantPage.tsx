@@ -98,11 +98,11 @@ const MessageBubble = memo(function MessageBubble({
               ? 'border border-destructive/40 bg-destructive/10'
               : 'bg-foreground/5',
         )}
+        // No role="alert" here: the role and the error content would arrive
+        // in the same render, which AT generally does not announce (MDN alert
+        // role). The primed announcer next to the message list handles SR
+        // announcement; this bubble is the visual surface only.
         data-testid={msg.isError ? 'message-error' : undefined}
-        // The 403 path suppresses the toast in favor of this bubble, so the
-        // bubble itself must be the live region — without it, screen-reader
-        // users get no announcement of the failure at all.
-        role={msg.isError ? 'alert' : undefined}
       >
         {showThinkingBlob && <AIThinkingBlob active />}
         {showTypingIndicator && <TypingIndicator />}
@@ -399,6 +399,23 @@ function AiAssistantInner() {
           they stay alongside the tabs while scrolling. */}
       {mode === 'improve' && <ImproveTypeSelector />}
       {mode === 'diagram' && <DiagramTypeSelector />}
+      </div>
+
+      {/* Primed live region for error announcements. It must exist (empty)
+          BEFORE any error so assistive tech watches it for content changes —
+          adding role="alert" together with the message in one render is
+          generally not announced (MDN alert role). The visible error bubble
+          below carries no alert role. For the toast-suppressed 403 path this
+          region is the only announcement; other errors keep their toast, so
+          they may announce twice — over-announcing beats silence.
+          The child span is keyed by message id: Ask mode appends on retry, so
+          a repeated identical failure derives byte-identical text — only a
+          freshly inserted node makes AT announce it again. */}
+      <div role="alert" data-testid="ai-error-announcer" className="sr-only">
+        {(() => {
+          const lastError = [...messages].reverse().find((msg) => msg.isError);
+          return lastError ? <span key={lastError.id}>{lastError.content}</span> : null;
+        })()}
       </div>
 
       {/* Messages — clean document-like surface, no heavy glass.

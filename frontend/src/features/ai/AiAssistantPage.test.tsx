@@ -712,7 +712,7 @@ describe('AiAssistantPage', () => {
       expect(screen.getByText('What is Confluence?')).toBeInTheDocument();
     });
 
-    it('announces inline error bubbles to screen readers via role="alert"', async () => {
+    it('announces errors via a live region that is primed before any error occurs', async () => {
       apiFetchMock.mockImplementation((path: string) => {
         if (path === '/settings') {
           return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
@@ -738,6 +738,14 @@ describe('AiAssistantPage', () => {
         expect(screen.queryByText('Loading models...')).not.toBeInTheDocument();
       });
 
+      // The announcer must exist EMPTY before any error: per MDN's alert-role
+      // guidance, the role="alert" element has to be in the DOM first so AT
+      // watches it for content changes — adding the role together with the
+      // message is generally NOT announced.
+      const announcer = screen.getByTestId('ai-error-announcer');
+      expect(announcer).toHaveAttribute('role', 'alert');
+      expect(announcer).toHaveTextContent('');
+
       const input = screen.getByPlaceholderText('Ask a question...');
       fireEvent.change(input, { target: { value: 'What is Confluence?' } });
       fireEvent.keyDown(input, { key: 'Enter' });
@@ -745,10 +753,70 @@ describe('AiAssistantPage', () => {
       await waitFor(() => {
         expect(screen.getByTestId('message-error')).toBeInTheDocument();
       });
-      // The 403 path deliberately suppresses the toast, so the bubble itself
-      // must be a live region — otherwise screen-reader users get zero
-      // announcement of the permission failure.
-      expect(screen.getByRole('alert')).toBe(screen.getByTestId('message-error'));
+      // The 403 path deliberately suppresses the toast, so this primed region
+      // is the only screen-reader announcement of the permission failure.
+      expect(announcer).toHaveTextContent(/llm:query/);
+      // The visible bubble must NOT also claim role="alert": the role+content
+      // arriving together is the unreliable pattern, and two alert regions
+      // would double-announce on the AT combos where it does fire.
+      expect(screen.getByTestId('message-error')).not.toHaveAttribute('role', 'alert');
+    });
+
+    it('re-announces when a retry fails with the byte-identical error', async () => {
+      // Ask mode APPENDS on retry (it never resets the list), so the derived
+      // announcer text stays identical across attempts — React would reconcile
+      // the same text node and AT would announce nothing, leaving a
+      // screen-reader user believing the retry succeeded. The announcer must
+      // mount a FRESH child element per error (keyed by message id): node
+      // insertion into a live region announces even when the text is equal.
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.resolve([{ name: 'llama3' }]);
+        }
+        if (path === '/llm/conversations') {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve([]);
+      });
+
+      // Fresh generator per call — a retry must not reuse the exhausted one.
+      // eslint-disable-next-line require-yield
+      async function* fakeForbiddenStream() {
+        throw new ApiError(403, 'Permission "llm:query" required');
+      }
+      streamSSEMock.mockImplementation(() => fakeForbiddenStream());
+
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.queryByText('Loading models...')).not.toBeInTheDocument();
+      });
+
+      const input = screen.getByPlaceholderText('Ask a question...');
+      fireEvent.change(input, { target: { value: 'What is Confluence?' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+
+      await waitFor(() => {
+        expect(screen.getAllByTestId('message-error')).toHaveLength(1);
+      });
+      const announcer = screen.getByTestId('ai-error-announcer');
+      const firstNode = announcer.firstElementChild;
+      expect(firstNode).not.toBeNull();
+
+      // Retry the same question → same 403, byte-identical message.
+      fireEvent.change(input, { target: { value: 'What is Confluence?' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+
+      await waitFor(() => {
+        expect(screen.getAllByTestId('message-error')).toHaveLength(2);
+      });
+      // Same text, but a NEW child node — that insertion is what AT announces.
+      expect(announcer).toHaveTextContent(/llm:query/);
+      expect(announcer.firstElementChild).not.toBeNull();
+      expect(announcer.firstElementChild).not.toBe(firstNode);
     });
 
     it('names the permission from the backend 403 message, not a hardcoded one', async () => {
