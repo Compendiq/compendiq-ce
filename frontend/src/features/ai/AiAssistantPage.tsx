@@ -405,10 +405,17 @@ function AiAssistantInner() {
           BEFORE any error so assistive tech watches it for content changes —
           adding role="alert" together with the message in one render is
           generally not announced (MDN alert role). The visible error bubble
-          below carries no alert role: this region is the single announcement
-          source (the 403 path suppresses its toast entirely). */}
+          below carries no alert role. For the toast-suppressed 403 path this
+          region is the only announcement; other errors keep their toast, so
+          they may announce twice — over-announcing beats silence.
+          The child span is keyed by message id: Ask mode appends on retry, so
+          a repeated identical failure derives byte-identical text — only a
+          freshly inserted node makes AT announce it again. */}
       <div role="alert" data-testid="ai-error-announcer" className="sr-only">
-        {[...messages].reverse().find((msg) => msg.isError)?.content ?? ''}
+        {(() => {
+          const lastError = [...messages].reverse().find((msg) => msg.isError);
+          return lastError ? <span key={lastError.id}>{lastError.content}</span> : null;
+        })()}
       </div>
 
       {/* Messages — clean document-like surface, no heavy glass.
