@@ -64,6 +64,35 @@ describe('ConfirmDialog', () => {
     expect(onConfirm).not.toHaveBeenCalled();
   });
 
+  it('routes Escape to onDismiss instead of onCancel when onDismiss is provided', () => {
+    // When the Cancel button carries a real action (e.g. "edit the published
+    // version"), Escape/overlay must stay neutral: close without choosing.
+    const onDismiss = vi.fn();
+    const { onConfirm, onCancel } = renderDialog({ onDismiss });
+
+    fireEvent.keyDown(screen.getByTestId('confirm-dialog'), { key: 'Escape' });
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  it('still routes the Cancel button to onCancel when onDismiss is provided', () => {
+    const onDismiss = vi.fn();
+    const { onCancel } = renderDialog({ onDismiss });
+
+    fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(onDismiss).not.toHaveBeenCalled();
+  });
+
+  it('renders a custom cancel label when cancelLabel is provided', () => {
+    renderDialog({ cancelLabel: 'Edit published version' });
+
+    expect(screen.getByTestId('confirm-dialog-cancel')).toHaveTextContent(
+      'Edit published version',
+    );
+  });
+
   it('applies the design-system destructive button when destructive', () => {
     renderDialog({ destructive: true, confirmLabel: 'Delete user' });
 

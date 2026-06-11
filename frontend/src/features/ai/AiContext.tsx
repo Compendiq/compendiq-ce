@@ -485,10 +485,24 @@ export function AiProvider({ children }: { children: ReactNode }) {
       });
     };
 
+    // Replace the placeholder assistant message with an inline error bubble —
+    // shared by thrown errors (catch below) and in-band SSE error events.
+    const failLastMessage = (text: string) => {
+      setMessages((prev) => {
+        const updated = [...prev];
+        const lastMsg = updated[updated.length - 1];
+        if (lastMsg && lastMsg.role === 'assistant') {
+          updated[updated.length - 1] = { ...lastMsg, content: text, isError: true };
+        }
+        return updated;
+      });
+    };
+
     try {
+      let streamError: string | null = null;
       for await (const chunk of streamSSE<T>(endpoint, body, controller.signal)) {
         if (chunk.error) {
-          toast.error(chunk.error);
+          streamError = chunk.error;
           break;
         }
         // Handle finalContent from output post-processing (cleaned content replaces accumulated)
@@ -518,6 +532,14 @@ export function AiProvider({ children }: { children: ReactNode }) {
           originalMarkdown = chunk.originalMarkdown;
         }
       }
+      if (streamError) {
+        // In-band SSE error events (HTTP 200 already established — the common
+        // mid-stream provider failure) get the same inline treatment as thrown
+        // errors, plus the toast that non-403 throws keep.
+        toast.error(streamError);
+        failLastMessage(streamError);
+        return;
+      }
       commitToMessages();
       opts?.onComplete?.(
         accumulated,
@@ -535,19 +557,15 @@ export function AiProvider({ children }: { children: ReactNode }) {
       // with an error message instead of silently removing it (the user
       // previously saw a bubble appear and then vanish with no explanation).
       const isForbidden = err instanceof ApiError && err.statusCode === 403;
+      // The backend's 403 body names the exact missing permission (each
+      // streamed mode has its own: llm:query, llm:improve, llm:generate,
+      // llm:summarize) — pass it through instead of hardcoding one.
       const friendly = isForbidden
-        ? 'You don\'t have permission to use AI features (permission "llm:query"). Ask an administrator to assign you a role that includes it.'
+        ? `You don't have permission to use this AI feature (${err.message || 'permission denied'}). Ask an administrator to assign you a role that includes it.`
         : err instanceof Error ? err.message : 'Request failed';
       // 403 is fully explained inline — keep the toast only for other errors.
       if (!isForbidden) toast.error(friendly);
-      setMessages((prev) => {
-        const updated = [...prev];
-        const lastMsg = updated[updated.length - 1];
-        if (lastMsg && lastMsg.role === 'assistant') {
-          updated[updated.length - 1] = { ...lastMsg, content: friendly, isError: true };
-        }
-        return updated;
-      });
+      failLastMessage(friendly);
     } finally {
       streamingFinish();
       isStreamingRef.current = false;

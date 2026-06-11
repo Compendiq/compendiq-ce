@@ -6,7 +6,10 @@
  * Built on @radix-ui/react-dialog (same primitive as UserBulkActionDialog
  * et al.), which provides focus trapping, initial focus, Escape-to-dismiss
  * and overlay-click-to-dismiss for free. Both dismissal paths route
- * through `onCancel` via `onOpenChange(false)`.
+ * through `onCancel` via `onOpenChange(false)` — unless `onDismiss` is
+ * provided, which they route to instead. Pass `onDismiss` whenever the
+ * Cancel button carries a real action (not just "close"), so Escape and
+ * overlay-click stay neutral.
  *
  * The confirm button uses the design-system `nm-button-destructive`
  * utility when `destructive` (same box metrics as `nm-button-primary` /
@@ -20,9 +23,17 @@ export interface ConfirmDialogProps {
   title: string;
   description: string;
   confirmLabel: string;
+  /** Cancel-button text. Defaults to "Cancel". */
+  cancelLabel?: string;
   destructive?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
+  /**
+   * Escape / overlay-click handler. Defaults to `onCancel`. Provide it when
+   * the Cancel button performs a real action, so dismissing the dialog means
+   * "close without choosing" rather than silently picking the cancel path.
+   */
+  onDismiss?: () => void;
 }
 
 export function ConfirmDialog({
@@ -30,15 +41,17 @@ export function ConfirmDialog({
   title,
   description,
   confirmLabel,
+  cancelLabel = 'Cancel',
   destructive = false,
   onConfirm,
   onCancel,
+  onDismiss,
 }: ConfirmDialogProps) {
   return (
     <Dialog.Root
       open={open}
       onOpenChange={(nextOpen) => {
-        if (!nextOpen) onCancel();
+        if (!nextOpen) (onDismiss ?? onCancel)();
       }}
     >
       <Dialog.Portal>
@@ -63,7 +76,7 @@ export function ConfirmDialog({
               className="nm-button-ghost"
               data-testid="confirm-dialog-cancel"
             >
-              Cancel
+              {cancelLabel}
             </button>
             <button
               type="button"
