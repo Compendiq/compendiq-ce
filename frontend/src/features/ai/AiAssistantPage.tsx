@@ -99,6 +99,10 @@ const MessageBubble = memo(function MessageBubble({
               : 'bg-foreground/5',
         )}
         data-testid={msg.isError ? 'message-error' : undefined}
+        // The 403 path suppresses the toast in favor of this bubble, so the
+        // bubble itself must be the live region — without it, screen-reader
+        // users get no announcement of the failure at all.
+        role={msg.isError ? 'alert' : undefined}
       >
         {showThinkingBlob && <AIThinkingBlob active />}
         {showTypingIndicator && <TypingIndicator />}
