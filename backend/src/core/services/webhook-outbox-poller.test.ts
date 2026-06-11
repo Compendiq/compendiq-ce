@@ -19,7 +19,6 @@
  */
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { createClient } from 'redis';
 import { Queue } from 'bullmq';
 
 import {
@@ -28,6 +27,7 @@ import {
   teardownTestDb,
   truncateAllTables,
 } from '../../test-db-helper.js';
+import { isRedisAvailable } from '../../test-redis-helper.js';
 import { query, getPool } from '../db/postgres.js';
 import {
   initWebhookOutboxPoller,
@@ -42,38 +42,8 @@ import { getRedisConnectionOpts } from '../utils/redis-connection.js';
 
 // ─── Environment probe ───────────────────────────────────────────────────
 
-async function checkRedisReachable(): Promise<boolean> {
-  const url = process.env.REDIS_URL ?? 'redis://localhost:6379';
-  // Use an explicit bounded reconnect strategy so ECONNREFUSED fails fast
-  // instead of letting the default retry backoff hang the suite. The redis
-  // client will otherwise wait >10s with exponential backoff per attempt.
-  const probe = createClient({
-    url,
-    socket: {
-      connectTimeout: 1_500,
-      reconnectStrategy: () => new Error('probe: no retries'),
-    },
-  });
-  probe.on('error', () => {
-    /* swallow — we only want to know whether connect works */
-  });
-  try {
-    await probe.connect();
-    await probe.ping();
-    await probe.quit();
-    return true;
-  } catch {
-    try {
-      await probe.disconnect();
-    } catch {
-      /* best effort */
-    }
-    return false;
-  }
-}
-
 const dbAvailable = await isDbAvailable();
-const redisAvailable = dbAvailable ? await checkRedisReachable() : false;
+const redisAvailable = dbAvailable ? await isRedisAvailable() : false;
 const canRun = dbAvailable && redisAvailable;
 
 // ─── Helpers ────────────────────────────────────────────────────────────

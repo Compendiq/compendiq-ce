@@ -93,21 +93,17 @@ test.describe('Confluence sync flow', () => {
     await expect(testBtn.first()).toBeVisible({ timeout: 5_000 });
     await testBtn.first().click();
 
-    // Wait for the connection test result (success or failure indicator)
-    // The result appears as a coloured box with a message
-    const resultIndicator = page
-      .locator('.bg-success\\/10')
-      .or(page.locator('.bg-destructive\\/10'))
-      .or(page.getByText(/connected|success|failed|error/i));
+    // Wait for the connection test result box. Located via data-testid +
+    // data-state (pinned by ConfluenceTab.test.tsx) rather than Tailwind
+    // utility classes, so a styling refactor can't silently hollow out
+    // this assertion.
+    const resultIndicator = page.getByTestId('confluence-test-result');
+    await expect(resultIndicator).toBeVisible({ timeout: 15_000 });
 
-    await expect(resultIndicator.first()).toBeVisible({ timeout: 15_000 });
-
-    // Verify the test succeeded (green success indicator)
-    const successIndicator = page
-      .locator('.bg-success\\/10')
-      .or(page.getByText(/connected|success/i));
-
-    await expect(successIndicator.first()).toBeVisible({ timeout: 5_000 });
+    // Verify the test succeeded.
+    await expect(resultIndicator).toHaveAttribute('data-state', 'success', {
+      timeout: 5_000,
+    });
 
     // Save the Confluence settings
     const saveBtn = page
