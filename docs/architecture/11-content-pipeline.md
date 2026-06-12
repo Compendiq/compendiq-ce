@@ -208,15 +208,19 @@ around the (still fully editable) cell content:
 [[[COLUMN width=50%]]]    … [[[/COLUMN]]]    ← legacy ac:column macro
 ```
 
-`layoutTokens` is set solely by the Improve route's main-page conversion
+`layoutTokens` is set solely by the Improve route
 (`assembleContextIfNeeded` in `routes/llm/_helpers.ts`). Every other
 `htmlToMarkdown` caller — quality scoring, auto-tagging, diagram context,
-version-compare summaries, sub-page context, page imports — keeps the
-default flattened output, so raw `[[[…]]]` tokens never leak into prompts
-or user-visible text. Sub-page context in particular must stay token-free
-even within the Improve flow: a truncated sub-page token sequence could be
+version-compare summaries, page imports — keeps the default flattened
+output, so raw `[[[…]]]` tokens never leak into prompts or user-visible
+text. In the Improve flow's sub-page mode the **parent page** conversion
+emits tokens too (apply-time skeleton alignment runs against the parent;
+without its tokens an Improve of a multi-cell layout page with
+`includeSubPages` was guaranteed unrecoverable) — but **sub-page**
+conversions stay token-free: a truncated sub-page token sequence could be
 echoed by the model into the parent page's output and build layout that
-never existed on the parent. Legacy sections/columns nested inside
+never existed on the parent (truncation only ever affects sub-pages — the
+parent always goes first). Legacy sections/columns nested inside
 markdown-constrained containers (`td`/`th`/`li`/`blockquote`/panels) never
 emit tokens either — they stay opaque-frozen via `protectMedia` (see above).
 
@@ -246,7 +250,10 @@ poison the balance validation of the real tokens.
 `/llm/improve` appends `STRUCTURE_PRESERVATION_INSTRUCTION` (from
 `prompts.ts`) to the system prompt whenever the markdown contains boundary
 or media tokens, instructing the model — with a few-shot example (#781) —
-to keep them verbatim.
+to keep them verbatim. It also refuses to **cache** a response that lost
+every token (`hasRecoverableLayoutTokens`): the 422 message tells the user
+to run Improve again, and a cached token-less response would otherwise
+replay on every retry until the LLM cache TTL expired.
 
 ### Skeleton-guided token recovery + 422 fallback (#781)
 
@@ -296,12 +303,21 @@ the LLM's echo; it aligns whatever came back against the known skeleton:
    toast by the frontend). The page is **not** modified locally and nothing
    is pushed to Confluence — a flattened body can never be saved silently.
    An empty skeleton (layout-free page) also strips any *hallucinated*
-   tokens instead of building layout that never existed. One exception:
-   a skeleton with exactly **one** prose-bearing slot (a `single`-layout
-   page) is recovered even when the model dropped every token — all prose
-   can only belong in that one cell, so it is wrapped there (debris
-   stripped, same token-for-token verification). With two or more slots the
-   assignment would be a guess, and the 422 stands.
+   tokens instead of building layout that never existed. Two exceptions
+   recover even when the model dropped **every** token:
+   - a skeleton with exactly **one** prose-bearing slot (a `single`-layout
+     page): all prose can only belong in that one cell, so it is wrapped
+     there (debris stripped, same token-for-token verification);
+   - a **multi**-slot skeleton whose cells' **leading prose survives**: the
+     skeleton carries each cell's leading text as an `anchor` (captured by
+     `extractLayoutSkeleton`), and `splitProseByAnchors()` re-slots the
+     output at the anchors — matched case-insensitively, through markdown
+     emphasis and whitespace churn. Strictly all-or-nothing: every slot
+     needs an anchor, every anchor must match exactly once and in skeleton
+     order, and any unrecognized token-shaped remnant bails; otherwise the
+     422 stands. (This is the observed real-model failure shape: small
+     local models return the improved prose with every token gone while
+     cell-leading headings/markers survive verbatim.)
 
 Note that greedy in-order alignment guards the layout **structure**, not the
 prose-to-cell **assignment**: a model that swaps two cells' content yields

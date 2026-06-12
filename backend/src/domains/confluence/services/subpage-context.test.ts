@@ -205,10 +205,39 @@ describe('subpage-context', () => {
       expect(result.pageCount).toBeLessThanOrEqual(3);
     });
 
-    it('never requests layout boundary tokens — sub-page context stays flattened (#765 review)', async () => {
-      // Truncated sub-page token sequences could be echoed by the model into
-      // the parent page's output, so neither the parent nor any sub-page
-      // conversion may opt in to layoutTokens here.
+    it('requests layout boundary tokens for the PARENT page only when opted in (apply needs them to preserve the layout)', async () => {
+      // Sub-page conversions must stay token-free (#765 review: truncated
+      // sub-page token sequences could be echoed by the model into the parent
+      // page's output) — but the PARENT page's tokens are exactly what the
+      // apply-time skeleton alignment needs; without them an Improve with
+      // includeSubPages on a layout page is guaranteed unrecoverable.
+      mockQuery.mockResolvedValueOnce({
+        rows: [
+          { confluence_id: 'child-1', title: 'Child 1', body_html: '<div class="confluence-layout"><p>Sub</p></div>' },
+        ],
+      });
+      mockQuery.mockResolvedValueOnce({ rows: [] });
+
+      await assembleSubPageContext(
+        'user-1',
+        'parent-1',
+        '<div class="confluence-layout"><p>Parent</p></div>',
+        'Parent',
+        undefined,
+        { parentLayoutTokens: true },
+      );
+
+      const { htmlToMarkdown } = await import('../../../core/services/content-converter.js');
+      const calls = vi.mocked(htmlToMarkdown).mock.calls;
+      expect(calls.length).toBeGreaterThanOrEqual(2); // parent + sub-page
+      const parentCall = calls.find((c) => (c[0] as string).includes('Parent'));
+      expect(parentCall?.[1]).toEqual({ layoutTokens: true });
+      for (const call of calls.filter((c) => c !== parentCall)) {
+        expect(call[1]).toBeUndefined();
+      }
+    });
+
+    it('keeps every conversion token-free by default (no opts)', async () => {
       mockQuery.mockResolvedValueOnce({
         rows: [
           { confluence_id: 'child-1', title: 'Child 1', body_html: '<div class="confluence-layout"><p>Sub</p></div>' },
@@ -224,9 +253,7 @@ describe('subpage-context', () => {
       );
 
       const { htmlToMarkdown } = await import('../../../core/services/content-converter.js');
-      const calls = vi.mocked(htmlToMarkdown).mock.calls;
-      expect(calls.length).toBeGreaterThanOrEqual(2); // parent + sub-page
-      for (const call of calls) {
+      for (const call of vi.mocked(htmlToMarkdown).mock.calls) {
         expect(call[1]).toBeUndefined();
       }
     });

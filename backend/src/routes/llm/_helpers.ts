@@ -39,6 +39,40 @@ export const MAX_PDF_TEXT_FOR_LLM = 80_000;
  *
  * Returns the markdown content and an optional multi-page prompt suffix.
  */
+export interface ResolvedPageRef {
+  id: number;
+  confluenceId: string | null;
+  title: string;
+}
+
+// pages.id is int4 — only strings that safely fit are tried as internal ids
+// (long numeric strings are Confluence ids and would overflow the cast).
+const SAFE_INT4_DIGITS = 9;
+
+/**
+ * Resolve a route-level `pageId` to the page row. The frontend passes the
+ * INTERNAL `pages.id` (its /pages/:id route param) while API callers may
+ * pass the Confluence id — both are numeric strings, so the internal id is
+ * tried first, mirroring the precedence of /llm/improvements/apply.
+ */
+export async function resolvePageRef(pageId: string): Promise<ResolvedPageRef | undefined> {
+  type Row = { id: number; confluence_id: string | null; title: string };
+  if (/^\d+$/.test(pageId) && pageId.length <= SAFE_INT4_DIGITS) {
+    const byId = await query<Row>(
+      'SELECT id, confluence_id, title FROM pages WHERE id = $1 AND deleted_at IS NULL',
+      [parseInt(pageId, 10)],
+    );
+    const row = byId.rows[0];
+    if (row) return { id: row.id, confluenceId: row.confluence_id, title: row.title };
+  }
+  const byConfluenceId = await query<Row>(
+    'SELECT id, confluence_id, title FROM pages WHERE confluence_id = $1 AND deleted_at IS NULL',
+    [pageId],
+  );
+  const row = byConfluenceId.rows[0];
+  return row ? { id: row.id, confluenceId: row.confluence_id, title: row.title } : undefined;
+}
+
 export async function assembleContextIfNeeded(
   userId: string,
   pageId: string | undefined,
@@ -47,13 +81,23 @@ export async function assembleContextIfNeeded(
   opts?: { protectMedia?: boolean; layoutTokens?: boolean },
 ): Promise<{ markdown: string; multiPageSuffix: string }> {
   if (includeSubPages && pageId) {
-    const pageResult = await query<{ title: string }>(
-      'SELECT title FROM pages WHERE confluence_id = $1',
-      [pageId],
+    // Resolve internal-vs-Confluence id: sub-page traversal is keyed on the
+    // Confluence id (pages.parent_id), so an unresolved internal id would
+    // silently fetch no children and title the parent "Untitled".
+    const resolved = await resolvePageRef(pageId);
+    const parentHtml = opts?.protectMedia ? protectMedia(content).html : content;
+    const assembled = await assembleSubPageContext(
+      userId,
+      resolved?.confluenceId ?? pageId,
+      parentHtml,
+      resolved?.title ?? 'Untitled',
+      undefined,
+      // #765: tokens for the PARENT page only — apply-time skeleton
+      // alignment runs against the parent, and without its tokens any
+      // Improve of a multi-cell layout page is guaranteed unrecoverable.
+      // Sub-page conversions stay token-free (see assembleSubPageContext).
+      { parentLayoutTokens: opts?.layoutTokens === true },
     );
-    const parentTitle = pageResult.rows[0]?.title ?? 'Untitled';
-
-    const assembled = await assembleSubPageContext(userId, pageId, content, parentTitle);
     return {
       markdown: assembled.markdown,
       multiPageSuffix: getMultiPagePromptSuffix(assembled.pageCount),
@@ -62,10 +106,8 @@ export async function assembleContextIfNeeded(
 
   const html = opts?.protectMedia ? protectMedia(content).html : content;
   return {
-    // #765: layout boundary tokens are opt-in — only the Improve route's
-    // main-page conversion requests them. The sub-page branch above never
-    // emits tokens (truncated sub-page token sequences could be echoed by
-    // the model into the parent page's output).
+    // #765: layout boundary tokens are opt-in — only the Improve route
+    // requests them.
     markdown: htmlToMarkdown(html, { layoutTokens: opts?.layoutTokens === true }),
     multiPageSuffix: '',
   };
@@ -170,6 +212,13 @@ export async function streamSSE(
     llmCache?: LlmCache;
     cacheKey?: string;
     postProcess?: (content: string) => OutputSanitizeResult;
+    /**
+     * Gate on the cache write (runs on the post-processed content). Return
+     * false to skip caching — e.g. the Improve route's layout-token guard,
+     * which refuses to cache a response that lost the page's [[[…]]] tokens
+     * so a retry regenerates instead of replaying the unusable output.
+     */
+    shouldCache?: (content: string) => boolean;
   },
 ): Promise<string> {
   const controller = new AbortController();
@@ -215,7 +264,10 @@ export async function streamSSE(
     }
 
     // Cache the (possibly cleaned) response
-    if (options?.llmCache && options?.cacheKey && fullContent && !controller.signal.aborted) {
+    if (
+      options?.llmCache && options?.cacheKey && fullContent && !controller.signal.aborted &&
+      (options.shouldCache?.(fullContent) ?? true)
+    ) {
       await options.llmCache.setCachedResponse(options.cacheKey, fullContent);
     }
 
