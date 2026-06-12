@@ -202,6 +202,50 @@ describe('POST /api/llm/improvements/apply', () => {
     expect(response.statusCode).toBe(404);
   });
 
+  it('falls back to the Confluence id when a numeric pageId matches no internal id', async () => {
+    const selects: string[] = [];
+    mockQuery.mockImplementation((sql: string) => {
+      if (sql.includes('SELECT id, version, title, space_key, source, confluence_id')) {
+        selects.push(sql);
+        if (sql.includes('WHERE id = $1')) return Promise.resolve({ rows: [] });
+        // Standalone page owned by the requester — local-update path, no Confluence push.
+        return Promise.resolve({ rows: [{ id: 7, version: 2, title: 'Standalone', space_key: 'LOCAL', source: 'standalone', confluence_id: '1146884', body_html: '<p>Old</p>', created_by_user_id: 'user-123', visibility: 'private' }] });
+      }
+      return Promise.resolve({ rows: [] });
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/llm/improvements/apply',
+      payload: { pageId: '1146884', improvedMarkdown: '## Better' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(selects[0]).toContain('WHERE id = $1');
+    expect(selects[1]).toContain('WHERE confluence_id = $1');
+  });
+
+  it('skips the int4 cast for numeric ids longer than 9 digits (404, not a cast error)', async () => {
+    const selects: string[] = [];
+    mockQuery.mockImplementation((sql: string) => {
+      if (sql.includes('SELECT id, version, title, space_key, source, confluence_id')) {
+        selects.push(sql);
+        return Promise.resolve({ rows: [] });
+      }
+      return Promise.resolve({ rows: [] });
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/llm/improvements/apply',
+      payload: { pageId: '123456789012', improvedMarkdown: '## Better' },
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(selects.some((sql) => sql.includes('WHERE id = $1'))).toBe(false);
+    expect(selects.some((sql) => sql.includes('WHERE confluence_id = $1'))).toBe(true);
+  });
+
   it('returns 409 on version conflict', async () => {
     mockQuery.mockImplementation((sql: string) => {
       if (sql.includes('SELECT id, version, title, space_key, source, confluence_id')) {

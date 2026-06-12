@@ -46,6 +46,7 @@ vi.mock('../../core/services/content-converter.js', () => ({
   markdownToHtml: vi.fn(),
   protectMedia: vi.fn((html: string) => ({ html, media: [] })),
   restoreMedia: vi.fn((html: string) => html),
+  hasRecoverableLayoutTokens: vi.fn((md: string) => /\[\[\[/.test(md)),
 }));
 
 vi.mock('../../domains/llm/services/embedding-service.js', () => ({

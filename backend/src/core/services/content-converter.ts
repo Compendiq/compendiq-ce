@@ -1399,9 +1399,27 @@ function transformOutsideHtmlCode(html: string, transform: (segment: string) => 
 //      silently flattening the page. Exception (#785 review): a skeleton
 //      with exactly ONE prose-bearing slot is unambiguous even when every
 //      token was dropped — wrapProseInSingleSlot() places all prose in it.
+//   6. Anchor split (last resort, MULTI-slot): when the model dropped every
+//      token but each cell's LEADING PROSE (captured as `anchor` on the
+//      skeleton by extractLayoutSkeleton) survives uniquely and in order,
+//      splitProseByAnchors() re-slots the prose deterministically.
+//      All-or-nothing: any missing, duplicated, or out-of-order anchor —
+//      or unrecognized token-shaped remnants — falls through to the error.
 // ---------------------------------------------------------------------------
 
-export interface LayoutSkeletonToken { kind: string; isClose: boolean; attrs: string; }
+export interface LayoutSkeletonToken {
+  kind: string;
+  isClose: boolean;
+  attrs: string;
+  /**
+   * Leading text of a prose-bearing open (first non-empty block of the cell,
+   * whitespace-collapsed, capped). Used by the anchor-based last-resort
+   * recovery: when the model dropped EVERY token, the cells' leading prose
+   * usually survives the rewrite and marks where each cell's content starts.
+   * Absent on close tokens, pure containers, and empty cells.
+   */
+  anchor?: string;
+}
 
 export class LayoutRecoveryError extends Error {
   constructor(
@@ -1439,6 +1457,19 @@ function layoutWrapperKind(el: Element): { kind: string; attrs: string } | null 
   return null;
 }
 
+/** Max anchor length: long enough to be unique, short enough to survive edits. */
+const ANCHOR_MAX_CHARS = 80;
+
+/** First non-empty block text of a cell — the anchor for token-free recovery. */
+function leadingAnchorText(el: Element): string | undefined {
+  for (const child of Array.from(el.children)) {
+    const t = (child.textContent ?? '').replace(/\s+/g, ' ').trim();
+    if (t) return t.slice(0, ANCHOR_MAX_CHARS);
+  }
+  const own = (el.textContent ?? '').replace(/\s+/g, ' ').trim();
+  return own ? own.slice(0, ANCHOR_MAX_CHARS) : undefined;
+}
+
 /**
  * Derive the expected layout-token skeleton from body HTML. Mirrors the
  * token emission rules of htmlToMarkdown({ layoutTokens: true }) exactly:
@@ -1452,7 +1483,14 @@ export function extractLayoutSkeleton(html: string): LayoutSkeletonToken[] {
   const visit = (el: Element): void => {
     if (isFrozenLegacyWrapper(el)) return; // opaque-protected whole — no tokens
     const wrapper = layoutWrapperKind(el);
-    if (wrapper) tokens.push({ kind: wrapper.kind, isClose: false, attrs: wrapper.attrs });
+    if (wrapper) {
+      const open: LayoutSkeletonToken = { kind: wrapper.kind, isClose: false, attrs: wrapper.attrs };
+      if (PROSE_BEARING_KINDS.has(wrapper.kind)) {
+        const anchor = leadingAnchorText(el);
+        if (anchor) open.anchor = anchor;
+      }
+      tokens.push(open);
+    }
     for (const child of Array.from(el.children)) visit(child);
     // Close tokens carry no attrs (matching their canonical [[[/KIND]]] form).
     if (wrapper) tokens.push({ kind: wrapper.kind, isClose: true, attrs: '' });
@@ -1726,6 +1764,123 @@ function wrapProseInSingleSlot(markdown: string, skeleton: LayoutSkeletonToken[]
 }
 
 /**
+ * True when the markdown still carries layout-token text the #781 recovery
+ * could work with — canonical or realistically mangled spellings, outside
+ * code constructs. Used by the Improve route's cache guard: a response whose
+ * input had tokens but whose output has NONE must not be cached, or every
+ * "run AI Improve again" retry within the cache TTL would replay the same
+ * token-less output and the apply would keep failing.
+ */
+export function hasRecoverableLayoutTokens(markdown: string): boolean {
+  return scanLooseLayoutTokens(markdown).length > 0;
+}
+
+/**
+ * Lowercase + strip markdown decoration/escapes + collapse whitespace, with a
+ * map from each normalized char back to its original index. Both anchors and
+ * the model's prose are normalized with this before matching, so case fixes,
+ * dropped emphasis, and whitespace churn don't break anchor recovery.
+ */
+function normalizeWithMap(s: string): { norm: string; map: number[] } {
+  let norm = '';
+  const map: number[] = [];
+  let lastWasSpace = true; // swallow leading whitespace
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]!;
+    if (ch === '\\' && i + 1 < s.length && /[\\`*_{}[\]()#+\-.!>]/.test(s[i + 1]!)) continue;
+    if (/[*_~`#>]/.test(ch)) continue;
+    if (/\s/.test(ch)) {
+      if (!lastWasSpace) {
+        norm += ' ';
+        map.push(i);
+        lastWasSpace = true;
+      }
+      continue;
+    }
+    norm += ch.toLowerCase();
+    map.push(i);
+    lastWasSpace = false;
+  }
+  while (norm.endsWith(' ')) {
+    norm = norm.slice(0, -1);
+    map.pop();
+  }
+  return { norm, map };
+}
+
+/**
+ * Last-resort recovery for MULTI-slot skeletons when the model dropped every
+ * token: split the (debris-stripped) prose at each cell's surviving anchor —
+ * the leading text captured into the skeleton by extractLayoutSkeleton.
+ * Strictly conservative, all-or-nothing:
+ *   - every prose-bearing slot must have an anchor (empty cells → bail);
+ *   - every anchor must match exactly once, in skeleton order (a later
+ *     duplicate or swapped cells → bail);
+ * On any doubt returns null so the caller rejects instead of mis-assigning
+ * prose to cells. Prose before the first anchor stays at top level (it was
+ * outside the layout); prose after the last anchor belongs to the last cell.
+ */
+function splitProseByAnchors(markdown: string, skeleton: LayoutSkeletonToken[]): string | null {
+  // Alignment already failed, so every token-shaped fragment is debris.
+  const debris = scanLooseLayoutTokens(markdown);
+  let prose = '';
+  let pos = 0;
+  for (const d of debris) {
+    prose += markdown.slice(pos, d.start);
+    pos = d.end;
+  }
+  prose += markdown.slice(pos);
+  prose = prose.replace(/^\n+|\n+$/g, '');
+
+  // Unrecognized token-shaped remnants (e.g. a translated "[[[SPALTE]]]")
+  // survive debris-stripping; splitting around them would persist raw
+  // bracket text into the page. Reject — the echo is mangled, not dropped.
+  if (/\[\[\[|\]\]\]/.test(prose)) return null;
+
+  const slots = skeleton.filter((t) => !t.isClose && PROSE_BEARING_KINDS.has(t.kind));
+  const anchors = slots.map((t) => normalizeWithMap(t.anchor ?? '').norm);
+  if (anchors.some((a) => a.length < 3)) return null;
+
+  const { norm, map } = normalizeWithMap(prose);
+  const normStarts: number[] = [];
+  let from = 0;
+  for (const a of anchors) {
+    const idx = norm.indexOf(a, from);
+    if (idx === -1) return null; // anchor edited away → unrecoverable
+    if (norm.indexOf(a, idx + 1) !== -1) return null; // recurs later → ambiguous
+    normStarts.push(idx);
+    from = idx + a.length;
+  }
+
+  const origStarts = normStarts.map((n) => {
+    let s = map[n]!;
+    // Pull adjacent emphasis decoration into the segment so a **bold** anchor
+    // keeps its opening marks instead of leaking them into the prior segment.
+    while (s > 0 && /[*_~]/.test(prose[s - 1]!)) s--;
+    return s;
+  });
+
+  const pre = prose.slice(0, origStarts[0]!).replace(/^\n+|\n+$/g, '');
+  const segments = origStarts.map((s, i) =>
+    prose
+      .slice(s, i + 1 < origStarts.length ? origStarts[i + 1]! : prose.length)
+      .replace(/^\n+|\n+$/g, ''),
+  );
+
+  const out: string[] = [];
+  if (pre.trim()) out.push(`\n\n${pre}\n\n`);
+  let slotIdx = 0;
+  for (const t of skeleton) {
+    out.push(`\n\n${canonicalLayoutToken(t)}\n\n`);
+    if (!t.isClose && PROSE_BEARING_KINDS.has(t.kind)) {
+      const seg = segments[slotIdx++]!;
+      if (seg.trim()) out.push(`\n\n${seg}\n\n`);
+    }
+  }
+  return out.join('');
+}
+
+/**
  * Recover the LLM's (possibly mangled) layout tokens against the known
  * skeleton and return canonical markdown, or throw LayoutRecoveryError.
  * Strictness ladder (#785 review): candidates are evaluated with the strict
@@ -1794,6 +1949,14 @@ function recoverLayoutMarkdown(markdown: string, skeleton: LayoutSkeletonToken[]
   if (proseSlots.length === 1) {
     const wrapped = wrapProseInSingleSlot(markdown, skeleton);
     if (matchesSkeleton(wrapped, skeleton)) return wrapped;
+  }
+
+  // Anchor split: multi-slot skeleton, every token dropped, but each cell's
+  // leading prose survived the rewrite — split at the anchors instead of
+  // rejecting. All-or-nothing; any ambiguity falls through to the error.
+  if (proseSlots.length > 1) {
+    const split = splitProseByAnchors(markdown, skeleton);
+    if (split !== null && matchesSkeleton(split, skeleton)) return split;
   }
 
   throw new LayoutRecoveryError({

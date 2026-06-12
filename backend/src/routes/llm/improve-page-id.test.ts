@@ -58,6 +58,7 @@ vi.mock('../../core/services/content-converter.js', () => ({
   markdownToHtml: vi.fn(),
   protectMedia: vi.fn((html: string) => ({ html, media: [] })),
   restoreMedia: vi.fn((html: string) => html),
+  hasRecoverableLayoutTokens: vi.fn((md: string) => /\[\[\[/.test(md)),
 }));
 
 vi.mock('../../domains/llm/services/embedding-service.js', () => ({
@@ -160,17 +161,19 @@ describe('POST /api/llm/improve — page_id resolution (regression: issue #418)'
     });
   });
 
-  it('first-click: INSERT uses page_id subquery (not confluence_id column) when pageId is provided', async () => {
-    // Arrange: INSERT returns a valid improvement id (page exists in DB)
+  it('first-click: pageId resolves to the pages row and the INSERT carries its internal id', async () => {
+    // Arrange: page resolution finds the row; INSERT returns a valid id.
     mockQuery.mockImplementation((sql: string) => {
       if (sql.includes('INSERT INTO llm_improvements')) {
         return Promise.resolve({ rows: [{ id: 'improvement-1' }] });
+      }
+      if (sql.includes('SELECT id, confluence_id, title FROM pages')) {
+        return Promise.resolve({ rows: [{ id: 42, confluence_id: 'conf-123', title: 'T' }] });
       }
       // user_settings for custom prompt lookup
       if (sql.includes('SELECT custom_prompts FROM user_settings')) {
         return Promise.resolve({ rows: [] });
       }
-      // SELECT title FROM pages (assembleContextIfNeeded without includeSubPages returns early)
       return Promise.resolve({ rows: [] });
     });
 
@@ -195,15 +198,52 @@ describe('POST /api/llm/improve — page_id resolution (regression: issue #418)'
     expect(response.statusCode).toBe(200);
     expect(response.headers['content-type']).toBe('text/event-stream');
 
-    // Assert: INSERT uses page_id with the SELECT subquery pattern (not confluence_id column directly)
+    // Assert: INSERT writes page_id with the RESOLVED internal id (the
+    // route resolves both id forms up front — see resolvePageRef).
     const insertCall = (mockQuery.mock.calls as unknown[][]).find(
       (args) => typeof args[0] === 'string' && (args[0] as string).includes('INSERT INTO llm_improvements'),
     );
     expect(insertCall).toBeDefined();
     const insertSql = insertCall![0] as string;
     expect(insertSql).toContain('page_id');
-    expect(insertSql).toContain('FROM pages p WHERE p.confluence_id');
-    expect(insertSql).not.toContain('confluence_id,'); // should not insert directly into confluence_id column
+    expect(insertSql).not.toContain('confluence_id,'); // never the confluence_id column
+    expect((insertCall![1] as unknown[])[1]).toBe(42);
+  });
+
+  it('resolves a NUMERIC pageId as the internal pages.id first (what the frontend routes pass)', async () => {
+    const selects: Array<{ sql: string; params: unknown[] }> = [];
+    mockQuery.mockImplementation((sql: string, params: unknown[]) => {
+      if (sql.includes('SELECT id, confluence_id, title FROM pages')) {
+        selects.push({ sql, params });
+        if (sql.includes('WHERE id = $1')) {
+          return Promise.resolve({ rows: [{ id: 11, confluence_id: '917505', title: 'Layout page' }] });
+        }
+        return Promise.resolve({ rows: [] });
+      }
+      if (sql.includes('INSERT INTO llm_improvements')) {
+        return Promise.resolve({ rows: [{ id: 'improvement-2' }] });
+      }
+      return Promise.resolve({ rows: [] });
+    });
+
+    async function* mockGenerator() {
+      yield { content: 'Improved content', done: true };
+    }
+    mockProviderStreamChat.mockReturnValue(mockGenerator());
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/llm/improve',
+      payload: { content: '<p>x</p>', type: 'grammar', model: 'llama3', pageId: '11' },
+    });
+    expect(response.statusCode).toBe(200);
+
+    expect(selects[0]!.sql).toContain('WHERE id = $1');
+    expect(selects[0]!.params).toEqual([11]);
+    const insertCall = (mockQuery.mock.calls as unknown[][]).find(
+      (args) => typeof args[0] === 'string' && (args[0] as string).includes('INSERT INTO llm_improvements'),
+    );
+    expect((insertCall![1] as unknown[])[1]).toBe(11);
   });
 
   it('persists and audits the resolved provider id and model, not the request model', async () => {
@@ -222,6 +262,9 @@ describe('POST /api/llm/improve — page_id resolution (regression: issue #418)'
     mockQuery.mockImplementation((sql: string) => {
       if (sql.includes('INSERT INTO llm_improvements')) {
         return Promise.resolve({ rows: [{ id: 'improvement-1' }] });
+      }
+      if (sql.includes('SELECT id, confluence_id, title FROM pages')) {
+        return Promise.resolve({ rows: [{ id: 42, confluence_id: 'conf-123', title: 'T' }] });
       }
       if (sql.includes('SELECT custom_prompts FROM user_settings')) {
         return Promise.resolve({ rows: [] });
@@ -253,7 +296,7 @@ describe('POST /api/llm/improve — page_id resolution (regression: issue #418)'
     expect(insertCall).toBeDefined();
     expect(insertCall![1]).toEqual([
       'user-123',
-      'conf-123',
+      42,
       'grammar',
       'resolved-model',
       '<p>Original content</p>',
@@ -267,12 +310,9 @@ describe('POST /api/llm/improve — page_id resolution (regression: issue #418)'
     );
   });
 
-  it('first-click: page not yet synced — INSERT returns 0 rows, no UPDATE attempted, stream returns 200', async () => {
-    // Arrange: INSERT returns 0 rows (page not in pages table yet — not yet synced from Confluence)
+  it('first-click: page not yet synced — resolution finds no row, no INSERT/UPDATE attempted, stream returns 200', async () => {
+    // Arrange: page resolution finds nothing (not yet synced from Confluence)
     mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('INSERT INTO llm_improvements')) {
-        return Promise.resolve({ rows: [] }); // 0 rows = page not found
-      }
       if (sql.includes('SELECT custom_prompts FROM user_settings')) {
         return Promise.resolve({ rows: [] });
       }
@@ -300,7 +340,11 @@ describe('POST /api/llm/improve — page_id resolution (regression: issue #418)'
     expect(response.statusCode).toBe(200);
     expect(response.headers['content-type']).toBe('text/event-stream');
 
-    // Assert: no UPDATE was attempted because improvementId is undefined
+    // Assert: neither INSERT nor UPDATE was attempted
+    const insertCall = (mockQuery.mock.calls as unknown[][]).find(
+      (args) => typeof args[0] === 'string' && (args[0] as string).includes('INSERT INTO llm_improvements'),
+    );
+    expect(insertCall).toBeUndefined();
     const updateCall = (mockQuery.mock.calls as unknown[][]).find(
       (args) => typeof args[0] === 'string' && (args[0] as string).includes("SET improved_content"),
     );

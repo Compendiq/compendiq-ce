@@ -9,6 +9,7 @@ import {
   restoreMedia,
   extractLayoutSkeleton,
   LayoutRecoveryError,
+  hasRecoverableLayoutTokens,
 } from './content-converter.js';
 import {
   SIMPLE_PAGE,
@@ -1891,10 +1892,134 @@ describe('content-converter: #781 layout-token resilience', () => {
       expect(xhtml).toMatch(/<ac:layout-cell>[\s\S]*Full width content[\s\S]*<\/ac:layout-cell>/);
     });
 
-    it('still throws for multi-slot skeletons with all tokens dropped (prose-to-cell assignment would be a guess)', async () => {
+    it('still throws for multi-slot skeletons when tokens are dropped AND the cell-leading prose was rewritten (no anchors to split by)', async () => {
       const { skeleton, md } = prepare(LAYOUT_TWO_EQUAL_PAGE);
-      const tokenFree = md.replace(/\[\[\[[^\]]+\]\]\]\n*/g, '');
+      const tokenFree = md
+        .replace(/\[\[\[[^\]]+\]\]\]\n*/g, '')
+        .replace('Left column content', 'Completely new intro')
+        .replace('Right column content', 'Another fresh paragraph');
       await expect(markdownToHtml(tokenFree, { layoutSkeleton: skeleton })).rejects.toThrow(LayoutRecoveryError);
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // hasRecoverableLayoutTokens — the Improve route's cache guard predicate
+  // ------------------------------------------------------------------
+  describe('hasRecoverableLayoutTokens', () => {
+    it('is true for canonical tokens', () => {
+      expect(hasRecoverableLayoutTokens('[[[LAYOUT-CELL]]]\n\nProse')).toBe(true);
+    });
+
+    it('is true for realistically mangled tokens (recovery could still use them)', () => {
+      expect(hasRecoverableLayoutTokens('**[[[layout cell]]]**\n\nProse')).toBe(true);
+      expect(hasRecoverableLayoutTokens('[[LAYOUT CELL]]\n\nProse')).toBe(true);
+    });
+
+    it('is false for plain prose without any token-ish text', () => {
+      expect(hasRecoverableLayoutTokens('Just improved prose, nothing else.')).toBe(false);
+    });
+
+    it('is false when token text only appears inside code constructs (data, not structure)', () => {
+      expect(hasRecoverableLayoutTokens('```\n[[[LAYOUT-CELL]]]\n```')).toBe(false);
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // Anchor-based multi-cell recovery: all tokens dropped, but each cell's
+  // leading prose survives — re-slot deterministically instead of rejecting.
+  // (Observed in prod/dev: small local models return the improved prose with
+  // every [[[…]]] token gone while cell-leading headings/markers survive.)
+  // ------------------------------------------------------------------
+  describe('anchor-based recovery when the model dropped every token (multi-cell)', () => {
+    const dropAllTokens = (md: string): string => md.replace(/\[\[\[[^\]]+\]\]\]\n*/g, '');
+
+    it('recovers a two_equal layout by splitting prose at the surviving cell anchors', async () => {
+      const { skeleton, md } = prepare(LAYOUT_TWO_EQUAL_PAGE);
+      const tokenFree = dropAllTokens(md);
+      expect(tokenFree).not.toContain('[[[');
+      const html = await markdownToHtml(tokenFree, { layoutSkeleton: skeleton });
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).toContain('ac:type="two_equal"');
+      expect((xhtml.match(/<ac:layout-cell>/g) ?? []).length).toBe(2);
+      // Each cell's prose must land in ITS OWN cell, in order.
+      expect(xhtml).toMatch(/<ac:layout-cell>[\s\S]*Left column content[\s\S]*<\/ac:layout-cell>\s*<ac:layout-cell>[\s\S]*Right column content[\s\S]*<\/ac:layout-cell>/);
+    });
+
+    it('keeps prose preceding the layout at top level (not pulled into the first cell)', async () => {
+      const { skeleton, md } = prepare(LAYOUT_TWO_EQUAL_PAGE);
+      const html = await markdownToHtml(dropAllTokens(md), { layoutSkeleton: skeleton });
+      const xhtml = htmlToConfluence(html);
+      // The fixture's "Two Column Layout" h2 sits before <ac:layout> in storage.
+      expect(xhtml).toMatch(/Two Column Layout[\s\S]*<ac:layout>/);
+      expect(xhtml).not.toMatch(/<ac:layout-cell>[\s\S]*Two Column Layout/);
+    });
+
+    it('recovers the real-world failure shape: grammar-corrected prose, bold anchors stripped to plain text, no tokens', async () => {
+      // Mirrors the observed model output: **ALPHA-LEFT** → ALPHA-LEFT (bold
+      // dropped), prose grammar-corrected, every token gone.
+      const storage =
+        '<ac:layout><ac:layout-section ac:type="two_equal">' +
+        '<ac:layout-cell><p><strong>ALPHA-LEFT</strong></p><p>Der Bereitstellungsprozess beginnt mit der Compilierung des Backends. Danach werden die Migrationen ausgefuehrt.</p></ac:layout-cell>' +
+        '<ac:layout-cell><p><strong>BRAVO-RIGHT</strong></p><p>Rollbacks erfolgen durch Wiederherstellen des vorherigen Builds.</p></ac:layout-cell>' +
+        '</ac:layout-section></ac:layout>';
+      const { skeleton } = prepare(storage);
+      const modelOutput =
+        'ALPHA-LEFT\n\nDer Bereitstellungsprozess beginnt mit der Compilierung des Backends. Anschließend werden die Migrationen ausgeführt.\n\n' +
+        'BRAVO-RIGHT\n\nRollbacks erfolgen durch Wiederherstellen des vorherigen Builds.';
+      const html = await markdownToHtml(modelOutput, { layoutSkeleton: skeleton });
+      const xhtml = htmlToConfluence(html);
+      expect((xhtml.match(/<ac:layout-cell>/g) ?? []).length).toBe(2);
+      expect(xhtml).toMatch(/<ac:layout-cell>[\s\S]*Anschließend[\s\S]*<\/ac:layout-cell>\s*<ac:layout-cell>[\s\S]*Rollbacks[\s\S]*<\/ac:layout-cell>/);
+    });
+
+    it('recovers a five-cell three_with_sidebars page when every token was dropped', async () => {
+      const { skeleton, md } = prepare(LAYOUT_THREE_WITH_SIDEBARS_PAGE);
+      const html = await markdownToHtml(dropAllTokens(md), { layoutSkeleton: skeleton });
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).toContain('ac:type="three_with_sidebars"');
+      expect((xhtml.match(/<ac:layout-cell>/g) ?? []).length).toBe(5);
+      expect(xhtml).toMatch(/<ac:layout-cell>[\s\S]*Left sidebar nav[\s\S]*<\/ac:layout-cell>\s*<ac:layout-cell>[\s\S]*Wide middle content[\s\S]*<\/ac:layout-cell>/);
+      expect(xhtml).toMatch(/<ac:layout-cell>[\s\S]*Footer text\.[\s\S]*<\/ac:layout-cell>/);
+    });
+
+    it('matches anchors case-insensitively and through markdown emphasis', async () => {
+      const { skeleton, md } = prepare(LAYOUT_TWO_EQUAL_PAGE);
+      const mangled = dropAllTokens(md)
+        .replace('Left column content', '**left COLUMN content**')
+        .replace('Right column content', '_Right column content_');
+      const html = await markdownToHtml(mangled, { layoutSkeleton: skeleton });
+      const xhtml = htmlToConfluence(html);
+      expect((xhtml.match(/<ac:layout-cell>/g) ?? []).length).toBe(2);
+      expect(xhtml).toMatch(/left COLUMN content[\s\S]*<\/ac:layout-cell>\s*<ac:layout-cell>[\s\S]*Right column content/);
+    });
+
+    it('throws when an anchor would match ambiguously (same text appears twice)', async () => {
+      const storage =
+        '<ac:layout><ac:layout-section ac:type="two_equal">' +
+        '<ac:layout-cell><p>Notes</p><p>First details.</p></ac:layout-cell>' +
+        '<ac:layout-cell><p>Summary</p><p>Notes</p></ac:layout-cell>' +
+        '</ac:layout-section></ac:layout>';
+      const { skeleton, md } = prepare(storage);
+      await expect(markdownToHtml(dropAllTokens(md), { layoutSkeleton: skeleton })).rejects.toThrow(LayoutRecoveryError);
+    });
+
+    it('throws when the anchors come back out of order (cells swapped)', async () => {
+      const { skeleton, md } = prepare(LAYOUT_TWO_EQUAL_PAGE);
+      const swapped = dropAllTokens(md)
+        .replace('Left column content', 'TEMP-MARKER')
+        .replace('Right column content', 'Left column content')
+        .replace('TEMP-MARKER', 'Right column content');
+      await expect(markdownToHtml(swapped, { layoutSkeleton: skeleton })).rejects.toThrow(LayoutRecoveryError);
+    });
+
+    it('throws when a cell was empty in the original (no anchor to split by)', async () => {
+      const storage =
+        '<ac:layout><ac:layout-section ac:type="two_equal">' +
+        '<ac:layout-cell><p>Left column content</p></ac:layout-cell>' +
+        '<ac:layout-cell><p></p></ac:layout-cell>' +
+        '</ac:layout-section></ac:layout>';
+      const { skeleton, md } = prepare(storage);
+      await expect(markdownToHtml(dropAllTokens(md), { layoutSkeleton: skeleton })).rejects.toThrow(LayoutRecoveryError);
     });
   });
 
@@ -1922,15 +2047,29 @@ describe('content-converter: #781 layout-token resilience', () => {
       expect(err.details.expectedTokens).toBeGreaterThan(0);
     });
 
-    it('throws when the LLM merged two cells into one (a cell boundary is gone)', async () => {
+    it('throws when the LLM merged two cells AND rewrote the second cell lead (anchor recovery impossible)', async () => {
       await expectRecoveryError(LAYOUT_TWO_EQUAL_PAGE, (md) =>
-        md.replace('[[[/LAYOUT-CELL]]]\n\n[[[LAYOUT-CELL]]]', ''),
+        md
+          .replace('[[[/LAYOUT-CELL]]]\n\n[[[LAYOUT-CELL]]]', '')
+          .replace('Right column content', 'Umgeschriebener zweiter Teil'),
       );
     });
 
-    it('throws when the LLM dropped every token', async () => {
+    it('recovers a merged-cells echo via anchors when both cell leads survived', async () => {
+      const { skeleton, md } = prepare(LAYOUT_TWO_EQUAL_PAGE);
+      const merged = md.replace('[[[/LAYOUT-CELL]]]\n\n[[[LAYOUT-CELL]]]', '');
+      const html = await markdownToHtml(merged, { layoutSkeleton: skeleton });
+      const xhtml = htmlToConfluence(html);
+      expect((xhtml.match(/<ac:layout-cell>/g) ?? []).length).toBe(2);
+      expect(xhtml).toMatch(/<ac:layout-cell>[\s\S]*Left column content[\s\S]*<\/ac:layout-cell>\s*<ac:layout-cell>[\s\S]*Right column content[\s\S]*<\/ac:layout-cell>/);
+    });
+
+    it('throws when the LLM dropped every token and rewrote the cell-leading prose (anchor recovery impossible)', async () => {
       await expectRecoveryError(LAYOUT_TWO_EQUAL_PAGE, (md) =>
-        md.replace(/\[\[\[[^\]]+\]\]\]\n*/g, ''),
+        md
+          .replace(/\[\[\[[^\]]+\]\]\]\n*/g, '')
+          .replace('Left column content', 'Erste Spalte, neu formuliert')
+          .replace('Right column content', 'Zweite Spalte, neu formuliert'),
       );
     });
 

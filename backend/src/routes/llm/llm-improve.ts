@@ -9,8 +9,10 @@ import { ImproveRequestSchema } from '@compendiq/contracts';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
 import { emitLlmAudit, estimateTokens } from '../../domains/llm/services/llm-audit-hook.js';
+import { hasRecoverableLayoutTokens } from '../../core/services/content-converter.js';
 import {
   assembleContextIfNeeded,
+  resolvePageRef,
   resolveSystemPrompt,
   checkCacheWithLock,
   sendCachedSSE,
@@ -91,7 +93,8 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
     // #765: when the markdown carries layout boundary tokens or media
     // placeholders, instruct the model to keep them verbatim. (Deterministic
     // per content, so it composes safely with the cache key below.)
-    if (/\[\[\[|CQ\\?_MEDIA\\?_PLACEHOLDER/.test(markdown)) {
+    const inputHasLayoutTokens = /\[\[\[/.test(markdown);
+    if (inputHasLayoutTokens || /CQ\\?_MEDIA\\?_PLACEHOLDER/.test(markdown)) {
       systemPrompt += `\n\n${STRUCTURE_PRESERVATION_INSTRUCTION}`;
     }
     if (sanitizedInstruction) {
@@ -113,19 +116,30 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
       // Echo back the markdown the model was given (#704) so the frontend can
       // diff like-for-like (original markdown vs improved markdown) instead of
       // comparing formatting-stripped bodyText against the markdown output.
-      sendCachedSSE(reply, cached.content, { originalMarkdown: markdown });
+      // layoutTokensLost: lossy responses are no longer cached, but entries
+      // written before that guard may still be live for one cache TTL.
+      sendCachedSSE(reply, cached.content, {
+        originalMarkdown: markdown,
+        layoutTokensLost: inputHasLayoutTokens && !hasRecoverableLayoutTokens(cached.content),
+      });
       return;
     }
 
-    // Pre-insert improvement record so we have the row to update after streaming
+    // Pre-insert improvement record so we have the row to update after
+    // streaming. resolvePageRef accepts both id forms — the frontend passes
+    // the INTERNAL pages.id, which the old confluence_id-only subquery never
+    // matched, so UI-driven improvements silently skipped this record.
     let improvementId: string | undefined;
     if (body.pageId) {
-      const insertResult = await query<{ id: string }>(
-        `INSERT INTO llm_improvements (user_id, page_id, improvement_type, model, original_content, improved_content, status)
-         SELECT $1, p.id, $3, $4, $5, '', 'streaming' FROM pages p WHERE p.confluence_id = $2 RETURNING id`,
-        [userId, body.pageId, type, resolvedModel, content.slice(0, 10000)],
-      );
-      improvementId = insertResult.rows[0]?.id;
+      const page = await resolvePageRef(body.pageId);
+      if (page) {
+        const insertResult = await query<{ id: string }>(
+          `INSERT INTO llm_improvements (user_id, page_id, improvement_type, model, original_content, improved_content, status)
+           VALUES ($1, $2, $3, $4, $5, '', 'streaming') RETURNING id`,
+          [userId, page.id, type, resolvedModel, content.slice(0, 10000)],
+        );
+        improvementId = insertResult.rows[0]?.id;
+      }
     }
 
     // Always echo the markdown the model was given (#704) so the frontend can
@@ -148,7 +162,21 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
 
       const generator = streamChat(chatConfig, resolvedModel, improveMessages, undefined, { thinking: body.thinking });
 
-      const accumulated = await streamSSE(request, reply, generator, improveExtras, { llmCache, cacheKey, postProcess });
+      const accumulated = await streamSSE(request, reply, generator, improveExtras, {
+        llmCache,
+        cacheKey,
+        postProcess,
+        // Never cache a response that lost the layout tokens: the apply will
+        // 422 with "run AI Improve again", and a cached token-less response
+        // would replay on every retry until the TTL expires.
+        shouldCache: (out) => !inputHasLayoutTokens || hasRecoverableLayoutTokens(out),
+        // Authoritative token-loss verdict for the frontend's pre-Accept
+        // warning — its own `[[[` heuristic cannot recognize mangled-but-
+        // recoverable token spellings.
+        finalExtras: (out) => ({
+          layoutTokensLost: inputHasLayoutTokens && !hasRecoverableLayoutTokens(out),
+        }),
+      });
 
       // Persist the full improved content now that streaming is done
       if (improvementId && accumulated) {
