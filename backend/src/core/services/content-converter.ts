@@ -1457,13 +1457,6 @@ function layoutWrapperKind(el: Element): { kind: string; attrs: string } | null 
   return null;
 }
 
-/**
- * Derive the expected layout-token skeleton from body HTML. Mirrors the
- * token emission rules of htmlToMarkdown({ layoutTokens: true }) exactly:
- * same kinds, same attrs validation, and frozen legacy wrappers (nested in
- * markdown-constrained containers — see protectMedia) are skipped because
- * they travel opaquely, never as boundary tokens.
- */
 /** Max anchor length: long enough to be unique, short enough to survive edits. */
 const ANCHOR_MAX_CHARS = 80;
 
@@ -1477,6 +1470,13 @@ function leadingAnchorText(el: Element): string | undefined {
   return own ? own.slice(0, ANCHOR_MAX_CHARS) : undefined;
 }
 
+/**
+ * Derive the expected layout-token skeleton from body HTML. Mirrors the
+ * token emission rules of htmlToMarkdown({ layoutTokens: true }) exactly:
+ * same kinds, same attrs validation, and frozen legacy wrappers (nested in
+ * markdown-constrained containers — see protectMedia) are skipped because
+ * they travel opaquely, never as boundary tokens.
+ */
 export function extractLayoutSkeleton(html: string): LayoutSkeletonToken[] {
   const dom = new JSDOM(`<body>${html}</body>`);
   const tokens: LayoutSkeletonToken[] = [];

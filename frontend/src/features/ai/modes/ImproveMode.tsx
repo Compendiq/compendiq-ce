@@ -60,7 +60,10 @@ export function ImproveTypeSelector() {
  * Diff view shown after an improve stream completes.
  */
 export function ImproveDiffView() {
-  const { page, pageId, navigate, queryClient, isStreaming, showDiffView, setShowDiffView, improvedContent, originalMarkdown } = useAiContext();
+  const {
+    page, pageId, navigate, queryClient, isStreaming, showDiffView, setShowDiffView,
+    improvedContent, originalMarkdown, layoutTokensLost: backendLayoutTokensLost,
+  } = useAiContext();
   const [isApplying, setIsApplying] = useState(false);
 
   const handleAccept = useCallback(async () => {
@@ -91,7 +94,12 @@ export function ImproveDiffView() {
   // The page's markdown carried [[[…]]] layout boundary tokens but the AI
   // output lost every one of them: applying will most likely be rejected by
   // the backend's layout guard (422). Surface that BEFORE the user accepts.
-  const layoutTokensLost = /\[\[\[/.test(originalMarkdown) && !/\[\[\[/.test(improvedContent);
+  // The backend's final-event verdict is authoritative (it runs the real
+  // recoverability scan, which also recognizes mangled token spellings); the
+  // `[[[` heuristic only covers streams that ended without a final event.
+  const layoutTokensLost =
+    backendLayoutTokensLost ??
+    (/\[\[\[/.test(originalMarkdown) && !/\[\[\[/.test(improvedContent));
 
   return (
     <div className="flex flex-col gap-3">
@@ -126,7 +134,7 @@ export function ImproveDiffView() {
 export function ImproveModeInput() {
   const {
     isStreaming, page, isPageLoading, model, pageId, includeSubPages, thinkingMode, runStream,
-    improvementType, setShowDiffView, setImprovedContent, setOriginalMarkdown,
+    improvementType, setShowDiffView, setImprovedContent, setOriginalMarkdown, setLayoutTokensLost,
   } = useAiContext();
   const [instruction, setInstruction] = useState('');
   const [searchWeb, setSearchWeb] = useState(false);
@@ -155,6 +163,7 @@ export function ImproveModeInput() {
     setShowDiffView(false);
     setImprovedContent('');
     setOriginalMarkdown('');
+    setLayoutTokensLost(undefined);
 
     const body: Record<string, unknown> = {
       content: page.bodyHtml, type: improvementType, model, pageId: pageId ?? undefined, includeSubPages,
@@ -179,11 +188,12 @@ export function ImproveModeInput() {
           if (meta?.originalMarkdown !== undefined) {
             setOriginalMarkdown(meta.originalMarkdown);
           }
+          setLayoutTokensLost(meta?.layoutTokensLost);
           setShowDiffView(true);
         },
       },
     );
-  }, [page, model, improvementType, pageId, isStreaming, includeSubPages, thinkingMode, instruction, searchWeb, runStream, setShowDiffView, setImprovedContent, setOriginalMarkdown]);
+  }, [page, model, improvementType, pageId, isStreaming, includeSubPages, thinkingMode, instruction, searchWeb, runStream, setShowDiffView, setImprovedContent, setOriginalMarkdown, setLayoutTokensLost]);
 
   return (
     <div className="mt-3 flex flex-col gap-3 border-t border-border/40 pt-3">

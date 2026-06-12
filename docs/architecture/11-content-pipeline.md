@@ -253,7 +253,11 @@ or media tokens, instructing the model — with a few-shot example (#781) —
 to keep them verbatim. It also refuses to **cache** a response that lost
 every token (`hasRecoverableLayoutTokens`): the 422 message tells the user
 to run Improve again, and a cached token-less response would otherwise
-replay on every retry until the LLM cache TTL expired.
+replay on every retry until the LLM cache TTL expired. The same verdict is
+sent to the frontend as `layoutTokensLost` on the final SSE event, so the
+Improve diff view can warn before the user hits Accept — authoritative
+over any client-side token heuristic, which cannot recognize
+mangled-but-recoverable spellings.
 
 ### Skeleton-guided token recovery + 422 fallback (#781)
 

@@ -314,6 +314,58 @@ describe('ImproveMode', () => {
       await runImproveWith('Improved prose', '# Title\n\nOriginal prose');
       expect(screen.queryByTestId('layout-token-loss-warning')).not.toBeInTheDocument();
     });
+
+    // The backend's final SSE event carries an authoritative layoutTokensLost
+    // verdict (it runs the real recoverability scan); the client `[[[`
+    // heuristic is only the fallback when the flag is absent (e.g. aborted
+    // stream).
+    it('trusts backend layoutTokensLost=false over the client heuristic (mangled-but-recoverable output)', async () => {
+      async function* fakeStream() {
+        // Mangled 2-bracket spelling: no literal `[[[`, but the backend's
+        // loose scanner can still recover it — so it reports false.
+        yield { content: '[[LAYOUT CELL]]\n\nLeft improved' };
+        yield { originalMarkdown: TOKEN_MD, layoutTokensLost: false, done: true, final: true };
+      }
+      streamSSEMock.mockReturnValue(fakeStream());
+      render(
+        <>
+          <ImproveModeInput />
+          <ImproveDiffView />
+        </>,
+        { wrapper: createWrapper() },
+      );
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /Improve Page/i })).not.toBeDisabled();
+      });
+      fireEvent.click(screen.getByRole('button', { name: /Improve Page/i }));
+      await waitFor(() => {
+        expect(screen.getByTestId('unified-diff')).toBeInTheDocument();
+      });
+      expect(screen.queryByTestId('layout-token-loss-warning')).not.toBeInTheDocument();
+    });
+
+    it('trusts backend layoutTokensLost=true even when the output happens to contain bracket text', async () => {
+      async function* fakeStream() {
+        yield { content: 'Prose mentioning [[[something]]] that is not a real token' };
+        yield { originalMarkdown: TOKEN_MD, layoutTokensLost: true, done: true, final: true };
+      }
+      streamSSEMock.mockReturnValue(fakeStream());
+      render(
+        <>
+          <ImproveModeInput />
+          <ImproveDiffView />
+        </>,
+        { wrapper: createWrapper() },
+      );
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /Improve Page/i })).not.toBeDisabled();
+      });
+      fireEvent.click(screen.getByRole('button', { name: /Improve Page/i }));
+      await waitFor(() => {
+        expect(screen.getByTestId('unified-diff')).toBeInTheDocument();
+      });
+      expect(screen.getByTestId('layout-token-loss-warning')).toBeInTheDocument();
+    });
   });
 
   it('disables textarea while streaming', async () => {

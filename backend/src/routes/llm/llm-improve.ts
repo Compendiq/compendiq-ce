@@ -116,7 +116,12 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
       // Echo back the markdown the model was given (#704) so the frontend can
       // diff like-for-like (original markdown vs improved markdown) instead of
       // comparing formatting-stripped bodyText against the markdown output.
-      sendCachedSSE(reply, cached.content, { originalMarkdown: markdown });
+      // layoutTokensLost: lossy responses are no longer cached, but entries
+      // written before that guard may still be live for one cache TTL.
+      sendCachedSSE(reply, cached.content, {
+        originalMarkdown: markdown,
+        layoutTokensLost: inputHasLayoutTokens && !hasRecoverableLayoutTokens(cached.content),
+      });
       return;
     }
 
@@ -165,6 +170,12 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
         // 422 with "run AI Improve again", and a cached token-less response
         // would replay on every retry until the TTL expires.
         shouldCache: (out) => !inputHasLayoutTokens || hasRecoverableLayoutTokens(out),
+        // Authoritative token-loss verdict for the frontend's pre-Accept
+        // warning — its own `[[[` heuristic cannot recognize mangled-but-
+        // recoverable token spellings.
+        finalExtras: (out) => ({
+          layoutTokensLost: inputHasLayoutTokens && !hasRecoverableLayoutTokens(out),
+        }),
       });
 
       // Persist the full improved content now that streaming is done

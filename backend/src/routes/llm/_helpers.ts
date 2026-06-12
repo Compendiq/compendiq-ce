@@ -219,6 +219,13 @@ export async function streamSSE(
      * so a retry regenerates instead of replaying the unusable output.
      */
     shouldCache?: (content: string) => boolean;
+    /**
+     * Extra fields for the final SSE event that depend on the FULL streamed
+     * content (the static `extras` parameter is built before streaming).
+     * E.g. the Improve route's `layoutTokensLost` flag for the frontend's
+     * pre-Accept warning.
+     */
+    finalExtras?: (content: string) => Record<string, unknown>;
   },
 ): Promise<string> {
   const controller = new AbortController();
@@ -271,8 +278,10 @@ export async function streamSSE(
       await options.llmCache.setCachedResponse(options.cacheKey, fullContent);
     }
 
-    if (extras && !controller.signal.aborted) {
-      reply.raw.write(`data: ${JSON.stringify({ ...extras, done: true, final: true })}\n\n`);
+    if ((extras || options?.finalExtras) && !controller.signal.aborted) {
+      reply.raw.write(
+        `data: ${JSON.stringify({ ...extras, ...options?.finalExtras?.(fullContent), done: true, final: true })}\n\n`,
+      );
     }
   } catch (err) {
     if (controller.signal.aborted || (err instanceof Error && err.name === 'AbortError')) {

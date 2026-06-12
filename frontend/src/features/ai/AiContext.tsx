@@ -126,6 +126,14 @@ interface AiContextValue {
   /** Markdown baseline (#704) the model was fed — diffed against `improvedContent`. */
   originalMarkdown: string;
   setOriginalMarkdown: (v: string) => void;
+  /**
+   * Backend verdict from the Improve stream's final event: the output lost
+   * the page's layout boundary tokens beyond recovery. Authoritative over
+   * any client-side token heuristic; undefined when the stream ended without
+   * a final event (abort) — callers fall back to their own check then.
+   */
+  layoutTokensLost: boolean | undefined;
+  setLayoutTokensLost: (v: boolean | undefined) => void;
 
   // Diagram mode state
   diagramType: string;
@@ -159,12 +167,16 @@ interface StreamChunk {
   sources?: Source[];
   /** Improve route (#704): the original markdown the model was fed, echoed on the final event. */
   originalMarkdown?: string;
+  /** Improve route: backend verdict that the output lost the layout tokens beyond recovery. */
+  layoutTokensLost?: boolean;
 }
 
 /** Extra, non-content metadata surfaced to `onComplete` once a stream finishes. */
 export interface StreamMeta {
   /** Improve route (#704): markdown baseline for like-for-like diffing. */
   originalMarkdown?: string;
+  /** Improve route: backend verdict that the output lost the layout tokens beyond recovery. */
+  layoutTokensLost?: boolean;
 }
 
 const AiCtx = createContext<AiContextValue | null>(null);
@@ -209,6 +221,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
   const [showDiffView, setShowDiffView] = useState(false);
   const [improvedContent, setImprovedContent] = useState('');
   const [originalMarkdown, setOriginalMarkdown] = useState('');
+  const [layoutTokensLost, setLayoutTokensLost] = useState<boolean | undefined>(undefined);
   const [diagramType, setDiagramType] = useState('flowchart');
   const [diagramCode, setDiagramCode] = useState('');
   const [isInsertingDiagram, setIsInsertingDiagram] = useState(false);
@@ -459,6 +472,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
     let accumulated = '';
     let finalSources: Source[] = [];
     let originalMarkdown: string | undefined;
+    let streamLayoutTokensLost: boolean | undefined;
 
     // Add the placeholder assistant message with a stable ID. It stays empty
     // during the stream (#747) — the in-flight answer renders through the
@@ -531,6 +545,9 @@ export function AiProvider({ children }: { children: ReactNode }) {
         if (chunk.originalMarkdown !== undefined) {
           originalMarkdown = chunk.originalMarkdown;
         }
+        if (chunk.layoutTokensLost !== undefined) {
+          streamLayoutTokensLost = chunk.layoutTokensLost;
+        }
       }
       if (streamError) {
         // In-band SSE error events (HTTP 200 already established — the common
@@ -544,7 +561,9 @@ export function AiProvider({ children }: { children: ReactNode }) {
       opts?.onComplete?.(
         accumulated,
         finalSources.length > 0 ? finalSources : undefined,
-        originalMarkdown !== undefined ? { originalMarkdown } : undefined,
+        originalMarkdown !== undefined || streamLayoutTokensLost !== undefined
+          ? { originalMarkdown, layoutTokensLost: streamLayoutTokensLost }
+          : undefined,
       );
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') {
@@ -621,6 +640,8 @@ export function AiProvider({ children }: { children: ReactNode }) {
     setImprovedContent,
     originalMarkdown,
     setOriginalMarkdown,
+    layoutTokensLost,
+    setLayoutTokensLost,
     diagramType,
     setDiagramType,
     diagramCode,

@@ -138,7 +138,14 @@ describe('POST /api/llm/improve - layout-token cache guard', () => {
     mockGetCachedResponse.mockResolvedValue(null);
   });
 
-  async function improve(content: string, modelOutput: string): Promise<number> {
+  function parseSseEvents(body: string): Array<Record<string, unknown>> {
+    return body
+      .split('\n')
+      .filter((line) => line.startsWith('data: '))
+      .map((line) => JSON.parse(line.slice(6)) as Record<string, unknown>);
+  }
+
+  async function improve(content: string, modelOutput: string): Promise<{ status: number; finalEvent?: Record<string, unknown> }> {
     async function* mockGenerator() {
       yield { content: modelOutput, done: true };
     }
@@ -148,24 +155,55 @@ describe('POST /api/llm/improve - layout-token cache guard', () => {
       url: '/api/llm/improve',
       payload: { content, type: 'grammar', model: 'llama3' },
     });
-    return response.statusCode;
+    return { status: response.statusCode, finalEvent: parseSseEvents(response.body).find((e) => e.final === true) };
   }
 
   it('does NOT cache a response that lost the layout tokens', async () => {
-    const status = await improve(LAYOUT_CONTENT, 'Left prose improved\n\nRight prose improved');
+    const { status } = await improve(LAYOUT_CONTENT, 'Left prose improved\n\nRight prose improved');
     expect(status).toBe(200);
     expect(mockSetCachedResponse).not.toHaveBeenCalled();
   });
 
   it('caches a response that kept the layout tokens', async () => {
-    const status = await improve(LAYOUT_CONTENT, LAYOUT_CONTENT.replace('Left prose', 'Left prose improved'));
+    const { status } = await improve(LAYOUT_CONTENT, LAYOUT_CONTENT.replace('Left prose', 'Left prose improved'));
     expect(status).toBe(200);
     expect(mockSetCachedResponse).toHaveBeenCalledTimes(1);
   });
 
   it('caches normally for layout-free pages regardless of output shape', async () => {
-    const status = await improve('Plain prose without any layout.', 'Improved plain prose.');
+    const { status } = await improve('Plain prose without any layout.', 'Improved plain prose.');
     expect(status).toBe(200);
     expect(mockSetCachedResponse).toHaveBeenCalledTimes(1);
+  });
+
+  // The frontend's pre-Accept warning prefers this authoritative flag over
+  // its own `[[[` heuristic, which cannot recognize mangled-but-recoverable
+  // token spellings.
+  it('flags layoutTokensLost=true on the final SSE event when the output lost the tokens', async () => {
+    const { finalEvent } = await improve(LAYOUT_CONTENT, 'Left prose improved\n\nRight prose improved');
+    expect(finalEvent).toBeDefined();
+    expect(finalEvent!.layoutTokensLost).toBe(true);
+  });
+
+  it('flags layoutTokensLost=false when the output kept the tokens', async () => {
+    const { finalEvent } = await improve(LAYOUT_CONTENT, LAYOUT_CONTENT.replace('Left prose', 'Left prose improved'));
+    expect(finalEvent!.layoutTokensLost).toBe(false);
+  });
+
+  it('flags layoutTokensLost=false for layout-free pages', async () => {
+    const { finalEvent } = await improve('Plain prose without any layout.', 'Improved plain prose.');
+    expect(finalEvent!.layoutTokensLost).toBe(false);
+  });
+
+  it('computes the flag for cached responses too (pre-guard cache entries may be token-less)', async () => {
+    mockGetCachedResponse.mockResolvedValue({ content: 'token-less cached output' });
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/llm/improve',
+      payload: { content: LAYOUT_CONTENT, type: 'grammar', model: 'llama3' },
+    });
+    expect(response.statusCode).toBe(200);
+    const finalEvent = parseSseEvents(response.body).find((e) => e.final === true);
+    expect(finalEvent!.layoutTokensLost).toBe(true);
   });
 });

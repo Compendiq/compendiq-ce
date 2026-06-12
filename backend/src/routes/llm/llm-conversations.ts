@@ -107,18 +107,31 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     const { pageId, improvedMarkdown, version, title } = body;
     const userId = request.userId;
 
-    // Resolve page by confluenceId or internal id (standalone pages use numeric id)
-    const isNumericId = /^\d+$/.test(pageId);
-    const existing = await query<{
+    // Resolve page by internal id or Confluence id. Both are numeric strings,
+    // so the internal id (what the frontend's /pages/:id routes pass) wins,
+    // with a Confluence-id fallback for API callers — same precedence as
+    // resolvePageRef in the improve route. The digit cap keeps long Confluence
+    // ids out of the int4 cast (a 10+ digit id would error, not 404).
+    type PageRow = {
       id: number; version: number; title: string; space_key: string;
       source: string; confluence_id: string | null; body_html: string | null;
       created_by_user_id: string | null; visibility: string;
-    }>(
-      `SELECT id, version, title, space_key, source, confluence_id, body_html,
-              created_by_user_id, visibility FROM pages
-       WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'} AND deleted_at IS NULL`,
-      [isNumericId ? parseInt(pageId, 10) : pageId],
-    );
+    };
+    const PAGE_COLUMNS = `id, version, title, space_key, source, confluence_id, body_html,
+              created_by_user_id, visibility`;
+    let existing: { rows: PageRow[] } = { rows: [] };
+    if (/^\d{1,9}$/.test(pageId)) {
+      existing = await query<PageRow>(
+        `SELECT ${PAGE_COLUMNS} FROM pages WHERE id = $1 AND deleted_at IS NULL`,
+        [parseInt(pageId, 10)],
+      );
+    }
+    if (existing.rows.length === 0) {
+      existing = await query<PageRow>(
+        `SELECT ${PAGE_COLUMNS} FROM pages WHERE confluence_id = $1 AND deleted_at IS NULL`,
+        [pageId],
+      );
+    }
     if (existing.rows.length === 0) {
       throw fastify.httpErrors.notFound('Page not found');
     }
