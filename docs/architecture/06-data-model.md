@@ -9,7 +9,6 @@ per-feature settings) are omitted for readability. See
 erDiagram
     users ||--o| user_settings : "has 1"
     users ||--o{ pages : "owns"
-    users ||--o{ page_versions : "owns"
     users ||--o{ page_embeddings : "owns"
     users ||--o{ llm_conversations : "owns"
     users ||--o{ notifications : "receives"
@@ -56,6 +55,7 @@ erDiagram
         text ollama_model
         text theme
         int sync_interval_min
+        timestamptz confluence_pat_prompt_dismissed_at "PAT onboarding banner dismissed (#771)"
     }
 
     pages {
@@ -80,13 +80,15 @@ erDiagram
 
     page_versions {
         uuid id PK
-        uuid user_id FK
-        text confluence_id
+        int page_id FK "universal FK since migration 030"
         int version_number
         text title
         text body_html
         text body_text
         timestamptz synced_at
+        timestamptz edited_at "nullable; real Confluence edit time (migration 077)"
+        text author "nullable; Confluence author display name (migration 077)"
+        text message "nullable; Confluence version comment (migration 077)"
     }
 
     page_embeddings {
@@ -278,7 +280,11 @@ erDiagram
   `backend/src/domains/llm/services/embedding-service.ts` (`enqueueReembedAll`).
 - **Encryption at rest.** `user_settings.confluence_pat` is stored as a
   ciphertext blob (AES-256-GCM, key from `PAT_ENCRYPTION_KEY`). Never
-  log or expose it to the frontend.
+  log or expose it to the frontend. The AES key is derived via HKDF-SHA256
+  over the full passphrase (#738); pre-HKDF ciphertexts (`v{N}:` /
+  unversioned) remain decryptable. The `smtp_pass` row in `admin_settings`
+  uses the same versioned helpers — legacy plaintext rows are detected on
+  startup and re-encrypted in place.
 - **`admin_settings`** is a key-value bag used for server-wide config
   that must survive restarts and be editable at runtime — notably the
   `license_key` (populated by the EE plugin) and the `embedding_dimensions`
@@ -303,3 +309,20 @@ erDiagram
   (`00000000-0000-0000-0000-000000000000`) inside the same transaction
   before issuing the `DELETE FROM users`.
 - **Soft delete** on `pages.deleted_at` — the Trash feature filters on this.
+  Standalone pages in the trash are hard-deleted after 30 days
+  (`purgeExpiredStandalonePages` in `data-retention-service.ts`, run by the
+  daily maintenance job; dependent rows go via `ON DELETE CASCADE`).
+  Confluence-synced pages have their own purge in `sync-service.ts`
+  (`purgeDeletedPages`, with upstream re-confirmation — see 08-flow-sync).
+- **Version history & restore** (`page_versions`, keyed by `page_id`). Snapshots
+  are written on sync, on draft-publish, and before a restore — so both
+  Confluence-synced and standalone/local pages accumulate history. The
+  right-pane "Version history" UI lists snapshots + the live version, previews
+  any snapshot, and offers a Confluence-style **restore**
+  (`POST /api/pages/:id/versions/:version/restore`): it snapshots the current
+  live state first, then applies the target snapshot as a **new** bumped
+  version (older versions remain), marks `embedding_dirty`, and — for
+  Confluence-sourced pages — pushes the restored content upstream as a new
+  Confluence version so the next sync doesn't clobber the revert. Retention
+  keeps the last `RETENTION_VERSIONS_MAX` (default 50) snapshots per page
+  (`data-retention-service.ts`).

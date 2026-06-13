@@ -4,8 +4,11 @@ import sensible from '@fastify/sensible';
 import { ZodError } from 'zod';
 import { adminRoutes } from './admin.js';
 
-// Mock external dependencies
-vi.mock('../../core/utils/crypto.js', () => ({
+// Mock external dependencies. Passthrough keeps the real encryptPat/decryptPat
+// (used by PUT /admin/smtp to encrypt smtp_pass at rest, #738) while stubbing
+// the key-rotation entry point.
+vi.mock('../../core/utils/crypto.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../core/utils/crypto.js')>()),
   reEncryptPat: vi.fn().mockReturnValue(null),
 }));
 
@@ -39,6 +42,18 @@ vi.mock('../../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
+// issue #743 — mock nodemailer at the boundary so the SMTP route tests can
+// assert which credentials reach the live transport.
+vi.mock('nodemailer', () => {
+  const sendMail = vi.fn().mockResolvedValue({ messageId: 'test-123' });
+  const close = vi.fn();
+  return {
+    default: {
+      createTransport: vi.fn().mockReturnValue({ sendMail, close }),
+    },
+  };
+});
+
 // LLM provider + per-use-case assignment routes have moved to
 // `/admin/llm-providers` + `/admin/llm-usecases` — see the dedicated tests in
 // `backend/src/routes/llm/llm-providers.test.ts` and `.../llm-usecases.test.ts`.
@@ -63,7 +78,9 @@ vi.mock('../../domains/llm/services/llm-queue.js', () => ({
   setLlmMaxQueueDepthClusterWide: vi.fn().mockResolvedValue(undefined),
 }));
 
+import nodemailer from 'nodemailer';
 import { listErrors, resolveError, getErrorSummary } from '../../core/services/error-tracker.js';
+import { decryptPat, isEncryptedSecretFormat, reEncryptPat } from '../../core/utils/crypto.js';
 import { query as mockQuery } from '../../core/db/postgres.js';
 import { _resetStreamCapCache } from '../../core/services/sse-stream-limiter.js';
 import { _resetCache as _resetRateLimitsCache } from '../../core/services/rate-limit-service.js';
@@ -803,6 +820,274 @@ describe('Admin routes', () => {
         payload: { adminAccessDeniedRetentionDays: 30.5 },
       });
       expect(response.statusCode).toBe(400);
+    });
+  });
+
+  // ========================
+  // SMTP settings — masked password sentinel (issue #743)
+  // ========================
+  // GET /admin/smtp masks the password as '••••••••'; the admin UI round-trips
+  // that value on save. The mask must never reach the live transport nor be
+  // persisted to admin_settings.
+  describe('PUT /api/admin/smtp - masked password sentinel (#743)', () => {
+    const SMTP_MASK = '••••••••';
+
+    it('keeps the real password on the live transport when the masked sentinel is round-tripped', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [], rowCount: 0 });
+
+      // 1. Admin saves real credentials.
+      let response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/smtp',
+        payload: {
+          host: 'smtp.test.local',
+          port: 587,
+          secure: false,
+          user: 'mailer',
+          pass: 'real-secret-password',
+          from: 'noreply@test.local',
+          enabled: true,
+        },
+      });
+      expect(response.statusCode).toBe(200);
+
+      // 2. GET returns the masked password, which the UI round-trips on the
+      //    next save (here: changing the port).
+      const getResponse = await app.inject({ method: 'GET', url: '/api/admin/smtp' });
+      expect(getResponse.statusCode).toBe(200);
+      expect(JSON.parse(getResponse.body).pass).toBe(SMTP_MASK);
+
+      response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/smtp',
+        payload: {
+          host: 'smtp.test.local',
+          port: 2525,
+          secure: false,
+          user: 'mailer',
+          pass: SMTP_MASK,
+          from: 'noreply@test.local',
+          enabled: true,
+        },
+      });
+      expect(response.statusCode).toBe(200);
+
+      // 3. The transport created for the next send must use the real
+      //    password — not the literal mask.
+      const testResponse = await app.inject({
+        method: 'POST',
+        url: '/api/admin/smtp/test',
+        payload: { to: 'admin@test.local' },
+      });
+      expect(testResponse.statusCode).toBe(200);
+      expect(JSON.parse(testResponse.body).success).toBe(true);
+
+      const createCalls = (nodemailer.createTransport as ReturnType<typeof vi.fn>).mock.calls;
+      expect(createCalls.length).toBeGreaterThan(0);
+      const transportOptions = createCalls[createCalls.length - 1][0] as {
+        port: number;
+        auth?: { user: string; pass: string };
+      };
+      expect(transportOptions.port).toBe(2525);
+      expect(transportOptions.auth?.pass).toBe('real-secret-password');
+    });
+
+    it('does not persist the masked sentinel to admin_settings', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [], rowCount: 0 });
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/smtp',
+        payload: { host: 'smtp.other.local', pass: SMTP_MASK, enabled: true },
+      });
+      expect(response.statusCode).toBe(200);
+
+      const calls = (mockQuery as ReturnType<typeof vi.fn>).mock.calls as Array<[string, unknown[]]>;
+      const upsert = calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO admin_settings'));
+      expect(upsert).toBeDefined();
+      const persistedKeys = upsert?.[1][0] as string[];
+      expect(persistedKeys).toContain('smtp_host');
+      expect(persistedKeys).not.toContain('smtp_pass');
+    });
+
+    it('persists a real (non-masked) password to admin_settings', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [], rowCount: 0 });
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/smtp',
+        payload: { pass: 'brand-new-password' },
+      });
+      expect(response.statusCode).toBe(200);
+
+      const calls = (mockQuery as ReturnType<typeof vi.fn>).mock.calls as Array<[string, unknown[]]>;
+      const upsert = calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO admin_settings'));
+      expect(upsert).toBeDefined();
+      const persistedKeys = upsert?.[1][0] as string[];
+      const persistedValues = upsert?.[1][1] as string[];
+      expect(persistedKeys).toContain('smtp_pass');
+      // issue #738 — smtp_pass is now encrypted at rest, so the persisted
+      // value is a versioned ciphertext that decrypts to the real password,
+      // never the plaintext itself.
+      const stored = persistedValues[persistedKeys.indexOf('smtp_pass')];
+      expect(stored).not.toBe('brand-new-password');
+      expect(isEncryptedSecretFormat(stored)).toBe(true);
+      expect(decryptPat(stored)).toBe('brand-new-password');
+    });
+  });
+
+  // ========================
+  // SMTP settings — smtp_pass encrypted at rest (issue #738)
+  // ========================
+  describe('PUT /api/admin/smtp - smtp_pass encrypted at rest (#738)', () => {
+    const findAdminSettingsUpsert = () => {
+      const calls = (mockQuery as ReturnType<typeof vi.fn>).mock.calls as Array<[string, unknown[]]>;
+      return calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO admin_settings'));
+    };
+
+    it('persists smtp_pass encrypted, never plaintext', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [], rowCount: 0 });
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/smtp',
+        payload: { host: 'smtp.test.local', pass: 'super-secret-smtp', enabled: true },
+      });
+      expect(response.statusCode).toBe(200);
+
+      const upsert = findAdminSettingsUpsert();
+      expect(upsert).toBeDefined();
+      const [, params] = upsert!;
+      const keys = params[0] as string[];
+      const values = params[1] as string[];
+      const stored = values[keys.indexOf('smtp_pass')];
+
+      expect(stored).not.toBe('super-secret-smtp');
+      expect(stored).toMatch(/^h\d+:/); // versioned encryptPat format
+      expect(decryptPat(stored)).toBe('super-secret-smtp');
+    });
+
+    it('persists an empty smtp_pass as an empty string so admins can clear it', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [], rowCount: 0 });
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/smtp',
+        payload: { pass: '' },
+      });
+      expect(response.statusCode).toBe(200);
+
+      const upsert = findAdminSettingsUpsert();
+      expect(upsert).toBeDefined();
+      const [, params] = upsert!;
+      const keys = params[0] as string[];
+      const values = params[1] as string[];
+      expect(values[keys.indexOf('smtp_pass')]).toBe('');
+    });
+  });
+
+  // ========================
+  // Encryption-key rotation must sweep admin_settings.smtp_pass too —
+  // otherwise the documented procedure (rotate, remove old key) strands the
+  // ciphertext and SMTP auth fails silently (#762 review follow-up).
+  // ========================
+  describe('POST /api/admin/rotate-encryption-key - admin_settings.smtp_pass sweep (#762 review)', () => {
+    const mockedReEncryptPat = reEncryptPat as ReturnType<typeof vi.fn>;
+    // Structurally valid h0 ciphertext (passes the real isEncryptedSecretFormat).
+    const storedCipher = `h0:${'a'.repeat(32)}:${'b'.repeat(32)}:cc`;
+
+    const mockRotationQueries = (smtpValue: string | undefined, updateRowCount = 1) => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockImplementation(async (sql: string) => {
+        if (typeof sql === 'string' && sql.includes('FROM user_settings')) {
+          return { rows: [], rowCount: 0 };
+        }
+        if (typeof sql === 'string' && sql.trimStart().startsWith('SELECT') && sql.includes(`'smtp_pass'`)) {
+          return smtpValue === undefined
+            ? { rows: [], rowCount: 0 }
+            : { rows: [{ setting_value: smtpValue }], rowCount: 1 };
+        }
+        return { rows: [], rowCount: updateRowCount };
+      });
+    };
+
+    const findSmtpPassUpdate = () => {
+      const calls = (mockQuery as ReturnType<typeof vi.fn>).mock.calls as Array<[string, unknown[]]>;
+      return calls.find(([sql]) =>
+        typeof sql === 'string' && sql.includes('UPDATE admin_settings') && sql.includes(`'smtp_pass'`),
+      );
+    };
+
+    it('re-encrypts smtp_pass with the latest key, conditional on the value read, and reports it as rotated', async () => {
+      mockRotationQueries(storedCipher);
+      mockedReEncryptPat.mockReturnValueOnce('h1:new-cipher');
+
+      const response = await app.inject({ method: 'POST', url: '/api/admin/rotate-encryption-key' });
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)).toMatchObject({ rotated: 1, skipped: 0, errors: 0, total: 1 });
+
+      const update = findSmtpPassUpdate();
+      expect(update).toBeDefined();
+      const [sql, params] = update!;
+      // Lost-update guard: a concurrent PUT /admin/smtp must never be
+      // clobbered with a re-encryption of the OLD password.
+      expect(sql).toContain('setting_value = $2');
+      expect(params).toEqual(['h1:new-cipher', storedCipher]);
+    });
+
+    it('counts smtp_pass as skipped when already on the latest key (reEncryptPat → null)', async () => {
+      mockRotationQueries(storedCipher);
+      mockedReEncryptPat.mockReturnValueOnce(null);
+
+      const response = await app.inject({ method: 'POST', url: '/api/admin/rotate-encryption-key' });
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)).toMatchObject({ rotated: 0, skipped: 1, errors: 0, total: 1 });
+      expect(findSmtpPassUpdate()).toBeUndefined();
+    });
+
+    it('counts smtp_pass as skipped when the conditional UPDATE matches 0 rows (concurrent change)', async () => {
+      mockRotationQueries(storedCipher, 0);
+      mockedReEncryptPat.mockReturnValueOnce('h1:new-cipher');
+
+      const response = await app.inject({ method: 'POST', url: '/api/admin/rotate-encryption-key' });
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)).toMatchObject({ rotated: 0, skipped: 1, errors: 0, total: 1 });
+    });
+
+    it('encrypts a legacy plaintext smtp_pass outright during the sweep', async () => {
+      mockRotationQueries('plain-old-secret');
+
+      const response = await app.inject({ method: 'POST', url: '/api/admin/rotate-encryption-key' });
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)).toMatchObject({ rotated: 1, skipped: 0, errors: 0, total: 1 });
+
+      const update = findSmtpPassUpdate();
+      expect(update).toBeDefined();
+      const [sql, params] = update!;
+      expect(sql).toContain('setting_value = $2');
+      expect((params as string[])[1]).toBe('plain-old-secret');
+      expect((params as string[])[0]).toMatch(/^h\d+:/);
+      expect(decryptPat((params as string[])[0]!)).toBe('plain-old-secret');
+    });
+
+    it('reports an error when smtp_pass re-encryption throws, without failing the request', async () => {
+      mockRotationQueries(storedCipher);
+      mockedReEncryptPat.mockImplementationOnce(() => {
+        throw new Error('key version 0 not found');
+      });
+
+      const response = await app.inject({ method: 'POST', url: '/api/admin/rotate-encryption-key' });
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)).toMatchObject({ rotated: 0, skipped: 0, errors: 1, total: 1 });
+    });
+
+    it('does not count an absent or empty smtp_pass row', async () => {
+      mockRotationQueries(undefined);
+      const absent = await app.inject({ method: 'POST', url: '/api/admin/rotate-encryption-key' });
+      expect(JSON.parse(absent.body)).toMatchObject({ rotated: 0, skipped: 0, errors: 0, total: 0 });
+
+      mockRotationQueries('');
+      const empty = await app.inject({ method: 'POST', url: '/api/admin/rotate-encryption-key' });
+      expect(JSON.parse(empty.body)).toMatchObject({ rotated: 0, skipped: 0, errors: 0, total: 0 });
     });
   });
 });

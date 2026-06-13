@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
+import { Link } from 'react-router-dom';
 import { m, AnimatePresence } from 'framer-motion';
 import { AlertTriangle, X, Wifi, WifiOff, Server } from 'lucide-react';
 import { cn } from '../../lib/cn';
@@ -20,6 +21,7 @@ interface ServiceAlert {
   icon: typeof AlertTriangle;
   colorClass: string;
   bgClass: string;
+  link?: { to: string; label: string };
 }
 
 const HEALTH_CHECK_INTERVAL = 30_000;
@@ -52,16 +54,18 @@ export function ServiceStatus() {
         if (fullRes.ok) {
           const data: HealthStatus = await fullRes.json();
           if (data.services?.llm === false) {
-            const label = data.llmProvider === 'openai'
-              ? 'LLM server is unreachable'
-              : 'Ollama server is down';
+            const label = data.llmProvider
+              ? `LLM provider "${data.llmProvider}" is unreachable`
+              : 'LLM provider is unreachable';
             newAlerts.push({
+              // id stays 'ollama' for dismissal-state compatibility
               id: 'ollama',
-              service: 'ollama',
+              service: 'LLM provider',
               label,
               icon: Server,
               colorClass: 'text-warning',
               bgClass: 'bg-warning/15 border-warning/30',
+              link: { to: '/settings/ai/models', label: 'Check LLM settings' },
             });
           }
           if (data.services?.redis === false) {
@@ -126,7 +130,7 @@ export function ServiceStatus() {
               exit={{ opacity: 0, height: 0, marginBottom: 0 }}
               transition={{ duration: 0.2 }}
               className={cn(
-                'flex items-center justify-between rounded-lg border px-4 py-2.5',
+                'flex items-center justify-between rounded-lg border px-4 py-2',
                 alert.bgClass,
               )}
             >
@@ -135,6 +139,14 @@ export function ServiceStatus() {
                 <span className={cn('text-sm font-medium', alert.colorClass)}>
                   {alert.label}
                 </span>
+                {alert.link && (
+                  <Link
+                    to={alert.link.to}
+                    className={cn('text-sm underline', alert.colorClass)}
+                  >
+                    {alert.link.label}
+                  </Link>
+                )}
               </div>
               <button
                 onClick={() => dismissAlert(alert.id)}

@@ -93,21 +93,17 @@ test.describe('Confluence sync flow', () => {
     await expect(testBtn.first()).toBeVisible({ timeout: 5_000 });
     await testBtn.first().click();
 
-    // Wait for the connection test result (success or failure indicator)
-    // The result appears as a coloured box with a message
-    const resultIndicator = page
-      .locator('.bg-success\\/10')
-      .or(page.locator('.bg-destructive\\/10'))
-      .or(page.getByText(/connected|success|failed|error/i));
+    // Wait for the connection test result box. Located via data-testid +
+    // data-state (pinned by ConfluenceTab.test.tsx) rather than Tailwind
+    // utility classes, so a styling refactor can't silently hollow out
+    // this assertion.
+    const resultIndicator = page.getByTestId('confluence-test-result');
+    await expect(resultIndicator).toBeVisible({ timeout: 15_000 });
 
-    await expect(resultIndicator.first()).toBeVisible({ timeout: 15_000 });
-
-    // Verify the test succeeded (green success indicator)
-    const successIndicator = page
-      .locator('.bg-success\\/10')
-      .or(page.getByText(/connected|success/i));
-
-    await expect(successIndicator.first()).toBeVisible({ timeout: 5_000 });
+    // Verify the test succeeded.
+    await expect(resultIndicator).toHaveAttribute('data-state', 'success', {
+      timeout: 5_000,
+    });
 
     // Save the Confluence settings
     const saveBtn = page
@@ -122,46 +118,38 @@ test.describe('Confluence sync flow', () => {
       page.getByText(/saved|success/i).first(),
     ).toBeVisible({ timeout: 10_000 });
 
-    // Switch to the Sync tab to trigger sync
-    await page.getByText('Sync').first().click();
-    await page.waitForLoadState('domcontentloaded');
+    // Go to Knowledge → Spaces & Sync and discover spaces from Confluence
+    await page.goto('/settings/knowledge/spaces');
+    await page.getByRole('button', { name: /Fetch Spaces/i }).click();
 
-    // Look for a sync trigger button
-    const syncBtn = page
-      .getByRole('button', { name: /sync now|start sync|trigger sync/i })
-      .or(page.getByTestId('sync-trigger-btn'));
+    // At least one remote space appears as a selectable row ("Select <name>")
+    const selectSpaceBtn = page.getByRole('button', { name: /^Select / });
+    await expect(selectSpaceBtn.first()).toBeVisible({ timeout: 15_000 });
 
-    if (await syncBtn.first().waitFor({ state: 'visible', timeout: 5_000 }).then(() => true).catch(() => false)) {
-      await syncBtn.first().click();
+    // Select the first discovered space and persist the selection
+    await selectSpaceBtn.first().click();
+    await page.getByRole('button', { name: /Save Selection/i }).click();
 
-      // Verify that sync started (status changes or progress indicator appears)
-      const syncStatus = page
-        .getByText(/syncing|in progress|started/i)
-        .or(page.locator('[data-testid="sync-status"]'));
+    // Trigger the first sync for the selected space
+    const syncSelected = page.getByRole('button', { name: /Sync Selected/i });
+    await expect(syncSelected).toBeEnabled({ timeout: 10_000 });
+    await syncSelected.click();
 
-      await expect(syncStatus.first()).toBeVisible({ timeout: 10_000 });
-    }
+    // Sync completion is reflected by the space row gaining a "Synced: <date>"
+    // stamp (sync of the small fixture space takes seconds)
+    await expect(
+      page.getByText(/Synced: \d/).first(),
+    ).toBeVisible({ timeout: 60_000 });
 
-    // Switch to the Spaces tab to verify spaces were discovered
-    await page.getByText('Spaces').first().click();
-    await page.waitForLoadState('networkidle');
-
-    // After a successful connection, at least one Confluence space should appear
-    // Allow extra time because space fetching may be async
-    const spaceItem = page
-      .locator('[data-testid="space-item"]')
-      .or(page.getByRole('checkbox'))
-      .or(page.locator('label').filter({ hasText: /.+/ }));
-
-    const hasSpaces = await spaceItem
-      .first()
-      .waitFor({ state: 'visible', timeout: 10_000 })
-      .then(() => true)
-      .catch(() => false);
-
-    // Spaces appearing confirms the connection is working end-to-end.
-    // If the Confluence instance has spaces, at least one must be visible.
-    expect(hasSpaces).toBe(true);
+    // End-to-end proof: synced Confluence pages are served to the user
+    const pages = await page.request.get('/api/pages?source=confluence', {
+      headers: { Authorization: `Bearer ${authToken}` },
+    });
+    expect(pages.ok()).toBe(true);
+    const body = await pages.json();
+    const items = body.items ?? body.pages ?? [];
+    expect(Array.isArray(items)).toBe(true);
+    expect(items.length).toBeGreaterThan(0);
   });
 
   test('saves Confluence URL and displays it after page reload', async ({ page }) => {

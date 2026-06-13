@@ -38,7 +38,8 @@ Additionally, you need an **Ollama** server (or OpenAI-compatible API) accessibl
    JWT_SECRET=<random-32-char-string>
    PAT_ENCRYPTION_KEY=<random-32-char-string>
 
-   # Set strong passwords for infrastructure
+   # REQUIRED: strong infrastructure passwords — compose has no defaults
+   # and refuses to start when these are missing
    POSTGRES_PASSWORD=<strong-password>
    REDIS_PASSWORD=<strong-password>
    ```
@@ -46,8 +47,17 @@ Additionally, you need an **Ollama** server (or OpenAI-compatible API) accessibl
    Generate secure random strings:
 
    ```bash
+   # JWT_SECRET / PAT_ENCRYPTION_KEY
    openssl rand -base64 48
+
+   # POSTGRES_PASSWORD / REDIS_PASSWORD — must be URL-safe because they are
+   # interpolated raw into POSTGRES_URL/REDIS_URL ('/', '+', '=' break them)
+   openssl rand -hex 24
    ```
+
+   > **Note:** Docker Compose reads interpolation variables from `docker/.env`
+   > (the compose file's directory), not the repo-root `.env`. Copy your file
+   > there (`cp .env docker/.env`) or pass `--env-file .env` explicitly.
 
 4. **Start all services:**
 
@@ -55,11 +65,13 @@ Additionally, you need an **Ollama** server (or OpenAI-compatible API) accessibl
    docker compose -f docker/docker-compose.yml up -d
    ```
 
-   This starts four containers:
+   This starts six containers:
    - **frontend** -- nginx serving the React app (port 8081)
    - **backend** -- Node.js Fastify server (port 3051, internal)
    - **postgres** -- PostgreSQL 17 with pgvector
-   - **redis** -- Redis 8 Alpine with password auth and LRU eviction
+   - **redis** -- Redis 8 Alpine with password auth and `noeviction` (required by BullMQ — eviction would silently drop queued jobs)
+   - **mcp-docs** -- documentation-search MCP server (port 3100, internal)
+   - **searxng** -- metasearch engine used by mcp-docs (port 8080, internal)
 
 5. **Pull Ollama models** on your host machine:
 
@@ -81,7 +93,7 @@ docker compose -f docker/docker-compose.yml ps
 All services should show `(healthy)` status. You can also hit the health endpoint:
 
 ```bash
-curl http://localhost:3051/api/health
+curl http://localhost:8081/api/health
 ```
 
 ## Configuration Reference
@@ -97,18 +109,18 @@ curl http://localhost:3051/api/health
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `POSTGRES_URL` | `postgresql://kb_user:changeme-postgres@localhost:5432/kb_creator` | PostgreSQL connection string |
+| `POSTGRES_URL` | `postgresql://kb_user:<password>@localhost:5432/kb_creator` | PostgreSQL connection string |
 | `POSTGRES_TEST_URL` | `postgresql://kb_user:changeme-postgres@localhost:5433/kb_creator_test` | Test database connection (port 5433) |
 | `POSTGRES_USER` | `kb_user` | PostgreSQL username (Docker Compose only) |
-| `POSTGRES_PASSWORD` | `changeme-postgres` | PostgreSQL password (Docker Compose only) |
+| `POSTGRES_PASSWORD` | -- | **Required** PostgreSQL password — Docker Compose refuses to start without it (Docker Compose only) |
 | `POSTGRES_DB` | `kb_creator` | PostgreSQL database name (Docker Compose only) |
 
 ### Redis
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `REDIS_URL` | `redis://:changeme-redis@localhost:6379` | Redis connection string |
-| `REDIS_PASSWORD` | `changeme-redis` | Redis AUTH password (Docker Compose only) |
+| `REDIS_URL` | `redis://:<password>@localhost:6379` | Redis connection string |
+| `REDIS_PASSWORD` | -- | **Required** Redis AUTH password — Docker Compose refuses to start without it (Docker Compose only) |
 
 ### Server
 
@@ -116,10 +128,10 @@ curl http://localhost:3051/api/health
 |----------|---------|-------------|
 | `NODE_ENV` | `development` | Set to `production` for production deployments |
 | `BACKEND_PORT` | `3051` | Backend server port |
-| `FRONTEND_URL` | `http://localhost:5273` | Used for CORS origin and OIDC redirects |
+| `FRONTEND_URL` | `http://localhost:5273` | CORS origin **and** the origin the post-login OIDC redirect is built from. Behind a reverse proxy with SSO, set this to your public origin (see [OIDC / SSO](#oidc--sso)). |
 | `FRONTEND_PORT` | `5273` | Host port mapped to the frontend container (Docker Compose only) |
 | `LOG_LEVEL` | `info` | Pino log level: `fatal`, `error`, `warn`, `info`, `debug`, `trace` |
-| `ACCESS_TOKEN_EXPIRY` | `1h` | JWT access token lifetime (jose duration format: `30m`, `1h`, `2h`) |
+| `ACCESS_TOKEN_EXPIRY` | `1h` | JWT access token lifetime (jose duration format: `30m`, `1h`, `2h`). Maximum `24h` — a longer value is clamped to `24h` at startup and a warning is logged, since the token lifetime is the worst-case window a deactivated or demoted account could retain API access. An invalid format (e.g. `banana`) still fails startup. Deactivation and role changes normally take effect within seconds (≤ 30s) via the per-user security check. |
 
 ### LLM Provider
 
@@ -192,7 +204,7 @@ Compendiq uses BullMQ (Redis-backed) for reliable background job processing. Six
 
 **Monitoring:** The health endpoint returns per-queue counts (waiting, active, completed, failed):
 ```bash
-curl http://localhost:3051/api/health | jq '.queues'
+curl http://localhost:8081/api/health | jq '.queues'
 ```
 
 ### LLM Request Queue
@@ -286,7 +298,20 @@ Settings configured via the admin UI are persisted in the `admin_settings` datab
 
 ### OIDC / SSO
 
-OIDC is configured entirely via the Admin UI (Settings > OIDC/SSO). No environment variables are required -- all OIDC configuration is stored in the database.
+OIDC provider settings (issuer, client ID/secret, group mappings) are configured entirely via the Admin UI (Settings > OIDC/SSO) and stored in the database.
+
+**`FRONTEND_URL` must be your public origin behind a reverse proxy.** OIDC login uses a two-hop callback:
+
+1. The IdP redirects the browser back to the **Redirect URI** you configure in Settings > OIDC/SSO — e.g. `https://compendiq.example.com/api/auth/oidc/callback`. This hits the backend.
+2. The backend exchanges the code and then redirects the browser to the SPA callback route (`/auth/oidc/callback?login_code=…`). It builds **that** redirect from the backend's `FRONTEND_URL` env var — **not** from the Redirect URI.
+
+These are two independent URLs. If `FRONTEND_URL` is left at its `http://localhost:8081` / `http://localhost:5273` default while the admin reaches the app through a public host, a correctly-configured Redirect URI still bounces the browser to `localhost` after the IdP round-trip, dead-ending login. Set:
+
+```
+FRONTEND_URL=https://compendiq.example.com
+```
+
+(matching the origin of your Redirect URI) and restart the backend. `FRONTEND_URL` also accepts a comma-separated list, which doubles as the CORS allowlist — so if you already configured multiple origins, **append** the public origin (`…,https://compendiq.example.com`) rather than overwriting the existing list. The Settings > OIDC/SSO page warns inline when the Redirect URI origin diverges from the origin you loaded the app from, and surfaces the exact `FRONTEND_URL` value to set.
 
 ### IP Allowlist (Enterprise, v0.4+)
 
@@ -565,6 +590,12 @@ In CE-only deployments the `/api/admin/compliance-reports` and `/api/admin/compl
 | `OTEL_SERVICE_NAME` | `compendiq-backend` | Service name reported to the OTLP collector |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | *(none)* | OTLP collector endpoint (e.g., `http://localhost:4318`) |
 
+When tracing is enabled, every outbound LLM call additionally emits a custom
+span (`llm.chat`, `llm.stream_chat.dispatch`, `llm.embeddings`,
+`llm.list_models`) tagged with the provider id and model, covering queue wait
+plus the upstream request. See `docs/PERFORMANCE.md` → "OpenTelemetry Tracing"
+for the full span reference.
+
 ### Docker Compose Only
 
 | Variable | Default | Description |
@@ -573,6 +604,51 @@ In CE-only deployments the `/api/admin/compliance-reports` and `/api/admin/compl
 | `CONTAINER_CA_BUNDLE_PATH` | `/etc/ssl/certs/ca-certificates.crt` | Container path for the CA bundle |
 
 ## Upgrade Procedure
+
+### Breaking change: `POSTGRES_PASSWORD` / `REDIS_PASSWORD` are now required
+
+`docker/docker-compose.yml` no longer ships the `changeme-postgres` /
+`changeme-redis` default passwords — `docker compose up` refuses to start
+until both variables are set (in `docker/.env` or exported in the
+environment).
+
+**Important:** PostgreSQL bakes the password into the `postgres-data`
+volume when it is first initialized. Setting a *new* `POSTGRES_PASSWORD`
+on an existing install does **not** change the password inside the volume —
+the backend will fail to authenticate and crash-loop.
+
+Pick one of the following when upgrading an existing install:
+
+- **Option A — keep the existing credentials.** Set the variables to the
+  values your volumes/containers were initialized with. If you previously
+  relied on the defaults, that is:
+
+  ```bash
+  # docker/.env
+  POSTGRES_PASSWORD=changeme-postgres
+  REDIS_PASSWORD=changeme-redis
+  ```
+
+- **Option B — rotate properly (recommended).** Change the live Postgres
+  password first, then update the env and recreate:
+
+  ```bash
+  # 1. Generate a URL-safe password (avoid base64: '/', '+', '=' break
+  #    the POSTGRES_URL/REDIS_URL interpolation)
+  openssl rand -hex 24
+
+  # 2. Change the password inside the running Postgres
+  docker compose -f docker/docker-compose.yml exec postgres \
+    psql -U kb_user -d kb_creator \
+    -c "ALTER USER kb_user WITH PASSWORD '<new-password>';"
+
+  # 3. Set POSTGRES_PASSWORD=<new-password> in docker/.env, then
+  docker compose -f docker/docker-compose.yml up -d
+  ```
+
+  Redis needs no in-place step: `requirepass` comes from the container
+  command line (no state in a volume), so setting a new `REDIS_PASSWORD`
+  and running `up -d` re-creates it with the new password.
 
 ### Docker Compose Upgrade
 
@@ -593,7 +669,7 @@ In CE-only deployments the `/api/admin/compliance-reports` and `/api/admin/compl
 3. **Verify the upgrade:**
 
    ```bash
-   curl http://localhost:3051/api/health
+   curl http://localhost:8081/api/health
    ```
 
 ### From Source

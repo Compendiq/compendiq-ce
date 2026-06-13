@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { query } from '../../core/db/postgres.js';
 import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
+import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
 import { logger } from '../../core/utils/logger.js';
 
 const IdParamSchema = z.object({ id: z.string().min(1) });
@@ -26,11 +27,7 @@ export async function verificationRoutes(fastify: FastifyInstance) {
       `SELECT p.id FROM pages p
        WHERE ${isNumeric ? 'p.id = $2' : 'p.confluence_id = $2'}
          AND p.deleted_at IS NULL
-         AND (
-           (p.source = 'confluence' AND p.space_key = ANY($1::text[]))
-           OR (p.source = 'standalone' AND p.visibility = 'shared')
-           OR (p.source = 'standalone' AND p.visibility = 'private' AND p.created_by_user_id = $3)
-         )`,
+         AND ${visiblePagesPredicate(1, 3, 'p')}`,
       [verifySpaces, isNumeric ? parseInt(pageId, 10) : pageId, userId],
     );
     if (check.rows.length === 0) {

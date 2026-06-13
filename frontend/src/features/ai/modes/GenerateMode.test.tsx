@@ -9,10 +9,11 @@ import { useAuthStore } from '../../../stores/auth-store';
 
 Element.prototype.scrollIntoView = vi.fn();
 
+// Replace apiFetch with a controllable mock but keep the real ApiError class
+// available — runStream branches on `err instanceof ApiError` for 403 handling.
 const apiFetchMock = vi.fn();
-vi.mock('../../../shared/lib/api', () => ({
-  apiFetch: (...args: unknown[]) => apiFetchMock(...args),
-}));
+vi.mock('../../../shared/lib/api', async () =>
+  (await import('../../../test-utils')).apiModuleMock(() => apiFetchMock));
 
 const streamSSEMock = vi.fn();
 vi.mock('../../../shared/lib/sse', () => ({
@@ -126,15 +127,15 @@ describe('GenerateMode', () => {
   });
 
   it('exports correct empty state constants', () => {
-    expect(GENERATE_EMPTY_TITLE).toBe('Describe the article you want to generate');
-    expect(GENERATE_EMPTY_SUBTITLE).toBe('AI will create a full article based on your prompt');
+    expect(GENERATE_EMPTY_TITLE).toBe('Describe the page you want to generate');
+    expect(GENERATE_EMPTY_SUBTITLE).toBe('AI will create a full page based on your prompt');
   });
 
   describe('GenerateModeInput', () => {
     it('renders the prompt input, send button, and PDF upload zone', () => {
       render(<GenerateModeInput />, { wrapper: createWrapper() });
 
-      expect(screen.getByPlaceholderText('Describe the article to generate...')).toBeInTheDocument();
+      expect(screen.getByPlaceholderText('Describe the page to generate...')).toBeInTheDocument();
       expect(screen.getByTestId('pdf-upload-zone')).toBeInTheDocument();
       expect(getSendButton()).toBeInTheDocument();
     });
@@ -152,7 +153,7 @@ describe('GenerateMode', () => {
 
       render(<GenerateModeInput />, { wrapper: createWrapper() });
 
-      const input = screen.getByPlaceholderText('Describe the article to generate...');
+      const input = screen.getByPlaceholderText('Describe the page to generate...');
       fireEvent.change(input, { target: { value: 'Write a guide about Docker' } });
 
       await waitFor(() => {
@@ -181,7 +182,7 @@ describe('GenerateMode', () => {
 
       render(<GenerateModeInput />, { wrapper: createWrapper() });
 
-      const input = screen.getByPlaceholderText('Describe the article to generate...');
+      const input = screen.getByPlaceholderText('Describe the page to generate...');
       fireEvent.change(input, { target: { value: 'Write about Docker' } });
 
       await waitFor(() => {
@@ -208,7 +209,7 @@ describe('GenerateMode', () => {
 
       render(<GenerateModeInput />, { wrapper: createWrapper() });
 
-      const input = screen.getByPlaceholderText('Describe the article to generate...');
+      const input = screen.getByPlaceholderText('Describe the page to generate...');
       fireEvent.change(input, { target: { value: 'Write about Docker' } });
 
       await waitFor(() => {
@@ -235,7 +236,7 @@ describe('GenerateMode', () => {
 
       render(<GenerateModeInput />, { wrapper: createWrapper() });
 
-      const input = screen.getByPlaceholderText('Describe the article to generate...');
+      const input = screen.getByPlaceholderText('Describe the page to generate...');
       fireEvent.change(input, { target: { value: 'Write article' } });
 
       await waitFor(() => {
@@ -367,7 +368,7 @@ describe('GenerateMode', () => {
 
       render(<GenerateModeInput />, { wrapper: createWrapper() });
 
-      const input = screen.getByPlaceholderText('Describe the article to generate...');
+      const input = screen.getByPlaceholderText('Describe the page to generate...');
       fireEvent.change(input, { target: { value: 'Write about testing' } });
 
       await waitFor(() => {
@@ -434,7 +435,7 @@ describe('GenerateMode', () => {
       render(<GenerateModeInput />, { wrapper: createWrapper() });
 
       // Before upload: standard placeholder
-      expect(screen.getByPlaceholderText('Describe the article to generate...')).toBeInTheDocument();
+      expect(screen.getByPlaceholderText('Describe the page to generate...')).toBeInTheDocument();
 
       const fileInput = screen.getByTestId('pdf-file-input');
       const pdfFile = new File(['%PDF-1.4'], 'doc.pdf', { type: 'application/pdf' });
@@ -744,6 +745,52 @@ describe('GenerateMode', () => {
         expect(body.bodyHtml).toContain('<strong>Bold</strong>');
         expect(body.bodyHtml).toContain('<em>italic</em>');
         expect(body.bodyHtml).toContain('<li>Item 1</li>');
+      });
+    });
+
+    it('sanitizes generated markdown before sending bodyHtml (#747)', async () => {
+      // LLM output may carry raw HTML through markdown — it must be sanitized
+      // with the shared DOMPurify-backed helper before being sent to /pages.
+      const maliciousMarkdown =
+        '# Title\n\n<script>alert("xss")</script>\n\n<img src="x" onerror="alert(1)">\n\nSafe **bold** text.';
+
+      apiFetchMock.mockImplementation((path: string, opts?: RequestInit) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.resolve([{ name: 'llama3' }]);
+        }
+        if (path === '/llm/conversations') {
+          return Promise.resolve([]);
+        }
+        if (path === '/pages' && opts?.method === 'POST') {
+          return Promise.resolve({ id: 'new-page-4', title: 'Title', version: 1 });
+        }
+        return Promise.resolve([]);
+      });
+
+      render(
+        <GenerateSavePanel generatedContent={maliciousMarkdown} onSaved={onSavedMock} />,
+        { wrapper: createWrapper() },
+      );
+
+      fireEvent.change(screen.getByTestId('generate-space-select'), { target: { value: 'DEV' } });
+      fireEvent.click(screen.getByTestId('generate-save-button'));
+
+      await waitFor(() => {
+        const postCall = apiFetchMock.mock.calls.find(
+          (args: unknown[]) =>
+            args[0] === '/pages' && (args[1] as RequestInit | undefined)?.method === 'POST',
+        );
+        expect(postCall).toBeDefined();
+        const body = JSON.parse((postCall![1] as RequestInit).body as string);
+
+        // Dangerous markup is stripped...
+        expect(body.bodyHtml).not.toContain('<script>');
+        expect(body.bodyHtml).not.toContain('onerror');
+        // ...while legitimate formatting is preserved.
+        expect(body.bodyHtml).toContain('<strong>bold</strong>');
       });
     });
 

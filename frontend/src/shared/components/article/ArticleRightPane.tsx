@@ -16,8 +16,10 @@ import {
   RefreshCw,
   Trash2,
   Wand2,
+  History,
 } from 'lucide-react';
 import { AutoTagger } from '../../../features/pages/AutoTagger';
+import { VersionHistory } from '../../../features/pages/VersionHistory';
 import { FreshnessBadge } from '../badges/FreshnessBadge';
 import { EmbeddingStatusBadge } from '../badges/EmbeddingStatusBadge';
 import { QualityScoreBadge } from '../badges/QualityScoreBadge';
@@ -38,9 +40,12 @@ import {
   useResyncPage,
   useUnpinPage,
 } from '../../hooks/use-pages';
+import { useQuery } from '@tanstack/react-query';
 import { useExportPdf } from '../../hooks/use-standalone';
 import { useSettings } from '../../hooks/use-settings';
+import { apiFetch } from '../../lib/api';
 import { cn } from '../../lib/cn';
+import { ConfirmDialog } from '../ConfirmDialog';
 import type { TocHeading } from './TableOfContents';
 
 // ---------- Outline tree helpers ----------
@@ -202,10 +207,19 @@ export function ArticleRightPane() {
 
   const isPinned = pinnedData?.items.some((item) => item.id === id) ?? false;
 
-  // Derive the active LLM model from settings for auto-tagging
-  const activeModel = settings?.llmProvider === 'openai'
-    ? (settings.openaiModel ?? '')
-    : (settings?.ollamaModel ?? '');
+  // #718: gate the Auto-tag button on the NEW provider source, not the removed
+  // legacy settings.llmProvider/ollamaModel/openaiModel fields (ADR-021 / migration
+  // 054). The backend resolves the auto_tag use-case itself; we only hide the button
+  // when we positively know no provider can serve auto-tag. Default to VISIBLE while
+  // the query is in flight so the button never flickers out on load.
+  const autoTagDefaultQuery = useQuery<{ model?: string | null }>({
+    queryKey: ['llm', 'usecase-default', 'auto_tag'],
+    queryFn: () => apiFetch('/llm/usecase-default?usecase=auto_tag'),
+    retry: false,
+    staleTime: 30_000,
+  });
+  const aiAutoTagAvailable =
+    autoTagDefaultQuery.isLoading || Boolean(autoTagDefaultQuery.data?.model);
 
   // PDF export
   const exportPdf = useExportPdf();
@@ -217,7 +231,7 @@ export function ArticleRightPane() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${page?.title?.replace(/[^a-zA-Z0-9-_ ]/g, '').replace(/\s+/g, '-').toLowerCase() ?? 'article'}.pdf`;
+      a.download = `${page?.title?.replace(/[^a-zA-Z0-9-_ ]/g, '').replace(/\s+/g, '-').toLowerCase() ?? 'page'}.pdf`;
       a.click();
       URL.revokeObjectURL(url);
     } catch (err) {
@@ -231,6 +245,7 @@ export function ArticleRightPane() {
   const [collapsedIds, setCollapsedIds] = useState(() => readCollapsedIds(storageKey));
   const [readingProgress, setReadingProgress] = useState(0);
   const [isResizing, setIsResizing] = useState(false);
+  const [confirmTrashOpen, setConfirmTrashOpen] = useState(false);
   const observerRef = useRef<IntersectionObserver | null>(null);
   const sidebarRef = useRef<HTMLElement>(null);
 
@@ -375,14 +390,24 @@ export function ArticleRightPane() {
     });
   }, [id, isPinned, page, pinMutation, unpinMutation]);
 
-  const handleDelete = useCallback(async () => {
-    if (!id || !window.confirm('Delete this article? This cannot be undone.')) return;
+  // Deleting soft-deletes into the 30-day trash, so the confirm copy must
+  // not claim the action "cannot be undone". ConfirmDialog replaces the
+  // native confirm() to match the neumorphic design system. Same flow
+  // and copy as PageViewPage's Alt+Shift+D shortcut.
+  const handleDelete = useCallback(() => {
+    if (!id) return;
+    setConfirmTrashOpen(true);
+  }, [id]);
+
+  const handleConfirmMoveToTrash = useCallback(async () => {
+    if (!id) return;
+    setConfirmTrashOpen(false);
     try {
       await deleteMutation.mutateAsync(id);
       navigate('/');
-      toast.success('Article deleted.');
+      toast.success('Page moved to trash.');
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to delete article.');
+      toast.error(error instanceof Error ? error.message : 'Failed to move page to trash.');
     }
   }, [deleteMutation, id, navigate]);
 
@@ -460,11 +485,26 @@ export function ArticleRightPane() {
 
   if (!id) return null;
 
+  // Shared between the collapsed-rail and expanded returns — Radix portals
+  // the dialog to <body>, so its position in the tree only matters for state.
+  const confirmTrashDialog = (
+    <ConfirmDialog
+      open={confirmTrashOpen}
+      title="Move page to trash?"
+      description="It can be restored from Trash for 30 days, then it is permanently deleted."
+      confirmLabel="Move to trash"
+      destructive
+      onConfirm={handleConfirmMoveToTrash}
+      onCancel={() => setConfirmTrashOpen(false)}
+    />
+  );
+
   // Collapsed rail — glass pill style
   if (collapsed) {
     const railIconBtn =
       'rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors disabled:opacity-50';
     return (
+      <>
       <AnimatePresence mode="wait">
         <m.div
           key="collapsed-rail"
@@ -479,7 +519,7 @@ export function ArticleRightPane() {
             <button
               onClick={toggleSidebar}
               className={railIconBtn}
-              aria-label="Expand article sidebar"
+              aria-label="Expand page sidebar"
               title="Expand sidebar (.)"
             >
               <PanelRight size={16} />
@@ -506,11 +546,10 @@ export function ArticleRightPane() {
                   <Wand2 size={16} />
                 </button>
 
-                {activeModel && (
+                {aiAutoTagAvailable && id && (
                   <AutoTagger
                     pageId={id}
                     currentLabels={page?.labels ?? []}
-                    model={activeModel}
                     className={`${railIconBtn} [&>span]:hidden`}
                   />
                 )}
@@ -602,7 +641,7 @@ export function ArticleRightPane() {
                 <button
                   onClick={handleDelete}
                   className="rounded-lg p-1.5 text-destructive/80 transition-colors hover:bg-destructive/8 hover:text-destructive"
-                  aria-label="Delete article"
+                  aria-label="Delete page"
                   title={`Delete (${formatKeysForPlatform(getShortcutHint('delete-page') ?? '', detectMac())})`}
                 >
                   <Trash2 size={16} />
@@ -612,10 +651,13 @@ export function ArticleRightPane() {
           )}
         </m.div>
       </AnimatePresence>
+      {confirmTrashDialog}
+      </>
     );
   }
 
   return (
+    <>
     <m.aside
       ref={sidebarRef}
       key="expanded-sidebar"
@@ -634,7 +676,7 @@ export function ArticleRightPane() {
         <button
           onClick={toggleSidebar}
           className="flex items-center gap-0.5 rounded-lg p-1 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
-          aria-label="Collapse article sidebar"
+          aria-label="Collapse page sidebar"
           title="Collapse sidebar (.)"
         >
           <PanelRightClose size={14} />
@@ -650,12 +692,11 @@ export function ArticleRightPane() {
           editor; readers want to discover labels for re-tagging. The other
           actions (Improve, Export, Delete) stay read-mode-only because they
           act on the saved page state. */}
-      {page && id && activeModel && editing && (
+      {page && id && aiAutoTagAvailable && editing && (
         <div className="p-2 space-y-0.5" data-testid="article-actions-edit">
           <AutoTagger
             pageId={id}
             currentLabels={page?.labels ?? []}
-            model={activeModel}
             className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
           />
         </div>
@@ -673,12 +714,32 @@ export function ArticleRightPane() {
             <span className="truncate">AI Improve</span>
           </button>
 
-          {id && activeModel && (
+          {id && aiAutoTagAvailable && (
             <AutoTagger
               pageId={id}
               currentLabels={page?.labels ?? []}
-              model={activeModel}
               className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
+            />
+          )}
+
+          {id && (
+            <VersionHistory
+              pageId={id}
+              renderTrigger={(historyOpen) => (
+                <button
+                  type="button"
+                  className={cn(
+                    'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
+                    historyOpen
+                      ? 'nm-pill-active text-primary font-medium'
+                      : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
+                  )}
+                  title="Version history"
+                >
+                  <History size={15} className="shrink-0 opacity-70" />
+                  <span className="truncate">Version history</span>
+                </button>
+              )}
             />
           )}
 
@@ -866,7 +927,7 @@ export function ArticleRightPane() {
       <div className="flex-1 overflow-y-auto p-1.5 scroll-mask" data-testid="article-outline-tree">
         {headings.length === 0 ? (
           <div className="px-3 py-6 text-center text-xs text-muted-foreground">
-            No headings in this article.
+            No headings on this page.
           </div>
         ) : (
           <div className="space-y-0.5">
@@ -887,7 +948,7 @@ export function ArticleRightPane() {
       {/* Resize handle */}
       <div
         role="separator"
-        aria-label="Resize article sidebar"
+        aria-label="Resize page sidebar"
         aria-orientation="vertical"
         onMouseDown={handleResizeStart}
         className={cn(
@@ -896,5 +957,7 @@ export function ArticleRightPane() {
         )}
       />
     </m.aside>
+    {confirmTrashDialog}
+    </>
   );
 }

@@ -68,7 +68,7 @@ describe('PinnedArticlesSection', () => {
 
     const section = await screen.findByTestId('pinned-articles-section');
     expect(section).toBeInTheDocument();
-    expect(screen.getByText('Pinned Articles')).toBeInTheDocument();
+    expect(screen.getByText('Pinned Pages')).toBeInTheDocument();
     expect(screen.getByText('Getting Started Guide')).toBeInTheDocument();
     expect(screen.getByText('Deployment Runbook')).toBeInTheDocument();
   });

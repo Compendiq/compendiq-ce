@@ -95,6 +95,12 @@ export function LicenseStatusCard() {
   const isValid = data?.valid === true;
   const canUpdate = data?.canUpdate === true;
   const hasStoredKey = Boolean(data?.displayKey && data.displayKey.length > 0);
+  // A stored key that the backend rejects deserves a loud explanation —
+  // otherwise the admin sees "Community — Free" and has to decode the
+  // expiry date out of the masked key string.
+  const storedKeyInvalid = hasStoredKey && !isValid;
+  const expiredDate = data?.expiresAt ? new Date(data.expiresAt) : null;
+  const isExpired = storedKeyInvalid && expiredDate !== null && expiredDate.getTime() < Date.now();
 
   const handleSave = () => {
     const trimmed = keyInput.trim();
@@ -109,7 +115,7 @@ export function LicenseStatusCard() {
     <div className="space-y-6" data-testid="license-status">
       <PanelHeader
         title="License"
-        subtitle="Current tier and the enterprise features each tier unlocks."
+        subtitle="License tier and the enterprise features each tier unlocks."
       />
 
       {/* Community-upgrade CTA promoted to top: in CE the admin is most
@@ -164,11 +170,17 @@ export function LicenseStatusCard() {
                 <span className="text-lg font-semibold">{config.label} Edition</span>
                 <span className={cn(
                   'inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium',
-                  config.borderColor,
-                  config.bgColor,
-                  config.color,
+                  storedKeyInvalid
+                    ? 'border-destructive/30 bg-destructive/10 text-destructive'
+                    : [config.borderColor, config.bgColor, config.color],
                 )}>
-                  {isValid ? 'Active' : isCommunity ? 'Free' : 'Inactive'}
+                  {isValid
+                    ? 'Active'
+                    : storedKeyInvalid
+                      ? (isExpired ? 'Expired' : 'Invalid')
+                      : isCommunity
+                        ? 'Free'
+                        : 'Inactive'}
                 </span>
               </div>
               {isCommunity && !canUpdate && (
@@ -185,8 +197,24 @@ export function LicenseStatusCard() {
           </div>
         </div>
 
-        {/* Stats */}
-        {!isCommunity && (
+        {/* Invalid stored key — explain WHY the tier fell back to community
+            instead of leaving the admin to decode the date from the masked
+            key string. */}
+        {storedKeyInvalid && (
+          <div className="border-t border-destructive/30 bg-destructive/10 px-5 py-3 text-sm" data-testid="license-expired-banner">
+            {/* The key encodes the expiry as a UTC date — format in UTC so
+                east-of-UTC locales don't display a day-late date. */}
+            {isExpired ? (
+              <>Your stored license key expired on <strong>{expiredDate!.toLocaleDateString(undefined, { timeZone: 'UTC' })}</strong>. Enterprise features are locked until a new key is saved.</>
+            ) : (
+              <>The stored license key is invalid. Enterprise features are locked until a valid key is saved.</>
+            )}
+          </div>
+        )}
+
+        {/* Stats — also shown when an (invalid) key is stored so the admin
+            can see what that key granted. */}
+        {(!isCommunity || hasStoredKey) && (
           <div className="grid grid-cols-2 gap-px border-t border-border/40 bg-border/40">
             <div className="bg-card p-4">
               <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -198,10 +226,10 @@ export function LicenseStatusCard() {
             <div className="bg-card p-4">
               <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
                 <Calendar size={12} />
-                Expires
+                {isExpired ? 'Expired' : 'Expires'}
               </div>
               <div className="mt-1 text-xl font-semibold">
-                {data?.expiresAt ? new Date(data.expiresAt).toLocaleDateString() : 'N/A'}
+                {data?.expiresAt ? new Date(data.expiresAt).toLocaleDateString(undefined, { timeZone: 'UTC' }) : 'N/A'}
               </div>
             </div>
           </div>

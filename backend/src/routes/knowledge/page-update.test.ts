@@ -24,11 +24,15 @@ vi.mock('../../core/services/content-converter.js', () => ({
   htmlToText: (...args: unknown[]) => mockHtmlToText(...args),
 }));
 
+const mockCacheInvalidate = vi.fn();
+const mockCacheInvalidateAcrossUsers = vi.fn();
+
 vi.mock('../../core/services/redis-cache.js', () => ({
   RedisCache: class MockRedisCache {
     get = vi.fn().mockResolvedValue(null);
     set = vi.fn().mockResolvedValue(undefined);
-    invalidate = vi.fn().mockResolvedValue(undefined);
+    invalidate = (...args: unknown[]) => mockCacheInvalidate(...args);
+    invalidateAcrossUsers = (...args: unknown[]) => mockCacheInvalidateAcrossUsers(...args);
   },
 }));
 
@@ -134,5 +138,65 @@ describe('PUT /api/pages/:id', () => {
       'page-1',
       'OPS',
     );
+  });
+
+  describe('standalone visibility change — cache invalidation', () => {
+    function mockStandalonePage(visibility: 'private' | 'shared') {
+      mockQuery.mockImplementation((sql: string) => {
+        if (sql.includes('SELECT id, version, space_key')) {
+          return Promise.resolve({
+            rows: [{
+              id: 7, version: 3, space_key: 'NOTES', source: 'standalone',
+              created_by_user_id: 'user-1', visibility,
+              confluence_id: null, deleted_at: null, page_type: 'page',
+            }],
+          });
+        }
+        return Promise.resolve({ rows: [] });
+      });
+    }
+
+    it('invalidates the pages cache across all users when the update changes visibility', async () => {
+      mockStandalonePage('private');
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/pages/7',
+        payload: { title: 'Note', bodyHtml: '<p>note</p>', version: 3, visibility: 'shared' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      // Other users' cached trees/lists would otherwise serve stale data
+      // for up to the cache TTL after a private → shared flip (and vice versa).
+      expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledWith('pages');
+    });
+
+    it('keeps per-user invalidation when the payload sends the same visibility', async () => {
+      mockStandalonePage('shared');
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/pages/7',
+        payload: { title: 'Note', bodyHtml: '<p>note</p>', version: 3, visibility: 'shared' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockCacheInvalidateAcrossUsers).not.toHaveBeenCalled();
+      expect(mockCacheInvalidate).toHaveBeenCalledWith('user-1', 'pages');
+    });
+
+    it('keeps per-user invalidation when the payload omits visibility', async () => {
+      mockStandalonePage('private');
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/pages/7',
+        payload: { title: 'Note', bodyHtml: '<p>note</p>', version: 3 },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockCacheInvalidateAcrossUsers).not.toHaveBeenCalled();
+      expect(mockCacheInvalidate).toHaveBeenCalledWith('user-1', 'pages');
+    });
   });
 });

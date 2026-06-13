@@ -3,10 +3,11 @@ import { createContext, useContext, useState, useRef, useEffect, useCallback, ty
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { UsecaseDefault } from '@compendiq/contracts';
-import { apiFetch } from '../../shared/lib/api';
+import { apiFetch, ApiError } from '../../shared/lib/api';
 import { streamSSE } from '../../shared/lib/sse';
 import { usePage, useEmbeddingStatus, type EmbeddingStatusData } from '../../shared/hooks/use-pages';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
+import { useStreamingContent } from '../../shared/hooks/use-streaming-content';
 import { type Source } from './SourceCitations';
 import { toast } from 'sonner';
 
@@ -25,6 +26,9 @@ export interface Message {
   role: 'user' | 'assistant';
   content: string;
   sources?: Source[];
+  /** True when this assistant message reports a failed request (rendered with
+   * destructive styling instead of the regular bubble). */
+  isError?: boolean;
 }
 
 interface Conversation {
@@ -72,12 +76,23 @@ interface AiContextValue {
   model: string;
   setModel: (m: string) => void;
   models: Array<{ name: string }>;
+  /** True when the models fetch failed (e.g. LLM provider down) — the UI must
+   * surface a retry affordance instead of spinning forever. */
+  modelsError: boolean;
+  refetchModels: () => void;
 
   // Streaming state
   input: string;
   setInput: (v: string) => void;
   isStreaming: boolean;
   setIsStreaming: (v: boolean) => void;
+  /**
+   * rAF-batched content of the in-flight assistant answer (#747). During a
+   * stream the placeholder assistant message in `messages` stays empty and
+   * the UI renders this value instead; runStream commits the final content
+   * to `messages` once the stream ends.
+   */
+  streamingContent: string;
   isThinking: boolean;
   setIsThinking: (v: boolean) => void;
   thinkingElapsed: boolean;
@@ -108,6 +123,17 @@ interface AiContextValue {
   setShowDiffView: (v: boolean) => void;
   improvedContent: string;
   setImprovedContent: (v: string) => void;
+  /** Markdown baseline (#704) the model was fed — diffed against `improvedContent`. */
+  originalMarkdown: string;
+  setOriginalMarkdown: (v: string) => void;
+  /**
+   * Backend verdict from the Improve stream's final event: the output lost
+   * the page's layout boundary tokens beyond recovery. Authoritative over
+   * any client-side token heuristic; undefined when the stream ended without
+   * a final event (abort) — callers fall back to their own check then.
+   */
+  layoutTokensLost: boolean | undefined;
+  setLayoutTokensLost: (v: boolean | undefined) => void;
 
   // Diagram mode state
   diagramType: string;
@@ -119,16 +145,38 @@ interface AiContextValue {
 
   // Streaming helper
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  runStream: <T extends { content?: string; error?: string; done?: boolean; final?: boolean; conversationId?: string; sources?: Source[] }>(
+  runStream: <T extends StreamChunk>(
     endpoint: string,
     body: Record<string, unknown>,
     opts?: {
       onBeforeStream?: () => void;
       onContent?: (accumulated: string) => void;
-      onComplete?: (accumulated: string, sources?: Source[]) => void;
+      onComplete?: (accumulated: string, sources?: Source[], meta?: StreamMeta) => void;
       userMessage?: string;
     },
   ) => Promise<void>;
+}
+
+/** Shape of a single parsed SSE event from any `/llm/*` streaming route. */
+interface StreamChunk {
+  content?: string;
+  error?: string;
+  done?: boolean;
+  final?: boolean;
+  conversationId?: string;
+  sources?: Source[];
+  /** Improve route (#704): the original markdown the model was fed, echoed on the final event. */
+  originalMarkdown?: string;
+  /** Improve route: backend verdict that the output lost the layout tokens beyond recovery. */
+  layoutTokensLost?: boolean;
+}
+
+/** Extra, non-content metadata surfaced to `onComplete` once a stream finishes. */
+export interface StreamMeta {
+  /** Improve route (#704): markdown baseline for like-for-like diffing. */
+  originalMarkdown?: string;
+  /** Improve route: backend verdict that the output lost the layout tokens beyond recovery. */
+  layoutTokensLost?: boolean;
 }
 
 const AiCtx = createContext<AiContextValue | null>(null);
@@ -172,6 +220,8 @@ export function AiProvider({ children }: { children: ReactNode }) {
   const [improvementType, setImprovementType] = useState('grammar');
   const [showDiffView, setShowDiffView] = useState(false);
   const [improvedContent, setImprovedContent] = useState('');
+  const [originalMarkdown, setOriginalMarkdown] = useState('');
+  const [layoutTokensLost, setLayoutTokensLost] = useState<boolean | undefined>(undefined);
   const [diagramType, setDiagramType] = useState('flowchart');
   const [diagramCode, setDiagramCode] = useState('');
   const [isInsertingDiagram, setIsInsertingDiagram] = useState(false);
@@ -179,6 +229,19 @@ export function AiProvider({ children }: { children: ReactNode }) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const isStreamingRef = useRef(false);
+
+  // #747: rAF-batched display buffer for the in-flight assistant answer.
+  // SSE chunks are appended to a ref and flushed to React state at most once
+  // per animation frame (~20x/s), instead of committing every chunk to
+  // `messages` (which re-parsed the full Markdown answer per token).
+  const streaming = useStreamingContent();
+  const {
+    start: streamingStart,
+    append: streamingAppend,
+    replace: streamingReplace,
+    finish: streamingFinish,
+  } = streaming;
+  const streamingDisplayContent = streaming.displayContent;
   const { data: page, isLoading: isPageLoading } = usePage(pageId ?? undefined);
   const { data: embeddingStatus } = useEmbeddingStatus();
   const pageHasChildren = page?.hasChildren ?? false;
@@ -202,6 +265,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
       setInput('');
       setShowDiffView(false);
       setImprovedContent('');
+      setOriginalMarkdown('');
       setDiagramCode('');
     }
   }, [pageId]);
@@ -318,13 +382,16 @@ export function AiProvider({ children }: { children: ReactNode }) {
     }
   }, [chatDefault, settingsFallbackQuery.data, modelsQuery.data]);
 
+  // Auto-scroll when committed messages change and on each batched streaming
+  // flush (#747: the in-flight answer renders via streamingDisplayContent and
+  // no longer updates `messages` per SSE chunk).
   useEffect(() => {
-    if (messages.length === 0) return;
+    if (messages.length === 0 && !streamingDisplayContent) return;
     // Skip auto-scroll in improve mode — the page should stay in place
     // so the user can see the full UI instead of jumping to the message area
     if (mode === 'improve') return;
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, mode]);
+  }, [messages, mode, streamingDisplayContent]);
 
   // Scroll to bottom immediately when switching conversations so the latest
   // messages are visible right away (independent of the messages-change effect).
@@ -377,13 +444,13 @@ export function AiProvider({ children }: { children: ReactNode }) {
    * Generic SSE streaming helper used by all mode handlers.
    * Manages abort controller, streaming state, thinking state, and message accumulation.
    */
-  const runStream = useCallback(async <T extends { content?: string; error?: string; done?: boolean; final?: boolean; conversationId?: string; sources?: Source[] }>(
+  const runStream = useCallback(async <T extends StreamChunk>(
     endpoint: string,
     body: Record<string, unknown>,
     opts?: {
       onBeforeStream?: () => void;
       onContent?: (accumulated: string) => void;
-      onComplete?: (accumulated: string, sources?: Source[]) => void;
+      onComplete?: (accumulated: string, sources?: Source[], meta?: StreamMeta) => void;
       userMessage?: string;
     },
   ) => {
@@ -404,37 +471,64 @@ export function AiProvider({ children }: { children: ReactNode }) {
 
     let accumulated = '';
     let finalSources: Source[] = [];
+    let originalMarkdown: string | undefined;
+    let streamLayoutTokensLost: boolean | undefined;
 
-    // Add the placeholder assistant message with a stable ID
+    // Add the placeholder assistant message with a stable ID. It stays empty
+    // during the stream (#747) — the in-flight answer renders through the
+    // rAF-batched streamingContent — and gets the full content committed in
+    // a single update once the stream ends.
     const assistantMsgId = nextMessageId();
     setMessages((prev) => [...prev, { id: assistantMsgId, role: 'assistant', content: '' }]);
+    streamingStart();
+
+    // Commit the accumulated answer (and sources, if any) to the placeholder
+    // assistant message in one state update.
+    const commitToMessages = () => {
+      setMessages((prev) => {
+        const updated = [...prev];
+        const lastMsg = updated[updated.length - 1];
+        if (lastMsg) {
+          updated[updated.length - 1] = {
+            ...lastMsg,
+            content: accumulated,
+            ...(finalSources.length > 0 ? { sources: finalSources } : {}),
+          };
+        }
+        return updated;
+      });
+    };
+
+    // Replace the placeholder assistant message with an inline error bubble —
+    // shared by thrown errors (catch below) and in-band SSE error events.
+    const failLastMessage = (text: string) => {
+      setMessages((prev) => {
+        const updated = [...prev];
+        const lastMsg = updated[updated.length - 1];
+        if (lastMsg && lastMsg.role === 'assistant') {
+          updated[updated.length - 1] = { ...lastMsg, content: text, isError: true };
+        }
+        return updated;
+      });
+    };
 
     try {
+      let streamError: string | null = null;
       for await (const chunk of streamSSE<T>(endpoint, body, controller.signal)) {
         if (chunk.error) {
-          toast.error(chunk.error);
+          streamError = chunk.error;
           break;
         }
         // Handle finalContent from output post-processing (cleaned content replaces accumulated)
         if ((chunk as Record<string, unknown>).finalContent) {
           accumulated = (chunk as Record<string, unknown>).finalContent as string;
-          setMessages((prev) => {
-            const updated = [...prev];
-            const lastMsg = updated[updated.length - 1];
-            if (lastMsg) updated[updated.length - 1] = { ...lastMsg, content: accumulated };
-            return updated;
-          });
+          streamingReplace(accumulated);
           opts?.onContent?.(accumulated);
         }
         if (chunk.content) {
           setIsThinking(false);
           accumulated += chunk.content;
-          setMessages((prev) => {
-            const updated = [...prev];
-            const lastMsg = updated[updated.length - 1];
-            if (lastMsg) updated[updated.length - 1] = { ...lastMsg, content: accumulated };
-            return updated;
-          });
+          streamingAppend(chunk.content);
           opts?.onContent?.(accumulated);
         }
         if (chunk.conversationId) {
@@ -443,29 +537,61 @@ export function AiProvider({ children }: { children: ReactNode }) {
         if (chunk.final && chunk.sources) {
           finalSources = chunk.sources;
         }
+        // Improve route (#704): capture the original markdown baseline so the
+        // diff compares like-for-like markdown instead of stripped bodyText.
+        // Use !== undefined (not truthiness) so an intentionally empty baseline
+        // (empty page → htmlToMarkdown('') === '') is preserved rather than
+        // falling back to the also-empty bodyText.
+        if (chunk.originalMarkdown !== undefined) {
+          originalMarkdown = chunk.originalMarkdown;
+        }
+        if (chunk.layoutTokensLost !== undefined) {
+          streamLayoutTokensLost = chunk.layoutTokensLost;
+        }
       }
-      // Attach sources to the last assistant message
-      if (finalSources.length > 0) {
-        setMessages((prev) => {
-          const updated = [...prev];
-          const lastMsg = updated[updated.length - 1];
-          if (lastMsg) updated[updated.length - 1] = { ...lastMsg, sources: finalSources };
-          return updated;
-        });
+      if (streamError) {
+        // In-band SSE error events (HTTP 200 already established — the common
+        // mid-stream provider failure) get the same inline treatment as thrown
+        // errors, plus the toast that non-403 throws keep.
+        toast.error(streamError);
+        failLastMessage(streamError);
+        return;
       }
-      opts?.onComplete?.(accumulated, finalSources.length > 0 ? finalSources : undefined);
+      commitToMessages();
+      opts?.onComplete?.(
+        accumulated,
+        finalSources.length > 0 ? finalSources : undefined,
+        originalMarkdown !== undefined || streamLayoutTokensLost !== undefined
+          ? { originalMarkdown, layoutTokensLost: streamLayoutTokensLost }
+          : undefined,
+      );
     } catch (err) {
-      if (err instanceof DOMException && err.name === 'AbortError') return;
-      toast.error(err instanceof Error ? err.message : 'Request failed');
-      // Always remove the empty assistant message on error — runStream unconditionally
-      // adds a placeholder assistant message, regardless of whether userMessage was passed.
-      setMessages((prev) => prev.slice(0, -1));
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        // Keep whatever was streamed before the abort (matches the previous
+        // per-chunk-commit behavior).
+        commitToMessages();
+        return;
+      }
+      // Surface the failure INLINE: replace the placeholder assistant message
+      // with an error message instead of silently removing it (the user
+      // previously saw a bubble appear and then vanish with no explanation).
+      const isForbidden = err instanceof ApiError && err.statusCode === 403;
+      // The backend's 403 body names the exact missing permission (each
+      // streamed mode has its own: llm:query, llm:improve, llm:generate,
+      // llm:summarize) — pass it through instead of hardcoding one.
+      const friendly = isForbidden
+        ? `You don't have permission to use this AI feature (${err.message || 'permission denied'}). Ask an administrator to assign you a role that includes it.`
+        : err instanceof Error ? err.message : 'Request failed';
+      // 403 is fully explained inline — keep the toast only for other errors.
+      if (!isForbidden) toast.error(friendly);
+      failLastMessage(friendly);
     } finally {
+      streamingFinish();
       isStreamingRef.current = false;
       setIsStreaming(false);
       setIsThinking(false);
     }
-  }, []);
+  }, [streamingStart, streamingAppend, streamingReplace, streamingFinish]);
 
   const value: AiContextValue = {
     pageId,
@@ -487,10 +613,13 @@ export function AiProvider({ children }: { children: ReactNode }) {
     model,
     setModel,
     models,
+    modelsError: modelsQuery.isError,
+    refetchModels: modelsQuery.refetch,
     input,
     setInput,
     isStreaming,
     setIsStreaming,
+    streamingContent: streamingDisplayContent,
     isThinking,
     setIsThinking,
     thinkingElapsed,
@@ -509,6 +638,10 @@ export function AiProvider({ children }: { children: ReactNode }) {
     setShowDiffView,
     improvedContent,
     setImprovedContent,
+    originalMarkdown,
+    setOriginalMarkdown,
+    layoutTokensLost,
+    setLayoutTokensLost,
     diagramType,
     setDiagramType,
     diagramCode,

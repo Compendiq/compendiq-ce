@@ -1,13 +1,14 @@
 {
   "name": "frontend",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "prebuild": "node scripts/check-csp-hash.mjs",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "lint": "eslint --max-warnings=0 src/",
+    "lint": "eslint --max-warnings=0 src/ scripts/",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",

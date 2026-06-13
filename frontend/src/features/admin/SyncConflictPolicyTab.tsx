@@ -91,7 +91,7 @@ const POLICY_OPTIONS: readonly PolicyOption[] = [
     value: 'confluence-wins',
     label: 'Confluence wins',
     description:
-      'When a Confluence-side change differs from a local edit, the Confluence version is applied and the local change is discarded. This is the legacy behaviour.',
+      'When a Confluence-side change differs from a local edit, the Confluence version is applied and the local change is discarded. This is the legacy behavior.',
     warning:
       'Local edits made between syncs will be silently overwritten on the next sync.',
   },

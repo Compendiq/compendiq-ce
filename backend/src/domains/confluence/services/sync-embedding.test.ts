@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   processDirtyPages: vi.fn().mockResolvedValue({ processed: 3, errors: 0 }),
   getSpaces: vi.fn().mockResolvedValue({ results: [] }),
   getAllPagesInSpace: vi.fn().mockResolvedValue([]),
+  getAllPageIds: vi.fn().mockResolvedValue(new Set<string>()),
   getModifiedPages: vi.fn().mockResolvedValue([]),
   getPage: vi.fn().mockResolvedValue(undefined),
   getPageAttachments: vi.fn().mockResolvedValue({ results: [] }),
@@ -20,6 +21,7 @@ vi.mock('./confluence-client.js', () => ({
     getSpaces = mocks.getSpaces;
     getAllSpaces = vi.fn().mockResolvedValue([]);
     getAllPagesInSpace = mocks.getAllPagesInSpace;
+    getAllPageIds = mocks.getAllPageIds;
     getModifiedPages = mocks.getModifiedPages;
     getPage = mocks.getPage;
     getPageAttachments = mocks.getPageAttachments;
@@ -88,14 +90,17 @@ describe('syncUser auto-embedding', () => {
       // 2. getUserAccessibleSpaces is mocked (returns ['DEV'])
       // 3. last_synced (no previous sync -> full sync)
       .mockResolvedValueOnce({ rows: [{ last_synced: null }] })
-      // 4. detectDeletedPages: count of users with this space
-      .mockResolvedValueOnce({ rows: [{ count: '1' }] })
-      // 5. detectDeletedPages: existing pages
+      // 4. detectDeletedPages: revival cross-check UPDATE (none revived)
       .mockResolvedValueOnce({ rows: [] })
-      // 6. update space sync timestamp
+      // 5. detectDeletedPages: existing pages (none → no deletion candidates)
+      .mockResolvedValueOnce({ rows: [] })
+      // 6. purgeDeletedPages: candidate SELECT (none expired)
+      .mockResolvedValueOnce({ rows: [] })
+      // 7. update space sync timestamp
       .mockResolvedValueOnce({ rows: [] });
 
     mocks.getAllPagesInSpace.mockResolvedValueOnce([]);
+    mocks.getAllPageIds.mockResolvedValueOnce(new Set());
   }
 
   it('should call processDirtyPages after successful sync', async () => {
@@ -262,14 +267,17 @@ describe('syncPage attachment cache invalidation', () => {
     }
 
     mocks.query
-      // 6. detectDeletedPages: count of users with this space
-      .mockResolvedValueOnce({ rows: [{ count: '1' }] })
-      // 7. detectDeletedPages: existing page ids
+      // 6. detectDeletedPages: revival cross-check UPDATE (none revived)
       .mockResolvedValueOnce({ rows: [] })
-      // 8. update space last_synced
+      // 7. detectDeletedPages: existing page ids (none → no deletion candidates)
+      .mockResolvedValueOnce({ rows: [] })
+      // 8. purgeDeletedPages: candidate SELECT (none expired)
+      .mockResolvedValueOnce({ rows: [] })
+      // 9. update space last_synced
       .mockResolvedValueOnce({ rows: [] });
 
     mocks.getAllPagesInSpace.mockResolvedValueOnce([mockPage]);
+    mocks.getAllPageIds.mockResolvedValueOnce(new Set([mockPage.id]));
     mocks.getPage.mockResolvedValueOnce(mockPage);
     mocks.getPageAttachments.mockResolvedValueOnce({ results: [] });
   }
@@ -347,6 +355,18 @@ describe('incremental sync with missing attachments', () => {
       rows: opts.cachedPages ?? [],
     });
 
+    // detectDeletedPages now runs on incremental syncs too (#706):
+    // revival cross-check UPDATE (none revived), then existing page ids in
+    // the space (none → no deletion candidates).
+    mocks.query.mockResolvedValueOnce({ rows: [] });
+    mocks.query.mockResolvedValueOnce({ rows: [] });
+    mocks.getAllPageIds.mockResolvedValueOnce(
+      new Set((opts.modifiedPages ?? []).map((p) => p.id)),
+    );
+
+    // purgeDeletedPages: candidate SELECT (none expired)
+    mocks.query.mockResolvedValueOnce({ rows: [] });
+
     // update space last_synced
     mocks.query.mockResolvedValueOnce({ rows: [] });
 
@@ -418,14 +438,17 @@ describe('incremental sync with missing attachments', () => {
       // 2. getUserAccessibleSpaces is mocked (returns ['DEV'])
       // 3. spaces.last_synced -> null -> full sync
       .mockResolvedValueOnce({ rows: [{ last_synced: null }] })
-      // 4. detectDeletedPages: count of users with this space
-      .mockResolvedValueOnce({ rows: [{ count: '1' }] })
-      // 5. detectDeletedPages: existing page ids
+      // 4. detectDeletedPages: revival cross-check UPDATE (none revived)
       .mockResolvedValueOnce({ rows: [] })
-      // 6. update space last_synced
+      // 5. detectDeletedPages: existing page ids (none → no deletion candidates)
+      .mockResolvedValueOnce({ rows: [] })
+      // 6. purgeDeletedPages: candidate SELECT (none expired)
+      .mockResolvedValueOnce({ rows: [] })
+      // 7. update space last_synced
       .mockResolvedValueOnce({ rows: [] });
 
     mocks.getAllPagesInSpace.mockResolvedValueOnce([]);
+    mocks.getAllPageIds.mockResolvedValueOnce(new Set());
 
     await syncUser('user-full');
 

@@ -1,12 +1,13 @@
-import { query } from '../../../core/db/postgres.js';
+import { query, getPool } from '../../../core/db/postgres.js';
 import { resolveUsecase } from '../../llm/services/llm-provider-resolver.js';
 import { chat } from '../../llm/services/openai-compatible-client.js';
-import { htmlToMarkdown } from '../../../core/services/content-converter.js';
+import { htmlToMarkdown, htmlToText } from '../../../core/services/content-converter.js';
 import { sanitizeLlmInput } from '../../../core/utils/sanitize-llm-input.js';
-import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
+import { getHistoricalBody } from '../../confluence/services/version-backfill.js';
+import type { ConfluenceClient } from '../../confluence/services/confluence-client.js';
 
 // Re-export from core so existing consumers keep working
-export { saveVersionSnapshot } from '../../../core/services/version-snapshot.js';
+export { saveVersionSnapshot, saveVersionSnapshotByPageId } from '../../../core/services/version-snapshot.js';
 
 interface PageVersion {
   id: string;
@@ -17,17 +18,22 @@ interface PageVersion {
   bodyHtml: string | null;
   bodyText: string | null;
   syncedAt: Date;
+  editedAt: Date | null;
+  author: string | null;
+  message: string | null;
 }
 
 /**
- * Get version history for a page.
- * Access controlled via caller verifying user has access to the page's space.
+ * Get version history for a page, keyed by the internal integer `page_id`.
+ *
+ * History is stored against `page_versions.page_id` (the universal FK since
+ * migration 030), so both Confluence-synced and standalone/local pages surface
+ * their snapshots here. RBAC is enforced by the caller before this runs (the
+ * route resolves and access-checks the page first).
  */
 export async function getVersionHistory(
-  userId: string,
-  confluenceId: string,
+  pageId: number,
 ): Promise<Omit<PageVersion, 'bodyHtml' | 'bodyText'>[]> {
-  const vhSpaces = await getUserAccessibleSpaces(userId);
   const result = await query<{
     id: string;
     page_id: number;
@@ -35,15 +41,18 @@ export async function getVersionHistory(
     version_number: number;
     title: string;
     synced_at: Date;
+    edited_at: Date | null;
+    author: string | null;
+    message: string | null;
   }>(
-    `SELECT pv.id, pv.page_id, p.confluence_id, pv.version_number, pv.title, pv.synced_at
+    `SELECT pv.id, pv.page_id, p.confluence_id, pv.version_number, pv.title, pv.synced_at,
+            pv.edited_at, pv.author, pv.message
      FROM page_versions pv
      JOIN pages p ON pv.page_id = p.id
-     WHERE p.space_key = ANY($1::text[])
+     WHERE pv.page_id = $1
        AND p.deleted_at IS NULL
-       AND p.confluence_id = $2
      ORDER BY pv.version_number DESC`,
-    [vhSpaces, confluenceId],
+    [pageId],
   );
 
   return result.rows.map((row) => ({
@@ -53,15 +62,18 @@ export async function getVersionHistory(
     versionNumber: row.version_number,
     title: row.title,
     syncedAt: row.synced_at,
+    editedAt: row.edited_at ?? null,
+    author: row.author ?? null,
+    message: row.message ?? null,
   }));
 }
 
 /**
- * Get a specific version of a page.
+ * Get a specific version of a page by internal `page_id` + version number.
+ * RBAC is enforced by the caller before this runs.
  */
 export async function getVersion(
-  userId: string,
-  confluenceId: string,
+  pageId: number,
   versionNumber: number,
 ): Promise<PageVersion | null> {
   const result = await query<{
@@ -73,14 +85,18 @@ export async function getVersion(
     body_html: string | null;
     body_text: string | null;
     synced_at: Date;
+    edited_at: Date | null;
+    author: string | null;
+    message: string | null;
   }>(
-    `SELECT pv.id, pv.page_id, p.confluence_id, pv.version_number, pv.title, pv.body_html, pv.body_text, pv.synced_at
+    `SELECT pv.id, pv.page_id, p.confluence_id, pv.version_number, pv.title, pv.body_html, pv.body_text,
+            pv.synced_at, pv.edited_at, pv.author, pv.message
      FROM page_versions pv
      JOIN pages p ON pv.page_id = p.id
-     WHERE p.space_key = ANY($1::text[])
+     WHERE pv.page_id = $1
        AND p.deleted_at IS NULL
-       AND p.confluence_id = $2 AND pv.version_number = $3`,
-    [await getUserAccessibleSpaces(userId), confluenceId, versionNumber],
+       AND pv.version_number = $2`,
+    [pageId, versionNumber],
   );
 
   if (result.rows.length === 0) return null;
@@ -95,31 +111,194 @@ export async function getVersion(
     bodyHtml: row.body_html,
     bodyText: row.body_text,
     syncedAt: row.synced_at,
+    editedAt: row.edited_at ?? null,
+    author: row.author ?? null,
+    message: row.message ?? null,
   };
+}
+
+export interface RestoreResult {
+  pageId: number;
+  title: string;
+  /** New live version after the restore (old version + bump). */
+  newVersion: number;
+  bodyHtml: string | null;
+  bodyText: string | null;
+}
+
+/**
+ * Non-destructive, Confluence-style restore of an older snapshot.
+ *
+ * In a single transaction:
+ *   1. Snapshot the CURRENT live state into `page_versions` (so the revert is
+ *      itself reversible and intermediate manual edits aren't lost — a plain
+ *      edit-save does not snapshot, only sync/draft-publish/this path do).
+ *   2. Apply the target snapshot's title / body_html / body_text to the live
+ *      `pages` row, re-deriving body_text from body_html when needed.
+ *   3. Bump `version` and mark the page `embedding_dirty` so the change flows
+ *      through search/embedding the same way an edit-save does.
+ *
+ * The Confluence push (for synced pages) and audit/webhook events are the
+ * caller's responsibility — this keeps the domain service DB-only and lets the
+ * route reuse the exact edit-save side-effect path.
+ *
+ * @returns the applied content + new version, or `null` if the target version
+ *          doesn't exist for the page.
+ */
+export async function restoreVersion(
+  pageId: number,
+  targetVersion: number,
+): Promise<RestoreResult | null> {
+  const txClient = await getPool().connect();
+  try {
+    await txClient.query('BEGIN');
+
+    // Lock the live row so concurrent edits/restores serialise.
+    const liveRes = await txClient.query<{
+      version: number;
+      title: string;
+      body_html: string | null;
+      body_text: string | null;
+    }>(
+      `SELECT version, title, body_html, body_text
+       FROM pages WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
+      [pageId],
+    );
+    if (liveRes.rows.length === 0) {
+      await txClient.query('ROLLBACK');
+      return null;
+    }
+    const live = liveRes.rows[0]!;
+
+    // Load the target snapshot to restore.
+    const targetRes = await txClient.query<{
+      title: string;
+      body_html: string | null;
+      body_text: string | null;
+    }>(
+      `SELECT title, body_html, body_text
+       FROM page_versions WHERE page_id = $1 AND version_number = $2`,
+      [pageId, targetVersion],
+    );
+    if (targetRes.rows.length === 0) {
+      await txClient.query('ROLLBACK');
+      return null;
+    }
+    const target = targetRes.rows[0]!;
+
+    // #722/#724 defense-in-depth: never apply an empty body. Backfilled rows are
+    // metadata-only (body_html IS NULL) until lazily fetched; the route fills the
+    // body before calling us. If it is still NULL here, restoring would BLANK the
+    // live page (and, for Confluence pages, push an empty body upstream). Abort
+    // without mutating so no code path can lose content.
+    if (target.body_html === null) {
+      await txClient.query('ROLLBACK');
+      throw new Error(
+        `Cannot restore version ${targetVersion} of page ${pageId}: historical body is unavailable (not yet fetched from Confluence).`,
+      );
+    }
+
+    // 1. Snapshot the current live state first (idempotent — DO NOTHING if the
+    //    live version already has a snapshot, e.g. from a prior sync).
+    await txClient.query(
+      `INSERT INTO page_versions (page_id, version_number, title, body_html, body_text, synced_at)
+       VALUES ($1, $2, $3, $4, $5, NOW())
+       ON CONFLICT (page_id, version_number) DO NOTHING`,
+      [pageId, live.version, live.title, live.body_html, live.body_text],
+    );
+
+    // 2 + 3. Apply the target snapshot as a NEW live version.
+    const newVersion = live.version + 1;
+    const restoredBodyText = target.body_text ?? (target.body_html ? htmlToText(target.body_html) : null);
+    await txClient.query(
+      `UPDATE pages SET
+         title = $2, body_html = $3, body_text = $4,
+         version = $5, last_modified_at = NOW(), embedding_dirty = TRUE,
+         embedding_status = 'not_embedded', embedded_at = NULL,
+         local_modified_at = NOW()
+       WHERE id = $1`,
+      [pageId, target.title, target.body_html, restoredBodyText, newVersion],
+    );
+
+    await txClient.query('COMMIT');
+
+    return {
+      pageId,
+      title: target.title,
+      newVersion,
+      bodyHtml: target.body_html,
+      bodyText: restoredBodyText,
+    };
+  } catch (err) {
+    await txClient.query('ROLLBACK');
+    throw err;
+  } finally {
+    txClient.release();
+  }
+}
+
+/**
+ * Resolve a version's `bodyHtml`, lazily fetching it from Confluence and
+ * persisting it when the stored row is metadata-only (body_html IS NULL).
+ *
+ * Returns the resolved HTML, or the row's existing `bodyHtml` (possibly null)
+ * when there is nothing to fetch (no Confluence id / client, or the fetch fails).
+ * Best-effort: a Confluence failure must not break the diff — we fall back to
+ * whatever body we have.
+ */
+async function resolveVersionBodyHtml(
+  pageId: number,
+  version: PageVersion,
+  confluenceId?: string | null,
+  client?: ConfluenceClient | null,
+): Promise<string | null> {
+  if (version.bodyHtml !== null) return version.bodyHtml;
+  if (!confluenceId || !client) return version.bodyHtml;
+  try {
+    const fetched = await getHistoricalBody(pageId, confluenceId, version.versionNumber, client);
+    return fetched.bodyHtml;
+  } catch {
+    return version.bodyHtml;
+  }
 }
 
 /**
  * Generate a semantic diff between two versions using LLM.
- * Sends both versions' text to Ollama and asks for a human-readable description.
+ *
+ * Sends both versions' text to the LLM and asks for a human-readable
+ * description. `model` is an optional caller override; when falsy the `chat`
+ * use-case assignment (resolved below) supplies the concrete model, so the
+ * route never has to depend on a hardcoded model name (ADR-021).
  */
 export async function getSemanticDiff(
-  userId: string,
-  confluenceId: string,
+  pageId: number,
   v1: number,
   v2: number,
-  model: string,
+  model?: string,
+  confluenceId?: string | null,
+  client?: ConfluenceClient | null,
 ): Promise<string> {
   const [version1, version2] = await Promise.all([
-    getVersion(userId, confluenceId, v1),
-    getVersion(userId, confluenceId, v2),
+    getVersion(pageId, v1),
+    getVersion(pageId, v2),
   ]);
 
-  if (!version1) throw new Error(`Version ${v1} not found for page ${confluenceId}`);
-  if (!version2) throw new Error(`Version ${v2} not found for page ${confluenceId}`);
+  if (!version1) throw new Error(`Version ${v1} not found for page ${pageId}`);
+  if (!version2) throw new Error(`Version ${v2} not found for page ${pageId}`);
+
+  // #722/#724: backfilled rows are metadata-only (body_html IS NULL) until a
+  // version is previewed. Without this, a never-previewed version would diff as
+  // an empty string and the LLM would report "all content removed". Lazily fetch
+  // (and persist) both bodies from Confluence first — same helper as the restore
+  // path — so the diff compares real content.
+  const [body1, body2] = await Promise.all([
+    resolveVersionBodyHtml(pageId, version1, confluenceId, client),
+    resolveVersionBodyHtml(pageId, version2, confluenceId, client),
+  ]);
 
   // Convert to markdown for LLM consumption
-  const text1 = version1.bodyHtml ? htmlToMarkdown(version1.bodyHtml) : (version1.bodyText ?? '');
-  const text2 = version2.bodyHtml ? htmlToMarkdown(version2.bodyHtml) : (version2.bodyText ?? '');
+  const text1 = body1 ? htmlToMarkdown(body1) : (version1.bodyText ?? '');
+  const text2 = body2 ? htmlToMarkdown(body2) : (version2.bodyText ?? '');
 
   // Truncate to prevent excessive LLM input
   const maxLen = 8000;

@@ -2,8 +2,9 @@ import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { query } from '../../core/db/postgres.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
-import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
-import { getUserAccessibleSpaces, userHasPermission } from '../../core/services/rbac-service.js';
+import { getClientForUser, unsyncSpace } from '../../domains/confluence/services/sync-service.js';
+import { getUserAccessibleSpaces, userHasPermission, isSystemAdmin, invalidateRbacCache } from '../../core/services/rbac-service.js';
+import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
 
 export async function spacesRoutes(fastify: FastifyInstance) {
@@ -185,5 +186,36 @@ export async function spacesRoutes(fastify: FastifyInstance) {
       name: s.name,
       type: s.type,
     }));
+  });
+
+  // DELETE /api/spaces/:key — stop syncing a Confluence space and purge its
+  // local data (#721). Admin-only. Read-only against Confluence.
+  fastify.delete('/spaces/:key', async (request) => {
+    const userId = request.userId;
+
+    if (!(await isSystemAdmin(userId))) {
+      throw fastify.httpErrors.forbidden('Removing a synced space requires system admin.');
+    }
+
+    const { key } = KeyParamSchema.parse(request.params);
+
+    const existing = await query<{ source: string }>(
+      'SELECT source FROM spaces WHERE space_key = $1',
+      [key],
+    );
+    if (existing.rows.length === 0) {
+      throw fastify.httpErrors.notFound('Space not found');
+    }
+
+    const { pagesDeleted } = await unsyncSpace(key);
+
+    await invalidateRbacCache();
+    await cache.invalidate(userId, 'spaces');
+    await cache.invalidate(userId, 'pages');
+    await logAuditEvent(userId, 'SPACE_UNSYNCED', 'space', key, { pagesDeleted }, request);
+
+    logger.info({ userId, spaceKey: key, pagesDeleted }, 'Space unsynced and purged');
+
+    return { key, deleted: true, pagesDeleted };
   });
 }

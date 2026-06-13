@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // ─── BullMQ mock wiring ──────────────────────────────────────────────────
 // Each test needs fine-grained control over Job methods (getState, remove).
@@ -71,6 +71,67 @@ vi.mock('bullmq', () => ({
     this.on = vi.fn();
     this.close = vi.fn().mockResolvedValue(undefined);
   },
+}));
+
+// ─── Legacy-mode module mocks (issue #741) ───────────────────────────────
+// `startLegacyWorkers()` / the registered processors dynamically import these
+// modules. `vi.hoisted` keeps the vi.fn references stable across the
+// `vi.resetModules()` call in beforeEach (factories re-run on re-import, but
+// they all close over this same object).
+
+const legacy = vi.hoisted(() => ({
+  startSyncWorker: vi.fn(),
+  stopSyncWorker: vi.fn(),
+  runScheduledSync: vi.fn(),
+  startQualityWorker: vi.fn(),
+  stopQualityWorker: vi.fn(),
+  triggerQualityBatch: vi.fn(),
+  processBatch: vi.fn(),
+  startSummaryWorker: vi.fn(),
+  stopSummaryWorker: vi.fn(),
+  triggerSummaryBatch: vi.fn(),
+  runSummaryBatch: vi.fn(),
+  startTokenCleanupWorker: vi.fn(),
+  stopTokenCleanupWorker: vi.fn(),
+  startRetentionWorker: vi.fn(),
+  stopRetentionWorker: vi.fn(),
+  runRetentionCleanup: vi.fn(),
+  runReembedAllJob: vi.fn(),
+}));
+
+vi.mock('../../domains/confluence/services/sync-service.js', () => ({
+  startSyncWorker: legacy.startSyncWorker,
+  stopSyncWorker: legacy.stopSyncWorker,
+  runScheduledSync: legacy.runScheduledSync,
+}));
+
+vi.mock('../../domains/knowledge/services/quality-worker.js', () => ({
+  startQualityWorker: legacy.startQualityWorker,
+  stopQualityWorker: legacy.stopQualityWorker,
+  triggerQualityBatch: legacy.triggerQualityBatch,
+  processBatch: legacy.processBatch,
+}));
+
+vi.mock('../../domains/knowledge/services/summary-worker.js', () => ({
+  startSummaryWorker: legacy.startSummaryWorker,
+  stopSummaryWorker: legacy.stopSummaryWorker,
+  triggerSummaryBatch: legacy.triggerSummaryBatch,
+  runSummaryBatch: legacy.runSummaryBatch,
+}));
+
+vi.mock('./token-cleanup-service.js', () => ({
+  startTokenCleanupWorker: legacy.startTokenCleanupWorker,
+  stopTokenCleanupWorker: legacy.stopTokenCleanupWorker,
+}));
+
+vi.mock('./data-retention-service.js', () => ({
+  startRetentionWorker: legacy.startRetentionWorker,
+  stopRetentionWorker: legacy.stopRetentionWorker,
+  runRetentionCleanup: legacy.runRetentionCleanup,
+}));
+
+vi.mock('../../domains/llm/services/embedding-service.js', () => ({
+  runReembedAllJob: legacy.runReembedAllJob,
 }));
 
 vi.mock('../db/postgres.js', () => ({
@@ -264,6 +325,177 @@ describe('queue-service', () => {
 
       // Stub got created lazily
       expect(queueStubs.has('reembed-all')).toBe(true);
+    });
+  });
+
+  // ─── BullMQ mode (USE_BULLMQ=true) — startQueueWorkers ─────────────────
+  // Guards the data-retention scheduler relocation (issue #741 follow-up):
+  // the upsertJobScheduler call moved out of registerAllWorkers (which now
+  // also runs in legacy mode and must stay Redis-pure) into the BullMQ-only
+  // branch of startQueueWorkers. The legacy-purity test below only proves the
+  // call is GONE from legacy mode — this one proves it still HAPPENS in
+  // BullMQ mode, on the right queue, with the right id and repeat options.
+  describe('BullMQ mode (USE_BULLMQ=true) — scheduler registration', () => {
+    const ORIGINAL_USE_BULLMQ = process.env.USE_BULLMQ;
+
+    beforeEach(() => {
+      process.env.USE_BULLMQ = 'true';
+    });
+
+    afterEach(() => {
+      if (ORIGINAL_USE_BULLMQ === undefined) {
+        delete process.env.USE_BULLMQ;
+      } else {
+        process.env.USE_BULLMQ = ORIGINAL_USE_BULLMQ;
+      }
+    });
+
+    it('startQueueWorkers registers the daily data-retention scheduler on the maintenance queue', async () => {
+      const { startQueueWorkers } = await import('./queue-service.js');
+      await startQueueWorkers();
+
+      const maintenance = queueStubs.get('maintenance');
+      expect(maintenance).toBeDefined();
+      expect(maintenance!.upsertJobScheduler).toHaveBeenCalledWith(
+        'data-retention-scheduler',
+        { every: 24 * 60 * 60 * 1000 },
+        { name: 'data-retention' },
+      );
+    });
+
+    it('startQueueWorkers also keeps the maintenance queue repeatable (token cleanup) — two schedulers on one queue', async () => {
+      const { startQueueWorkers } = await import('./queue-service.js');
+      await startQueueWorkers();
+
+      const maintenance = queueStubs.get('maintenance')!;
+      // maintenance-scheduler comes from the workerDef repeatPattern;
+      // data-retention-scheduler from the explicit post-loop registration.
+      // Asserting both proves the relocation didn't mistarget or collapse them.
+      expect(maintenance.upsertJobScheduler).toHaveBeenCalledTimes(2);
+      expect(maintenance.upsertJobScheduler).toHaveBeenCalledWith(
+        'maintenance-scheduler',
+        { every: 24 * 60 * 60 * 1000 },
+        { name: 'maintenance' },
+      );
+    });
+  });
+
+  // ─── Issue #741 — legacy mode (USE_BULLMQ=false) ──────────────────────
+  // enqueueJob's inline fallback must actually execute the registered
+  // processor (it previously found no workerDefs because registerAllWorkers
+  // only ran in the BullMQ branch), and a rejecting processor must be logged
+  // instead of becoming a process-fatal unhandled rejection.
+  describe('legacy mode (USE_BULLMQ=false) — issue #741', () => {
+    const ORIGINAL_USE_BULLMQ = process.env.USE_BULLMQ;
+
+    beforeEach(() => {
+      process.env.USE_BULLMQ = 'false';
+      // Fake timers so startLegacyWorkers' 30s initial-batch setTimeout does
+      // not leave a real pending timer behind after each test.
+      vi.useFakeTimers();
+      legacy.triggerQualityBatch.mockResolvedValue(undefined);
+      legacy.triggerSummaryBatch.mockResolvedValue(undefined);
+      legacy.runReembedAllJob.mockResolvedValue('processed=0 failed=0 total=0');
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      if (ORIGINAL_USE_BULLMQ === undefined) {
+        delete process.env.USE_BULLMQ;
+      } else {
+        process.env.USE_BULLMQ = ORIGINAL_USE_BULLMQ;
+      }
+    });
+
+    it('enqueueJob runs the registered reembed-all processor inline after startQueueWorkers()', async () => {
+      const { startQueueWorkers, enqueueJob } = await import('./queue-service.js');
+      await startQueueWorkers();
+
+      // Legacy interval workers still start (ordering regression guard).
+      expect(legacy.startSyncWorker).toHaveBeenCalledOnce();
+      expect(legacy.startQualityWorker).toHaveBeenCalledOnce();
+
+      const id = await enqueueJob(
+        'reembed-all',
+        { triggeredAt: 't' },
+        { jobId: 'reembed-all' },
+      );
+      expect(id).toBe('reembed-all');
+
+      // Fire-and-forget inline execution — wait for the async processor.
+      await vi.waitFor(() => {
+        expect(legacy.runReembedAllJob).toHaveBeenCalledOnce();
+      });
+      expect(legacy.runReembedAllJob).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 'reembed-all',
+          name: 'reembed-all',
+          data: { triggeredAt: 't' },
+        }),
+      );
+    });
+
+    it('does not create any BullMQ queues or schedulers in legacy mode', async () => {
+      const { startQueueWorkers } = await import('./queue-service.js');
+      await startQueueWorkers();
+
+      // Registering worker defs for the inline fallback must not open Redis
+      // connections — no Queue construction, no upsertJobScheduler.
+      expect(queueStubs.size).toBe(0);
+    });
+
+    it('logs instead of crashing when an inline processor rejects', async () => {
+      legacy.runReembedAllJob.mockRejectedValue(new Error('embed boom'));
+      const { startQueueWorkers, enqueueJob } = await import('./queue-service.js');
+      const { logger } = await import('../utils/logger.js');
+      await startQueueWorkers();
+
+      await enqueueJob('reembed-all', {}, { jobId: 'reembed-all' });
+
+      // The rejection must be caught and logged — an uncaught rejection here
+      // would be process-fatal on modern Node.
+      await vi.waitFor(() => {
+        expect(logger.error).toHaveBeenCalledWith(
+          expect.objectContaining({
+            err: expect.objectContaining({ message: 'embed boom' }),
+            queueName: 'reembed-all',
+          }),
+          expect.any(String),
+        );
+      });
+    });
+
+    it('warns when enqueueJob targets a queue with no registered processor', async () => {
+      const { startQueueWorkers, enqueueJob } = await import('./queue-service.js');
+      const { logger } = await import('../utils/logger.js');
+      await startQueueWorkers();
+
+      const id = await enqueueJob('no-such-queue', {});
+
+      expect(id).toContain('no-such-queue');
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ queueName: 'no-such-queue' }),
+        expect.any(String),
+      );
+    });
+
+    it('catches rejections from the delayed initial quality/summary batch trigger', async () => {
+      legacy.triggerQualityBatch.mockRejectedValue(new Error('quality boom'));
+      const { startQueueWorkers } = await import('./queue-service.js');
+      const { logger } = await import('../utils/logger.js');
+      await startQueueWorkers();
+
+      // Fire the 30s initial-batch setTimeout.
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      await vi.waitFor(() => {
+        expect(logger.error).toHaveBeenCalledWith(
+          expect.objectContaining({
+            err: expect.objectContaining({ message: 'quality boom' }),
+          }),
+          expect.any(String),
+        );
+      });
     });
   });
 });

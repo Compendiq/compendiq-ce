@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-06-13
+
+> Curated summary of the notable changes among ~159 PRs merged since 0.5.2.
+
+### Added
+
+- **Page version history + restore** in the right pane — backfills the version list, lazy-loads historical bodies, and shows the real Confluence edit time / author / message; restore pushes the prior version back to Confluence. Migration 077 adds Confluence version metadata to `page_versions`. (#722, #724)
+- **Notion-style selection bubble menu** with inline **AI Improve** merged into a single popup.
+- **SSO as the primary sign-in** — SSO button above credentials on the CE login page, with an OIDC config fallback and IdP display-name handling.
+- **Unsync a Confluence space** — `DELETE /api/spaces/:key` + purge service, plus a Remove action in the Spaces tab.
+- **Upload-on-paste for HTML `<img>` pastes** — rewrites external / `data:` image srcs to internal attachments via an SSRF-guarded server-side import route. (#683, #686)
+- **Confluence restriction-change detection** via the audit log — skips redundant restriction fetches during sync.
+- **PAT onboarding banner** prompting users without a Confluence PAT (dismissible).
+- **OpenTelemetry spans** around outbound LLM calls; PII scan of generated summaries before persisting; optional Swiss spelling (ß→ss) AI post-processing.
+- **`ConfirmDialog`** replacing native `confirm()` across the app; LLM provider settings UX polish (dismissable modal, delete confirmation, pending states).
+
+### Changed
+
+- **BREAKING: Docker Compose hardening (#761, closes #740).** `docker/docker-compose.yml` no longer ships `changeme-postgres` / `changeme-redis` default credentials — `POSTGRES_PASSWORD` and `REDIS_PASSWORD` are now required (`${VAR:?...}`) and compose refuses to start without them. Use URL-safe values (`openssl rand -hex 24`); base64 output can contain `/`, `+`, `=`, which break the raw interpolation into `POSTGRES_URL`/`REDIS_URL`. **Existing installs:** the Postgres volume keeps the password it was initialized with — set the variables to the *current* values (the old defaults above, if you never changed them) or rotate via `ALTER USER kb_user WITH PASSWORD ...` first; see the [Admin Guide → Upgrade Procedure](docs/ADMIN-GUIDE.md#upgrade-procedure). Also breaking: the backend no longer publishes a host port (`BACKEND_HOST_PORT`/3052 removed) — all API traffic goes through the frontend nginx proxy (`http://localhost:8081/api/...`). The installer-generated Redis config switched from `allkeys-lru` to `noeviction` (BullMQ requirement — eviction silently dropped queued jobs), and dev-override data-tier ports now bind `127.0.0.1` only. (#740, #761)
+
+### Fixed
+
+- **AI Improve robustness** — preserves Confluence layouts through the Markdown round-trip, recovers mangled/dropped layout tokens against the page skeleton (instead of flattening), protects media for a lossless round-trip, and survives token-dropping models via anchor recovery + cache guards. (#774, #781, #793)
+- **Queue / Redis** — honor `rediss://` TLS, ACL username, and db index in BullMQ connections; register worker defs in legacy mode so enqueued jobs actually run.
+- **Backend resilience** — cross-replica migration lock + hardened graceful shutdown; migration-lock wait exempt from `statement_timeout`.
+- **Confluence sync** — atomic remote+local delete, reconcile deletions, tolerate already-deleted remote pages, trust the Confluence-returned version on restore.
+- **Accessibility** — announce AI errors via a primed live region / `role=alert`, including byte-identical retries.
+- Numerous editor (drag handle, bubble-menu, streaming render), sidebar (scroll/position), settings (embedding dims, provider gating), and health-banner fixes.
+
+### Security
+
+- **IDOR** — enforce per-space/page RBAC on knowledge routes; gate comment resolve/reactions by page access.
+- **Stored XSS** via local attachments blocked.
+- **Secrets at rest** — encrypt `smtp_pass`, harden PAT key derivation, and include `smtp_pass` in encryption-key rotation.
+- **SSRF** — require admin + SSRF guard on `POST /api/setup/llm-test`; re-validate every redirect hop on server-side image import.
+- **ReDoS** — bound whitespace runs in injection patterns and filter all occurrences in `sanitizeLlmInput`.
+- **Session** — revoke API access immediately on deactivation and role change.
+
 ## [0.5.2] - 2026-05-21
 
 ### Added

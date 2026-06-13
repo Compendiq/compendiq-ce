@@ -217,13 +217,19 @@ npm install
 
 ```bash
 cp .env.example .env
-# Edit .env -- set JWT_SECRET and PAT_ENCRYPTION_KEY to random 32+ char strings
+# Edit .env -- set four required variables:
+#   JWT_SECRET / PAT_ENCRYPTION_KEY  -> random 32+ char strings
+#   POSTGRES_PASSWORD / REDIS_PASSWORD -> URL-safe passwords (openssl rand -hex 24)
 ```
 
 ### 3. Start infrastructure
 
+Compose reads interpolation variables from `docker/.env` (the compose file's
+directory), **not** the root `.env` — copy your file there first:
+
 ```bash
-docker compose -f docker/docker-compose.yml up -d   # PostgreSQL + Redis
+cp .env docker/.env
+docker compose -f docker/docker-compose.yml up -d   # PostgreSQL + Redis + app containers
 ```
 
 ### 4. Start dev servers
@@ -276,11 +282,11 @@ All configuration is via environment variables. Key settings:
 | `JWT_SECRET` | -- | JWT signing secret (32+ chars, must not be default in production) |
 | `PAT_ENCRYPTION_KEY` | -- | AES-256-GCM key for encrypting Confluence PATs (32+ chars) |
 | `POSTGRES_USER` | `kb_user` | PostgreSQL username |
-| `POSTGRES_PASSWORD` | `changeme-postgres` | PostgreSQL password |
+| `POSTGRES_PASSWORD` | -- | PostgreSQL password (**required** by `docker/docker-compose.yml` — no default) |
 | `POSTGRES_DB` | `kb_creator` | PostgreSQL database name |
-| `POSTGRES_URL` | `postgresql://kb_user:changeme-postgres@localhost:5432/kb_creator` | Full connection string |
-| `REDIS_PASSWORD` | `changeme-redis` | Redis password |
-| `REDIS_URL` | `redis://:changeme-redis@localhost:6379` | Full Redis connection string |
+| `POSTGRES_URL` | `postgresql://kb_user:<password>@localhost:5432/kb_creator` | Full connection string |
+| `REDIS_PASSWORD` | -- | Redis password (**required** by `docker/docker-compose.yml` — no default) |
+| `REDIS_URL` | `redis://:<password>@localhost:6379` | Full Redis connection string |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | **Deprecated — seed-only.** Consulted once on fresh install to create the first `llm_providers` row; ignored afterwards. Configure providers via Settings → LLM. |
 | `LLM_PROVIDER` | — | **Removed.** The two-slot `{ollama, openai}` toggle was replaced by the `llm_providers` table + per-use-case assignments. |
 | `LLM_BEARER_TOKEN` | -- | **Deprecated — seed-only.** Bearer token on the seeded Ollama row. |

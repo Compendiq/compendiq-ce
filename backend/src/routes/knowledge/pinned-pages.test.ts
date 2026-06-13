@@ -79,9 +79,18 @@ vi.mock('../../core/services/rbac-service.js', () => ({
 }));
 
 const mockQueryFn = vi.fn();
+// Transaction client returned by getPool().connect() — since #766 the delete
+// routes finish local cleanup in a BEGIN…COMMIT on a dedicated client.
+const mockTxQueryFn = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 });
 vi.mock('../../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mockQueryFn(...args),
-  getPool: vi.fn().mockReturnValue({}),
+  getPool: vi.fn().mockReturnValue({
+    connect: () =>
+      Promise.resolve({
+        query: (...args: unknown[]) => mockTxQueryFn(...args),
+        release: vi.fn(),
+      }),
+  }),
   runMigrations: vi.fn(),
   closePool: vi.fn(),
 }));
@@ -520,10 +529,8 @@ describe('Pinned Pages API', () => {
         rows: [{ id: 42, source: 'confluence', created_by_user_id: null, confluence_id: 'page-1' }],
         rowCount: 1,
       });
-      // pinned_pages delete
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
-      // pages delete (page_embeddings cascade-deleted via FK)
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+      // #766 delete-intent soft-delete (UPDATE … RETURNING id)
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 42 }], rowCount: 1 });
 
       const response = await app.inject({
         method: 'DELETE',
@@ -531,20 +538,22 @@ describe('Pinned Pages API', () => {
       });
 
       expect(response.statusCode).toBe(200);
-      // Second query (after page lookup) should be pinned_pages cleanup
-      expect(mockQueryFn.mock.calls[1][0]).toContain('DELETE FROM pinned_pages');
-      expect(mockQueryFn.mock.calls[1][1]).toEqual(['test-user-id', 42]);
+      // Since #766 the hard cleanup (pins + page row) runs inside one
+      // transaction on a dedicated pool client.
+      const pinnedDeleteCall = mockTxQueryFn.mock.calls.find(
+        (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('DELETE FROM pinned_pages'),
+      );
+      expect(pinnedDeleteCall).toBeDefined();
+      expect(pinnedDeleteCall![1]).toEqual([42]);
     });
 
     it('should delete pinned_pages row when bulk-deleting pages', async () => {
-      // Bulk delete uses batched queries: ownership check, then parallel cleanup (pinned_pages, pages)
-      // page_embeddings are cascade-deleted via FK on pages
-      // batch ownership check via RBAC space access (route selects id, source, confluence_id, space_key)
+      // Bulk delete: ownership check, #766 delete-intent soft-delete, then the
+      // batched cleanup (pinned_pages, pages) inside one transaction.
+      // page_embeddings are cascade-deleted via FK on pages.
       mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 42, source: 'confluence', confluence_id: 'page-1', space_key: 'DEV' }], rowCount: 1 });
-      // batched pinned_pages delete via ANY($2)
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
-      // batched pages delete via ANY($1)
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+      // #766 delete-intent soft-delete (UPDATE … RETURNING id)
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 42 }], rowCount: 1 });
 
       const response = await app.inject({
         method: 'POST',
@@ -556,14 +565,13 @@ describe('Pinned Pages API', () => {
       const body = JSON.parse(response.body);
       expect(body.succeeded).toBe(1);
 
-      // After the ownership check (index 0), the Confluence client.deletePage is
-      // called (mocked), then the batch cleanup queries run in parallel.
-      // Find the pinned_pages DELETE among the subsequent queries.
-      const pinnedDeleteCall = mockQueryFn.mock.calls.find(
+      // After the ownership check, the Confluence client.deletePage is called
+      // (mocked), then the batch cleanup runs inside the #766 transaction.
+      const pinnedDeleteCall = mockTxQueryFn.mock.calls.find(
         (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('DELETE FROM pinned_pages'),
       );
       expect(pinnedDeleteCall).toBeDefined();
-      expect(pinnedDeleteCall![1]).toEqual(['test-user-id', [42]]);
+      expect(pinnedDeleteCall![1]).toEqual([[42]]);
     });
   });
 });

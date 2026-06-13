@@ -6,7 +6,7 @@ import { RedisCache } from '../../core/services/redis-cache.js';
 import { encryptPat, decryptPat } from '../../core/utils/crypto.js';
 import { validateUrl, addAllowedBaseUrl, removeAllowedBaseUrl, resolveConfluenceUrl } from '../../core/utils/ssrf-guard.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
-import { getUserAccessibleSpaces, invalidateRbacCache } from '../../core/services/rbac-service.js';
+import { getSelectedSyncSpaces, invalidateRbacCache } from '../../core/services/rbac-service.js';
 import { getSyncOverview } from '../../domains/confluence/services/sync-overview-service.js';
 import { logger } from '../../core/utils/logger.js';
 import { confluenceDispatcher } from '../../core/utils/tls-config.js';
@@ -25,12 +25,15 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       sync_interval_min: number;
       show_space_home_content: boolean;
       custom_prompts: Record<string, string>;
+      confluence_pat_prompt_dismissed_at: Date | null;
     }>(
-      'SELECT confluence_url, confluence_pat, theme, sync_interval_min, show_space_home_content, custom_prompts FROM user_settings WHERE user_id = $1',
+      'SELECT confluence_url, confluence_pat, theme, sync_interval_min, show_space_home_content, custom_prompts, confluence_pat_prompt_dismissed_at FROM user_settings WHERE user_id = $1',
       [request.userId],
     );
-    // Fetch accessible spaces from RBAC
-    const selectedSpaces = await getUserAccessibleSpaces(request.userId);
+    // #721: Use explicit editor assignments rather than getUserAccessibleSpaces
+    // so that admins see only the spaces they've chosen to sync — not every
+    // space in the DB (which getUserAccessibleSpaces returns for admins).
+    const selectedSpaces = await getSelectedSyncSpaces(request.userId);
     selectedSpaces.sort();
 
     if (result.rows.length === 0) {
@@ -45,6 +48,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
         confluenceConnected: false,
         showSpaceHomeContent: true,
         customPrompts: {},
+        confluencePatPromptDismissed: false,
       };
     }
 
@@ -58,6 +62,8 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       confluenceConnected: !!(row.confluence_url && row.confluence_pat),
       showSpaceHomeContent: row.show_space_home_content,
       customPrompts: row.custom_prompts ?? {},
+      // #771: boolean only — the dismissal timestamp stays server-side.
+      confluencePatPromptDismissed: !!row.confluence_pat_prompt_dismissed_at,
     };
   });
 
@@ -142,6 +148,17 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     if (body.customPrompts !== undefined) {
       updates.push(`custom_prompts = $${paramIdx++}`);
       values.push(JSON.stringify(body.customPrompts));
+    }
+
+    // #771: dismissal of the Confluence-PAT onboarding banner. The client
+    // sends a boolean; the server owns the timestamp (NOW() on dismiss,
+    // NULL to clear). Static SQL fragments only — no user input involved.
+    if (body.confluencePatPromptDismissed !== undefined) {
+      updates.push(
+        body.confluencePatPromptDismissed
+          ? 'confluence_pat_prompt_dismissed_at = NOW()'
+          : 'confluence_pat_prompt_dismissed_at = NULL',
+      );
     }
 
     // Handle selectedSpaces via RBAC space_role_assignments

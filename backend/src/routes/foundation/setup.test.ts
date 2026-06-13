@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi, beforeEach } from 'vitest';
 import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 import cookie from '@fastify/cookie';
@@ -54,8 +54,20 @@ vi.mock('../../core/utils/logger.js', () => ({
 // Must import after mocks
 import { query } from '../../core/db/postgres.js';
 import { setupRoutes } from './setup.js';
+// Real (unmocked) SSRF guard — the route under test must drive it correctly.
+import {
+  addAllowedBaseUrlSilent,
+  clearAllowedBaseUrls,
+  getAllowedBaseUrlCount,
+  validateUrl,
+} from '../../core/utils/ssrf-guard.js';
 
 const mockQuery = query as ReturnType<typeof vi.fn>;
+
+// Controllable auth passthroughs so individual tests can simulate 401/403
+// (mirrors the vi.spyOn passthrough pattern used by sibling route tests).
+const mockAuthenticate = vi.fn(async (_request: unknown) => {});
+const mockRequireAdmin = vi.fn(async (_request: unknown) => {});
 
 describe('Setup routes', () => {
   let app: ReturnType<typeof Fastify>;
@@ -65,9 +77,10 @@ describe('Setup routes', () => {
     await app.register(sensible);
     await app.register(cookie);
 
-    // Decorate with authenticate and requireAdmin
-    app.decorate('authenticate', async () => {});
-    app.decorate('requireAdmin', async () => {});
+    // Decorate with authenticate and requireAdmin, delegating to mocks so
+    // tests can simulate unauthenticated (401) and non-admin (403) callers.
+    app.decorate('authenticate', (request: unknown) => mockAuthenticate(request));
+    app.decorate('requireAdmin', (request: unknown) => mockRequireAdmin(request));
 
     // Add ZodError handler matching app.ts behavior
     app.setErrorHandler((error: Error & { statusCode?: number }, _request, reply) => {
@@ -390,6 +403,188 @@ describe('Setup routes', () => {
       });
 
       expect(response.statusCode).toBe(400);
+    });
+
+    // ─── Security: admin gate + SSRF guard (issue #736) ──────────────────
+
+    describe('security: admin gate + SSRF guard (issue #736)', () => {
+      beforeEach(() => {
+        clearAllowedBaseUrls();
+      });
+
+      // Hygiene: never leak entries into the module-global allowlist for
+      // other suites sharing this worker (PR #751 review follow-up).
+      afterEach(() => {
+        clearAllowedBaseUrls();
+      });
+
+      it('should return 401 for unauthenticated requests without any outbound call', async () => {
+        mockAuthenticate.mockRejectedValueOnce(
+          Object.assign(new Error('Invalid or expired token'), { statusCode: 401 }),
+        );
+
+        const response = await app.inject({
+          method: 'POST',
+          url: '/api/setup/llm-test',
+          payload: { provider: 'ollama', baseUrl: 'http://localhost:11434' },
+        });
+
+        expect(response.statusCode).toBe(401);
+        expect(mockCheckHealth).not.toHaveBeenCalled();
+        expect(mockListModels).not.toHaveBeenCalled();
+      });
+
+      it('should return 403 for authenticated non-admin users without any outbound call', async () => {
+        mockRequireAdmin.mockRejectedValueOnce(
+          Object.assign(new Error('Admin access required'), { statusCode: 403 }),
+        );
+
+        const response = await app.inject({
+          method: 'POST',
+          url: '/api/setup/llm-test',
+          payload: { provider: 'ollama', baseUrl: 'http://10.0.0.1:11434' },
+        });
+
+        expect(response.statusCode).toBe(403);
+        expect(mockCheckHealth).not.toHaveBeenCalled();
+        expect(mockListModels).not.toHaveBeenCalled();
+      });
+
+      it('should run the requireAdmin gate on every request', async () => {
+        const response = await app.inject({
+          method: 'POST',
+          url: '/api/setup/llm-test',
+          payload: { provider: 'ollama', baseUrl: 'http://localhost:11434' },
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(mockRequireAdmin).toHaveBeenCalledTimes(1);
+      });
+
+      it('should block non-HTTP(S) protocols without any outbound call', async () => {
+        const response = await app.inject({
+          method: 'POST',
+          url: '/api/setup/llm-test',
+          payload: { provider: 'openai', baseUrl: 'ftp://internal-files.example.com' },
+        });
+
+        expect(response.statusCode).toBe(200);
+        const body = JSON.parse(response.body);
+        expect(body.success).toBe(false);
+        expect(body.error).toMatch(/SSRF blocked/);
+        expect(body.models).toEqual([]);
+        expect(mockCheckHealth).not.toHaveBeenCalled();
+        expect(mockListModels).not.toHaveBeenCalled();
+        // Validation is non-mutating — nothing reaches the global allowlist
+        expect(getAllowedBaseUrlCount()).toBe(0);
+      });
+
+      it('should allow private-network hosts for admins (same policy as admin provider routes)', async () => {
+        const response = await app.inject({
+          method: 'POST',
+          url: '/api/setup/llm-test',
+          payload: { provider: 'ollama', baseUrl: 'http://192.168.1.50:11434' },
+        });
+
+        expect(response.statusCode).toBe(200);
+        const body = JSON.parse(response.body);
+        expect(body.success).toBe(true);
+        expect(mockCheckHealth).toHaveBeenCalledWith(
+          expect.objectContaining({ baseUrl: 'http://192.168.1.50:11434/v1' }),
+        );
+      });
+
+      it('should still allow the default localhost Ollama URL (wizard auto-detect)', async () => {
+        const response = await app.inject({
+          method: 'POST',
+          url: '/api/setup/llm-test',
+          payload: { provider: 'ollama' },
+        });
+
+        expect(response.statusCode).toBe(200);
+        const body = JSON.parse(response.body);
+        expect(body.success).toBe(true);
+        expect(mockCheckHealth).toHaveBeenCalledWith(
+          expect.objectContaining({ baseUrl: 'http://localhost:11434/v1' }),
+        );
+      });
+
+      it('should never mutate the global SSRF allowlist on a successful probe', async () => {
+        expect(getAllowedBaseUrlCount()).toBe(0);
+
+        const response = await app.inject({
+          method: 'POST',
+          url: '/api/setup/llm-test',
+          payload: { provider: 'ollama', baseUrl: 'http://10.0.0.7:11434' },
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(JSON.parse(response.body).success).toBe(true);
+        expect(getAllowedBaseUrlCount()).toBe(0);
+        // Origin must NOT be retained as an SSRF bypass for other flows
+        expect(() => validateUrl('http://10.0.0.7:11434/v1')).toThrow(/SSRF blocked/);
+      });
+
+      it('should never mutate the global SSRF allowlist on a failed probe', async () => {
+        mockCheckHealth.mockRejectedValueOnce(new Error('Connection refused'));
+        mockListModels.mockRejectedValueOnce(new Error('Connection refused'));
+
+        const response = await app.inject({
+          method: 'POST',
+          url: '/api/setup/llm-test',
+          payload: { provider: 'ollama', baseUrl: 'http://10.0.0.8:11434' },
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(JSON.parse(response.body).success).toBe(false);
+        expect(getAllowedBaseUrlCount()).toBe(0);
+      });
+
+      it('should not widen the global allowlist even transiently while the probe is in flight', async () => {
+        // Guards against the ephemeral add/revoke round-trip from a previous
+        // revision: during the (untimed) outbound probe, the origin must NOT
+        // be allowlisted for unrelated flows on this pod (e.g. image import).
+        let countDuringProbe = -1;
+        let probedOriginAllowedDuringProbe = true;
+        mockCheckHealth.mockImplementationOnce(async () => {
+          countDuringProbe = getAllowedBaseUrlCount();
+          try {
+            validateUrl('http://10.0.0.9:11434/v1');
+          } catch {
+            probedOriginAllowedDuringProbe = false;
+          }
+          return { connected: true };
+        });
+
+        const response = await app.inject({
+          method: 'POST',
+          url: '/api/setup/llm-test',
+          payload: { provider: 'ollama', baseUrl: 'http://10.0.0.9:11434' },
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(JSON.parse(response.body).success).toBe(true);
+        expect(countDuringProbe).toBe(0);
+        expect(probedOriginAllowedDuringProbe).toBe(false);
+      });
+
+      it('should leave a pre-existing allowlist entry untouched (no cross-route revocation)', async () => {
+        // A persisted provider's origin (added by the admin routes /
+        // bootstrap) must survive a probe of the same origin — the probe
+        // must not revoke entries it does not own.
+        addAllowedBaseUrlSilent('http://10.1.2.3:11434');
+        expect(getAllowedBaseUrlCount()).toBe(1);
+
+        const response = await app.inject({
+          method: 'POST',
+          url: '/api/setup/llm-test',
+          payload: { provider: 'ollama', baseUrl: 'http://10.1.2.3:11434' },
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(getAllowedBaseUrlCount()).toBe(1);
+        expect(() => validateUrl('http://10.1.2.3:11434')).not.toThrow();
+      });
     });
   });
 });

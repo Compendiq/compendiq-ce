@@ -15,7 +15,7 @@ vi.mock('./SidebarTreeView', () => ({
   ),
 }));
 
-vi.mock('./ArticleRightPane', () => ({
+vi.mock('../article/ArticleRightPane', () => ({
   ArticleRightPane: () => <div data-testid="article-right-pane">Article Right Pane</div>,
 }));
 
@@ -23,8 +23,14 @@ vi.mock('./CommandPalette', () => ({
   CommandPalette: () => null,
 }));
 
-vi.mock('./ServiceStatus', () => ({
+vi.mock('../badges/ServiceStatus', () => ({
   ServiceStatus: () => null,
+}));
+
+// Self-fetching banner (GET /api/settings) — mock it so AppLayout tests stay
+// hermetic (no unmocked fetch through jsdom).
+vi.mock('../banners/ConfluencePatBanner', () => ({
+  ConfluencePatBanner: () => null,
 }));
 
 vi.mock('./ThemeToggle', () => ({
@@ -117,7 +123,7 @@ describe('AppLayout', () => {
       </AppLayout>,
       { wrapper: createWrapper('/') },
     );
-    expect(screen.getByText('Search pages, articles, commands...')).toBeInTheDocument();
+    expect(screen.getByText('Search pages, commands...')).toBeInTheDocument();
   });
 
   it('search bar has role="search" landmark and distinct aria-labels', () => {

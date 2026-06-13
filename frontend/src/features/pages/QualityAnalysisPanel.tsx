@@ -95,7 +95,7 @@ export function QualityAnalysisPanel({
     <button
       onClick={toggleOpen}
       className="nm-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
-      title="Analyze article quality"
+      title="Analyze page quality"
     >
       <ShieldCheck size={14} /> <span className="hidden sm:inline">Quality</span>
     </button>
@@ -157,7 +157,7 @@ export function QualityAnalysisPanel({
       {/* Streaming indicator without result yet */}
       {isStreaming && !result && (
         <div className="flex items-center gap-2 rounded-lg border border-border/50 bg-foreground/5 p-4 text-xs text-muted-foreground">
-          <Loader2 size={12} className="animate-spin" /> Analyzing article quality...
+          <Loader2 size={12} className="animate-spin" /> Analyzing page quality...
         </div>
       )}
     </div>

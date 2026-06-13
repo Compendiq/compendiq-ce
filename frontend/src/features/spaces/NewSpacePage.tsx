@@ -82,7 +82,7 @@ export function NewSpacePage() {
           <div>
             <h1 className="text-lg font-semibold text-foreground">Create Local Space</h1>
             <p className="text-xs text-muted-foreground">
-              Organize standalone articles in a local space
+              Organize standalone pages in a local space
             </p>
           </div>
         </div>

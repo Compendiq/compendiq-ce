@@ -46,6 +46,8 @@ interface PageDetail extends PageSummary {
   summaryGeneratedAt: string | null;
   summaryModel: string | null;
   summaryError: string | null;
+  /** Creator's user id — set for standalone pages, null for Confluence-synced. */
+  createdByUserId?: string | number | null;
 }
 
 interface PaginatedPages {

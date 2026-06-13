@@ -77,6 +77,7 @@ import { registerKnowledgeRelationshipProducers } from './domains/knowledge/serv
 import { initSsrfAllowlistBus } from './core/services/ssrf-allowlist-bus.js';
 import { initPresenceBus } from './core/services/presence-service.js';
 import { initCacheBus, close as closeCacheBus } from './core/services/redis-cache-bus.js';
+import { initUserSecurityCacheBus } from './core/services/user-security-cache.js';
 import { initProviderCacheBus } from './domains/llm/services/cache-bus.js';
 import { buildTrustProxyFn } from './core/utils/trusted-proxy.js';
 import {
@@ -90,6 +91,7 @@ import { initLlmQueueClusterCoordination } from './domains/llm/services/llm-queu
 import { setLlmAuditHook } from './domains/llm/services/llm-audit-hook.js';
 import { defaultLlmAuditWriter } from './domains/llm/services/llm-audit-default-writer.js';
 import { ENTERPRISE_FEATURES } from './core/enterprise/features.js';
+import type { OidcConfig } from '@compendiq/contracts';
 
 export async function buildApp() {
   // v0.4 epic §3.4 — replace the previous blanket `trustProxy: true` with a
@@ -231,6 +233,13 @@ export async function buildApp() {
   app.addHook('onClose', async () => {
     await closeCacheBus();
   });
+
+  // ── User security cache bus (#737) ───────────────────────────────
+  // Subscribes the per-user liveness/role cache (checked by `authenticate`
+  // on every request) to `user:security:changed` so deactivation and role
+  // changes invalidate across pods immediately. Must run AFTER initCacheBus.
+  // Without a working bus the cache's 30s TTL bounds the staleness.
+  initUserSecurityCacheBus();
 
   // ── LLM provider cache-bus subscriber (EE #113 sub-PR 1d) ────────
   // Wires the cluster subscriber for `provider:cache:bump` and
@@ -387,6 +396,20 @@ export async function buildApp() {
       tier: 'community',
       valid: true,
       features: [],
+    }));
+  }
+
+  // Community-mode OIDC config fallback.
+  // The EE plugin serves a richer GET /api/auth/oidc/config when OIDC_SSO is
+  // licensed (see the conditional registration below); in community mode we
+  // return a static "disabled" payload so the shared CE login page can hide
+  // the SSO button instead of 404-ing on every load.
+  if (enterprise.version === 'community') {
+    app.get('/api/auth/oidc/config', async (): Promise<OidcConfig> => ({
+      enabled: false,
+      issuer: null,
+      name: null,
+      enterpriseRequired: true,
     }));
   }
 

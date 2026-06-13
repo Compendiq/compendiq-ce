@@ -648,5 +648,24 @@ describe('RBAC routes', () => {
       expect(usersCall).toBeDefined();
       expect(usersCall![0]).toContain('last_login_at');
     });
+
+    // UX-fix Task 4 follow-up: the system sentinel user (migration 032) must
+    // not appear in the role-assignment principal picker either — exclude it
+    // at the SQL level, same as admin-user-service.listUsers().
+    it('should exclude the system sentinel user from the SELECT', async () => {
+      const queryMock = mockQuery as ReturnType<typeof vi.fn>;
+      queryMock.mockResolvedValueOnce({ rows: [] });
+
+      const response = await app.inject({ method: 'GET', url: '/api/users' });
+      expect(response.statusCode).toBe(200);
+
+      const usersCall = queryMock.mock.calls.find((call) =>
+        typeof call[0] === 'string' &&
+        call[0].includes('FROM users'),
+      );
+      expect(usersCall).toBeDefined();
+      expect(usersCall![0]).toMatch(/id\s*<>/);
+      expect(usersCall![1]).toContain('00000000-0000-0000-0000-000000000000');
+    });
   });
 });

@@ -21,15 +21,17 @@ services:
       dockerfile: backend/Dockerfile
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    ports:
-      - "${BACKEND_HOST_PORT:-3052}:3051"
+    # No host port mapping on purpose: the backend is only reachable through
+    # the frontend nginx proxy, which applies the CSP / security headers
+    # (frontend/nginx-security-headers.conf). Publishing the API directly
+    # would bypass the only XSS mitigation for served HTML attachments.
     env_file:
       - .env
     environment:
       NODE_ENV: production
       BACKEND_PORT: "3051"
-      POSTGRES_URL: postgresql://${POSTGRES_USER:-kb_user}:${POSTGRES_PASSWORD:-changeme-postgres}@postgres:5432/${POSTGRES_DB:-kb_creator}
-      REDIS_URL: redis://:${REDIS_PASSWORD:-changeme-redis}@redis:6379
+      POSTGRES_URL: postgresql://${POSTGRES_USER:-kb_user}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required - set a strong password, e.g. openssl rand -hex 24}@postgres:5432/${POSTGRES_DB:-kb_creator}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required - set a strong password, e.g. openssl rand -hex 24}@redis:6379
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
       PAT_ENCRYPTION_KEY: ${PAT_ENCRYPTION_KEY:?PAT_ENCRYPTION_KEY is required}
       EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1024}
@@ -73,7 +75,7 @@ services:
     image: pgvector/pgvector:pg17
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-kb_user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required - set a strong password, e.g. openssl rand -hex 24}
       POSTGRES_DB: ${POSTGRES_DB:-kb_creator}
     volumes:
       - postgres-data:/var/lib/postgresql/data
@@ -93,7 +95,7 @@ services:
     environment:
       PORT: "3100"
       MCP_DOCS_HOST: "0.0.0.0"
-      REDIS_URL: redis://:${REDIS_PASSWORD:-changeme-redis}@redis:6379
+      REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required - set a strong password, e.g. openssl rand -hex 24}@redis:6379
       LOG_LEVEL: ${MCP_LOG_LEVEL:-info}
       CACHE_TTL_SECONDS: ${MCP_CACHE_TTL:-3600}
       SEARXNG_URL: ${SEARXNG_URL:-http://searxng:8080}
@@ -136,9 +138,9 @@ services:
       redis-server
       --maxmemory 256mb
       --maxmemory-policy noeviction
-      --requirepass ${REDIS_PASSWORD:-changeme-redis}
+      --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD is required - set a strong password, e.g. openssl rand -hex 24}
     healthcheck:
-      test: ["CMD-SHELL", "REDISCLI_AUTH=${REDIS_PASSWORD:-changeme-redis} redis-cli ping"]
+      test: ["CMD-SHELL", "REDISCLI_AUTH=${REDIS_PASSWORD:?REDIS_PASSWORD is required - set a strong password, e.g. openssl rand -hex 24} redis-cli ping"]
       interval: 5s
       timeout: 5s
       retries: 5

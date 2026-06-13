@@ -3,7 +3,7 @@ import { query } from '../../core/db/postgres.js';
 import { ChatMessage } from '../../domains/llm/services/prompts.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { ApplyImprovementRequestSchema } from '@compendiq/contracts';
-import { confluenceToHtml, htmlToConfluence, htmlToText, markdownToHtml } from '../../core/services/content-converter.js';
+import { confluenceToHtml, htmlToConfluence, htmlToText, markdownToHtml, protectMedia, restoreMedia, extractLayoutSkeleton, LayoutRecoveryError } from '../../core/services/content-converter.js';
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { IdParamSchema, ImprovementsQuerySchema } from './_helpers.js';
@@ -107,21 +107,52 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     const { pageId, improvedMarkdown, version, title } = body;
     const userId = request.userId;
 
-    // Resolve page by confluenceId or internal id (standalone pages use numeric id)
-    const isNumericId = /^\d+$/.test(pageId);
-    const existing = await query<{
+    // Resolve page by internal id or Confluence id. Both are numeric strings,
+    // so the internal id (what the frontend's /pages/:id routes pass) wins,
+    // with a Confluence-id fallback for API callers — same precedence as
+    // resolvePageRef in the improve route. The digit cap keeps long Confluence
+    // ids out of the int4 cast (a 10+ digit id would error, not 404).
+    type PageRow = {
       id: number; version: number; title: string; space_key: string;
-      source: string; confluence_id: string | null;
-    }>(
-      `SELECT id, version, title, space_key, source, confluence_id FROM pages
-       WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'} AND deleted_at IS NULL`,
-      [isNumericId ? parseInt(pageId, 10) : pageId],
-    );
+      source: string; confluence_id: string | null; body_html: string | null;
+      created_by_user_id: string | null; visibility: string;
+    };
+    const PAGE_COLUMNS = `id, version, title, space_key, source, confluence_id, body_html,
+              created_by_user_id, visibility`;
+    let existing: { rows: PageRow[] } = { rows: [] };
+    if (/^\d{1,9}$/.test(pageId)) {
+      existing = await query<PageRow>(
+        `SELECT ${PAGE_COLUMNS} FROM pages WHERE id = $1 AND deleted_at IS NULL`,
+        [parseInt(pageId, 10)],
+      );
+    }
+    if (existing.rows.length === 0) {
+      existing = await query<PageRow>(
+        `SELECT ${PAGE_COLUMNS} FROM pages WHERE confluence_id = $1 AND deleted_at IS NULL`,
+        [pageId],
+      );
+    }
     if (existing.rows.length === 0) {
       throw fastify.httpErrors.notFound('Page not found');
     }
 
     const existingPage = existing.rows[0]!;
+
+    // IDOR guard (#734): a standalone page is writable only by its owner
+    // unless it is explicitly shared — same rule as PATCH /pages/:id.
+    // Respond 404 (not 403/409) so another user's private page never leaks
+    // its existence, title, or version; this must run before the version
+    // check below to avoid a 404-vs-409 existence oracle. Confluence-sourced
+    // pages are not gated here: that branch pushes through the caller's own
+    // Confluence client, so Confluence ACLs apply.
+    if (
+      existingPage.source === 'standalone' &&
+      existingPage.created_by_user_id !== userId &&
+      existingPage.visibility !== 'shared'
+    ) {
+      throw fastify.httpErrors.notFound('Page not found');
+    }
+
     const currentVersion = existingPage.version;
     const pageTitle = title ?? existingPage.title;
 
@@ -129,8 +160,50 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.conflict('Page has been modified since you loaded it. Please refresh and try again.');
     }
 
-    // Convert improved Markdown → HTML
-    const bodyHtml = await markdownToHtml(improvedMarkdown);
+    // #723: re-derive the same media tokens from the page's CURRENT body_html
+    // (deterministic, document order) and re-inject originals verbatim so AI
+    // Improve can never strip images/draw.io.
+    //
+    // The Improve-time token set (derived from the editor `content`) and this
+    // Accept-time token set (derived from `body_html`) are decoupled, so they
+    // can diverge — the LLM may also drop tokens entirely. The drop-guard below
+    // is the backstop: any media original not present after restoreMedia
+    // (including the worst case where restoreMedia was a complete no-op because
+    // no tokens survived) is re-appended, so media is never silently lost.
+    const { html: protectedCurrentHtml, media } = protectMedia(existingPage.body_html ?? '');
+
+    // #781: derive the expected layout-token skeleton from the page's CURRENT
+    // body_html (deterministic, same re-derivation idea as the media tokens
+    // above) and let markdownToHtml align the LLM's — possibly mangled —
+    // boundary tokens against it. When the layout is unrecoverable (e.g. the
+    // model merged two cells' prose or dropped every token), the apply is
+    // REJECTED with a 422 instead of silently flattening the page and
+    // pushing the flattened body back to Confluence.
+    const layoutSkeleton = extractLayoutSkeleton(protectedCurrentHtml);
+    let bodyHtml: string;
+    try {
+      bodyHtml = await markdownToHtml(improvedMarkdown, { layoutSkeleton });
+    } catch (err) {
+      if (err instanceof LayoutRecoveryError) {
+        fastify.log.warn(
+          { pageId, ...err.details },
+          '#781: AI Improve output lost the page layout — apply rejected, page not modified',
+        );
+        throw fastify.httpErrors.unprocessableEntity(
+          "The AI response lost this page's column layout and it could not be recovered, so the change was not applied. The page is unchanged — run AI Improve again, or edit the page manually.",
+        );
+      }
+      throw err;
+    }
+    bodyHtml = restoreMedia(bodyHtml, media);
+    const dropped = media.filter((m) => !bodyHtml.includes(m.html));
+    if (dropped.length > 0) {
+      bodyHtml += dropped.map((m) => m.html).join('\n');
+      fastify.log.warn(
+        { pageId, dropped: dropped.length, total: media.length },
+        '#723: re-appended media dropped during AI Improve',
+      );
+    }
     const bodyText = htmlToText(bodyHtml);
 
     const cache = new RedisCache(fastify.redis);

@@ -34,16 +34,23 @@ vi.mock('../../../core/utils/ssrf-guard.js', () => ({
 const mockConfluenceClientInstance: Record<string, ReturnType<typeof vi.fn>> = {
   getAllSpaces: vi.fn().mockResolvedValue([]),
   getAllPagesInSpace: vi.fn().mockResolvedValue([]),
+  getAllPageIds: vi.fn().mockResolvedValue(new Set<string>()),
   getModifiedPages: vi.fn().mockResolvedValue([]),
   getPage: vi.fn(),
   getPageAttachments: vi.fn().mockResolvedValue({ results: [] }),
 };
 
-vi.mock('./confluence-client.js', () => ({
-  ConfluenceClient: vi.fn(function (this: Record<string, ReturnType<typeof vi.fn>>) {
-    Object.assign(this, mockConfluenceClientInstance);
-  }),
-}));
+// Keep the real `ConfluenceError` so the #706 404-confirmation branch's
+// `instanceof` check works while `ConfluenceClient` itself is stubbed.
+vi.mock('./confluence-client.js', async () => {
+  const actual = await vi.importActual<typeof import('./confluence-client.js')>('./confluence-client.js');
+  return {
+    ...actual,
+    ConfluenceClient: vi.fn(function (this: Record<string, ReturnType<typeof vi.fn>>) {
+      Object.assign(this, mockConfluenceClientInstance);
+    }),
+  };
+});
 
 vi.mock('../../../core/services/content-converter.js', () => ({
   confluenceToHtml: vi.fn().mockReturnValue('<p>html</p>'),
@@ -103,6 +110,7 @@ vi.mock('../../../core/services/redis-cache.js', () => ({
 import { syncUser } from './sync-service.js';
 import { query } from '../../../core/db/postgres.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
+import { ConfluenceError } from './confluence-client.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -115,9 +123,9 @@ import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js'
 function setupSyncMocks(opts: {
   confluencePages: Array<{ id: string; title: string; version?: number }>;
   dbPages?: string[];
-  rbacUserCount?: number;
 }) {
-  const { confluencePages, dbPages = [], rbacUserCount = 1 } = opts;
+  const { confluencePages, dbPages = [] } = opts;
+  const liveIds = new Set(confluencePages.map((p) => p.id));
 
   mockConfluenceClientInstance.getAllSpaces.mockResolvedValue([
     { key: 'TEST', name: 'Test Space', homepage: null },
@@ -125,15 +133,22 @@ function setupSyncMocks(opts: {
   mockConfluenceClientInstance.getAllPagesInSpace.mockResolvedValue(
     confluencePages.map((p) => ({ id: p.id, title: p.title, status: 'current' })),
   );
+  // Authoritative live-id listing used by deletion reconciliation (#706).
+  mockConfluenceClientInstance.getAllPageIds.mockResolvedValue(liveIds);
   mockConfluenceClientInstance.getModifiedPages.mockResolvedValue([]);
   mockConfluenceClientInstance.getPage.mockImplementation((id: string) => {
     const summary = confluencePages.find((p) => p.id === id);
+    // A page absent from the live listing is confirmed gone with a 404 (the
+    // reconciler's per-candidate confirmation fetch); live pages resolve.
+    if (!summary) {
+      return Promise.reject(new ConfluenceError('Resource not found', 404));
+    }
     return Promise.resolve({
       id,
-      title: summary?.title ?? `Page ${id}`,
+      title: summary.title,
       body: { storage: { value: '<p>content</p>' } },
       version: {
-        number: summary?.version ?? 1,
+        number: summary.version ?? 1,
         when: '2025-01-01T00:00:00Z',
         by: { displayName: 'Author' },
       },
@@ -165,13 +180,6 @@ function setupSyncMocks(opts: {
       return empty as QueryResult; // fresh create for every page in confluencePages
     }
     if (sqlStr.includes('INSERT INTO pages')) return empty as QueryResult;
-    // detectDeletedPages: COUNT(DISTINCT principal_id)
-    if (sqlStr.includes('COUNT(DISTINCT principal_id)')) {
-      return {
-        rows: [{ count: String(rbacUserCount) }],
-        rowCount: 1, command: '', oid: 0, fields: [],
-      } as QueryResult;
-    }
     // detectDeletedPages: SELECT confluence_id FROM pages WHERE space_key = $1 AND deleted_at IS NULL
     if (sqlStr.includes('SELECT confluence_id FROM pages') && sqlStr.includes('deleted_at IS NULL')) {
       return {

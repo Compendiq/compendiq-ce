@@ -265,6 +265,20 @@ export const LAYOUT_RIGHT_SIDEBAR_PAGE = `<h2>Right Sidebar Layout</h2>
 export const LAYOUT_THREE_EQUAL_PAGE = `<h2>Three Column Layout</h2>
 <ac:layout><ac:layout-section ac:type="three_equal"><ac:layout-cell><p>Column one</p></ac:layout-cell><ac:layout-cell><p>Column two</p></ac:layout-cell><ac:layout-cell><p>Column three</p></ac:layout-cell></ac:layout-section></ac:layout>`;
 
+/**
+ * Page with layout macros — three_with_sidebars, stacked between two `single`
+ * sections. Mirrors the canonical example from the official Confluence DC
+ * storage-format docs ("Page layouts" section).
+ */
+export const LAYOUT_THREE_WITH_SIDEBARS_PAGE = `<ac:layout><ac:layout-section ac:type="single"><ac:layout-cell><h2>Header section</h2><p>Intro paragraph.</p></ac:layout-cell></ac:layout-section><ac:layout-section ac:type="three_with_sidebars"><ac:layout-cell><p>Left sidebar nav</p></ac:layout-cell><ac:layout-cell><p>Wide middle content</p></ac:layout-cell><ac:layout-cell><p>Right sidebar widgets</p></ac:layout-cell></ac:layout-section><ac:layout-section ac:type="single"><ac:layout-cell><p>Footer text.</p></ac:layout-cell></ac:layout-section></ac:layout>`;
+
+/**
+ * Real-DC attribute variants: extra/unknown attributes on ac:layout and
+ * ac:layout-section (e.g. breakout-mode emitted by newer editors) must be
+ * tolerated — the converter keys off the element name + ac:type only.
+ */
+export const LAYOUT_DC_EXTRA_ATTRS_PAGE = `<ac:layout ac:schema-version="1"><ac:layout-section ac:type="two_left_sidebar" ac:breakout-mode="default"><ac:layout-cell ac:custom="x"><p>Sidebar cell</p></ac:layout-cell><ac:layout-cell><p>Main cell</p></ac:layout-cell></ac:layout-section></ac:layout>`;
+
 /** Page with multiple stacked layout sections */
 export const LAYOUT_STACKED_SECTIONS_PAGE = `<h2>Stacked Layouts</h2>
 <ac:layout><ac:layout-section ac:type="single"><ac:layout-cell><h3>Introduction</h3><p>Welcome to the guide.</p></ac:layout-cell></ac:layout-section><ac:layout-section ac:type="two_equal"><ac:layout-cell><p>Left details</p></ac:layout-cell><ac:layout-cell><p>Right details</p></ac:layout-cell></ac:layout-section><ac:layout-section ac:type="three_equal"><ac:layout-cell><p>Feature A</p></ac:layout-cell><ac:layout-cell><p>Feature B</p></ac:layout-cell><ac:layout-cell><p>Feature C</p></ac:layout-cell></ac:layout-section></ac:layout>`;

@@ -13,6 +13,12 @@ export type ReferenceAction = 'flag' | 'strip' | 'off';
 interface AiOutputRules {
   stripReferences: boolean;
   referenceAction: ReferenceAction;
+  /**
+   * Issue #705 — Swiss spelling. When true, the output post-processor replaces
+   * `ß` → `ss` and capital `ẞ` (U+1E9E) → `SS` on the final AI output. Default
+   * off so German spelling is preserved unless an admin opts in.
+   */
+  swissSpelling: boolean;
 }
 
 // ─── Defaults ─────────────────────────────────────────────────────────────────
@@ -25,9 +31,18 @@ const DEFAULT_GUARDRAILS: AiGuardrails = {
   noFabricationEnabled: true,
 };
 
+/**
+ * Issue #705 — supplementary prompt hint appended when Swiss spelling is on.
+ * The deterministic `ß→ss` post-processor is the source of truth; this hint
+ * just reduces churn before that pass by nudging the model up front.
+ */
+export const SWISS_SPELLING_INSTRUCTION =
+  "Use Swiss orthography: never use the character 'ß' (eszett); always write 'ss' instead.";
+
 const DEFAULT_OUTPUT_RULES: AiOutputRules = {
   stripReferences: true,
   referenceAction: 'flag',
+  swissSpelling: false,
 };
 
 // ─── In-process TTL cache (critic fix #3) ─────────────────────────────────────
@@ -42,6 +57,7 @@ const AI_SAFETY_KEYS = [
   'ai_guardrail_no_fabrication_enabled',
   'ai_output_rule_strip_references',
   'ai_output_rule_reference_action',
+  'ai_output_rule_swiss_spelling',
 ] as const;
 
 async function getAiSettingsMap(): Promise<Record<string, string>> {
@@ -88,6 +104,9 @@ export async function getAiOutputRules(): Promise<AiOutputRules> {
       action === 'strip' || action === 'flag' || action === 'off'
         ? action
         : DEFAULT_OUTPUT_RULES.referenceAction,
+    // Default off (#705): only enabled when an admin explicitly opts in.
+    swissSpelling:
+      map['ai_output_rule_swiss_spelling'] === 'true',
   };
   outputRuleCache = { value, expiresAt: Date.now() + CACHE_TTL_MS };
   return value;
@@ -170,6 +189,14 @@ export async function upsertAiOutputRules(
         [updates.referenceAction],
       );
     }
+    if (updates.swissSpelling !== undefined) {
+      await client.query(
+        `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
+         VALUES ('ai_output_rule_swiss_spelling', $1, NOW())
+         ON CONFLICT (setting_key) DO UPDATE SET setting_value = $1, updated_at = NOW()`,
+        [String(updates.swissSpelling)],
+      );
+    }
 
     await client.query('COMMIT');
   } catch (err) {
@@ -195,5 +222,14 @@ export async function upsertAiOutputRules(
       },
     );
   }
+}
+
+// Test seam — mirrors `_resetForTests()` in `sync-conflict-policy-service.ts`.
+// Clears the in-process 60s TTL caches so test suites start each test with a
+// cold cache regardless of execution order (a previous test's primed cache
+// would otherwise leak into the next one's GET assertions).
+export function _resetAiSafetyCachesForTests(): void {
+  guardrailCache = null;
+  outputRuleCache = null;
 }
 

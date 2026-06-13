@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Clock, AlertTriangle } from 'lucide-react';
 import { cn } from '../../lib/cn';
+import { useAuthStore } from '../../../stores/auth-store';
 
 /**
  * Response shape from `GET /api/license/info` (EE-only endpoint).
@@ -23,15 +24,21 @@ interface LicenseInfoResponse {
  *   daysRemaining  1..7 → warning banner ("Trial — only N day(s) left")
  *   daysRemaining  <= 0 → destructive banner ("Trial expired N days ago")
  *
+ * Visible to admins only — non-admin users see a clean UI and don't need to
+ * act on (or worry about) trial expiry. The fetch is also gated so regular
+ * users don't poke the license endpoint on every mount.
+ *
  * Self-fetching, single shot on mount. Trial state changes day-to-day at
  * coarse granularity, so a 24h-stale banner is fine — and avoids the
  * polling overhead of `<ServiceStatus />`. Page reload picks up changes
  * issued via /api/admin/license.
  */
 export function TrialBanner() {
+  const isAdmin = useAuthStore((s) => s.user?.role === 'admin');
   const [info, setInfo] = useState<LicenseInfoResponse | null>(null);
 
   useEffect(() => {
+    if (!isAdmin) return;
     let cancelled = false;
     fetch('/api/license/info')
       .then((res) => (res.ok ? res.json() : null))
@@ -44,8 +51,9 @@ export function TrialBanner() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [isAdmin]);
 
+  if (!isAdmin) return null;
   if (!info || info.type !== 'trial' || info.daysRemaining === null) return null;
 
   const days = info.daysRemaining;

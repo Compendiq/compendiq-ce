@@ -11,6 +11,7 @@ import { randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { query, getPool } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
+import { invalidateUserSecurityState } from './user-security-cache.js';
 import type { AdminUser, AdminUserRole } from '@compendiq/contracts';
 
 const BCRYPT_ROUNDS = 10;
@@ -19,8 +20,11 @@ const BCRYPT_ROUNDS = 10;
  * System sentinel user that owns built-in templates (migration 032). When a
  * real user is hard-deleted we reassign their `templates.created_by` rows
  * to this UUID rather than blocking the delete on the NOT NULL FK.
+ *
+ * Exported so other user-listing endpoints (e.g. the rbac principal picker)
+ * can exclude it the same way `listUsers()` does.
  */
-const SYSTEM_USER_ID = '00000000-0000-0000-0000-000000000000';
+export const SYSTEM_USER_ID = '00000000-0000-0000-0000-000000000000';
 
 /**
  * Errors thrown by the service. Routes map them to HTTP status codes.
@@ -32,6 +36,7 @@ export class AdminUserServiceError extends Error {
       | 'EMAIL_TAKEN'
       | 'NOT_FOUND'
       | 'SELF_FORBIDDEN'
+      | 'SYSTEM_USER_PROTECTED'
       | 'LAST_ADMIN',
     message: string,
   ) {
@@ -82,10 +87,28 @@ const USER_SELECT = `
 `;
 
 export async function listUsers(): Promise<AdminUser[]> {
+  // The system sentinel user (migration 032) is an implementation detail —
+  // it owns reassigned templates and cannot log in. Hide it from the admin
+  // Users page so nobody tries to manage it.
   const res = await query<UserRow>(
-    `${USER_SELECT} ORDER BY username`,
+    `${USER_SELECT} WHERE id <> $1 ORDER BY username`,
+    [SYSTEM_USER_ID],
   );
   return res.rows.map(rowToAdminUser);
+}
+
+/**
+ * Raise `SYSTEM_USER_PROTECTED` when a mutation targets the system sentinel
+ * user. Deactivating, deleting, or editing it would break the install — it
+ * owns reassigned templates and the deletion flow depends on its existence.
+ */
+function assertNotSystemUser(targetUserId: string): void {
+  if (targetUserId === SYSTEM_USER_ID) {
+    throw new AdminUserServiceError(
+      'SYSTEM_USER_PROTECTED',
+      'The system account cannot be modified',
+    );
+  }
 }
 
 export async function getUser(id: string): Promise<AdminUser | null> {
@@ -159,6 +182,8 @@ interface UpdateUserOptions {
 }
 
 export async function updateUser(id: string, patch: UpdateUserOptions): Promise<AdminUser> {
+  assertNotSystemUser(id);
+
   // The existence check + optional last-admin guard + mutation all run in
   // the same transaction so concurrent role-demotes can't both pass a
   // stale precheck (PR #311 Finding #2).
@@ -179,6 +204,7 @@ export async function updateUser(id: string, patch: UpdateUserOptions): Promise<
     const updates: string[] = [];
     const values: unknown[] = [];
     let i = 1;
+    let roleChanged = false;
 
     if (patch.email !== undefined) {
       updates.push(`email = $${i++}`);
@@ -192,6 +218,7 @@ export async function updateUser(id: string, patch: UpdateUserOptions): Promise<
       if (existing.role === 'admin' && patch.role !== 'admin') {
         await assertNotLastActiveAdminTx(client, id);
       }
+      roleChanged = patch.role !== existing.role;
       updates.push(`role = $${i++}`);
       values.push(patch.role);
     }
@@ -213,7 +240,21 @@ export async function updateUser(id: string, patch: UpdateUserOptions): Promise<
     if (res.rows.length === 0) {
       throw new AdminUserServiceError('NOT_FOUND', 'User not found');
     }
+    if (roleChanged) {
+      // #737: a role change crosses a privilege boundary — revoke every
+      // refresh token (mirrors deactivateUser) so the user cannot silently
+      // refresh back to a token carrying the old role. Already-issued
+      // access tokens are rejected by the user-security check in
+      // `authenticate` (cache invalidated below, after COMMIT).
+      await client.query(
+        `DELETE FROM refresh_tokens WHERE user_id = $1`,
+        [id],
+      );
+    }
     await client.query('COMMIT');
+    if (roleChanged) {
+      await invalidateUserSecurityState(id);
+    }
     return rowToAdminUser(res.rows[0]!);
   } catch (err: unknown) {
     await client.query('ROLLBACK').catch(() => {});
@@ -237,6 +278,7 @@ export async function deactivateUser(
   targetUserId: string,
   opts: DeactivateOptions,
 ): Promise<AdminUser> {
+  assertNotSystemUser(targetUserId);
   if (targetUserId === opts.actorUserId) {
     throw new AdminUserServiceError('SELF_FORBIDDEN', 'Cannot deactivate yourself');
   }
@@ -280,6 +322,10 @@ export async function deactivateUser(
       [targetUserId],
     );
     await client.query('COMMIT');
+    // #737: drop the cached security state (local + cache-bus) so the
+    // per-request check in `authenticate` rejects already-issued access
+    // tokens immediately instead of after the cache TTL.
+    await invalidateUserSecurityState(targetUserId);
     return rowToAdminUser(updated.rows[0]!);
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
@@ -290,6 +336,7 @@ export async function deactivateUser(
 }
 
 export async function reactivateUser(targetUserId: string): Promise<AdminUser> {
+  assertNotSystemUser(targetUserId);
   const res = await query<UserRow>(
     `UPDATE users
        SET deactivated_at = NULL,
@@ -304,6 +351,10 @@ export async function reactivateUser(targetUserId: string): Promise<AdminUser> {
   if (res.rows.length === 0) {
     throw new AdminUserServiceError('NOT_FOUND', 'User not found');
   }
+  // #737: clear the cached 'deactivated' state so the user regains access
+  // immediately (they still need to log in again — refresh tokens were
+  // deleted on deactivation).
+  await invalidateUserSecurityState(targetUserId);
   return rowToAdminUser(res.rows[0]!);
 }
 
@@ -315,6 +366,7 @@ export async function deleteUser(
   targetUserId: string,
   opts: DeleteUserOptions,
 ): Promise<void> {
+  assertNotSystemUser(targetUserId);
   if (targetUserId === opts.actorUserId) {
     throw new AdminUserServiceError('SELF_FORBIDDEN', 'Cannot delete yourself');
   }
@@ -366,6 +418,9 @@ export async function deleteUser(
       throw new AdminUserServiceError('NOT_FOUND', 'User not found');
     }
     await client.query('COMMIT');
+    // #737: reject any still-circulating access token for the deleted user
+    // immediately (the per-request check maps a missing row to 401).
+    await invalidateUserSecurityState(targetUserId);
     logger.info(
       { targetUserId, actor: opts.actorUserId },
       'admin-user-service: deleted user',

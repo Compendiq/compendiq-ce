@@ -69,6 +69,10 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
   return (
     <div ref={sortable.ref}>
       <div
+        // #707: mark the active row so the scroll container can find it and
+        // scroll it into view on reload (its ancestors are auto-expanded first).
+        data-active={isActive ? 'true' : undefined}
+        data-page-id={node.page.id}
         className={cn(
           'group flex items-center gap-1.5 rounded-[10px] h-9 pr-2 text-sm cursor-pointer transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
           isActive
@@ -93,7 +97,12 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
           <span className="w-[20px] shrink-0" />
         )}
         <FileText size={15} className={cn('shrink-0', isActive ? 'text-action/80' : 'text-muted-foreground/70')} />
-        <span className="truncate text-sm">{node.page.title}</span>
+        {/* #767: pin the weight explicitly (conditional, never both classes)
+            so titles can't inherit or synthesize a heavier weight while the
+            variable font loads or the row sits on a composited layer. */}
+        <span className={cn('truncate text-sm', isActive ? 'font-medium' : 'font-normal')}>
+          {node.page.title}
+        </span>
       </div>
 
       {hasChildren && isExpanded && (

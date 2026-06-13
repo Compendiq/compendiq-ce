@@ -1,17 +1,17 @@
 import { memo } from 'react';
 import { m, useReducedMotion } from 'framer-motion';
 import {
-  Bot, User, Loader2, MessageSquare, Brain,
+  Bot, User, Loader2, MessageSquare, Brain, AlertTriangle,
   Wand2, ListCollapse, Sparkles, GitBranch, FileText, ShieldCheck, Network,
 } from 'lucide-react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { cn } from '../../shared/lib/cn';
 import { ConfidenceBadge } from '../../shared/components/badges/ConfidenceBadge';
-import { StreamingCursor } from '../../shared/components/feedback/StreamingCursor';
 import { AIThinkingBlob } from '../../shared/components/feedback/AIThinkingBlob';
 import { SourceCitations } from './SourceCitations';
 import { CitationChips } from './CitationChips';
+import { StreamingMessage } from './StreamingMessage';
 import { AiProvider, useAiContext, type Mode, type Message } from './AiContext';
 import {
   AskModeInput, AskExamplePrompts, ASK_EMPTY_TITLE, ASK_EMPTY_SUBTITLE,
@@ -56,15 +56,19 @@ interface MessageBubbleProps {
   thinkingElapsed: boolean;
   isLight: boolean;
   shouldReduceMotion: boolean | null;
+  /**
+   * rAF-batched content of the in-flight answer (#747). Only passed to the
+   * last message bubble while streaming; committed messages render msg.content.
+   */
+  streamingContent?: string;
 }
 
 const MessageBubble = memo(function MessageBubble({
-  msg, index, isLast, isStreaming, isThinking, thinkingElapsed, isLight, shouldReduceMotion,
+  msg, index, isLast, isStreaming, isThinking, thinkingElapsed, isLight, shouldReduceMotion, streamingContent,
 }: MessageBubbleProps) {
   const isLastAssistant = msg.role === 'assistant' && isLast;
   const isStreamingThis = isStreaming && isLastAssistant;
-  const effectiveContent = msg.content;
-  const showStreamingCursor = isStreamingThis && !!effectiveContent;
+  const effectiveContent = isStreamingThis ? (streamingContent ?? msg.content) : msg.content;
   const showThinkingBlob = isThinking && isLastAssistant && !effectiveContent && thinkingElapsed;
   const showTypingIndicator = isThinking && isLastAssistant && !effectiveContent && !thinkingElapsed;
 
@@ -90,21 +94,40 @@ const MessageBubble = memo(function MessageBubble({
           'max-w-[80%] rounded-2xl px-4 py-3 text-sm xl:max-w-2xl',
           msg.role === 'user'
             ? 'bg-primary/10 text-foreground'
-            : 'bg-foreground/5',
+            : msg.isError
+              ? 'border border-destructive/40 bg-destructive/10'
+              : 'bg-foreground/5',
         )}
+        // No role="alert" here: the role and the error content would arrive
+        // in the same render, which AT generally does not announce (MDN alert
+        // role). The primed announcer next to the message list handles SR
+        // announcement; this bubble is the visual surface only.
+        data-testid={msg.isError ? 'message-error' : undefined}
       >
         {showThinkingBlob && <AIThinkingBlob active />}
         {showTypingIndicator && <TypingIndicator />}
-        <div className={cn('prose prose-sm max-w-none', !isLight && 'prose-invert')}>
-          {msg.content ? (
-            <>
+        {isStreamingThis ? (
+          // #747: the in-flight answer renders through the rAF-batched
+          // StreamingMessage, so the Markdown re-parse happens at most once
+          // per animation frame instead of once per SSE chunk.
+          effectiveContent ? (
+            <StreamingMessage content={effectiveContent} isStreaming />
+          ) : (!showThinkingBlob && !showTypingIndicator ? (
+            <div className={cn('prose prose-sm max-w-none', !isLight && 'prose-invert')}>
+              <TypingIndicator />
+            </div>
+          ) : null)
+        ) : msg.isError ? (
+          // Error messages render as plain text (not Markdown) so the
+          // destructive color isn't overridden by the prose styles.
+          <p className="text-destructive">{msg.content}</p>
+        ) : (
+          <div className={cn('prose prose-sm max-w-none', !isLight && 'prose-invert')}>
+            {msg.content ? (
               <Markdown remarkPlugins={[remarkGfm]}>{msg.content}</Markdown>
-              {showStreamingCursor && <StreamingCursor />}
-            </>
-          ) : (!showThinkingBlob && !showTypingIndicator && isStreamingThis ? (
-            <TypingIndicator />
-          ) : null)}
-        </div>
+            ) : null}
+          </div>
+        )}
         {msg.role === 'assistant' && msg.sources && msg.sources.length > 0 && (
           <div className="mt-3 space-y-2">
             <div className="flex items-center gap-2">
@@ -132,9 +155,11 @@ const MessageBubble = memo(function MessageBubble({
   // Completed messages (not last or not streaming) will never re-render.
   if (prev.msg.id !== next.msg.id) return false;
   if (prev.msg.content !== next.msg.content) return false;
+  if (prev.msg.isError !== next.msg.isError) return false;
   if (prev.msg.sources !== next.msg.sources) return false;
   if (prev.isLast !== next.isLast) return false;
   if (prev.isStreaming !== next.isStreaming) return false;
+  if (prev.streamingContent !== next.streamingContent) return false;
   if (prev.isThinking !== next.isThinking) return false;
   if (prev.thinkingElapsed !== next.thinkingElapsed) return false;
   if (prev.isLight !== next.isLight) return false;
@@ -189,7 +214,8 @@ function AiAssistantInner() {
   const {
     mode, setMode, page, pageHasChildren,
     messages, messagesEndRef, isStreaming, isThinking, thinkingElapsed,
-    model, models, setModel, isLight,
+    streamingContent,
+    model, models, setModel, modelsError, refetchModels, isLight,
     includeSubPages, setIncludeSubPages,
     thinkingMode, setThinkingMode,
   } = ctx;
@@ -211,13 +237,23 @@ function AiAssistantInner() {
       {/* Sticky sub-header: mode selector | context + options.
           Sits at top-0 of the scroll container so it stays visible as
           messages grow. backdrop-blur on the inner card keeps the surface
-          legible against the live content scrolling under it.
+          legible against the live content scrolling under it. An opaque
+          UNDER-mask (bg-background, z-[-1]) sits behind the translucent bar
+          so chat content scrolling up is fully occluded above the tab row
+          (#703). The mask covers exactly the bar's box (inset-0): the bar
+          pins flush at the scrollport top, so there is no gap above it to
+          mask, and extending past the bar's box adds absolute overflow that
+          inflates the page's scrollable height (#769).
 
           Visual grammar: two clear groups separated by a thin divider.
           Group A (left): which mode are we in. Inset segmented control.
           Group B (right): what's the model + what's the context window +
             what options are on. Outlined chips of uniform 28 px height. */}
-      <div className="sticky top-0 z-20 -mx-1 space-y-3 bg-background/85 px-1 py-1 backdrop-blur">
+      <div className="sticky top-0 z-20 isolate -mx-1 space-y-3 bg-background/85 px-1 py-1 backdrop-blur">
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 z-[-1] bg-background"
+      />
       <div className="flex flex-wrap items-center gap-x-2 gap-y-2 rounded-xl border border-border/40 bg-card/50 px-3 py-2 backdrop-blur-sm">
         {/* Group A — mode segmented control */}
         <div
@@ -266,7 +302,18 @@ function AiAssistantInner() {
             the model dropdown and the toggles separates "infrastructure" the
             user sets once from "context flags" they flip per question. */}
         <div className="flex flex-wrap items-center gap-1.5">
-          {models.length === 0 ? (
+          {modelsError ? (
+            // Models fetch failed (LLM provider down / unreachable): surface
+            // the failure with a retry affordance instead of spinning forever.
+            <button
+              type="button"
+              onClick={() => refetchModels()}
+              title="Failed to load models from the LLM provider — click to retry"
+              className="flex h-7 items-center gap-1.5 rounded-md border border-destructive/40 px-2.5 text-xs text-destructive transition-colors hover:bg-destructive/10"
+            >
+              <AlertTriangle size={12} /> Models unavailable — retry
+            </button>
+          ) : models.length === 0 ? (
             <span className="flex h-7 items-center gap-1.5 rounded-md border border-border/40 px-2.5 text-xs text-muted-foreground">
               <Loader2 size={12} className="animate-spin" /> Loading models...
             </span>
@@ -354,6 +401,23 @@ function AiAssistantInner() {
       {mode === 'diagram' && <DiagramTypeSelector />}
       </div>
 
+      {/* Primed live region for error announcements. It must exist (empty)
+          BEFORE any error so assistive tech watches it for content changes —
+          adding role="alert" together with the message in one render is
+          generally not announced (MDN alert role). The visible error bubble
+          below carries no alert role. For the toast-suppressed 403 path this
+          region is the only announcement; other errors keep their toast, so
+          they may announce twice — over-announcing beats silence.
+          The child span is keyed by message id: Ask mode appends on retry, so
+          a repeated identical failure derives byte-identical text — only a
+          freshly inserted node makes AT announce it again. */}
+      <div role="alert" data-testid="ai-error-announcer" className="sr-only">
+        {(() => {
+          const lastError = [...messages].reverse().find((msg) => msg.isError);
+          return lastError ? <span key={lastError.id}>{lastError.content}</span> : null;
+        })()}
+      </div>
+
       {/* Messages — clean document-like surface, no heavy glass.
           flex-1 so the messages area grows to fill the column, pushing
           the sticky input bar to the bottom of the page. */}
@@ -388,6 +452,10 @@ function AiAssistantInner() {
               thinkingElapsed={thinkingElapsed}
               isLight={isLight}
               shouldReduceMotion={shouldReduceMotion}
+              // #747: only the last bubble receives the batched in-flight
+              // content; earlier (committed) bubbles keep a stable prop so
+              // the memo comparator skips re-rendering them per flush.
+              streamingContent={i === messages.length - 1 ? streamingContent : undefined}
             />
           ))}
           <div ref={messagesEndRef} />
@@ -400,8 +468,19 @@ function AiAssistantInner() {
 
       {/* Mode-specific input bar — sticky at the bottom of the scroll
           container, with a translucent backdrop so chat content scrolls
-          legibly behind it. */}
-      <div className="sticky bottom-0 z-20 -mx-1 bg-background/85 px-1 py-1 backdrop-blur">
+          legibly behind it. An opaque UNDER-mask (bg-background, z-[-1]) sits
+          behind the translucent bar so chat content scrolling down is fully
+          occluded below the input field + submit button (#703). The mask
+          covers exactly the bar's box (inset-0): the bar pins flush at the
+          scrollport bottom, so nothing can show below it, and an absolutely
+          positioned mask overflowing the block-end edge grows the scroll
+          container's scrollable overflow region — the former -bottom-[100px]
+          extension added ~100px of phantom scroll on every mode (#769). */}
+      <div className="sticky bottom-0 z-20 isolate -mx-1 bg-background/85 px-1 py-1 backdrop-blur">
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-0 z-[-1] bg-background"
+        />
         {mode === 'ask' && <AskModeInput />}
         {mode === 'improve' && <ImproveModeInput />}
         {mode === 'generate' && <GenerateModeInput />}

@@ -22,6 +22,7 @@ import {
   truncateAllTables,
   isDbAvailable,
 } from '../../../test-db-helper.js';
+import { isRedisAvailable } from '../../../test-redis-helper.js';
 import { query } from '../../../core/db/postgres.js';
 import {
   initCacheBus,
@@ -31,30 +32,8 @@ import {
   // subscriber simulates "Pod B".
 } from '../../../core/services/redis-cache-bus.js';
 
-async function checkRedisReachable(): Promise<boolean> {
-  const url = process.env.REDIS_URL ?? 'redis://localhost:6379';
-  // Fail fast — if the connection isn't established within 1s, treat as
-  // unavailable. node-redis defaults to a longer reconnect loop that would
-  // otherwise hang the test runner on a workstation without a Redis dev
-  // container running on the published port.
-  const probe = createClient({
-    url,
-    socket: { connectTimeout: 1_000, reconnectStrategy: false },
-  });
-  probe.on('error', () => { /* swallow */ });
-  try {
-    await probe.connect();
-    await probe.ping();
-    await probe.quit();
-    return true;
-  } catch {
-    try { await probe.disconnect(); } catch { /* best effort */ }
-    return false;
-  }
-}
-
 const dbAvailable = await isDbAvailable();
-const redisAvailable = await checkRedisReachable();
+const redisAvailable = await isRedisAvailable();
 
 const integrationGate = dbAvailable && redisAvailable;
 

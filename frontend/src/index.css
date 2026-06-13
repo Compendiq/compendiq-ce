@@ -47,6 +47,15 @@ body {
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
   font-feature-settings: "liga" 1, "kern" 1;
+  /* #767: the variable fonts above load async (@fontsource, font-display:
+     swap). During the swap window the browser renders system fallbacks and
+     may synthesize faux-bold glyphs, making random sidebar/tree text flash
+     heavier between loads. `style` allows only italic synthesis (we ship no
+     italic cut of IBM Plex Sans, so the `italic` utility and the editor's
+     Italic mark rely on oblique synthesis) while disabling weight and
+     small-caps synthesis. Shorthand over `font-synthesis-weight: none` for
+     wider browser support (Safari 9+/Firefox 34+ vs 16.4+/111+). */
+  font-synthesis: style;
 }
 
 /* Headings share the body's sans stack (IBM Plex Sans Variable) so the UI
@@ -134,6 +143,10 @@ h1, h2, h3, h4, h5, h6,
   --color-accent: #2a2925;
   --color-accent-foreground: #f5efe0;
   --color-destructive: #e88888;
+  /* Text/icon color on a solid destructive fill. #e88888 is a light red, so
+     near-black ink gives ~8:1 — comfortably AA. (Token was previously
+     undefined; text-destructive-foreground utilities need it to compile.) */
+  --color-destructive-foreground: #0a0a0a;
   --color-border: #3a3831;
   --color-ring: #f9c74f;
   --color-success: #79c088;
@@ -294,6 +307,8 @@ h1, h2, h3, h4, h5, h6,
   --color-accent: #f1f0ec;
   --color-accent-foreground: #0a0a0a;
   --color-destructive: #b0322e;
+  /* White ink on the dark red fill — ~6.9:1, AA-pass. */
+  --color-destructive-foreground: #ffffff;
   --color-border: #dedcd4;
   --color-ring: #f9c74f;
   --color-success: #2f7a3a;
@@ -569,6 +584,77 @@ h1, h2, h3, h4, h5, h6,
   }
 }
 
+/* Destructive sibling of nm-button-primary — identical box metrics
+   (padding, 1px border, radius, type scale) so it lines up with
+   nm-button-ghost in dialog footers, with the destructive palette:
+   solid red fill, theme-tuned readable ink, hover darken instead of
+   the honey glow. Press/disabled/focus follow the shared conventions. */
+@utility nm-button-destructive {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.625rem 1.25rem;
+  border-radius: var(--radius-md);
+  border: 1px solid oklch(from var(--color-destructive) calc(l - 0.06) c h);
+  /* Solid background-color under the gradient overlay, same reasoning as
+     nm-button-primary: contrast auditors only read background-color. */
+  background-color: var(--color-destructive);
+  background-image: linear-gradient(
+    145deg,
+    oklch(from var(--color-destructive) calc(l + 0.04) c h),
+    var(--color-destructive)
+  );
+  color: var(--color-destructive-foreground);
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  outline: 2px solid transparent;
+  outline-offset: 3px;
+  box-shadow:
+    4px 4px 10px var(--nm-shadow-out-strong),
+    -2px -2px 6px var(--nm-highlight-strong),
+    inset 0 1px 0 oklch(1 0 0 / 0.25);
+  transition:
+    background-color 0.2s ease-out,
+    box-shadow 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+    transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+
+  &:hover {
+    /* Darken on hover (vs primary's glow) — red glow reads as an error
+       state, a simple value shift reads as affordance. */
+    background-color: oklch(from var(--color-destructive) calc(l - 0.05) c h);
+    background-image: linear-gradient(
+      145deg,
+      oklch(from var(--color-destructive) calc(l - 0.01) c h),
+      oklch(from var(--color-destructive) calc(l - 0.05) c h)
+    );
+    box-shadow:
+      6px 6px 16px var(--nm-shadow-out-strong),
+      -3px -3px 10px var(--nm-highlight-strong),
+      inset 0 1px 0 oklch(1 0 0 / 0.3);
+    transform: translateY(-2px);
+  }
+
+  &:active {
+    box-shadow:
+      inset 3px 3px 6px oklch(0 0 0 / 0.3),
+      inset -1px -1px 3px oklch(1 0 0 / 0.2);
+    transform: translateY(0) scale(0.97);
+    transition-duration: 0.1s;
+  }
+
+  &:focus-visible {
+    outline-color: var(--color-destructive);
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    pointer-events: none;
+  }
+}
+
 @utility nm-button-ghost {
   display: inline-flex;
   align-items: center;
@@ -821,12 +907,14 @@ h1, h2, h3, h4, h5, h6,
   .nm-header,
   .nm-pill-active,
   .nm-button-primary,
+  .nm-button-destructive,
   .nm-button-ghost,
   .nm-icon-button,
   .nm-input {
     border: 2px solid ButtonText;
   }
-  .nm-button-primary {
+  .nm-button-primary,
+  .nm-button-destructive {
     background: ButtonFace;
     color: ButtonText;
   }
@@ -842,12 +930,14 @@ h1, h2, h3, h4, h5, h6,
 @media (prefers-reduced-motion: reduce) {
   .nm-card-interactive,
   .nm-button-primary,
+  .nm-button-destructive,
   .nm-button-ghost,
   .nm-icon-button {
     transition: border-color 0.2s ease-out, color 0.2s ease-out;
   }
   .nm-card-interactive:hover,
   .nm-button-primary:hover,
+  .nm-button-destructive:hover,
   .nm-button-ghost:hover,
   .nm-icon-button:hover {
     transform: none;
@@ -858,6 +948,7 @@ h1, h2, h3, h4, h5, h6,
   }
   .nm-card-interactive:active,
   .nm-button-primary:active,
+  .nm-button-destructive:active,
   .nm-button-ghost:active,
   .nm-icon-button:active {
     transform: none;
@@ -1385,18 +1476,6 @@ h1, h2, h3, h4, h5, h6,
   margin-top: 0.5rem;
   font-size: 12px; /* pinned: higher specificity than .confluence-drawio .drawio-edit-link */
   color: var(--color-muted-foreground);
-}
-
-/* DrawioDiagramPreview React component — glassmorphic container */
-.drawio-preview-container {
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-}
-
-/* Light background panel behind diagram images for dark mode readability */
-.drawio-preview-container [data-testid="drawio-image-panel"] {
-  border-radius: var(--radius-sm);
-  min-height: 6rem;
 }
 
 /* Prevent prose from adding unwanted margins to the preview wrapper */
@@ -2513,4 +2592,26 @@ pre:hover .code-copy-btn {
 .ProseMirror-active-search-match {
   background-color: rgba(255, 130, 0, 0.6);
   border-radius: 2px;
+}
+
+/* ============================================
+   AI Improve — selection decoration (#764)
+   Keeps the captured passage visibly marked while the bubble menu's Improve
+   popover holds focus (a blurred editor stops painting its native selection).
+   Applied via a ProseMirror inline decoration — never a document mark. Honey
+   primary at low alpha reads as a highlight on both Graphite Honey (dark) and
+   Honey Linen (light) without hurting text contrast.
+   ============================================ */
+.ai-improve-selection {
+  background-color: color-mix(in srgb, var(--color-primary) 30%, transparent);
+  border-radius: 2px;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+@media (forced-colors: active) {
+  .ai-improve-selection {
+    background-color: Highlight;
+    color: HighlightText;
+  }
 }

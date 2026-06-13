@@ -7,6 +7,7 @@ import {
   ConfluenceRestriction,
   ConfluenceError,
 } from './confluence-client.js';
+import { getRestrictionChangeSet, type RestrictionChangeSet } from './restriction-change-tracker.js';
 import { confluenceToHtml, htmlToText } from '../../../core/services/content-converter.js';
 import { syncDrawioAttachments, syncImageAttachments, cleanPageAttachments, getMissingAttachments } from './attachment-handler.js';
 import { saveVersionSnapshot } from '../../../core/services/version-snapshot.js';
@@ -45,6 +46,69 @@ const SYNC_LOCK_KEY = 'sync:worker:lock';
 const SYNC_LOCK_TTL = 600; // 10 min safety TTL
 const SYNC_STATUS_PREFIX = 'sync:status:';
 const SYNC_STATUS_TTL = 86_400; // 24 h
+
+/**
+ * Upper bound on the number of per-candidate `GET /content/{id}` confirmation
+ * calls deletion reconciliation will issue in a single space sync (#706). A page
+ * absent from one user's listing is confirmed gone with a direct fetch before we
+ * soft-delete it, which keeps shared spaces correct (a 403/200 means "still there,
+ * just not visible to this principal" — not deleted). If a single sweep turns up
+ * more candidates than this (e.g. a large permission change suddenly hides a whole
+ * subtree from this user), we skip confirmation that run and defer — better to
+ * reconcile a few pages late than to hammer Confluence or risk a mass false delete.
+ */
+const MAX_DELETION_CONFIRMATIONS = 200;
+
+/**
+ * Grace window (seconds) before deletion reconciliation may REVIVE a locally
+ * soft-deleted row whose page is present in the live Confluence listing again
+ * (#766 review).
+ *
+ * Why revival exists: a page restored from the Confluence trash does NOT get a
+ * new version (`lastmodified` is unchanged), so the incremental sync's
+ * `lastmodified >=` CQL window never re-upserts it — without this cross-check
+ * the local row would stay hidden until `purgeDeletedPages` hard-deletes it
+ * (with all local enrichment) at 30 days. The upsert path only revives a row
+ * when the page is modified upstream or a full sync (≥24h-stale `last_synced`)
+ * happens to run.
+ *
+ * Why the grace window exists: the delete routes record their delete INTENT as
+ * a soft-delete BEFORE calling Confluence (#766) — until that upstream DELETE
+ * lands, the page is still in the live listing, so a reconciliation running
+ * concurrently would see "soft-deleted locally but live upstream" and revive a
+ * row that is mid-delete. Reviving only rows whose `deleted_at` is older than
+ * this window keeps the in-flight intent untouched: the route's
+ * Confluence call is bounded by the client's HTTP timeouts (30–120s), far
+ * below this window. A genuine trash-restore is unaffected — its row was
+ * soft-deleted in an earlier reconciliation cycle, so `deleted_at` is already
+ * older than the window by the time an admin restores the page.
+ */
+const REVIVAL_GRACE_SECONDS = 15 * 60;
+
+/**
+ * Per-space dedupe window for deletion reconciliation (#706).
+ *
+ * Reconciliation is invoked once per (user × space) per sync cycle: a space
+ * shared by N users would otherwise issue its `getAllPageIds` + per-candidate
+ * confirmation fetches N times each cycle. This Redis `SET NX EX` guard lets the
+ * FIRST run for a space within the window claim it, so the other users skip the
+ * redundant work that cycle.
+ *
+ * Safety: this can only NARROW work — it never causes a missed or false delete.
+ * A genuinely deleted page returns 404 to every principal, so whichever user
+ * reaches the space first reconciles it; a page merely restricted from one user
+ * is never a 404 and is never deleted regardless of who runs. When Redis is
+ * unavailable the guard is a no-op and reconciliation runs per-user exactly as
+ * before (still bounded by `MAX_DELETION_CONFIRMATIONS`).
+ *
+ * The window is kept comfortably below the sync interval so reconciliation still
+ * runs at least once per cycle (a deletion surfaces within one normal cycle).
+ */
+const RECONCILE_DEDUPE_PREFIX = 'sync:reconcile:';
+const RECONCILE_DEDUPE_TTL = Math.max(
+  60,
+  Math.floor(parseInt(process.env.SYNC_INTERVAL_MIN ?? '15', 10) * 60 * 0.8),
+);
 
 /** Lua script: only delete the lock if the caller owns it (value matches). */
 const RELEASE_LOCK_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end`;
@@ -87,6 +151,32 @@ const MAX_ATTACHMENT_FAILURES = REDIS_MAX_ATTACHMENT_FAILURES;
 async function clearPageFailures(pageId: string): Promise<void> {
   const redis = getRedisClient();
   await clearAttachmentFailures(redis, pageId);
+}
+
+/**
+ * Try to claim deletion reconciliation for a space this cycle (#706).
+ *
+ * Returns `true` if this caller should run reconciliation now, `false` if another
+ * run already claimed the space within `RECONCILE_DEDUPE_TTL`. When Redis is
+ * unavailable (or errors) we fail OPEN — return `true` — so reconciliation still
+ * runs; the dedupe is a best-effort optimisation, never a correctness gate.
+ */
+async function tryClaimSpaceReconcile(spaceKey: string): Promise<boolean> {
+  const redis = getRedisClient();
+  if (!redis) return true;
+  try {
+    const result = await redis.set(`${RECONCILE_DEDUPE_PREFIX}${spaceKey}`, '1', {
+      NX: true,
+      EX: RECONCILE_DEDUPE_TTL,
+    });
+    return result === 'OK';
+  } catch (err) {
+    logger.debug(
+      { spaceKey, err: err instanceof Error ? err.message : String(err) },
+      'Reconcile dedupe claim failed — proceeding (fail-open)',
+    );
+    return true;
+  }
 }
 
 /**
@@ -137,6 +227,17 @@ export async function syncUser(userId: string): Promise<void> {
   const syncRunStartedAt = new Date();
   const ancestorCache = new Map<string, ConfluenceRestriction[]>();
 
+  // Audit-log-driven restriction-change detection (perf). When RAG permission
+  // enforcement is on, ask the Confluence audit log which pages' restrictions
+  // changed so `syncPageRestrictions` can skip the per-page fetch for the rest.
+  // Fails safe to a full re-fetch on any uncertainty (no admin access on the
+  // sync token, retention gap, audit error). Inert in CE / un-flagged EE.
+  const restrictionChangeSet: RestrictionChangeSet = isFeatureEnabled(
+    ENTERPRISE_FEATURES.RAG_PERMISSION_ENFORCEMENT,
+  )
+    ? await getRestrictionChangeSet(client, Date.now())
+    : { mode: 'full' };
+
   // Sync run id (Compendiq/compendiq-ee#118). Stamped onto every
   // `pending_sync_versions` row inserted during this run so the conflict-
   // resolution UI / retention sweep can group rows by run ("the 12
@@ -159,6 +260,7 @@ export async function syncUser(userId: string): Promise<void> {
         syncRunStartedAt,
         ancestorCache,
         syncRunId,
+        restrictionChangeSet,
       );
     }
 
@@ -226,6 +328,7 @@ async function syncSpace(
   syncRunStartedAt: Date,
   ancestorCache: Map<string, ConfluenceRestriction[]>,
   syncRunId: string,
+  changeSet: RestrictionChangeSet = { mode: 'full' },
 ): Promise<void> {
   const spaceStartedAt = Date.now();
   const counts: SyncSpaceCounts = { pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 };
@@ -272,7 +375,7 @@ async function syncSpace(
     });
 
     const page = pages[i]!;
-    await syncPage(client, userId, spaceKey, page, syncRunStartedAt, ancestorCache, counts, syncRunId);
+    await syncPage(client, userId, spaceKey, page, syncRunStartedAt, ancestorCache, counts, syncRunId, changeSet);
   }
 
   // During incremental sync, also check for pages with missing attachments
@@ -282,13 +385,19 @@ async function syncSpace(
     await syncMissingAttachments(client, userId, spaceKey);
   }
 
-  // Detect deleted pages (only during full sync)
-  if (!lastSynced || (Date.now() - lastSynced.getTime()) >= 24 * 60 * 60 * 1000) {
-    await detectDeletedPages(client, spaceKey, pages, counts);
-  }
+  // Reconcile pages deleted in Confluence (#706). Runs on every sync — including
+  // incremental — so deletions surface within a normal sync cycle rather than only
+  // on the ≥24h full-sync window. `detectDeletedPages` fetches its own authoritative
+  // id list from Confluence (the incremental `pages` list only holds *modified*
+  // pages, so it can't be used to infer deletions) and confirms each candidate is
+  // genuinely gone before soft-deleting, which makes it safe in shared spaces.
+  // It also revives soft-deleted rows that are live upstream again (e.g. restored
+  // from the Confluence trash — see the revival cross-check, #766 review).
+  await detectDeletedPages(client, spaceKey, counts);
 
-  // Purge pages that have been soft-deleted for more than 30 days
-  await purgeDeletedPages(spaceKey);
+  // Purge pages that have been soft-deleted for more than 30 days, re-confirming
+  // each is still gone upstream first (purge is irreversible — #766 review).
+  await purgeDeletedPages(client, spaceKey);
 
   // Update space sync timestamp (shared table)
   await query(
@@ -321,6 +430,7 @@ async function syncPage(
   ancestorCache: Map<string, ConfluenceRestriction[]>,
   counts: SyncSpaceCounts,
   syncRunId: string,
+  changeSet: RestrictionChangeSet = { mode: 'full' },
 ): Promise<void> {
   // Fetch full page content
   const page = await client.getPage(pageSummary.id);
@@ -392,7 +502,7 @@ async function syncPage(
       // from the plan is not wired (see §1.4 TODO below). `syncPageRestrictions`
       // is a no-op when the feature flag is disabled, so CE builds pay zero
       // extra cost here.
-      await syncPageRestrictions(client, page, syncRunStartedAt, ancestorCache);
+      await syncPageRestrictions(client, page, syncRunStartedAt, ancestorCache, changeSet);
       return;
     }
 
@@ -455,7 +565,7 @@ async function syncPage(
     // Version-unchanged branch: still re-evaluate restrictions. See note at
     // the earlier early-return above. Safe/cheap because `syncPageRestrictions`
     // short-circuits on the feature flag.
-    await syncPageRestrictions(client, page, syncRunStartedAt, ancestorCache);
+    await syncPageRestrictions(client, page, syncRunStartedAt, ancestorCache, changeSet);
     return;
   }
 
@@ -524,7 +634,7 @@ async function syncPage(
   // the page upsert so `pages.id` is guaranteed to exist (the ACE foreign
   // key on `resource_id` points at that SERIAL). No-op when the
   // `RAG_PERMISSION_ENFORCEMENT` feature flag is off.
-  await syncPageRestrictions(client, page, syncRunStartedAt, ancestorCache);
+  await syncPageRestrictions(client, page, syncRunStartedAt, ancestorCache, changeSet);
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -891,6 +1001,7 @@ async function syncPageRestrictions(
   page: ConfluencePage,
   syncRunStartedAt: Date,
   ancestorCache: Map<string, ConfluenceRestriction[]>,
+  changeSet: RestrictionChangeSet = { mode: 'full' },
 ): Promise<void> {
   if (!isFeatureEnabled(ENTERPRISE_FEATURES.RAG_PERMISSION_ENFORCEMENT)) {
     return;
@@ -900,8 +1011,8 @@ async function syncPageRestrictions(
   // UPDATE paths in `syncPage` run before this call so the row is
   // guaranteed to exist. A missing row means the INSERT silently failed
   // upstream — log and bail rather than plough on with a bogus resource_id.
-  const pageRow = await query<{ id: number }>(
-    `SELECT id FROM pages WHERE confluence_id = $1`,
+  const pageRow = await query<{ id: number; restrictions_synced_at: Date | null }>(
+    `SELECT id, restrictions_synced_at FROM pages WHERE confluence_id = $1`,
     [page.id],
   );
   if (pageRow.rows.length === 0) {
@@ -912,6 +1023,27 @@ async function syncPageRestrictions(
     return;
   }
   const pageDbId = pageRow.rows[0]!.id;
+  const restrictionsSyncedAt = pageRow.rows[0]!.restrictions_synced_at;
+
+  // Audit-log-driven skip (perf): when the audit window confirms no restriction
+  // change for this page since we last mirrored it (within the covered window),
+  // skip the rate-limited Confluence fetch. Still bump this page's Confluence ACE
+  // synced_at to the current run so the global stale-ACE sweep keeps the rows —
+  // the optimization is sweep-neutral. Any uncertainty falls through to a fetch.
+  if (
+    changeSet.mode === 'incremental' &&
+    restrictionsSyncedAt !== null &&
+    restrictionsSyncedAt.getTime() >= changeSet.windowStartMs &&
+    !changeSet.changedPageIds.has(page.id)
+  ) {
+    await query(
+      `UPDATE access_control_entries
+          SET synced_at = $1
+        WHERE resource_type = 'page' AND resource_id = $2 AND source = 'confluence'`,
+      [syncRunStartedAt, pageDbId],
+    );
+    return;
+  }
 
   let effective: Awaited<ReturnType<typeof computeEffectivePageReadRestrictions>>;
   try {
@@ -937,7 +1069,7 @@ async function syncPageRestrictions(
     // restriction. Flip `inherit_perms` back to TRUE — `userCanAccessPage`
     // will fall through to the space-level role check. No ACE writes; the
     // end-of-run sweep cleans up any leftover rows from a prior sync.
-    await query(`UPDATE pages SET inherit_perms = TRUE WHERE id = $1`, [pageDbId]);
+    await query(`UPDATE pages SET inherit_perms = TRUE, restrictions_synced_at = $2 WHERE id = $1`, [pageDbId, syncRunStartedAt]);
     return;
   }
 
@@ -1010,8 +1142,8 @@ async function syncPageRestrictions(
       );
     }
     await dbClient.query(
-      `UPDATE pages SET inherit_perms = FALSE WHERE id = $1`,
-      [pageDbId],
+      `UPDATE pages SET inherit_perms = FALSE, restrictions_synced_at = $2 WHERE id = $1`,
+      [pageDbId, syncRunStartedAt],
     );
     await dbClient.query('COMMIT');
   } catch (err) {
@@ -1172,62 +1304,327 @@ async function syncMissingAttachments(
   }
 }
 
+/**
+ * Reconcile pages that were deleted in Confluence by soft-deleting their local
+ * rows (#706), and REVIVE soft-deleted rows whose page is live upstream again
+ * (#766 review — e.g. restored from the Confluence trash; restore creates no
+ * new version, so only this cross-check converges it — the sync upsert revives
+ * a row only when the page is also modified upstream or a full sync runs).
+ *
+ * Runs on every sync (incremental and full). The authoritative live id set comes
+ * from a dedicated lightweight listing (`getAllPageIds`) rather than the modified-
+ * pages list passed to the rest of the sync — during an incremental sync that list
+ * only holds pages that changed, so absence from it tells us nothing about deletion.
+ *
+ * Shared-space correctness: rather than gating on "exactly one user owns the space"
+ * (which meant shared-space deletions were never reconciled), each candidate — a
+ * local page missing from this principal's listing — is confirmed genuinely gone via
+ * a direct `GET /content/{id}` before we soft-delete it: a 404 **or** a 200 with
+ * `status: 'trashed'` (#766 — Confluence DC's DELETE trashes rather than purges, and
+ * some DC versions still serve trashed content on a direct GET) counts as gone. A page
+ * that still exists but is merely hidden from this principal answers 200 `current`
+ * or 403, so one user's restricted view can no longer nuke pages others can still
+ * see. The number of confirmation fetches per run is capped
+ * (`MAX_DELETION_CONFIRMATIONS`).
+ *
+ * Per-cycle fan-out: this runs once per (user × space). A shared space would
+ * otherwise re-run the listing + confirmation fetches once per user each cycle, so
+ * a best-effort Redis dedupe (`tryClaimSpaceReconcile`) lets the first run per space
+ * claim the cycle and the rest skip. It fails open (runs) when Redis is absent, and
+ * can only narrow work — see the dedupe constant's note for why it is delete-safe.
+ */
 async function detectDeletedPages(
-  _client: ConfluenceClient,
+  client: ConfluenceClient,
   spaceKey: string,
-  currentPages: ConfluencePage[],
   counts: SyncSpaceCounts,
 ): Promise<void> {
-  // Only delete pages when exactly one user has this space assigned via RBAC.
-  // If multiple users share the space, one user's limited-permission sync
-  // could incorrectly delete pages still visible to another user.
-  const selectionCount = await query<{ count: string }>(
-    `SELECT COUNT(DISTINCT principal_id) AS count FROM space_role_assignments
-     WHERE space_key = $1 AND principal_type = 'user'`,
-    [spaceKey],
-  );
-  if (parseInt(selectionCount.rows[0]?.count ?? '0', 10) !== 1) {
-    logger.info({ spaceKey }, 'Skipping stale-page detection: space is shared by multiple users');
+  // Dedupe the per-(user × space) fan-out within a sync cycle (#706). Fail-open.
+  if (!(await tryClaimSpaceReconcile(spaceKey))) {
+    logger.debug({ spaceKey }, 'Skipping deletion reconciliation: already reconciled this cycle');
     return;
   }
 
-  const currentIds = new Set(currentPages.map((p) => p.id));
+  // Authoritative set of ids Confluence still serves for this space (cheap listing).
+  let liveIds: Set<string>;
+  try {
+    liveIds = await client.getAllPageIds(spaceKey);
+  } catch (err) {
+    // If we can't establish the live set we must not delete anything — bailing keeps
+    // the local copy intact and lets a later sync reconcile once Confluence recovers.
+    logger.warn(
+      { spaceKey, err: err instanceof Error ? err.message : String(err) },
+      'Skipping deletion reconciliation: failed to list live Confluence page ids',
+    );
+    return;
+  }
 
-  // Query shared table by space_key only (exclude already soft-deleted pages)
+  // Revival cross-check (#766 review): clear `deleted_at` for soft-deleted rows
+  // whose page is back in the live listing — the page was restored from the
+  // Confluence trash (or the earlier soft-delete was otherwise stale). The
+  // incremental-sync upsert can NOT do this: a trash-restore creates no new
+  // version, so the page never matches the `lastmodified >=` CQL window and is
+  // never re-upserted; without this cross-check the hidden row would sit out
+  // the 30-day clock and be hard-purged with all its local enrichment. The
+  // grace window keeps an in-flight delete-route INTENT (soft-deleted seconds
+  // ago, upstream DELETE not landed yet, page therefore still listed) from
+  // being resurrected mid-delete — see `REVIVAL_GRACE_SECONDS`.
+  const revived = await query<{ confluence_id: string }>(
+    `UPDATE pages
+        SET deleted_at = NULL
+      WHERE space_key = $1
+        AND deleted_at IS NOT NULL
+        AND deleted_at < NOW() - make_interval(secs => $2)
+        AND confluence_id = ANY($3::text[])
+      RETURNING confluence_id`,
+    [spaceKey, REVIVAL_GRACE_SECONDS, [...liveIds]],
+  );
+  if (revived.rows.length > 0) {
+    logger.info(
+      { spaceKey, revived: revived.rows.map((r) => r.confluence_id) },
+      'Revived soft-deleted pages that are live in Confluence again (e.g. restored from trash)',
+    );
+  }
+
+  // Local non-deleted rows for this space.
   const existingResult = await query<{ confluence_id: string }>(
     'SELECT confluence_id FROM pages WHERE space_key = $1 AND deleted_at IS NULL',
     [spaceKey],
   );
 
-  for (const { confluence_id } of existingResult.rows) {
-    if (!currentIds.has(confluence_id)) {
-      logger.info({ spaceKey, confluenceId: confluence_id }, 'Soft-deleting stale page');
-      await query(
-        'UPDATE pages SET deleted_at = NOW() WHERE confluence_id = $1 AND deleted_at IS NULL',
-        [confluence_id],
-      );
-      await cleanPageAttachments('', confluence_id);
-      await clearPageFailures(confluence_id);
-      counts.pagesDeleted++;
+  // Candidates: present locally, absent from this principal's live listing. Absence
+  // alone is not proof of deletion (the page may be restricted from this principal),
+  // so we confirm each via a direct fetch below.
+  const candidates = existingResult.rows
+    .map((r) => r.confluence_id)
+    .filter((confluenceId) => !liveIds.has(confluenceId));
+
+  if (candidates.length === 0) return;
+
+  if (candidates.length > MAX_DELETION_CONFIRMATIONS) {
+    // Guard against a permission change suddenly hiding a large subtree from this
+    // principal: skip this run rather than issue thousands of confirmation fetches
+    // or risk a mass false delete. A later sync re-evaluates once the set is smaller.
+    logger.warn(
+      { spaceKey, candidates: candidates.length, cap: MAX_DELETION_CONFIRMATIONS },
+      'Skipping deletion reconciliation: too many candidates this run (deferring)',
+    );
+    return;
+  }
+
+  for (const confluenceId of candidates) {
+    // Confirm the page is genuinely gone before soft-deleting. Two outcomes
+    // count as "gone" (#706, #766):
+    //   - 404: the content no longer exists for this DC (purged, or the DC
+    //     version hides trashed content from a plain GET);
+    //   - 200 with `status: 'trashed'`: Confluence DC's DELETE on a current
+    //     page moves it to the space trash rather than purging it, and some
+    //     DC versions still serve that trashed content on a direct GET. A
+    //     trashed page is already absent from the live listing (only `current`
+    //     content is listed), so a trashed answer here means the page was
+    //     deleted — not restricted from this principal. Without this branch,
+    //     pages deleted via Compendiq's own Delete button (which trashes
+    //     upstream) would never be reconciled (#766).
+    // Any other outcome means "still there / not visible to me" — leave it
+    // untouched. The local soft-delete mirrors the trash's recoverability:
+    // the row survives (hidden) for 30 days before `purgeDeletedPages`.
+    try {
+      const remote = await client.getPage(confluenceId);
+      if (remote.status !== 'trashed') {
+        // 200 current: page still exists for this principal — not deleted.
+        continue;
+      }
+      // 200 trashed: fall through to the soft-delete below.
+    } catch (err) {
+      if (!(err instanceof ConfluenceError && err.statusCode === 404)) {
+        // 403/401/5xx/network: inconclusive — do not delete.
+        logger.debug(
+          { spaceKey, confluenceId, status: err instanceof ConfluenceError ? err.statusCode : 'unknown' },
+          'Deletion candidate not confirmed gone — leaving in place',
+        );
+        continue;
+      }
     }
+
+    logger.info({ spaceKey, confluenceId }, 'Soft-deleting page confirmed deleted in Confluence');
+    await query(
+      'UPDATE pages SET deleted_at = NOW() WHERE confluence_id = $1 AND deleted_at IS NULL',
+      [confluenceId],
+    );
+    await cleanPageAttachments('', confluenceId);
+    await clearPageFailures(confluenceId);
+    counts.pagesDeleted++;
   }
 }
 
 /**
  * Permanently remove pages that were soft-deleted more than 30 days ago.
  * page_embeddings are removed by CASCADE on the pages table FK.
+ *
+ * Purge is the point of no return — it irreversibly destroys the local row and
+ * every piece of local enrichment hanging off it (embeddings, version history
+ * via FK cascade). So before deleting, each candidate is RE-CONFIRMED gone
+ * upstream with a direct `GET /content/{id}` (#766 review):
+ *   - 404 or 200 `status: 'trashed'` → confirmed gone, purge proceeds;
+ *   - 200 `status: 'current'`        → the page exists upstream (e.g. restored
+ *     from the trash but hidden from this principal's listing, so the revival
+ *     cross-check never saw it) — do NOT purge; the row stays soft-deleted for
+ *     reconciliation to sort out;
+ *   - anything else (403/5xx/network) → inconclusive — defer to a later cycle.
+ * Rows without a `confluence_id` have no upstream to consult; for them the
+ * 30-day local-trash window remains the only authority.
+ *
+ * Confirmation fetches are bounded per run: at most `MAX_DELETION_CONFIRMATIONS`
+ * candidates (oldest first) are processed each cycle; a larger backlog converges
+ * over subsequent cycles.
  */
-async function purgeDeletedPages(spaceKey: string): Promise<void> {
-  const result = await query<{ confluence_id: string }>(
-    `DELETE FROM pages WHERE space_key = $1 AND deleted_at < NOW() - INTERVAL '30 days' RETURNING confluence_id`,
-    [spaceKey],
+async function purgeDeletedPages(client: ConfluenceClient, spaceKey: string): Promise<void> {
+  const candidates = await query<{ id: number; confluence_id: string | null }>(
+    `SELECT id, confluence_id FROM pages
+      WHERE space_key = $1 AND deleted_at < NOW() - INTERVAL '30 days'
+      ORDER BY deleted_at
+      LIMIT $2`,
+    [spaceKey, MAX_DELETION_CONFIRMATIONS],
+  );
+  if (candidates.rows.length === 0) return;
+
+  const confirmedIds: number[] = [];
+  for (const row of candidates.rows) {
+    if (row.confluence_id === null) {
+      confirmedIds.push(row.id);
+      continue;
+    }
+    try {
+      const remote = await client.getPage(row.confluence_id);
+      if (remote.status === 'trashed') {
+        confirmedIds.push(row.id);
+      } else {
+        logger.warn(
+          { spaceKey, confluenceId: row.confluence_id },
+          'Purge candidate still exists upstream (200 current) — skipping permanent delete',
+        );
+      }
+    } catch (err) {
+      if (err instanceof ConfluenceError && err.statusCode === 404) {
+        confirmedIds.push(row.id);
+      } else {
+        logger.debug(
+          { spaceKey, confluenceId: row.confluence_id, status: err instanceof ConfluenceError ? err.statusCode : 'unknown' },
+          'Purge candidate not confirmed gone upstream — deferring to a later cycle',
+        );
+      }
+    }
+  }
+  if (confirmedIds.length === 0) return;
+
+  // Re-assert the 30-day precondition inside the DELETE: a row revived between
+  // the SELECT and here has `deleted_at = NULL` and falls out of the predicate.
+  const result = await query<{ confluence_id: string | null }>(
+    `DELETE FROM pages
+      WHERE id = ANY($1::int[]) AND deleted_at < NOW() - INTERVAL '30 days'
+      RETURNING confluence_id`,
+    [confirmedIds],
   );
   if (result.rowCount && result.rowCount > 0) {
     for (const { confluence_id } of result.rows) {
+      if (!confluence_id) continue;
       await cleanPageAttachments('', confluence_id);
       await clearPageFailures(confluence_id);
     }
     logger.info({ spaceKey, purged: result.rowCount }, 'Purged expired soft-deleted pages');
+  }
+}
+
+/**
+ * #721: Remove a synced Confluence space and all of its local data. Read-only
+ * against Confluence — only local rows/files are deleted.
+ *
+ * Atomicity (#721 review WARNING 1): all row deletes run inside a single
+ * BEGIN…COMMIT on one pooled client (the same pattern as `postgres.ts` and
+ * `applyConflictPolicyForExistingPage`). On any error we ROLLBACK and re-throw,
+ * so a crash mid-purge can never leave a space half-removed.
+ *
+ * Ordering note: filesystem attachment cleanup (`cleanPageAttachments`) is
+ * inherently non-transactional — files can't be rolled back. We run it
+ * best-effort BEFORE opening the transaction and never let a file-cleanup
+ * failure abort the DB work (it's logged, not fatal). Worst case is a few
+ * orphaned files if the transaction later rolls back; that is preferable to
+ * leaving DB rows pointing at a deleted space, and a re-run of unsync would
+ * sweep them again.
+ *
+ * Deleting the `pages` rows cascades to `page_embeddings` and `page_versions`
+ * (page_id FK ON DELETE CASCADE, migration 030).
+ *
+ * Orphaned space_key rows (#721 review WARNING 2): several tables reference a
+ * space by plain `space_key` with NO foreign key, so they survive the cascade
+ * and would dangle. Within the same transaction we therefore also reconcile:
+ *   - `space_role_assignments` — RBAC, also encodes the sync selection
+ *     (`user_space_selections` was migrated into this table and DROPPED in
+ *     migration 040). DELETE: scoped entirely to the removed space.
+ *   - `oidc_group_role_mappings` — OIDC group→space RBAC mapping (space_key
+ *     nullable). DELETE only the rows whose `space_key` matches: a non-null
+ *     space_key row exists solely to map a group into THIS space, so it is
+ *     meaningless once the space is gone. Global rows (space_key IS NULL) are
+ *     untouched.
+ *   - `templates` / `knowledge_requests` — may hold USER-AUTHORED content and
+ *     their `space_key` columns are NULLABLE (migrations 032 / 037). We do NOT
+ *     destroy user work: we NULL `space_key` to DETACH the artifact from the
+ *     removed space while retaining the row. Least-surprising option — a
+ *     template or knowledge request authored against a space outlives the
+ *     space, just unscoped.
+ */
+export async function unsyncSpace(spaceKey: string): Promise<{ pagesDeleted: number }> {
+  // Best-effort, non-transactional filesystem cleanup BEFORE the DB
+  // transaction. A failure here must never abort the row deletes.
+  // Attachment directories are keyed by confluence_id for synced pages
+  // (syncImageAttachments, the serving route in routes/confluence/attachments.ts)
+  // and by the integer PK only for standalone pages (confluence_id IS NULL) —
+  // passing the SERIAL id for a synced page would delete nothing and orphan
+  // the real data/attachments/<confluence_id> directory (#746).
+  const pages = await query<{ id: number; confluence_id: string | null }>(
+    'SELECT id, confluence_id FROM pages WHERE space_key = $1',
+    [spaceKey],
+  );
+  for (const p of pages.rows) {
+    const attachmentKey = p.confluence_id ?? String(p.id);
+    try {
+      await cleanPageAttachments('', attachmentKey);
+    } catch (err) {
+      logger.warn({ err, pageId: p.id, attachmentKey, spaceKey }, 'unsyncSpace: attachment cleanup failed (continuing)');
+    }
+  }
+
+  const pool = getPool();
+  const conn = await pool.connect();
+  try {
+    await conn.query('BEGIN');
+
+    // Pages → cascades to page_embeddings + page_versions (migration 030).
+    const del = await conn.query('DELETE FROM pages WHERE space_key = $1', [spaceKey]);
+
+    // RBAC / sync-selection rows for the removed space.
+    await conn.query('DELETE FROM space_role_assignments WHERE space_key = $1', [spaceKey]);
+
+    // OIDC group→space mappings scoped to this space (NULL = global, kept).
+    await conn.query('DELETE FROM oidc_group_role_mappings WHERE space_key = $1', [spaceKey]);
+
+    // User-authored artifacts: detach (retain the row, NULL the space_key)
+    // rather than delete, so unsyncing a space never silently destroys work.
+    await conn.query('UPDATE templates SET space_key = NULL WHERE space_key = $1', [spaceKey]);
+    await conn.query('UPDATE knowledge_requests SET space_key = NULL WHERE space_key = $1', [spaceKey]);
+
+    // Finally the space row itself.
+    await conn.query('DELETE FROM spaces WHERE space_key = $1', [spaceKey]);
+
+    await conn.query('COMMIT');
+    logger.info({ spaceKey, pagesDeleted: del.rowCount ?? 0 }, 'unsyncSpace: purged synced space');
+    return { pagesDeleted: del.rowCount ?? 0 };
+  } catch (err) {
+    await conn.query('ROLLBACK').catch(() => {
+      /* rollback failures are not actionable; original error already surfacing */
+    });
+    throw err;
+  } finally {
+    conn.release();
   }
 }
 
@@ -1433,4 +1830,15 @@ export const __internal = {
   // having to stub a Confluence client + attachment handler + version-
   // snapshot writer just to reach this branch via syncUser.
   applyConflictPolicyForExistingPage,
+  // Exposed for the #706 deletion-reconciliation integration tests so the
+  // live-id listing + per-candidate 404 confirmation + revival cross-check
+  // can be exercised against a real Postgres (real `pages` rows, real
+  // soft-delete + count tracking) with only the ConfluenceClient stubbed.
+  detectDeletedPages,
+  // Exposed for the #766 delete-atomicity integration tests: after a
+  // post-upstream local failure the row is left soft-deleted, and the test
+  // proves the standard sync lifecycle (30-day purge, with its upstream
+  // gone-confirmation) converges it fully without driving an entire
+  // syncSpace run.
+  purgeDeletedPages,
 };

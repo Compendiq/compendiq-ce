@@ -528,6 +528,116 @@ describe.skipIf(!dbAvailable)('sync-service per-page restriction branch (EE #112
     // v0.3 no-op behaviour.
   });
 
+  // ── Audit-log-driven restriction-change detection (skip rule) ───────────
+  // syncPageRestrictions takes an optional change-set. In 'incremental' mode a
+  // page is skipped (no Confluence fetch) iff it was mirrored within the
+  // audit-covered window AND is not in the changed set — but its ACE synced_at
+  // is still bumped so the global stale-ACE sweep keeps the rows.
+  const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+  const incremental = (changed: string[]) => ({
+    mode: 'incremental' as const,
+    changedPageIds: new Set<string>(changed),
+    windowStartMs: Date.now() - WEEK_MS,
+    auditQueryAt: Date.now(),
+  });
+
+  it('audit-skip: skips the Confluence fetch but bumps ACE synced_at when audit shows no change', async () => {
+    const userA = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    await insertUser(userA, 'alice');
+    await ensureSpace('DOCS');
+    const pageDbId = await insertPage('c-600', 'DOCS');
+    // Mirrored an hour ago (well within the week-long window) ...
+    await query(`UPDATE pages SET restrictions_synced_at = $1, inherit_perms = FALSE WHERE id = $2`, [
+      new Date(Date.now() - 60 * 60 * 1000),
+      pageDbId,
+    ]);
+    // ... carrying a Confluence ACE from that prior run with a stale synced_at.
+    await query(
+      `INSERT INTO access_control_entries (resource_type, resource_id, principal_type, principal_id, permission, source, synced_at)
+       VALUES ('page', $1, 'user', $2, 'read', 'confluence', $3)`,
+      [pageDbId, userA, new Date('2020-01-01T00:00:00Z')],
+    );
+
+    const client = makeMockClient();
+    const startedAt = new Date();
+    await __internal.syncPageRestrictions(client as never, fakePage('c-600'), startedAt, new Map(), incremental([]));
+
+    expect(client.restrictionCalls).toHaveLength(0);
+    expect(client.ancestorCalls).toHaveLength(0);
+    const aces = await getAces(pageDbId);
+    expect(aces).toHaveLength(1);
+    expect(aces[0]!.synced_at!.getTime()).toBe(startedAt.getTime());
+  });
+
+  it('audit-skip: FETCHES when the page id is in the changed set', async () => {
+    const userA = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    await insertUser(userA, 'alice');
+    await ensureSpace('DOCS');
+    const pageDbId = await insertPage('c-601', 'DOCS');
+    await query(`UPDATE pages SET restrictions_synced_at = $1, inherit_perms = FALSE WHERE id = $2`, [
+      new Date(Date.now() - 60 * 60 * 1000),
+      pageDbId,
+    ]);
+
+    const client = makeMockClient();
+    client.restrictionsByPage.set('c-601', [readRestriction([{ userKey: 'keyalice', username: 'alice' }])]);
+    await __internal.syncPageRestrictions(client as never, fakePage('c-601'), new Date(), new Map(), incremental(['c-601']));
+
+    expect(client.restrictionCalls).toEqual(['c-601']);
+    expect(await getAces(pageDbId)).toHaveLength(1);
+  });
+
+  it('audit-skip: FETCHES a never-mirrored page (restrictions_synced_at NULL) in incremental mode', async () => {
+    const userA = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    await insertUser(userA, 'alice');
+    await ensureSpace('DOCS');
+    const pageDbId = await insertPage('c-602', 'DOCS'); // restrictions_synced_at stays NULL
+
+    const client = makeMockClient();
+    client.restrictionsByPage.set('c-602', [readRestriction([{ userKey: 'keyalice', username: 'alice' }])]);
+    await __internal.syncPageRestrictions(client as never, fakePage('c-602'), new Date(), new Map(), incremental([]));
+
+    expect(client.restrictionCalls).toEqual(['c-602']);
+    expect(await getAces(pageDbId)).toHaveLength(1);
+  });
+
+  it('audit-skip: FETCHES when restrictions_synced_at predates the audit window', async () => {
+    const userA = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    await insertUser(userA, 'alice');
+    await ensureSpace('DOCS');
+    const pageDbId = await insertPage('c-603', 'DOCS');
+    await query(`UPDATE pages SET restrictions_synced_at = $1, inherit_perms = FALSE WHERE id = $2`, [
+      new Date('2020-01-01T00:00:00Z'),
+      pageDbId,
+    ]);
+
+    const client = makeMockClient();
+    client.restrictionsByPage.set('c-603', [readRestriction([{ userKey: 'keyalice', username: 'alice' }])]);
+    await __internal.syncPageRestrictions(client as never, fakePage('c-603'), new Date(), new Map(), incremental([]));
+
+    expect(client.restrictionCalls).toEqual(['c-603']);
+  });
+
+  it('audit-skip: full mode always fetches and stamps restrictions_synced_at', async () => {
+    const userA = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    await insertUser(userA, 'alice');
+    await ensureSpace('DOCS');
+    const pageDbId = await insertPage('c-604', 'DOCS');
+    await query(`UPDATE pages SET restrictions_synced_at = $1 WHERE id = $2`, [new Date(Date.now() - 60 * 60 * 1000), pageDbId]);
+
+    const client = makeMockClient();
+    client.restrictionsByPage.set('c-604', [readRestriction([{ userKey: 'keyalice', username: 'alice' }])]);
+    const startedAt = new Date();
+    await __internal.syncPageRestrictions(client as never, fakePage('c-604'), startedAt, new Map(), { mode: 'full' as const });
+
+    expect(client.restrictionCalls).toEqual(['c-604']);
+    const row = await query<{ restrictions_synced_at: Date | null }>(
+      `SELECT restrictions_synced_at FROM pages WHERE id = $1`,
+      [pageDbId],
+    );
+    expect(row.rows[0]!.restrictions_synced_at!.getTime()).toBe(startedAt.getTime());
+  });
+
   it('ancestor cache collapses repeated restriction fetches across siblings', async () => {
     const userA = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
     await insertUser(userA, 'alice');

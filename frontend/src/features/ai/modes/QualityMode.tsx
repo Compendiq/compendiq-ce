@@ -53,7 +53,7 @@ export function QualityModeInput() {
   );
 }
 
-export const QUALITY_EMPTY_TITLE = 'Analyze article quality across multiple dimensions';
+export const QUALITY_EMPTY_TITLE = 'Analyze page quality across multiple dimensions';
 export function qualityEmptySubtitle(page: { title: string } | undefined): string {
   return page
     ? `Ready to analyze: ${page.title}`

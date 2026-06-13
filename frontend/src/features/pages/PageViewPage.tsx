@@ -19,6 +19,7 @@ import { useAuthenticatedSrc } from '../../shared/hooks/use-authenticated-src';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { useKeyboardShortcuts, type ShortcutDefinition } from '../../shared/hooks/use-keyboard-shortcuts';
 import { useArticleViewStore } from '../../stores/article-view-store';
+import { useAuthStore } from '../../stores/auth-store';
 import { cn } from '../../shared/lib/cn';
 import { FeatureErrorBoundary } from '../../shared/components/feedback/FeatureErrorBoundary';
 import { QualityScoreBadge } from '../../shared/components/badges/QualityScoreBadge';
@@ -33,6 +34,7 @@ import type { TocHeading } from '../../shared/components/article/TableOfContents
 import { PageViewSkeleton } from '../../shared/components/feedback/Skeleton';
 import { TagEditor } from '../../shared/components/TagEditor';
 import { ShortcutHint } from '../../shared/components/ShortcutHint';
+import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
 import { usePresence } from './use-presence';
 import { PresenceAvatarStack } from './PresenceAvatarStack';
 
@@ -121,6 +123,16 @@ export function PageViewPage() {
 
   const isPinned = pinnedData?.items.some((item) => item.id === id) ?? false;
 
+  // Hide the helpfulness widget on standalone pages the current user authored
+  // — rating your own page is noise. Confluence-synced pages (createdByUserId
+  // is null) and other users' pages keep the widget.
+  const currentUserId = useAuthStore((s) => s.user?.id);
+  const isOwnStandalonePage =
+    page?.source === 'standalone' &&
+    page.createdByUserId != null &&
+    currentUserId != null &&
+    String(page.createdByUserId) === String(currentUserId);
+
 
   // Fetch the configured draw.io embed URL (falls back to default inside DrawioEditor if undefined)
   const { data: drawioSettings } = useQuery({
@@ -144,6 +156,10 @@ export function PageViewPage() {
   const [lightboxSrc, setLightboxSrc] = useState<{ alt: string; src: string } | null>(null);
   const [drawioEditingDiagram, setDrawioEditingDiagram] = useState<string | null>(null);
   const [drawioXml, setDrawioXml] = useState<string>('');
+  const [confirmTrashOpen, setConfirmTrashOpen] = useState(false);
+  // Draft awaiting a restore decision (ConfirmDialog replaces native confirm()).
+  // While non-null, edit mode is deferred until the user picks a side.
+  const [pendingDraft, setPendingDraft] = useState<string | null>(null);
 
   // Vim mode state — lifted here so we can pass it to the external toolbar
   const [vimEnabled, setVimEnabled] = useState(() =>
@@ -204,13 +220,29 @@ export function PageViewPage() {
     setEditTitle(page.title);
     const draft = getDraft(`page-${id}`);
     if (draft && draft !== page.bodyHtml) {
-      const restoreDraft = window.confirm('A draft was found for this article. Restore it?');
-      setEditHtml(restoreDraft ? draft : page.bodyHtml);
-    } else {
-      setEditHtml(page.bodyHtml);
+      // Defer edit mode until the user decides in the ConfirmDialog below:
+      // confirm restores the draft, the labeled cancel action edits the
+      // published copy, and Escape/overlay dismissal stays in view mode.
+      setPendingDraft(draft);
+      return;
     }
+    setEditHtml(page.bodyHtml);
     setEditing(true);
   }, [id, page]);
+
+  const handleRestoreDraft = useCallback(() => {
+    if (pendingDraft === null) return;
+    setEditHtml(pendingDraft);
+    setPendingDraft(null);
+    setEditing(true);
+  }, [pendingDraft]);
+
+  const handleDeclineDraft = useCallback(() => {
+    setPendingDraft(null);
+    if (!page) return;
+    setEditHtml(page.bodyHtml);
+    setEditing(true);
+  }, [page]);
 
   const handleCancelEditing = useCallback(() => {
     if (draftKey) clearDraft(draftKey);
@@ -244,9 +276,9 @@ export function PageViewPage() {
       });
       if (draftKey) clearDraft(draftKey);
       setEditing(false);
-      toast.success('Article saved.');
+      toast.success('Page saved.');
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to save article.';
+      const message = error instanceof Error ? error.message : 'Failed to save page.';
       if (message.includes('modified since you loaded')) {
         toast.error('Version conflict detected.', {
           action: {
@@ -353,14 +385,23 @@ export function PageViewPage() {
     });
   }, [id, isPinned, page, pinMutation, unpinMutation]);
 
-  const handleDeletePage = useCallback(async () => {
-    if (!id || !window.confirm('Delete this article? This cannot be undone.')) return;
+  // Deleting soft-deletes into the 30-day trash, so the confirm copy must
+  // not claim the action "cannot be undone". ConfirmDialog replaces the
+  // native confirm() to match the neumorphic design system.
+  const handleDeletePage = useCallback(() => {
+    if (!id) return;
+    setConfirmTrashOpen(true);
+  }, [id]);
+
+  const handleConfirmMoveToTrash = useCallback(async () => {
+    if (!id) return;
+    setConfirmTrashOpen(false);
     try {
       await deleteMutation_page.mutateAsync(id);
       navigate('/');
-      toast.success('Article deleted.');
+      toast.success('Page moved to trash.');
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to delete article.');
+      toast.error(error instanceof Error ? error.message : 'Failed to move page to trash.');
     }
   }, [deleteMutation_page, id, navigate]);
 
@@ -370,7 +411,7 @@ export function PageViewPage() {
       key: 'Ctrl+S',
       keys: ['s'],
       mod: true,
-      description: 'Save current article',
+      description: 'Save current page',
       category: 'editor',
       action: () => {
         if (editing) handleSave();
@@ -443,7 +484,7 @@ export function PageViewPage() {
     return (
       <div className="nm-card flex min-h-[18rem] flex-col items-center justify-center gap-3 py-16 text-center">
         <FileText size={42} className="text-muted-foreground" />
-        <h1 className="text-xl font-semibold text-foreground">Article not found</h1>
+        <h1 className="text-xl font-semibold text-foreground">Page not found</h1>
         <p className="max-w-md text-sm text-muted-foreground">
           The selected page is unavailable or no longer accessible in the synced space tree.
         </p>
@@ -467,22 +508,22 @@ export function PageViewPage() {
       transition={{ duration: 0.18 }}
       data-testid="article-page"
     >
-      {/* Sticky toolbar with a UNDER-mask that sits behind the toolbar at
-          a lower z-index. The mask is bg-background and reaches from the
-          top of the scroll container (flush against the AppLayout top bar
-          when scrolled) down to the bottom of the toolbar — masking any
-          content that would otherwise be visible through the toolbar's
-          rounded-corner cutouts. */}
+      {/* Sticky toolbar with an UNDER-mask that sits behind the toolbar at
+          a lower z-index. The mask is opaque bg-background, so article
+          content scrolling under the translucent toolbar is fully occluded
+          rather than showing through its rounded-corner cutouts. */}
       {editing && (
         <div className="sticky top-0 z-30 isolate">
-          {/* Under-mask: behind the toolbar (z-[-1]), extends up by 100px so
-              it always reaches the top bar above. Bottom matches toolbar
-              height so mask never extends past the toolbar visually. Rounded
-              bottom corners give the mask its own card-like silhouette. */}
+          {/* Under-mask: behind the toolbar (z-[-1]), covering exactly the
+              toolbar's box (inset-0). The toolbar pins flush at the
+              scrollport top — same situation as /ai's sub-header (#769) —
+              so there is no gap above it to mask, and the former
+              -top-[100px] upward bleed was dead paint (clipped at the
+              scrollport edge when stuck). Rounded bottom corners keep the
+              mask inside the toolbar's card silhouette. */}
           <div
             aria-hidden
-            className="pointer-events-none absolute inset-x-0 -top-[100px] z-[-1] bg-background rounded-b-xl"
-            style={{ bottom: 0 }}
+            className="pointer-events-none absolute inset-0 z-[-1] bg-background rounded-b-xl"
           />
         <div className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm">
           {editorInstance && (
@@ -646,7 +687,7 @@ export function PageViewPage() {
                   value={editTitle}
                   onChange={(event) => setEditTitle(event.target.value)}
                   className="w-full bg-transparent text-3xl font-bold leading-tight tracking-[-0.02em] text-foreground outline-none placeholder:text-muted-foreground/40"
-                  placeholder="Article title…"
+                  placeholder="Page title…"
                 />
               </div>
             </div>
@@ -717,7 +758,7 @@ export function PageViewPage() {
               />
             )}
 
-            <FeatureErrorBoundary featureName="Article Viewer">
+            <FeatureErrorBoundary featureName="Page Viewer">
               <ArticleViewer
                 content={page.bodyHtml}
                 confluenceUrl={settings?.confluenceUrl}
@@ -729,8 +770,8 @@ export function PageViewPage() {
               />
             </FeatureErrorBoundary>
 
-            {/* Feedback widget */}
-            <FeedbackWidget pageId={id} />
+            {/* Feedback widget — hidden on the author's own standalone pages */}
+            {!isOwnStandalonePage && <FeedbackWidget pageId={id} />}
           </div>
         )}
       </div>
@@ -753,6 +794,34 @@ export function PageViewPage() {
           drawioUrl={drawioSettings?.drawioEmbedUrl}
         />
       )}
+
+      <ConfirmDialog
+        open={confirmTrashOpen}
+        title="Move page to trash?"
+        description="It can be restored from Trash for 30 days, then it is permanently deleted."
+        confirmLabel="Move to trash"
+        destructive
+        onConfirm={handleConfirmMoveToTrash}
+        onCancel={() => setConfirmTrashOpen(false)}
+      />
+
+      {/* Draft restore — drafts are autosaved to localStorage on this device
+          while editing. Restoring is non-destructive; the labeled cancel
+          action opens the editor on the published content. Escape/overlay
+          stay neutral (onDismiss): entering edit mode would let autosave
+          start overwriting the stored draft, a side effect nobody chose.
+          No destructive styling: the draft is only overwritten by continued
+          editing, never deleted here. */}
+      <ConfirmDialog
+        open={pendingDraft !== null}
+        title="Restore draft?"
+        description="An unsaved draft of this page was found in this browser. Restore it to continue where you left off, or edit the published version instead (the draft is overwritten as you edit)."
+        confirmLabel="Restore draft"
+        cancelLabel="Edit published version"
+        onConfirm={handleRestoreDraft}
+        onCancel={handleDeclineDraft}
+        onDismiss={() => setPendingDraft(null)}
+      />
     </m.div>
   );
 }
@@ -783,7 +852,7 @@ function FeedbackWidget({ pageId }: { pageId: string | undefined }) {
 
   return (
     <div className="mt-12 border-t border-border/25 pt-6" data-testid="feedback-widget">
-      <p className="mb-3 text-sm font-medium text-muted-foreground">Was this article helpful?</p>
+      <p className="mb-3 text-sm font-medium text-muted-foreground">Was this page helpful?</p>
       <div className="flex gap-2">
         <button
           onClick={() => handleFeedback(true)}

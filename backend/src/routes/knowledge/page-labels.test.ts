@@ -74,6 +74,12 @@ vi.mock('../../core/db/postgres.js', () => ({
   closePool: vi.fn(),
 }));
 
+// #733: routes check page access via rbac-service before mutating labels
+const mockUserCanAccessPage = vi.fn().mockResolvedValue(true);
+vi.mock('../../core/services/rbac-service.js', () => ({
+  userCanAccessPage: (...args: unknown[]) => mockUserCanAccessPage(...args),
+}));
+
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
 
 describe('PUT /api/pages/:id/labels', () => {
@@ -119,6 +125,7 @@ describe('PUT /api/pages/:id/labels', () => {
     vi.clearAllMocks();
     // Mock returns integer PK + confluence_id (required after #442 fix)
     mockQueryFn.mockResolvedValue({ rows: [{ id: 1, confluence_id: 'page-1', labels: ['existing-tag'] }], rowCount: 1 });
+    mockUserCanAccessPage.mockResolvedValue(true);
   });
 
   it('should add labels to a page', async () => {

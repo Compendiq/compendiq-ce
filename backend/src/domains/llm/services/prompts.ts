@@ -13,6 +13,37 @@ export interface ChatMessage {
 
 export const LANGUAGE_PRESERVATION_INSTRUCTION = `IMPORTANT: Keep the text in its ORIGINAL language. If the text is in German, respond in German. If in English, respond in English. Never translate — only improve the text while preserving its language.`;
 
+// #765: appended to improve prompts when the markdown contains layout
+// boundary tokens or media placeholders, so the LLM keeps the page structure
+// intact. #781 hardened it with a few-shot example (models echo tokens far
+// more reliably when shown one) — and markdownToHtml() now recovers mangled
+// tokens against the known skeleton when the model still misbehaves.
+export const STRUCTURE_PRESERVATION_INSTRUCTION = `The text contains structural placeholder tokens: standalone lines like [[[LAYOUT]]], [[[LAYOUT-SECTION two_equal]]], [[[LAYOUT-CELL]]], [[[SECTION]]], [[[COLUMN width=50%]]] and their matching closing forms ([[[/LAYOUT]]], [[[/LAYOUT-SECTION]]], …), plus opaque CQ_MEDIA_PLACEHOLDER_N tokens. These mark page structure that must survive your edit. Keep every token EXACTLY as written — same UPPERCASE spelling, same triple brackets, each on its own line, in the same order and nesting. Improve only the prose between them. Never delete, rename, translate, reorder, or merge tokens, and never wrap them in code fences or quotes.
+
+Example. Given this input:
+[[[LAYOUT]]]
+[[[LAYOUT-SECTION two_equal]]]
+[[[LAYOUT-CELL]]]
+left text to improve
+[[[/LAYOUT-CELL]]]
+[[[LAYOUT-CELL]]]
+right text to improve
+[[[/LAYOUT-CELL]]]
+[[[/LAYOUT-SECTION]]]
+[[[/LAYOUT]]]
+
+A correct response keeps every token verbatim and edits only the prose:
+[[[LAYOUT]]]
+[[[LAYOUT-SECTION two_equal]]]
+[[[LAYOUT-CELL]]]
+The left text, improved.
+[[[/LAYOUT-CELL]]]
+[[[LAYOUT-CELL]]]
+The right text, improved.
+[[[/LAYOUT-CELL]]]
+[[[/LAYOUT-SECTION]]]
+[[[/LAYOUT]]]`;
+
 const SYSTEM_PROMPTS = {
   improve_grammar: `You are a technical writing assistant. Improve the grammar, spelling, and punctuation of the following article while preserving its meaning and structure. Return the improved text in Markdown format. Only output the improved text, no explanations. ${LANGUAGE_PRESERVATION_INSTRUCTION}`,
 

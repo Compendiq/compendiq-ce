@@ -63,7 +63,7 @@ export function SystemTab() {
             <span className="font-mono" data-testid="app-version">{__APP_VERSION__}</span>
           </div>
           <div className="flex items-center justify-between">
-            <span>Edition</span>
+            <span>Build edition</span>
             <span className="font-mono" data-testid="app-edition">{editionLabel}</span>
           </div>
           <div className="flex items-center justify-between">

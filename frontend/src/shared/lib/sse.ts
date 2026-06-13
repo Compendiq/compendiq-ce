@@ -1,4 +1,5 @@
 import { useAuthStore } from '../../stores/auth-store';
+import { ApiError } from './api';
 
 /**
  * Stream SSE events from a POST endpoint.
@@ -26,7 +27,9 @@ export async function* streamSSE<T = { content: string; done: boolean }>(
 
   if (!res.ok) {
     const errorBody = await res.json().catch(() => ({ message: res.statusText }));
-    throw new Error(errorBody.message ?? `SSE request failed: ${res.status}`);
+    // ApiError (extends Error) keeps the HTTP status so callers can branch on
+    // it — e.g. runStream renders a permission explanation for 403 responses.
+    throw new ApiError(res.status, errorBody.message ?? `SSE request failed: ${res.status}`);
   }
 
   const reader = res.body?.getReader();

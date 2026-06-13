@@ -3,16 +3,17 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
-import { ImproveTypeSelector, ImproveModeInput, IMPROVE_EMPTY_TITLE, improveEmptySubtitle } from './ImproveMode';
+import { ImproveTypeSelector, ImproveModeInput, ImproveDiffView, IMPROVE_EMPTY_TITLE, improveEmptySubtitle } from './ImproveMode';
 import { AiProvider } from '../AiContext';
 import { useAuthStore } from '../../../stores/auth-store';
 
 Element.prototype.scrollIntoView = vi.fn();
 
+// Replace apiFetch with a controllable mock but keep the real ApiError class
+// available — runStream branches on `err instanceof ApiError` for 403 handling.
 const apiFetchMock = vi.fn();
-vi.mock('../../../shared/lib/api', () => ({
-  apiFetch: (...args: unknown[]) => apiFetchMock(...args),
-}));
+vi.mock('../../../shared/lib/api', async () =>
+  (await import('../../../test-utils')).apiModuleMock(() => apiFetchMock));
 
 const streamSSEMock = vi.fn();
 vi.mock('../../../shared/lib/sse', () => ({
@@ -191,6 +192,180 @@ describe('ImproveMode', () => {
     render(<ImproveModeInput />, { wrapper: createWrapper() });
     const textarea = screen.getByPlaceholderText(/Additional instructions/i) as HTMLTextAreaElement;
     expect(textarea.maxLength).toBe(10000);
+  });
+
+  // #704: the diff must compare the original *markdown* the model was fed
+  // (echoed by the backend on the final SSE event) against the improved
+  // markdown — not the formatting-stripped page.bodyText.
+  describe('#704 diff baseline is original markdown', () => {
+    const ORIGINAL_MD = '# Title\n\nThis sentence have a grammar error.\n\n- item one\n- item two';
+    const IMPROVED_MD = '# Title\n\nThis sentence has a grammar error.\n\n- item one\n- item two';
+
+    async function runImprove() {
+      // Stream the improved markdown, then a final event carrying the original
+      // markdown baseline (mirrors the backend's `improveExtras`).
+      async function* fakeStream() {
+        yield { content: IMPROVED_MD };
+        yield { originalMarkdown: ORIGINAL_MD, done: true, final: true };
+      }
+      streamSSEMock.mockReturnValue(fakeStream());
+
+      render(
+        <>
+          <ImproveModeInput />
+          <ImproveDiffView />
+        </>,
+        { wrapper: createWrapper() },
+      );
+
+      await waitFor(() => {
+        const btn = screen.getByRole('button', { name: /Improve Page/i });
+        expect(btn).not.toBeDisabled();
+      });
+      fireEvent.click(screen.getByRole('button', { name: /Improve Page/i }));
+
+      await waitFor(() => {
+        expect(screen.getByTestId('unified-diff')).toBeInTheDocument();
+      });
+    }
+
+    it('uses the echoed original markdown (with markup) as the diff baseline, not stripped bodyText', async () => {
+      await runImprove();
+
+      const diff = screen.getByTestId('unified-diff');
+      // The markdown markup (`#`, list `-`) must be present in the baseline and
+      // NOT flagged as additions. With a grammar-only edit, the only highlighted
+      // change is the wording — markup carries over unchanged.
+      const addedSpans = diff.querySelectorAll('.text-success');
+      const addedText = Array.from(addedSpans).map((s) => s.textContent).join('');
+
+      // No markup tokens should appear as additions (the old bug surfaced
+      // `#`, `**`, `-` as green additions).
+      expect(addedText).not.toContain('#');
+      expect(addedText).not.toContain('- item');
+      // The genuine grammar edit ("has") is still highlighted.
+      expect(addedText).toContain('has');
+
+      // The full diff text preserves the markdown structure (baseline kept its
+      // headers/lists rather than being whitespace-collapsed plain text).
+      expect(diff.textContent).toContain('# Title');
+      expect(diff.textContent).toContain('- item one');
+    });
+
+    it('marks only the changed word as removed, leaving markup untouched', async () => {
+      await runImprove();
+
+      const diff = screen.getByTestId('unified-diff');
+      const removedSpans = diff.querySelectorAll('.text-destructive');
+      const removedText = Array.from(removedSpans).map((s) => s.textContent).join('');
+
+      // The replaced word is removed; markup is not.
+      expect(removedText).toContain('have');
+      expect(removedText).not.toContain('#');
+      expect(removedText).not.toContain('- item');
+    });
+  });
+
+  // Layout-token loss warning: when the page's markdown carried [[[…]]]
+  // layout boundary tokens but the model's output lost them all, applying
+  // will most likely be rejected (422) — warn BEFORE the user hits Accept.
+  describe('layout-token loss warning', () => {
+    const TOKEN_MD =
+      '[[[LAYOUT]]]\n\n[[[LAYOUT-SECTION two_equal]]]\n\n[[[LAYOUT-CELL]]]\n\nLeft\n\n[[[/LAYOUT-CELL]]]\n\n' +
+      '[[[LAYOUT-CELL]]]\n\nRight\n\n[[[/LAYOUT-CELL]]]\n\n[[[/LAYOUT-SECTION]]]\n\n[[[/LAYOUT]]]';
+
+    async function runImproveWith(improved: string, original: string) {
+      async function* fakeStream() {
+        yield { content: improved };
+        yield { originalMarkdown: original, done: true, final: true };
+      }
+      streamSSEMock.mockReturnValue(fakeStream());
+
+      render(
+        <>
+          <ImproveModeInput />
+          <ImproveDiffView />
+        </>,
+        { wrapper: createWrapper() },
+      );
+
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /Improve Page/i })).not.toBeDisabled();
+      });
+      fireEvent.click(screen.getByRole('button', { name: /Improve Page/i }));
+      await waitFor(() => {
+        expect(screen.getByTestId('unified-diff')).toBeInTheDocument();
+      });
+    }
+
+    it('warns when the original markdown had layout tokens but the AI output lost them', async () => {
+      await runImproveWith('Left improved\n\nRight improved', TOKEN_MD);
+      const warning = screen.getByTestId('layout-token-loss-warning');
+      expect(warning.textContent).toMatch(/layout/i);
+      expect(warning.textContent).toMatch(/try again|run .*again|retry/i);
+    });
+
+    it('shows no warning when the AI output kept the tokens', async () => {
+      await runImproveWith(TOKEN_MD.replace('Left', 'Left improved'), TOKEN_MD);
+      expect(screen.queryByTestId('layout-token-loss-warning')).not.toBeInTheDocument();
+    });
+
+    it('shows no warning for layout-free pages', async () => {
+      await runImproveWith('Improved prose', '# Title\n\nOriginal prose');
+      expect(screen.queryByTestId('layout-token-loss-warning')).not.toBeInTheDocument();
+    });
+
+    // The backend's final SSE event carries an authoritative layoutTokensLost
+    // verdict (it runs the real recoverability scan); the client `[[[`
+    // heuristic is only the fallback when the flag is absent (e.g. aborted
+    // stream).
+    it('trusts backend layoutTokensLost=false over the client heuristic (mangled-but-recoverable output)', async () => {
+      async function* fakeStream() {
+        // Mangled 2-bracket spelling: no literal `[[[`, but the backend's
+        // loose scanner can still recover it — so it reports false.
+        yield { content: '[[LAYOUT CELL]]\n\nLeft improved' };
+        yield { originalMarkdown: TOKEN_MD, layoutTokensLost: false, done: true, final: true };
+      }
+      streamSSEMock.mockReturnValue(fakeStream());
+      render(
+        <>
+          <ImproveModeInput />
+          <ImproveDiffView />
+        </>,
+        { wrapper: createWrapper() },
+      );
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /Improve Page/i })).not.toBeDisabled();
+      });
+      fireEvent.click(screen.getByRole('button', { name: /Improve Page/i }));
+      await waitFor(() => {
+        expect(screen.getByTestId('unified-diff')).toBeInTheDocument();
+      });
+      expect(screen.queryByTestId('layout-token-loss-warning')).not.toBeInTheDocument();
+    });
+
+    it('trusts backend layoutTokensLost=true even when the output happens to contain bracket text', async () => {
+      async function* fakeStream() {
+        yield { content: 'Prose mentioning [[[something]]] that is not a real token' };
+        yield { originalMarkdown: TOKEN_MD, layoutTokensLost: true, done: true, final: true };
+      }
+      streamSSEMock.mockReturnValue(fakeStream());
+      render(
+        <>
+          <ImproveModeInput />
+          <ImproveDiffView />
+        </>,
+        { wrapper: createWrapper() },
+      );
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /Improve Page/i })).not.toBeDisabled();
+      });
+      fireEvent.click(screen.getByRole('button', { name: /Improve Page/i }));
+      await waitFor(() => {
+        expect(screen.getByTestId('unified-diff')).toBeInTheDocument();
+      });
+      expect(screen.getByTestId('layout-token-loss-warning')).toBeInTheDocument();
+    });
   });
 
   it('disables textarea while streaming', async () => {

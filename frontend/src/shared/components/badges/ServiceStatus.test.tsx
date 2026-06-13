@@ -1,18 +1,23 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { ServiceStatus } from './ServiceStatus';
 
 // Wrap in LazyMotion for framer-motion
 import { LazyMotion, domAnimation } from 'framer-motion';
 
 function Wrapper({ children }: { children: React.ReactNode }) {
-  return <LazyMotion features={domAnimation}>{children}</LazyMotion>;
+  return (
+    <MemoryRouter>
+      <LazyMotion features={domAnimation}>{children}</LazyMotion>
+    </MemoryRouter>
+  );
 }
 
 describe('ServiceStatus', () => {
   beforeEach(() => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({ status: 'ok', llmProvider: 'ollama', services: { postgres: true, redis: true, llm: true } }), {
+      new Response(JSON.stringify({ status: 'ok', llmProvider: 'LMStudio', services: { postgres: true, redis: true, llm: true } }), {
         headers: { 'Content-Type': 'application/json' },
       }),
     );
@@ -31,17 +36,16 @@ describe('ServiceStatus', () => {
     });
 
     // No alerts should be visible
-    expect(screen.queryByText('Ollama server is down')).not.toBeInTheDocument();
-    expect(screen.queryByText('LLM server is unreachable')).not.toBeInTheDocument();
+    expect(screen.queryByText(/LLM provider/)).not.toBeInTheDocument();
     expect(screen.queryByText('Redis is unavailable')).not.toBeInTheDocument();
   });
 
-  it('shows alert when Ollama is disconnected', async () => {
+  it('names the configured provider when the LLM is unreachable', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(
         JSON.stringify({
           status: 'degraded',
-          llmProvider: 'ollama',
+          llmProvider: 'LMStudio',
           services: { postgres: true, redis: true, llm: false },
         }),
         { headers: { 'Content-Type': 'application/json' } },
@@ -51,16 +55,18 @@ describe('ServiceStatus', () => {
     render(<ServiceStatus />, { wrapper: Wrapper });
 
     await waitFor(() => {
-      expect(screen.getByText('Ollama server is down')).toBeInTheDocument();
+      expect(screen.getByText('LLM provider "LMStudio" is unreachable')).toBeInTheDocument();
     });
+
+    const settingsLink = screen.getByRole('link', { name: 'Check LLM settings' });
+    expect(settingsLink).toHaveAttribute('href', '/settings/ai/models');
   });
 
-  it('shows provider-aware alert when OpenAI provider is disconnected', async () => {
+  it('falls back to a generic label when no provider name is reported', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(
         JSON.stringify({
           status: 'degraded',
-          llmProvider: 'openai',
           services: { postgres: true, redis: true, llm: false },
         }),
         { headers: { 'Content-Type': 'application/json' } },
@@ -70,9 +76,8 @@ describe('ServiceStatus', () => {
     render(<ServiceStatus />, { wrapper: Wrapper });
 
     await waitFor(() => {
-      expect(screen.getByText('LLM server is unreachable')).toBeInTheDocument();
+      expect(screen.getByText('LLM provider is unreachable')).toBeInTheDocument();
     });
-    expect(screen.queryByText('Ollama server is down')).not.toBeInTheDocument();
   });
 
   it('shows alert when Redis is disconnected', async () => {
@@ -80,7 +85,7 @@ describe('ServiceStatus', () => {
       new Response(
         JSON.stringify({
           status: 'degraded',
-          llmProvider: 'ollama',
+          llmProvider: 'LMStudio',
           services: { postgres: true, redis: false, llm: true },
         }),
         { headers: { 'Content-Type': 'application/json' } },
@@ -92,6 +97,10 @@ describe('ServiceStatus', () => {
     await waitFor(() => {
       expect(screen.getByText('Redis is unavailable')).toBeInTheDocument();
     });
+
+    // Unlike the LLM alert, the Redis alert has no settings page to link to —
+    // it must render without any link.
+    expect(screen.queryByRole('link')).not.toBeInTheDocument();
   });
 
   it('shows network error when fetch fails', async () => {
@@ -109,7 +118,7 @@ describe('ServiceStatus', () => {
       new Response(
         JSON.stringify({
           status: 'degraded',
-          llmProvider: 'ollama',
+          llmProvider: 'LMStudio',
           services: { postgres: true, redis: false, llm: false },
         }),
         { headers: { 'Content-Type': 'application/json' } },
@@ -119,7 +128,7 @@ describe('ServiceStatus', () => {
     render(<ServiceStatus />, { wrapper: Wrapper });
 
     await waitFor(() => {
-      expect(screen.getByText('Ollama server is down')).toBeInTheDocument();
+      expect(screen.getByText('LLM provider "LMStudio" is unreachable')).toBeInTheDocument();
       expect(screen.getByText('Redis is unavailable')).toBeInTheDocument();
     });
   });
@@ -129,7 +138,7 @@ describe('ServiceStatus', () => {
       new Response(
         JSON.stringify({
           status: 'degraded',
-          llmProvider: 'ollama',
+          llmProvider: 'LMStudio',
           services: { postgres: true, redis: true, llm: false },
         }),
         { headers: { 'Content-Type': 'application/json' } },
@@ -139,14 +148,14 @@ describe('ServiceStatus', () => {
     render(<ServiceStatus />, { wrapper: Wrapper });
 
     await waitFor(() => {
-      expect(screen.getByText('Ollama server is down')).toBeInTheDocument();
+      expect(screen.getByText('LLM provider "LMStudio" is unreachable')).toBeInTheDocument();
     });
 
-    const dismissBtn = screen.getByLabelText('Dismiss ollama alert');
+    const dismissBtn = screen.getByLabelText('Dismiss LLM provider alert');
     fireEvent.click(dismissBtn);
 
     await waitFor(() => {
-      expect(screen.queryByText('Ollama server is down')).not.toBeInTheDocument();
+      expect(screen.queryByText('LLM provider "LMStudio" is unreachable')).not.toBeInTheDocument();
     });
   });
 

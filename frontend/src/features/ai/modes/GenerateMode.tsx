@@ -7,8 +7,8 @@ import { useLocalSpaces } from '../../../shared/hooks/use-standalone';
 import { usePages, useCreatePage, type PageFilters } from '../../../shared/hooks/use-pages';
 import { useExtractPdf, type ExtractPdfResult } from '../../../shared/hooks/use-extract-pdf';
 import { apiFetch } from '../../../shared/lib/api';
+import { improveMarkdownToHtml } from '../../../shared/components/article/improve-markdown';
 import { toast } from 'sonner';
-import { marked } from 'marked';
 import { cn } from '../../../shared/lib/cn';
 
 /** Threshold above which the backend truncates PDF text for the LLM context window. */
@@ -22,13 +22,6 @@ const PDF_TEXT_TRUNCATION_THRESHOLD = 80_000;
 function extractTitleFromMarkdown(md: string): string {
   const match = md.match(/^#{1,3}\s+(.+)$/m);
   return match?.[1]?.trim() ?? '';
-}
-
-/** Convert markdown to HTML using marked (sync). */
-function markdownToHtml(md: string): string {
-  // marked.parse can return string | Promise<string>; with async: false (default) it's sync
-  const result = marked.parse(md, { async: false });
-  return typeof result === 'string' ? result : '';
 }
 
 /** Format bytes to human-readable size. */
@@ -369,7 +362,9 @@ export function GenerateSavePanel({
 
     setIsSaving(true);
     try {
-      const bodyHtml = markdownToHtml(generatedContent);
+      // #747: shared marked + DOMPurify helper — never send unsanitized
+      // LLM-derived HTML to POST /pages.
+      const bodyHtml = improveMarkdownToHtml(generatedContent);
       const result = await createPage.mutateAsync({
         spaceKey,
         title: title.trim(),
@@ -397,7 +392,7 @@ export function GenerateSavePanel({
     >
       <div className="flex items-center gap-2 text-sm font-medium text-primary">
         <FolderOpen size={16} />
-        Save Article
+        Save Page
       </div>
 
       <div className="space-y-3">
@@ -598,7 +593,7 @@ export function GenerateModeInput() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSubmit()}
-            placeholder={pdfData ? 'Instructions for generating from PDF...' : 'Describe the article to generate...'}
+            placeholder={pdfData ? 'Instructions for generating from PDF...' : 'Describe the page to generate...'}
             disabled={isStreaming}
             className="flex-1 bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
           />
@@ -616,5 +611,5 @@ export function GenerateModeInput() {
   );
 }
 
-export const GENERATE_EMPTY_TITLE = 'Describe the article you want to generate';
-export const GENERATE_EMPTY_SUBTITLE = 'AI will create a full article based on your prompt';
+export const GENERATE_EMPTY_TITLE = 'Describe the page you want to generate';
+export const GENERATE_EMPTY_SUBTITLE = 'AI will create a full page based on your prompt';

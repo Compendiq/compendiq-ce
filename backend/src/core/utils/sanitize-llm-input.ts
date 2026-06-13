@@ -3,42 +3,53 @@ import { logger } from './logger.js';
 /**
  * Configurable blocklist patterns for prompt injection detection.
  * Each entry has a regex pattern and a human-readable description.
+ *
+ * All patterns carry the `g` flag so every occurrence is neutralized, not
+ * just the first. Because `g`-flagged regexes are stateful via `lastIndex`,
+ * these shared instances must only be used with lastIndex-safe operations:
+ * `String.prototype.replace` (resets lastIndex when global) and
+ * `String.prototype.search` (saves and restores lastIndex). Never call
+ * `.test()` or `.exec()` on them.
  */
 const INJECTION_PATTERNS: Array<{ pattern: RegExp; description: string }> = [
   // System prompt manipulation
-  { pattern: /ignore\s+(all\s+)?previous\s+instructions/i, description: 'ignore previous instructions' },
-  { pattern: /ignore\s+(all\s+)?above\s+instructions/i, description: 'ignore above instructions' },
-  { pattern: /disregard\s+(all\s+)?previous/i, description: 'disregard previous' },
-  { pattern: /forget\s+(all\s+)?(your\s+)?instructions/i, description: 'forget instructions' },
-  { pattern: /forget\s+everything\s+(above|before)/i, description: 'forget everything above' },
-  { pattern: /override\s+(your\s+)?(system\s+)?instructions/i, description: 'override instructions' },
+  { pattern: /ignore\s+(all\s+)?previous\s+instructions/gi, description: 'ignore previous instructions' },
+  { pattern: /ignore\s+(all\s+)?above\s+instructions/gi, description: 'ignore above instructions' },
+  { pattern: /disregard\s+(all\s+)?previous/gi, description: 'disregard previous' },
+  { pattern: /forget\s+(all\s+)?(your\s+)?instructions/gi, description: 'forget instructions' },
+  { pattern: /forget\s+everything\s+(above|before)/gi, description: 'forget everything above' },
+  { pattern: /override\s+(your\s+)?(system\s+)?instructions/gi, description: 'override instructions' },
 
   // Role hijacking
-  { pattern: /you\s+are\s+now\s+(a|an|my)\b/i, description: 'role reassignment (you are now)' },
-  { pattern: /act\s+as\s+(a|an|if\s+you\s+are)\b/i, description: 'role reassignment (act as)' },
-  { pattern: /pretend\s+(you\s+are|to\s+be)\b/i, description: 'role reassignment (pretend)' },
-  { pattern: /from\s+now\s+on,?\s+you\s+(are|will)\b/i, description: 'role reassignment (from now on)' },
+  { pattern: /you\s+are\s+now\s+(a|an|my)\b/gi, description: 'role reassignment (you are now)' },
+  { pattern: /act\s+as\s+(a|an|if\s+you\s+are)\b/gi, description: 'role reassignment (act as)' },
+  { pattern: /pretend\s+(you\s+are|to\s+be)\b/gi, description: 'role reassignment (pretend)' },
+  { pattern: /from\s+now\s+on,?\s+you\s+(are|will)\b/gi, description: 'role reassignment (from now on)' },
 
   // System/assistant prompt markers
-  { pattern: /^system\s*:/im, description: 'system prompt marker' },
-  { pattern: /^assistant\s*:/im, description: 'assistant prompt marker' },
-  { pattern: /\[SYSTEM\]/i, description: '[SYSTEM] tag' },
-  { pattern: /\[INST\]/i, description: '[INST] tag' },
-  { pattern: /<<\s*SYS\s*>>/i, description: '<<SYS>> tag' },
-  { pattern: /<\|im_start\|>/i, description: 'ChatML start tag' },
-  { pattern: /<\|im_end\|>/i, description: 'ChatML end tag' },
+  { pattern: /^system\s*:/gim, description: 'system prompt marker' },
+  { pattern: /^assistant\s*:/gim, description: 'assistant prompt marker' },
+  { pattern: /\[SYSTEM\]/gi, description: '[SYSTEM] tag' },
+  { pattern: /\[INST\]/gi, description: '[INST] tag' },
+  { pattern: /<<\s*SYS\s*>>/gi, description: '<<SYS>> tag' },
+  { pattern: /<\|im_start\|>/gi, description: 'ChatML start tag' },
+  { pattern: /<\|im_end\|>/gi, description: 'ChatML end tag' },
 
   // Prompt leaking
-  { pattern: /repeat\s+(your\s+)?(system\s+)?(prompt|instructions)/i, description: 'prompt leaking attempt' },
-  { pattern: /show\s+(me\s+)?(your\s+)?(system\s+)?(prompt|instructions)/i, description: 'prompt leaking attempt' },
-  { pattern: /what\s+(are|were)\s+(your\s+)?(system\s+)?(prompt|instructions)/i, description: 'prompt leaking attempt' },
-  { pattern: /output\s+(your\s+)?(initial|system)\s+prompt/i, description: 'prompt leaking attempt' },
+  { pattern: /repeat\s+(your\s+)?(system\s+)?(prompt|instructions)/gi, description: 'prompt leaking attempt' },
+  { pattern: /show\s+(me\s+)?(your\s+)?(system\s+)?(prompt|instructions)/gi, description: 'prompt leaking attempt' },
+  { pattern: /what\s+(are|were)\s+(your\s+)?(system\s+)?(prompt|instructions)/gi, description: 'prompt leaking attempt' },
+  { pattern: /output\s+(your\s+)?(initial|system)\s+prompt/gi, description: 'prompt leaking attempt' },
 
   // Markdown/format injection for output manipulation
-  { pattern: /```\s*(system|assistant)\b/i, description: 'markdown code block injection' },
+  { pattern: /```\s*(system|assistant)\b/gi, description: 'markdown code block injection' },
 
-  // Delimiter injection
-  { pattern: /---+\s*\n\s*(system|new\s+instructions)/i, description: 'delimiter injection' },
+  // Delimiter injection. Whitespace runs are bounded: only horizontal
+  // whitespace ([^\S\n]) before the newline and at most 16 whitespace chars
+  // after it. The previous `\s*\n\s*` form had adjacent unbounded quantifiers
+  // that both match newlines, backtracking polynomially over a newline run
+  // (ReDoS: ~7.4s event-loop block on a 20KB adversarial input).
+  { pattern: /-{3,}[^\S\n]*\n\s{0,16}(system|new\s+instructions)/gi, description: 'delimiter injection' },
 ];
 
 interface SanitizeResult {
@@ -57,20 +68,28 @@ export function sanitizeLlmInput(input: string): SanitizeResult {
   const warnings: string[] = [];
   let sanitized = input;
 
-  // Check each pattern
+  // Check each pattern. A single global replace with a callback both detects
+  // and removes every occurrence in one pass (replace resets lastIndex on
+  // global regexes, so the shared pattern instances stay stateless).
   for (const { pattern, description } of INJECTION_PATTERNS) {
-    if (pattern.test(sanitized)) {
+    let matched = false;
+    sanitized = sanitized.replace(pattern, () => {
+      matched = true;
+      return '[FILTERED]';
+    });
+    if (matched) {
       warnings.push(`Detected prompt injection pattern: ${description}`);
-      // Remove the matched pattern
-      sanitized = sanitized.replace(pattern, '[FILTERED]');
     }
   }
 
   // Strip ChatML-like tags that could confuse model parsing
-  const chatMlTagPattern = /<\|[a-z_]+\|>/gi;
-  if (chatMlTagPattern.test(sanitized)) {
+  let chatMlMatched = false;
+  sanitized = sanitized.replace(/<\|[a-z_]+\|>/gi, () => {
+    chatMlMatched = true;
+    return '[FILTERED]';
+  });
+  if (chatMlMatched) {
     warnings.push('Detected ChatML-like tags');
-    sanitized = sanitized.replace(chatMlTagPattern, '[FILTERED]');
   }
 
   // Log warnings if any injection attempts detected
@@ -91,7 +110,12 @@ export function sanitizeLlmInput(input: string): SanitizeResult {
 /**
  * Quick check if input contains suspicious patterns without modifying it.
  * Useful for logging/monitoring.
+ *
+ * Uses String.prototype.search instead of RegExp.prototype.test because the
+ * shared patterns carry the `g` flag: `.test()` would advance `lastIndex`
+ * and make subsequent calls start mid-string, whereas `search` always
+ * matches from the start and restores `lastIndex` on exit.
  */
 export function detectInjectionAttempt(input: string): boolean {
-  return INJECTION_PATTERNS.some(({ pattern }) => pattern.test(input));
+  return INJECTION_PATTERNS.some(({ pattern }) => input.search(pattern) !== -1);
 }

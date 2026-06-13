@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import type { LlmProvider, LlmProviderInput } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
@@ -20,6 +20,18 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
   const [defaultModel, setDefaultModel] = useState(initial?.defaultModel ?? '');
   const [saving, setSaving] = useState(false);
   const canSave = name.trim().length > 0 && /^https?:\/\//.test(baseUrl);
+  const nameRef = useRef<HTMLInputElement>(null);
+
+  // Close on Escape and move focus into the dialog when it opens.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', onKey);
+    nameRef.current?.focus();
+    return () => document.removeEventListener('keydown', onKey);
+  }, [open, onClose]);
 
   if (!open) return null;
 
@@ -55,12 +67,25 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
   }
 
   return (
-    <div role="dialog" className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-      <div className="nm-card w-[480px] space-y-3 p-6">
-        <h2 className="text-lg font-semibold">{mode === 'create' ? 'Add provider' : 'Edit provider'}</h2>
+    <div
+      data-testid="provider-modal-backdrop"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="provider-modal-title"
+        className="nm-card w-[480px] space-y-3 p-6"
+      >
+        <h2 id="provider-modal-title" className="text-lg font-semibold">
+          {mode === 'create' ? 'Add provider' : 'Edit provider'}
+        </h2>
         <label className="block text-sm">
           Name
-          <input className="nm-input w-full" value={name} onChange={(e) => setName(e.target.value)} />
+          <input ref={nameRef} className="nm-input w-full" value={name} onChange={(e) => setName(e.target.value)} />
         </label>
         <label className="block text-sm">
           Base URL

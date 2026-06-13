@@ -88,15 +88,26 @@ vi.mock('../../core/services/rbac-service.js', () => ({
 }));
 
 const mockQueryFn = vi.fn();
+// Transaction client returned by getPool().connect() — since #766 the bulk
+// delete route finishes local cleanup in a BEGIN…COMMIT on a dedicated client.
+const mockTxQueryFn = vi.fn();
+const mockTxRelease = vi.fn();
 vi.mock('../../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mockQueryFn(...args),
-  getPool: vi.fn().mockReturnValue({}),
+  getPool: vi.fn().mockReturnValue({
+    connect: () =>
+      Promise.resolve({
+        query: (...args: unknown[]) => mockTxQueryFn(...args),
+        release: (...args: unknown[]) => mockTxRelease(...args),
+      }),
+  }),
   runMigrations: vi.fn(),
   closePool: vi.fn(),
 }));
 
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
 import { cleanPageAttachments } from '../../domains/confluence/services/attachment-handler.js';
+import { ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
 
 describe('Bulk Pages Routes (Parallelized)', () => {
   let app: ReturnType<typeof Fastify>;
@@ -152,6 +163,7 @@ describe('Bulk Pages Routes (Parallelized)', () => {
       ],
       rowCount: 2,
     });
+    mockTxQueryFn.mockResolvedValue({ rows: [], rowCount: 0 });
   });
 
   describe('POST /api/pages/bulk/delete', () => {
@@ -253,21 +265,23 @@ describe('Bulk Pages Routes (Parallelized)', () => {
 
       expect(response.statusCode).toBe(200);
 
-      // Verify pages DELETE uses ANY($1) (no user_id in shared table)
-      // and pinned_pages DELETE uses ANY($2) (user_id=$1, page_id=ANY($2))
-      const cachedPageDelete = mockQueryFn.mock.calls.find(
+      // Verify both batch DELETEs use ANY(…) and run inside the #766 cleanup
+      // transaction (dedicated client, BEGIN…COMMIT).
+      const cachedPageDelete = mockTxQueryFn.mock.calls.find(
         (call: unknown[]) => typeof call[0] === 'string' &&
           (call[0] as string).includes('DELETE FROM pages'),
       );
       expect(cachedPageDelete).toBeDefined();
-      expect(cachedPageDelete![0]).toContain('ANY($1)');
+      expect(cachedPageDelete![0]).toContain('ANY($1::int[])');
 
-      const pinnedDelete = mockQueryFn.mock.calls.find(
+      const pinnedDelete = mockTxQueryFn.mock.calls.find(
         (call: unknown[]) => typeof call[0] === 'string' &&
           (call[0] as string).includes('DELETE FROM pinned_pages'),
       );
       expect(pinnedDelete).toBeDefined();
-      expect(pinnedDelete![0]).toContain('page_id = ANY($2');
+      expect(pinnedDelete![0]).toContain('page_id = ANY($1::int[])');
+      expect(mockTxQueryFn).toHaveBeenCalledWith('BEGIN');
+      expect(mockTxQueryFn).toHaveBeenCalledWith('COMMIT');
     });
 
     it('should call cleanPageAttachments for each deleted page', async () => {
@@ -314,8 +328,8 @@ describe('Bulk Pages Routes (Parallelized)', () => {
       );
       expect(softDelete).toBeDefined();
 
-      // Confluence page should be hard-deleted
-      const hardDelete = mockQueryFn.mock.calls.find(
+      // Confluence page should be hard-deleted (inside the #766 cleanup transaction)
+      const hardDelete = mockTxQueryFn.mock.calls.find(
         (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('DELETE FROM pages'),
       );
       expect(hardDelete).toBeDefined();
@@ -352,6 +366,59 @@ describe('Bulk Pages Routes (Parallelized)', () => {
       expect(body.failed).toBe(1);
       expect(body.errors).toHaveLength(1);
       expect(body.errors[0]).toContain('Confluence error');
+
+      // #766: the delete intent recorded before the upstream calls is rolled
+      // back for the failed page (id 2) so it stays fully live locally.
+      const intentRestore = mockQueryFn.mock.calls.find(
+        (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('UPDATE pages SET deleted_at = NULL'),
+      );
+      expect(intentRestore).toBeDefined();
+      expect(intentRestore![1]).toEqual([[2]]);
+    });
+
+    it('treats a 404 Confluence rejection as success and removes the row locally (#706)', async () => {
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [
+          { id: 1, confluence_id: 'page-1', source: 'confluence' },
+          { id: 2, confluence_id: 'page-2', source: 'confluence' },
+        ],
+        rowCount: 2,
+      });
+
+      // page-1 deletes cleanly; page-2 is already gone in Confluence (404).
+      const client = {
+        deletePage: vi.fn().mockImplementation((id: string) =>
+          id === 'page-2'
+            ? Promise.reject(new ConfluenceError('Resource not found', 404))
+            : Promise.resolve(undefined),
+        ),
+        getPage: vi.fn(),
+        addLabels: vi.fn(),
+        removeLabel: vi.fn(),
+      };
+      (getClientForUser as ReturnType<typeof vi.fn>).mockResolvedValueOnce(client);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/delete',
+        payload: { ids: ['page-1', 'page-2'] },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      // Both count as succeeded — the 404 page's local cleanup runs too.
+      expect(body.succeeded).toBe(2);
+      expect(body.failed).toBe(0);
+      expect(body.errors).toHaveLength(0);
+
+      // The already-gone page is included in the batch row removal + attachment
+      // cleanup (the row delete runs inside the #766 cleanup transaction).
+      const pageDelete = mockTxQueryFn.mock.calls.find(
+        (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('DELETE FROM pages WHERE id = ANY'),
+      );
+      expect(pageDelete).toBeDefined();
+      expect(pageDelete![1]).toEqual([[1, 2]]);
+      expect(cleanPageAttachments).toHaveBeenCalledWith('test-user-id', 'page-2');
     });
   });
 

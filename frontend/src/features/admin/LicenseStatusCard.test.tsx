@@ -91,6 +91,26 @@ describe('LicenseStatusCard', () => {
     expect(screen.getByText('50')).toBeInTheDocument();
   });
 
+  it('renders the stats-grid expiry date formatted in UTC', async () => {
+    // '2027-12-31T23:59:59.999Z' is Jan 1 in east-of-UTC locales when
+    // formatted in local time — the card must format in UTC.
+    mockFetch({
+      edition: 'enterprise',
+      tier: 'enterprise',
+      seats: 50,
+      expiresAt: '2027-12-31T23:59:59.999Z',
+      features: ['oidc'],
+      valid: true,
+      canUpdate: true,
+    });
+
+    render(<LicenseStatusCard />, { wrapper: createWrapper() });
+
+    await screen.findByText('Enterprise Edition');
+    const utcDateText = new Date('2027-12-31T23:59:59.999Z').toLocaleDateString(undefined, { timeZone: 'UTC' });
+    expect(screen.getByText(utcDateText)).toBeInTheDocument();
+  });
+
   it('shows feature availability based on license', async () => {
     mockFetch({
       edition: 'enterprise',
@@ -196,6 +216,102 @@ describe('LicenseStatusCard', () => {
     const display = screen.getByTestId('license-key-display');
     expect(display.textContent).toContain('ATM-enterprise-50-20271231');
     expect(screen.getByTestId('license-key-clear-btn')).toBeInTheDocument();
+  });
+
+  it('surfaces expired state when stored key is invalid with past expiry', async () => {
+    // Real EE response shape: stored key expired → tier falls back to
+    // community but displayKey/expiresAt are still reported.
+    mockFetch({
+      edition: 'community',
+      tier: 'community',
+      seats: 10,
+      expiresAt: '2026-05-15T23:59:59.999Z',
+      features: [],
+      valid: false,
+      canUpdate: true,
+      displayKey: 'ATM-enterprise-10-20260515-CPQ6ddb3390.****',
+    });
+
+    render(<LicenseStatusCard />, { wrapper: createWrapper() });
+
+    await screen.findByText('Community Edition');
+
+    // Badge reads "Expired", not the misleading "Free"
+    expect(screen.getAllByText('Expired').length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByText('Free')).not.toBeInTheDocument();
+
+    // Banner explains the expiry with the locale-formatted date (UTC — the
+    // key string encodes a UTC date, so the display must not shift by TZ)
+    const expiredDateText = new Date('2026-05-15T23:59:59.999Z').toLocaleDateString(undefined, { timeZone: 'UTC' });
+    const banner = screen.getByTestId('license-expired-banner');
+    expect(banner.textContent).toContain('expired on');
+    expect(banner.textContent).toContain(expiredDateText);
+
+    // Stats grid stays visible despite the community fallback tier so the
+    // admin can see what the stored key granted (seats + expiry date).
+    expect(screen.getByText('Licensed Seats')).toBeInTheDocument();
+    expect(screen.getByText('10')).toBeInTheDocument();
+    // Date appears in both the banner and the stats grid
+    expect(screen.getAllByText(expiredDateText).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('surfaces invalid state when stored key is invalid but not expired', async () => {
+    mockFetch({
+      edition: 'community',
+      tier: 'community',
+      seats: 10,
+      expiresAt: '2099-12-31T23:59:59.999Z',
+      features: [],
+      valid: false,
+      canUpdate: true,
+      displayKey: 'ATM-enterprise-10-20991231-CPQ6ddb3390.****',
+    });
+
+    render(<LicenseStatusCard />, { wrapper: createWrapper() });
+
+    await screen.findByText('Community Edition');
+
+    expect(screen.getByText('Invalid')).toBeInTheDocument();
+    expect(screen.queryByText('Free')).not.toBeInTheDocument();
+
+    const banner = screen.getByTestId('license-expired-banner');
+    expect(banner.textContent).toContain('invalid');
+    expect(banner.textContent).not.toContain('expired on');
+  });
+
+  it('does not show invalid-key banner for a valid enterprise license', async () => {
+    mockFetch({
+      edition: 'enterprise',
+      tier: 'enterprise',
+      seats: 50,
+      expiresAt: '2027-12-31T23:59:59.999Z',
+      features: ['oidc'],
+      valid: true,
+      canUpdate: true,
+      displayKey: 'ATM-enterprise-50-20271231-CPQ1a2b3c4d.****',
+    });
+
+    render(<LicenseStatusCard />, { wrapper: createWrapper() });
+
+    await screen.findByText('Enterprise Edition');
+    expect(screen.getAllByText('Active').length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByTestId('license-expired-banner')).not.toBeInTheDocument();
+  });
+
+  it('shows Free badge and no banner for community with no stored key', async () => {
+    mockFetch({
+      edition: 'community',
+      tier: 'community',
+      features: [],
+      valid: false,
+      canUpdate: true,
+    });
+
+    render(<LicenseStatusCard />, { wrapper: createWrapper() });
+
+    await screen.findByText('Community Edition');
+    expect(screen.getByText('Free')).toBeInTheDocument();
+    expect(screen.queryByTestId('license-expired-banner')).not.toBeInTheDocument();
   });
 
   it('sends PUT /admin/license when Save is clicked', async () => {

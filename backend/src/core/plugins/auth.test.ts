@@ -13,6 +13,14 @@ import * as jose from 'jose';
 
 const JWT_SECRET = 'a-test-secret-that-is-at-least-32-chars-long!!';
 
+// Mock the logger so the 24h-clamp tests can assert the startup warning.
+// vi.resetModules() in afterEach re-runs this factory on the next import, so
+// each test sees a fresh mock instance — fetch it via dynamic import AFTER
+// importing auth.js to get the same instance auth.js wrote to.
+vi.mock('../utils/logger.js', () => ({
+  logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
+}));
+
 describe('generateAccessToken expiry', () => {
   const payload = { sub: 'user-1', username: 'testuser', role: 'user' as const };
 
@@ -78,5 +86,68 @@ describe('generateAccessToken expiry', () => {
     await expect(() => import('./auth.js')).rejects.toThrow(
       'Invalid ACCESS_TOKEN_EXPIRY format: "banana"',
     );
+  });
+
+  // #737: ACCESS_TOKEN_EXPIRY is the upper bound on how long a revoked /
+  // demoted account could keep API access if every faster invalidation
+  // layer failed. Values above 24h are CLAMPED to 24h with a loud startup
+  // warning (#756 review) — previously-valid configs like '48h' or '7d'
+  // must not turn into a hard boot failure on unattended upgrade. Only an
+  // invalid FORMAT still fails startup.
+  it('should accept the 24h boundary value without warning', async () => {
+    process.env.ACCESS_TOKEN_EXPIRY = '24h';
+    const { generateAccessToken } = await import('./auth.js');
+    const { logger } = await import('../utils/logger.js');
+
+    const now = Math.floor(Date.now() / 1000);
+    const token = await generateAccessToken(payload);
+    const secret = new TextEncoder().encode(JWT_SECRET);
+    const { payload: decoded } = await jose.jwtVerify(token, secret, { issuer: 'compendiq' });
+
+    const diff = (decoded.exp as number) - now;
+    expect(diff).toBeGreaterThanOrEqual(86395);
+    expect(diff).toBeLessThanOrEqual(86405);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('should clamp ACCESS_TOKEN_EXPIRY above 24h (999d) to 24h and log a warning instead of failing boot', async () => {
+    process.env.ACCESS_TOKEN_EXPIRY = '999d';
+    const { generateAccessToken } = await import('./auth.js');
+    const { logger } = await import('../utils/logger.js');
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ configured: '999d', effective: '24h' }),
+      expect.stringContaining('24h'),
+    );
+
+    const now = Math.floor(Date.now() / 1000);
+    const token = await generateAccessToken(payload);
+    const secret = new TextEncoder().encode(JWT_SECRET);
+    const { payload: decoded } = await jose.jwtVerify(token, secret, { issuer: 'compendiq' });
+
+    // Token is issued with the clamped 24h lifetime, not the configured 999d.
+    const diff = (decoded.exp as number) - now;
+    expect(diff).toBeGreaterThanOrEqual(86395);
+    expect(diff).toBeLessThanOrEqual(86405);
+  });
+
+  it('should clamp ACCESS_TOKEN_EXPIRY above 24h (25h) to 24h and log a warning instead of failing boot', async () => {
+    process.env.ACCESS_TOKEN_EXPIRY = '25h';
+    const { generateAccessToken } = await import('./auth.js');
+    const { logger } = await import('../utils/logger.js');
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ configured: '25h', effective: '24h' }),
+      expect.stringContaining('24h'),
+    );
+
+    const now = Math.floor(Date.now() / 1000);
+    const token = await generateAccessToken(payload);
+    const secret = new TextEncoder().encode(JWT_SECRET);
+    const { payload: decoded } = await jose.jwtVerify(token, secret, { issuer: 'compendiq' });
+
+    const diff = (decoded.exp as number) - now;
+    expect(diff).toBeGreaterThanOrEqual(86395);
+    expect(diff).toBeLessThanOrEqual(86405);
   });
 });

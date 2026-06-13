@@ -323,7 +323,7 @@ export function KnowledgeRequestsPage() {
                   <textarea
                     value={newDescription}
                     onChange={(e) => setNewDescription(e.target.value)}
-                    placeholder="Describe what the article should cover..."
+                    placeholder="Describe what the page should cover..."
                     rows={3}
                     className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary resize-none"
                     data-testid="request-description-input"
@@ -378,7 +378,7 @@ export function KnowledgeRequestsPage() {
               <div className="border-b border-border/50 px-5 py-4">
                 <h2 className="font-semibold">Fulfill Request</h2>
                 <p className="text-xs text-muted-foreground mt-1">
-                  Link an existing article to fulfill this request
+                  Link an existing page to fulfill this request
                 </p>
               </div>
               <div className="p-5">
@@ -407,7 +407,7 @@ export function KnowledgeRequestsPage() {
                   data-testid="submit-fulfill"
                 >
                   {fulfillMutation.isPending && <Loader2 size={14} className="animate-spin" />}
-                  Link Article
+                  Link Page
                 </button>
               </div>
             </div>

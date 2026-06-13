@@ -99,7 +99,7 @@ describe('GraphPage', () => {
     });
 
     // Should display node/edge counts
-    expect(screen.getByText(/2 articles, 1 connections/)).toBeInTheDocument();
+    expect(screen.getByText(/2 pages, 1 connections/)).toBeInTheDocument();
 
     // Should render ForceGraph2D
     expect(screen.getByTestId('mock-force-graph')).toBeInTheDocument();

@@ -31,16 +31,11 @@ export function LlmTab() {
     queryKey: ['llm-usecases'],
     queryFn: () => apiFetch('/admin/llm-usecases'),
   });
-  const { data: dims } = useQuery<{ dimensions: number }>({
-    queryKey: ['embedding-dimensions'],
-    queryFn: () => apiFetch('/admin/embedding/dimensions'),
-    // This endpoint may not exist in every deployment; on 404 fall back to
-    // the legacy 1024-dim default rather than blocking the tab.
-    retry: false,
-  });
-  // Runtime limits — only reads fields we own from the shared admin-settings
-  // document. Other fields (embedding, rate limits, AI safety) are managed
-  // elsewhere and are left untouched when we PUT.
+  // Shared admin-settings document (same ['admin-settings'] cache entry as
+  // EmbeddingTab). Read-only source for `embeddingDimensions` (current vector
+  // width shown in the re-embed banner) and `llmMaxConcurrentStreamsPerUser`.
+  // Other fields (rate limits, AI safety) are managed elsewhere and are left
+  // untouched when we PUT.
   const { data: adminSettings } = useQuery<AdminSettings>({
     queryKey: ['admin-settings'],
     queryFn: () => apiFetch('/admin/settings'),
@@ -145,7 +140,9 @@ export function LlmTab() {
       </div>
       <ProviderListSection />
       <EmbeddingReembedBanner
-        currentDimensions={dims?.dimensions ?? 1024}
+        // Legacy 1024-dim default while settings load or on older backends
+        // whose payload predates the field.
+        currentDimensions={adminSettings?.embeddingDimensions ?? 1024}
         pending={embeddingPending}
       />
       <UsecaseAssignmentsSection

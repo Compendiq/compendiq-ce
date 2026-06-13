@@ -119,9 +119,23 @@ export async function assembleSubPageContext(
   parentHtml: string,
   parentTitle: string,
   maxChars: number = MAX_COMBINED_CONTEXT_CHARS,
+  opts?: {
+    /**
+     * Emit #765 layout boundary tokens for the PARENT page conversion. The
+     * Improve route needs them: apply-time skeleton alignment runs against
+     * the parent page, so a token-free parent makes any Improve of a
+     * multi-cell layout page unrecoverable (guaranteed 422). Sub-page
+     * conversions NEVER opt in (#765 review: truncated sub-page token
+     * sequences could be echoed by the model into the parent's output —
+     * truncation only ever affects sub-pages, the parent always goes first).
+     */
+    parentLayoutTokens?: boolean;
+  },
 ): Promise<AssembledContext> {
   // Convert parent page to markdown
-  const parentMarkdown = htmlToMarkdown(parentHtml);
+  const parentMarkdown = opts?.parentLayoutTokens
+    ? htmlToMarkdown(parentHtml, { layoutTokens: true })
+    : htmlToMarkdown(parentHtml);
   const includedPages: string[] = [parentTitle];
   let wasTruncated = false;
 

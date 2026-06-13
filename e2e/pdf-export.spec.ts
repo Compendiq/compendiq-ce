@@ -81,7 +81,7 @@ test.describe('PDF export', () => {
     // The Export PDF button is in the article right pane (ArticleRightPane)
     // It may be in a collapsed sidebar; expand it if needed
     const expandBtn = page
-      .getByLabel('Expand article sidebar')
+      .getByLabel('Expand page sidebar')
       .or(page.getByTestId('article-right-pane-rail'));
 
     if (await expandBtn.waitFor({ state: 'visible', timeout: 3_000 }).then(() => true).catch(() => false)) {
@@ -167,7 +167,7 @@ test.describe('PDF export', () => {
 
     // Expand sidebar if collapsed
     const expandBtn = page
-      .getByLabel('Expand article sidebar')
+      .getByLabel('Expand page sidebar')
       .or(page.getByTestId('article-right-pane-rail'));
 
     if (await expandBtn.waitFor({ state: 'visible', timeout: 3_000 }).then(() => true).catch(() => false)) {

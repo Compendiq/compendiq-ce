@@ -51,6 +51,10 @@ vi.mock('../../shared/hooks/use-settings', () => ({
     },
     isLoading: false,
   }),
+  useUpdateSettings: () => ({
+    mutate: vi.fn(),
+    mutateAsync: vi.fn().mockResolvedValue({}),
+  }),
 }));
 
 // Stub api-fetch so lazy-loaded panels don't explode on mount in JSDOM.
@@ -186,12 +190,28 @@ describe('SettingsPanelRoute — gating via direct URL', () => {
     });
   });
 
-  it('bounces unknown /settings/foo/bar URLs to the default panel', async () => {
+  it('renders a not-found panel (no redirect) for unknown /settings/foo/bar URLs', async () => {
     renderLayoutAt('/settings/foo/bar');
+
+    expect(await screen.findByText("This settings page doesn't exist.")).toBeInTheDocument();
+
+    // Offers a way back to the first visible panel instead of silently bouncing.
+    const link = screen.getByRole('link', { name: 'Go to Settings' });
+    expect(link).toHaveAttribute('href', '/settings/personal/confluence');
+
+    // No redirect happened — the default panel is not marked active.
+    expect(screen.getByTestId('nav-settings-confluence')).not.toHaveAttribute('aria-current', 'page');
+  });
+
+  it('keeps the redirect for a registered item hidden from the user (admin-only, non-admin)', async () => {
+    // ai/models exists in the nav config but is admin-only — a non-admin must
+    // be bounced to the first visible panel, NOT shown the not-found panel.
+    renderLayoutAt('/settings/ai/models');
 
     await waitFor(() => {
       expect(screen.getByTestId('nav-settings-confluence')).toHaveAttribute('aria-current', 'page');
     });
+    expect(screen.queryByText("This settings page doesn't exist.")).not.toBeInTheDocument();
   });
 });
 
@@ -235,12 +255,10 @@ describe('SettingsPanelRoute — EE deep-link loading race', () => {
     });
   });
 
-  it('still bounces unknown URLs immediately even while license is loading', async () => {
+  it('renders the not-found panel immediately for unknown URLs even while license is loading', async () => {
     enterpriseState.isLoading = true;
     renderLayoutAt('/settings/foo/bar');
 
-    await waitFor(() => {
-      expect(screen.getByTestId('nav-settings-confluence')).toHaveAttribute('aria-current', 'page');
-    });
+    expect(await screen.findByText("This settings page doesn't exist.")).toBeInTheDocument();
   });
 });

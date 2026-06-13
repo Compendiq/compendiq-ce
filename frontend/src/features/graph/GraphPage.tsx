@@ -107,23 +107,30 @@ export function GraphPage() {
   // in the URL or the user clicking "Show full graph anyway" enables it.
   const [showFullGraph, setShowFullGraph] = useState<boolean>(initialShowFullGraph);
 
-  // Mirror filter state to URL (#360 shareable views).
+  // Mirror filter state to URL (#360 shareable views). Uses the functional
+  // setSearchParams updater so the effect never reads `searchParams` — that
+  // keeps the dependency list complete (no exhaustive-deps escape) and avoids
+  // the update→re-run loop that depending on `searchParams` would cause.
   useEffect(() => {
-    const next = new URLSearchParams(searchParams);
-    const sync = (key: string, value: string | undefined | null) => {
-      if (value === undefined || value === null || value === '') next.delete(key);
-      else next.set(key, value);
-    };
-    sync('edgeTypes', edgeTypes.length > 0 ? edgeTypes.join(',') : '');
-    sync('minScore', minScore !== undefined ? minScore.toString() : '');
-    sync('labels', labels.length > 0 ? labels.join(',') : '');
-    sync('full', showFullGraph ? '1' : '');
-    // #360 multi-select: encode the space filter as a comma-separated list
-    // so it round-trips through the URL the same way edgeTypes/labels do.
-    sync('space', filterSpaces.length > 0 ? filterSpaces.join(',') : '');
-    setSearchParams(next, { replace: true });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [edgeTypes, minScore, labels, showFullGraph, filterSpaces]);
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        const sync = (key: string, value: string | undefined | null) => {
+          if (value === undefined || value === null || value === '') next.delete(key);
+          else next.set(key, value);
+        };
+        sync('edgeTypes', edgeTypes.length > 0 ? edgeTypes.join(',') : '');
+        sync('minScore', minScore !== undefined ? minScore.toString() : '');
+        sync('labels', labels.length > 0 ? labels.join(',') : '');
+        sync('full', showFullGraph ? '1' : '');
+        // #360 multi-select: encode the space filter as a comma-separated list
+        // so it round-trips through the URL the same way edgeTypes/labels do.
+        sync('space', filterSpaces.length > 0 ? filterSpaces.join(',') : '');
+        return next;
+      },
+      { replace: true },
+    );
+  }, [edgeTypes, minScore, labels, showFullGraph, filterSpaces, setSearchParams]);
 
   const filters = useMemo<LocalGraphFilters>(() => ({
     edgeTypes: edgeTypes.length > 0 ? edgeTypes : undefined,
@@ -265,7 +272,7 @@ export function GraphPage() {
         const badgeFontSize = Math.max(9 / globalScale, 1.2);
         ctx.font = `${badgeFontSize}px Inter, system-ui, sans-serif`;
         ctx.fillStyle = 'rgba(255,255,255,0.7)';
-        ctx.fillText(`${node.articleCount} articles`, x, y + fontSize);
+        ctx.fillText(`${node.articleCount} pages`, x, y + fontSize);
         return;
       }
 
@@ -395,7 +402,7 @@ export function GraphPage() {
         <div>
           <h1 className="text-xl font-semibold">Knowledge Graph</h1>
           <p className="text-sm text-muted-foreground">
-            {data.nodes.length} {viewMode === 'clustered' ? 'clusters' : 'articles'}, {data.edges.length} connections
+            {data.nodes.length} {viewMode === 'clustered' ? 'clusters' : 'pages'}, {data.edges.length} connections
             {focusPageId && ' (local view)'}
             {filterSpaces.length > 0 && ` in ${filterSpaces.join(', ')}`}
           </p>
@@ -412,7 +419,7 @@ export function GraphPage() {
                 )}
                 aria-label="Individual view"
                 data-testid="graph-view-individual"
-                title="Individual articles"
+                title="Individual pages"
               >
                 <Grid3x3 size={16} />
               </button>
@@ -573,7 +580,7 @@ export function GraphPage() {
             </p>
             {isClusterNode(hoveredNode) ? (
               <p className="text-muted-foreground">
-                Articles: {hoveredNode.articleCount}
+                Pages: {hoveredNode.articleCount}
               </p>
             ) : (
               <>
@@ -631,10 +638,10 @@ function ArticlePickerLanding({ onPick, onShowFullGraph }: ArticlePickerLandingP
   return (
     <div className="flex h-full items-center justify-center p-6">
       <div className="nm-card w-full max-w-xl p-6" data-testid="graph-picker-landing">
-        <h2 className="mb-1 text-lg font-semibold">Pick an article to explore</h2>
+        <h2 className="mb-1 text-lg font-semibold">Pick a page to explore</h2>
         <p className="mb-4 text-sm text-muted-foreground">
-          The knowledge graph is large — start from one article and expand from
-          there. The default view shows that article and its closest neighbours.
+          The knowledge graph is large — start from one page and expand from
+          there. The default view shows that page and its closest neighbors.
         </p>
 
         <div className="relative mb-3">
@@ -644,7 +651,7 @@ function ArticlePickerLanding({ onPick, onShowFullGraph }: ArticlePickerLandingP
             type="text"
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Search articles by title…"
+            placeholder="Search pages by title…"
             className="w-full rounded-lg border border-border/40 bg-foreground/5 py-2 pl-9 pr-3 text-sm outline-none focus:ring-1 focus:ring-primary"
             data-testid="graph-picker-input"
           />
@@ -658,7 +665,7 @@ function ArticlePickerLanding({ onPick, onShowFullGraph }: ArticlePickerLandingP
           <p className="py-6 text-center text-xs text-muted-foreground">Searching…</p>
         ) : items.length === 0 ? (
           <p className="py-6 text-center text-xs text-muted-foreground" data-testid="graph-picker-no-results">
-            No articles match “{q}”.
+            No pages match “{q}”.
           </p>
         ) : (
           <ul role="listbox" aria-label="Search results" className="max-h-72 space-y-1 overflow-y-auto" data-testid="graph-picker-results">
@@ -837,7 +844,7 @@ export function GraphFilterSidebar({
           type="button"
           onClick={onClearFocus}
           className="rounded p-1 text-muted-foreground hover:bg-foreground/5"
-          title="Pick a different article"
+          title="Pick a different page"
           data-testid="graph-clear-focus-btn"
         >
           <X size={12} />

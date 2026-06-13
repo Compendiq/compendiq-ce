@@ -32,16 +32,24 @@ vi.mock('../../../core/utils/ssrf-guard.js', () => ({
 const mockConfluenceClientInstance: Record<string, ReturnType<typeof vi.fn>> = {
   getAllSpaces: vi.fn().mockResolvedValue([]),
   getAllPagesInSpace: vi.fn().mockResolvedValue([]),
+  getAllPageIds: vi.fn().mockResolvedValue(new Set<string>()),
   getModifiedPages: vi.fn().mockResolvedValue([]),
   getPage: vi.fn().mockResolvedValue({ id: '', title: '', body: { storage: { value: '' } }, version: { number: 1 }, metadata: { labels: { results: [] } }, ancestors: [] }),
   getPageAttachments: vi.fn().mockResolvedValue({ results: [] }),
 };
 
-vi.mock('./confluence-client.js', () => ({
-  ConfluenceClient: vi.fn(function (this: Record<string, ReturnType<typeof vi.fn>>) {
-    Object.assign(this, mockConfluenceClientInstance);
-  }),
-}));
+// Keep the real `ConfluenceError` so `instanceof` checks in the module under
+// test (the #706 404-confirmation branch) still work while `ConfluenceClient`
+// itself is stubbed.
+vi.mock('./confluence-client.js', async () => {
+  const actual = await vi.importActual<typeof import('./confluence-client.js')>('./confluence-client.js');
+  return {
+    ...actual,
+    ConfluenceClient: vi.fn(function (this: Record<string, ReturnType<typeof vi.fn>>) {
+      Object.assign(this, mockConfluenceClientInstance);
+    }),
+  };
+});
 
 vi.mock('../../../core/services/content-converter.js', () => ({
   confluenceToHtml: vi.fn().mockReturnValue('<p>test</p>'),
@@ -104,6 +112,7 @@ import { query } from '../../../core/db/postgres.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { cleanPageAttachments } from './attachment-handler.js';
 import { clearAttachmentFailures } from '../../../core/services/redis-cache.js';
+import { ConfluenceError } from './confluence-client.js';
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
@@ -337,26 +346,33 @@ describe('sync-service', () => {
     function setupSyncMocks(opts: {
       confluencePageIds: string[];
       dbPageIds: string[];
-      rbacUserCount?: number;
     }) {
-      const { confluencePageIds, dbPageIds, rbacUserCount = 1 } = opts;
+      const { confluencePageIds, dbPageIds } = opts;
+      const liveIds = new Set(confluencePageIds);
 
       // Configure the shared mock client instance
       mockConfluenceClientInstance.getAllSpaces.mockResolvedValue([{ key: 'TEST', name: 'Test Space', homepage: null }]);
       mockConfluenceClientInstance.getAllPagesInSpace.mockResolvedValue(
         confluencePageIds.map((id) => ({ id, title: `Page ${id}`, status: 'current' })),
       );
+      // Authoritative live-id listing used by deletion reconciliation (#706).
+      mockConfluenceClientInstance.getAllPageIds.mockResolvedValue(liveIds);
       mockConfluenceClientInstance.getModifiedPages.mockResolvedValue([]);
-      mockConfluenceClientInstance.getPage.mockImplementation((id: string) =>
-        Promise.resolve({
+      // Per-candidate confirmation fetch: a page absent from the live listing is
+      // confirmed gone with a 404; live pages resolve normally.
+      mockConfluenceClientInstance.getPage.mockImplementation((id: string) => {
+        if (!liveIds.has(id)) {
+          return Promise.reject(new ConfluenceError('Resource not found', 404));
+        }
+        return Promise.resolve({
           id,
           title: `Page ${id}`,
           body: { storage: { value: '<p>content</p>' } },
           version: { number: 1, when: '2025-01-01T00:00:00Z', by: { displayName: 'Author' } },
           metadata: { labels: { results: [] } },
           ancestors: [],
-        }),
-      );
+        });
+      });
       mockConfluenceClientInstance.getPageAttachments.mockResolvedValue({ results: [] });
 
       // Mock RBAC spaces
@@ -393,14 +409,6 @@ describe('sync-service', () => {
         // syncPage: upsert page
         if (sqlStr.includes('INSERT INTO pages')) {
           return emptyResult as QueryResult;
-        }
-
-        // detectDeletedPages: RBAC user count
-        if (sqlStr.includes('COUNT(DISTINCT principal_id)')) {
-          return {
-            rows: [{ count: String(rbacUserCount) }],
-            rowCount: 1, command: '', oid: 0, fields: [],
-          } as QueryResult;
         }
 
         // detectDeletedPages: existing pages in DB
@@ -489,14 +497,39 @@ describe('sync-service', () => {
 
       expect(vi.mocked(cleanPageAttachments)).toHaveBeenCalledWith('', 'page-orphan');
     });
+
+    it('skips reconciliation when another run already claimed the space this cycle (#706 dedupe)', async () => {
+      setupSyncMocks({
+        confluencePageIds: [],
+        dbPageIds: ['page-orphan'],
+      });
+      mockRedisGet.mockResolvedValue(null);
+      // The per-space dedupe key (sync:reconcile:*) is already held → claim lost.
+      // The unrelated worker-lock SET still succeeds so the sync run proceeds.
+      mockRedisSet.mockImplementation((key: string) =>
+        Promise.resolve(typeof key === 'string' && key.startsWith('sync:reconcile:') ? null : 'OK'),
+      );
+
+      await syncUser('user-1');
+
+      // No confirmation fetch and no soft-delete — reconciliation was deduped.
+      expect(mockConfluenceClientInstance.getAllPageIds).not.toHaveBeenCalled();
+      const softDeleteCall = vi.mocked(query).mock.calls.find(
+        (call) => typeof call[0] === 'string' && call[0].includes('UPDATE pages SET deleted_at = NOW()'),
+      );
+      expect(softDeleteCall).toBeUndefined();
+    });
   });
 
   describe('purgeDeletedPages', () => {
-    it('runs DELETE for pages with deleted_at older than 30 days', async () => {
+    it('runs DELETE for confirmed-gone pages with deleted_at older than 30 days', async () => {
       // Configure the shared mock client instance for a minimal sync
       mockConfluenceClientInstance.getAllSpaces.mockResolvedValue([{ key: 'TEST', name: 'Test Space', homepage: null }]);
       mockConfluenceClientInstance.getAllPagesInSpace.mockResolvedValue([]);
       mockConfluenceClientInstance.getModifiedPages.mockResolvedValue([]);
+      // Purge re-confirms each candidate is still gone upstream before the
+      // irreversible local delete (#766 review) — answer 404 (genuinely gone).
+      mockConfluenceClientInstance.getPage.mockRejectedValue(new ConfluenceError('Resource not found', 404));
 
       vi.mocked(getUserAccessibleSpaces).mockResolvedValue(['TEST']);
       mockRedisSet.mockResolvedValue('OK');
@@ -519,17 +552,27 @@ describe('sync-service', () => {
         if (sqlStr.includes('COUNT(DISTINCT principal_id)')) {
           return { rows: [{ count: '1' }], rowCount: 1, command: '', oid: 0, fields: [] } as QueryResult;
         }
+        // purgeDeletedPages: candidate SELECT (>30-day soft-deleted rows)
+        if (sqlStr.includes('SELECT id, confluence_id FROM pages') && sqlStr.includes('deleted_at <')) {
+          return {
+            rows: [{ id: 11, confluence_id: 'purged-1' }],
+            rowCount: 1, command: '', oid: 0, fields: [],
+          } as QueryResult;
+        }
         if (sqlStr.includes('SELECT confluence_id FROM pages')) {
           return emptyResult as QueryResult;
         }
         if (sqlStr.includes('DELETE FROM pages') && sqlStr.includes('deleted_at <')) {
-          return { rows: [], rowCount: 0, command: 'DELETE', oid: 0, fields: [] } as QueryResult;
+          return { rows: [{ confluence_id: 'purged-1' }], rowCount: 1, command: 'DELETE', oid: 0, fields: [] } as QueryResult;
         }
         if (sqlStr.includes('UPDATE spaces SET last_synced')) return emptyResult as QueryResult;
         return emptyResult as QueryResult;
       });
 
       await syncUser('user-1');
+
+      // The candidate was re-confirmed gone upstream before the DELETE.
+      expect(mockConfluenceClientInstance.getPage).toHaveBeenCalledWith('purged-1');
 
       const queryCalls = vi.mocked(query).mock.calls;
       const purgeCall = queryCalls.find(
@@ -538,13 +581,15 @@ describe('sync-service', () => {
           && call[0].includes("deleted_at < NOW() - INTERVAL '30 days'"),
       );
       expect(purgeCall).toBeDefined();
-      expect(purgeCall![1]).toEqual(['TEST']);
+      expect(purgeCall![1]).toEqual([[11]]);
     });
 
     it('calls cleanPageAttachments and clearPageFailures for each purged page', async () => {
       mockConfluenceClientInstance.getAllSpaces.mockResolvedValue([{ key: 'TEST', name: 'Test Space', homepage: null }]);
       mockConfluenceClientInstance.getAllPagesInSpace.mockResolvedValue([]);
       mockConfluenceClientInstance.getModifiedPages.mockResolvedValue([]);
+      // Both candidates confirm gone upstream (404) so both are purged.
+      mockConfluenceClientInstance.getPage.mockRejectedValue(new ConfluenceError('Resource not found', 404));
 
       vi.mocked(getUserAccessibleSpaces).mockResolvedValue(['TEST']);
       mockRedisSet.mockResolvedValue('OK');
@@ -566,6 +611,13 @@ describe('sync-service', () => {
         }
         if (sqlStr.includes('COUNT(DISTINCT principal_id)')) {
           return { rows: [{ count: '1' }], rowCount: 1, command: '', oid: 0, fields: [] } as QueryResult;
+        }
+        // purgeDeletedPages: candidate SELECT (>30-day soft-deleted rows)
+        if (sqlStr.includes('SELECT id, confluence_id FROM pages') && sqlStr.includes('deleted_at <')) {
+          return {
+            rows: [{ id: 21, confluence_id: 'purged-1' }, { id: 22, confluence_id: 'purged-2' }],
+            rowCount: 2, command: '', oid: 0, fields: [],
+          } as QueryResult;
         }
         if (sqlStr.includes('SELECT confluence_id FROM pages')) {
           return emptyResult as QueryResult;

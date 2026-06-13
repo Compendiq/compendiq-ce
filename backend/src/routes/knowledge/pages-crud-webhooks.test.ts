@@ -61,9 +61,18 @@ vi.mock('../../core/services/webhook-emit-hook.js', () => ({
 }));
 
 const mockQueryFn = vi.fn();
+// Transaction client returned by getPool().connect() — since #766 the delete
+// route finishes local cleanup in a BEGIN…COMMIT on a dedicated client.
+const mockTxQueryFn = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 });
 vi.mock('../../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mockQueryFn(...args),
-  getPool: vi.fn().mockReturnValue({}),
+  getPool: vi.fn().mockReturnValue({
+    connect: () =>
+      Promise.resolve({
+        query: (...args: unknown[]) => mockTxQueryFn(...args),
+        release: vi.fn(),
+      }),
+  }),
   runMigrations: vi.fn(),
   closePool: vi.fn(),
 }));

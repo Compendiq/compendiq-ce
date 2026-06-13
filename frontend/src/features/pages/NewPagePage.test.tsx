@@ -217,6 +217,53 @@ describe('NewPagePage', () => {
     });
   });
 
+  it('explains the disabled Create Page button via a hover hint', () => {
+    render(<NewPagePage />, { wrapper: createWrapper() });
+    const createBtn = screen.getByText('Create Page').closest('button')!;
+    expect(createBtn).toBeDisabled();
+    // nm-button-primary sets pointer-events:none on :disabled, which swallows
+    // a title tooltip placed on the button itself — the wrapping span carries it.
+    const hintCarrier = createBtn.closest('[title]');
+    expect(hintCarrier).not.toBeNull();
+    expect(hintCarrier).toHaveAttribute('title', 'Enter a title and select a space first');
+  });
+
+  it('drops the hover hint once the Create Page button is enabled', async () => {
+    render(<NewPagePage />, { wrapper: createWrapper() });
+    fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'My Page' } });
+    fireEvent.change(screen.getByTestId('space-selector'), { target: { value: '__local__' } });
+    await waitFor(() => {
+      expect(screen.getByText('Create Page').closest('button')).not.toBeDisabled();
+    });
+    expect(screen.getByText('Create Page').closest('[title]')).toBeNull();
+  });
+
+  it('shows the disabled-create hint as visible text wired via aria-describedby', () => {
+    // A title tooltip is mouse-only — keyboard, touch and screen-reader users
+    // need the explanation too, so it must exist as real text in the DOM and
+    // be linked to the button for assistive tech.
+    render(<NewPagePage />, { wrapper: createWrapper() });
+    const createBtn = screen.getByText('Create Page').closest('button')!;
+    expect(createBtn).toBeDisabled();
+
+    const hint = screen.getByText('Enter a title and select a space first', {
+      selector: '#create-page-hint',
+    });
+    expect(hint).toBeInTheDocument();
+    expect(createBtn).toHaveAttribute('aria-describedby', 'create-page-hint');
+  });
+
+  it('removes the visible hint once the Create Page button is enabled', async () => {
+    render(<NewPagePage />, { wrapper: createWrapper() });
+    fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'My Page' } });
+    fireEvent.change(screen.getByTestId('space-selector'), { target: { value: '__local__' } });
+    await waitFor(() => {
+      expect(screen.getByText('Create Page').closest('button')).not.toBeDisabled();
+    });
+    expect(document.querySelector('#create-page-hint')).toBeNull();
+    expect(screen.getByText('Create Page').closest('button')).not.toHaveAttribute('aria-describedby');
+  });
+
   it('submit uses the selected local spaceKey (not hardcoded __local__)', async () => {
     mockCreateMutateAsync.mockResolvedValueOnce({ id: 'new-page-id', title: 'My Notes Page', version: 1 });
 

@@ -14,6 +14,8 @@ interface StreamingContentHandle {
   isActive: boolean;
   /** Append a chunk of text. Batches updates via requestAnimationFrame + throttle. */
   append: (chunk: string) => void;
+  /** Replace the whole buffer (e.g. server-side output post-processing). Batched like append. */
+  replace: (content: string) => void;
   /** Get the current full accumulated content (reads from the ref, not state). */
   getContent: () => string;
   /** Reset the buffer and display content for a new stream. */
@@ -93,6 +95,11 @@ export function useStreamingContent(): StreamingContentHandle {
     scheduleFlush();
   }, [scheduleFlush]);
 
+  const replace = useCallback((content: string) => {
+    bufferRef.current = content;
+    scheduleFlush();
+  }, [scheduleFlush]);
+
   const getContent = useCallback(() => bufferRef.current, []);
 
   const start = useCallback(() => {
@@ -119,5 +126,5 @@ export function useStreamingContent(): StreamingContentHandle {
     };
   }, [cancelPending]);
 
-  return { displayContent, isActive, append, getContent, start, finish };
+  return { displayContent, isActive, append, replace, getContent, start, finish };
 }

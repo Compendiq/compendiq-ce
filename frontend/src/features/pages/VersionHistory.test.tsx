@@ -1,13 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { VersionHistory } from './VersionHistory';
 import { useAuthStore } from '../../stores/auth-store';
 
-function createWrapper() {
-  const queryClient = new QueryClient({
+function createWrapper(externalQueryClient?: QueryClient) {
+  const queryClient = externalQueryClient ?? new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
   return function Wrapper({ children }: { children: React.ReactNode }) {
@@ -30,19 +30,28 @@ function mockVersionsResponse() {
         {
           versionNumber: 3,
           title: 'Page v3',
+          editedAt: '2026-03-05T10:00:00Z',
           syncedAt: '2026-03-05T10:00:00Z',
+          author: null,
+          message: null,
           isCurrent: true,
         },
         {
           versionNumber: 2,
           title: 'Page v2',
+          editedAt: '2026-03-04T10:00:00Z',
           syncedAt: '2026-03-04T10:00:00Z',
+          author: 'alice',
+          message: 'Updated intro',
           isCurrent: false,
         },
         {
           versionNumber: 1,
           title: 'Page v1',
+          editedAt: null,
           syncedAt: '2026-03-03T10:00:00Z',
+          author: null,
+          message: null,
           isCurrent: false,
         },
       ],
@@ -147,6 +156,181 @@ describe('VersionHistory', () => {
     });
   });
 
+  it('empty-state copy describes lazy-on-open import, not sync (#763 regression)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({ versions: [], pageId: 'page-1' }),
+        { headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    render(
+      <VersionHistory pageId="page-1" model="qwen3.5" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+
+    await waitFor(() => {
+      expect(screen.getByText(/No version history available/)).toBeInTheDocument();
+    });
+    // The stale post-#728 copy must be gone — backfill is lazy-on-open, syncing cannot help.
+    expect(screen.queryByText(/saved during sync/i)).not.toBeInTheDocument();
+    // The new copy explains the lazy import and the PAT requirement.
+    expect(screen.getByText(/imported\s+from Confluence when this dialog opens/i)).toBeInTheDocument();
+    expect(screen.getByText(/Confluence PAT/i)).toBeInTheDocument();
+  });
+
+  it('renders the error branch (with reason + retry) instead of the empty state on a failed request (#763)', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ message: 'Access denied to this space' }), {
+          status: 403,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+      .mockResolvedValue(mockVersionsResponse());
+
+    render(
+      <VersionHistory pageId="page-1" model="qwen3.5" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+
+    await waitFor(() => {
+      expect(screen.getByText('Failed to load version history.')).toBeInTheDocument();
+    });
+    // The backend reason is surfaced, and the error is NOT masked as "no data".
+    expect(screen.getByText(/Access denied to this space \(HTTP 403\)/)).toBeInTheDocument();
+    expect(screen.queryByText(/No version history available/)).not.toBeInTheDocument();
+
+    // Retry refetches and renders the list.
+    fireEvent.click(screen.getByText('Retry'));
+    await waitFor(() => {
+      expect(screen.getByText('v3')).toBeInTheDocument();
+    });
+    expect(fetchSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('keeps the loaded list and shows an inline notice when a background refetch fails (#763 review follow-up)', async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(mockVersionsResponse())
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ message: 'upstream hiccup' }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+      .mockResolvedValue(mockVersionsResponse());
+
+    render(
+      <VersionHistory pageId="page-1" model="qwen3.5" />,
+      { wrapper: createWrapper(queryClient) },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+    await waitFor(() => expect(screen.getByText('v3')).toBeInTheDocument());
+
+    // Simulate a background refetch that fails — same path as the
+    // invalidateQueries after a restore or a window-focus refetch.
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ['pages', 'page-1', 'versions'], exact: true });
+    });
+
+    // The observer notifies asynchronously after refetchQueries resolves.
+    await waitFor(() => {
+      expect(screen.getByText(/Could not refresh version history/)).toBeInTheDocument();
+    });
+    // The loaded list survives; the full-panel error does NOT replace it.
+    expect(screen.getByText('v3')).toBeInTheDocument();
+    expect(screen.queryByText('Failed to load version history.')).not.toBeInTheDocument();
+
+    // The inline Retry recovers and clears the notice.
+    fireEvent.click(screen.getByText('Retry'));
+    await waitFor(() => {
+      expect(screen.queryByText(/Could not refresh version history/)).not.toBeInTheDocument();
+    });
+    expect(screen.getByText('v3')).toBeInTheDocument();
+  });
+
+  it('shows the no-credentials hint alongside the list when backfillStatus is skipped_no_credentials (#763)', async () => {
+    const base = JSON.parse(await mockVersionsResponse().text());
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({ ...base, backfillStatus: 'skipped_no_credentials' }),
+        { headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    render(
+      <VersionHistory pageId="page-1" model="qwen3.5" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+
+    await waitFor(() => {
+      expect(screen.getByText('v3')).toBeInTheDocument();
+    });
+    // The list still renders, with a hint pointing the user at Settings → Confluence.
+    expect(screen.getByText(/no Confluence credentials/i)).toBeInTheDocument();
+    expect(screen.getByText(/Settings → Confluence/)).toBeInTheDocument();
+  });
+
+  it('prefers the server-provided backfillDetail and shows a failed-import hint (#763)', async () => {
+    const base = JSON.parse(await mockVersionsResponse().text());
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ...base,
+          backfillStatus: 'failed',
+          backfillDetail: 'Importing historical versions from Confluence failed — the list below may be incomplete.',
+        }),
+        { headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    render(
+      <VersionHistory pageId="page-1" model="qwen3.5" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+
+    await waitFor(() => {
+      expect(screen.getByText('v3')).toBeInTheDocument();
+    });
+    expect(screen.getByText(/may be incomplete/i)).toBeInTheDocument();
+  });
+
+  it('shows no backfill hint when backfillStatus is ok (#763)', async () => {
+    const base = JSON.parse(await mockVersionsResponse().text());
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({ ...base, backfillStatus: 'ok' }),
+        { headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    render(
+      <VersionHistory pageId="page-1" model="qwen3.5" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+
+    await waitFor(() => {
+      expect(screen.getByText('v3')).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/could not be imported/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/may be incomplete/i)).not.toBeInTheDocument();
+  });
+
   it('shows loading state in dialog', async () => {
     vi.spyOn(globalThis, 'fetch').mockReturnValue(
       new Promise(() => {}),
@@ -161,6 +345,175 @@ describe('VersionHistory', () => {
 
     await waitFor(() => {
       expect(screen.getByText('Loading versions...')).toBeInTheDocument();
+    });
+  });
+
+  it('renders a custom trigger via renderTrigger and reflects open state', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockVersionsResponse());
+
+    render(
+      <VersionHistory
+        pageId="page-1"
+        model="qwen3.5"
+        renderTrigger={(open) => (
+          <button>{open ? 'History open' : 'Open history'}</button>
+        )}
+      />,
+      { wrapper: createWrapper() },
+    );
+
+    // Default trigger text must NOT be present when a custom trigger is supplied
+    expect(screen.queryByTitle('Version history')).not.toBeInTheDocument();
+    const trigger = screen.getByText('Open history');
+    expect(trigger).toBeInTheDocument();
+
+    fireEvent.click(trigger);
+    await waitFor(() => {
+      expect(screen.getByText('History open')).toBeInTheDocument();
+    });
+  });
+
+  it('shows a Restore action on older versions but not the current one', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockVersionsResponse());
+
+    render(
+      <VersionHistory pageId="page-1" model="qwen3.5" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+
+    await waitFor(() => {
+      expect(screen.getByText('v3')).toBeInTheDocument();
+    });
+
+    // 3 versions; current (v3) has no restore → 2 restore buttons.
+    const restoreButtons = screen.getAllByTitle('Restore this version');
+    expect(restoreButtons).toHaveLength(2);
+  });
+
+  it('restores a version through the ConfirmDialog: POSTs to the restore endpoint with the current version guard', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/restore')) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              id: 1,
+              title: 'Page v2',
+              version: 4,
+              restoredFrom: 2,
+              source: 'confluence',
+              pushedToConfluence: true,
+            }),
+            { headers: { 'Content-Type': 'application/json' } },
+          ),
+        );
+      }
+      return Promise.resolve(mockVersionsResponse());
+    });
+
+    render(
+      <VersionHistory pageId="page-1" model="qwen3.5" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+    await waitFor(() => expect(screen.getByText('v2')).toBeInTheDocument());
+
+    // Restore buttons are ordered top→bottom: v2 then v1 (v3 is current).
+    const restoreButtons = screen.getAllByTitle('Restore this version');
+    fireEvent.click(restoreButtons[0]!);
+
+    // ConfirmDialog replaces native confirm(). The copy must reflect the
+    // backend reality (pages-versions.ts): Confluence-style non-destructive
+    // restore — current content is replaced but stays in version history.
+    expect(await screen.findByText('Restore v2?')).toBeInTheDocument();
+    expect(screen.getByText(/saved as a new version/i)).toBeInTheDocument();
+    expect(screen.getByText(/stays in version history/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
+
+    await waitFor(() => {
+      const restoreCall = fetchSpy.mock.calls.find(
+        ([input]) => (typeof input === 'string' ? input : String(input)).includes('/restore'),
+      );
+      expect(restoreCall).toBeDefined();
+      const [url, options] = restoreCall as [string, RequestInit];
+      expect(url).toContain('/pages/page-1/versions/2/restore');
+      expect(options.method).toBe('POST');
+      // Optimistic guard: the current live version (3) is sent.
+      expect(JSON.parse(options.body as string)).toEqual({ version: 3 });
+    });
+  });
+
+  it('does not POST when the restore dialog is cancelled, and keeps the history dialog open', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockVersionsResponse());
+
+    render(
+      <VersionHistory pageId="page-1" model="qwen3.5" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+    await waitFor(() => expect(screen.getByText('v2')).toBeInTheDocument());
+
+    fireEvent.click(screen.getAllByTitle('Restore this version')[0]!);
+    await screen.findByTestId('confirm-dialog');
+
+    fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
+    });
+    // The outer Version History dialog must survive the nested cancel.
+    expect(screen.getByText('Version History')).toBeInTheDocument();
+
+    const restoreCall = fetchSpy.mock.calls.find(
+      ([input]) => (typeof input === 'string' ? input : String(input)).includes('/restore'),
+    );
+    expect(restoreCall).toBeUndefined();
+  });
+
+  it('requests a semantic diff without a model prop (server resolves the use-case)', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/semantic-diff')) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ diff: 'Section A changed.', v1: 1, v2: 2, pageId: 'page-1' }),
+            { headers: { 'Content-Type': 'application/json' } },
+          ),
+        );
+      }
+      return Promise.resolve(mockVersionsResponse());
+    });
+
+    // No `model` prop — matches how ArticleRightPane renders VersionHistory.
+    render(
+      <VersionHistory pageId="page-1" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+    await waitFor(() => expect(screen.getByText('v2')).toBeInTheDocument());
+
+    // Sparkles = AI semantic diff (present on non-oldest versions).
+    fireEvent.click(screen.getAllByTitle('AI semantic diff with previous version')[0]!);
+
+    await waitFor(() => {
+      const diffCall = fetchSpy.mock.calls.find(
+        ([input]) => (typeof input === 'string' ? input : String(input)).includes('/semantic-diff'),
+      );
+      expect(diffCall).toBeDefined();
+      const [, options] = diffCall as [string, RequestInit];
+      expect(options.method).toBe('POST');
+      const body = JSON.parse(options.body as string);
+      // v1/v2 are sent; model is undefined (omitted from JSON) so the backend
+      // resolves the chat use-case instead of forcing a hardcoded model.
+      expect(body.v1).toBeGreaterThan(0);
+      expect(body.v2).toBeGreaterThan(0);
+      expect(body.model).toBeUndefined();
     });
   });
 
@@ -185,6 +538,54 @@ describe('VersionHistory', () => {
 
     await waitFor(() => {
       expect(screen.queryByText('Version History')).not.toBeInTheDocument();
+    });
+  });
+
+  it('shows author name for versions with Confluence edit metadata (#722)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockVersionsResponse());
+
+    render(
+      <VersionHistory pageId="page-1" model="qwen3.5" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+
+    await waitFor(() => {
+      // v2 has author 'alice' in the mock
+      expect(screen.getByText('alice')).toBeInTheDocument();
+    });
+  });
+
+  it('shows commit message for versions with Confluence edit metadata (#722)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockVersionsResponse());
+
+    render(
+      <VersionHistory pageId="page-1" model="qwen3.5" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+
+    await waitFor(() => {
+      // v2 has message 'Updated intro' in the mock
+      expect(screen.getByText(/Updated intro/)).toBeInTheDocument();
+    });
+  });
+
+  it('shows Synced prefix for rows without editedAt (#724)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockVersionsResponse());
+
+    render(
+      <VersionHistory pageId="page-1" model="qwen3.5" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+
+    await waitFor(() => {
+      // v1 has editedAt:null, syncedAt:'2026-03-03T10:00:00Z' → shows "Synced ..."
+      expect(screen.getByText(/Synced/)).toBeInTheDocument();
     });
   });
 });

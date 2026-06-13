@@ -5,6 +5,10 @@ import sensible from '@fastify/sensible';
 const mockQuery = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 });
 const mockGetUserAccessibleSpaces = vi.fn().mockResolvedValue([]);
 const mockUserHasPermission = vi.fn().mockResolvedValue(false);
+const mockIsSystemAdmin = vi.fn().mockResolvedValue(true);
+const mockInvalidateRbacCache = vi.fn().mockResolvedValue(undefined);
+const mockUnsyncSpace = vi.fn().mockResolvedValue({ pagesDeleted: 0 });
+const mockLogAuditEvent = vi.fn().mockResolvedValue(undefined);
 
 vi.mock('../../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mockQuery(...args),
@@ -13,14 +17,21 @@ vi.mock('../../core/db/postgres.js', () => ({
 vi.mock('../../core/services/rbac-service.js', () => ({
   getUserAccessibleSpaces: (...args: unknown[]) => mockGetUserAccessibleSpaces(...args),
   userHasPermission: (...args: unknown[]) => mockUserHasPermission(...args),
+  isSystemAdmin: (...args: unknown[]) => mockIsSystemAdmin(...args),
+  invalidateRbacCache: (...args: unknown[]) => mockInvalidateRbacCache(...args),
 }));
 
 vi.mock('../../domains/confluence/services/sync-service.js', () => ({
   getClientForUser: vi.fn(),
+  unsyncSpace: (...args: unknown[]) => mockUnsyncSpace(...args),
 }));
 
 vi.mock('../../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
+}));
+
+vi.mock('../../core/services/audit-service.js', () => ({
+  logAuditEvent: (...args: unknown[]) => mockLogAuditEvent(...args),
 }));
 
 import { spacesRoutes } from './spaces.js';
@@ -65,6 +76,10 @@ describe('Spaces routes', () => {
     mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
     mockGetUserAccessibleSpaces.mockResolvedValue([]);
     mockUserHasPermission.mockResolvedValue(false);
+    mockIsSystemAdmin.mockResolvedValue(true);
+    mockInvalidateRbacCache.mockResolvedValue(undefined);
+    mockUnsyncSpace.mockResolvedValue({ pagesDeleted: 0 });
+    mockLogAuditEvent.mockResolvedValue(undefined);
     // Re-arm Redis SCAN to terminate immediately for tests that don't
     // care about cache invalidation; tests that DO care override this.
     mockRedisScan.mockReset().mockResolvedValue({ cursor: '0', keys: [] });
@@ -315,5 +330,37 @@ describe('Spaces routes', () => {
     });
 
     expect(response.statusCode).toBe(404);
+  });
+
+  // ---------- #721: DELETE /api/spaces/:key ----------
+
+  it('DELETE /api/spaces/:key removes a synced space and returns 200 (admin, #721)', async () => {
+    // Simulate the space existing in DB
+    mockQuery.mockResolvedValueOnce({ rows: [{ source: 'confluence' }], rowCount: 1 });
+    mockUnsyncSpace.mockResolvedValueOnce({ pagesDeleted: 3 });
+
+    const response = await app.inject({ method: 'DELETE', url: '/api/spaces/ENG' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ key: 'ENG', deleted: true, pagesDeleted: 3 });
+    expect(mockUnsyncSpace).toHaveBeenCalledWith('ENG');
+  });
+
+  it('DELETE /api/spaces/:key returns 404 for an unknown space (#721)', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+    const response = await app.inject({ method: 'DELETE', url: '/api/spaces/NOPE' });
+
+    expect(response.statusCode).toBe(404);
+    expect(mockUnsyncSpace).not.toHaveBeenCalled();
+  });
+
+  it('DELETE /api/spaces/:key returns 403 for a non-admin caller (#721)', async () => {
+    mockIsSystemAdmin.mockResolvedValueOnce(false);
+
+    const response = await app.inject({ method: 'DELETE', url: '/api/spaces/ENG' });
+
+    expect(response.statusCode).toBe(403);
+    expect(mockUnsyncSpace).not.toHaveBeenCalled();
   });
 });

@@ -311,4 +311,79 @@ describe('WorkersTab', () => {
       expect(within(qualityCard).getByText('Error')).toBeInTheDocument();
     });
   });
+
+  // ConfirmDialog replaces the native confirm() guard on Rescan All. Each card
+  // carries copy matching its backend reality (knowledge-admin.ts routes).
+  describe('Rescan All confirmation dialog', () => {
+    function rescanPostCalls(endpoint: string) {
+      return fetchSpy.mock.calls.filter(([url, opts]) => {
+        const path = typeof url === 'string' ? url : '';
+        return path.includes(endpoint) && (opts as RequestInit | undefined)?.method === 'POST';
+      });
+    }
+
+    it('opens a dialog instead of firing the rescan POST immediately', async () => {
+      render(<WorkersTab />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('quality-rescan')).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByTestId('quality-rescan'));
+
+      expect(await screen.findByTestId('confirm-dialog')).toBeInTheDocument();
+      // forceQualityRescan() NULLs quality_score — the copy must say scores
+      // are cleared, and must not invent a false "cannot be undone".
+      expect(screen.getByText(/existing quality scores are cleared/i)).toBeInTheDocument();
+      expect(rescanPostCalls('quality-rescan')).toHaveLength(0);
+    });
+
+    it('confirming fires the rescan POST', async () => {
+      render(<WorkersTab />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('quality-rescan')).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByTestId('quality-rescan'));
+      await screen.findByTestId('confirm-dialog');
+      fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
+
+      await waitFor(() => {
+        expect(rescanPostCalls('quality-rescan').length).toBeGreaterThan(0);
+      });
+    });
+
+    it('cancelling does not fire the rescan POST', async () => {
+      render(<WorkersTab />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('summary-rescan')).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByTestId('summary-rescan'));
+      await screen.findByTestId('confirm-dialog');
+      fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+
+      await waitFor(() => {
+        expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
+      });
+      expect(rescanPostCalls('summary-rescan')).toHaveLength(0);
+    });
+
+    it('embedding rescan copy warns that stored embeddings are deleted and search is degraded meanwhile', async () => {
+      render(<WorkersTab />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('embedding-rescan')).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByTestId('embedding-rescan'));
+
+      // reEmbedAll() runs DELETE FROM page_embeddings before re-queueing.
+      expect(await screen.findByTestId('confirm-dialog')).toBeInTheDocument();
+      expect(screen.getByText(/embeddings are deleted/i)).toBeInTheDocument();
+      expect(screen.getByText(/semantic search/i)).toBeInTheDocument();
+    });
+  });
 });

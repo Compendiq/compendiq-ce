@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SidebarTreeView, SidebarTreeNode } from './SidebarTreeView';
@@ -12,9 +12,15 @@ vi.mock('framer-motion', async () => {
 });
 
 // DndLocalSpaceTree is lazy-loaded; provide a lightweight stub so Suspense
-// resolves synchronously in tests without pulling in @dnd-kit.
+// resolves synchronously in tests without pulling in @dnd-kit. The stub mirrors
+// the real component's `data-active` marker on the active row (#707) so the
+// parent's scroll-into-view effect can find it end-to-end for local spaces.
 vi.mock('./DndLocalSpaceTree', () => ({
-  default: () => <div data-testid="dnd-local-space-tree" />,
+  default: ({ activePageId }: { activePageId?: string }) => (
+    <div data-testid="dnd-local-space-tree">
+      {activePageId && <div data-active="true" data-page-id={activePageId} />}
+    </div>
+  ),
 }));
 
 const mockNavigate = vi.fn();
@@ -147,6 +153,71 @@ describe('SidebarTreeView', () => {
     expect(screen.getByText('Configuration')).toBeInTheDocument();
   });
 
+  it('keeps the sidebar scroll position when a node is expanded (does not jump to the active page)', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const scroller = screen.getByTestId('tree-scroll');
+    // The user has scrolled the tree down before interacting.
+    scroller.scrollTop = 120;
+    const expandBtn = screen.getAllByLabelText('Expand')[0];
+    // mousedown must snapshot the position *before* the browser scrolls the
+    // freshly-focused chevron into view…
+    fireEvent.mouseDown(expandBtn);
+    // …which we emulate here by jumping the list to the top (the active page).
+    scroller.scrollTop = 0;
+    // Expanding the node must restore the pre-click position, not stay jumped.
+    fireEvent.click(expandBtn);
+    expect(scroller.scrollTop).toBe(120);
+    // Sanity: the node still actually expanded.
+    expect(screen.getByText('Installation')).toBeInTheDocument();
+  });
+
+  it('keeps the sidebar scroll position when a node is collapsed (snapshot is re-captured per press)', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const scroller = screen.getByTestId('tree-scroll');
+    // Expand first so the node exposes a "Collapse" chevron.
+    fireEvent.click(screen.getAllByLabelText('Expand')[0]);
+    expect(screen.getByText('Installation')).toBeInTheDocument();
+    // A *different* position than the expand test — proves the snapshot is taken
+    // fresh on this press, not reused from an earlier interaction.
+    scroller.scrollTop = 90;
+    const collapseBtn = screen.getByLabelText('Collapse'); // the chevron, not the "Collapse <title>" indent guide
+    fireEvent.mouseDown(collapseBtn);
+    scroller.scrollTop = 0; // emulate the browser's focus-into-view jump
+    fireEvent.click(collapseBtn);
+    expect(scroller.scrollTop).toBe(90);
+    // Sanity: the node actually collapsed.
+    expect(screen.queryByText('Installation')).not.toBeInTheDocument();
+  });
+
+  it('does not restore scroll on auto-expand (navigation); only a node press restores', () => {
+    // OPS has no homepage, so the full tree (incl. root-1 + its children) renders;
+    // setting it explicitly also stops the auto-select-space effect from switching
+    // to DEV (whose homepage root-1 would be hidden).
+    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: 'OPS' });
+    const { rerender } = render(<SidebarTreeView />, { wrapper: createWrapper('/pages/child-1') });
+    const scroller = screen.getByTestId('tree-scroll');
+    // Viewing child-1 auto-expands its ancestor root-1 on mount — no press involved.
+    expect(screen.getByText('Installation')).toBeInTheDocument();
+
+    // Leave a non-null snapshot behind via a real press (collapse root-1).
+    scroller.scrollTop = 200;
+    const collapseBtn = screen.getByLabelText('Collapse');
+    fireEvent.mouseDown(collapseBtn);
+    fireEvent.click(collapseBtn);
+    expect(screen.queryByText('Installation')).not.toBeInTheDocument();
+
+    // User scrolls; then an auto-expand fires WITHOUT a press — emulated by new
+    // tree data, which re-runs the ancestor auto-expand effect.
+    scroller.scrollTop = 50;
+    mockTreeData = { ...defaultTreeData, items: [...defaultTreeData.items] };
+    rerender(<SidebarTreeView />);
+
+    // The ancestor re-expanded, but the guard left scroll where the user put it —
+    // it was NOT yanked back to the stale 200 snapshot.
+    expect(screen.getByText('Installation')).toBeInTheDocument();
+    expect(scroller.scrollTop).toBe(50);
+  });
+
   it('shows indent guide line when a folder is expanded', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
     const expandBtn = screen.getAllByLabelText('Expand')[0];
@@ -201,6 +272,36 @@ describe('SidebarTreeView', () => {
     const row = installRef.parentElement!;
     expect(row.className).toContain('bg-action');
     expect(row.className).toContain('text-action-foreground');
+  });
+
+  // #767: tree titles intermittently rendered faux-bold (synthesized weight
+  // during variable-font load / compositing re-rasterization). The weight is
+  // now pinned per-state on the title span so it can never float: exactly one
+  // of font-normal / font-medium, never both (Tailwind class order between the
+  // two utilities is unspecified, so conditional classes are mandatory).
+  it('pins font-normal on inactive tree titles and font-medium on the active title (#767)', () => {
+    // OPS has no homepage, so the full tree (incl. "Getting Started") renders.
+    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: 'OPS' });
+    render(<SidebarTreeView />, { wrapper: createWrapper('/pages/root-2') });
+
+    const activeTitle = screen.getByText('API Reference');
+    expect(activeTitle.className).toContain('font-medium');
+    expect(activeTitle.className).not.toContain('font-normal');
+
+    const inactiveTitle = screen.getByText('Getting Started');
+    expect(inactiveTitle.className).toContain('font-normal');
+    expect(inactiveTitle.className).not.toContain('font-medium');
+  });
+
+  it('pins font-normal on every title when no page is active (#767)', () => {
+    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: 'OPS' });
+    render(<SidebarTreeView />, { wrapper: createWrapper('/') });
+
+    for (const title of ['Getting Started', 'API Reference']) {
+      const span = screen.getByText(title);
+      expect(span.className).toContain('font-normal');
+      expect(span.className).not.toContain('font-medium');
+    }
   });
 
   it('shows collapsed state with expand toggle and nav icons when treeSidebarCollapsed is true', () => {
@@ -374,6 +475,119 @@ describe('SidebarTreeView', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByLabelText('Collapse sidebar'));
     expect(useUiStore.getState().treeSidebarCollapsed).toBe(true);
+  });
+});
+
+// #707: on reload the tree mounts scrolled to the top; the active page's path
+// is auto-expanded but the row is out of view. The scroll container should
+// scroll the active node into view — unless it is already visible (so manual
+// scrolling and in-session navigation aren't disrupted).
+describe('SidebarTreeView active-page scroll-into-view (#707)', () => {
+  let scrollIntoView: ReturnType<typeof vi.fn>;
+  let rectByTestState: { containerTop: number; containerBottom: number; activeTop: number; activeBottom: number };
+
+  beforeEach(() => {
+    mockNavigate.mockClear();
+    mockTreeData = { ...defaultTreeData };
+    useUiStore.setState({
+      treeSidebarCollapsed: false,
+      // "All Spaces" so the homepage isn't hidden and the full tree renders.
+      treeSidebarSpaceKey: undefined,
+    });
+
+    scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+
+    // jsdom returns zeroed rects, which would read as "always visible". Drive
+    // the visibility check from rectByTestState so each test controls geometry.
+    rectByTestState = { containerTop: 0, containerBottom: 500, activeTop: 0, activeBottom: 40 };
+    Element.prototype.getBoundingClientRect = function (this: Element) {
+      const isContainer = this.classList.contains('overflow-y-auto');
+      const isActive = this.getAttribute('data-active') === 'true';
+      if (isContainer) {
+        return { top: rectByTestState.containerTop, bottom: rectByTestState.containerBottom, left: 0, right: 0, width: 0, height: 0, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+      }
+      if (isActive) {
+        return { top: rectByTestState.activeTop, bottom: rectByTestState.activeBottom, left: 0, right: 0, width: 0, height: 0, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+      }
+      return { top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+    };
+  });
+
+  it('scrolls the active node into view on mount when it is below the viewport', () => {
+    // Active row sits below the container's bottom edge → off-screen.
+    rectByTestState = { containerTop: 0, containerBottom: 500, activeTop: 900, activeBottom: 940 };
+    render(<SidebarTreeView />, { wrapper: createWrapper('/pages/child-1') });
+
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center', behavior: 'auto' });
+  });
+
+  it('uses instant scroll (behavior "auto") when prefers-reduced-motion is set', () => {
+    // The file-level framer-motion mock forces useReducedMotion() === true.
+    rectByTestState = { containerTop: 0, containerBottom: 500, activeTop: 900, activeBottom: 940 };
+    render(<SidebarTreeView />, { wrapper: createWrapper('/pages/child-1') });
+
+    expect(scrollIntoView).toHaveBeenCalledWith(expect.objectContaining({ behavior: 'auto' }));
+  });
+
+  it('does not scroll when the active node is already within the viewport', () => {
+    // Active row fully inside the container bounds → already visible.
+    rectByTestState = { containerTop: 0, containerBottom: 500, activeTop: 100, activeBottom: 140 };
+    render(<SidebarTreeView />, { wrapper: createWrapper('/pages/child-1') });
+
+    expect(scrollIntoView).not.toHaveBeenCalled();
+  });
+
+  it('does not scroll when no page is active', () => {
+    rectByTestState = { containerTop: 0, containerBottom: 500, activeTop: 900, activeBottom: 940 };
+    render(<SidebarTreeView />, { wrapper: createWrapper('/') });
+
+    expect(scrollIntoView).not.toHaveBeenCalled();
+  });
+
+  it('scrolls the active node into view for a local space (DndLocalSpaceTree) when off-screen', async () => {
+    // Select a local space so the lazy DndLocalSpaceTree branch renders. Its
+    // stub mirrors the real component's data-active marker, so this exercises
+    // the scroll-into-view wiring end-to-end for local spaces. The local tree
+    // is lazy-loaded, so the active row appears after the effect's first pass —
+    // the MutationObserver fallback catches it once it commits.
+    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: 'NOTES' });
+    rectByTestState = { containerTop: 0, containerBottom: 500, activeTop: 900, activeBottom: 940 };
+    render(<SidebarTreeView />, { wrapper: createWrapper('/pages/p-local') });
+
+    await waitFor(() => {
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center', behavior: 'auto' });
+    });
+  });
+
+  it('does NOT scroll the active row into view when the user manually expands a node', () => {
+    // Integration with the manual-expand fix: #707 scrolls to the active row on
+    // navigation/reload, but a user pressing a chevron must not trigger it —
+    // otherwise opening any node jumps the list to the current article.
+    // root-3 is a second expandable node (unrelated to the active page); OPS has
+    // no homepage so the full tree renders.
+    mockTreeData = {
+      items: [
+        ...defaultTreeData.items,
+        { id: 'root-3', spaceKey: 'DEV', title: 'Guides', pageType: 'page' as const, parentId: null, labels: [], lastModifiedAt: '2026-03-01T00:00:00Z', embeddingDirty: false },
+        { id: 'child-3', spaceKey: 'DEV', title: 'Quickstart', pageType: 'page' as const, parentId: 'root-3', labels: [], lastModifiedAt: '2026-03-01T00:00:00Z', embeddingDirty: false },
+      ],
+      total: 6,
+    };
+    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: 'OPS' });
+    // Active row off-screen, so #707 *would* scroll to it on a non-press change.
+    rectByTestState = { containerTop: 0, containerBottom: 500, activeTop: 900, activeBottom: 940 };
+    render(<SidebarTreeView />, { wrapper: createWrapper('/pages/child-1') });
+    scrollIntoView.mockClear(); // ignore the legitimate scroll-to-active on mount
+
+    // Manually expand the unrelated node.
+    const expandBtn = screen.getByLabelText('Expand');
+    fireEvent.mouseDown(expandBtn);
+    fireEvent.click(expandBtn);
+
+    expect(screen.getByText('Quickstart')).toBeInTheDocument(); // it expanded…
+    expect(scrollIntoView).not.toHaveBeenCalled();              // …but did NOT jump to the active row
   });
 });
 
@@ -673,6 +887,25 @@ describe('SidebarTreeNode memoization', () => {
       useUiStore.setState({ treeSidebarSpaceKey: 'DEV' });
       render(<SidebarTreeView />, { wrapper: createWrapper() });
       expect(screen.queryByText('Sync a Space')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('footer stats pluralization', () => {
+    it('uses plural "pages" when total is not 1', () => {
+      render(<SidebarTreeView />, { wrapper: createWrapper() });
+      expect(screen.getByText('4 pages')).toBeInTheDocument();
+    });
+
+    it('uses singular "page" when total is 1', () => {
+      mockTreeData = { ...defaultTreeData, items: [defaultTreeData.items[0]!], total: 1 };
+      render(<SidebarTreeView />, { wrapper: createWrapper() });
+      expect(screen.getByText('1 page')).toBeInTheDocument();
+    });
+
+    it('keeps the space-key suffix when a space is selected', () => {
+      useUiStore.setState({ treeSidebarSpaceKey: 'DEV' });
+      render(<SidebarTreeView />, { wrapper: createWrapper() });
+      expect(screen.getByText('4 pages in DEV')).toBeInTheDocument();
     });
   });
 });

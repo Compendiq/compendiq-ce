@@ -74,6 +74,8 @@ vi.mock('../../core/db/postgres.js', () => ({
 vi.mock('../../core/services/content-converter.js', () => ({
   htmlToMarkdown: vi.fn((s: string) => s),
   markdownToHtml: vi.fn((s: string) => s),
+  protectMedia: vi.fn((html: string) => ({ html, media: [] })),
+  restoreMedia: vi.fn((html: string) => html),
 }));
 
 vi.mock('../../domains/llm/services/embedding-service.js', () => ({
@@ -122,9 +124,11 @@ vi.mock('../../core/services/ai-safety-service.js', () => ({
   getAiOutputRules: vi.fn().mockResolvedValue({
     stripReferences: false,
     referenceAction: 'off',
+    swissSpelling: false,
   }),
   upsertAiGuardrails: vi.fn(),
   upsertAiOutputRules: vi.fn(),
+  SWISS_SPELLING_INSTRUCTION: "Use Swiss orthography: never use the character 'ß' (eszett); always write 'ss' instead.",
 }));
 
 vi.mock('../../domains/confluence/services/subpage-context.js', () => ({

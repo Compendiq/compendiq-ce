@@ -79,6 +79,30 @@ export const UpdatePageSchema = z.object({
   visibility: PageVisibilityEnum.optional(),
 });
 
+/**
+ * Body for POST /api/pages/:id/versions/:version/restore.
+ *
+ * `version` is the optimistic-concurrency guard: the live page version the
+ * client believed it was reverting from. If the page has since advanced, the
+ * server returns 409 — same contract as {@link UpdatePageSchema}. It is the
+ * *current* version, not the target snapshot (which comes from the URL param).
+ */
+export const RestoreVersionSchema = z.object({
+  version: z.number().int().positive().optional(),
+});
+export type RestoreVersionInput = z.infer<typeof RestoreVersionSchema>;
+
+/** Response shape of a successful version restore. */
+export const RestoreVersionResponseSchema = z.object({
+  id: z.number(),
+  title: z.string(),
+  version: z.number(),
+  restoredFrom: z.number(),
+  source: PageSourceEnum,
+  pushedToConfluence: z.boolean(),
+});
+export type RestoreVersionResponse = z.infer<typeof RestoreVersionResponseSchema>;
+
 // ── Hybrid / semantic search ──────────────────────────────────────────────────
 
 export const SearchModeEnum = z.enum(['keyword', 'semantic', 'hybrid']);
@@ -149,6 +173,34 @@ export const PublishDraftSchema = z.object({
   title: z.string().min(1).max(500).optional(),
   bodyHtml: z.string().optional(),
 });
+
+// ── Trash (GET /api/pages/trash) ──────────────────────────────────────────────
+
+/**
+ * One soft-deleted standalone article as it crosses the wire. The backend
+ * stringifies the integer PK and serializes all dates to ISO strings
+ * (same convention as {@link PageVersionSummarySchema} responses).
+ * `autoPurgeAt` = `deletedAt` + the standalone-trash retention window, so the
+ * Trash UI shows the same date the maintenance purge acts on.
+ */
+export const TrashItemSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  source: PageSourceEnum,
+  visibility: PageVisibilityEnum,
+  deletedAt: z.string(),
+  createdAt: z.string(),
+  deletedBy: z.string(),
+  autoPurgeAt: z.string(),
+});
+export type TrashItem = z.infer<typeof TrashItemSchema>;
+
+/** Response shape of GET /api/pages/trash. */
+export const TrashListResponseSchema = z.object({
+  items: z.array(TrashItemSchema),
+  total: z.number().int().nonnegative(),
+});
+export type TrashListResponse = z.infer<typeof TrashListResponseSchema>;
 
 // -- Duplicates & Export validation schemas (Issue #580) --
 

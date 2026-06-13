@@ -44,6 +44,9 @@ vi.mock('../../core/services/content-converter.js', () => ({
   htmlToConfluence: vi.fn(),
   htmlToText: vi.fn(),
   markdownToHtml: vi.fn(),
+  protectMedia: vi.fn((html: string) => ({ html, media: [] })),
+  restoreMedia: vi.fn((html: string) => html),
+  hasRecoverableLayoutTokens: vi.fn((md: string) => /\[\[\[/.test(md)),
 }));
 
 vi.mock('../../domains/llm/services/embedding-service.js', () => ({
@@ -91,6 +94,8 @@ vi.mock('../../core/utils/sanitize-llm-input.js', () => ({
 }));
 
 import { llmImproveRoutes } from './llm-improve.js';
+import { STRUCTURE_PRESERVATION_INSTRUCTION } from '../../domains/llm/services/prompts.js';
+import { htmlToMarkdown } from '../../core/services/content-converter.js';
 
 describe('POST /api/llm/improve - instruction field', () => {
   let app: ReturnType<typeof Fastify>;
@@ -261,5 +266,83 @@ describe('POST /api/llm/improve - instruction field', () => {
     const messages = callArgs[2];
     const systemMessage = messages.find((m: { role: string }) => m.role === 'system');
     expect(systemMessage.content).not.toContain('ADDITIONAL USER INSTRUCTIONS');
+  });
+});
+
+describe('POST /api/llm/improve - structure preservation instruction (#765)', () => {
+  let app: ReturnType<typeof Fastify>;
+
+  beforeAll(async () => {
+    app = Fastify({ logger: false });
+    await app.register(sensible);
+
+    app.decorate('authenticate', async () => {});
+    app.decorate('requireAdmin', async () => {});
+    app.decorate('redis', {});
+    app.decorateRequest('userId', '');
+    app.addHook('onRequest', async (request) => {
+      request.userId = 'test-user-123';
+      request.userCan = async () => true;
+    });
+
+    await app.register(llmImproveRoutes, { prefix: '/api' });
+    await app.ready();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetCachedResponse.mockResolvedValue(null);
+  });
+
+  async function injectImprove(content: string): Promise<string> {
+    async function* mockGenerator() {
+      yield { content: 'Improved text', done: true };
+    }
+    mockProviderStreamChat.mockReturnValue(mockGenerator());
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/llm/improve',
+      payload: { content, type: 'grammar', model: 'llama3' },
+    });
+    expect(response.statusCode).toBe(200);
+
+    expect(mockProviderStreamChat).toHaveBeenCalledTimes(1);
+    const messages = mockProviderStreamChat.mock.calls[0]![2];
+    return messages.find((m: { role: string }) => m.role === 'system').content as string;
+  }
+
+  it('appends STRUCTURE_PRESERVATION_INSTRUCTION when the markdown carries layout boundary tokens', async () => {
+    // htmlToMarkdown is mocked as a passthrough, so token-bearing content
+    // stands in for the real layoutTokens conversion output.
+    const systemPrompt = await injectImprove(
+      '[[[LAYOUT]]]\n\n[[[LAYOUT-CELL]]]\n\nProse\n\n[[[/LAYOUT-CELL]]]\n\n[[[/LAYOUT]]]',
+    );
+    expect(systemPrompt).toContain(STRUCTURE_PRESERVATION_INSTRUCTION);
+  });
+
+  it('appends STRUCTURE_PRESERVATION_INSTRUCTION when the markdown carries media placeholders', async () => {
+    const systemPrompt = await injectImprove('Some prose with CQ_MEDIA_PLACEHOLDER_0 inside.');
+    expect(systemPrompt).toContain(STRUCTURE_PRESERVATION_INSTRUCTION);
+  });
+
+  it('keeps the system prompt clean when no tokens are present', async () => {
+    const systemPrompt = await injectImprove('<p>Plain text without any structural tokens</p>');
+    expect(systemPrompt).not.toContain(STRUCTURE_PRESERVATION_INSTRUCTION);
+    // Not even a fragment of the instruction leaks in.
+    expect(systemPrompt).not.toContain('structural placeholder tokens');
+  });
+
+  it('requests layout boundary tokens for the main-page conversion (#765 review)', async () => {
+    await injectImprove('<p>Whatever</p>');
+    // The Improve route is the ONLY caller allowed to set layoutTokens.
+    expect(vi.mocked(htmlToMarkdown)).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ layoutTokens: true }),
+    );
   });
 });

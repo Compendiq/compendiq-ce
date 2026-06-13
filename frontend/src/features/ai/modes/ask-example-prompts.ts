@@ -6,7 +6,7 @@
 // Each prompt fills the input rather than auto-submits — auto-submit would
 // surprise the user.
 export const ASK_EXAMPLE_PROMPTS: readonly string[] = [
-  'Summarise the most-edited pages in the last 30 days',
+  'Summarize the most-edited pages in the last 30 days',
   'Find pages that look like duplicates of each other',
   'Draft a how-to from pages tagged "onboarding"',
   'What changed in the engineering space in the last 7 days?',

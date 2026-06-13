@@ -55,6 +55,7 @@ import {
 import type { Editor as EditorType } from '@tiptap/react';
 import { VimExtension, type VimState } from './vim-extension';
 import { VimModeIndicator } from './VimModeIndicator';
+import { EditorBubbleMenu } from './EditorBubbleMenu';
 
 const ConfluenceImage = Image.extend({
   addAttributes() {
@@ -499,7 +500,7 @@ export function EditorToolbar({ editor, headerNumbering, onToggleHeaderNumbering
     // overflow into article content).
     <div
       role="toolbar"
-      aria-label="Article editor toolbar"
+      aria-label="Page editor toolbar"
       className="flex flex-wrap items-center gap-0.5 px-2 py-1.5"
     >
       <ToolbarGroup name="inline">
@@ -1456,6 +1457,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
         </div>
       )}
       {editable && editor && <SearchAndReplace editor={editor} />}
+      {editable && editor && <EditorBubbleMenu editor={editor} />}
       {editable && editor && (
         <DragHandle editor={editor} className="drag-handle">
           <GripVertical size={16} />

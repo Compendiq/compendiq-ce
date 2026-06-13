@@ -4,16 +4,17 @@ import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { AiAssistantPage } from './AiAssistantPage';
+import { ApiError } from '../../shared/lib/api';
 import { useAuthStore } from '../../stores/auth-store';
 
 // scrollIntoView is not available in jsdom
 Element.prototype.scrollIntoView = vi.fn();
 
-// Keep reference to original apiFetch mock to control per-test
+// Replace apiFetch with a controllable mock but keep the real ApiError class
+// available — runStream branches on `err instanceof ApiError` for 403 handling.
 const apiFetchMock = vi.fn();
-vi.mock('../../shared/lib/api', () => ({
-  apiFetch: (...args: unknown[]) => apiFetchMock(...args),
-}));
+vi.mock('../../shared/lib/api', async () =>
+  (await import('../../test-utils')).apiModuleMock(() => apiFetchMock));
 
 // Mock SSE module so we can control streaming behavior
 const streamSSEMock = vi.fn();
@@ -162,6 +163,76 @@ describe('AiAssistantPage', () => {
     render(<AiAssistantPage />, { wrapper: createWrapper() });
 
     await waitFor(() => {
+      expect(screen.queryByText('Loading models...')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('models error chip (degraded LLM provider)', () => {
+    it('shows "Models unavailable — retry" instead of the loading spinner when the models fetch fails', async () => {
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: '', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.reject(new Error('LLM provider unreachable'));
+        }
+        if (path === '/llm/conversations') {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve([]);
+      });
+
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.getByText('Models unavailable — retry')).toBeInTheDocument();
+      });
+      // The infinite spinner must not keep rendering once the fetch has failed.
+      expect(screen.queryByText('Loading models...')).not.toBeInTheDocument();
+    });
+
+    it('refetches models when the retry chip is clicked and recovers to the dropdown', async () => {
+      let modelsDown = true;
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: '', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return modelsDown
+            ? Promise.reject(new Error('LLM provider unreachable'))
+            : Promise.resolve([{ name: 'llama3' }]);
+        }
+        if (path === '/llm/conversations') {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve([]);
+      });
+
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.getByText('Models unavailable — retry')).toBeInTheDocument();
+      });
+
+      const modelsCalls = () => apiFetchMock.mock.calls
+        .map((args) => args[0])
+        .filter((p): p is string => typeof p === 'string' && p.startsWith('/ollama/models'))
+        .length;
+      const callsBefore = modelsCalls();
+
+      // Provider comes back up; clicking the chip must fire another fetch.
+      modelsDown = false;
+      fireEvent.click(screen.getByText('Models unavailable — retry'));
+
+      await waitFor(() => {
+        expect(modelsCalls()).toBeGreaterThan(callsBefore);
+      });
+
+      // Recovered: the chip is replaced by the model dropdown.
+      await waitFor(() => {
+        expect(document.querySelector('select')).not.toBeNull();
+      });
+      expect(screen.queryByText('Models unavailable — retry')).not.toBeInTheDocument();
       expect(screen.queryByText('Loading models...')).not.toBeInTheDocument();
     });
   });
@@ -467,7 +538,7 @@ describe('AiAssistantPage', () => {
 
       // Verify success toast
       await waitFor(() => {
-        expect(toastSuccessMock).toHaveBeenCalledWith('Article updated and synced to Confluence');
+        expect(toastSuccessMock).toHaveBeenCalledWith('Page updated and synced to Confluence');
       });
     });
 
@@ -537,7 +608,7 @@ describe('AiAssistantPage', () => {
       }
     });
 
-    it('removes empty assistant message when ask stream throws an error', async () => {
+    it('replaces the placeholder assistant message with an inline error when the ask stream throws', async () => {
       apiFetchMock.mockImplementation((path: string) => {
         if (path === '/settings') {
           return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
@@ -574,7 +645,7 @@ describe('AiAssistantPage', () => {
 
       fireEvent.keyDown(input, { key: 'Enter' });
 
-      // Wait for the error toast
+      // The toast still fires for generic (non-403) errors
       await waitFor(() => {
         expect(toastErrorMock).toHaveBeenCalledWith('Connection lost');
       });
@@ -582,17 +653,258 @@ describe('AiAssistantPage', () => {
       // The user message should still be visible
       expect(screen.getByText('What is Confluence?')).toBeInTheDocument();
 
-      // The empty assistant message should have been removed.
-      // AskMode adds the user message directly via setMessages (not via runStream's
-      // userMessage option), so this test specifically verifies the fix: runStream
-      // must always remove the placeholder assistant message on error.
-      // If there were an assistant bubble, it would contain a Bot icon or typing indicator.
-      expect(screen.queryByTestId('typing-indicator')).not.toBeInTheDocument();
+      // The placeholder assistant message must NOT be silently removed: it is
+      // replaced with a visible inline error bubble carrying destructive styling.
+      const errorBubble = screen.getByTestId('message-error');
+      expect(errorBubble.textContent).toContain('Connection lost');
+      expect(errorBubble.className).toContain('destructive');
 
-      // Verify there is exactly 1 message bubble (the user message), not 2
-      // User messages have "justify-end" class on their container
-      const messageBubbles = document.querySelectorAll('.max-w-\\[80\\%\\]');
-      expect(messageBubbles.length).toBe(1);
+      // No lingering typing indicator
+      expect(screen.queryByTestId('typing-indicator')).not.toBeInTheDocument();
+    });
+
+    it('shows an inline permission explanation without a toast when ask is rejected with 403', async () => {
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.resolve([{ name: 'llama3' }]);
+        }
+        if (path === '/llm/conversations') {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve([]);
+      });
+
+      // Backend rejects POST /api/llm/ask with 403 when the user lacks the
+      // llm:query RBAC permission — streamSSE surfaces it as an ApiError.
+      // eslint-disable-next-line require-yield
+      async function* fakeForbiddenStream() {
+        throw new ApiError(403, 'Permission "llm:query" required');
+      }
+      streamSSEMock.mockReturnValue(fakeForbiddenStream());
+
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.queryByText('Loading models...')).not.toBeInTheDocument();
+      });
+
+      const input = screen.getByPlaceholderText('Ask a question...');
+      fireEvent.change(input, { target: { value: 'What is Confluence?' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+
+      // The chat shows what happened inline, in the assistant's bubble.
+      await waitFor(() => {
+        expect(screen.getByTestId('message-error')).toBeInTheDocument();
+      });
+      const errorBubble = screen.getByTestId('message-error');
+      expect(errorBubble.textContent).toContain('permission');
+      expect(errorBubble.textContent).toContain('llm:query');
+      expect(errorBubble.textContent).toContain('administrator');
+      expect(errorBubble.className).toContain('destructive');
+
+      // 403 is fully explained inline — no redundant toast.
+      expect(toastErrorMock).not.toHaveBeenCalled();
+
+      // The user message stays visible above the explanation.
+      expect(screen.getByText('What is Confluence?')).toBeInTheDocument();
+    });
+
+    it('announces errors via a live region that is primed before any error occurs', async () => {
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.resolve([{ name: 'llama3' }]);
+        }
+        if (path === '/llm/conversations') {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve([]);
+      });
+
+      // eslint-disable-next-line require-yield
+      async function* fakeForbiddenStream() {
+        throw new ApiError(403, 'Permission "llm:query" required');
+      }
+      streamSSEMock.mockReturnValue(fakeForbiddenStream());
+
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.queryByText('Loading models...')).not.toBeInTheDocument();
+      });
+
+      // The announcer must exist EMPTY before any error: per MDN's alert-role
+      // guidance, the role="alert" element has to be in the DOM first so AT
+      // watches it for content changes — adding the role together with the
+      // message is generally NOT announced.
+      const announcer = screen.getByTestId('ai-error-announcer');
+      expect(announcer).toHaveAttribute('role', 'alert');
+      expect(announcer).toHaveTextContent('');
+
+      const input = screen.getByPlaceholderText('Ask a question...');
+      fireEvent.change(input, { target: { value: 'What is Confluence?' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('message-error')).toBeInTheDocument();
+      });
+      // The 403 path deliberately suppresses the toast, so this primed region
+      // is the only screen-reader announcement of the permission failure.
+      expect(announcer).toHaveTextContent(/llm:query/);
+      // The visible bubble must NOT also claim role="alert": the role+content
+      // arriving together is the unreliable pattern, and two alert regions
+      // would double-announce on the AT combos where it does fire.
+      expect(screen.getByTestId('message-error')).not.toHaveAttribute('role', 'alert');
+    });
+
+    it('re-announces when a retry fails with the byte-identical error', async () => {
+      // Ask mode APPENDS on retry (it never resets the list), so the derived
+      // announcer text stays identical across attempts — React would reconcile
+      // the same text node and AT would announce nothing, leaving a
+      // screen-reader user believing the retry succeeded. The announcer must
+      // mount a FRESH child element per error (keyed by message id): node
+      // insertion into a live region announces even when the text is equal.
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.resolve([{ name: 'llama3' }]);
+        }
+        if (path === '/llm/conversations') {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve([]);
+      });
+
+      // Fresh generator per call — a retry must not reuse the exhausted one.
+      // eslint-disable-next-line require-yield
+      async function* fakeForbiddenStream() {
+        throw new ApiError(403, 'Permission "llm:query" required');
+      }
+      streamSSEMock.mockImplementation(() => fakeForbiddenStream());
+
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.queryByText('Loading models...')).not.toBeInTheDocument();
+      });
+
+      const input = screen.getByPlaceholderText('Ask a question...');
+      fireEvent.change(input, { target: { value: 'What is Confluence?' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+
+      await waitFor(() => {
+        expect(screen.getAllByTestId('message-error')).toHaveLength(1);
+      });
+      const announcer = screen.getByTestId('ai-error-announcer');
+      const firstNode = announcer.firstElementChild;
+      expect(firstNode).not.toBeNull();
+
+      // Retry the same question → same 403, byte-identical message.
+      fireEvent.change(input, { target: { value: 'What is Confluence?' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+
+      await waitFor(() => {
+        expect(screen.getAllByTestId('message-error')).toHaveLength(2);
+      });
+      // Same text, but a NEW child node — that insertion is what AT announces.
+      expect(announcer).toHaveTextContent(/llm:query/);
+      expect(announcer.firstElementChild).not.toBeNull();
+      expect(announcer.firstElementChild).not.toBe(firstNode);
+    });
+
+    it('names the permission from the backend 403 message, not a hardcoded one', async () => {
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.resolve([{ name: 'llama3' }]);
+        }
+        if (path === '/llm/conversations') {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve([]);
+      });
+
+      // Each streamed mode has its own permission (llm:improve, llm:generate,
+      // llm:summarize…) — the shared runStream catch must surface whichever
+      // one the backend named, not always "llm:query".
+      // eslint-disable-next-line require-yield
+      async function* fakeForbiddenStream() {
+        throw new ApiError(403, 'Permission "llm:improve" required');
+      }
+      streamSSEMock.mockReturnValue(fakeForbiddenStream());
+
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.queryByText('Loading models...')).not.toBeInTheDocument();
+      });
+
+      const input = screen.getByPlaceholderText('Ask a question...');
+      fireEvent.change(input, { target: { value: 'Improve this' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('message-error')).toBeInTheDocument();
+      });
+      const errorBubble = screen.getByTestId('message-error');
+      expect(errorBubble.textContent).toContain('llm:improve');
+      expect(errorBubble.textContent).not.toContain('llm:query');
+      expect(errorBubble.textContent).toContain('administrator');
+    });
+
+    it('surfaces in-band SSE error events inline instead of leaving an empty bubble', async () => {
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.resolve([{ name: 'llama3' }]);
+        }
+        if (path === '/llm/conversations') {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve([]);
+      });
+
+      // Mid-stream provider failures arrive as `data: {"error": …}` events on
+      // an already-established HTTP 200 stream — the common failure path.
+      async function* fakeErrorEventStream() {
+        yield { error: 'LLM provider exploded' };
+      }
+      streamSSEMock.mockReturnValue(fakeErrorEventStream());
+
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.queryByText('Loading models...')).not.toBeInTheDocument();
+      });
+
+      const input = screen.getByPlaceholderText('Ask a question...');
+      fireEvent.change(input, { target: { value: 'What is Confluence?' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+
+      // Inline error bubble, same treatment as thrown errors…
+      await waitFor(() => {
+        expect(screen.getByTestId('message-error')).toBeInTheDocument();
+      });
+      const errorBubble = screen.getByTestId('message-error');
+      expect(errorBubble.textContent).toContain('LLM provider exploded');
+      expect(errorBubble.className).toContain('destructive');
+
+      // …plus the toast, matching non-403 thrown errors.
+      expect(toastErrorMock).toHaveBeenCalledWith('LLM provider exploded');
+
+      // No lingering typing indicator after the failure.
+      expect(screen.queryByTestId('typing-indicator')).not.toBeInTheDocument();
     });
 
     it('enables send button when model is loaded and input is provided', async () => {
@@ -633,8 +945,8 @@ describe('AiAssistantPage', () => {
     });
   });
 
-  describe('diagram mode - Use in article', () => {
-    it('shows "Use in article" button after diagram generation when page is selected', async () => {
+  describe('diagram mode - Use in page', () => {
+    it('shows "Use in page" button after diagram generation when page is selected', async () => {
       mockPageData = {
         data: { id: 'p1', title: 'My Article', bodyHtml: '<p>Content</p>', bodyText: 'Content', version: 3 },
       };
@@ -677,11 +989,11 @@ describe('AiAssistantPage', () => {
 
       // Wait for stream to complete and button to appear
       await waitFor(() => {
-        expect(screen.getByText('Use in article')).toBeInTheDocument();
+        expect(screen.getByText('Use in page')).toBeInTheDocument();
       });
     });
 
-    it('does not show "Use in article" button when no page is selected', async () => {
+    it('does not show "Use in page" button when no page is selected', async () => {
       mockPageData = { data: undefined };
 
       apiFetchMock.mockImplementation((path: string) => {
@@ -703,10 +1015,10 @@ describe('AiAssistantPage', () => {
       fireEvent.click(screen.getByText('Diagram'));
 
       // The button should not appear (no page context)
-      expect(screen.queryByText('Use in article')).not.toBeInTheDocument();
+      expect(screen.queryByText('Use in page')).not.toBeInTheDocument();
     });
 
-    it('calls apiFetch with PUT when "Use in article" is clicked in diagram mode', async () => {
+    it('calls apiFetch with PUT when "Use in page" is clicked in diagram mode', async () => {
       mockPageData = {
         data: { id: 'p1', title: 'My Article', bodyHtml: '<p>Content</p>', bodyText: 'Content', version: 3 },
       };
@@ -749,13 +1061,13 @@ describe('AiAssistantPage', () => {
       const diagramBtn = btns.find((b) => b.textContent?.includes('Generate Diagram'))!;
       fireEvent.click(diagramBtn);
 
-      // Wait for "Use in article" button
+      // Wait for "Use in page" button
       await waitFor(() => {
-        expect(screen.getByText('Use in article')).toBeInTheDocument();
+        expect(screen.getByText('Use in page')).toBeInTheDocument();
       });
 
-      // Click "Use in article"
-      fireEvent.click(screen.getByText('Use in article'));
+      // Click "Use in page"
+      fireEvent.click(screen.getByText('Use in page'));
 
       // Verify the PUT call was made
       await waitFor(() => {
@@ -773,7 +1085,7 @@ describe('AiAssistantPage', () => {
 
       // Verify success toast
       await waitFor(() => {
-        expect(toastSuccessMock).toHaveBeenCalledWith('Diagram inserted into article');
+        expect(toastSuccessMock).toHaveBeenCalledWith('Diagram inserted into page');
       });
     });
   });
@@ -994,7 +1306,7 @@ describe('AiAssistantPage', () => {
       // Should NOT show Q&A message
       expect(screen.queryByText('Ask questions about your knowledge base')).not.toBeInTheDocument();
       // Should NOT show "Open a page first" from other modes bleeding through
-      expect(screen.queryByText('AI will create a full article based on your prompt')).not.toBeInTheDocument();
+      expect(screen.queryByText('AI will create a full page based on your prompt')).not.toBeInTheDocument();
     });
 
     it('shows only Q&A empty state in ask mode', () => {
@@ -1099,6 +1411,112 @@ describe('AiAssistantPage', () => {
       // (this would fail with index-based keys if React rebinds elements)
       const userMessage = screen.getByText('My question');
       expect(userMessage.closest('.bg-primary\\/10')).toBeTruthy();
+    });
+  });
+
+  // #747 item 1 — the in-flight assistant answer renders through the
+  // rAF-batched StreamingMessage path (useStreamingContent) instead of
+  // committing every SSE chunk to the message list; the final committed
+  // message keeps the regular Markdown rendering.
+  describe('batched streaming render (#747)', () => {
+    function mockModelApis() {
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.resolve([{ name: 'llama3' }]);
+        }
+        if (path === '/llm/conversations') {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve([]);
+      });
+    }
+
+    it('renders the in-flight answer via StreamingMessage and commits it once on completion', async () => {
+      mockModelApis();
+
+      let releaseStream: (() => void) | undefined;
+      const gate = new Promise<void>((resolve) => { releaseStream = resolve; });
+      async function* gatedStream() {
+        yield { content: 'Hello ' };
+        yield { content: '**world**' };
+        await gate;
+      }
+      streamSSEMock.mockReturnValue(gatedStream());
+
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.queryByText('Loading models...')).not.toBeInTheDocument();
+      });
+
+      const input = screen.getByPlaceholderText('Ask a question...');
+      fireEvent.change(input, { target: { value: 'Stream me' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+
+      // While streaming, the in-flight answer renders through the batched
+      // StreamingMessage component (content appears after the rAF flush).
+      await waitFor(() => {
+        expect(screen.getByTestId('streaming-message')).toBeInTheDocument();
+      });
+      await waitFor(() => {
+        expect(screen.getByTestId('streaming-message').textContent).toContain('Hello world');
+      });
+      // Markdown is parsed in the batched path too.
+      expect(screen.getByText('world').tagName).toBe('STRONG');
+
+      // Finish the stream — the final committed message renders through the
+      // regular (non-streaming) Markdown path.
+      await act(async () => {
+        releaseStream?.();
+      });
+
+      await waitFor(() => {
+        expect(screen.queryByTestId('streaming-message')).not.toBeInTheDocument();
+      });
+      expect(screen.getByText('world')).toBeInTheDocument();
+      expect(screen.getByText('world').tagName).toBe('STRONG');
+      expect(screen.queryByTestId('streaming-cursor')).not.toBeInTheDocument();
+    });
+
+    it('commits partial content to the message list when the stream is aborted', async () => {
+      mockModelApis();
+
+      async function* abortingStream() {
+        yield { content: 'partial answer' };
+        throw new DOMException('Aborted', 'AbortError');
+      }
+      streamSSEMock.mockReturnValue(abortingStream());
+
+      const { AiProvider, useAiContext } = await import('./AiContext');
+      let captured: ReturnType<typeof useAiContext> | null = null;
+      function Capture() {
+        captured = useAiContext();
+        return null;
+      }
+
+      render(
+        <AiProvider>
+          <Capture />
+        </AiProvider>,
+        { wrapper: createWrapper() },
+      );
+
+      await waitFor(() => {
+        expect(captured?.model).toBe('llama3');
+      });
+
+      await act(async () => {
+        await captured!.runStream('/llm/ask', { question: 'q', model: 'llama3' });
+      });
+
+      // The partial answer must not be lost on abort.
+      const lastMsg = captured!.messages[captured!.messages.length - 1];
+      expect(lastMsg?.role).toBe('assistant');
+      expect(lastMsg?.content).toBe('partial answer');
+      expect(captured!.isStreaming).toBe(false);
     });
   });
 
@@ -1352,6 +1770,83 @@ describe('AiAssistantPage', () => {
         captured!.startNewConversation();
       });
       expect(captured?.model).toBe('qwen3:8b');
+    });
+  });
+
+  // #703 — chat content must not bleed through the translucent sticky bars.
+  // Both bars carry an opaque bg-background under-mask (z-[-1]) covering
+  // exactly the bar's box (inset-0), so scrolling messages are fully occluded
+  // behind the sub-header and the input bar.
+  //
+  // #769 — the masks must NOT extend past the bar's box: the original
+  // -top-[100px] / -bottom-[100px] extensions overflowed the scroll
+  // container, and absolute overflow past the block-end edge grows the
+  // scrollable overflow region — producing ~100px of phantom vertical scroll
+  // on every mode even when content fit the viewport.
+  describe('sticky bar under-mask (#703, #769)', () => {
+    it('renders an opaque under-mask behind the top sub-header covering exactly its box', () => {
+      const { container } = render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      // The sticky sub-header wrapper establishes its own stacking context
+      // (isolate) so the negative-z mask sits behind it, not behind the page.
+      const subHeader = container.querySelector('.sticky.top-0');
+      expect(subHeader).not.toBeNull();
+      expect(subHeader!.className).toContain('isolate');
+
+      // The under-mask is an aria-hidden, opaque bg-background div behind the
+      // bar (z-[-1]). inset-0 pins it to the bar's box: the bar sticks flush
+      // at the scrollport top, so the bar-sized mask fully occludes messages
+      // scrolling up (#703) without overflowing the bar.
+      const mask = subHeader!.querySelector('[aria-hidden]');
+      expect(mask).not.toBeNull();
+      expect(mask!.className).toContain('bg-background');
+      expect(mask!.className).not.toContain('bg-background/');
+      expect(mask!.className).toContain('z-[-1]');
+      expect(mask!.className).toContain('inset-0');
+      expect(mask!.className).toContain('pointer-events-none');
+    });
+
+    it('renders an opaque under-mask behind the bottom input bar covering exactly its box', () => {
+      const { container } = render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      const inputBar = container.querySelector('.sticky.bottom-0');
+      expect(inputBar).not.toBeNull();
+      expect(inputBar!.className).toContain('isolate');
+
+      // The bar sticks flush at the scrollport bottom, so a bar-sized
+      // (inset-0) mask fully occludes messages scrolling down (#703) without
+      // overflowing the bar.
+      const mask = inputBar!.querySelector('[aria-hidden]');
+      expect(mask).not.toBeNull();
+      expect(mask!.className).toContain('bg-background');
+      expect(mask!.className).not.toContain('bg-background/');
+      expect(mask!.className).toContain('z-[-1]');
+      expect(mask!.className).toContain('inset-0');
+      expect(mask!.className).toContain('pointer-events-none');
+    });
+
+    it('no under-mask extends past its sticky bar (regression: #769 phantom scroll)', () => {
+      const { container } = render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      const bars = [
+        container.querySelector('.sticky.top-0'),
+        container.querySelector('.sticky.bottom-0'),
+      ];
+      for (const bar of bars) {
+        expect(bar).not.toBeNull();
+        const mask = bar!.querySelector('[aria-hidden]') as HTMLElement;
+        expect(mask).not.toBeNull();
+        // Negative inset offsets (e.g. -top-[100px] / -bottom-[100px]) push
+        // the absolutely positioned mask outside the scroll container's
+        // content edge; overflow past the block-end edge adds phantom
+        // scrollable height. The mask must keep all four edges on the bar.
+        expect(mask.className).not.toMatch(/-(top|bottom|left|right|inset(-[xy])?)-\[/);
+        // Tailwind also accepts the arbitrary-negative-value spelling
+        // (top-[-100px]) — forbid that form too.
+        expect(mask.className).not.toMatch(/\b(top|bottom|left|right|inset(-[xy])?)-\[-/);
+        expect(mask.style.top).toBe('');
+        expect(mask.style.bottom).toBe('');
+      }
     });
   });
 });

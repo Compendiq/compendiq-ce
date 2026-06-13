@@ -15,6 +15,15 @@ interface ConfluenceSpace {
   homepage?: { id: string; title: string };
 }
 
+/** #722: normalised version metadata from the Confluence version list. */
+export interface ConfluenceVersionMeta {
+  number: number;
+  when: string;
+  author: string | null;
+  message: string | null;
+  minorEdit: boolean;
+}
+
 interface ConfluencePage {
   id: string;
   title: string;
@@ -60,6 +69,31 @@ interface PaginatedResponse<T> {
   limit: number;
   size: number;
   _links?: { next?: string };
+}
+
+/** Raw audit record shape as returned by GET /rest/api/audit (only the fields we use). */
+interface RawAuditRecord {
+  creationDate?: number;
+  category?: string;
+  summary?: string;
+  affectedObject?: { id?: string | number; type?: string; objectType?: string; name?: string };
+}
+
+/**
+ * Normalised Confluence audit record. `affectedObject.type` is resolved from the
+ * raw `type` or `objectType` field (the field name varies across DC 9.x builds).
+ */
+export interface ConfluenceAuditRecord {
+  creationDate: number;
+  category?: string;
+  summary?: string;
+  affectedObject?: { id: string; type?: string; name?: string };
+}
+
+/** Audit-log retention period from GET /rest/api/audit/retention. */
+export interface AuditRetention {
+  number: number;
+  units: string;
 }
 
 interface RetryOptions {
@@ -159,7 +193,19 @@ export class ConfluenceClient {
       throw error;
     }
 
-    return JSON.parse(text) as T;
+    try {
+      return JSON.parse(text) as T;
+    } catch {
+      // A 2xx response whose body isn't JSON (e.g. a reverse proxy or SSO
+      // portal answering 200 with an HTML login page) must surface as a typed
+      // ConfluenceError with a body excerpt — not a raw SyntaxError whose
+      // opaque "Unexpected token" message aborts the whole sync (#746).
+      logger.error({ statusCode, url, body: text.slice(0, 500) }, 'Confluence API returned non-JSON response');
+      throw new ConfluenceError(
+        `Confluence API returned non-JSON response (HTTP ${statusCode}): ${text.slice(0, 200)}`,
+        statusCode,
+      );
+    }
   }
 
   /**
@@ -191,6 +237,71 @@ export class ConfluenceClient {
     }
 
     return spaces;
+  }
+
+  /**
+   * Fetch the configured audit-log retention period.
+   * Requires the Confluence administrator permission.
+   */
+  async getAuditRetention(): Promise<AuditRetention> {
+    return this.fetch<AuditRetention>('/rest/api/audit/retention');
+  }
+
+  /**
+   * Fetch audit-log records from `startDate` (epoch ms) up to now (or `endDate`),
+   * following pagination to completion and normalising each record. Requires the
+   * Confluence administrator permission; a 403/404 is surfaced as
+   * `AuditUnavailableError` so callers can fall back rather than treat it as a
+   * hard failure.
+   */
+  async getAuditRecords(opts: {
+    startDate: number;
+    endDate?: number;
+    start?: number;
+    limit?: number;
+  }): Promise<ConfluenceAuditRecord[]> {
+    const limit = opts.limit ?? 1000;
+    let start = opts.start ?? 0;
+    const records: ConfluenceAuditRecord[] = [];
+
+    while (true) {
+      const params = new URLSearchParams({
+        startDate: String(opts.startDate),
+        start: String(start),
+        limit: String(limit),
+      });
+      if (opts.endDate !== undefined) params.set('endDate', String(opts.endDate));
+
+      let response: PaginatedResponse<RawAuditRecord>;
+      try {
+        response = await this.fetch<PaginatedResponse<RawAuditRecord>>(`/rest/api/audit?${params.toString()}`);
+      } catch (err) {
+        if (err instanceof ConfluenceError && (err.statusCode === 403 || err.statusCode === 404)) {
+          throw new AuditUnavailableError(
+            `Confluence audit log not accessible (HTTP ${err.statusCode}); requires the Confluence administrator permission`,
+            err.statusCode,
+          );
+        }
+        throw err;
+      }
+
+      for (const raw of response.results ?? []) {
+        const ao = raw.affectedObject;
+        records.push({
+          creationDate: raw.creationDate ?? 0,
+          category: raw.category,
+          summary: raw.summary,
+          affectedObject: ao
+            ? { id: String(ao.id ?? ''), type: ao.type ?? ao.objectType, name: ao.name }
+            : undefined,
+        });
+      }
+
+      if ((response.size ?? 0) < limit || !response._links?.next) break;
+      start += limit;
+    }
+
+    return records;
   }
 
   async getPages(spaceKey: string, start = 0, limit = 50): Promise<PaginatedResponse<ConfluencePage>> {
@@ -743,6 +854,120 @@ export class ConfluenceClient {
 
     return pages;
   }
+
+  /**
+   * Cheaply list every live page id in a space, with no body / version / ancestor
+   * expansion. Used by deletion reconciliation (#706) to obtain the authoritative
+   * set of ids Confluence still serves for the space — comparing local rows against
+   * this set bounds the cost of detecting deletions during incremental syncs
+   * (one lightweight paginated listing instead of a full content fetch per page).
+   * Uses a larger page size than `getAllPagesInSpace` since each result is tiny.
+   */
+  async getAllPageIds(spaceKey: string): Promise<Set<string>> {
+    const ids = new Set<string>();
+    let start = 0;
+    const limit = 200;
+
+    while (true) {
+      const response = await this.fetch<PaginatedResponse<{ id: string }>>(
+        `/rest/api/content?spaceKey=${encodeURIComponent(spaceKey)}&type=page&start=${start}&limit=${limit}`,
+      );
+      for (const { id } of response.results) ids.add(id);
+      if (response.size < limit || !response._links?.next) break;
+      start += limit;
+    }
+
+    return ids;
+  }
+
+  /**
+   * #722/#780: list a page's full version history (metadata only — cheap).
+   * Paginates automatically.
+   *
+   * Confluence DATA CENTER serves the version *list* only at the experimental
+   * path `/rest/experimental/content/{id}/version`. On DC, the stable path
+   * `/rest/api/content/{id}/version` has NO GET collection (only DELETE of a
+   * single version), so it answers 404 — which made every backfill fail and
+   * collapsed the Version History dialog to just the current version (#780).
+   * The experimental path is therefore tried first (it is the one that exists
+   * on the supported platform, DC 9.x); a 404/405 there falls back to the
+   * Cloud-style stable path for forward-compatibility (e.g. a future DC
+   * promoting the endpoint, or a gateway exposing Cloud semantics). Whichever
+   * path answers is reused for the remaining pagination pages.
+   */
+  async getPageVersions(pageId: string): Promise<ConfluenceVersionMeta[]> {
+    type VersionListPage = {
+      results: Array<{ number: number; when: string; by?: { displayName?: string }; message?: string; minorEdit?: boolean }>;
+      size: number;
+      _links?: { next?: string };
+    };
+
+    const encodedId = encodeURIComponent(pageId);
+    const candidatePaths = [
+      `/rest/experimental/content/${encodedId}/version`,
+      `/rest/api/content/${encodedId}/version`,
+    ] as const;
+    let resolvedPath: string | null = null;
+
+    const fetchPage = async (start: number, limit: number): Promise<VersionListPage> => {
+      const queryString = `?expand=by,message&start=${start}&limit=${limit}`;
+      if (resolvedPath) {
+        return this.fetch<VersionListPage>(`${resolvedPath}${queryString}`, { method: 'GET' });
+      }
+      let lastErr: unknown;
+      for (const path of candidatePaths) {
+        try {
+          const page = await this.fetch<VersionListPage>(`${path}${queryString}`, { method: 'GET' });
+          resolvedPath = path;
+          return page;
+        } catch (err) {
+          // 404/405 = this deployment doesn't serve the path → try the next
+          // one. Any other error (401/403/5xx) is a real failure on a path the
+          // server understands — propagate it instead of masking it with the
+          // other path's inevitable 404.
+          if (err instanceof ConfluenceError && (err.statusCode === 404 || err.statusCode === 405)) {
+            lastErr = err;
+            continue;
+          }
+          throw err;
+        }
+      }
+      throw new ConfluenceError(
+        `Failed to list versions for pageId=${pageId}: neither ${candidatePaths[0]} nor ${candidatePaths[1]} is available (HTTP 404/405 on both)`,
+        lastErr instanceof ConfluenceError ? lastErr.statusCode : 404,
+      );
+    };
+
+    const out: ConfluenceVersionMeta[] = [];
+    let start = 0;
+    const limit = 100;
+    // Defensive cap: never loop forever on a misbehaving `_links.next` (e.g. a
+    // self-referential next link). 1000 pages × 100 = 100k versions is far
+    // beyond any real page's history.
+    const maxIterations = 1000;
+    for (let i = 0; i < maxIterations; i++) {
+      const res = await fetchPage(start, limit);
+      for (const v of res.results) {
+        out.push({ number: v.number, when: v.when, author: v.by?.displayName ?? null, message: v.message ?? null, minorEdit: v.minorEdit ?? false });
+      }
+      // Stop on the last page (no `next` link — authoritative) or an empty page
+      // (no progress) — either means there is no more data. The empty-page break
+      // plus the iteration cap above guarantee termination even if a misbehaving
+      // API keeps returning a `next` link.
+      if (!res._links?.next || res.results.length === 0) break;
+      start += limit;
+    }
+    return out;
+  }
+
+  /** #722: fetch a historical version's storage-format body (read-only). */
+  async getHistoricalPageBody(pageId: string, version: number): Promise<string> {
+    const res = await this.fetch<{ body?: { storage?: { value?: string } } }>(
+      `/rest/api/content/${encodeURIComponent(pageId)}?status=historical&version=${version}&expand=body.storage`,
+      { method: 'GET' },
+    );
+    return res.body?.storage?.value ?? '';
+  }
 }
 
 /**
@@ -898,6 +1123,21 @@ export class ConfluenceError extends Error {
   ) {
     super(message);
     this.name = 'ConfluenceError';
+  }
+}
+
+/**
+ * Raised when the audit-log API is not accessible (HTTP 403/404 — typically the
+ * sync token lacks the Confluence administrator permission). Callers treat this
+ * as "optimization unavailable" and fall back to the full restriction sync.
+ */
+export class AuditUnavailableError extends Error {
+  constructor(
+    message: string,
+    public statusCode: number,
+  ) {
+    super(message);
+    this.name = 'AuditUnavailableError';
   }
 }
 

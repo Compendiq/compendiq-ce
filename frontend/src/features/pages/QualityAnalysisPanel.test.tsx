@@ -67,7 +67,7 @@ describe('QualityAnalysisPanel', () => {
       <QualityAnalysisPanel pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" />,
       { wrapper: createWrapper() },
     );
-    expect(screen.getByTitle('Analyze article quality')).toBeInTheDocument();
+    expect(screen.getByTitle('Analyze page quality')).toBeInTheDocument();
   });
 
   it('expands panel when button is clicked', async () => {
@@ -76,7 +76,7 @@ describe('QualityAnalysisPanel', () => {
       { wrapper: createWrapper() },
     );
 
-    fireEvent.click(screen.getByTitle('Analyze article quality'));
+    fireEvent.click(screen.getByTitle('Analyze page quality'));
 
     await waitFor(() => {
       expect(screen.getByText('Quality Analysis')).toBeInTheDocument();
@@ -88,7 +88,7 @@ describe('QualityAnalysisPanel', () => {
       <QualityAnalysisPanel pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" renderTriggerOnly />,
       { wrapper: createWrapper() },
     );
-    expect(screen.getByTitle('Analyze article quality')).toBeInTheDocument();
+    expect(screen.getByTitle('Analyze page quality')).toBeInTheDocument();
     expect(screen.queryByText('Quality Analysis')).not.toBeInTheDocument();
   });
 
@@ -113,7 +113,7 @@ describe('QualityAnalysisPanel', () => {
       <QualityAnalysisPanel pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" renderTriggerOnly />,
       { wrapper: createWrapper() },
     );
-    const btn = screen.getByTitle('Analyze article quality');
+    const btn = screen.getByTitle('Analyze page quality');
     const label = btn.querySelector('span');
     expect(label).toHaveClass('hidden', 'sm:inline');
   });
@@ -124,7 +124,7 @@ describe('QualityAnalysisPanel', () => {
       { wrapper: createWrapper() },
     );
 
-    fireEvent.click(screen.getByTitle('Analyze article quality'));
+    fireEvent.click(screen.getByTitle('Analyze page quality'));
 
     await waitFor(() => {
       expect(screen.getByText('Analyzing: My Article')).toBeInTheDocument();
@@ -137,7 +137,7 @@ describe('QualityAnalysisPanel', () => {
       { wrapper: createWrapper() },
     );
 
-    fireEvent.click(screen.getByTitle('Analyze article quality'));
+    fireEvent.click(screen.getByTitle('Analyze page quality'));
 
     await waitFor(() => {
       expect(apiFetchMock).toHaveBeenCalledWith('/ollama/models');
@@ -150,7 +150,7 @@ describe('QualityAnalysisPanel', () => {
       { wrapper: createWrapper() },
     );
 
-    fireEvent.click(screen.getByTitle('Analyze article quality'));
+    fireEvent.click(screen.getByTitle('Analyze page quality'));
     await waitFor(() => {
       expect(screen.getByText('Quality Analysis')).toBeInTheDocument();
     });
@@ -160,7 +160,7 @@ describe('QualityAnalysisPanel', () => {
     fireEvent.click(closeBtn);
 
     expect(screen.queryByText('Quality Analysis')).not.toBeInTheDocument();
-    expect(screen.getByTitle('Analyze article quality')).toBeInTheDocument();
+    expect(screen.getByTitle('Analyze page quality')).toBeInTheDocument();
   });
 
   it('sends correct payload when analyzing', async () => {
@@ -174,7 +174,7 @@ describe('QualityAnalysisPanel', () => {
       { wrapper: createWrapper() },
     );
 
-    fireEvent.click(screen.getByTitle('Analyze article quality'));
+    fireEvent.click(screen.getByTitle('Analyze page quality'));
 
     await waitFor(() => {
       expect(screen.getByText('Analyze')).toBeInTheDocument();
@@ -205,7 +205,7 @@ describe('QualityAnalysisPanel', () => {
       { wrapper: createWrapper() },
     );
 
-    fireEvent.click(screen.getByTitle('Analyze article quality'));
+    fireEvent.click(screen.getByTitle('Analyze page quality'));
 
     await waitFor(() => {
       expect(screen.getByText('Analyze')).toBeInTheDocument();
@@ -229,7 +229,7 @@ describe('QualityAnalysisPanel', () => {
       { wrapper: createWrapper() },
     );
 
-    fireEvent.click(screen.getByTitle('Analyze article quality'));
+    fireEvent.click(screen.getByTitle('Analyze page quality'));
 
     await waitFor(() => {
       expect(screen.getByText('Analyze')).toBeInTheDocument();
@@ -257,7 +257,7 @@ describe('QualityAnalysisPanel', () => {
       { wrapper: createWrapper() },
     );
 
-    fireEvent.click(screen.getByTitle('Analyze article quality'));
+    fireEvent.click(screen.getByTitle('Analyze page quality'));
 
     await waitFor(() => {
       expect(screen.getByText('Analyze')).toBeInTheDocument();
@@ -279,7 +279,7 @@ describe('QualityAnalysisPanel', () => {
       { wrapper: createWrapper() },
     );
 
-    const btn = screen.getByTitle('Analyze article quality');
+    const btn = screen.getByTitle('Analyze page quality');
     expect(btn).toBeInTheDocument();
   });
 });

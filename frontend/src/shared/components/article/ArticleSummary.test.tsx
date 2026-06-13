@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ArticleSummary } from './ArticleSummary';
@@ -102,6 +102,87 @@ describe('ArticleSummary', () => {
     );
     expect(screen.getByTestId('article-summary-pending')).toBeInTheDocument();
     expect(screen.getByText('Generating AI summary...')).toBeInTheDocument();
+  });
+
+  // The pending banner promises "AI summary will be generated shortly" — a
+  // promise that can't be kept while the LLM provider is down. When /api/health
+  // reports services.llm === false, show a muted offline note instead.
+  describe('LLM offline while summary pending', () => {
+    const fetchMock = vi.fn();
+
+    beforeEach(() => {
+      fetchMock.mockReset();
+      vi.stubGlobal('fetch', fetchMock);
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    function renderWithStatus(summaryStatus: 'pending' | 'summarizing') {
+      return render(
+        <ArticleSummary
+          pageId="p1"
+          summaryHtml={null}
+          summaryStatus={summaryStatus}
+          summaryGeneratedAt={null}
+          summaryModel={null}
+          summaryError={null}
+        />,
+        { wrapper: createWrapper() },
+      );
+    }
+
+    it('shows the offline note instead of the pending promise when health reports llm: false', async () => {
+      fetchMock.mockResolvedValue({
+        json: () => Promise.resolve({ status: 'degraded', services: { llm: false } }),
+      });
+
+      renderWithStatus('pending');
+
+      expect(await screen.findByTestId('article-summary-offline')).toBeInTheDocument();
+      expect(screen.getByText('AI summary unavailable — LLM provider offline')).toBeInTheDocument();
+      expect(screen.queryByText('AI summary will be generated shortly')).not.toBeInTheDocument();
+      expect(fetchMock).toHaveBeenCalledWith('/api/health');
+    });
+
+    it('keeps the pending text when health reports llm: true', async () => {
+      fetchMock.mockResolvedValue({
+        json: () => Promise.resolve({ status: 'ok', services: { llm: true } }),
+      });
+
+      renderWithStatus('pending');
+
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith('/api/health');
+      });
+      expect(screen.getByText('AI summary will be generated shortly')).toBeInTheDocument();
+      expect(screen.queryByTestId('article-summary-offline')).not.toBeInTheDocument();
+    });
+
+    it('keeps the pending text when the health endpoint is unavailable', async () => {
+      fetchMock.mockRejectedValue(new Error('network down'));
+
+      renderWithStatus('pending');
+
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith('/api/health');
+      });
+      expect(screen.getByText('AI summary will be generated shortly')).toBeInTheDocument();
+      expect(screen.queryByTestId('article-summary-offline')).not.toBeInTheDocument();
+    });
+
+    it('keeps "Generating AI summary..." while actively summarizing even if llm is reported down', () => {
+      fetchMock.mockResolvedValue({
+        json: () => Promise.resolve({ services: { llm: false } }),
+      });
+
+      renderWithStatus('summarizing');
+
+      // An in-flight generation already left the queue — don't contradict it.
+      expect(screen.getByText('Generating AI summary...')).toBeInTheDocument();
+      expect(screen.queryByTestId('article-summary-offline')).not.toBeInTheDocument();
+    });
   });
 
   it('renders failed state with error message and retry button (admin)', () => {

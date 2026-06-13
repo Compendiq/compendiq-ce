@@ -14,7 +14,6 @@
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { createClient } from 'redis';
 
 // Short-circuit DNS lookups performed by the SSRF guard during buildApp().
 vi.mock('node:dns/promises', () => ({
@@ -26,27 +25,13 @@ vi.mock('node:dns/promises', () => ({
 }));
 
 import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../test-db-helper.js';
+import { isRedisAvailable } from '../../test-redis-helper.js';
 import { query } from '../../core/db/postgres.js';
 import { buildApp } from '../../app.js';
 import { generateAccessToken } from '../../core/plugins/auth.js';
 
-async function checkRedisReachable(): Promise<boolean> {
-  const url = process.env.REDIS_URL ?? 'redis://localhost:6379';
-  const probe = createClient({ url });
-  probe.on('error', () => { /* swallow */ });
-  try {
-    await probe.connect();
-    await probe.ping();
-    await probe.quit();
-    return true;
-  } catch {
-    try { await probe.quit(); } catch { /* best effort */ }
-    return false;
-  }
-}
-
 const dbAvailable = await isDbAvailable();
-const redisAvailable = dbAvailable ? await checkRedisReachable() : false;
+const redisAvailable = dbAvailable ? await isRedisAvailable() : false;
 const canRun = dbAvailable && redisAvailable;
 
 let app: FastifyInstance;

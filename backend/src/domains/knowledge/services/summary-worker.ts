@@ -30,6 +30,7 @@
 import crypto from 'node:crypto';
 import { query } from '../../../core/db/postgres.js';
 import { emitWebhookEvent } from '../../../core/services/webhook-emit-hook.js';
+import { scanForPii } from '../../../core/services/pii-scan-hook.js';
 import { getSystemPrompt } from '../../llm/services/prompts.js';
 import { resolveUsecase } from '../../llm/services/llm-provider-resolver.js';
 import {
@@ -263,8 +264,34 @@ async function summarizePage(
       throw new Error('LLM returned empty summary');
     }
 
+    // PII guard (EE #119): scan the generated summary before persisting it.
+    // No-op in CE / when no policy is active. On 'blocked' the summary is
+    // withheld (terminal 'skipped' + content hash so it isn't retried until the
+    // source content changes); on 'redacted' the redacted variant is persisted.
+    const piiResult = await scanForPii(markdownSummary, 'summary');
+    if (piiResult?.action === 'blocked') {
+      await query(
+        `UPDATE pages
+         SET summary_status = 'skipped',
+             summary_error = $1,
+             summary_content_hash = $2,
+             summary_retry_count = 0
+         WHERE id = $3`,
+        ['Summary withheld: detected PII (policy: block)', contentHash, id],
+      );
+      logger.warn(
+        { pageId: id, title, piiSpans: piiResult.spans.length },
+        'Summary blocked — PII detected in generated summary',
+      );
+      return;
+    }
+    const summaryMarkdown =
+      piiResult?.action === 'redacted' && piiResult.redactedText
+        ? piiResult.redactedText
+        : markdownSummary;
+
     // Convert Markdown → HTML
-    const summaryHtml = await markdownToHtml(markdownSummary);
+    const summaryHtml = await markdownToHtml(summaryMarkdown);
     const summaryText = stripHtml(summaryHtml);
 
     // Store result

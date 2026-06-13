@@ -36,6 +36,45 @@ async function insertDeniedRow(resourceId: string, ageDays: number): Promise<voi
   );
 }
 
+// ── pending_sync_versions fixtures (#744) ──────────────────────────────
+
+async function setPendingSyncRetentionDays(days: number): Promise<void> {
+  await query(
+    `INSERT INTO admin_settings (setting_key, setting_value)
+     VALUES ($1, $2)
+     ON CONFLICT (setting_key) DO UPDATE SET setting_value = $2`,
+    ['pending_sync_versions_retention_days', String(days)],
+  );
+}
+
+/** Seed a space + page flagged with a pending conflict; returns the page id. */
+async function insertConflictPage(confluenceId: string): Promise<number> {
+  await query(
+    `INSERT INTO spaces (space_key, space_name) VALUES ('RET', 'RET')
+     ON CONFLICT (space_key) DO NOTHING`,
+  );
+  const r = await query<{ id: number }>(
+    `INSERT INTO pages
+       (confluence_id, source, space_key, title,
+        body_storage, body_html, body_text,
+        version, last_synced, conflict_pending, conflict_detected_at)
+     VALUES ($1, 'confluence', 'RET', 'Retention Test Page',
+             'b', 'b', 'b', 1, NOW(), TRUE, NOW())
+     RETURNING id`,
+    [confluenceId],
+  );
+  return r.rows[0]!.id;
+}
+
+async function insertPendingVersion(pageId: number, ageDays: number): Promise<void> {
+  await query(
+    `INSERT INTO pending_sync_versions
+       (page_id, confluence_version, body_storage, body_html, body_text, sync_run_id, detected_at)
+     VALUES ($1, 2, 's', 'h', 't', gen_random_uuid(), NOW() - ($2::text || ' days')::interval)`,
+    [pageId, String(ageDays)],
+  );
+}
+
 const dbAvailable = await isDbAvailable();
 
 beforeAll(async () => {
@@ -161,5 +200,79 @@ describe.skipIf(!dbAvailable)('ADMIN_ACCESS_DENIED retention purge (#264)', () =
       `SELECT action FROM audit_log WHERE action <> 'RETENTION_PRUNED' ORDER BY action`,
     );
     expect(remaining.rows.map((r) => r.action)).toEqual(['PAGE_CREATED']);
+  });
+});
+
+describe.skipIf(!dbAvailable)('pending_sync_versions retention rows_pruned count (#744)', () => {
+  // Regression: the sweep used `WITH deleted AS (DELETE … RETURNING page_id)
+  // SELECT DISTINCT page_id FROM deleted` and read `result.rowCount`, which
+  // for a CTE query reflects the outer SELECT DISTINCT — i.e. the number of
+  // DISTINCT PAGES, not deleted rows. Deleting 5 pending versions across 2
+  // pages reported rows_pruned = 2.
+  it('reports the number of deleted rows, not distinct pages', async () => {
+    await setPendingSyncRetentionDays(7);
+    const pageA = await insertConflictPage('ret-744-a');
+    const pageB = await insertConflictPage('ret-744-b');
+
+    // 5 stale rows across 2 distinct pages.
+    await insertPendingVersion(pageA, 30);
+    await insertPendingVersion(pageA, 31);
+    await insertPendingVersion(pageA, 32);
+    await insertPendingVersion(pageB, 30);
+    await insertPendingVersion(pageB, 31);
+
+    const results = await runRetentionCleanup();
+
+    // True deleted-row count — the buggy CTE rowCount reported 2 (pages).
+    expect(results['pending_sync_versions']).toBe(5);
+
+    // The compliance heartbeat must carry the same true row count.
+    const audit = await query<{ metadata: { rows_pruned: number } }>(
+      `SELECT metadata FROM audit_log
+        WHERE action = 'RETENTION_PRUNED' AND resource_id = 'pending_sync_versions'`,
+    );
+    expect(audit.rows).toHaveLength(1);
+    expect(audit.rows[0]!.metadata.rows_pruned).toBe(5);
+
+    // All stale rows are actually gone.
+    const left = await query<{ c: string }>(
+      `SELECT COUNT(*)::text AS c FROM pending_sync_versions`,
+    );
+    expect(left.rows[0]!.c).toBe('0');
+
+    // conflict_pending recompute still runs for every affected page.
+    const flags = await query<{ conflict_pending: boolean; conflict_detected_at: Date | null }>(
+      `SELECT conflict_pending, conflict_detected_at FROM pages WHERE id = ANY($1::int[])`,
+      [[pageA, pageB]],
+    );
+    expect(flags.rows).toHaveLength(2);
+    for (const row of flags.rows) {
+      expect(row.conflict_pending).toBe(false);
+      expect(row.conflict_detected_at).toBeNull();
+    }
+  });
+
+  it('keeps conflict_pending TRUE when a fresh pending version survives the sweep', async () => {
+    await setPendingSyncRetentionDays(7);
+    const pageId = await insertConflictPage('ret-744-c');
+
+    await insertPendingVersion(pageId, 30); // pruned
+    await insertPendingVersion(pageId, 1);  // survives
+
+    const results = await runRetentionCleanup();
+
+    expect(results['pending_sync_versions']).toBe(1);
+
+    const flags = await query<{ conflict_pending: boolean }>(
+      `SELECT conflict_pending FROM pages WHERE id = $1`,
+      [pageId],
+    );
+    expect(flags.rows[0]!.conflict_pending).toBe(true);
+
+    const left = await query<{ c: string }>(
+      `SELECT COUNT(*)::text AS c FROM pending_sync_versions WHERE page_id = $1`,
+      [pageId],
+    );
+    expect(left.rows[0]!.c).toBe('1');
   });
 });

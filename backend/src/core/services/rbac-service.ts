@@ -409,3 +409,22 @@ export async function userCanAccessPage(
   const accessibleSpaces = await getUserAccessibleSpaces(userId);
   return accessibleSpaces.includes(page.space_key);
 }
+
+/**
+ * #721: The spaces the user has EXPLICITLY selected for sync (their editor
+ * assignments that still correspond to an existing space row) — regardless of
+ * system-admin "all spaces" access. Used by GET /settings so deselecting a
+ * space is honoured for admins (getUserAccessibleSpaces would always
+ * re-include every known space for admins).
+ */
+export async function getSelectedSyncSpaces(userId: string): Promise<string[]> {
+  const r = await query<{ space_key: string }>(
+    `SELECT DISTINCT sra.space_key
+       FROM space_role_assignments sra
+       JOIN roles r ON r.id = sra.role_id AND r.name = 'editor'
+       JOIN spaces s ON s.space_key = sra.space_key
+      WHERE sra.principal_type = 'user' AND sra.principal_id = $1`,
+    [userId],
+  );
+  return r.rows.map((row) => row.space_key);
+}
