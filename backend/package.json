@@ -1,6 +1,6 @@
 {
   "name": "backend",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
   "//hoisting-note": "`p-limit` and `ipaddr.js` are ALSO declared in the root package.json `dependencies` block to force npm to hoist them to root node_modules. The runtime Docker stage only copies the root tree, so any version pinned here that ends up nested under backend/node_modules disappears at runtime. If you change the ranges below, update the root mirror in lockstep — the docker-build smoke step is the safety net but local repros are faster.",
