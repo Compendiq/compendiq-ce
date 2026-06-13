@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-06-13
+
 ### Changed
 
 - **BREAKING: Docker Compose hardening (#761, closes #740).** `docker/docker-compose.yml` no longer ships `changeme-postgres` / `changeme-redis` default credentials — `POSTGRES_PASSWORD` and `REDIS_PASSWORD` are now required (`${VAR:?...}`) and compose refuses to start without them. Use URL-safe values (`openssl rand -hex 24`); base64 output can contain `/`, `+`, `=`, which break the raw interpolation into `POSTGRES_URL`/`REDIS_URL`. **Existing installs:** the Postgres volume keeps the password it was initialized with — set the variables to the *current* values (the old defaults above, if you never changed them) or rotate via `ALTER USER kb_user WITH PASSWORD ...` first; see the [Admin Guide → Upgrade Procedure](docs/ADMIN-GUIDE.md#upgrade-procedure). Also breaking: the backend no longer publishes a host port (`BACKEND_HOST_PORT`/3052 removed) — all API traffic goes through the frontend nginx proxy (`http://localhost:8081/api/...`). The installer-generated Redis config switched from `allkeys-lru` to `noeviction` (BullMQ requirement — eviction silently dropped queued jobs), and dev-override data-tier ports now bind `127.0.0.1` only. (#740, #761)
