@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vitest';
 import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
+import { ZodError } from 'zod';
 
 // Hoisted query mock so we can reference it in tests
 vi.mock('../../core/services/rbac-service.js', () => ({
@@ -35,6 +36,18 @@ describe('Notification routes', () => {
       request.userId = 'test-user-id';
       request.username = 'testuser';
       request.userRole = 'user';
+    });
+
+    // Mirror the production app's Zod error handling (ZodError → 400)
+    app.setErrorHandler((error: Error & { statusCode?: number }, _request, reply) => {
+      if (error instanceof ZodError) {
+        return reply.status(400).send({ error: 'ValidationError', statusCode: 400 });
+      }
+      return reply.status(error.statusCode ?? 500).send({
+        error: error.name,
+        message: error.message,
+        statusCode: error.statusCode ?? 500,
+      });
     });
 
     await app.register(notificationRoutes, { prefix: '/api' });
@@ -127,6 +140,46 @@ describe('Notification routes', () => {
       const countCall = mockQuery.mock.calls[0];
       expect(countCall[0]).toContain('type = $');
       expect(countCall[1]).toContain('comment');
+    });
+
+    it('should reject an uncapped limit above the maximum', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/notifications?limit=100000000',
+      });
+
+      expect(response.statusCode).toBe(400);
+      // No DB query should run for invalid input
+      expect(mockQuery).not.toHaveBeenCalled();
+    });
+
+    it('should coerce and apply default limit/offset to the SELECT query', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] });
+      mockQuery.mockResolvedValueOnce({ rows: [] });
+
+      await app.inject({
+        method: 'GET',
+        url: '/api/notifications',
+      });
+
+      // Second call is the paginated SELECT; last two params are limit, offset
+      const selectCall = mockQuery.mock.calls[1];
+      const selectParams = selectCall[1] as unknown[];
+      expect(selectParams.slice(-2)).toEqual([50, 0]);
+    });
+
+    it('should coerce a valid limit string into a capped number', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] });
+      mockQuery.mockResolvedValueOnce({ rows: [] });
+
+      await app.inject({
+        method: 'GET',
+        url: '/api/notifications?limit=100&offset=10',
+      });
+
+      const selectCall = mockQuery.mock.calls[1];
+      const selectParams = selectCall[1] as unknown[];
+      expect(selectParams.slice(-2)).toEqual([100, 10]);
     });
   });
 

@@ -91,6 +91,10 @@ describe('SSRF Guard', () => {
     it('should block 0.0.0.0', () => {
       expect(() => validateUrl('http://0.0.0.0/api')).toThrow(SsrfError);
     });
+
+    it('should block 0.0.0.0/8 this-host range', () => {
+      expect(() => validateUrl('http://0.0.0.1/')).toThrow(SsrfError);
+    });
   });
 
   describe('blocked private IPv4 ranges', () => {

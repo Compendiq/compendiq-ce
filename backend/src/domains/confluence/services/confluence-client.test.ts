@@ -249,6 +249,41 @@ describe('ConfluenceClient', () => {
       const callUrl = mockRequest.mock.calls[0][0] as string;
       expect(callUrl).toContain(encodeURIComponent('space="OPS" AND type=page AND title="Shared Assets"'));
     });
+
+    it('escapes a double-quote in the space key so it cannot break out of the CQL literal', async () => {
+      const client = new ConfluenceClient(baseUrl, pat);
+      mockRequest.mockResolvedValue({
+        statusCode: 200,
+        body: { text: async () => JSON.stringify({ results: [], start: 0, limit: 1, size: 0 }) },
+      } as never);
+
+      // ri:space-key sourced from page XHTML could contain a quote to inject CQL.
+      await client.findPageByTitle('OPS" OR space="SECRET', 'Shared Assets');
+
+      const callUrl = mockRequest.mock.calls[0][0] as string;
+      const decodedCql = decodeURIComponent(callUrl.split('cql=')[1].split('&')[0]);
+      // The quote is escaped, so the value stays inside the space="..." literal
+      // and no bare ` OR space=` clause leaks into the query.
+      expect(decodedCql).toContain('space="OPS\\" OR space=\\"SECRET" AND ');
+      expect(decodedCql).not.toContain('space="OPS" OR space="SECRET"');
+    });
+  });
+
+  describe('getModifiedPages', () => {
+    it('escapes a double-quote in the space key so it cannot break out of the CQL literal', async () => {
+      const client = new ConfluenceClient(baseUrl, pat);
+      mockRequest.mockResolvedValue({
+        statusCode: 200,
+        body: { text: async () => JSON.stringify({ results: [], start: 0, limit: 50, size: 0 }) },
+      } as never);
+
+      await client.getModifiedPages(new Date('2026-06-01T00:00:00Z'), 'OPS" OR space="SECRET');
+
+      const callUrl = mockRequest.mock.calls[0][0] as string;
+      const decodedCql = decodeURIComponent(callUrl.split('cql=')[1].split('&')[0]);
+      expect(decodedCql).toContain('space="OPS\\" OR space=\\"SECRET" AND type=page');
+      expect(decodedCql).not.toContain('space="OPS" OR space="SECRET"');
+    });
   });
 
   describe('label management', () => {

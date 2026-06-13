@@ -4,6 +4,8 @@
  * Adapted from backend/src/core/utils/ssrf-guard.ts
  */
 
+import { lookup } from 'node:dns/promises';
+
 const BLOCKED_IPV4_PATTERNS = [
   /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/,
   /^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/,
@@ -62,6 +64,46 @@ export function validateUrl(urlString: string): URL {
 
   if (BLOCKED_SUFFIXES.some((s) => hostname.endsWith(s))) {
     throw new SsrfError('SSRF blocked: internal domain suffix');
+  }
+
+  return parsed;
+}
+
+/**
+ * DNS-resolving SSRF validation. Runs the sync `validateUrl()` checks first,
+ * then resolves the hostname (A + AAAA) and runs EVERY resolved address back
+ * through the private-IP blocklist. This closes the bypass where a publicly
+ * registered hostname resolves to an internal address (e.g. 169.254.169.254
+ * cloud metadata, 127.0.0.1, a Docker-internal service, or a DNS-rebinding
+ * domain) — the literal-string checks in validateUrl() never see that IP.
+ *
+ * NOTE: a TOCTOU gap remains between this lookup and the TCP connect; callers
+ * that follow redirects must re-validate each hop (fetch-url.ts uses
+ * redirect: 'manual' and rejects 3xx, so the connect target is fixed here).
+ *
+ * @throws SsrfError if the URL is malformed, non-HTTP(S), or any resolved
+ *   address is private/internal.
+ */
+export async function validateUrlWithDns(urlString: string): Promise<URL> {
+  // All sync syntax/protocol/literal-IP/hostname checks first.
+  const parsed = validateUrl(urlString);
+
+  // Resolve A + AAAA records and reject if ANY resolved address is private.
+  let addresses: Array<{ address: string }>;
+  try {
+    addresses = await lookup(parsed.hostname, { all: true });
+  } catch {
+    // DNS failures (ENOTFOUND, etc.) are surfaced by the HTTP client later;
+    // a name that does not resolve cannot reach an internal address here.
+    return parsed;
+  }
+
+  for (const { address } of addresses) {
+    if (isBlockedIpv4(address) || isBlockedIpv6(address)) {
+      throw new SsrfError(
+        `SSRF blocked: '${parsed.hostname}' resolved to private IP ${address}`,
+      );
+    }
   }
 
   return parsed;

@@ -18,6 +18,11 @@ vi.mock('../../domains/confluence/services/sync-service.js', () => ({
   getClientForUser: (...args: unknown[]) => mockGetClientForUser(...args),
 }));
 
+const mockGetUserAccessibleSpaces = vi.fn();
+vi.mock('../../core/services/rbac-service.js', () => ({
+  getUserAccessibleSpaces: (...args: unknown[]) => mockGetUserAccessibleSpaces(...args),
+}));
+
 vi.mock('../../core/services/content-converter.js', () => ({
   confluenceToHtml: (...args: unknown[]) => mockConfluenceToHtml(...args),
   htmlToConfluence: (...args: unknown[]) => mockHtmlToConfluence(...args),
@@ -99,6 +104,8 @@ describe('PUT /api/pages/:id', () => {
     mockConfluenceToHtml.mockReturnValue('<p>converted</p>');
     mockHtmlToConfluence.mockReturnValue('<p>storage</p>');
     mockHtmlToText.mockReturnValue('converted');
+    // Default: the test user can reach the OPS space used by the Confluence fixture.
+    mockGetUserAccessibleSpaces.mockResolvedValue(['OPS']);
 
     mockQuery.mockImplementation((sql: string) => {
       if (sql.includes('SELECT id, version, space_key')) {
@@ -138,6 +145,28 @@ describe('PUT /api/pages/:id', () => {
       'page-1',
       'OPS',
     );
+  });
+
+  it('returns 403 and does not push to Confluence when the page is in a space the user cannot access', async () => {
+    // Page lives in OPS but the user only has DEV — mirrors DELETE /pages/:id RBAC.
+    mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
+    const updatePage = vi.fn();
+    mockGetClientForUser.mockResolvedValue({ updatePage });
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/pages/page-1',
+      payload: {
+        title: 'Should not happen',
+        bodyHtml: '<p>unauthorized edit</p>',
+        version: 7,
+      },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(mockGetUserAccessibleSpaces).toHaveBeenCalledWith('user-1');
+    // Critical: no upstream edit must occur for an unauthorized space.
+    expect(updatePage).not.toHaveBeenCalled();
   });
 
   describe('standalone visibility change — cache invalidation', () => {

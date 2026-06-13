@@ -6,7 +6,7 @@
 import { JSDOM } from 'jsdom';
 import TurndownService from 'turndown';
 import type { RedisClientType } from 'redis';
-import { validateUrl } from '../security/ssrf-guard.js';
+import { validateUrlWithDns } from '../security/ssrf-guard.js';
 import { getDomainConfig, isDomainAllowed } from '../security/domain-filter.js';
 import { logOutboundRequest } from '../security/audit-logger.js';
 import { DocsCache, type CachedDoc } from '../cache/redis-cache.js';
@@ -45,8 +45,11 @@ export async function fetchUrl(
   const maxLength = Math.min(options.maxLength ?? DEFAULT_MAX_LENGTH, ABSOLUTE_MAX_LENGTH);
   const startIndex = options.startIndex ?? 0;
 
-  // 1. Validate URL (SSRF protection)
-  const parsed = validateUrl(url);
+  // 1. Validate URL (SSRF protection). DNS-resolving variant rejects a public
+  // hostname whose A/AAAA record points at an internal address — not just
+  // literal private-IP URLs. Redirects are blocked below (redirect: 'manual'),
+  // so the validated host is also the host actually connected to.
+  const parsed = await validateUrlWithDns(url);
 
   // 2. Check domain filter
   const domainConfig = await getDomainConfig(redis);

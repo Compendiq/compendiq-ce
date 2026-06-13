@@ -1,5 +1,9 @@
 import { FastifyInstance } from 'fastify';
 import {
+  NotificationListQuerySchema,
+  NotificationPreferenceUpdateSchema,
+} from '@compendiq/contracts';
+import {
   listNotifications,
   getUnreadCount,
   markAsRead,
@@ -18,19 +22,14 @@ export async function notificationRoutes(fastify: FastifyInstance) {
 
   // GET /notifications — List notifications (filter: unread, type; paginated)
   fastify.get('/notifications', async (request) => {
-    const { unread, type, limit, offset } = request.query as {
-      unread?: string;
-      type?: string;
-      limit?: string;
-      offset?: string;
-    };
+    const { unread, type, limit, offset } = NotificationListQuerySchema.parse(request.query);
 
     return listNotifications({
       userId: request.userId,
       unreadOnly: unread === 'true',
       type,
-      limit: limit ? parseInt(limit, 10) : undefined,
-      offset: offset ? parseInt(offset, 10) : undefined,
+      limit,
+      offset,
     });
   });
 
@@ -81,16 +80,8 @@ export async function notificationRoutes(fastify: FastifyInstance) {
   });
 
   // PUT /notification-preferences — Update preferences
-  fastify.put('/notification-preferences', async (request, reply) => {
-    const { type, inApp, email } = request.body as {
-      type?: string;
-      inApp?: boolean;
-      email?: boolean;
-    };
-
-    if (!type || typeof type !== 'string') {
-      return reply.badRequest('type is required');
-    }
+  fastify.put('/notification-preferences', async (request) => {
+    const { type, inApp, email } = NotificationPreferenceUpdateSchema.parse(request.body);
 
     await updatePreference(
       request.userId,
