@@ -105,6 +105,7 @@ describe('DuplicateDetector', () => {
       mocks.mockClientQuery.mockResolvedValueOnce({
         rows: [
           {
+            id: 101,
             confluence_id: 'neighbor-1',
             title: 'Neighbor Page',
             space_key: 'DEV',
@@ -118,6 +119,7 @@ describe('DuplicateDetector', () => {
       const result = await findDuplicates('user-1', 'conf-source', { distanceThreshold: 0.15, limit: 10 });
 
       expect(result).toHaveLength(1);
+      expect(result[0].id).toBe(101);
       expect(result[0].confluenceId).toBe('neighbor-1');
       expect(result[0].title).toBe('Neighbor Page');
       expect(result[0].spaceKey).toBe('DEV');
@@ -186,6 +188,11 @@ describe('DuplicateDetector', () => {
       expect(cteSQL).toContain('pe2.page_id = cp2.id');
       // The old broken join referenced pe2.confluence_id — verify it's gone
       expect(cteSQL).not.toContain('pe2.confluence_id');
+      // Dedup on the page PK (cp2.id), not the nullable confluence_id —
+      // otherwise standalone pages (confluence_id IS NULL) collapse into one row.
+      expect(cteSQL).toContain('DISTINCT ON (cp2.id)');
+      expect(cteSQL).not.toContain('DISTINCT ON (cp2.confluence_id)');
+      expect(cteSQL).toContain('ORDER BY cp2.id, pe2.embedding');
     });
 
     // ── #733 RBAC regressions ───────────────────────────────────────────
@@ -234,8 +241,8 @@ describe('DuplicateDetector', () => {
       // CTE returns one close match and one far one
       mocks.mockClientQuery.mockResolvedValueOnce({
         rows: [
-          { confluence_id: 'close-1', title: 'Close Neighbor', space_key: 'DEV', distance: 0.05 },
-          { confluence_id: 'far-1', title: 'Far Neighbor', space_key: 'DEV', distance: 0.50 },
+          { id: 1, confluence_id: 'close-1', title: 'Close Neighbor', space_key: 'DEV', distance: 0.05 },
+          { id: 2, confluence_id: 'far-1', title: 'Far Neighbor', space_key: 'DEV', distance: 0.50 },
         ],
       });
       mocks.mockClientQuery.mockResolvedValueOnce(undefined); // COMMIT
@@ -272,7 +279,7 @@ describe('DuplicateDetector', () => {
       mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
       // Pages scan returns one page
       mocks.mockQuery.mockResolvedValueOnce({
-        rows: [{ confluence_id: 'page-a', title: 'Page A' }],
+        rows: [{ id: 10, confluence_id: 'page-a', title: 'Page A' }],
       });
 
       // findDuplicates for 'page-a': preliminary SELECT
@@ -284,7 +291,7 @@ describe('DuplicateDetector', () => {
       mocks.mockClientQuery.mockResolvedValueOnce(undefined); // SET LOCAL
       mocks.mockClientQuery.mockResolvedValueOnce({
         rows: [
-          { confluence_id: 'page-b', title: 'Page B', space_key: 'DEV', distance: 0.08 },
+          { id: 20, confluence_id: 'page-b', title: 'Page B', space_key: 'DEV', distance: 0.08 },
         ],
       }); // CTE
       mocks.mockClientQuery.mockResolvedValueOnce(undefined); // COMMIT
@@ -301,8 +308,8 @@ describe('DuplicateDetector', () => {
       // Pages scan returns two pages
       mocks.mockQuery.mockResolvedValueOnce({
         rows: [
-          { confluence_id: 'page-a', title: 'Page A' },
-          { confluence_id: 'page-b', title: 'Page B' },
+          { id: 10, confluence_id: 'page-a', title: 'Page A' },
+          { id: 20, confluence_id: 'page-b', title: 'Page B' },
         ],
       });
 
@@ -312,7 +319,7 @@ describe('DuplicateDetector', () => {
         .mockResolvedValueOnce(undefined) // BEGIN
         .mockResolvedValueOnce(undefined) // SET LOCAL
         .mockResolvedValueOnce({
-          rows: [{ confluence_id: 'page-b', title: 'Page B', space_key: 'DEV', distance: 0.08 }],
+          rows: [{ id: 20, confluence_id: 'page-b', title: 'Page B', space_key: 'DEV', distance: 0.08 }],
         }) // CTE
         .mockResolvedValueOnce(undefined); // COMMIT
 
@@ -322,7 +329,7 @@ describe('DuplicateDetector', () => {
         .mockResolvedValueOnce(undefined) // BEGIN
         .mockResolvedValueOnce(undefined) // SET LOCAL
         .mockResolvedValueOnce({
-          rows: [{ confluence_id: 'page-a', title: 'Page A', space_key: 'DEV', distance: 0.08 }],
+          rows: [{ id: 10, confluence_id: 'page-a', title: 'Page A', space_key: 'DEV', distance: 0.08 }],
         }) // CTE
         .mockResolvedValueOnce(undefined); // COMMIT
 

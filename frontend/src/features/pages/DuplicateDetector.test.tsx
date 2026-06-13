@@ -117,6 +117,7 @@ describe('DuplicateDetector', () => {
         JSON.stringify({
           duplicates: [
             {
+              id: 2,
               confluenceId: 'page-2',
               title: 'Similar Page',
               spaceKey: 'DEV',
@@ -153,6 +154,7 @@ describe('DuplicateDetector', () => {
         JSON.stringify({
           duplicates: [
             {
+              id: 2,
               confluenceId: 'page-2',
               title: 'Similar Page',
               spaceKey: 'DEV',
@@ -181,6 +183,46 @@ describe('DuplicateDetector', () => {
 
     fireEvent.click(screen.getByText('View'));
     expect(mockNavigate).toHaveBeenCalledWith('/pages/page-2');
+  });
+
+  it('navigates via numeric id for standalone duplicates (null confluenceId)', async () => {
+    // Standalone articles have confluenceId === null; the nav target must fall
+    // back to the page's numeric id, not the literal string "null".
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          duplicates: [
+            {
+              id: 77,
+              confluenceId: null,
+              title: 'Standalone Note',
+              spaceKey: '',
+              embeddingDistance: 0.1,
+              titleSimilarity: 0.5,
+              combinedScore: 0.78,
+            },
+          ],
+          pageId: 'page-1',
+        }),
+        { headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    render(
+      <DuplicateDetector pageId="page-1" pageTitle="Test Page" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('Duplicates'));
+    fireEvent.click(screen.getByText('Find Duplicates'));
+
+    await waitFor(() => {
+      expect(screen.getByText('View')).toBeInTheDocument();
+    });
+
+    // View navigates to the numeric id, not the literal "null".
+    fireEvent.click(screen.getByText('View'));
+    expect(mockNavigate).toHaveBeenCalledWith('/pages/77');
   });
 
   it('closes dialog via close button', async () => {

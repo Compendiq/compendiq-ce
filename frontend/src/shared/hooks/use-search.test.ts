@@ -259,6 +259,40 @@ describe('useSearch', () => {
     expect(enhancedCalls).toHaveLength(0);
   });
 
+  it('adds sort to the keyword query URL when sort is not relevance', async () => {
+    const fetchSpy = mockFetch(makeSearchResponse({ mode: 'keyword' }));
+
+    const { result } = renderHook(
+      () => useSearch({ query: 'redis', mode: 'keyword', sort: 'modified' }),
+      { wrapper: createWrapper() },
+    );
+
+    await waitFor(() => expect(result.current.isLoadingImmediate).toBe(false));
+
+    const searchCalls = fetchSpy.mock.calls.filter(([url]) =>
+      typeof url === 'string' && (url as string).includes('/search'),
+    );
+    const url = searchCalls[0][0] as string;
+    expect(url).toContain('sort=modified');
+  });
+
+  it('omits the sort param when sort is relevance (server default)', async () => {
+    const fetchSpy = mockFetch(makeSearchResponse({ mode: 'keyword' }));
+
+    const { result } = renderHook(
+      () => useSearch({ query: 'redis', mode: 'keyword', sort: 'relevance' }),
+      { wrapper: createWrapper() },
+    );
+
+    await waitFor(() => expect(result.current.isLoadingImmediate).toBe(false));
+
+    const searchCalls = fetchSpy.mock.calls.filter(([url]) =>
+      typeof url === 'string' && (url as string).includes('/search'),
+    );
+    const url = searchCalls[0][0] as string;
+    expect(url).not.toContain('sort=');
+  });
+
   it('passes spaceKey to both query URLs', async () => {
     const fetchSpy = mockFetch(makeSearchResponse(), makeSearchResponse({ mode: 'hybrid' }));
 

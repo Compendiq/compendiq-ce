@@ -2,6 +2,7 @@ import { NodeViewWrapper } from '@tiptap/react';
 import { useEffect, useState } from 'react';
 import { File, FileText, FileImage, FileArchive, FileCode, Loader2 } from 'lucide-react';
 import { useParams } from 'react-router-dom';
+import { apiFetch } from '../../lib/api';
 import type { NodeViewProps } from '@tiptap/react';
 
 interface Attachment {
@@ -56,11 +57,9 @@ export function AttachmentsMacroView({ editor }: NodeViewProps) {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(`/api/attachments/${encodeURIComponent(pageId)}/list`);
-        if (!res.ok) {
-          throw new Error(`Failed to load attachments (${res.status})`);
-        }
-        const data = await res.json();
+        const data = await apiFetch<{ attachments?: Attachment[] }>(
+          `/attachments/${encodeURIComponent(pageId)}/list`,
+        );
         if (!cancelled) {
           setAttachments(data.attachments ?? []);
         }
