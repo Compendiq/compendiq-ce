@@ -8,20 +8,17 @@
  * pass-through, so existing deployments keep working unchanged.
  */
 
-import { timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import type { Request, Response, NextFunction } from 'express';
 import { logger } from './logger.js';
 
 export const MCP_AUTH_HEADER = 'x-mcp-docs-token';
 
 function constantTimeEqual(presented: string, expected: string): boolean {
-  const a = Buffer.from(presented, 'utf8');
-  const b = Buffer.from(expected, 'utf8');
-  if (a.length !== b.length) {
-    // Keep timing roughly constant on a length mismatch, then fail.
-    timingSafeEqual(b, b);
-    return false;
-  }
+  // Compare fixed-length SHA-256 digests: neither the comparison time nor an
+  // early length-mismatch branch can leak anything about the expected token.
+  const a = createHash('sha256').update(presented).digest();
+  const b = createHash('sha256').update(expected).digest();
   return timingSafeEqual(a, b);
 }
 

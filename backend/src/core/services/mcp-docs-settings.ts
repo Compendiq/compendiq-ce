@@ -62,7 +62,11 @@ function parseDomainList(raw: string | undefined, fallback: string[]): string[] 
   if (!raw) return fallback;
   try {
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : fallback;
+    if (Array.isArray(parsed) && parsed.every((d) => typeof d === 'string')) {
+      return parsed;
+    }
+    logger.warn('MCP docs domain list is not a string array, using default for this field');
+    return fallback;
   } catch (err) {
     logger.warn({ err }, 'Invalid MCP docs domain list JSON, using default for this field');
     return fallback;

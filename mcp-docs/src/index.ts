@@ -207,10 +207,11 @@ setInterval(() => {
 }, SESSION_REAP_INTERVAL_MS).unref();
 
 const app = express();
-app.use(express.json());
 
-// Shared-secret guard on /mcp (all methods); /health below stays open.
+// Shared-secret guard on /mcp (all methods) — registered BEFORE express.json so
+// an unauthenticated request's body is never parsed. /health below stays open.
 app.use('/mcp', makeMcpAuth(MCP_DOCS_TOKEN));
+app.use(express.json());
 
 // MCP endpoint
 app.post('/mcp', async (req, res) => {

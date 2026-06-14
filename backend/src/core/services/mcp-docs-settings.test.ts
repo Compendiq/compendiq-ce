@@ -53,6 +53,21 @@ describe('mcp-docs-settings', () => {
     expect(settings.allowedDomains).toEqual(['*']);
   });
 
+  it('falls back when a domain list is valid JSON but not a string array', async () => {
+    vi.mocked(query).mockResolvedValueOnce({
+      rows: [
+        { setting_key: 'mcp_docs_enabled', setting_value: 'true' },
+        { setting_key: 'mcp_docs_blocked_domains', setting_value: '[1, 2, 3]' },
+      ],
+      rowCount: 2, command: 'SELECT', oid: 0, fields: [],
+    });
+
+    const settings = await getMcpDocsSettings();
+
+    expect(settings.enabled).toBe(true);
+    expect(settings.blockedDomains).toEqual([]); // DEFAULTS.blockedDomains
+  });
+
   it('parses stored settings correctly', async () => {
     vi.mocked(query).mockResolvedValueOnce({
       rows: [
