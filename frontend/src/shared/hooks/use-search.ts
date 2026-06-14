@@ -45,6 +45,8 @@ interface UseSearchParams {
   mode: 'keyword' | 'semantic' | 'hybrid';
   spaceKey?: string;
   page?: number;
+  /** Sort order for keyword/immediate results. Semantic & hybrid ignore this (score-ordered server-side). */
+  sort?: 'relevance' | 'modified' | 'title';
 }
 
 interface UseSearchResult {
@@ -81,7 +83,7 @@ const MIN_QUERY_LENGTH = 1;
  * staleTime: 0 on both — search results are query-specific and must not be
  * served from the TanStack Query cache between different search terms.
  */
-export function useSearch({ query, mode, spaceKey, page: requestedPage = 1 }: UseSearchParams): UseSearchResult {
+export function useSearch({ query, mode, spaceKey, page: requestedPage = 1, sort = 'relevance' }: UseSearchParams): UseSearchResult {
   // Debounce the query string
   const [debouncedQuery, setDebouncedQuery] = useState(query);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -105,6 +107,8 @@ export function useSearch({ query, mode, spaceKey, page: requestedPage = 1 }: Us
     sp.set('limit', '10');
     if (pageNum > 1) sp.set('page', String(pageNum));
     if (spaceKey) sp.set('spaceKey', spaceKey);
+    // Sort only affects keyword results — semantic/hybrid are score-ordered server-side.
+    if (searchMode === 'keyword' && sort !== 'relevance') sp.set('sort', sort);
     return `/search?${sp.toString()}`;
   }
 
@@ -114,7 +118,7 @@ export function useSearch({ query, mode, spaceKey, page: requestedPage = 1 }: Us
   const enhancedHasData = useRef(false);
 
   const immediateQuery = useQuery<SearchApiResponse>({
-    queryKey: ['search', 'immediate', trimmedQuery, spaceKey, requestedPage],
+    queryKey: ['search', 'immediate', trimmedQuery, spaceKey, requestedPage, sort],
     queryFn: () => apiFetch<SearchApiResponse>(buildUrl('keyword', requestedPage)),
     enabled: isQueryEnabled && !enhancedHasData.current,
     staleTime: 30_000,

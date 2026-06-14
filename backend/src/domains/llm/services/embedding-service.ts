@@ -319,6 +319,11 @@ export async function embedPage(
   // remain intact in the database.
   const batchSize = 10;
   const allEmbeddings: Array<{ chunkIndex: number; text: string; embedding: number[]; metadata: ChunkMetadata }> = [];
+  // Tracks whether any batch was dropped because it exceeded the embedding
+  // model's context length. Used to distinguish "page legitimately has no
+  // embeddable content" from "every batch was skipped" so we never destroy
+  // existing embeddings or falsely mark the page embedded in the latter case.
+  let skippedBatches = false;
 
   // Resolve the `embedding` use-case once per page so we don't hit the
   // resolver cache on every batch. Rotating providers mid-page would mix
@@ -349,11 +354,31 @@ export async function embedPage(
           { pageId, batchOffset: i, batchSize: batch.length },
           'Skipping oversized embedding batch (context length exceeded)',
         );
+        skippedBatches = true;
         continue;
       }
       logger.error({ err, pageId, batch: i }, 'Failed to embed batch');
       throw err;
     }
+  }
+
+  // If every batch was skipped for exceeding the context length, no embeddings
+  // were produced. Do NOT enter Phase 2 — the unconditional DELETE there would
+  // wipe the page's existing (good) embeddings and the UPDATE would falsely mark
+  // the page 'embedded', silently dropping it from the RAG index. Instead leave
+  // existing embeddings intact, mark the page failed and keep it dirty so a
+  // future retry (or content change) can re-embed it.
+  if (allEmbeddings.length === 0 && skippedBatches) {
+    await query(
+      `UPDATE pages SET embedding_status = 'failed', embedding_dirty = TRUE, embedding_error = $2
+       WHERE id = $1`,
+      [pageId, 'all chunk batches exceeded embedding context length'],
+    );
+    logger.warn(
+      { pageId, pageTitle },
+      'All embedding batches exceeded context length — page left dirty, existing embeddings preserved',
+    );
+    return 0;
   }
 
   // ── Phase 2: Atomically replace old embeddings with new ones ─────────────────

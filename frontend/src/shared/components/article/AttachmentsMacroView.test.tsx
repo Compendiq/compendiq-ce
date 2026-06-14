@@ -18,6 +18,13 @@ vi.mock('lucide-react', () => ({
   Loader2: () => <span data-testid="icon-loader" />,
 }));
 
+// Mock the shared authenticated api helper. The component must use apiFetch
+// (which attaches the Authorization header) rather than a bare fetch().
+const mockApiFetch = vi.fn();
+vi.mock('../../lib/api', () => ({
+  apiFetch: (...args: unknown[]) => mockApiFetch(...args),
+}));
+
 function makeProps(overrides: Partial<NodeViewProps> = {}): NodeViewProps {
   return {
     node: {
@@ -44,27 +51,34 @@ function makeProps(overrides: Partial<NodeViewProps> = {}): NodeViewProps {
 
 describe('AttachmentsMacroView', () => {
   beforeEach(() => {
-    vi.restoreAllMocks();
+    vi.clearAllMocks();
+  });
+
+  it('requests attachments via the authenticated api helper', async () => {
+    mockApiFetch.mockResolvedValue({ attachments: [] });
+
+    render(<AttachmentsMacroView {...makeProps()} />);
+
+    await waitFor(() => {
+      expect(mockApiFetch).toHaveBeenCalledWith('/attachments/12345/list');
+    });
   });
 
   it('renders loading state initially', () => {
-    // Never resolve fetch so we stay in loading state
-    vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise(() => {}));
+    // Never resolve so we stay in loading state
+    mockApiFetch.mockImplementation(() => new Promise(() => {}));
 
     render(<AttachmentsMacroView {...makeProps()} />);
     expect(screen.getByText('Loading attachments...')).toBeTruthy();
   });
 
   it('renders attachment list after successful fetch', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        attachments: [
-          { filename: 'diagram.png', size: 1024, url: '/api/attachments/12345/diagram.png' },
-          { filename: 'report.pdf', size: 2048576, url: '/api/attachments/12345/report.pdf' },
-        ],
-      }),
-    } as Response);
+    mockApiFetch.mockResolvedValue({
+      attachments: [
+        { filename: 'diagram.png', size: 1024, url: '/api/attachments/12345/diagram.png' },
+        { filename: 'report.pdf', size: 2048576, url: '/api/attachments/12345/report.pdf' },
+      ],
+    });
 
     render(<AttachmentsMacroView {...makeProps()} />);
 
@@ -79,10 +93,7 @@ describe('AttachmentsMacroView', () => {
   });
 
   it('renders empty state when no attachments', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
-      ok: true,
-      json: async () => ({ attachments: [] }),
-    } as Response);
+    mockApiFetch.mockResolvedValue({ attachments: [] });
 
     render(<AttachmentsMacroView {...makeProps()} />);
 
@@ -92,27 +103,21 @@ describe('AttachmentsMacroView', () => {
   });
 
   it('renders error state on fetch failure', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
-      ok: false,
-      status: 500,
-    } as Response);
+    mockApiFetch.mockRejectedValue(new Error('Failed to load attachments'));
 
     render(<AttachmentsMacroView {...makeProps()} />);
 
     await waitFor(() => {
-      expect(screen.getByText('Failed to load attachments (500)')).toBeTruthy();
+      expect(screen.getByText('Failed to load attachments')).toBeTruthy();
     });
   });
 
   it('renders download links in read-only mode', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        attachments: [
-          { filename: 'doc.txt', size: 100, url: '/api/attachments/12345/doc.txt' },
-        ],
-      }),
-    } as Response);
+    mockApiFetch.mockResolvedValue({
+      attachments: [
+        { filename: 'doc.txt', size: 100, url: '/api/attachments/12345/doc.txt' },
+      ],
+    });
 
     render(<AttachmentsMacroView {...makeProps({ editor: { isEditable: false } as NodeViewProps['editor'] })} />);
 
@@ -124,14 +129,11 @@ describe('AttachmentsMacroView', () => {
   });
 
   it('renders plain text (not links) in edit mode', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        attachments: [
-          { filename: 'doc.txt', size: 100, url: '/api/attachments/12345/doc.txt' },
-        ],
-      }),
-    } as Response);
+    mockApiFetch.mockResolvedValue({
+      attachments: [
+        { filename: 'doc.txt', size: 100, url: '/api/attachments/12345/doc.txt' },
+      ],
+    });
 
     render(<AttachmentsMacroView {...makeProps({ editor: { isEditable: true } as NodeViewProps['editor'] })} />);
 

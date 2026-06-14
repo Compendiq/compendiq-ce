@@ -5,7 +5,7 @@ import { request } from 'undici';
 import type { RedisClientType } from 'redis';
 import { ConfluenceClient, ConfluenceAttachment } from './confluence-client.js';
 import { logger } from '../../../core/utils/logger.js';
-import { validateUrl } from '../../../core/utils/ssrf-guard.js';
+import { assertNonSsrfUrl } from '../../../core/utils/ssrf-guard.js';
 import {
   extractImageReferences,
   SUPPORTED_IMAGE_EXTENSIONS,
@@ -486,7 +486,10 @@ async function cacheExternalImage(
 }
 
 async function downloadExternalImage(url: string): Promise<ExternalImageDownloadResult> {
-  validateUrl(url);
+  // Content-sourced external image URLs are untrusted (lifted verbatim from
+  // synced Confluence page bodies, never allowlisted), so use the DNS-resolving
+  // SSRF guard to block public hostnames that resolve to private/internal IPs.
+  await assertNonSsrfUrl(url);
 
   const { statusCode, headers, body } = await request(url, {
     signal: AbortSignal.timeout(15_000),

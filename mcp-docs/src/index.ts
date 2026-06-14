@@ -18,6 +18,7 @@ import { fetchUrl } from './tools/fetch-url.js';
 import { searchWeb } from './tools/search-web.js';
 import { listCached } from './tools/list-cached.js';
 import { logger } from './logger.js';
+import { parsePort, parseCacheTtl } from './config.js';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -27,10 +28,20 @@ const APP_VERSION: string = JSON.parse(
   readFileSync(resolve(__dirname, '../package.json'), 'utf-8'),
 ).version;
 
-const PORT = parseInt(process.env.PORT ?? '3100', 10);
+// A malformed PORT (e.g. empty-but-set, or non-numeric) parses to NaN;
+// app.listen(NaN) would silently bind a random ephemeral port instead of
+// failing. Fail fast. (Narrow null -> number for use inside start()'s closure.)
+const parsedPort = parsePort(process.env.PORT);
+if (parsedPort === null) {
+  logger.fatal({ port: process.env.PORT }, 'Invalid PORT — must be an integer in 1..65535');
+  process.exit(1);
+}
+const PORT: number = parsedPort;
+
 const HOST = process.env.MCP_DOCS_HOST ?? '127.0.0.1';
 const REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379';
-const CACHE_TTL = parseInt(process.env.CACHE_TTL_SECONDS ?? '3600', 10);
+// CACHE_TTL is non-fatal: falls back to the default when unset/malformed.
+const CACHE_TTL = parseCacheTtl(process.env.CACHE_TTL_SECONDS);
 
 // ── Redis connection ────────────────────────────────────────────────────
 

@@ -12,6 +12,7 @@ import type { PoolClient } from 'pg';
 import { query, getPool } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
 import { invalidateUserSecurityState } from './user-security-cache.js';
+import { invalidateRbacCache } from './rbac-service.js';
 import type { AdminUser, AdminUserRole } from '@compendiq/contracts';
 
 const BCRYPT_ROUNDS = 10;
@@ -254,6 +255,14 @@ export async function updateUser(id: string, patch: UpdateUserOptions): Promise<
     await client.query('COMMIT');
     if (roleChanged) {
       await invalidateUserSecurityState(id);
+      // A role change crosses a privilege boundary — flush the RBAC caches
+      // (rbac:admin/spaces/perms/global:<id>) so a demoted admin loses the
+      // system-admin bypass immediately instead of after the 60s TTL. The
+      // per-request auth check already rejects the old-role access token;
+      // this closes the residual all-spaces/all-pages bypass that survives
+      // a forced re-login (rbac-service reads its own Redis cache, not the
+      // token claim).
+      await invalidateRbacCache(id);
     }
     return rowToAdminUser(res.rows[0]!);
   } catch (err: unknown) {

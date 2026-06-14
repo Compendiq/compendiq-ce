@@ -190,6 +190,7 @@ export function SearchPage() {
     mode: searchMode,
     spaceKey: filters.spaceKey,
     page,
+    sort,
   });
 
   // Display enhanced results if available; fall back to immediate results.

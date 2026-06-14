@@ -43,7 +43,16 @@ vi.mock('node:fs/promises', () => ({
 // Mock Redis client
 const mockRedisGet = vi.fn();
 const mockRedisSetEx = vi.fn();
-const mockRedisClient = { get: mockRedisGet, setEx: mockRedisSetEx };
+const mockRedisScan = vi.fn();
+const mockRedisDel = vi.fn();
+const mockRedisKeys = vi.fn();
+const mockRedisClient = {
+  get: mockRedisGet,
+  setEx: mockRedisSetEx,
+  scan: mockRedisScan,
+  del: mockRedisDel,
+  keys: mockRedisKeys,
+};
 vi.mock('../../core/services/redis-cache.js', () => ({
   getRedisClient: () => mockRedisClient,
 }));
@@ -90,6 +99,11 @@ describe('Attachment routes', () => {
     });
     mockRedisGet.mockResolvedValue(null);
     mockRedisSetEx.mockResolvedValue('OK');
+    // Default: SCAN returns an empty page and a terminal cursor so the
+    // invalidation loop completes in one iteration.
+    mockRedisScan.mockResolvedValue({ cursor: 0, keys: [] });
+    mockRedisDel.mockResolvedValue(0);
+    mockRedisKeys.mockResolvedValue([]);
   });
 
   it('should return 404 when the page is not in the user selected spaces', async () => {
@@ -651,6 +665,57 @@ describe('Attachment routes', () => {
         'diagram.png',
         expect.any(Buffer),
       );
+    });
+
+    it('invalidates the page cache with a non-blocking SCAN loop (never KEYS)', async () => {
+      mockGetClientForUser.mockResolvedValue(mockClient);
+      mockWriteAttachmentCache.mockResolvedValue('/data/attachments/page-123/diagram.png');
+
+      // Two-page SCAN walk: first page yields matching keys + a non-terminal
+      // cursor, second page yields the terminal cursor '0' to end the loop.
+      mockRedisScan
+        .mockResolvedValueOnce({ cursor: 42, keys: ['a:page:page-123:list', 'b:page:page-123:tree'] })
+        .mockResolvedValueOnce({ cursor: 0, keys: [] });
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/attachments/page-123/diagram.png',
+        payload: { dataUri: VALID_PNG_DATA_URI },
+      });
+
+      expect(response.statusCode).toBe(200);
+
+      // SCAN (cursor-based) is used, KEYS (blocking, O(N) keyspace walk) is not.
+      expect(mockRedisKeys).not.toHaveBeenCalled();
+      expect(mockRedisScan).toHaveBeenCalledTimes(2);
+      expect(mockRedisScan).toHaveBeenNthCalledWith(1, '0', {
+        MATCH: '*:page:page-123*',
+        COUNT: 100,
+      });
+      // Second call resumes from the cursor returned by the first page.
+      expect(mockRedisScan).toHaveBeenNthCalledWith(2, '42', {
+        MATCH: '*:page:page-123*',
+        COUNT: 100,
+      });
+      // Matched keys from the first page are deleted.
+      expect(mockRedisDel).toHaveBeenCalledWith(['a:page:page-123:list', 'b:page:page-123:tree']);
+    });
+
+    it('keeps cache invalidation non-fatal when SCAN throws', async () => {
+      mockGetClientForUser.mockResolvedValue(mockClient);
+      mockWriteAttachmentCache.mockResolvedValue('/data/attachments/page-123/diagram.png');
+      mockRedisScan.mockRejectedValue(new Error('Redis unavailable'));
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/attachments/page-123/diagram.png',
+        payload: { dataUri: VALID_PNG_DATA_URI },
+      });
+
+      // The PNG already uploaded — a cache-invalidation failure must not fail
+      // the request (the cache expires naturally on TTL).
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ success: true, filename: 'diagram.png' });
     });
 
     it('should return 500 when Confluence upload fails', async () => {
