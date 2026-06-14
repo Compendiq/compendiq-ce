@@ -191,6 +191,10 @@ export function SearchPage() {
     spaceKey: filters.spaceKey,
     page,
     sort,
+    author: filters.author,
+    dateFrom: filters.dateFrom,
+    dateTo: filters.dateTo,
+    labels: filters.labels,
   });
 
   // Display enhanced results if available; fall back to immediate results.

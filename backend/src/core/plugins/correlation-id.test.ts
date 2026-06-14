@@ -58,6 +58,21 @@ describe('correlation-id plugin', () => {
     expect(response.headers['x-correlation-id']).toBe(customId);
   });
 
+  it('falls back to a generated UUID when the inbound ID exceeds the length bound', async () => {
+    const tooLong = 'x'.repeat(300);
+    const response = await app.inject({
+      method: 'GET',
+      url: '/test',
+      headers: { 'x-correlation-id': tooLong },
+    });
+
+    const body = JSON.parse(response.body);
+    expect(body.correlationId).not.toBe(tooLong);
+    expect(body.correlationId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    );
+  });
+
   it('should generate unique IDs for different requests', async () => {
     const response1 = await app.inject({ method: 'GET', url: '/test' });
     const response2 = await app.inject({ method: 'GET', url: '/test' });

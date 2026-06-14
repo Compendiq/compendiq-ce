@@ -31,11 +31,27 @@ export function createCorrelationLogger(correlationId: string): Logger {
   return rootLogger.child({ correlationId });
 }
 
+/** Upper bound on an accepted inbound correlation ID (generous; a UUID is 36). */
+export const MAX_CORRELATION_ID_LENGTH = 256;
+
+/**
+ * Resolve the correlation ID for a request: reuse the inbound `x-correlation-id`
+ * header when present and within {@link MAX_CORRELATION_ID_LENGTH}, otherwise
+ * mint a fresh UUID. Bounding the length stops an oversized client-supplied
+ * value from bloating every log line and the reflected response header.
+ */
+export function resolveCorrelationId(raw: string | string[] | undefined): string {
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  if (value && value.length > 0 && value.length <= MAX_CORRELATION_ID_LENGTH) {
+    return value;
+  }
+  return randomUUID();
+}
+
 export default fp(async (fastify: FastifyInstance) => {
   fastify.addHook('onRequest', async (request: FastifyRequest, reply: FastifyReply) => {
-    // Read from header or generate a new UUID
-    const correlationId =
-      (request.headers['x-correlation-id'] as string) || randomUUID();
+    // Reuse a sane inbound ID, otherwise generate a new UUID.
+    const correlationId = resolveCorrelationId(request.headers['x-correlation-id']);
 
     request.correlationId = correlationId;
 
