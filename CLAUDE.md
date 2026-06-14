@@ -114,6 +114,7 @@ Feature PRs to `dev` → no bump. Release (`dev → main`) → bump all five `pa
 - `npm install` from repo root only — workspaces require a single root lockfile.
 - `pino-pretty` is a devDependency (excluded from production images).
 - Pin majors for framework deps (React 19, Fastify 5, TipTap v3).
+- **Root override `"vite": "^7.3.3"`** pins the whole tree to vite 7 (don't remove without testing `npm run dev`). vitest 4 / `@tailwindcss/vite` otherwise pull vite 8 → `rolldown@1.0.1`, whose stricter transform contract breaks `@vitejs/plugin-react@5.2.0`'s native react-refresh wrapper in the dev server (`Missing field moduleType`). Lifting the pin requires moving the app to vite 8 + `@vitejs/plugin-react` 6.x together. See #800.
 
 ## Code Quality
 
