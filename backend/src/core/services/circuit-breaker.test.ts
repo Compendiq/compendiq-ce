@@ -138,6 +138,24 @@ describe('CircuitBreaker', () => {
       expect(breaker.getStatus().state).toBe('CLOSED');
       expect(breaker.getStatus().failureCount).toBe(0);
     });
+
+    it('admits only one concurrent probe in HALF_OPEN', async () => {
+      vi.useRealTimers();
+      let started = 0;
+      const slow = () => breaker.execute(async () => {
+        started++;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return 'ok';
+      });
+
+      const results = await Promise.allSettled([slow(), slow()]);
+
+      // Exactly one probe ran; the second was rejected without invoking fn.
+      expect(started).toBe(1);
+      const rejected = results.filter((r) => r.status === 'rejected');
+      expect(rejected).toHaveLength(1);
+      expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(CircuitBreakerOpenError);
+    });
   });
 
   describe('reset', () => {
