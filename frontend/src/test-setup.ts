@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom';
-import { afterEach } from 'vitest';
+import { afterEach, vi } from 'vitest';
 import { cleanup } from '@testing-library/react';
 
 // Mock IntersectionObserver for jsdom (used by TableOfContents scroll-spy)
@@ -116,7 +116,11 @@ if (!window.matchMedia) {
 // TypeError — intermittently reddening a green run (#799). The leak is cross-file.
 // Unmount explicitly, then flush one real macrotask so the focus-scope timer
 // fires while the document is still attached, instead of leaking into teardown.
+// Skip the flush when a test left fake timers active: a faked setTimeout would
+// never resolve (hanging the run), and a faked focus-scope timer can't leak into
+// real teardown anyway.
 afterEach(async () => {
   cleanup();
+  if (vi.isFakeTimers()) return;
   await new Promise((resolve) => setTimeout(resolve, 0));
 });
