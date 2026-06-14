@@ -25,6 +25,39 @@ try {
   // Use defaults; nothing to log since this runs during vite config init.
 }
 
+// Vendor chunk groups. vite 8 (Rolldown) dropped the object form of
+// `manualChunks`, so this is the function form: map a module id to its chunk
+// name by the package directory it lives in. Trailing slashes keep `react`
+// from matching `react-dom` / `react-router-dom`.
+const VENDOR_CHUNKS: Array<[chunk: string, packages: string[]]> = [
+  ['react-vendor', ['react', 'react-dom', 'react-router-dom']],
+  ['query', ['@tanstack/react-query']],
+  ['motion', ['framer-motion']],
+  ['radix-ui', [
+    '@radix-ui/react-collapsible',
+    '@radix-ui/react-dialog',
+    '@radix-ui/react-dropdown-menu',
+    '@radix-ui/react-popover',
+    '@radix-ui/react-switch',
+  ]],
+  ['ui-utils', ['lucide-react', 'clsx', 'tailwind-merge', 'sonner']],
+  ['zustand', ['zustand']],
+  ['recharts', ['recharts']],
+  ['pdf', ['pdf-lib']],
+  // The excel chunk was removed in #303 alongside the exceljs dep.
+];
+
+function manualChunks(id: string): string | undefined {
+  // Rolldown ids are normally posix, but normalize separators so a Windows dev
+  // build matches `/node_modules/<pkg>/` the same way as linux CI.
+  const normalized = id.replace(/\\/g, '/');
+  if (!normalized.includes('/node_modules/')) return undefined;
+  for (const [chunk, packages] of VENDOR_CHUNKS) {
+    if (packages.some((pkg) => normalized.includes(`/node_modules/${pkg}/`))) return chunk;
+  }
+  return undefined;
+}
+
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   define: {
@@ -56,28 +89,7 @@ export default defineConfig({
     sourcemap: process.env.NODE_ENV !== 'production',
     rollupOptions: {
       output: {
-        manualChunks: {
-          'react-vendor': ['react', 'react-dom', 'react-router-dom'],
-          'query': ['@tanstack/react-query'],
-          'motion': ['framer-motion'],
-          'radix-ui': [
-            '@radix-ui/react-collapsible',
-            '@radix-ui/react-dialog',
-            '@radix-ui/react-dropdown-menu',
-            '@radix-ui/react-popover',
-            '@radix-ui/react-switch',
-          ],
-          'ui-utils': [
-            'lucide-react',
-            'clsx',
-            'tailwind-merge',
-            'sonner',
-          ],
-          'zustand': ['zustand'],
-          'recharts': ['recharts'],
-          'pdf': ['pdf-lib'],
-          // The excel chunk was removed in #303 alongside the exceljs dep.
-        },
+        manualChunks,
       },
     },
     chunkSizeWarningLimit: 600,

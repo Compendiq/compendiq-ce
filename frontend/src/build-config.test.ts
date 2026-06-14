@@ -76,25 +76,21 @@ describe('Vite build configuration', () => {
     });
 
     it('only references packages that exist in package.json dependencies', () => {
-      // Extract all quoted package names from the manualChunks section
-      const manualChunksMatch = viteConfigSource.match(
-        /manualChunks:\s*\{([\s\S]*?)\n\s{8}\}/,
-      );
-      expect(manualChunksMatch).not.toBeNull();
+      // vite 8 (Rolldown) dropped the object form of manualChunks, so the
+      // package→chunk mapping now lives in the VENDOR_CHUNKS tuple array.
+      const blockMatch = viteConfigSource.match(/VENDOR_CHUNKS[^=]*=\s*\[([\s\S]*?)\n\];/);
+      expect(blockMatch).not.toBeNull();
 
-      const chunksBlock = manualChunksMatch![1];
-      // Match package names in array values (strings inside square brackets)
-      const packageRefs = [
-        ...chunksBlock.matchAll(/'(@?[a-z][a-z0-9./-]*)'/g),
-      ]
+      const block = blockMatch![1];
+      // Chunk names are the first string of each tuple, identified by the inner
+      // array that follows them: `['chunk-name', [ ... ]]`.
+      const chunkNames = new Set(
+        [...block.matchAll(/\[\s*'([^']+)'\s*,\s*\[/g)].map((m) => m[1]),
+      );
+      // Every other quoted identifier is a package reference; verify it exists.
+      const packageRefs = [...block.matchAll(/'(@?[a-z][a-z0-9./-]*)'/g)]
         .map((m) => m[1])
-        // Filter out chunk names (keys) by only keeping values inside arrays
-        .filter((name) => {
-          // Chunk keys appear as 'key': [...], package refs appear inside [...]
-          // A simple heuristic: chunk keys are followed by a colon
-          const keyPattern = new RegExp(`'${escapeRegex(name)}'\\s*:`);
-          return !keyPattern.test(chunksBlock);
-        });
+        .filter((name) => !chunkNames.has(name));
 
       for (const pkg of packageRefs) {
         expect(deps).toContain(pkg);
@@ -102,7 +98,3 @@ describe('Vite build configuration', () => {
     });
   });
 });
-
-function escapeRegex(str: string): string {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
