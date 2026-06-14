@@ -52,6 +52,23 @@ async function getSettingsMap(): Promise<Record<string, string>> {
   return map;
 }
 
+/**
+ * Parse a stored JSON string-array setting, falling back to `fallback` (and
+ * logging) when the value is absent or corrupt. A bad domain list must not
+ * disable the whole feature, so this is scoped per-field rather than wrapping
+ * the entire settings load in one try/catch.
+ */
+function parseDomainList(raw: string | undefined, fallback: string[]): string[] {
+  if (!raw) return fallback;
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : fallback;
+  } catch (err) {
+    logger.warn({ err }, 'Invalid MCP docs domain list JSON, using default for this field');
+    return fallback;
+  }
+}
+
 export async function getMcpDocsSettings(): Promise<McpDocsSettings> {
   try {
     const settings = await getSettingsMap();
@@ -59,12 +76,8 @@ export async function getMcpDocsSettings(): Promise<McpDocsSettings> {
       enabled: settings['mcp_docs_enabled'] === 'true',
       url: settings['mcp_docs_url'] ?? DEFAULTS.url,
       domainMode: (settings['mcp_docs_domain_mode'] as 'allowlist' | 'blocklist') ?? DEFAULTS.domainMode,
-      allowedDomains: settings['mcp_docs_allowed_domains']
-        ? JSON.parse(settings['mcp_docs_allowed_domains'])
-        : DEFAULTS.allowedDomains,
-      blockedDomains: settings['mcp_docs_blocked_domains']
-        ? JSON.parse(settings['mcp_docs_blocked_domains'])
-        : DEFAULTS.blockedDomains,
+      allowedDomains: parseDomainList(settings['mcp_docs_allowed_domains'], DEFAULTS.allowedDomains),
+      blockedDomains: parseDomainList(settings['mcp_docs_blocked_domains'], DEFAULTS.blockedDomains),
       cacheTtl: parseInt(settings['mcp_docs_cache_ttl'] ?? String(DEFAULTS.cacheTtl), 10),
       maxContentLength: parseInt(settings['mcp_docs_max_content_length'] ?? String(DEFAULTS.maxContentLength), 10),
     };

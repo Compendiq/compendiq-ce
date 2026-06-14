@@ -36,6 +36,23 @@ describe('mcp-docs-settings', () => {
     expect(settings.maxContentLength).toBe(50_000);
   });
 
+  it('keeps the feature enabled when only the domain list JSON is corrupt', async () => {
+    vi.mocked(query).mockResolvedValueOnce({
+      rows: [
+        { setting_key: 'mcp_docs_enabled', setting_value: 'true' },
+        { setting_key: 'mcp_docs_allowed_domains', setting_value: '{not valid json' },
+      ],
+      rowCount: 2, command: 'SELECT', oid: 0, fields: [],
+    });
+
+    const settings = await getMcpDocsSettings();
+
+    // A corrupt domain list must not collapse the whole config to DEFAULTS
+    // (which would disable the feature) — only that field falls back.
+    expect(settings.enabled).toBe(true);
+    expect(settings.allowedDomains).toEqual(['*']);
+  });
+
   it('parses stored settings correctly', async () => {
     vi.mocked(query).mockResolvedValueOnce({
       rows: [
