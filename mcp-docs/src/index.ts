@@ -18,6 +18,7 @@ import { fetchUrl } from './tools/fetch-url.js';
 import { searchWeb } from './tools/search-web.js';
 import { listCached } from './tools/list-cached.js';
 import { logger } from './logger.js';
+import { makeMcpAuth } from './auth.js';
 import { parsePort, parseCacheTtl } from './config.js';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
@@ -40,6 +41,8 @@ const PORT: number = parsedPort;
 
 const HOST = process.env.MCP_DOCS_HOST ?? '127.0.0.1';
 const REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379';
+// Optional shared secret; when set, /mcp requires it in the x-mcp-docs-token header.
+const MCP_DOCS_TOKEN = process.env.MCP_DOCS_TOKEN;
 // CACHE_TTL is non-fatal: falls back to the default when unset/malformed.
 const CACHE_TTL = parseCacheTtl(process.env.CACHE_TTL_SECONDS);
 
@@ -205,6 +208,9 @@ setInterval(() => {
 
 const app = express();
 app.use(express.json());
+
+// Shared-secret guard on /mcp (all methods); /health below stays open.
+app.use('/mcp', makeMcpAuth(MCP_DOCS_TOKEN));
 
 // MCP endpoint
 app.post('/mcp', async (req, res) => {

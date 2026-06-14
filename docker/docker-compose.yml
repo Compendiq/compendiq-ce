@@ -54,6 +54,7 @@ services:
       ATTACHMENTS_DIR: /app/data/attachments
       NODE_EXTRA_CA_CERTS: ${CONTAINER_CA_BUNDLE_PATH:-/etc/ssl/certs/ca-certificates.crt}
       MCP_DOCS_URL: ${MCP_DOCS_URL:-http://mcp-docs:3100/mcp}
+      MCP_DOCS_TOKEN: ${MCP_DOCS_TOKEN:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -99,6 +100,7 @@ services:
       LOG_LEVEL: ${MCP_LOG_LEVEL:-info}
       CACHE_TTL_SECONDS: ${MCP_CACHE_TTL:-3600}
       SEARXNG_URL: ${SEARXNG_URL:-http://searxng:8080}
+      MCP_DOCS_TOKEN: ${MCP_DOCS_TOKEN:-}
     depends_on:
       redis:
         condition: service_healthy

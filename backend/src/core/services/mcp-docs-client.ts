@@ -28,7 +28,11 @@ async function ensureConnected(): Promise<Client> {
   if (client) return client;
 
   try {
-    transport = new StreamableHTTPClientTransport(new URL(settings.url));
+    // Send the shared secret (if configured) so the sidecar's /mcp guard accepts us.
+    const token = process.env.MCP_DOCS_TOKEN;
+    transport = new StreamableHTTPClientTransport(new URL(settings.url), {
+      requestInit: token ? { headers: { 'x-mcp-docs-token': token } } : undefined,
+    });
     client = new Client({ name: 'compendiq-backend', version: APP_VERSION });
     await client.connect(transport);
     connectedUrl = settings.url;
