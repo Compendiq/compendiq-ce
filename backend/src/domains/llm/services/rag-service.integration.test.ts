@@ -58,7 +58,7 @@ vi.mock('../../../core/enterprise/loader.js', async () => {
 });
 
 // Import the functions under test AFTER the mocks above are registered.
-const { hybridSearch, keywordSearch, vectorSearch } = await import('./rag-service.js');
+const { hybridSearch, keywordSearch, vectorSearch, flushSearchAnalytics } = await import('./rag-service.js');
 // The logger is spied on below (Phase D overfetch tests) to read the
 // `candidatesBeforeFilter` / `candidatesAfterFilter` counts without poking
 // at the internal vectorSearch/keywordSearch calls — ES module bindings
@@ -76,6 +76,10 @@ describe.skipIf(!dbAvailable)('rag-service integration — space permission enfo
     await teardownTestDb();
   });
   beforeEach(async () => {
+    // Drain any fire-and-forget search-analytics writes from the previous test
+    // before TRUNCATE, else a late INSERT (FK RowShareLock) deadlocks the reset
+    // (AccessExclusiveLock). See #805.
+    await flushSearchAnalytics();
     await truncateAllTables();
     // Re-seed system roles that migration 039 inserts on fresh install;
     // truncateAllTables wipes them, so restore the ones we reference below.
@@ -274,6 +278,8 @@ describe.skipIf(!dbAvailable)('rag-service integration — per-page ACL post-fil
     await teardownTestDb();
   });
   beforeEach(async () => {
+    // Drain fire-and-forget search-analytics writes before TRUNCATE (see #805).
+    await flushSearchAnalytics();
     await truncateAllTables();
     await query(
       `INSERT INTO roles (name, display_name, is_system, permissions) VALUES
