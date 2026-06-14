@@ -486,32 +486,42 @@ describe('SSRF Guard', () => {
     });
 
     it('should pass for public URLs that resolve to public IPs', async () => {
-      mockLookup.mockResolvedValue({ address: '93.184.216.34', family: 4 });
+      mockLookup.mockResolvedValue([{ address: '93.184.216.34', family: 4 }]);
 
       await expect(validateUrlWithDns('https://example.com/api')).resolves.toBeUndefined();
     });
 
+    it('should reject when ANY resolved record is private (mixed public+private)', async () => {
+      // Round-robin / multi-record response: first public, second internal.
+      mockLookup.mockResolvedValue([
+        { address: '93.184.216.34', family: 4 },
+        { address: '169.254.169.254', family: 4 },
+      ]);
+
+      await expect(validateUrlWithDns('https://rebind-mixed.example.com/api')).rejects.toThrow(SsrfError);
+    });
+
     it('should reject when DNS resolves to a private IP (127.x.x.x)', async () => {
-      mockLookup.mockResolvedValue({ address: '127.0.0.1', family: 4 });
+      mockLookup.mockResolvedValue([{ address: '127.0.0.1', family: 4 }]);
 
       await expect(validateUrlWithDns('https://evil-rebind.example.com/api')).rejects.toThrow(SsrfError);
       await expect(validateUrlWithDns('https://evil-rebind.example.com/api')).rejects.toThrow(/DNS resolved to blocked IP/);
     });
 
     it('should reject when DNS resolves to a private IP (10.x.x.x)', async () => {
-      mockLookup.mockResolvedValue({ address: '10.0.0.1', family: 4 });
+      mockLookup.mockResolvedValue([{ address: '10.0.0.1', family: 4 }]);
 
       await expect(validateUrlWithDns('https://rebind.example.com/api')).rejects.toThrow(SsrfError);
     });
 
     it('should reject when DNS resolves to 169.254.x.x (link-local)', async () => {
-      mockLookup.mockResolvedValue({ address: '169.254.169.254', family: 4 });
+      mockLookup.mockResolvedValue([{ address: '169.254.169.254', family: 4 }]);
 
       await expect(validateUrlWithDns('https://metadata.example.com')).rejects.toThrow(SsrfError);
     });
 
     it('should skip DNS check for allowlisted origins', async () => {
-      mockLookup.mockResolvedValue({ address: '10.0.0.5', family: 4 });
+      mockLookup.mockResolvedValue([{ address: '10.0.0.5', family: 4 }]);
 
       addAllowedBaseUrl('http://10.0.0.5:8090');
       await expect(validateUrlWithDns('http://10.0.0.5:8090/rest/api')).resolves.toBeUndefined();

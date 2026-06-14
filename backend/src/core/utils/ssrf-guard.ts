@@ -353,9 +353,14 @@ function isBlockedIp(ip: string): boolean {
  */
 async function resolveAndValidateIp(hostname: string): Promise<void> {
   try {
-    const { address } = await lookup(hostname);
-    if (isBlockedIp(address)) {
-      throw new SsrfError(`SSRF blocked: DNS resolved to blocked IP: ${hostname} -> ${address}`);
+    // Resolve ALL A/AAAA records, not just the first: a multi-record or
+    // round-robin response can mix a public address with a private one to slip
+    // past a single-address check. Block if ANY resolved address is internal.
+    const resolved = await lookup(hostname, { all: true });
+    for (const { address } of resolved) {
+      if (isBlockedIp(address)) {
+        throw new SsrfError(`SSRF blocked: DNS resolved to blocked IP: ${hostname} -> ${address}`);
+      }
     }
   } catch (err) {
     // Re-throw our own SsrfError
