@@ -47,6 +47,14 @@ interface UseSearchParams {
   page?: number;
   /** Sort order for keyword/immediate results. Semantic & hybrid ignore this (score-ordered server-side). */
   sort?: 'relevance' | 'modified' | 'title';
+  /** Filter to a single author (Confluence display name). */
+  author?: string;
+  /** Inclusive lower bound on last-modified date (YYYY-MM-DD). */
+  dateFrom?: string;
+  /** Inclusive upper bound on last-modified date (YYYY-MM-DD). */
+  dateTo?: string;
+  /** Comma-separated labels; sent to the backend as the `tags` param. */
+  labels?: string;
 }
 
 interface UseSearchResult {
@@ -83,7 +91,7 @@ const MIN_QUERY_LENGTH = 1;
  * staleTime: 0 on both — search results are query-specific and must not be
  * served from the TanStack Query cache between different search terms.
  */
-export function useSearch({ query, mode, spaceKey, page: requestedPage = 1, sort = 'relevance' }: UseSearchParams): UseSearchResult {
+export function useSearch({ query, mode, spaceKey, page: requestedPage = 1, sort = 'relevance', author, dateFrom, dateTo, labels }: UseSearchParams): UseSearchResult {
   // Debounce the query string
   const [debouncedQuery, setDebouncedQuery] = useState(query);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -107,6 +115,11 @@ export function useSearch({ query, mode, spaceKey, page: requestedPage = 1, sort
     sp.set('limit', '10');
     if (pageNum > 1) sp.set('page', String(pageNum));
     if (spaceKey) sp.set('spaceKey', spaceKey);
+    // Filters apply to every mode — the backend ANDs them into the WHERE clause.
+    if (author) sp.set('author', author);
+    if (dateFrom) sp.set('dateFrom', dateFrom);
+    if (dateTo) sp.set('dateTo', dateTo);
+    if (labels) sp.set('tags', labels); // FE field `labels` → backend query param `tags`
     // Sort only affects keyword results — semantic/hybrid are score-ordered server-side.
     if (searchMode === 'keyword' && sort !== 'relevance') sp.set('sort', sort);
     return `/search?${sp.toString()}`;
@@ -118,7 +131,7 @@ export function useSearch({ query, mode, spaceKey, page: requestedPage = 1, sort
   const enhancedHasData = useRef(false);
 
   const immediateQuery = useQuery<SearchApiResponse>({
-    queryKey: ['search', 'immediate', trimmedQuery, spaceKey, requestedPage, sort],
+    queryKey: ['search', 'immediate', trimmedQuery, spaceKey, requestedPage, sort, author, dateFrom, dateTo, labels],
     queryFn: () => apiFetch<SearchApiResponse>(buildUrl('keyword', requestedPage)),
     enabled: isQueryEnabled && !enhancedHasData.current,
     staleTime: 30_000,
@@ -128,7 +141,7 @@ export function useSearch({ query, mode, spaceKey, page: requestedPage = 1, sort
   // ── Phase 2: Enhanced semantic/hybrid results ────────────────────────────
   // Only fires when mode is not 'keyword'
   const enhancedQuery = useQuery<SearchApiResponse>({
-    queryKey: ['search', 'enhanced', trimmedQuery, mode, spaceKey],
+    queryKey: ['search', 'enhanced', trimmedQuery, mode, spaceKey, author, dateFrom, dateTo, labels],
     queryFn: () => apiFetch<SearchApiResponse>(buildUrl(mode as 'semantic' | 'hybrid')),
     enabled: isQueryEnabled && mode !== 'keyword',
     staleTime: 0,

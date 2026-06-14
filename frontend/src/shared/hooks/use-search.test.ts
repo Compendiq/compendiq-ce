@@ -311,4 +311,33 @@ describe('useSearch', () => {
     );
     expect(allHaveSpaceKey).toBe(true);
   });
+
+  it('passes author, date range, and labels→tags to the query URL', async () => {
+    const fetchSpy = mockFetch(makeSearchResponse(), makeSearchResponse({ mode: 'hybrid' }));
+
+    const { result } = renderHook(
+      () => useSearch({
+        query: 'docker',
+        mode: 'hybrid',
+        author: 'jane',
+        dateFrom: '2026-01-01',
+        dateTo: '2026-02-01',
+        labels: 'kb,ops',
+      }),
+      { wrapper: createWrapper() },
+    );
+
+    await waitFor(() => expect(result.current.isLoadingImmediate).toBe(false));
+
+    const searchCalls = fetchSpy.mock.calls.filter(([url]) =>
+      typeof url === 'string' && (url as string).includes('/search'),
+    );
+    expect(searchCalls.length).toBeGreaterThan(0);
+    const url = searchCalls[0][0] as string;
+    expect(url).toContain('author=jane');
+    expect(url).toContain('dateFrom=2026-01-01');
+    expect(url).toContain('dateTo=2026-02-01');
+    // FE field `labels` maps to backend query param `tags` (comma-encoded)
+    expect(url).toContain('tags=kb%2Cops');
+  });
 });
