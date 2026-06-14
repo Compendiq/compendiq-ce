@@ -48,9 +48,12 @@ const VENDOR_CHUNKS: Array<[chunk: string, packages: string[]]> = [
 ];
 
 function manualChunks(id: string): string | undefined {
-  if (!id.includes('/node_modules/')) return undefined;
+  // Rolldown ids are normally posix, but normalize separators so a Windows dev
+  // build matches `/node_modules/<pkg>/` the same way as linux CI.
+  const normalized = id.replace(/\\/g, '/');
+  if (!normalized.includes('/node_modules/')) return undefined;
   for (const [chunk, packages] of VENDOR_CHUNKS) {
-    if (packages.some((pkg) => id.includes(`/node_modules/${pkg}/`))) return chunk;
+    if (packages.some((pkg) => normalized.includes(`/node_modules/${pkg}/`))) return chunk;
   }
   return undefined;
 }
