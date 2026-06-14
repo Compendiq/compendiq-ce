@@ -198,6 +198,39 @@ export async function recordSearchAnalytics(
   }
 }
 
+// In-flight fire-and-forget analytics writes. recordSearchAnalytics is invoked
+// WITHOUT await from the search path so it never adds latency to a user search —
+// but the INSERT can still be running after the caller returns. Track the
+// promises so callers that need a quiet point (graceful shutdown; DB reset in
+// integration tests) can drain them; otherwise a late INSERT (RowShareLock for
+// the users FK) deadlocks a concurrent TRUNCATE (AccessExclusiveLock). See #805.
+const inFlightAnalytics = new Set<Promise<void>>();
+
+/** Fire-and-forget a search-analytics write while tracking it for {@link flushSearchAnalytics}. */
+export function trackSearchAnalytics(
+  userId: string,
+  queryText: string,
+  resultCount: number,
+  maxScore: number | null,
+  searchType: string,
+): void {
+  const p = recordSearchAnalytics(userId, queryText, resultCount, maxScore, searchType)
+    .catch(() => {})
+    .finally(() => {
+      inFlightAnalytics.delete(p);
+    });
+  inFlightAnalytics.add(p);
+}
+
+/**
+ * Await all in-flight fire-and-forget search-analytics writes. Use before
+ * resetting/tearing down the database (integration tests) and during graceful
+ * shutdown, so a late INSERT never races a TRUNCATE. See #805.
+ */
+export async function flushSearchAnalytics(): Promise<void> {
+  await Promise.allSettled([...inFlightAnalytics]);
+}
+
 /**
  * Hybrid RAG search: combines vector search + keyword search using RRF.
  * Returns top results with source metadata for citations.
@@ -282,7 +315,7 @@ export async function hybridSearch(
     // Record search analytics (non-blocking)
     const searchType = vectorResults.length === 0 && keywordResults.length > 0 ? 'keyword_fallback' : 'hybrid';
     const maxScore = topResults.length > 0 ? Math.max(...topResults.map((r) => r.score)) : null;
-    recordSearchAnalytics(userId, question, topResults.length, maxScore, searchType).catch(() => {});
+    trackSearchAnalytics(userId, question, topResults.length, maxScore, searchType);
 
     return topResults;
   }
@@ -293,7 +326,7 @@ export async function hybridSearch(
   // Distinguish keyword-fallback (embedding failed) from true hybrid
   const searchType = vectorResults.length === 0 && keywordResults.length > 0 ? 'keyword_fallback' : 'hybrid';
   const maxScore = topResults.length > 0 ? Math.max(...topResults.map((r) => r.score)) : null;
-  recordSearchAnalytics(userId, question, topResults.length, maxScore, searchType).catch(() => {});
+  trackSearchAnalytics(userId, question, topResults.length, maxScore, searchType);
 
   return topResults;
 }
