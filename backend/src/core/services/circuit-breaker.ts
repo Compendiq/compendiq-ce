@@ -27,6 +27,8 @@ export class CircuitBreaker {
   private failureCount = 0;
   private successCount = 0;
   private lastFailureTime: number | null = null;
+  /** True while a HALF_OPEN probe request is in flight (single-probe gate). */
+  private isProbing = false;
   private readonly config: CircuitBreakerConfig;
   readonly name: string;
 
@@ -70,6 +72,19 @@ export class CircuitBreaker {
       );
     }
 
+    // HALF_OPEN admits a single probe at a time: concurrent requests would all
+    // hit a recovering server and could each flip the breaker, defeating the
+    // probe's purpose. Reject extra probes until the first resolves.
+    const wasProbing = this.state === 'HALF_OPEN';
+    if (wasProbing) {
+      if (this.isProbing) {
+        throw new CircuitBreakerOpenError(
+          `${this.name}: probe already in flight`,
+        );
+      }
+      this.isProbing = true;
+    }
+
     try {
       const result = await fn();
       this.onSuccess();
@@ -77,6 +92,10 @@ export class CircuitBreaker {
     } catch (err) {
       this.onFailure();
       throw err;
+    } finally {
+      // onSuccess/onFailure may have flipped state to CLOSED/OPEN, so clear the
+      // probe flag unconditionally based on whether *this* call took the probe.
+      if (wasProbing) this.isProbing = false;
     }
   }
 
@@ -93,6 +112,7 @@ export class CircuitBreaker {
     this.failureCount = 0;
     this.successCount = 0;
     this.lastFailureTime = null;
+    this.isProbing = false;
     logger.info({ breaker: this.name }, 'Circuit breaker reset');
   }
 

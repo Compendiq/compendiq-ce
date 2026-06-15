@@ -1,8 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ReadableStream } from 'node:stream/web';
+import { lookup } from 'node:dns/promises';
 import { fetchUrl } from './fetch-url.js';
 import { DocsCache, type CachedDoc } from '../cache/redis-cache.js';
 import * as auditLogger from '../security/audit-logger.js';
+
+// fetchUrl now runs validateUrlWithDns(), which resolves the hostname. Mock the
+// dns module (ESM named exports can't be spied) and point every lookup at a
+// public address so these tests stay hermetic and exercise the post-validation
+// paths rather than network resolution.
+vi.mock('node:dns/promises', () => ({
+  lookup: vi.fn(async () => [{ address: '93.184.216.34', family: 4 }]),
+}));
 
 const TEST_URL = 'https://docs.example.com/api';
 
@@ -11,6 +20,7 @@ describe('fetchUrl — slice truncation (cached path)', () => {
   let auditSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
+    vi.mocked(lookup).mockResolvedValue([{ address: '93.184.216.34', family: 4 }] as never);
     auditSpy = vi.spyOn(auditLogger, 'logOutboundRequest').mockImplementation(() => {});
     getCachedDocSpy = vi.spyOn(DocsCache.prototype, 'getCachedDoc');
   });
@@ -84,6 +94,7 @@ describe('fetchUrl — response body size cap (uncached path)', () => {
   let getCachedDocSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
+    vi.mocked(lookup).mockResolvedValue([{ address: '93.184.216.34', family: 4 }] as never);
     fetchSpy = vi.spyOn(globalThis, 'fetch');
     auditSpy = vi.spyOn(auditLogger, 'logOutboundRequest').mockImplementation(() => {});
     // Force cache miss so the fetch path runs
@@ -175,6 +186,7 @@ describe('fetchUrl — streaming reader (chunked, no Content-Length)', () => {
   let getCachedDocSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
+    vi.mocked(lookup).mockResolvedValue([{ address: '93.184.216.34', family: 4 }] as never);
     fetchSpy = vi.spyOn(globalThis, 'fetch');
     auditSpy = vi.spyOn(auditLogger, 'logOutboundRequest').mockImplementation(() => {});
     getCachedDocSpy = vi.spyOn(DocsCache.prototype, 'getCachedDoc').mockResolvedValue(null);

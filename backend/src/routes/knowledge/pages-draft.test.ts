@@ -22,6 +22,11 @@ vi.mock('../../domains/confluence/services/sync-service.js', () => ({
   getClientForUser: (...args: unknown[]) => mockGetClientForUser(...args),
 }));
 
+const mockGetUserAccessibleSpaces = vi.fn();
+vi.mock('../../core/services/rbac-service.js', () => ({
+  getUserAccessibleSpaces: (...args: unknown[]) => mockGetUserAccessibleSpaces(...args),
+}));
+
 vi.mock('../../core/services/content-converter.js', () => ({
   confluenceToHtml: (...args: unknown[]) => mockConfluenceToHtml(...args),
   htmlToConfluence: (...args: unknown[]) => mockHtmlToConfluence(...args),
@@ -109,6 +114,8 @@ describe('Draft-while-published routes', () => {
     vi.clearAllMocks();
     mockHtmlToText.mockReturnValue('plain text');
     mockHtmlToConfluence.mockReturnValue('<p>storage</p>');
+    // Default: user can reach DEV/OPS. Confluence-branch tests override per case.
+    mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
   });
 
   // ---------- PUT /api/pages/:id/draft ----------
@@ -420,7 +427,8 @@ describe('Draft-while-published routes', () => {
               body_html: '<p>live</p>', body_text: 'live',
               body_storage: '<p>storage</p>', source: 'confluence',
               created_by_user_id: null, visibility: 'shared',
-              confluence_id: 'conf-123', draft_body_html: '<p>draft</p>',
+              confluence_id: 'conf-123', space_key: 'DEV',
+              draft_body_html: '<p>draft</p>',
               draft_body_storage: null,
             }],
           });
@@ -589,6 +597,248 @@ describe('Draft-while-published routes', () => {
       const body = response.json();
       expect(body.hasDraft).toBe(false);
       expect(body.draftUpdatedAt).toBeNull();
+    });
+  });
+
+  // ---------- Confluence-page RBAC space access (IDOR fix) ----------
+  // Confluence-sourced drafts must be gated on getUserAccessibleSpaces, exactly
+  // like GET /pages/:id and DELETE /pages/:id. Without this, any authenticated
+  // user could read/overwrite/publish/discard the draft of a page in a space
+  // they have no RBAC assignment in.
+
+  describe('Confluence-page RBAC space access', () => {
+    // PUT /draft — overwrite the draft
+    it('PUT /draft returns 403 for a Confluence page in an inaccessible space', async () => {
+      mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
+      mockQuery.mockImplementation((sql: string) => {
+        if (sql.includes('SELECT id, source')) {
+          return Promise.resolve({
+            rows: [{
+              id: 10, source: 'confluence', created_by_user_id: null,
+              visibility: 'shared', space_key: 'HR', deleted_at: null,
+            }],
+          });
+        }
+        return Promise.resolve({ rows: [] });
+      });
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/pages/10/draft',
+        payload: { title: 'Sneaky', bodyHtml: '<p>sneaky draft</p>' },
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(mockGetUserAccessibleSpaces).toHaveBeenCalledWith(TEST_USER);
+      // The draft UPDATE must never run.
+      const updateCall = mockQuery.mock.calls.find(
+        (call) => typeof call[0] === 'string' && call[0].includes('draft_body_html = $1'),
+      );
+      expect(updateCall).toBeUndefined();
+    });
+
+    it('PUT /draft saves the draft for a Confluence page in an accessible space', async () => {
+      mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
+      mockQuery.mockImplementation((sql: string) => {
+        if (sql.includes('SELECT id, source')) {
+          return Promise.resolve({
+            rows: [{
+              id: 10, source: 'confluence', created_by_user_id: null,
+              visibility: 'shared', space_key: 'DEV', deleted_at: null,
+            }],
+          });
+        }
+        return Promise.resolve({ rows: [], rowCount: 1 });
+      });
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/pages/10/draft',
+        payload: { title: 'OK', bodyHtml: '<p>authorized draft</p>' },
+      });
+
+      expect(response.statusCode).toBe(200);
+    });
+
+    // GET /draft — read the draft (404, no existence oracle)
+    it('GET /draft returns 404 for a Confluence page in an inaccessible space', async () => {
+      mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
+      mockQuery.mockResolvedValue({
+        rows: [{
+          id: 10, source: 'confluence', created_by_user_id: null,
+          visibility: 'shared', space_key: 'HR',
+          draft_body_html: '<p>secret draft</p>', draft_body_text: 'secret',
+          draft_updated_at: new Date(), draft_updated_by: 'someone',
+        }],
+      });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/pages/10/draft',
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(mockGetUserAccessibleSpaces).toHaveBeenCalledWith(TEST_USER);
+    });
+
+    it('GET /draft returns the draft for a Confluence page in an accessible space', async () => {
+      mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
+      mockQuery.mockResolvedValue({
+        rows: [{
+          id: 10, source: 'confluence', created_by_user_id: null,
+          visibility: 'shared', space_key: 'OPS',
+          draft_body_html: '<p>visible draft</p>', draft_body_text: 'visible',
+          draft_updated_at: new Date('2026-01-01'), draft_updated_by: 'author',
+        }],
+      });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/pages/10/draft',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().bodyHtml).toBe('<p>visible draft</p>');
+    });
+
+    // POST /draft/publish — promote the draft to live
+    it('POST /draft/publish returns 403 for a Confluence page in an inaccessible space', async () => {
+      mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
+      const txCalls: string[] = [];
+      mockQuery.mockImplementation((sql: string) => {
+        if (sql.includes('SELECT id, version, title')) {
+          return Promise.resolve({
+            rows: [{
+              id: 10, version: 3, title: 'Secret Article',
+              body_html: '<p>live</p>', body_text: 'live',
+              body_storage: '<p>storage</p>', source: 'confluence',
+              created_by_user_id: null, visibility: 'shared',
+              confluence_id: 'conf-123', space_key: 'HR',
+              draft_body_html: '<p>draft</p>', draft_body_storage: null,
+            }],
+          });
+        }
+        return Promise.resolve({ rows: [] });
+      });
+      mockTxQuery.mockImplementation((sql: string) => {
+        txCalls.push(sql.trim().substring(0, 30));
+        return Promise.resolve({ rows: [], rowCount: 1 });
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/10/draft/publish',
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(mockGetUserAccessibleSpaces).toHaveBeenCalledWith(TEST_USER);
+      // No content swap may occur for an unauthorized space.
+      expect(txCalls).not.toContain('BEGIN');
+    });
+
+    it('POST /draft/publish publishes for a Confluence page in an accessible space', async () => {
+      mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
+      mockGetClientForUser.mockResolvedValue({ updatePage: vi.fn().mockResolvedValue({}) });
+      mockQuery.mockImplementation((sql: string) => {
+        if (sql.includes('SELECT id, version, title')) {
+          return Promise.resolve({
+            rows: [{
+              id: 10, version: 3, title: 'Authorized Article',
+              body_html: '<p>live</p>', body_text: 'live',
+              body_storage: '<p>storage</p>', source: 'confluence',
+              created_by_user_id: null, visibility: 'shared',
+              confluence_id: 'conf-123', space_key: 'OPS',
+              draft_body_html: '<p>draft</p>', draft_body_storage: null,
+            }],
+          });
+        }
+        return Promise.resolve({ rows: [], rowCount: 1 });
+      });
+      mockTxQuery.mockResolvedValue({ rows: [], rowCount: 1 });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/10/draft/publish',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().published).toBe(true);
+    });
+
+    // DELETE /draft — discard the draft
+    it('DELETE /draft returns 403 for a Confluence page in an inaccessible space', async () => {
+      mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
+      mockQuery.mockImplementation((sql: string) => {
+        if (sql.includes('SELECT id, source')) {
+          return Promise.resolve({
+            rows: [{
+              id: 10, source: 'confluence', created_by_user_id: null,
+              visibility: 'shared', space_key: 'HR',
+            }],
+          });
+        }
+        return Promise.resolve({ rows: [] });
+      });
+
+      const response = await app.inject({
+        method: 'DELETE',
+        url: '/api/pages/10/draft',
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(mockGetUserAccessibleSpaces).toHaveBeenCalledWith(TEST_USER);
+      // The discard UPDATE must never run.
+      const updateCall = mockQuery.mock.calls.find(
+        (call) => typeof call[0] === 'string' && call[0].includes('draft_body_html = NULL'),
+      );
+      expect(updateCall).toBeUndefined();
+    });
+
+    it('DELETE /draft discards the draft for a Confluence page in an accessible space', async () => {
+      mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
+      mockQuery.mockImplementation((sql: string) => {
+        if (sql.includes('SELECT id, source')) {
+          return Promise.resolve({
+            rows: [{
+              id: 10, source: 'confluence', created_by_user_id: null,
+              visibility: 'shared', space_key: 'DEV',
+            }],
+          });
+        }
+        return Promise.resolve({ rows: [], rowCount: 1 });
+      });
+
+      const response = await app.inject({
+        method: 'DELETE',
+        url: '/api/pages/10/draft',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().hasDraft).toBe(false);
+    });
+
+    // A Confluence page with no space_key is unreachable (defensive): treated as denied.
+    it('PUT /draft returns 403 for a Confluence page with a null space_key', async () => {
+      mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
+      mockQuery.mockImplementation((sql: string) => {
+        if (sql.includes('SELECT id, source')) {
+          return Promise.resolve({
+            rows: [{
+              id: 10, source: 'confluence', created_by_user_id: null,
+              visibility: 'shared', space_key: null, deleted_at: null,
+            }],
+          });
+        }
+        return Promise.resolve({ rows: [] });
+      });
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/pages/10/draft',
+        payload: { title: 'X', bodyHtml: '<p>x</p>' },
+      });
+
+      expect(response.statusCode).toBe(403);
     });
   });
 });

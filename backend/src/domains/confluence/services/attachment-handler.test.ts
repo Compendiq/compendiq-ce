@@ -36,8 +36,9 @@ vi.mock('undici', () => ({
   request: vi.fn(),
 }));
 
+const mockAssertNonSsrfUrl = vi.fn().mockResolvedValue(undefined);
 vi.mock('../../../core/utils/ssrf-guard.js', () => ({
-  validateUrl: vi.fn(),
+  assertNonSsrfUrl: (...args: unknown[]) => mockAssertNonSsrfUrl(...args),
 }));
 
 // Mock fs to avoid real filesystem operations.
@@ -94,6 +95,8 @@ describe('attachment-handler', () => {
     vi.mocked(fs.rm).mockResolvedValue(undefined);
     vi.mocked(fs.readdir as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([]);
     mockRequest.mockReset();
+    // Default: SSRF guard passes (URL is safe)
+    mockAssertNonSsrfUrl.mockResolvedValue(undefined);
     // Default: no prior failures
     mockGetAttachmentFailureCount.mockResolvedValue(0);
     mockRecordAttachmentFailure.mockResolvedValue(undefined);
@@ -391,6 +394,33 @@ describe('attachment-handler', () => {
 
       expect(result).toEqual(Buffer.from('external-image'));
       expect(mockRequest).toHaveBeenCalled();
+      expect(mockAssertNonSsrfUrl).toHaveBeenCalledWith('https://example.com/img.png');
+    });
+
+    it('rejects a content-sourced external image whose URL fails the DNS SSRF guard', async () => {
+      const client = createMockClient();
+      // Simulate a public hostname whose A record resolves to a private IP:
+      // the DNS-resolving guard rejects, and the fetch must never happen.
+      mockAssertNonSsrfUrl.mockRejectedValue(
+        new Error('SSRF blocked: DNS resolved to blocked IP'),
+      );
+
+      await expect(
+        fetchAndCachePageImage({
+          client,
+          userId: 'user-1',
+          pageId: 'page-1',
+          localFilename: getLocalFilenameForImageSource({
+            kind: 'external-url',
+            url: 'https://internal.attacker.example/x.png',
+          }),
+          bodyStorage:
+            '<ac:image><ri:url ri:value="https://internal.attacker.example/x.png" /></ac:image>',
+        }),
+      ).rejects.toThrow(/SSRF blocked/);
+
+      expect(mockAssertNonSsrfUrl).toHaveBeenCalledWith('https://internal.attacker.example/x.png');
+      expect(mockRequest).not.toHaveBeenCalled();
     });
 
     it('fetches a mirrored cross-page image using its local filename', async () => {

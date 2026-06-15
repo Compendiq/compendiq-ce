@@ -7,7 +7,11 @@ import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
 
 interface DuplicateCandidate {
-  confluenceId: string;
+  // Stable page PK — always present. confluenceId is null for standalone
+  // articles, so navigation falls back to this id (the /pages/:id route
+  // resolves numeric ids too).
+  id: number;
+  confluenceId: string | null;
   title: string;
   spaceKey: string;
   embeddingDistance: number;
@@ -64,12 +68,12 @@ export function DuplicateDetector({ pageId, pageTitle }: DuplicateDetectorProps)
     refetch();
   };
 
-  const handleCompare = (duplicateId: string) => {
+  const handleCompare = (duplicateId: string | number) => {
     setOpen(false);
     navigate(`/pages/${pageId}?compare=${duplicateId}`);
   };
 
-  const handleView = (duplicateId: string) => {
+  const handleView = (duplicateId: string | number) => {
     setOpen(false);
     navigate(`/pages/${duplicateId}`);
   };
@@ -139,9 +143,12 @@ export function DuplicateDetector({ pageId, pageTitle }: DuplicateDetectorProps)
               <div className="space-y-2">
                 {data?.duplicates.map((dup) => {
                   const similarity = Math.round(dup.combinedScore * 100);
+                  // confluenceId is null for standalone articles; fall back to
+                  // the stable page id for keys and navigation targets.
+                  const navId = dup.confluenceId ?? dup.id;
                   return (
                     <div
-                      key={dup.confluenceId}
+                      key={dup.id}
                       className="flex items-center justify-between gap-3 rounded-lg bg-foreground/5 px-4 py-3"
                     >
                       <div className="min-w-0 flex-1">
@@ -161,13 +168,13 @@ export function DuplicateDetector({ pageId, pageTitle }: DuplicateDetectorProps)
                       </div>
                       <div className="flex shrink-0 gap-2">
                         <button
-                          onClick={() => handleCompare(dup.confluenceId)}
+                          onClick={() => handleCompare(navId)}
                           className="flex items-center gap-1 rounded-md border border-border/50 px-2.5 py-1 text-xs hover:bg-foreground/5 transition-colors"
                         >
                           Compare
                         </button>
                         <button
-                          onClick={() => handleView(dup.confluenceId)}
+                          onClick={() => handleView(navId)}
                           className="flex items-center gap-1 rounded-md border border-border/50 px-2.5 py-1 text-xs hover:bg-foreground/5 transition-colors"
                         >
                           <ExternalLink size={10} /> View

@@ -4,6 +4,7 @@ import { resolveUsecase } from './llm-provider-resolver.js';
 import { generateEmbedding } from './openai-compatible-client.js';
 import { htmlToText } from '../../../core/services/content-converter.js';
 import { logger } from '../../../core/utils/logger.js';
+import { safeIntOr } from '../../../core/utils/safe-int.js';
 import { invalidateGraphCache, acquireEmbeddingLock, releaseEmbeddingLock, isEmbeddingLocked, getRedisClient, listActiveEmbeddingLocks } from '../../../core/services/redis-cache.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { visiblePagesPredicate } from '../../../core/services/page-visibility.js';
@@ -276,14 +277,16 @@ async function getAdminChunkSettings(): Promise<{ chunkSize: number; chunkOverla
      WHERE setting_key IN ('embedding_chunk_size', 'embedding_chunk_overlap')`,
   );
 
-  const settings: Record<string, number> = {};
+  const settings: Record<string, string> = {};
   for (const row of result.rows) {
-    settings[row.setting_key] = parseInt(row.setting_value, 10);
+    settings[row.setting_key] = row.setting_value;
   }
 
+  // safeIntOr guards a NaN/garbage admin_settings value (plain `?? DEFAULT`
+  // would let a NaN through). Overlap may legitimately be 0, so allow min 0.
   return {
-    chunkSize: settings['embedding_chunk_size'] ?? CHUNK_SIZE,
-    chunkOverlap: settings['embedding_chunk_overlap'] ?? CHUNK_OVERLAP,
+    chunkSize: safeIntOr(settings['embedding_chunk_size'], CHUNK_SIZE),
+    chunkOverlap: safeIntOr(settings['embedding_chunk_overlap'], CHUNK_OVERLAP, 0),
   };
 }
 
@@ -319,6 +322,11 @@ export async function embedPage(
   // remain intact in the database.
   const batchSize = 10;
   const allEmbeddings: Array<{ chunkIndex: number; text: string; embedding: number[]; metadata: ChunkMetadata }> = [];
+  // Tracks whether any batch was dropped because it exceeded the embedding
+  // model's context length. Used to distinguish "page legitimately has no
+  // embeddable content" from "every batch was skipped" so we never destroy
+  // existing embeddings or falsely mark the page embedded in the latter case.
+  let skippedBatches = false;
 
   // Resolve the `embedding` use-case once per page so we don't hit the
   // resolver cache on every batch. Rotating providers mid-page would mix
@@ -349,11 +357,31 @@ export async function embedPage(
           { pageId, batchOffset: i, batchSize: batch.length },
           'Skipping oversized embedding batch (context length exceeded)',
         );
+        skippedBatches = true;
         continue;
       }
       logger.error({ err, pageId, batch: i }, 'Failed to embed batch');
       throw err;
     }
+  }
+
+  // If every batch was skipped for exceeding the context length, no embeddings
+  // were produced. Do NOT enter Phase 2 — the unconditional DELETE there would
+  // wipe the page's existing (good) embeddings and the UPDATE would falsely mark
+  // the page 'embedded', silently dropping it from the RAG index. Instead leave
+  // existing embeddings intact, mark the page failed and keep it dirty so a
+  // future retry (or content change) can re-embed it.
+  if (allEmbeddings.length === 0 && skippedBatches) {
+    await query(
+      `UPDATE pages SET embedding_status = 'failed', embedding_dirty = TRUE, embedding_error = $2
+       WHERE id = $1`,
+      [pageId, 'all chunk batches exceeded embedding context length'],
+    );
+    logger.warn(
+      { pageId, pageTitle },
+      'All embedding batches exceeded context length — page left dirty, existing embeddings preserved',
+    );
+    return 0;
   }
 
   // ── Phase 2: Atomically replace old embeddings with new ones ─────────────────
@@ -1198,10 +1226,10 @@ export async function enqueueReembedAll(
  *     every 100 pages (or on 100%).
  */
 export async function runReembedAllJob(job: Job): Promise<string> {
-  const WAIT_LOCKS_TIMEOUT_MS = parseInt(
-    process.env.REEMBED_WAIT_LOCKS_MS ?? '600000',
-    10,
-  );
+  // Guard against a garbage env value: a NaN timeout makes the
+  // `Date.now() - waitStart > WAIT_LOCKS_TIMEOUT_MS` check below always false,
+  // so the wait loop would never time out (silent hang).
+  const WAIT_LOCKS_TIMEOUT_MS = safeIntOr(process.env.REEMBED_WAIT_LOCKS_MS, 600_000);
   const POLL_INTERVAL_MS = 3_000;
 
   // Wait-on-locks loop — exit when no per-user lock (other than our own

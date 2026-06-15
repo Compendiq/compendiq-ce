@@ -6,7 +6,10 @@ import { logger } from '../../../core/utils/logger.js';
 const RAG_EF_SEARCH = parseInt(process.env.RAG_EF_SEARCH ?? '100', 10);
 
 interface DuplicateCandidate {
-  confluenceId: string;
+  // Stable page PK — always present, used as the dedup key and as a non-null
+  // navigation target for standalone pages (confluenceId IS NULL).
+  id: number;
+  confluenceId: string | null;
   title: string;
   spaceKey: string;
   embeddingDistance: number;
@@ -85,17 +88,23 @@ export async function findDuplicates(
 
     // Find nearest neighbors using pgvector kNN on the average embedding
     const result = await client.query<{
-      confluence_id: string;
+      id: number;
+      confluence_id: string | null;
       title: string;
       space_key: string;
       distance: number;
     }>(
+      // Dedup on the page PK, not confluence_id: standalone pages have
+      // confluence_id IS NULL and Postgres DISTINCT ON treats NULLs as equal,
+      // so keying on confluence_id collapses every standalone candidate into a
+      // single row. cp2.id is always non-null and unique per page.
       `WITH source_avg AS (
          SELECT AVG(embedding) AS avg_embedding
          FROM page_embeddings
          WHERE page_id = $1
        )
-       SELECT DISTINCT ON (cp2.confluence_id)
+       SELECT DISTINCT ON (cp2.id)
+         cp2.id,
          cp2.confluence_id,
          cp2.title,
          cp2.space_key,
@@ -107,7 +116,7 @@ export async function findDuplicates(
          AND source_avg.avg_embedding IS NOT NULL
          AND cp2.deleted_at IS NULL
          AND ${visiblePagesPredicate(3, 4, 'cp2')}
-       ORDER BY cp2.confluence_id, pe2.embedding <=> source_avg.avg_embedding
+       ORDER BY cp2.id, pe2.embedding <=> source_avg.avg_embedding
        LIMIT $2`,
       // #733: over-fetch to filter later; candidates restricted to the same
       // retrieval scope as rag-service (accessible Confluence spaces +
@@ -128,6 +137,7 @@ export async function findDuplicates(
       const combinedScore = embeddingSimilarity * 0.7 + titleSim * 0.3;
 
       candidates.push({
+        id: row.id,
         confluenceId: row.confluence_id,
         title: row.title,
         spaceKey: row.space_key,
@@ -163,8 +173,8 @@ export async function scanAllDuplicates(
 
   // Get all pages with embeddings (RBAC access control)
   const dupSpaces = await getUserAccessibleSpaces(userId);
-  const pages = await query<{ confluence_id: string; title: string }>(
-    `SELECT DISTINCT cp.confluence_id, cp.title
+  const pages = await query<{ id: number; confluence_id: string; title: string }>(
+    `SELECT DISTINCT cp.id, cp.confluence_id, cp.title
      FROM pages cp
      JOIN page_embeddings pe ON pe.page_id = cp.id
      WHERE cp.space_key = ANY($1::text[])
@@ -183,14 +193,16 @@ export async function scanAllDuplicates(
       });
 
       for (const dup of duplicates) {
-        // Avoid reporting A->B and B->A
-        const pairKey = [page.confluence_id, dup.confluenceId].sort().join(':');
+        // Avoid reporting A->B and B->A. Key on the stable page PKs — standalone
+        // pages have a NULL confluenceId, which would otherwise collide.
+        const pairKey = [page.id, dup.id].sort((a, b) => a - b).join(':');
         if (seen.has(pairKey)) continue;
         seen.add(pairKey);
 
         allPairs.push({
           page1: {
             sourceId: page.confluence_id,
+            id: page.id,
             confluenceId: page.confluence_id,
             title: page.title,
             spaceKey: '', // Will be filled from the scan

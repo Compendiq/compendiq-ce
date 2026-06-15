@@ -1466,6 +1466,33 @@ describe('chunkText', () => {
       // No DB interaction at all since Phase 1 throws
       expect(mockClient.query).not.toHaveBeenCalled();
     });
+
+    it('when EVERY batch is skipped (all context-length): preserves embeddings, leaves page dirty/failed, no DELETE or embedded UPDATE', async () => {
+      mocks.htmlToText.mockReturnValue('Some content for the page that is long enough');
+
+      // Every Phase 1 batch rejects with a context-length error → allEmbeddings stays empty
+      const contextErr = new Error('HTTP 400 - input length exceeds context length');
+      mocks.providerGenerateEmbedding.mockRejectedValue(contextErr);
+
+      const count = await embedPage('user-1', 101, 'Page', 'DEV', '<p>content</p>');
+
+      // No embeddings produced
+      expect(count).toBe(0);
+
+      // Phase 2 must NOT run: no transaction opened, no DELETE that would wipe
+      // existing embeddings, no INSERT, no COMMIT.
+      expect(mockClient.query).not.toHaveBeenCalled();
+      expect(mockClient.release).not.toHaveBeenCalled();
+
+      // The page is marked failed and left dirty via the pool `query` (not the client).
+      expect(mocks.query).toHaveBeenCalledTimes(1);
+      const [sql, params] = mocks.query.mock.calls[0]!;
+      expect(sql).toContain("embedding_status = 'failed'");
+      expect(sql).toContain('embedding_dirty = TRUE');
+      // It must NOT falsely mark the page embedded.
+      expect(sql).not.toContain("embedding_status = 'embedded'");
+      expect(params).toEqual([101, 'all chunk batches exceeded embedding context length']);
+    });
   });
 
   describe('getEmbedBreakerNextRetryTime', () => {

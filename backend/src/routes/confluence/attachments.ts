@@ -420,12 +420,21 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
         }
       }
 
-      // Invalidate Redis page cache so other users get the updated diagram
+      // Invalidate Redis page cache so other users get the updated diagram.
+      // Uses a SCAN cursor loop (not KEYS) to avoid blocking the single-threaded
+      // Redis server — mirrors the established pattern in redis-cache.ts.
       try {
         const redis = getRedisClient();
         if (redis) {
-          const keys = await redis.keys(`*:page:${pageId}*`);
-          if (keys.length > 0) await redis.del(keys);
+          const pattern = `*:page:${pageId}*`;
+          let cursor = '0';
+          do {
+            const result = await redis.scan(cursor, { MATCH: pattern, COUNT: 100 });
+            cursor = String(result.cursor);
+            if (result.keys.length > 0) {
+              await redis.del(result.keys);
+            }
+          } while (cursor !== '0');
         }
       } catch {
         // Redis may be unavailable — non-fatal, cache will expire naturally

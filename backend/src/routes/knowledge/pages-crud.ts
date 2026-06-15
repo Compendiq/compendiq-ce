@@ -1281,6 +1281,14 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     }
 
     // --- Confluence article: existing flow ---
+    // RBAC: verify user has access to this page's space before allowing edit
+    if (existingPage.space_key) {
+      const accessibleSpaces = await getUserAccessibleSpaces(userId);
+      if (!accessibleSpaces.includes(existingPage.space_key)) {
+        throw fastify.httpErrors.forbidden('Access denied to this space');
+      }
+    }
+
     const client = await getClientForUser(userId);
     if (!client) {
       throw fastify.httpErrors.badRequest('Confluence not configured');
@@ -1545,17 +1553,23 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     const existing = await query<{
       id: number; source: string; created_by_user_id: string | null;
-      visibility: string; deleted_at: Date | null;
+      visibility: string; space_key: string | null; deleted_at: Date | null;
     }>(
-      'SELECT id, source, created_by_user_id, visibility, deleted_at FROM pages WHERE id = $1 AND deleted_at IS NULL',
+      'SELECT id, source, created_by_user_id, visibility, space_key, deleted_at FROM pages WHERE id = $1 AND deleted_at IS NULL',
       [pageId],
     );
     if (!existing.rows.length) throw fastify.httpErrors.notFound('Page not found');
 
     const page = existing.rows[0]!;
 
-    // Access control: standalone pages require ownership or shared visibility
-    if (page.source === 'standalone' && page.created_by_user_id !== userId && page.visibility !== 'shared') {
+    // Access control: Confluence pages require RBAC space access; standalone pages
+    // require ownership or shared visibility
+    if (page.source === 'confluence') {
+      const spaces = await getUserAccessibleSpaces(userId);
+      if (!page.space_key || !spaces.includes(page.space_key)) {
+        throw fastify.httpErrors.forbidden('Access denied to this space');
+      }
+    } else if (page.created_by_user_id !== userId && page.visibility !== 'shared') {
       throw fastify.httpErrors.forbidden('Not authorized to edit this page');
     }
 
@@ -1578,19 +1592,26 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     const result = await query<{
       id: number; source: string; created_by_user_id: string | null;
-      visibility: string; draft_body_html: string | null;
+      visibility: string; space_key: string | null; draft_body_html: string | null;
       draft_body_text: string | null; draft_updated_at: Date | null;
       draft_updated_by: string | null;
     }>(
-      `SELECT id, source, created_by_user_id, visibility, draft_body_html, draft_body_text, draft_updated_at, draft_updated_by FROM pages WHERE id = $1 AND deleted_at IS NULL`,
+      `SELECT id, source, created_by_user_id, visibility, space_key, draft_body_html, draft_body_text, draft_updated_at, draft_updated_by FROM pages WHERE id = $1 AND deleted_at IS NULL`,
       [pageId],
     );
     if (!result.rows.length) throw fastify.httpErrors.notFound('Page not found');
 
     const row = result.rows[0]!;
 
-    // Access control
-    if (row.source === 'standalone' && row.created_by_user_id !== userId && row.visibility !== 'shared') {
+    // Access control: Confluence pages require RBAC space access; standalone pages
+    // require ownership or shared visibility. Use 404 (no existence oracle) to
+    // match GET /pages/:id semantics.
+    if (row.source === 'confluence') {
+      const spaces = await getUserAccessibleSpaces(userId);
+      if (!row.space_key || !spaces.includes(row.space_key)) {
+        throw fastify.httpErrors.notFound('Page not found');
+      }
+    } else if (row.created_by_user_id !== userId && row.visibility !== 'shared') {
       throw fastify.httpErrors.notFound('Page not found');
     }
 
@@ -1625,8 +1646,14 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     const page = existing.rows[0]!;
 
-    // Access control
-    if (page.source === 'standalone' && page.created_by_user_id !== userId && page.visibility !== 'shared') {
+    // Access control: Confluence pages require RBAC space access; standalone pages
+    // require ownership or shared visibility
+    if (page.source === 'confluence') {
+      const spaces = await getUserAccessibleSpaces(userId);
+      if (!page.space_key || !spaces.includes(page.space_key)) {
+        throw fastify.httpErrors.forbidden('Access denied to this space');
+      }
+    } else if (page.created_by_user_id !== userId && page.visibility !== 'shared') {
       throw fastify.httpErrors.forbidden('Not authorized to publish this page');
     }
 
@@ -1713,17 +1740,23 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     const existing = await query<{
       id: number; source: string; created_by_user_id: string | null;
-      visibility: string;
+      visibility: string; space_key: string | null;
     }>(
-      'SELECT id, source, created_by_user_id, visibility FROM pages WHERE id = $1 AND deleted_at IS NULL',
+      'SELECT id, source, created_by_user_id, visibility, space_key FROM pages WHERE id = $1 AND deleted_at IS NULL',
       [pageId],
     );
     if (!existing.rows.length) throw fastify.httpErrors.notFound('Page not found');
 
     const page = existing.rows[0]!;
 
-    // Access control
-    if (page.source === 'standalone' && page.created_by_user_id !== userId && page.visibility !== 'shared') {
+    // Access control: Confluence pages require RBAC space access; standalone pages
+    // require ownership or shared visibility
+    if (page.source === 'confluence') {
+      const spaces = await getUserAccessibleSpaces(userId);
+      if (!page.space_key || !spaces.includes(page.space_key)) {
+        throw fastify.httpErrors.forbidden('Access denied to this space');
+      }
+    } else if (page.created_by_user_id !== userId && page.visibility !== 'shared') {
       throw fastify.httpErrors.forbidden('Not authorized to discard this draft');
     }
 

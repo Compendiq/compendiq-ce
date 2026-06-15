@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-06-15
+
+> Patch release: deep-review follow-ups, the Vite 8 build upgrade, and test/flake hardening.
+
+### Added
+
+- Search results now apply the **Author / Date-range / Labels** filters — they were collected in the UI but never sent to the API. (#803)
+- Optional shared-secret auth (`MCP_DOCS_TOKEN`, constant-time compared) on the mcp-docs sidecar's `/mcp` endpoints, as defense-in-depth on top of Docker network isolation; `/health` stays open. (#803)
+
+### Changed
+
+- Frontend build upgraded to **Vite 8** (with `@vitejs/plugin-react` 6); `build.rollupOptions.output.manualChunks` migrated to Rolldown's function form. Lifts the temporary Vite 7 pin. (#801, #804)
+
+### Fixed
+
+- Deep-review security & correctness fixes across the backend. (#797)
+- `search_web` now surfaces a SearXNG backend failure (timeout / non-2xx / DNS / parse) instead of silently returning **and caching** empty results, so a misconfigured `SEARXNG_URL` is distinguishable from a genuine no-results. (#803)
+- Bounded the inbound `x-correlation-id` length; the LLM circuit breaker admits a single in-flight probe in `HALF_OPEN`; mcp-docs domain-list settings fall back per-field instead of disabling the feature on one corrupt value; SSRF guard validates all resolved IPs. (#803)
+- Stabilised two flaky tests: a Radix focus-scope timer firing after jsdom teardown (frontend), and a `rag-service` search-analytics write deadlocking the test DB reset (backend). (#802, #806)
+- Defense-in-depth: NaN-guarded integer parsing for the re-embed wait timeout (a garbage value previously caused a silent never-timeout) and chunk settings; mcp-docs cache listing skips a corrupted entry instead of truncating. (#807)
+
 ## [0.6.0] - 2026-06-13
 
 > Curated summary of the notable changes among ~159 PRs merged since 0.5.2.

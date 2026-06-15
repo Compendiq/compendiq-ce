@@ -164,4 +164,37 @@ describe.skipIf(!dbAvailable)('duplicate-detector integration — RBAC kNN filte
 
     expect(results.map((r) => r.title)).toContain('My private draft');
   });
+
+  it('surfaces every accessible standalone near-duplicate, each with a distinct non-null id', async () => {
+    // Two accessible standalone near-duplicates both inside the threshold. They
+    // both have confluence_id IS NULL, so keying dedup on confluence_id would
+    // collapse them into a single row (Postgres treats NULLs as equal in
+    // DISTINCT ON). Keying on the page PK keeps both.
+    const vec = fakeVec(29);
+    await seedPage({ confluenceId: 'src-1', source: 'confluence', spaceKey: 'TEAMA', title: 'Deploy guide', vec });
+    const sharedId = await seedPage({
+      confluenceId: null, source: 'standalone', spaceKey: null,
+      title: 'Standalone deploy notes', visibility: 'shared', createdBy: USER_B, vec,
+    });
+    const ownPrivateId = await seedPage({
+      confluenceId: null, source: 'standalone', spaceKey: null,
+      title: 'My private deploy draft', visibility: 'private', createdBy: USER_A, vec,
+    });
+
+    const results = await findDuplicates(USER_A, 'src-1');
+    const standalone = results.filter((r) => r.confluenceId === null);
+
+    // Both standalone duplicates surface — not collapsed into one.
+    expect(standalone).toHaveLength(2);
+    expect(standalone.map((r) => r.title).sort()).toEqual([
+      'My private deploy draft',
+      'Standalone deploy notes',
+    ]);
+    // Every candidate carries a stable, non-null id usable as a nav target.
+    expect(results.every((r) => typeof r.id === 'number' && Number.isInteger(r.id))).toBe(true);
+    const ids = standalone.map((r) => r.id);
+    expect(new Set(ids).size).toBe(ids.length); // distinct
+    expect(ids).toContain(sharedId);
+    expect(ids).toContain(ownPrivateId);
+  });
 });

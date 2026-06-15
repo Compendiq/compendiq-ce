@@ -46,7 +46,7 @@ export async function searchWeb(
   searchUrl.searchParams.set('format', 'json');
   searchUrl.searchParams.set('categories', 'general');
 
-  let results: SearchResult[] = [];
+  let results: SearchResult[];
 
   try {
     const response = await fetch(searchUrl.toString(), {
@@ -69,12 +69,18 @@ export async function searchWeb(
       snippet: r.content ?? '',
     }));
   } catch (err) {
-    logger.warn({ err, query: sanitized }, 'SearXNG search failed');
-    // Return empty results rather than failing the tool call
-    results = [];
+    // Surface backend failures (timeout / non-2xx / DNS / parse) instead of
+    // masking them as an empty result set — and do NOT cache the failure, so a
+    // transient SearXNG outage isn't pinned for the cache TTL and a
+    // misconfigured SEARXNG_URL stays distinguishable from a genuine no-results
+    // (#798). The tool wrapper maps this to an isError MCP response.
+    logger.warn({ err, query: sanitized }, 'SearXNG search backend unavailable');
+    throw new Error(
+      `search backend unavailable: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 
-  // 4. Cache results
+  // 4. Cache successful responses only — a genuinely-empty result set is cacheable.
   await cache.setCachedSearch(sanitized, {
     results, query: sanitized, fetchedAt: new Date().toISOString(),
   });

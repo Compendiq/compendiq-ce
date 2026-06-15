@@ -114,6 +114,7 @@ Feature PRs to `dev` → no bump. Release (`dev → main`) → bump all five `pa
 - `npm install` from repo root only — workspaces require a single root lockfile.
 - `pino-pretty` is a devDependency (excluded from production images).
 - Pin majors for framework deps (React 19, Fastify 5, TipTap v3).
+- **Root override `"vite": "^8.0.16"`** unifies the whole tree on a single vite 8 (frontend + vitest + `@tailwindcss/vite` must not split versions). The app runs **vite 8 with `@vitejs/plugin-react` 6.x** — these move together: vite 8's `rolldown` transform contract breaks plugin-react 5.x's native react-refresh wrapper in the dev server (`Missing field moduleType`, #800), so never downgrade one without the other. Rolldown also dropped the **object** form of `build.rollupOptions.output.manualChunks` — it must be the **function** form (see `frontend/vite.config.ts`).
 
 ## Code Quality
 
