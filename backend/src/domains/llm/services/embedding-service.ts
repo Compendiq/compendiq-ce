@@ -4,6 +4,7 @@ import { resolveUsecase } from './llm-provider-resolver.js';
 import { generateEmbedding } from './openai-compatible-client.js';
 import { htmlToText } from '../../../core/services/content-converter.js';
 import { logger } from '../../../core/utils/logger.js';
+import { safeIntOr } from '../../../core/utils/safe-int.js';
 import { invalidateGraphCache, acquireEmbeddingLock, releaseEmbeddingLock, isEmbeddingLocked, getRedisClient, listActiveEmbeddingLocks } from '../../../core/services/redis-cache.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { visiblePagesPredicate } from '../../../core/services/page-visibility.js';
@@ -276,14 +277,16 @@ async function getAdminChunkSettings(): Promise<{ chunkSize: number; chunkOverla
      WHERE setting_key IN ('embedding_chunk_size', 'embedding_chunk_overlap')`,
   );
 
-  const settings: Record<string, number> = {};
+  const settings: Record<string, string> = {};
   for (const row of result.rows) {
-    settings[row.setting_key] = parseInt(row.setting_value, 10);
+    settings[row.setting_key] = row.setting_value;
   }
 
+  // safeIntOr guards a NaN/garbage admin_settings value (plain `?? DEFAULT`
+  // would let a NaN through). Overlap may legitimately be 0, so allow min 0.
   return {
-    chunkSize: settings['embedding_chunk_size'] ?? CHUNK_SIZE,
-    chunkOverlap: settings['embedding_chunk_overlap'] ?? CHUNK_OVERLAP,
+    chunkSize: safeIntOr(settings['embedding_chunk_size'], CHUNK_SIZE),
+    chunkOverlap: safeIntOr(settings['embedding_chunk_overlap'], CHUNK_OVERLAP, 0),
   };
 }
 
@@ -1223,10 +1226,10 @@ export async function enqueueReembedAll(
  *     every 100 pages (or on 100%).
  */
 export async function runReembedAllJob(job: Job): Promise<string> {
-  const WAIT_LOCKS_TIMEOUT_MS = parseInt(
-    process.env.REEMBED_WAIT_LOCKS_MS ?? '600000',
-    10,
-  );
+  // Guard against a garbage env value: a NaN timeout makes the
+  // `Date.now() - waitStart > WAIT_LOCKS_TIMEOUT_MS` check below always false,
+  // so the wait loop would never time out (silent hang).
+  const WAIT_LOCKS_TIMEOUT_MS = safeIntOr(process.env.REEMBED_WAIT_LOCKS_MS, 600_000);
   const POLL_INTERVAL_MS = 3_000;
 
   // Wait-on-locks loop — exit when no per-user lock (other than our own

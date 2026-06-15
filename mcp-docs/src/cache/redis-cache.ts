@@ -87,11 +87,18 @@ export class DocsCache {
         cursor = String(result.cursor);
         for (const key of result.keys) {
           const raw = await this.redis.get(key);
-          if (raw) {
-            const doc = JSON.parse(raw) as CachedDoc;
-            if (!filter || doc.url.includes(filter) || doc.title.toLowerCase().includes(filter.toLowerCase())) {
-              docs.push(doc);
-            }
+          if (!raw) continue;
+          // Skip a single corrupted entry rather than letting it abort the whole
+          // scan (the outer catch would otherwise truncate the list).
+          let doc: CachedDoc;
+          try {
+            doc = JSON.parse(raw) as CachedDoc;
+          } catch (err) {
+            logger.warn({ err, key }, 'Skipping corrupted cache entry');
+            continue;
+          }
+          if (!filter || doc.url.includes(filter) || doc.title.toLowerCase().includes(filter.toLowerCase())) {
+            docs.push(doc);
           }
         }
       } while (cursor !== '0');
