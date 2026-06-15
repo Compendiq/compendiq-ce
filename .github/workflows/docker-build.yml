@@ -113,6 +113,26 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # Stamp the committed placeholder build-info.json (commit: "unknown")
+      # with the real CE commit. The frontend bundle bakes __APP_COMMIT__ at
+      # build time from this file (frontend/vite.config.ts), and the EE flow
+      # never rebuilds the frontend — both editions ship this same CE image —
+      # so "Frontend commit" in Settings → System can only be filled in here.
+      # Mirrors scripts/build-enterprise.sh (git rev-parse --short HEAD) and
+      # the placeholder's JSON shape so vite's `ceCommit ?? commit` resolves it.
+      - name: Stamp build-info.json with the CE commit
+        run: |
+          SHORT_SHA="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+          cat > build-info.json <<EOF
+          {
+            "edition": "community",
+            "commit": "${SHORT_SHA}",
+            "builtAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+          echo "Stamped build-info.json:"
+          cat build-info.json
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
