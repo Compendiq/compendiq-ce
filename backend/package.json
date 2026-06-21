@@ -40,7 +40,7 @@
     "jose": "^6.0.8",
     "jsdom": "^28.1.0",
     "marked": "^15.0.0",
-    "nodemailer": "^8.0.5",
+    "nodemailer": "^9.0.1",
     "p-limit": "^7.3.0",
     "pdf-lib": "^1.17.1",
     "pg": "^8.19.0",
@@ -50,7 +50,7 @@
     "standardwebhooks": "^1.0.0",
     "turndown": "^7.2.0",
     "turndown-plugin-gfm": "^1.0.2",
-    "undici": "^7.24.0",
+    "undici": "^8.5.0",
     "unpdf": "^1.4.0",
     "zod": "^4.3.6"
   },
