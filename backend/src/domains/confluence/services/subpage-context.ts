@@ -10,6 +10,8 @@
 import { query } from '../../../core/db/postgres.js';
 import { htmlToMarkdown } from '../../../core/services/content-converter.js';
 import { logger } from '../../../core/utils/logger.js';
+import { getUserAccessibleSpacesMemoized } from '../../../core/services/rbac-service.js';
+import { visiblePagesPredicate } from '../../../core/services/page-visibility.js';
 
 /** Maximum combined context size in characters (approx 60K tokens for most LLMs). */
 const MAX_COMBINED_CONTEXT_CHARS = 200_000;
@@ -50,6 +52,12 @@ export async function fetchSubPages(
   const queue: Array<{ id: string; depth: number }> = [{ id: parentId, depth: 1 }];
   const visited = new Set<string>();
 
+  // #814: gate every descendant through the same visibility predicate the RAG
+  // path uses, so a caller can never pull a sub-page from a space they lack
+  // RBAC access to (or another user's private standalone page) into the LLM
+  // prompt. Soft-deleted children are excluded via `deleted_at IS NULL`.
+  const spaces = await getUserAccessibleSpacesMemoized(userId);
+
   while (queue.length > 0 && subPages.length < MAX_SUB_PAGES) {
     const current = queue.shift()!;
     if (current.depth > MAX_DEPTH || visited.has(current.id)) continue;
@@ -62,8 +70,10 @@ export async function fetchSubPages(
     }>(
       `SELECT confluence_id, title, body_html
        FROM pages
-       WHERE parent_id = $1`,
-      [current.id],
+       WHERE parent_id = $1
+         AND deleted_at IS NULL
+         AND ${visiblePagesPredicate(2, 3, 'pages')}`,
+      [current.id, spaces, userId],
     );
 
     for (const row of result.rows) {
@@ -91,9 +101,15 @@ export async function hasSubPages(
   userId: string,
   pageId: string,
 ): Promise<boolean> {
+  // #814: only count children the caller may actually see (same visibility
+  // predicate + soft-delete filter as fetchSubPages).
+  const spaces = await getUserAccessibleSpacesMemoized(userId);
   const result = await query<{ count: string }>(
-    `SELECT COUNT(*) as count FROM pages WHERE parent_id = $1`,
-    [pageId],
+    `SELECT COUNT(*) as count FROM pages
+     WHERE parent_id = $1
+       AND deleted_at IS NULL
+       AND ${visiblePagesPredicate(2, 3, 'pages')}`,
+    [pageId, spaces, userId],
   );
   const row = result.rows[0];
   if (!row) throw new Error('Expected a row from COUNT query');

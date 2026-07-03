@@ -205,7 +205,7 @@ describe('Health routes', () => {
   });
 
   describe('GET /api/health (backward compat)', () => {
-    it('should return full health status including LLM and live per-provider breakers', async () => {
+    it('should return coarse public health status (status/services/llmProvider/version)', async () => {
       const response = await app.inject({ method: 'GET', url: '/api/health' });
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
@@ -213,44 +213,24 @@ describe('Health routes', () => {
       expect(body.services).toHaveProperty('postgres');
       expect(body.services).toHaveProperty('redis');
       expect(body.services).toHaveProperty('llm');
-      expect(body).toHaveProperty('circuitBreakers');
-      // New shape: circuitBreakers.providers is an array of live per-provider snapshots.
-      expect(Array.isArray(body.circuitBreakers.providers)).toBe(true);
-      // Dead legacy globals must no longer be reported here.
-      expect(body.circuitBreakers).not.toHaveProperty('ollama');
-      expect(body.circuitBreakers).not.toHaveProperty('openai');
+      // Frontend reads these unauthenticated fields — they must remain.
       expect(body).toHaveProperty('llmProvider');
+      expect(body).toHaveProperty('version');
+      expect(body).toHaveProperty('commit');
     });
 
-    it('surfaces live per-provider breaker state enriched with provider names', async () => {
+    it('does NOT leak internal operational telemetry to unauthenticated callers (#818)', async () => {
+      // Live per-provider breakers + queue depth would be exposed if the leak regressed.
       mockListProviderBreakers.mockReturnValue([
-        { providerId: 'uuid-a', state: 'closed', failureCount: 0, nextRetryTime: null },
         { providerId: 'uuid-b', state: 'open', failureCount: 3, nextRetryTime: 99 },
       ]);
-      mockListProviders.mockResolvedValue([
-        { id: 'uuid-a', name: 'Ollama Local' },
-        { id: 'uuid-b', name: 'OpenAI' },
-      ]);
+      mockListProviders.mockResolvedValue([{ id: 'uuid-b', name: 'OpenAI' }]);
 
       const response = await app.inject({ method: 'GET', url: '/api/health' });
       const body = JSON.parse(response.body);
-      expect(body.circuitBreakers.providers).toEqual([
-        { providerId: 'uuid-a', name: 'Ollama Local', state: 'closed', failures: 0 },
-        { providerId: 'uuid-b', name: 'OpenAI', state: 'open', failures: 3 },
-      ]);
-    });
-
-    it('tolerates a provider with a live breaker but no row (race during delete)', async () => {
-      mockListProviderBreakers.mockReturnValue([
-        { providerId: 'uuid-orphan', state: 'closed', failureCount: 0, nextRetryTime: null },
-      ]);
-      mockListProviders.mockResolvedValue([]);
-
-      const response = await app.inject({ method: 'GET', url: '/api/health' });
-      const body = JSON.parse(response.body);
-      expect(body.circuitBreakers.providers).toEqual([
-        { providerId: 'uuid-orphan', name: null, state: 'closed', failures: 0 },
-      ]);
+      expect(body).not.toHaveProperty('circuitBreakers');
+      expect(body).not.toHaveProperty('llmQueue');
+      expect(body).not.toHaveProperty('queues');
     });
 
     it('should report llm=false when LLM provider is unreachable', async () => {

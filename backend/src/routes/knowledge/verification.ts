@@ -128,7 +128,9 @@ export async function verificationRoutes(fastify: FastifyInstance) {
   });
 
   // GET /api/analytics/verification-health — Dashboard stats
-  fastify.get('/analytics/verification-health', async () => {
+  // Admin-only: aggregates verification counts across ALL pages with no
+  // per-page visibility filter, so it must not be exposed to non-admins (#818).
+  fastify.get('/analytics/verification-health', { preHandler: fastify.requireAdmin }, async () => {
     const result = await query<{
       fresh: string;
       aging: string;

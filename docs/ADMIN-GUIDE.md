@@ -742,7 +742,7 @@ Compendiq provides Kubernetes-compatible health probes:
 
 | Endpoint | Purpose | Checks |
 |----------|---------|--------|
-| `GET /api/health` | Full health status | PostgreSQL + Redis + LLM connectivity, circuit breaker status |
+| `GET /api/health` | Public health status | PostgreSQL + Redis + LLM connectivity (coarse; no internal telemetry) |
 | `GET /api/health/ready` | Readiness probe | PostgreSQL + Redis |
 | `GET /api/health/live` | Liveness probe | Always returns 200 (process is alive) |
 | `GET /api/health/start` | Startup probe | Startup complete + PostgreSQL + LLM availability |
@@ -758,17 +758,17 @@ Example response from `GET /api/health`:
     "redis": true,
     "llm": true
   },
-  "circuitBreakers": {
-    "providers": [
-      { "providerId": "<uuid>", "name": "OpenAI Prod", "state": "closed", "failures": 0 }
-    ]
-  },
+  "llmProvider": "OpenAI Prod",
   "version": "1.0.0",
   "uptime": 3600.123
 }
 ```
 
 Status values: `ok` (all healthy), `degraded` (partial), `error` (all down).
+
+`/api/health` is public (unauthenticated), so it deliberately omits internal
+operational telemetry. Per-provider circuit-breaker state is available to
+authenticated callers via `GET /api/llm/circuit-breaker-status`.
 
 ### Docker Health Checks
 
