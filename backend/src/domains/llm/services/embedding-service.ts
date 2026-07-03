@@ -511,6 +511,20 @@ export async function processDirtyPages(
       logger.warn({ userId }, 'Embedding processing already in progress for user');
       return { processed: 0, errors: 0, alreadyProcessing: true };
     }
+    // Issue #823 — reembed-all interlock: the per-user lock says nothing about
+    // the global `__reembed_all__` system lock. A running reembed-all marks
+    // ALL pages `embedding_dirty = TRUE`, so a sync-triggered (or admin-route)
+    // call here would launch a competing global dirty-page scan and redundantly
+    // re-embed the same pages during the heaviest operation. After acquiring
+    // our own lock, back off if the reembed-all lock is held. Acquire-then-check
+    // composes safely with runReembedAllJob's post-acquire TOCTOU recheck: in a
+    // simultaneous-start race both sides back off rather than run concurrently.
+    // (runReembedAllJob's own call uses lockAlreadyHeld and never reaches here.)
+    if (userId !== REEMBED_ALL_LOCK_USER && (await isEmbeddingLocked(REEMBED_ALL_LOCK_USER))) {
+      await releaseEmbeddingLock(userId, lockId);
+      logger.info({ userId }, 'Reembed-all in progress — skipping competing dirty-page scan');
+      return { processed: 0, errors: 0, alreadyProcessing: true };
+    }
   }
 
   await setLastEmbeddingRunAt(new Date());

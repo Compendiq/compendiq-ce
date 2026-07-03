@@ -527,6 +527,37 @@ describe('embedding-service', () => {
       expect(mocks.releaseEmbeddingLock).not.toHaveBeenCalled();
     });
 
+    it('short-circuits with alreadyProcessing when the reembed-all system lock is held (#823)', async () => {
+      // Per-user lock is free, but a global reembed-all is running.
+      mocks.acquireEmbeddingLock.mockResolvedValue(FAKE_LOCK_ID);
+      mocks.isEmbeddingLocked.mockImplementation(async (id: string) => id === '__reembed_all__');
+
+      const result = await processDirtyPages('sync-user');
+
+      expect(result).toEqual({ processed: 0, errors: 0, alreadyProcessing: true });
+      // It consulted the reembed-all system lock.
+      expect(mocks.isEmbeddingLocked).toHaveBeenCalledWith('__reembed_all__');
+      // The just-acquired per-user lock must be released again so it is not leaked.
+      expect(mocks.releaseEmbeddingLock).toHaveBeenCalledWith('sync-user', FAKE_LOCK_ID);
+      // No dirty-page scan should have run: only the lock check happened, no
+      // chunk-settings or COUNT queries were issued.
+      expect(mocks.query).not.toHaveBeenCalled();
+    });
+
+    it('does not consult the reembed-all lock when the caller already holds the lock (#823)', async () => {
+      // runReembedAllJob path: lockAlreadyHeld=true and userId is the system
+      // user itself — the guard must be skipped so the global run proceeds.
+      mocks.isEmbeddingLocked.mockResolvedValue(true);
+      mockChunkSettings();
+      mocks.query.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // COUNT query
+
+      const result = await processDirtyPages('__reembed_all__', undefined, { lockAlreadyHeld: true });
+
+      expect(result).toEqual({ processed: 0, errors: 0 });
+      // Proceeded to the dirty-page scan (chunk settings + COUNT ran).
+      expect(mocks.query).toHaveBeenCalled();
+    });
+
     it('should acquire lock before processing and release with lock ID in finally', async () => {
       mockChunkSettings();
       // COUNT query (no dirty pages)
