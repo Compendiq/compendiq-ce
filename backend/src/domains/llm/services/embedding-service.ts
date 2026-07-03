@@ -539,8 +539,10 @@ export async function processDirtyPages(
       return { processed: 0, errors: 0 };
     }
 
-    // Offset only advances by the number of errors per batch, because
-    // successfully processed pages drop out of the WHERE filter.
+    // Offset advances by the number of pages from each batch that remain
+    // `embedding_dirty = TRUE` afterwards (failures, plus pages whose every
+    // chunk-batch exceeded the model's context window). Successfully embedded
+    // pages clear the flag and drop out of the WHERE filter on their own.
     let offset = 0;
     let batchAborted = false;
 
@@ -598,7 +600,10 @@ export async function processDirtyPages(
 
       if (batch.rows.length === 0) break;
 
-      let batchErrors = 0;
+      // Pages from this batch that are still embedding_dirty = TRUE after
+      // processing (errors + all-batches-skipped pages). Drives how far the
+      // LIMIT/OFFSET window advances; see the `offset +=` note below.
+      let batchRemainingDirty = 0;
       const batchTotal = totalDirty; // Use totalDirty for progress percentage
 
       // Batch-mark all pages in this DB batch as 'embedding' in a single UPDATE
@@ -635,7 +640,14 @@ export async function processDirtyPages(
 
         try {
 
-          await embedPage(userId, page.id, page.title, page.space_key, page.body_html, chunkOpts);
+          const embeddedChunks = await embedPage(userId, page.id, page.title, page.space_key, page.body_html, chunkOpts);
+          // embedPage returns 0 without throwing when every chunk-batch was
+          // skipped for exceeding the context window — the page stays
+          // embedding_dirty = TRUE, so it must be skipped past or the same
+          // window is re-fetched forever. (An empty/short page also returns 0
+          // but has already cleared its dirty flag; counting it here at worst
+          // nudges a few still-dirty pages to the next cycle — self-correcting.)
+          if (embeddedChunks === 0) batchRemainingDirty++;
           totalProcessed++;
           pagesProcessedSinceGuardCheck++;
           processedPageIds.push(page.id);
@@ -689,7 +701,10 @@ export async function processDirtyPages(
 
               // Try embedding again
               try {
-                await embedPage(userId, page.id, page.title, page.space_key, page.body_html, chunkOpts);
+                const embeddedChunks = await embedPage(userId, page.id, page.title, page.space_key, page.body_html, chunkOpts);
+                // See the note on the initial embedPage call: a 0 return means
+                // every chunk-batch was skipped, leaving the page dirty.
+                if (embeddedChunks === 0) batchRemainingDirty++;
                 totalProcessed++;
                 pagesProcessedSinceGuardCheck++;
                 processedPageIds.push(page.id);
@@ -719,7 +734,7 @@ export async function processDirtyPages(
                     [page.id, errorMessage.slice(0, 1000)],
                   ).catch((updateErr) => logger.error({ err: updateErr }, 'Failed to update embedding_status to failed'));
                   totalErrors++;
-                  batchErrors++;
+                  batchRemainingDirty++;
                   consecutiveFailures++;
                   errorList.push(`${page.title}: ${errorMessage.slice(0, 200)}`);
                   cbSuccess = true; // Mark as handled (failed, but handled)
@@ -750,7 +765,7 @@ export async function processDirtyPages(
             [page.id, errorMessage.slice(0, 1000)],
           ).catch((updateErr) => logger.error({ err: updateErr }, 'Failed to update embedding_status to failed'));
           totalErrors++;
-          batchErrors++;
+          batchRemainingDirty++;
           pagesProcessedSinceGuardCheck++;
           consecutiveFailures++;
           errorList.push(`${page.title}: ${errorMessage.slice(0, 200)}`);
@@ -791,10 +806,15 @@ export async function processDirtyPages(
         }
       }
 
-      // If every page in the batch errored, we need to advance past them
-      // to avoid an infinite loop. If some succeeded, those dropped from
-      // the result set so offset only needs to skip the errored ones.
-      offset += batchErrors;
+      // Advance the offset past every page from this batch that is still dirty,
+      // so the next LIMIT/OFFSET window doesn't re-read them. That's the errored
+      // pages plus the pages whose every chunk-batch was skipped for exceeding
+      // the model's context window (embedPage returns 0 but leaves the page
+      // embedding_dirty = TRUE). Counting only errors would livelock: an
+      // all-skip page never throws, so a full batch of them would re-fetch the
+      // same window forever. Successfully embedded pages clear the flag and drop
+      // out of the WHERE filter on their own.
+      offset += batchRemainingDirty;
 
       // If the batch was smaller than the batch size, we've reached the end
       if (batch.rows.length < DIRTY_PAGE_BATCH_SIZE) break;
