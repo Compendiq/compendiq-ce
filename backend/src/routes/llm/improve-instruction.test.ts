@@ -98,6 +98,15 @@ vi.mock('../../domains/confluence/services/subpage-context.js', () => ({
   getMultiPagePromptSuffix: vi.fn().mockReturnValue(''),
 }));
 
+const mockEmitLlmAudit = vi.fn();
+vi.mock('../../domains/llm/services/llm-audit-hook.js', async (importActual) => {
+  const actual = await importActual<typeof import('../../domains/llm/services/llm-audit-hook.js')>();
+  return {
+    ...actual,
+    emitLlmAudit: (...args: unknown[]) => mockEmitLlmAudit(...args),
+  };
+});
+
 vi.mock('../../core/utils/sanitize-llm-input.js', () => ({
   sanitizeLlmInput: vi.fn((input: string) => ({ sanitized: input, warnings: [] })),
 }));
@@ -423,6 +432,28 @@ describe('POST /api/llm/improve - web search injection audit (#835)', () => {
     );
   });
 
+  it('rolls web-search detections into the per-call attestation flags (#835)', async () => {
+    mockFetchWebSources.mockResolvedValue({
+      sources: [{ title: '[FILTERED] docs', url: 'https://evil.example.com/doc', snippet: 'neutralized' }],
+      injectionWarnings: [
+        { url: 'https://evil.example.com/doc', warnings: ['Detected prompt injection pattern: [SYSTEM] tag'] },
+      ],
+    });
+
+    await app.inject({
+      method: 'POST',
+      url: '/api/llm/improve',
+      payload: { content: '<p>Text</p>', type: 'grammar', model: 'llama3', searchWeb: true, searchQuery: 'q' },
+    });
+
+    // llm_audit_log.prompt_injection_detected must not read FALSE while
+    // audit_log carries a PROMPT_INJECTION_DETECTED row for the same request
+    // — Report 5 (LLM Usage attestation) counts by the per-call flags.
+    expect(mockEmitLlmAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ promptInjectionDetected: true, sanitized: true }),
+    );
+  });
+
   it('does not emit an audit event when web sources are clean (#835)', async () => {
     mockFetchWebSources.mockResolvedValue({
       sources: [{ title: 'Clean', url: 'https://clean.example.com/doc', snippet: 'safe' }],
@@ -437,5 +468,9 @@ describe('POST /api/llm/improve - web search injection audit (#835)', () => {
 
     expect(mockFetchWebSources).toHaveBeenCalledOnce();
     expect(vi.mocked(logAuditEvent)).not.toHaveBeenCalled();
+    // Clean web sources must not flip the attestation flags.
+    expect(mockEmitLlmAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ promptInjectionDetected: false, sanitized: false }),
+    );
   });
 });

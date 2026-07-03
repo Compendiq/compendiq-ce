@@ -55,10 +55,12 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
     // sub-page branch inside assembleContextIfNeeded never emits tokens.
     const { markdown, multiPageSuffix } = await assembleContextIfNeeded(userId, body.pageId, content, includeSubPages, { protectMedia: true, layoutTokens: true });
 
-    // Sanitize before sending to LLM
+    // Sanitize before sending to LLM. The two flags below are `let` because
+    // the web-search block further down folds its own sanitizer detections
+    // into them (#835) — mirrors `llm-generate.ts`'s accumulator pattern.
     const { sanitized, warnings } = sanitizeLlmInput(markdown);
-    const promptInjectionDetected = warnings.length > 0;
-    const wasSanitized = sanitized !== markdown;
+    let promptInjectionDetected = warnings.length > 0;
+    let wasSanitized = sanitized !== markdown;
     if (promptInjectionDetected) {
       await logAuditEvent(userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/improve' }, request);
     }
@@ -89,6 +91,12 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
           field: 'webSearch',
           urls: injectionWarnings.map((w) => w.url),
         }, request);
+        // Roll web-search detections into the per-call attestation flags so
+        // llm_audit_log (Report 5) stays consistent with audit_log — same
+        // idiom as llm-ask.ts / llm-generate.ts. Detections always imply
+        // [FILTERED] rewrites, so `sanitized` flips too.
+        promptInjectionDetected = true;
+        wasSanitized = true;
       }
     }
 

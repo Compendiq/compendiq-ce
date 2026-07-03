@@ -365,6 +365,32 @@ describe('POST /api/llm/generate with pdfText', () => {
     );
   });
 
+  it('rolls web-search detections into the per-call attestation flags (#835)', async () => {
+    async function* mockGenerator() {
+      yield { content: '# Article', done: true };
+    }
+    mockStreamChat.mockReturnValue(mockGenerator());
+    mockFetchWebSources.mockResolvedValue({
+      sources: [{ title: '[FILTERED] docs', url: 'https://evil.example.com/doc', snippet: 'neutralized' }],
+      injectionWarnings: [
+        { url: 'https://evil.example.com/doc', warnings: ['Detected prompt injection pattern: [SYSTEM] tag'] },
+      ],
+    });
+
+    await app.inject({
+      method: 'POST',
+      url: '/api/llm/generate',
+      payload: { prompt: 'Write about Docker', model: 'llama3', searchWeb: true, searchQuery: 'q' },
+    });
+
+    // llm_audit_log.prompt_injection_detected must not read FALSE while
+    // audit_log carries a PROMPT_INJECTION_DETECTED row for the same request
+    // — Report 5 (LLM Usage attestation) counts by the per-call flags.
+    expect(mockEmitLlmAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ promptInjectionDetected: true, sanitized: true }),
+    );
+  });
+
   it('does not emit an audit event when web sources are clean (#835)', async () => {
     async function* mockGenerator() {
       yield { content: '# Article', done: true };
@@ -385,6 +411,10 @@ describe('POST /api/llm/generate with pdfText', () => {
 
     expect(mockFetchWebSources).toHaveBeenCalledOnce();
     expect(logAuditEvent).not.toHaveBeenCalled();
+    // Clean web sources must not flip the attestation flags.
+    expect(mockEmitLlmAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ promptInjectionDetected: false, sanitized: false }),
+    );
   });
 
   it('should truncate pdfText when it exceeds MAX_PDF_TEXT_FOR_LLM', async () => {

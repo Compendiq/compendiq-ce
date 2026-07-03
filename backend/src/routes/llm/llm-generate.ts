@@ -103,6 +103,12 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
           field: 'webSearch',
           urls: injectionWarnings.map((w) => w.url),
         }, request);
+        // Roll web-search detections into the per-call attestation flags so
+        // llm_audit_log (Report 5) stays consistent with audit_log — same
+        // idiom as the pdfText accumulator above. Detections always imply
+        // [FILTERED] rewrites, so `sanitized` flips too.
+        promptInjectionDetected = true;
+        wasSanitized = true;
       }
     }
 

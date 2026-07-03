@@ -621,6 +621,31 @@ describe('POST /api/llm/ask', () => {
       );
     });
 
+    it('rolls web-search detections into the per-call attestation flags', async () => {
+      mockFetchWebSources.mockResolvedValue({
+        sources: [{ url: 'https://evil.example.com/doc', title: '[FILTERED] docs', snippet: 'neutralized' }],
+        injectionWarnings: [
+          { url: 'https://evil.example.com/doc', warnings: ['Detected prompt injection pattern: [SYSTEM] tag'] },
+        ],
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/llm/ask',
+        payload: { question: 'What is X?', model: 'llama3', searchWeb: true },
+      });
+
+      expect(response.statusCode).toBe(200);
+      // llm_audit_log.prompt_injection_detected must not read FALSE while
+      // audit_log carries a PROMPT_INJECTION_DETECTED row for the same
+      // request — Report 5 (LLM Usage attestation) counts by the per-call
+      // flags. Detections always imply [FILTERED] rewrites, so `sanitized`
+      // flips too.
+      expect(mockEmitLlmAudit).toHaveBeenCalledWith(
+        expect.objectContaining({ promptInjectionDetected: true, sanitized: true }),
+      );
+    });
+
     it('does NOT emit an audit event when web sources are clean', async () => {
       mockFetchWebSources.mockResolvedValue({
         sources: [{ url: 'https://clean.example.com/doc', title: 'Clean', snippet: 'safe' }],
@@ -636,6 +661,10 @@ describe('POST /api/llm/ask', () => {
       expect(response.statusCode).toBe(200);
       expect(mockFetchWebSources).toHaveBeenCalledTimes(1);
       expect(mockLogAuditEvent).not.toHaveBeenCalled();
+      // Clean web sources must not flip the attestation flags.
+      expect(mockEmitLlmAudit).toHaveBeenCalledWith(
+        expect.objectContaining({ promptInjectionDetected: false, sanitized: false }),
+      );
     });
   });
 });
