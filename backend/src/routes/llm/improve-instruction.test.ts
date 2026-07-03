@@ -80,6 +80,15 @@ vi.mock('../../core/services/audit-service.js', () => ({
   logAuditEvent: vi.fn(),
 }));
 
+// Mock _web-search-helper (fetchWebSources hits the MCP docs sidecar over HTTP)
+const mockFetchWebSources = vi.fn().mockResolvedValue({ sources: [], injectionWarnings: [] });
+const mockFormatWebContext = vi.fn().mockReturnValue('');
+
+vi.mock('./_web-search-helper.js', () => ({
+  fetchWebSources: (...args: unknown[]) => mockFetchWebSources(...args),
+  formatWebContext: (...args: unknown[]) => mockFormatWebContext(...args),
+}));
+
 vi.mock('../../domains/confluence/services/sync-service.js', () => ({
   getClientForUser: vi.fn(),
 }));
@@ -89,6 +98,15 @@ vi.mock('../../domains/confluence/services/subpage-context.js', () => ({
   getMultiPagePromptSuffix: vi.fn().mockReturnValue(''),
 }));
 
+const mockEmitLlmAudit = vi.fn();
+vi.mock('../../domains/llm/services/llm-audit-hook.js', async (importActual) => {
+  const actual = await importActual<typeof import('../../domains/llm/services/llm-audit-hook.js')>();
+  return {
+    ...actual,
+    emitLlmAudit: (...args: unknown[]) => mockEmitLlmAudit(...args),
+  };
+});
+
 vi.mock('../../core/utils/sanitize-llm-input.js', () => ({
   sanitizeLlmInput: vi.fn((input: string) => ({ sanitized: input, warnings: [] })),
 }));
@@ -96,6 +114,7 @@ vi.mock('../../core/utils/sanitize-llm-input.js', () => ({
 import { llmImproveRoutes } from './llm-improve.js';
 import { STRUCTURE_PRESERVATION_INSTRUCTION } from '../../domains/llm/services/prompts.js';
 import { htmlToMarkdown } from '../../core/services/content-converter.js';
+import { logAuditEvent } from '../../core/services/audit-service.js';
 
 describe('POST /api/llm/improve - instruction field', () => {
   let app: ReturnType<typeof Fastify>;
@@ -343,6 +362,115 @@ describe('POST /api/llm/improve - structure preservation instruction (#765)', ()
     expect(vi.mocked(htmlToMarkdown)).toHaveBeenCalledWith(
       expect.any(String),
       expect.objectContaining({ layoutTokens: true }),
+    );
+  });
+});
+
+describe('POST /api/llm/improve - web search injection audit (#835)', () => {
+  let app: ReturnType<typeof Fastify>;
+
+  beforeAll(async () => {
+    app = Fastify({ logger: false });
+    await app.register(sensible);
+
+    app.decorate('authenticate', async () => {});
+    app.decorate('requireAdmin', async () => {});
+    app.decorate('redis', {});
+    app.decorateRequest('userId', '');
+    app.addHook('onRequest', async (request) => {
+      request.userId = 'test-user-123';
+      request.userCan = async () => true;
+    });
+
+    await app.register(llmImproveRoutes, { prefix: '/api' });
+    await app.ready();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetCachedResponse.mockResolvedValue(null);
+    mockFetchWebSources.mockResolvedValue({ sources: [], injectionWarnings: [] });
+    mockFormatWebContext.mockReturnValue('');
+    async function* mockGenerator() {
+      yield { content: 'Improved text', done: true };
+    }
+    mockProviderStreamChat.mockReturnValue(mockGenerator());
+  });
+
+  it('emits ONE aggregated PROMPT_INJECTION_DETECTED event when web sources contain injections (#835)', async () => {
+    mockFetchWebSources.mockResolvedValue({
+      sources: [{ title: '[FILTERED] docs', url: 'https://evil.example.com/doc', snippet: 'neutralized' }],
+      injectionWarnings: [
+        { url: 'https://evil.example.com/doc', warnings: ['Detected prompt injection pattern: [SYSTEM] tag'] },
+      ],
+    });
+
+    await app.inject({
+      method: 'POST',
+      url: '/api/llm/improve',
+      payload: { content: '<p>Text</p>', type: 'grammar', model: 'llama3', searchWeb: true, searchQuery: 'q' },
+    });
+
+    expect(mockFetchWebSources).toHaveBeenCalledWith('q', 'test-user-123');
+    expect(vi.mocked(logAuditEvent)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(logAuditEvent)).toHaveBeenCalledWith(
+      'test-user-123',
+      'PROMPT_INJECTION_DETECTED',
+      'llm',
+      undefined,
+      {
+        warnings: ['Detected prompt injection pattern: [SYSTEM] tag'],
+        route: '/llm/improve',
+        field: 'webSearch',
+        urls: ['https://evil.example.com/doc'],
+      },
+      expect.anything(), // request object
+    );
+  });
+
+  it('rolls web-search detections into the per-call attestation flags (#835)', async () => {
+    mockFetchWebSources.mockResolvedValue({
+      sources: [{ title: '[FILTERED] docs', url: 'https://evil.example.com/doc', snippet: 'neutralized' }],
+      injectionWarnings: [
+        { url: 'https://evil.example.com/doc', warnings: ['Detected prompt injection pattern: [SYSTEM] tag'] },
+      ],
+    });
+
+    await app.inject({
+      method: 'POST',
+      url: '/api/llm/improve',
+      payload: { content: '<p>Text</p>', type: 'grammar', model: 'llama3', searchWeb: true, searchQuery: 'q' },
+    });
+
+    // llm_audit_log.prompt_injection_detected must not read FALSE while
+    // audit_log carries a PROMPT_INJECTION_DETECTED row for the same request
+    // — Report 5 (LLM Usage attestation) counts by the per-call flags.
+    expect(mockEmitLlmAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ promptInjectionDetected: true, sanitized: true }),
+    );
+  });
+
+  it('does not emit an audit event when web sources are clean (#835)', async () => {
+    mockFetchWebSources.mockResolvedValue({
+      sources: [{ title: 'Clean', url: 'https://clean.example.com/doc', snippet: 'safe' }],
+      injectionWarnings: [],
+    });
+
+    await app.inject({
+      method: 'POST',
+      url: '/api/llm/improve',
+      payload: { content: '<p>Text</p>', type: 'grammar', model: 'llama3', searchWeb: true, searchQuery: 'q' },
+    });
+
+    expect(mockFetchWebSources).toHaveBeenCalledOnce();
+    expect(vi.mocked(logAuditEvent)).not.toHaveBeenCalled();
+    // Clean web sources must not flip the attestation flags.
+    expect(mockEmitLlmAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ promptInjectionDetected: false, sanitized: false }),
     );
   });
 });

@@ -102,8 +102,18 @@ vi.mock('../../domains/llm/services/llm-cache.js', () => {
 });
 
 // --- Mock: audit-service ---
+const mockLogAuditEvent = vi.fn().mockResolvedValue(undefined);
 vi.mock('../../core/services/audit-service.js', () => ({
-  logAuditEvent: vi.fn().mockResolvedValue(undefined),
+  logAuditEvent: (...args: unknown[]) => mockLogAuditEvent(...args),
+}));
+
+// --- Mock: _web-search-helper (web-search injection audit, #835) ---
+const mockFetchWebSources = vi.fn().mockResolvedValue({ sources: [], injectionWarnings: [] });
+const mockFormatWebContext = vi.fn().mockReturnValue('');
+
+vi.mock('./_web-search-helper.js', () => ({
+  fetchWebSources: (...args: unknown[]) => mockFetchWebSources(...args),
+  formatWebContext: (...args: unknown[]) => mockFormatWebContext(...args),
 }));
 
 const mockEmitLlmAudit = vi.fn();
@@ -182,6 +192,8 @@ describe('POST /api/llm/ask', () => {
     // Default query mock: returns row with id for saveConversation INSERT
     mockQuery.mockResolvedValue({ rows: [{ id: 'test-conv-id' }] });
     mockBuildRagContext.mockReturnValue('Relevant context from the knowledge base.');
+    mockFetchWebSources.mockResolvedValue({ sources: [], injectionWarnings: [] });
+    mockFormatWebContext.mockReturnValue('');
     // Default resolveUsecase: provider 'p1' with model 'm'
     mockResolveUsecase.mockResolvedValue({
       config: {
@@ -562,6 +574,97 @@ describe('POST /api/llm/ask', () => {
       // The attacker-controlled title must pass through the prompt-injection
       // sanitizer before being embedded into the external-docs context.
       expect(vi.mocked(sanitizeLlmInput)).toHaveBeenCalledWith(maliciousTitle);
+    });
+  });
+
+  describe('web-search injection audit (#835)', () => {
+    beforeEach(() => {
+      mockHybridSearch.mockResolvedValue([]);
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
+    });
+
+    it('emits ONE aggregated PROMPT_INJECTION_DETECTED event when web sources contain injections', async () => {
+      mockFetchWebSources.mockResolvedValue({
+        sources: [
+          { url: 'https://evil-a.example.com/doc', title: '[FILTERED] docs', snippet: 'clean' },
+          { url: 'https://evil-b.example.com/doc', title: 'ok', snippet: '[FILTERED]' },
+        ],
+        injectionWarnings: [
+          { url: 'https://evil-a.example.com/doc', warnings: ['Detected prompt injection pattern: [SYSTEM] tag'] },
+          { url: 'https://evil-b.example.com/doc', warnings: ['Detected ChatML-like tags'] },
+        ],
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/llm/ask',
+        payload: { question: 'What is X?', model: 'llama3', searchWeb: true },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockLogAuditEvent).toHaveBeenCalledTimes(1);
+      expect(mockLogAuditEvent).toHaveBeenCalledWith(
+        'test-user-123',
+        'PROMPT_INJECTION_DETECTED',
+        'llm',
+        undefined,
+        {
+          warnings: [
+            'Detected prompt injection pattern: [SYSTEM] tag',
+            'Detected ChatML-like tags',
+          ],
+          route: '/llm/ask',
+          field: 'webSearch',
+          urls: ['https://evil-a.example.com/doc', 'https://evil-b.example.com/doc'],
+        },
+        expect.anything(), // request object
+      );
+    });
+
+    it('rolls web-search detections into the per-call attestation flags', async () => {
+      mockFetchWebSources.mockResolvedValue({
+        sources: [{ url: 'https://evil.example.com/doc', title: '[FILTERED] docs', snippet: 'neutralized' }],
+        injectionWarnings: [
+          { url: 'https://evil.example.com/doc', warnings: ['Detected prompt injection pattern: [SYSTEM] tag'] },
+        ],
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/llm/ask',
+        payload: { question: 'What is X?', model: 'llama3', searchWeb: true },
+      });
+
+      expect(response.statusCode).toBe(200);
+      // llm_audit_log.prompt_injection_detected must not read FALSE while
+      // audit_log carries a PROMPT_INJECTION_DETECTED row for the same
+      // request — Report 5 (LLM Usage attestation) counts by the per-call
+      // flags. Detections always imply [FILTERED] rewrites, so `sanitized`
+      // flips too.
+      expect(mockEmitLlmAudit).toHaveBeenCalledWith(
+        expect.objectContaining({ promptInjectionDetected: true, sanitized: true }),
+      );
+    });
+
+    it('does NOT emit an audit event when web sources are clean', async () => {
+      mockFetchWebSources.mockResolvedValue({
+        sources: [{ url: 'https://clean.example.com/doc', title: 'Clean', snippet: 'safe' }],
+        injectionWarnings: [],
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/llm/ask',
+        payload: { question: 'What is X?', model: 'llama3', searchWeb: true },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockFetchWebSources).toHaveBeenCalledTimes(1);
+      expect(mockLogAuditEvent).not.toHaveBeenCalled();
+      // Clean web sources must not flip the attestation flags.
+      expect(mockEmitLlmAudit).toHaveBeenCalledWith(
+        expect.objectContaining({ promptInjectionDetected: false, sanitized: false }),
+      );
     });
   });
 });
