@@ -292,11 +292,11 @@ export function AiProvider({ children }: { children: ReactNode }) {
     };
   }, [isThinking]);
 
-  // Load settings, models and conversations on mount.
+  // Load models and conversations on mount.
   // #355: prefer the admin-configured chat use-case default (resolveUsecase
-  // 'chat') over the legacy per-user settings.ollamaModel/openaiModel. The
-  // settings model remains a fallback so the input never shows empty if the
-  // chat use-case isn't configured.
+  // 'chat'); when the chat use-case isn't configured we fall through to the
+  // first available model (see modelsQuery below) so the input never shows
+  // empty.
   //
   // Refactored to TanStack Query (Finding 1, AC-3) so admin-side changes to
   // the chat use-case assignment propagate to the chat UI without a hard
@@ -306,29 +306,12 @@ export function AiProvider({ children }: { children: ReactNode }) {
     queryKey: ['llm', 'usecase-default', 'chat'],
     queryFn: () => apiFetch<UsecaseDefault>('/llm/usecase-default?usecase=chat'),
     // Returns 404 when no provider is configured for chat — that's a legitimate
-    // "no default" signal that we should fall through to the legacy /settings
-    // path; do not retry it as an error.
+    // "no default" signal that we should fall through to the models list; do
+    // not retry it as an error.
     retry: false,
     staleTime: 30_000,
   });
   const chatDefault = chatDefaultQuery.data;
-  const isChatDefaultSettled = !chatDefaultQuery.isLoading;
-
-  // Legacy fallback only consulted when the chat use-case has no configured
-  // default. Skipped while the primary query is still in flight so we don't
-  // race-set the wrong model.
-  const settingsFallbackQuery = useQuery<{
-    llmProvider: string;
-    ollamaModel: string;
-    openaiModel: string | null;
-  }>({
-    queryKey: ['settings', 'llm-fallback'],
-    queryFn: () =>
-      apiFetch('/settings'),
-    enabled: isChatDefaultSettled && !chatDefault?.model,
-    retry: false,
-    staleTime: 30_000,
-  });
 
   // Models for the chat use case. Finding 4: the backend route at
   // backend/src/routes/llm/llm-models.ts only parses ?usecase=… — it ignores
@@ -365,22 +348,12 @@ export function AiProvider({ children }: { children: ReactNode }) {
       modelInitializedRef.current = true;
       return;
     }
-    if (settingsFallbackQuery.data) {
-      const s = settingsFallbackQuery.data;
-      const provider = s.llmProvider ?? 'ollama';
-      const fb = provider === 'openai' ? s.openaiModel ?? '' : s.ollamaModel ?? '';
-      if (fb) {
-        setModel(fb);
-        modelInitializedRef.current = true;
-        return;
-      }
-    }
     const modelsList = modelsQuery.data;
     if (modelsList && modelsList.length > 0) {
       setModel((prev) => prev || (modelsList[0]?.name ?? ''));
       modelInitializedRef.current = true;
     }
-  }, [chatDefault, settingsFallbackQuery.data, modelsQuery.data]);
+  }, [chatDefault, modelsQuery.data]);
 
   // Auto-scroll when committed messages change and on each batched streaming
   // flush (#747: the in-flight answer renders via streamingDisplayContent and
