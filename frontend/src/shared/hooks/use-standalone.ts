@@ -310,25 +310,6 @@ export function useReorderPage() {
   });
 }
 
-// ======== Breadcrumb ========
-
-interface BreadcrumbData {
-  spaceKey: string | null;
-  spaceName: string | null;
-  source: 'confluence' | 'local';
-  ancestors: { id: number; title: string }[];
-  current: { id: number; title: string };
-}
-
-export function usePageBreadcrumb(pageId: string | undefined) {
-  return useQuery({
-    queryKey: ['page-breadcrumb', pageId],
-    queryFn: () => apiFetch<BreadcrumbData>(`/pages/${pageId}/breadcrumb`),
-    enabled: !!pageId,
-    staleTime: 60_000,
-  });
-}
-
 // ======== RBAC ========
 
 export function useRoles() {
