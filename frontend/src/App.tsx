@@ -60,6 +60,11 @@ const GraphPage = lazy(() =>
     default: m.GraphPage,
   })),
 );
+const KnowledgeRequestsPage = lazy(() =>
+  import('./features/knowledge-requests/KnowledgeRequestsPage').then((m) => ({
+    default: m.KnowledgeRequestsPage,
+  })),
+);
 const NewSpacePage = lazy(() =>
   import('./features/spaces/NewSpacePage').then((m) => ({
     default: m.NewSpacePage,
@@ -160,6 +165,10 @@ export function App() {
                           <Route path="/trash" element={<TrashPage />} />
                           <Route path="/ai" element={<AiAssistantPage />} />
                           <Route path="/graph" element={<GraphPage />} />
+                          <Route
+                            path="/knowledge-requests"
+                            element={<KnowledgeRequestsPage />}
+                          />
                           <Route path="/spaces/new" element={<NewSpacePage />} />
                           <Route path="/spaces/:key/settings" element={<SpaceSettingsPage />} />
                           <Route path="/admin/analytics" element={<AnalyticsPage />} />
