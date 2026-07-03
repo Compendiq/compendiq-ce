@@ -70,6 +70,12 @@ const DEFAULT_CONCURRENCY = 16;
 const DEFAULT_PER_JOB_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_ATTEMPTS = 8;
 const DEFAULT_RESPONSE_BODY_CAP_BYTES = 1024;
+// Hard ceiling on how many response bytes undici will buffer for us, a
+// belt-and-braces backstop to `safeReadBody`'s streamed cap: even if the
+// stream path is ever bypassed, the dispatcher errors past this bound
+// instead of buffering an unbounded receiver response. Sized well above
+// the 1 KB persisted cap so it never clips legitimately-read bodies.
+const WEBHOOK_MAX_RESPONSE_SIZE_BYTES = 64 * 1024;
 const DEFAULT_USER_AGENT =
   'Compendiq-Webhook/1.0 (+https://compendiq.com/docs/webhooks)';
 
@@ -201,6 +207,7 @@ function getWebhookAgent(perJobTimeoutMs: number): Agent {
       connectTimeout: perJobTimeoutMs,
       headersTimeout: perJobTimeoutMs,
       bodyTimeout: perJobTimeoutMs,
+      maxResponseSize: WEBHOOK_MAX_RESPONSE_SIZE_BYTES,
     });
   }
   return webhookAgent;
@@ -647,13 +654,61 @@ function describeError(err: unknown): string {
   }
 }
 
+/**
+ * Read at most `cap` bytes of the receiver's response body WITHOUT
+ * buffering the whole thing into memory first.
+ *
+ * The receiver URL is admin-configured but the endpoint is external and
+ * semi-trusted; a hostile or compromised receiver can return an
+ * arbitrarily large body. Streaming the body and cancelling once we have
+ * `cap` bytes bounds heap use to ~`cap` (plus one chunk) regardless of
+ * how much the receiver sends, and frees the socket immediately instead
+ * of holding it until the body timeout. `cap` is a BYTE budget (UTF-8),
+ * matching the sizing of the persisted column.
+ *
+ * Falls back to `response.text()` when a body stream is unavailable
+ * (e.g. test doubles that expose only `text()`). Any read error yields
+ * '' — delivery classification is driven by `httpStatus`, captured
+ * before this call, so an oversized/erroring body never changes the
+ * outcome.
+ */
 async function safeReadBody(
-  response: { text(): Promise<string> },
+  response: {
+    body?: {
+      getReader(): {
+        read(): Promise<{ done: boolean; value?: Uint8Array }>;
+        cancel(): Promise<void>;
+      };
+    } | null;
+    text(): Promise<string>;
+  },
   cap: number,
 ): Promise<string> {
   try {
-    const text = await response.text();
-    return text.length > cap ? text.slice(0, cap) : text;
+    const stream = response.body;
+    if (!stream || typeof stream.getReader !== 'function') {
+      const text = await response.text();
+      return text.length > cap ? text.slice(0, cap) : text;
+    }
+
+    const reader = stream.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    try {
+      while (total < cap) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value && value.length > 0) {
+          chunks.push(value);
+          total += value.length;
+        }
+      }
+    } finally {
+      // Discard the remainder and release the socket immediately rather
+      // than waiting for the body timeout to fire.
+      await reader.cancel().catch(() => {});
+    }
+    return Buffer.concat(chunks).subarray(0, cap).toString('utf8');
   } catch {
     return '';
   }

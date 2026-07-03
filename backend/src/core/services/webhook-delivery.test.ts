@@ -118,6 +118,42 @@ function makeFetchResponse(opts: {
 }
 
 /**
+ * Build an undici-fetch-shaped response whose body is a real
+ * `ReadableStream` (as `undici.fetch` returns) instead of a buffered
+ * `text()`. The stream enqueues `chunk` on every `pull`, so it is
+ * effectively unbounded — a correct reader MUST stop and `cancel()`
+ * once it has enough bytes rather than draining the whole thing into
+ * memory. `text()` throws to prove the streaming path is taken.
+ */
+function makeStreamingFetchResponse(opts: {
+  status: number;
+  chunk: Uint8Array;
+}): {
+  response: unknown;
+  state: { chunksPulled: number; cancelled: boolean };
+} {
+  const state = { chunksPulled: 0, cancelled: false };
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      state.chunksPulled += 1;
+      controller.enqueue(opts.chunk);
+    },
+    cancel() {
+      state.cancelled = true;
+    },
+  });
+  const response = {
+    status: opts.status,
+    ok: opts.status >= 200 && opts.status < 300,
+    body: stream,
+    text: async (): Promise<string> => {
+      throw new Error('text() must not be called when body stream exists');
+    },
+  };
+  return { response, state };
+}
+
+/**
  * Build an AbortError shaped like what `AbortSignal.timeout` throws so
  * the service classifies it as `timeout`.
  */
@@ -609,6 +645,38 @@ describe.skipIf(!canRun)('webhook-delivery __deliverOnce', () => {
     expect(deliveries[0]!.responseBody).not.toBeNull();
     expect(deliveries[0]!.responseBody!.length).toBeLessThanOrEqual(1024);
     expect(deliveries[0]!.responseBody!.length).toBe(1024);
+  });
+
+  // Case 9b: The body is read by STREAMING with an early cancel, not by
+  // buffering the entire response into memory before truncating. Proves
+  // the cap bounds heap use even against an effectively-unbounded body.
+  it('streams the response body and cancels once the cap is reached', async () => {
+    const seed = await seedSubscriptionAndOutbox();
+    // 256-byte chunks; cap is 1024, so the reader should pull ~4 chunks
+    // then cancel — never draining the unbounded stream.
+    const chunk = new Uint8Array(256).fill('a'.charCodeAt(0));
+    const { response, state } = makeStreamingFetchResponse({
+      status: 200,
+      chunk,
+    });
+    mockFetch.mockResolvedValueOnce(response as never);
+
+    await __deliverOnce({
+      id: seed.outboxId,
+      subscription_id: seed.subscriptionId,
+      webhook_id: seed.webhookId,
+      event_type: 'page.updated',
+      payload: { id: 'page-1' },
+    });
+
+    const deliveries = await readDeliveries(seed.outboxId);
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0]!.responseBody).not.toBeNull();
+    expect(deliveries[0]!.responseBody!.length).toBe(1024);
+    // The stream was cancelled (not drained) and only a bounded number of
+    // chunks were ever pulled into memory.
+    expect(state.cancelled).toBe(true);
+    expect(state.chunksPulled).toBeLessThanOrEqual(6);
   });
 
   // Case 10: Backoff table produces expected delays at the DB level too.
