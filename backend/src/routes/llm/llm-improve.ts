@@ -73,6 +73,13 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
       sanitizedInstruction = instrSanitized;
       if (instrWarnings.length > 0) {
         await logAuditEvent(userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings: instrWarnings, route: '/llm/improve', field: 'instruction' }, request);
+        // Roll instruction-field detections into the per-call attestation flags
+        // so llm_audit_log (Report 5) stays consistent with audit_log — same
+        // idiom as the markdown-body (:62-64) and web-search (:98-99) paths.
+        // sanitizeLlmInput only warns when it rewrites a match, so a non-empty
+        // instrWarnings always implies the instruction was sanitized.
+        promptInjectionDetected = true;
+        wasSanitized = true;
       }
     }
 
