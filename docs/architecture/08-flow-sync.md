@@ -112,6 +112,13 @@ sequenceDiagram
   is written from Confluence's own version counter; no double-writes.
 - **Circuit breaker** — `core/services/circuit-breaker.ts` protects against
   runaway failure against a broken Confluence instance.
+- **Per-page failure isolation (#822)** — the per-page loop in `syncSpace`
+  wraps each `syncPage` in try/catch: a page deleted or restricted between the
+  space listing and its `getPage` (404/403), or content that throws during
+  conversion, is logged, counted (`pagesFailed`), and skipped so the remaining
+  pages, deletion reconciliation, and the space `last_synced` update still run.
+  Only a connection-fatal `ConfluenceError` (401 — revoked/expired PAT) rethrows
+  to abort the whole run fast rather than grinding through every page.
 
 ## Deletion reconciliation (#706)
 

@@ -319,6 +319,38 @@ describe('openai-compatible-client — embeddings', () => {
   });
 });
 
+// ─── #821: HTTP error body must reach the thrown Error ──────────────────────
+// generateEmbedding used to throw `generateEmbedding HTTP 400` with the body
+// discarded, so `isContextLengthError` (embedding-service.ts) could never match
+// the oversized-input signal ("input length exceeds context length") and the
+// oversized-batch-skip / preserve-embeddings safeguards were dead code.
+describe('openai-compatible-client — generateEmbedding surfaces HTTP error body (#821)', () => {
+  let errSrv: Server;
+  let errBase: string;
+  beforeAll(async () => {
+    errSrv = createServer((req, res) => {
+      if (req.url === '/v1/embeddings') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'input length exceeds the context length' } }));
+        return;
+      }
+      res.writeHead(404); res.end();
+    });
+    await new Promise<void>((r) => errSrv.listen(0, r));
+    const { port } = errSrv.address() as AddressInfo;
+    errBase = `http://127.0.0.1:${port}/v1`;
+  });
+  afterAll(() => new Promise<void>((r) => errSrv.close(() => r())));
+
+  it('includes the HTTP status and the response body in the thrown error', async () => {
+    // Distinct providerId so this deliberate 400 does not trip a breaker shared
+    // with the happy-path embedding tests.
+    await expect(
+      generateEmbedding({ ...cfg, providerId: 'emb-err-821', baseUrl: errBase }, 'bge-m3', ['too long']),
+    ).rejects.toThrow(/generateEmbedding HTTP 400.*input length exceeds the context length/s);
+  });
+});
+
 // ─── Queue wrapping ─────────────────────────────────────────────────────────
 // Intentionally observing the llm-queue's `totalProcessed` counter rather than
 // the concurrency-serialization approach from the spec: `llm-queue.ts`

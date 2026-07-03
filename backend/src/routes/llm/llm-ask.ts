@@ -148,7 +148,9 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
             promptInjectionDetected = true;
           }
           if (sanitizedDoc !== doc.markdown) wasSanitized = true;
-          externalDocs.push({ url: doc.url, title: doc.title, markdown: sanitizedDoc });
+          // The title is attacker-controlled page metadata too — sanitize it
+          // before it is embedded into the external-docs context (#820).
+          externalDocs.push({ url: doc.url, title: sanitizeLlmInput(doc.title).sanitized, markdown: sanitizedDoc });
         } catch (err) {
           logger.warn({ err, url: extUrl }, 'Failed to fetch external doc via MCP');
         }

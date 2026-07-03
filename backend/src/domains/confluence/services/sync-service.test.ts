@@ -712,4 +712,99 @@ describe('sync-service', () => {
       expect(upsertSql).toContain('deleted_at = NULL');
     });
   });
+
+  describe('per-page failure isolation (#822)', () => {
+    /**
+     * Configure mocks so `syncUser` drives a single space through a full sync
+     * over `pageIds`, letting each test control `getPage` per page. `dbPageIds`
+     * is empty so deletion reconciliation is a no-op.
+     */
+    function setupSinglePageLoop(pageIds: string[]) {
+      mockConfluenceClientInstance.getAllSpaces.mockResolvedValue([{ key: 'TEST', name: 'Test Space', homepage: null }]);
+      mockConfluenceClientInstance.getAllPagesInSpace.mockResolvedValue(
+        pageIds.map((id) => ({ id, title: `Page ${id}`, status: 'current' })),
+      );
+      // Authoritative live-id listing for reconciliation: every page is live so
+      // detectDeletedPages neither soft-deletes nor issues confirmation fetches.
+      mockConfluenceClientInstance.getAllPageIds.mockResolvedValue(new Set(pageIds));
+      mockConfluenceClientInstance.getModifiedPages.mockResolvedValue([]);
+      mockConfluenceClientInstance.getPageAttachments.mockResolvedValue({ results: [] });
+
+      vi.mocked(getUserAccessibleSpaces).mockResolvedValue(['TEST']);
+      mockRedisSet.mockResolvedValue('OK');
+      mockRedisGet.mockResolvedValue(null);
+
+      vi.mocked(query).mockImplementation(async (sql: string) => {
+        const sqlStr = typeof sql === 'string' ? sql : '';
+        const emptyResult = { rows: [], rowCount: 0, command: '', oid: 0, fields: [] };
+
+        if (sqlStr.includes('confluence_url') && sqlStr.includes('user_settings')) {
+          return {
+            rows: [{ confluence_url: 'https://confluence.test', confluence_pat: 'encrypted-pat' }],
+            rowCount: 1, command: '', oid: 0, fields: [],
+          } as QueryResult;
+        }
+        if (sqlStr.includes('INSERT INTO spaces')) return emptyResult as QueryResult;
+        if (sqlStr.includes('last_synced') && sqlStr.includes('FROM spaces')) {
+          return { rows: [{ last_synced: null }], rowCount: 1, command: '', oid: 0, fields: [] } as QueryResult;
+        }
+        if (sqlStr.includes('SELECT version') && sqlStr.includes('FROM pages')) {
+          return emptyResult as QueryResult;
+        }
+        if (sqlStr.includes('INSERT INTO pages')) return emptyResult as QueryResult;
+        if (sqlStr.includes('SELECT confluence_id FROM pages') && sqlStr.includes('deleted_at IS NULL')) {
+          return emptyResult as QueryResult;
+        }
+        if (sqlStr.includes('DELETE FROM pages') && sqlStr.includes('deleted_at <')) {
+          return { rows: [], rowCount: 0, command: 'DELETE', oid: 0, fields: [] } as QueryResult;
+        }
+        if (sqlStr.includes('UPDATE spaces SET last_synced')) return emptyResult as QueryResult;
+        return emptyResult as QueryResult;
+      });
+    }
+
+    function livePage(id: string) {
+      return {
+        id,
+        title: `Page ${id}`,
+        body: { storage: { value: '<p>content</p>' } },
+        version: { number: 1, when: '2025-01-01T00:00:00Z', by: { displayName: 'Author' } },
+        metadata: { labels: { results: [] } },
+        ancestors: [],
+      };
+    }
+
+    it('continues syncing later pages after one page fetch 404s', async () => {
+      setupSinglePageLoop(['page-1', 'page-bad', 'page-2']);
+      // page-bad was deleted/restricted between listing and getPage → 404.
+      mockConfluenceClientInstance.getPage.mockImplementation((id: string) => {
+        if (id === 'page-bad') return Promise.reject(new ConfluenceError('Resource not found', 404));
+        return Promise.resolve(livePage(id));
+      });
+
+      // The whole run must not abort on the single 404.
+      await expect(syncUser('user-1')).resolves.toBeUndefined();
+
+      // The page ordered after the failing one still gets fetched (loop survived).
+      expect(mockConfluenceClientInstance.getPage).toHaveBeenCalledWith('page-2');
+      // syncUser did not mark the user's status as 'error'.
+      const errorStatusWrite = mockRedisSet.mock.calls.find(
+        (call) => typeof call[1] === 'string' && (call[1] as string).includes('"status":"error"'),
+      );
+      expect(errorStatusWrite).toBeUndefined();
+    });
+
+    it('aborts the whole run on an auth-fatal 401 during page fetch', async () => {
+      setupSinglePageLoop(['page-1', 'page-bad', 'page-2']);
+      // 401 means the PAT is revoked/expired — every later page would fail the
+      // same way, so the run must abort rather than grind through them.
+      mockConfluenceClientInstance.getPage.mockImplementation((id: string) => {
+        if (id === 'page-bad') return Promise.reject(new ConfluenceError('Unauthorized', 401));
+        return Promise.resolve(livePage(id));
+      });
+
+      await expect(syncUser('user-1')).rejects.toThrow();
+      expect(mockConfluenceClientInstance.getPage).not.toHaveBeenCalledWith('page-2');
+    });
+  });
 });

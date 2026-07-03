@@ -164,6 +164,23 @@ describe('data-retention-service', () => {
       expect(versionsCall[1]).toEqual([10]);
     });
 
+    it('falls back to documented defaults when a retention env var is non-numeric (#828)', async () => {
+      // A typo'd value (e.g. RETENTION_AUDIT_LOG_DAYS=foo) must NOT flow into
+      // the query as NaN — that makes Postgres raise and silently disables the
+      // sweep, letting the table grow unbounded. safeIntOr falls back to the
+      // documented default instead of NaN.
+      process.env.RETENTION_AUDIT_LOG_DAYS = 'foo';
+      process.env.RETENTION_VERSIONS_MAX = 'not-a-number';
+      mockPool.query.mockResolvedValue({ rowCount: 0 });
+
+      await runRetentionCleanup();
+
+      // audit_log falls back to its 365-day default (not NaN).
+      expect(mockPool.query.mock.calls[0]![1]).toEqual([365]);
+      // page_versions falls back to its 50 default (not NaN).
+      expect(mockPool.query.mock.calls[5]![1]).toEqual([50]);
+    });
+
     it('handles query errors gracefully and returns 0 for failed tables', async () => {
       mockPool.query
         .mockRejectedValueOnce(new Error('table does not exist')) // audit_log

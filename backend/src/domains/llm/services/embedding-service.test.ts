@@ -527,6 +527,37 @@ describe('embedding-service', () => {
       expect(mocks.releaseEmbeddingLock).not.toHaveBeenCalled();
     });
 
+    it('short-circuits with alreadyProcessing when the reembed-all system lock is held (#823)', async () => {
+      // Per-user lock is free, but a global reembed-all is running.
+      mocks.acquireEmbeddingLock.mockResolvedValue(FAKE_LOCK_ID);
+      mocks.isEmbeddingLocked.mockImplementation(async (id: string) => id === '__reembed_all__');
+
+      const result = await processDirtyPages('sync-user');
+
+      expect(result).toEqual({ processed: 0, errors: 0, alreadyProcessing: true });
+      // It consulted the reembed-all system lock.
+      expect(mocks.isEmbeddingLocked).toHaveBeenCalledWith('__reembed_all__');
+      // The just-acquired per-user lock must be released again so it is not leaked.
+      expect(mocks.releaseEmbeddingLock).toHaveBeenCalledWith('sync-user', FAKE_LOCK_ID);
+      // No dirty-page scan should have run: only the lock check happened, no
+      // chunk-settings or COUNT queries were issued.
+      expect(mocks.query).not.toHaveBeenCalled();
+    });
+
+    it('does not consult the reembed-all lock when the caller already holds the lock (#823)', async () => {
+      // runReembedAllJob path: lockAlreadyHeld=true and userId is the system
+      // user itself — the guard must be skipped so the global run proceeds.
+      mocks.isEmbeddingLocked.mockResolvedValue(true);
+      mockChunkSettings();
+      mocks.query.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // COUNT query
+
+      const result = await processDirtyPages('__reembed_all__', undefined, { lockAlreadyHeld: true });
+
+      expect(result).toEqual({ processed: 0, errors: 0 });
+      // Proceeded to the dirty-page scan (chunk settings + COUNT ran).
+      expect(mocks.query).toHaveBeenCalled();
+    });
+
     it('should acquire lock before processing and release with lock ID in finally', async () => {
       mockChunkSettings();
       // COUNT query (no dirty pages)
@@ -595,6 +626,64 @@ describe('embedding-service', () => {
       expect(batchSelectCall[0]).toContain('LIMIT');
       expect(batchSelectCall[0]).toContain('OFFSET');
       expect(batchSelectCall[1]).toEqual([DIRTY_PAGE_BATCH_SIZE, 0]);
+    });
+
+    it('advances the offset past all-skip pages so a full oversized batch does not re-fetch forever (#821)', async () => {
+      vi.useFakeTimers();
+
+      const BATCH = DIRTY_PAGE_BATCH_SIZE; // 100 — a full batch, so the loop does not break early
+      const pages = Array.from({ length: BATCH }, (_, i) => ({
+        id: i + 1,
+        confluence_id: `p${i + 1}`,
+        title: `Page ${i + 1}`,
+        space_key: 'DEV',
+        body_html: `<p>content ${i + 1}</p>`,
+      }));
+
+      const batchSelectOffsets: number[] = [];
+      let batchSelectCount = 0;
+
+      // Dispatcher over the shared pool `query` mock. All 100 pages take the
+      // oversized-input skip path (embedPage returns 0 but leaves the page
+      // embedding_dirty = TRUE), so the offset must advance by the full batch.
+      mocks.query.mockImplementation(async (sql: string, params?: unknown[]) => {
+        if (typeof sql === 'string') {
+          if (sql.includes('embedding_chunk_size')) {
+            return { rows: [
+              { setting_key: 'embedding_chunk_size', setting_value: '500' },
+              { setting_key: 'embedding_chunk_overlap', setting_value: '50' },
+            ] };
+          }
+          if (sql.includes('LIMIT') && sql.includes('OFFSET')) {
+            const offset = Number((params as unknown[])[1]);
+            batchSelectOffsets.push(offset);
+            batchSelectCount++;
+            return { rows: batchSelectCount === 1 ? pages : [] };
+          }
+          // Total dirty COUNT (drives totalDirty / early-exit).
+          if (sql.includes('COUNT(*)')) {
+            return { rows: [{ count: String(BATCH) }] };
+          }
+        }
+        return { rows: [] };
+      });
+
+      // Every batch's embedding call rejects with an oversized-input error whose
+      // body carries the context-length signal — embedPage skips every batch.
+      mocks.providerGenerateEmbedding.mockRejectedValue(
+        new Error('generateEmbedding HTTP 400: input length exceeds the context length'),
+      );
+
+      const promise = processDirtyPages('livelock-user');
+      await vi.advanceTimersByTimeAsync(BATCH * 300 + 5000);
+      await promise;
+
+      vi.useRealTimers();
+
+      // The second batch fetch must skip past the 100 still-dirty pages instead
+      // of re-reading the same window at offset 0 forever.
+      expect(batchSelectOffsets.length).toBeGreaterThanOrEqual(2);
+      expect(batchSelectOffsets[1]).toBe(BATCH);
     });
 
     it('should process dirty pages and return counts', async () => {
