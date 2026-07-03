@@ -40,9 +40,19 @@ vi.mock('../../shared/hooks/use-spaces', () => ({
   }),
 }));
 
+const { mockSetContent, mockEditorInstance, mockUseTemplateMutateAsync, templatesState } = vi.hoisted(() => {
+  const setContent = vi.fn();
+  return {
+    mockSetContent: setContent,
+    mockEditorInstance: { commands: { setContent } },
+    mockUseTemplateMutateAsync: vi.fn(),
+    templatesState: { items: [] as { id: number; title: string; category: string | null }[] },
+  };
+});
+
 vi.mock('../../shared/hooks/use-standalone', () => ({
-  useTemplates: () => ({ data: { items: [] }, isLoading: false }),
-  useUseTemplate: () => ({ mutateAsync: vi.fn() }),
+  useTemplates: () => ({ data: { items: templatesState.items }, isLoading: false }),
+  useUseTemplate: () => ({ mutateAsync: mockUseTemplateMutateAsync, isPending: false }),
   useImportMarkdown: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useLocalSpaces: () => ({
     data: [
@@ -52,16 +62,31 @@ vi.mock('../../shared/hooks/use-standalone', () => ({
   }),
 }));
 
-// Mock Editor to avoid complex TipTap setup
-vi.mock('../../shared/components/article/Editor', () => ({
-  Editor: ({ onChange }: { content: string; onChange: (html: string) => void; placeholder: string; draftKey: string }) => (
-    <textarea
-      data-testid="mock-editor"
-      onChange={(e) => onChange(e.target.value)}
-    />
-  ),
-  clearDraft: vi.fn(),
-}));
+// Mock Editor to avoid complex TipTap setup. It reports a fake editor
+// instance via onEditorReady (like the real Editor does once TipTap is up)
+// so the template flow can insert content into the "live" editor.
+vi.mock('../../shared/components/article/Editor', async () => {
+  const { useEffect } = await import('react');
+  return {
+    Editor: ({ onChange, onEditorReady }: { content: string; onChange: (html: string) => void; placeholder: string; draftKey: string; onEditorReady?: (editor: unknown) => void }) => {
+      useEffect(() => {
+        onEditorReady?.(mockEditorInstance);
+        return () => onEditorReady?.(null);
+      }, [onEditorReady]);
+      return (
+        <textarea
+          data-testid="mock-editor"
+          onChange={(e) => onChange(e.target.value)}
+        />
+      );
+    },
+    EditorToolbar: () => null,
+    TableContextToolbar: () => null,
+    LayoutContextToolbar: () => null,
+    ColumnContextToolbar: () => null,
+    clearDraft: vi.fn(),
+  };
+});
 
 vi.mock('../../shared/components/feedback/FeatureErrorBoundary', () => ({
   FeatureErrorBoundary: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
@@ -86,6 +111,9 @@ describe('NewPagePage', () => {
   beforeEach(() => {
     mockNavigate.mockClear();
     mockCreateMutateAsync.mockClear();
+    mockSetContent.mockClear();
+    mockUseTemplateMutateAsync.mockReset();
+    templatesState.items.length = 0;
   });
 
   it('renders the New Page title and form fields', () => {
@@ -358,6 +386,50 @@ describe('NewPagePage', () => {
     // The breadcrumb should reset to Root level
     await waitFor(() => {
       expect(screen.getByText('Root')).toBeInTheDocument();
+    });
+  });
+
+  describe('template gallery', () => {
+    it('inserts the selected template into the live editor via setContent', async () => {
+      templatesState.items.push({ id: 1, title: 'Meeting Notes', category: 'General' });
+      mockUseTemplateMutateAsync.mockResolvedValueOnce({ bodyJson: null, bodyHtml: '<p>Template body</p>' });
+
+      render(<NewPagePage />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByTestId('use-template-btn'));
+      fireEvent.click(screen.getByText('Meeting Notes'));
+
+      // The template HTML must reach the TipTap editor itself — bodyHtml state
+      // alone is invisible (Editor mounts with content="") and gets overwritten
+      // by the first keystroke's onUpdate.
+      await waitFor(() => {
+        expect(mockSetContent).toHaveBeenCalledWith('<p>Template body</p>', { emitUpdate: true });
+      });
+      expect(screen.queryByTestId('template-gallery-modal')).not.toBeInTheDocument();
+    });
+
+    it('includes the applied template content in the create payload', async () => {
+      templatesState.items.push({ id: 1, title: 'Meeting Notes', category: null });
+      mockUseTemplateMutateAsync.mockResolvedValueOnce({ bodyJson: null, bodyHtml: '<p>Template body</p>' });
+      mockCreateMutateAsync.mockResolvedValueOnce({ id: 'new-page-id', title: 'From Template', version: 1 });
+
+      render(<NewPagePage />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByTestId('use-template-btn'));
+      fireEvent.click(screen.getByText('Meeting Notes'));
+      await waitFor(() => {
+        expect(screen.queryByTestId('template-gallery-modal')).not.toBeInTheDocument();
+      });
+
+      fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'From Template' } });
+      fireEvent.change(screen.getByTestId('space-selector'), { target: { value: '__local__' } });
+      fireEvent.click(screen.getByText('Create Page'));
+
+      await waitFor(() => {
+        expect(mockCreateMutateAsync).toHaveBeenCalledWith(
+          expect.objectContaining({ bodyHtml: '<p>Template body</p>' }),
+        );
+      });
     });
   });
 });
