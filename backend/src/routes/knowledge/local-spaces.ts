@@ -232,18 +232,30 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
     const userId = request.userId;
     const { key } = KeyParamSchema.parse(request.params);
 
-    const cacheKey = `space-tree:${key}`;
-    const cached = await cache.get(userId, 'spaces', cacheKey);
-    if (cached) return cached;
-
-    // Verify space exists
-    const spaceCheck = await query(
-      'SELECT 1 FROM spaces WHERE space_key = $1',
+    // #817: gate cross-space access BEFORE reading the cache so a revoked user
+    // cannot replay their own per-user cached tree during the TTL window.
+    // Verify the space exists and resolve its source for the RBAC gate.
+    const spaceCheck = await query<{ source: string }>(
+      'SELECT source FROM spaces WHERE space_key = $1',
       [key],
     );
     if (spaceCheck.rows.length === 0) {
       throw fastify.httpErrors.notFound('Space not found');
     }
+    // Confluence-synced spaces require an RBAC space assignment; local spaces
+    // are accessible to all authenticated users (same model as the move handler
+    // and GET /api/pages/tree). 404 (not 403) so a restricted space is
+    // indistinguishable from a nonexistent one (no existence oracle).
+    if (spaceCheck.rows[0]!.source !== 'local') {
+      const accessibleSpaces = await getUserAccessibleSpaces(userId);
+      if (!accessibleSpaces.includes(key)) {
+        throw fastify.httpErrors.notFound('Space not found');
+      }
+    }
+
+    const cacheKey = `space-tree:${key}`;
+    const cached = await cache.get(userId, 'spaces', cacheKey);
+    if (cached) return cached;
 
     const result = await query<{
       id: number;

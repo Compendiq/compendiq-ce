@@ -10,6 +10,14 @@ vi.mock('../../../core/services/content-converter.js', () => ({
   htmlToMarkdown: vi.fn((html: string) => `md:${html}`),
 }));
 
+// Resolver is a boundary (tested in rbac-service tests); return a fixed
+// accessible-space set so the visibility predicate is exercised without the
+// resolver consuming the mocked `query` sequence.
+const mockGetSpaces = vi.fn().mockResolvedValue(['SPACE']);
+vi.mock('../../../core/services/rbac-service.js', () => ({
+  getUserAccessibleSpacesMemoized: (...args: unknown[]) => mockGetSpaces(...args),
+}));
+
 import {
   fetchSubPages,
   hasSubPages,
@@ -20,6 +28,7 @@ import {
 describe('subpage-context', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetSpaces.mockResolvedValue(['SPACE']);
   });
 
   describe('hasSubPages', () => {
@@ -28,10 +37,13 @@ describe('subpage-context', () => {
 
       const result = await hasSubPages('user-1', 'page-1');
       expect(result).toBe(true);
+      // #814: query now filters deleted rows + gates on visible spaces, so it
+      // binds the parent id, the accessible-space set, and the user id.
       expect(mockQuery).toHaveBeenCalledWith(
-        expect.stringContaining('COUNT(*)'),
-        ['page-1'],
+        expect.stringContaining('deleted_at IS NULL'),
+        ['page-1', ['SPACE'], 'user-1'],
       );
+      expect(mockGetSpaces).toHaveBeenCalledWith('user-1');
     });
 
     it('should return false when page has no children', async () => {

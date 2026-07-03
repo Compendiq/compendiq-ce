@@ -314,16 +314,26 @@ export async function processBatch(): Promise<number> {
       body_text: string;
       quality_retry_count: number;
     }>(
+      // #828: also re-scan retry-exhausted 'failed' pages whose content
+      // changed since the last analysis. sync-service never writes
+      // quality_status, so a page that failed MAX_RETRIES times is otherwise
+      // never re-analyzed after any content change (Priority 3 excludes
+      // retry >= MAX_RETRIES). The `quality_retry_count >= $2` clause on the
+      // 'failed' branch keeps this disjoint from Priority 3 (retry < MAX), so a
+      // page can't be picked up by both queries in the same batch. Re-selection
+      // self-limits: the failure path stamps quality_analyzed_at = NOW(), so
+      // last_modified_at > quality_analyzed_at flips false after one attempt.
       `SELECT id, COALESCE(body_html, '') AS body_html, COALESCE(body_text, '') AS body_text, quality_retry_count
        FROM pages
-       WHERE quality_status = 'analyzed'
+       WHERE quality_status IN ('analyzed', 'failed')
          AND deleted_at IS NULL
          AND COALESCE(page_type, 'page') != 'folder'
          AND last_modified_at > quality_analyzed_at
+         AND (quality_status = 'analyzed' OR quality_retry_count >= $2)
          AND (body_text IS NOT NULL AND body_text != '')
        ORDER BY last_modified_at DESC
        LIMIT $1`,
-      [remaining],
+      [remaining, MAX_RETRIES],
     );
     pages = [...pages, ...staleResult.rows];
   }

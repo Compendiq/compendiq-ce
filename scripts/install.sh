@@ -280,6 +280,8 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       CONFLUENCE_VERIFY_SSL: ${CONFLUENCE_VERIFY_SSL:-true}
       ATTACHMENTS_DIR: /app/data/attachments
+      MCP_DOCS_URL: ${MCP_DOCS_URL:-http://mcp-docs:3100/mcp}
+      MCP_DOCS_TOKEN: ${MCP_DOCS_TOKEN:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -297,6 +299,7 @@ services:
     networks:
       - frontend
       - backend
+      - data
 
   postgres:
     image: pgvector/pgvector:pg17
@@ -313,7 +316,7 @@ services:
       retries: 5
     restart: unless-stopped
     networks:
-      - backend
+      - data
 
   redis:
     image: redis:8-alpine
@@ -331,6 +334,54 @@ services:
       retries: 5
     restart: unless-stopped
     networks:
+      # data-net reaches postgres/backend; backend-net lets mcp-docs reach Redis.
+      - data
+      - backend
+
+  # MCP documentation sidecar (air-gapped LLM doc access). Mirrors the
+  # canonical docker/docker-compose.yml so one-command installs get the
+  # MCP web-docs feature; the backend's MCP_DOCS_URL resolves to this host.
+  mcp-docs:
+    image: ghcr.io/compendiq/compendiq-ce-mcp-docs:__VERSION__
+    environment:
+      PORT: "3100"
+      MCP_DOCS_HOST: "0.0.0.0"
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      LOG_LEVEL: ${MCP_LOG_LEVEL:-info}
+      CACHE_TTL_SECONDS: ${MCP_CACHE_TTL:-3600}
+      SEARXNG_URL: ${SEARXNG_URL:-http://searxng:8080}
+      MCP_DOCS_TOKEN: ${MCP_DOCS_TOKEN:-}
+    depends_on:
+      redis:
+        condition: service_healthy
+      searxng:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3100/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - backend
+
+  # SearXNG metasearch backend used by mcp-docs for web-doc lookups.
+  searxng:
+    image: ghcr.io/compendiq/compendiq-ce-searxng:__VERSION__
+    environment:
+      SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-http://localhost:8080}
+      SEARXNG_LIMITER: ${SEARXNG_LIMITER:-false}
+      SEARXNG_IMAGE_PROXY: ${SEARXNG_IMAGE_PROXY:-false}
+      SEARXNG_SECRET_KEY: ${SEARXNG_SECRET_KEY:-}
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks:
       - backend
 
 volumes:
@@ -338,8 +389,13 @@ volumes:
   attachments-data:
 
 networks:
+  # frontend/backend are bridges with internet egress. mcp-docs' fetch_url and
+  # searxng's metasearch need outbound access, so they live on backend (not an
+  # internal net). Only the data tier (postgres/redis) is isolated on `data`,
+  # mirroring docker/docker-compose.yml (frontend-net/backend-net/data-net).
   frontend:
   backend:
+  data:
     internal: true
 COMPOSEEOF
 

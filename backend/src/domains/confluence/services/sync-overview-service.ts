@@ -64,7 +64,12 @@ export async function getSyncOverview(userId: string): Promise<SyncOverviewRespo
        cp.body_storage
      FROM unnest($1::text[]) AS s(space_key)
      LEFT JOIN spaces cs ON cs.space_key = s.space_key
-     LEFT JOIN pages cp ON cp.space_key = s.space_key
+     -- #828: keep the soft-delete filter in the JOIN (not WHERE) so a space
+     -- with zero live pages still appears; a WHERE predicate on cp would drop
+     -- the row entirely. Soft-deleted pages (deleted_at set, purged only after
+     -- 30 days) must not inflate pageCount/asset counts/issues or flip a space
+     -- to 'degraded'.
+     LEFT JOIN pages cp ON cp.space_key = s.space_key AND cp.deleted_at IS NULL
      ORDER BY s.space_key, cp.title NULLS LAST`,
     [overviewSpaces],
   );

@@ -4,10 +4,11 @@ import { UpdateSettingsSchema, TestConfluenceSchema } from '@compendiq/contracts
 import { query } from '../../core/db/postgres.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { encryptPat, decryptPat } from '../../core/utils/crypto.js';
-import { validateUrl, addAllowedBaseUrl, removeAllowedBaseUrl, resolveConfluenceUrl } from '../../core/utils/ssrf-guard.js';
+import { validateUrlSyntaxAndProtocol, addAllowedBaseUrl, removeAllowedBaseUrl, resolveConfluenceUrl } from '../../core/utils/ssrf-guard.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { getSelectedSyncSpaces, invalidateRbacCache } from '../../core/services/rbac-service.js';
 import { getSyncOverview } from '../../domains/confluence/services/sync-overview-service.js';
+import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
 import { logger } from '../../core/utils/logger.js';
 import { confluenceDispatcher } from '../../core/utils/tls-config.js';
 import { getAiGuardrails, getAiOutputRules } from '../../core/services/ai-safety-service.js';
@@ -165,6 +166,29 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     if (body.selectedSpaces !== undefined) {
       const newSpaces = body.selectedSpaces;
 
+      // #815: Prevent horizontal privilege escalation. A user may only
+      // self-assign the editor role on spaces reachable by their OWN Confluence
+      // PAT — the same set the picker (GET /spaces/available) offers. Without
+      // this guard any authenticated user could insert an editor
+      // space_role_assignments row for an arbitrary space key and thereby read
+      // every already-synced page in that space, since getUserAccessibleSpaces
+      // derives a non-admin's readable spaces solely from these rows. Only the
+      // INSERT path needs the check; deselecting (empty set / DELETE below) is
+      // always safe and must not require a live PAT lookup.
+      if (newSpaces.length > 0) {
+        const client = await getClientForUser(request.userId);
+        if (!client) {
+          throw fastify.httpErrors.badRequest('Confluence not configured');
+        }
+        const patVisibleSpaces = new Set((await client.getAllSpaces()).map((s) => s.key));
+        const unauthorized = newSpaces.filter((key) => !patVisibleSpaces.has(key));
+        if (unauthorized.length > 0) {
+          throw fastify.httpErrors.forbidden(
+            `Not permitted to select space(s) not visible to your Confluence PAT: ${unauthorized.join(', ')}`,
+          );
+        }
+      }
+
       // Get the editor role ID for default assignment
       const editorRoleResult = await query<{ id: number }>(
         "SELECT id FROM roles WHERE name = 'editor' LIMIT 1",
@@ -249,22 +273,23 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       }
     }
 
-    // Register the Confluence URL as an allowed origin so that on-premises
-    // instances on private networks are not blocked by the SSRF guard (#480).
-    // NOTE: This MUST happen BEFORE validateUrl() because the whole purpose of
-    // the allowlist is to permit private-network Confluence instances. If we
-    // validated first, private IPs would be rejected before we could allowlist
-    // them.  The URL is user-provided but the user is authenticated, and
-    // protocol restrictions (HTTP/S only) still apply even for allowlisted
-    // origins.
-    addAllowedBaseUrl(url);
-
-    // SSRF protection: validate protocol and non-allowlisted checks
+    // SSRF guard (#819): validate URL syntax + protocol WITHOUT mutating the
+    // process-global allowlist. A previous revision called addAllowedBaseUrl(url)
+    // BEFORE validateUrl(url) — and validateUrl short-circuits for allowlisted
+    // origins — so the private-IP check became a no-op and, on a 2xx probe, the
+    // origin was left allowlisted in-memory AND broadcast cluster-wide, weakening
+    // the SSRF guard for every other fetch path (attachment/image import, webhook
+    // delivery) until restart. This route is authenticate-only (per-user
+    // Confluence config), so it can't be admin-gated like POST /setup/llm-test;
+    // instead the probe validates non-mutatingly. validateUrlSyntaxAndProtocol
+    // still permits on-prem private-network Confluence (#480 — it does not block
+    // private IPs) while rejecting non-HTTP(S) URLs. The allowlist entry is
+    // persisted ONLY when the URL is saved in PUT /settings — a probe never
+    // touches or broadcasts it.
     try {
-      validateUrl(url);
+      validateUrlSyntaxAndProtocol(url);
     } catch {
-      removeAllowedBaseUrl(url);
-      return { success: false, message: 'URL blocked: cannot connect to internal/private network addresses' };
+      return { success: false, message: 'URL blocked: only HTTP(S) URLs are allowed' };
     }
 
     // Rewrite localhost URLs for Docker networking (CONFLUENCE_DOCKER_HOST)
@@ -288,25 +313,16 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       if (statusCode >= 200 && statusCode < 300) {
         return { success: true, message: 'Connection successful' };
       }
-      // Non-2xx: URL is reachable but auth/config is wrong — remove from
-      // allowlist so it doesn't persist without a successful validation.
-      removeAllowedBaseUrl(url);
-      return { success: false, message: `HTTP ${statusCode}` };
+      // #819: do NOT reflect the raw HTTP status to the caller — it turns this
+      // probe into a semi-blind internal port/host scanner (CWE-918). The detail
+      // is logged server-side for operators; the caller gets a generic message.
+      logger.warn({ url, statusCode }, 'Confluence test connection returned non-2xx');
+      return { success: false, message: 'Connection failed' };
     } catch (err) {
-      // Connection failed — remove from allowlist so stale entries don't
-      // accumulate (#481).
-      removeAllowedBaseUrl(url);
-      // Node.js AggregateError (e.g. ECONNREFUSED trying both IPv6+IPv4) has
-      // an empty .message but carries detail in .errors[] sub-errors.
-      let message = err instanceof Error ? err.message : 'Connection failed';
-      if (!message && err instanceof AggregateError && err.errors.length > 0) {
-        message = err.errors[0].message;
-      }
-      if (!message) message = 'Connection failed';
-      const cause = err instanceof Error && err.cause instanceof Error ? err.cause.message : '';
-      const detail = cause && cause !== message ? `${message}: ${cause}` : message;
+      // #819: never reflect err.message / err.cause (ECONNREFUSED vs cert error
+      // vs ENOTFOUND) — that is the SSRF oracle. Log it server-side only.
       logger.warn({ err, url }, 'Confluence test connection failed');
-      return { success: false, message: detail };
+      return { success: false, message: 'Connection failed' };
     }
   });
 }

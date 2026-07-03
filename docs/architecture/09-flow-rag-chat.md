@@ -57,8 +57,11 @@ sequenceDiagram
                 note right of BE: candidates were overfetched 1.5x<br/>at vector/fts stage to compensate
             end
             opt includeSubPages
+                BE->>RBAC: userCanAccessPage(userId, parentPageId)
+                RBAC-->>BE: allow / deny (#814 — skip tree on deny)
                 BE->>SP: assembleSubPageContext(rootPageId)
-                SP->>CF: fetch parent/child tree
+                SP->>RBAC: getUserAccessibleSpacesMemoized(userId)
+                SP->>CF: fetch child tree WHERE deleted_at IS NULL<br/>AND visible to user (space RBAC)
                 CF-->>SP: pages
                 SP-->>BE: tree context
             end
@@ -112,6 +115,15 @@ candidate. Candidates are overfetched at 1.5× `topK` at the vector and FTS
 stages to give the filter headroom. When the feature is off (CE or EE
 without the flag), neither the overfetch nor the second post-filter runs —
 behaviour matches v0.3.
+
+The `includeSubPages` branch (#814) is gated independently of the RAG
+retrieval filters, since it injects a caller-supplied page tree rather than
+retrieved chunks. Before assembly, `/llm/ask` enforces the same access check
+as `GET /pages/:id` on the parent (`userCanAccessPage`) and skips the branch
+on denial. `subpage-context.fetchSubPages` then resolves the caller's readable
+spaces once and applies `visiblePagesPredicate` plus `deleted_at IS NULL` to
+every descendant query, so cross-space or soft-deleted sub-pages never reach
+the LLM prompt on any route (`ask`, `improve`, `analyze-quality`, `summarize`).
 
 ## Retrieval details
 

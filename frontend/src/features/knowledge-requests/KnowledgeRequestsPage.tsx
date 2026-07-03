@@ -1,5 +1,6 @@
 import { useState, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import * as Dialog from '@radix-ui/react-dialog';
 import { m } from 'framer-motion';
 import {
   Plus, Inbox, CheckCircle, Clock, XCircle,
@@ -293,127 +294,142 @@ export function KnowledgeRequestsPage() {
       )}
 
       {/* Create Request Modal */}
-      {showCreateModal && (
-        <>
-          <div
+      <Dialog.Root
+        open={showCreateModal}
+        onOpenChange={(open) => {
+          if (!open) setShowCreateModal(false);
+        }}
+      >
+        <Dialog.Portal>
+          <Dialog.Overlay
             className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm"
-            onClick={() => setShowCreateModal(false)}
             data-testid="create-modal-backdrop"
           />
-          <div className="fixed inset-x-0 top-[15%] z-50 mx-auto w-full max-w-md" data-testid="create-request-modal">
-            <div className="nm-card mx-4 overflow-hidden shadow-2xl">
-              <div className="border-b border-border/50 px-5 py-4">
-                <h2 className="font-semibold">Create Knowledge Request</h2>
-              </div>
-              <div className="space-y-4 p-5">
-                <div>
-                  <label className="mb-1 block text-xs text-muted-foreground">Title</label>
-                  <input
-                    type="text"
-                    value={newTitle}
-                    onChange={(e) => setNewTitle(e.target.value)}
-                    placeholder="What content is needed?"
-                    className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
-                    data-testid="request-title-input"
-                    autoFocus
-                  />
-                </div>
-                <div>
-                  <label className="mb-1 block text-xs text-muted-foreground">Description</label>
-                  <textarea
-                    value={newDescription}
-                    onChange={(e) => setNewDescription(e.target.value)}
-                    placeholder="Describe what the page should cover..."
-                    rows={3}
-                    className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary resize-none"
-                    data-testid="request-description-input"
-                  />
-                </div>
-                <div>
-                  <label className="mb-1 block text-xs text-muted-foreground">Priority</label>
-                  <select
-                    value={newPriority}
-                    onChange={(e) => setNewPriority(e.target.value as RequestPriority)}
-                    className="nm-select-md w-full"
-                    data-testid="request-priority-select"
-                  >
-                    <option value="low">Low</option>
-                    <option value="medium">Medium</option>
-                    <option value="high">High</option>
-                  </select>
-                </div>
-              </div>
-              <div className="flex justify-end gap-2 border-t border-border/50 px-5 py-3">
-                <button
-                  onClick={() => setShowCreateModal(false)}
-                  className="rounded-md bg-foreground/5 px-4 py-2 text-sm hover:bg-foreground/10"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleCreate}
-                  disabled={!newTitle.trim() || createMutation.isPending}
-                  className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
-                  data-testid="submit-request"
-                >
-                  {createMutation.isPending && <Loader2 size={14} className="animate-spin" />}
-                  Create
-                </button>
-              </div>
+          <Dialog.Content
+            className="nm-card fixed left-1/2 top-[15%] z-50 w-[calc(100%-2rem)] max-w-md -translate-x-1/2 overflow-hidden shadow-2xl outline-none"
+            aria-describedby={undefined}
+            data-testid="create-request-modal"
+          >
+            <div className="border-b border-border/50 px-5 py-4">
+              <Dialog.Title className="font-semibold">Create Knowledge Request</Dialog.Title>
             </div>
-          </div>
-        </>
-      )}
-
-      {/* Fulfill Modal */}
-      {fulfillRequestId && (
-        <>
-          <div
-            className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm"
-            onClick={() => setFulfillRequestId(null)}
-            data-testid="fulfill-modal-backdrop"
-          />
-          <div className="fixed inset-x-0 top-[20%] z-50 mx-auto w-full max-w-md" data-testid="fulfill-modal">
-            <div className="nm-card mx-4 overflow-hidden shadow-2xl">
-              <div className="border-b border-border/50 px-5 py-4">
-                <h2 className="font-semibold">Fulfill Request</h2>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Link an existing page to fulfill this request
-                </p>
-              </div>
-              <div className="p-5">
-                <label className="mb-1 block text-xs text-muted-foreground">Page ID</label>
+            <div className="space-y-4 p-5">
+              <div>
+                <label className="mb-1 block text-xs text-muted-foreground">Title</label>
                 <input
                   type="text"
-                  value={fulfillPageId}
-                  onChange={(e) => setFulfillPageId(e.target.value)}
-                  placeholder="Enter the page ID to link..."
+                  value={newTitle}
+                  onChange={(e) => setNewTitle(e.target.value)}
+                  placeholder="What content is needed?"
                   className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
-                  data-testid="fulfill-page-id-input"
+                  data-testid="request-title-input"
                   autoFocus
                 />
               </div>
-              <div className="flex justify-end gap-2 border-t border-border/50 px-5 py-3">
+              <div>
+                <label className="mb-1 block text-xs text-muted-foreground">Description</label>
+                <textarea
+                  value={newDescription}
+                  onChange={(e) => setNewDescription(e.target.value)}
+                  placeholder="Describe what the page should cover..."
+                  rows={3}
+                  className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary resize-none"
+                  data-testid="request-description-input"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-muted-foreground">Priority</label>
+                <select
+                  value={newPriority}
+                  onChange={(e) => setNewPriority(e.target.value as RequestPriority)}
+                  className="nm-select-md w-full"
+                  data-testid="request-priority-select"
+                >
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                </select>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-border/50 px-5 py-3">
+              <Dialog.Close asChild>
                 <button
-                  onClick={() => setFulfillRequestId(null)}
+                  type="button"
                   className="rounded-md bg-foreground/5 px-4 py-2 text-sm hover:bg-foreground/10"
                 >
                   Cancel
                 </button>
-                <button
-                  onClick={handleFulfill}
-                  disabled={!fulfillPageId.trim() || fulfillMutation.isPending}
-                  className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
-                  data-testid="submit-fulfill"
-                >
-                  {fulfillMutation.isPending && <Loader2 size={14} className="animate-spin" />}
-                  Link Page
-                </button>
-              </div>
+              </Dialog.Close>
+              <button
+                onClick={handleCreate}
+                disabled={!newTitle.trim() || createMutation.isPending}
+                className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+                data-testid="submit-request"
+              >
+                {createMutation.isPending && <Loader2 size={14} className="animate-spin" />}
+                Create
+              </button>
             </div>
-          </div>
-        </>
-      )}
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+
+      {/* Fulfill Modal */}
+      <Dialog.Root
+        open={fulfillRequestId !== null}
+        onOpenChange={(open) => {
+          if (!open) setFulfillRequestId(null);
+        }}
+      >
+        <Dialog.Portal>
+          <Dialog.Overlay
+            className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm"
+            data-testid="fulfill-modal-backdrop"
+          />
+          <Dialog.Content
+            className="nm-card fixed left-1/2 top-[20%] z-50 w-[calc(100%-2rem)] max-w-md -translate-x-1/2 overflow-hidden shadow-2xl outline-none"
+            data-testid="fulfill-modal"
+          >
+            <div className="border-b border-border/50 px-5 py-4">
+              <Dialog.Title className="font-semibold">Fulfill Request</Dialog.Title>
+              <Dialog.Description className="text-xs text-muted-foreground mt-1">
+                Link an existing page to fulfill this request
+              </Dialog.Description>
+            </div>
+            <div className="p-5">
+              <label className="mb-1 block text-xs text-muted-foreground">Page ID</label>
+              <input
+                type="text"
+                value={fulfillPageId}
+                onChange={(e) => setFulfillPageId(e.target.value)}
+                placeholder="Enter the page ID to link..."
+                className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                data-testid="fulfill-page-id-input"
+                autoFocus
+              />
+            </div>
+            <div className="flex justify-end gap-2 border-t border-border/50 px-5 py-3">
+              <Dialog.Close asChild>
+                <button
+                  type="button"
+                  className="rounded-md bg-foreground/5 px-4 py-2 text-sm hover:bg-foreground/10"
+                >
+                  Cancel
+                </button>
+              </Dialog.Close>
+              <button
+                onClick={handleFulfill}
+                disabled={!fulfillPageId.trim() || fulfillMutation.isPending}
+                className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+                data-testid="submit-fulfill"
+              >
+                {fulfillMutation.isPending && <Loader2 size={14} className="animate-spin" />}
+                Link Page
+              </button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
     </div>
   );
 }

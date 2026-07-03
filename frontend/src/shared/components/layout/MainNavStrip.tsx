@@ -14,7 +14,7 @@ import { cn } from '../../lib/cn';
  * tied to the mnemonic letter, not to the display order — so reordering
  * here doesn't move keys.
  */
-export const MAIN_NAV_ITEMS: readonly {
+const MAIN_NAV_ITEMS: readonly {
   icon: LucideIcon;
   label: string;
   path: string;

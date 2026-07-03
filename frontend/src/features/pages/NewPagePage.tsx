@@ -339,6 +339,14 @@ export function NewPagePage() {
       {showTemplateGallery && (
         <TemplateGallery
           onSelect={(html) => {
+            // Push the template into the live TipTap editor — the Editor is
+            // mounted with content="" and never re-reads the prop, so state
+            // alone would stay invisible and be overwritten by the first
+            // keystroke's onUpdate. emitUpdate fires onUpdate, which keeps
+            // bodyHtml and the localStorage draft in sync.
+            editorInstance?.commands.setContent(html, { emitUpdate: true });
+            // Fallback for the brief window before TipTap finishes mounting
+            // (immediatelyRender: false), when editorInstance is still null.
             setBodyHtml(html);
             setShowTemplateGallery(false);
           }}
@@ -376,11 +384,11 @@ function TemplateGallery({ onSelect, onClose }: { onSelect: (html: string) => vo
               <div key={i} className="h-12 animate-pulse rounded bg-foreground/5" />
             ))}
           </div>
-        ) : !templatesData?.items.length ? (
+        ) : !templatesData?.length ? (
           <p className="py-8 text-center text-sm text-muted-foreground">No templates available</p>
         ) : (
           <div className="max-h-80 space-y-2 overflow-y-auto">
-            {templatesData.items.map((tpl) => (
+            {templatesData.map((tpl) => (
               <button
                 key={tpl.id}
                 onClick={() => handleUse(tpl.id)}

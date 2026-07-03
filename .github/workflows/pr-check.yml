@@ -12,12 +12,11 @@ concurrency:
 jobs:
   typecheck-lint:
     name: Typecheck & Lint
-    if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: package.json
           cache: npm
@@ -62,7 +61,6 @@ jobs:
 
   test:
     name: Tests
-    if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -97,9 +95,9 @@ jobs:
       PAT_ENCRYPTION_KEY: ci-test-encryption-key-at-least-32-chars
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: package.json
           cache: npm
@@ -121,15 +119,14 @@ jobs:
 
   mcp-docs:
     name: MCP Docs Sidecar
-    if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: mcp-docs
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: package.json
           cache: npm

@@ -1246,6 +1246,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
            title = $2, body_html = $3, body_text = $4,
            version = $5, last_modified_at = NOW(), embedding_dirty = TRUE,
            embedding_status = 'not_embedded', embedded_at = NULL,
+           -- #828: the content changed, so re-queue the summary and quality
+           -- workers. Reset both status AND retry_count — a page that had
+           -- exhausted MAX_RETRIES ('failed') is otherwise skipped by the
+           -- workers' candidate queries and keeps a stale/absent summary or
+           -- quality report forever. Mirrors sync-service's reset-on-change.
+           summary_status = 'pending', summary_retry_count = 0,
+           quality_status = 'pending', quality_retry_count = 0,
            -- Stamp the local-edit markers (#305). Standalone pages have no
            -- upstream so the markers never clear — they just record who
            -- touched the page last.
@@ -1327,6 +1334,16 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
          title = $2, body_storage = $3, body_html = $4, body_text = $5,
          version = $6, last_synced = NOW(), embedding_dirty = TRUE,
          embedding_status = 'not_embedded', embedded_at = NULL,
+         -- #828: content changed on this app-side Confluence push, so re-queue
+         -- the summary/quality workers (reset status + retry_count so a
+         -- retry-exhausted 'failed' page is reprocessed). Also stamp
+         -- last_modified_at, which this path previously omitted entirely — the
+         -- subsequent sync short-circuits (version already current), so nothing
+         -- else would have refreshed it and last_modified_at-based change
+         -- detection never fired.
+         last_modified_at = NOW(),
+         summary_status = 'pending', summary_retry_count = 0,
+         quality_status = 'pending', quality_retry_count = 0,
          -- Clear local-edit markers (#305): the Confluence push has
          -- succeeded, so the local state is now in sync with the remote.
          local_modified_at = NULL, local_modified_by = NULL

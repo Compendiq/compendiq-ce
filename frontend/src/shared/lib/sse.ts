@@ -1,5 +1,5 @@
 import { useAuthStore } from '../../stores/auth-store';
-import { ApiError } from './api';
+import { ApiError, refreshAccessTokenOnce } from './api';
 
 /**
  * Stream SSE events from a POST endpoint.
@@ -12,18 +12,33 @@ export async function* streamSSE<T = { content: string; done: boolean }>(
   body: unknown,
   signal?: AbortSignal,
 ): AsyncGenerator<T> {
-  const { accessToken } = useAuthStore.getState();
+  const doFetch = (token: string | null) =>
+    fetch(`/api${path}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      credentials: 'include',
+      body: JSON.stringify(body),
+      signal,
+    });
 
-  const res = await fetch(`/api${path}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-    },
-    credentials: 'include',
-    body: JSON.stringify(body),
-    signal,
-  });
+  const { accessToken } = useAuthStore.getState();
+  let res = await doFetch(accessToken);
+
+  // Reactive token refresh on 401 — mirrors apiFetch. The access token may have
+  // expired (missed proactive refresh, backgrounded tab, transient failure);
+  // refresh via the httpOnly cookie and re-issue the POST once. Safe to retry
+  // because nothing has been yielded from the stream yet.
+  if (res.status === 401) {
+    const newToken = await refreshAccessTokenOnce();
+    if (newToken) {
+      res = await doFetch(newToken);
+    } else {
+      useAuthStore.getState().clearAuth();
+    }
+  }
 
   if (!res.ok) {
     const errorBody = await res.json().catch(() => ({ message: res.statusText }));

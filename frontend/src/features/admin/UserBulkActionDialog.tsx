@@ -32,7 +32,7 @@ import type {
   BulkUserAction,
   BulkUserBulkActionRequest,
 } from '@compendiq/contracts';
-import { useAuthStore } from '../../stores/auth-store';
+import { fetchJson } from '../../shared/lib/fetch-json';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
 import { cn } from '../../shared/lib/cn';
 
@@ -48,34 +48,6 @@ type FetchError = Error & {
   status?: number;
   body?: BackendErrorBody;
 };
-
-async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const { accessToken } = useAuthStore.getState();
-  const headers = new Headers(init?.headers);
-  if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`);
-  if (init?.body && !headers.has('Content-Type')) {
-    headers.set('Content-Type', 'application/json');
-  }
-  const res = await fetch(`/api${path}`, {
-    ...init,
-    headers,
-    credentials: 'include',
-  });
-  if (!res.ok) {
-    const body: BackendErrorBody = await res.json().catch(() => ({}));
-    const err = new Error(
-      body.message ?? body.error ?? res.statusText,
-    ) as FetchError;
-    err.status = res.status;
-    err.body = body;
-    throw err;
-  }
-  if (res.status === 204) return undefined as T;
-  if (res.headers.get('content-type')?.includes('application/json')) {
-    return res.json();
-  }
-  return undefined as T;
-}
 
 // ── Action kinds ──────────────────────────────────────────────────────────
 

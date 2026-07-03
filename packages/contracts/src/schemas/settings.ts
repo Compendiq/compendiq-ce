@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { LlmProviderTypeSchema } from '../llm.js';
 
 /** Valid keys for custom system prompt overrides. */
 export const CUSTOM_PROMPT_KEYS = [
@@ -46,12 +45,6 @@ export const SettingsResponseSchema = z.object({
   confluenceUrl: z.string().url().nullable(),
   hasConfluencePat: z.boolean(), // Never expose the actual PAT
   selectedSpaces: z.array(z.string()),
-  ollamaModel: z.string(),
-  llmProvider: LlmProviderTypeSchema,
-  openaiBaseUrl: z.string().nullable(),
-  hasOpenaiApiKey: z.boolean(), // Never expose the actual key
-  openaiModel: z.string().nullable(),
-  embeddingModel: z.string(), // Read-only, server-wide
   theme: z.string(),
   syncIntervalMin: z.number(),
   confluenceConnected: z.boolean(),

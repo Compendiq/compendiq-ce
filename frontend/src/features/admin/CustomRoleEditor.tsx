@@ -5,7 +5,7 @@ import {
   Shield, Trash2, X, Loader2, Check, AlertTriangle,
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { apiFetch } from '../../shared/lib/api';
+import { apiFetch, ApiError } from '../../shared/lib/api';
 
 // --- Types ---
 
@@ -176,9 +176,15 @@ export function CustomRoleEditor({ open, onOpenChange, editRole }: CustomRoleEdi
       onOpenChange(false);
     },
     onError: (err: Error) => {
-      // Backend returns 409 when role is still assigned to spaces
+      // Backend returns 409 when the role is still assigned to spaces. The
+      // status lives on ApiError.statusCode — it is never embedded in the
+      // message string, so branch on the code (with an "assigned" text
+      // fallback for defensiveness).
+      const isConflict =
+        (err instanceof ApiError && err.statusCode === 409) ||
+        err.message.toLowerCase().includes('assigned');
       toast.error(
-        err.message.includes('409') || err.message.toLowerCase().includes('assigned')
+        isConflict
           ? 'Role is still assigned to spaces. Remove assignments first.'
           : err.message,
       );

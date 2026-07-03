@@ -233,6 +233,38 @@ describe('LlmTab', () => {
     });
   });
 
+  // ── Error state — a failed assignments query must not skeleton forever ──
+
+  it('renders an error card with a retry button when the assignments query fails', async () => {
+    const Wrapper = createWrapper();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : (input as URL).toString();
+      if (url.endsWith('/admin/llm-providers')) {
+        return new Response(JSON.stringify([providerA, providerB]), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/admin/llm-usecases')) {
+        return new Response(JSON.stringify({ message: 'boom' }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/admin/settings')) {
+        return new Response(JSON.stringify({}), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify([]), { headers: { 'Content-Type': 'application/json' } });
+    });
+
+    render(<LlmTab />, { wrapper: Wrapper });
+
+    // The error state renders instead of an infinite skeleton.
+    await screen.findByTestId('llm-tab-error');
+    expect(screen.getByTestId('llm-tab-retry')).toBeInTheDocument();
+  });
+
   // ── Runtime limits card — per-user concurrent-SSE-stream cap (#268) ──
 
   it('renders the per-user concurrent stream cap with the server value', async () => {

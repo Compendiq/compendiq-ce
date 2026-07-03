@@ -169,6 +169,69 @@ describe('PUT /api/pages/:id', () => {
     expect(updatePage).not.toHaveBeenCalled();
   });
 
+  // #828 — an edit changes content, so the summary/quality workers must
+  // re-process the page. The workers exclude retry-exhausted 'failed' pages,
+  // so if the edit path leaves a stale 'failed'/'summarized' status the page
+  // keeps a stale (or absent) summary/quality forever. Both app-side edit
+  // paths must reset status + retry count (mirroring the sync-service
+  // convention that resets on upstream changes).
+  describe('re-queues summary/quality analysis after an edit (#828)', () => {
+    function findUpdatePagesCall(marker: string): string {
+      const call = mockQuery.mock.calls.find(
+        (c) => typeof c[0] === 'string' && (c[0] as string).includes('UPDATE pages SET') && (c[0] as string).includes(marker),
+      );
+      if (!call) throw new Error(`no UPDATE pages call containing ${marker}`);
+      return call[0] as string;
+    }
+
+    it('resets summary + quality status on a standalone edit', async () => {
+      mockQuery.mockImplementation((sql: string) => {
+        if (sql.includes('SELECT id, version, space_key')) {
+          return Promise.resolve({
+            rows: [{
+              id: 7, version: 3, space_key: 'NOTES', source: 'standalone',
+              created_by_user_id: 'user-1', visibility: 'shared',
+              confluence_id: null, deleted_at: null, page_type: 'page',
+            }],
+          });
+        }
+        return Promise.resolve({ rows: [] });
+      });
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/pages/7',
+        payload: { title: 'Note', bodyHtml: '<p>note</p>', version: 3 },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const sql = findUpdatePagesCall('local_modified_by');
+      expect(sql).toContain("summary_status = 'pending'");
+      expect(sql).toContain('summary_retry_count = 0');
+      expect(sql).toContain("quality_status = 'pending'");
+      expect(sql).toContain('quality_retry_count = 0');
+    });
+
+    it('resets summary + quality status and stamps last_modified_at on a Confluence-push edit', async () => {
+      // Default beforeEach mock resolves a Confluence-backed page (id 42).
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/pages/page-1',
+        payload: { title: 'Updated title', bodyHtml: '<p>updated body</p>', version: 7 },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const sql = findUpdatePagesCall('body_storage');
+      expect(sql).toContain("summary_status = 'pending'");
+      expect(sql).toContain('summary_retry_count = 0');
+      expect(sql).toContain("quality_status = 'pending'");
+      expect(sql).toContain('quality_retry_count = 0');
+      // The Confluence-push UPDATE previously omitted last_modified_at entirely,
+      // so downstream last_modified_at-based change detection never fired.
+      expect(sql).toContain('last_modified_at = NOW()');
+    });
+  });
+
   describe('standalone visibility change — cache invalidation', () => {
     function mockStandalonePage(visibility: 'private' | 'shared') {
       mockQuery.mockImplementation((sql: string) => {

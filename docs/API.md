@@ -62,15 +62,16 @@ Response:
     "redis": true,
     "llm": true
   },
-  "circuitBreakers": {
-    "providers": [
-      { "providerId": "<uuid>", "name": "OpenAI Prod", "state": "closed", "failures": 0 }
-    ]
-  },
+  "llmProvider": "OpenAI Prod",
   "version": "1.0.0",
   "uptime": 3600.123
 }
 ```
+
+> `/api/health` is public (unauthenticated). It reports only coarse status plus
+> the provider name and build version the frontend needs. Internal operational
+> telemetry (per-provider circuit-breaker state, LLM/BullMQ queue metrics) is
+> not exposed here.
 
 ### Register a User
 

@@ -26,7 +26,11 @@ describe('Content analytics routes - auth required', () => {
     app.decorate('authenticate', async () => {
       throw app.httpErrors.unauthorized('Missing token');
     });
+    app.decorate('requireAdmin', async () => {
+      throw app.httpErrors.forbidden('Admin required');
+    });
     app.decorateRequest('userId', '');
+    app.decorateRequest('userRole', '');
 
     await app.register(contentAnalyticsRoutes, { prefix: '/api' });
     await app.ready();
@@ -62,10 +66,16 @@ describe('Content analytics routes - authenticated', () => {
     app = Fastify({ logger: false });
     await app.register(sensible);
 
-    app.decorate('authenticate', async (request: { userId: string }) => {
+    app.decorate('authenticate', async (request: { userId: string; userRole: string }) => {
       request.userId = TEST_USER_ID;
+      request.userRole = 'admin';
+    });
+    app.decorate('requireAdmin', async (request: { userId: string; userRole: string }) => {
+      request.userId = TEST_USER_ID;
+      request.userRole = 'admin';
     });
     app.decorateRequest('userId', '');
+    app.decorateRequest('userRole', '');
 
     await app.register(contentAnalyticsRoutes, { prefix: '/api' });
     await app.ready();
@@ -310,5 +320,79 @@ describe('Content analytics routes - authenticated', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.json().periodDays).toBe(7);
+  });
+});
+
+// =============================================================================
+// Admin required for cross-user / cross-space aggregate routes (#818)
+// =============================================================================
+
+describe('Content analytics routes - admin required for aggregates', () => {
+  let app: ReturnType<typeof Fastify>;
+
+  beforeAll(async () => {
+    app = Fastify({ logger: false });
+    await app.register(sensible);
+
+    // Authenticated non-admin: authenticate passes, requireAdmin rejects.
+    app.decorate('authenticate', async (request: { userId: string; userRole: string }) => {
+      request.userId = TEST_USER_ID;
+      request.userRole = 'user';
+    });
+    app.decorate('requireAdmin', async () => {
+      throw app.httpErrors.forbidden('Admin required');
+    });
+    app.decorateRequest('userId', '');
+    app.decorateRequest('userRole', '');
+
+    await app.register(contentAnalyticsRoutes, { prefix: '/api' });
+    await app.ready();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('should return 403 for GET /api/analytics/trending without admin', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/analytics/trending' });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('should return 403 for GET /api/analytics/content-quality without admin', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/analytics/content-quality' });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('should return 403 for GET /api/analytics/content-gaps without admin', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/analytics/content-gaps' });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('should still allow per-user POST /api/pages/:id/feedback for non-admins', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 1 }] });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/pages/42/feedback',
+      payload: { isHelpful: true },
+    });
+
+    expect(res.statusCode).toBe(201);
+  });
+
+  it('should still allow per-user POST /api/pages/:id/view for non-admins', async () => {
+    mockQuery.mockResolvedValueOnce({ rowCount: 1 });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/pages/42/view',
+      payload: {},
+    });
+
+    expect(res.statusCode).toBe(201);
   });
 });
