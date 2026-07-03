@@ -63,7 +63,12 @@ export function ConfluenceStep({ onNext, onBack }: ConfluenceStepProps) {
             id="confluence-url"
             type="url"
             value={confluenceUrl}
-            onChange={(e) => setConfluenceUrl(e.target.value)}
+            onChange={(e) => {
+              setConfluenceUrl(e.target.value);
+              // Any edit invalidates the prior test — the wizard must not
+              // proceed with untested (and unpersisted) credentials.
+              setTestSuccess(null);
+            }}
             className="nm-input"
             placeholder="https://confluence.example.com"
             data-testid="confluence-url"
@@ -78,7 +83,10 @@ export function ConfluenceStep({ onNext, onBack }: ConfluenceStepProps) {
             id="confluence-pat"
             type="password"
             value={pat}
-            onChange={(e) => setPat(e.target.value)}
+            onChange={(e) => {
+              setPat(e.target.value);
+              setTestSuccess(null);
+            }}
             className="nm-input"
             placeholder="Your Confluence PAT"
             data-testid="confluence-pat"

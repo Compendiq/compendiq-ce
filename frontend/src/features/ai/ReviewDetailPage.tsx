@@ -142,7 +142,7 @@ function ReviewDetailPageInner() {
       >
         <button
           type="button"
-          onClick={() => navigate('/settings/ai/ai-reviews')}
+          onClick={() => navigate('/settings/ai/ai-safety?sub=reviews')}
           className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
           data-testid="ai-review-detail-back-btn"
         >
@@ -199,7 +199,7 @@ function ReviewDetailPageInner() {
         // refetch so the header reflects the new state.
         refetch();
       }}
-      onBackToQueue={() => navigate('/settings/ai/ai-reviews')}
+      onBackToQueue={() => navigate('/settings/ai/ai-safety?sub=reviews')}
     />
   );
 }
