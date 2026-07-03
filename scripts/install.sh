@@ -299,6 +299,7 @@ services:
     networks:
       - frontend
       - backend
+      - data
 
   postgres:
     image: pgvector/pgvector:pg17
@@ -315,7 +316,7 @@ services:
       retries: 5
     restart: unless-stopped
     networks:
-      - backend
+      - data
 
   redis:
     image: redis:8-alpine
@@ -333,6 +334,8 @@ services:
       retries: 5
     restart: unless-stopped
     networks:
+      # data-net reaches postgres/backend; backend-net lets mcp-docs reach Redis.
+      - data
       - backend
 
   # MCP documentation sidecar (air-gapped LLM doc access). Mirrors the
@@ -386,8 +389,13 @@ volumes:
   attachments-data:
 
 networks:
+  # frontend/backend are bridges with internet egress. mcp-docs' fetch_url and
+  # searxng's metasearch need outbound access, so they live on backend (not an
+  # internal net). Only the data tier (postgres/redis) is isolated on `data`,
+  # mirroring docker/docker-compose.yml (frontend-net/backend-net/data-net).
   frontend:
   backend:
+  data:
     internal: true
 COMPOSEEOF
 

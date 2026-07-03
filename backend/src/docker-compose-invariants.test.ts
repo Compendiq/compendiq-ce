@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -57,6 +57,53 @@ function extractServiceBlock(composeText: string, serviceName: string): string {
 /** All `${VAR...}` interpolations of a given variable name. */
 function interpolationsOf(text: string, varName: string): string[] {
   return [...text.matchAll(new RegExp(`\\$\\{${varName}([^}]*)\\}`, 'g'))].map((m) => m[1]);
+}
+
+/** The compose YAML the installer writes (the write_compose heredoc body). */
+function extractInstallerCompose(script: string): string {
+  const match = script.match(/<<'COMPOSEEOF'\n([\s\S]*?)\nCOMPOSEEOF/);
+  expect(match, 'write_compose heredoc not found in install.sh').not.toBeNull();
+  return match![1];
+}
+
+/** Map of top-level network name -> whether it is declared `internal: true`. */
+function parseNetworkInternalFlags(composeText: string): Record<string, boolean> {
+  const lines = composeText.split('\n');
+  const start = lines.findIndex((line) => line === 'networks:');
+  expect(start, 'top-level networks: block not found').toBeGreaterThanOrEqual(0);
+
+  const flags: Record<string, boolean> = {};
+  let current: string | null = null;
+  for (let i = start + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^\S/.test(line) && line.trim() !== '') break; // next top-level key
+    const nameMatch = line.match(/^ {2}([\w-]+):\s*$/);
+    if (nameMatch) {
+      current = nameMatch[1];
+      flags[current] = false;
+      continue;
+    }
+    if (current && /^\s+internal:\s*true\b/.test(line)) {
+      flags[current] = true;
+    }
+  }
+  return flags;
+}
+
+/** The list of networks a service block attaches to (list form only). */
+function serviceNetworks(serviceBlock: string): string[] {
+  const lines = serviceBlock.split('\n');
+  const start = lines.findIndex((line) => /^\s+networks:\s*$/.test(line));
+  if (start < 0) return [];
+  const nets: string[] = [];
+  for (let i = start + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim() === '' || /^\s*#/.test(line)) continue; // skip blank/comment lines
+    const item = line.match(/^\s+-\s+([\w-]+)\s*$/);
+    if (!item) break;
+    nets.push(item[1]);
+  }
+  return nets;
 }
 
 describe('docker/docker-compose.yml security invariants', () => {
@@ -144,6 +191,40 @@ describe('scripts/install.sh invariants', () => {
   it('points the backend at the mcp-docs sidecar', () => {
     expect(installSh).toContain('MCP_DOCS_URL:');
   });
+
+  it('attaches mcp-docs and searxng to a non-internal network so they can reach the internet', () => {
+    // mcp-docs' fetch_url tool and searxng's metasearch both require outbound
+    // internet egress. An `internal: true` Docker network denies egress, so if
+    // these sidecars are only on internal networks the MCP web-docs feature
+    // silently fails end-to-end even though the services start. Canonical
+    // docker/docker-compose.yml puts them on the non-internal backend-net.
+    const compose = extractInstallerCompose(installSh);
+    const internalFlags = parseNetworkInternalFlags(compose);
+
+    for (const service of ['mcp-docs', 'searxng']) {
+      const nets = serviceNetworks(extractServiceBlock(compose, service));
+      expect(nets.length, `${service} must declare at least one network`).toBeGreaterThan(0);
+      const hasEgress = nets.some((net) => internalFlags[net] === false);
+      expect(
+        hasEgress,
+        `${service} is only on internal-only networks (${nets.join(', ')}); it needs egress`,
+      ).toBe(true);
+    }
+  });
+
+  it('keeps postgres and redis on an internal network (no host egress for the data tier)', () => {
+    // The egress fix must not accidentally expose the data tier: postgres/redis
+    // must still sit on an `internal: true` network per CLAUDE.md infra rules.
+    const compose = extractInstallerCompose(installSh);
+    const internalFlags = parseNetworkInternalFlags(compose);
+    expect(Object.values(internalFlags).some((isInternal) => isInternal)).toBe(true);
+
+    for (const service of ['postgres', 'redis']) {
+      const nets = serviceNetworks(extractServiceBlock(compose, service));
+      const onInternal = nets.some((net) => internalFlags[net] === true);
+      expect(onInternal, `${service} must be on an internal network`).toBe(true);
+    }
+  });
 });
 
 describe('docker/docker-compose.test.yml security invariants', () => {
@@ -186,4 +267,32 @@ describe('.github/workflows/pr-check.yml runs validation for every author', () =
   it('does not skip typecheck/lint/test/hoist checks for Dependabot PRs', () => {
     expect(prCheckWorkflow).not.toContain('dependabot[bot]');
   });
+});
+
+describe('.github/workflows supply-chain hardening', () => {
+  const workflowsDir = join(repoRoot, '.github', 'workflows');
+  const workflowFiles = readdirSync(workflowsDir).filter(
+    (name) => name.endsWith('.yml') || name.endsWith('.yaml'),
+  );
+
+  it('has workflow files to check', () => {
+    expect(workflowFiles.length).toBeGreaterThan(0);
+  });
+
+  it.each(workflowFiles)(
+    'pins every third-party action in %s to a full 40-char commit SHA (mutable tags can be repointed)',
+    (file) => {
+      const text = readFileSync(join(workflowsDir, file), 'utf8');
+      const uses = [...text.matchAll(/uses:\s*(\S+)/g)].map((m) => m[1]);
+      for (const ref of uses) {
+        // Local composite actions (./path) are not pinnable; skip them.
+        if (ref.startsWith('./')) continue;
+        const [, version] = ref.split('@');
+        expect(version, `${ref} in ${file} must be pinned with @<sha>`).toBeDefined();
+        expect(version, `${ref} in ${file} must pin a full 40-char commit SHA, not a mutable tag`).toMatch(
+          /^[0-9a-f]{40}$/,
+        );
+      }
+    },
+  );
 });
