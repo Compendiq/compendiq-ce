@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams, useLocation } from 'react-router-dom';
 import { useAuthStore } from '../../stores/auth-store';
 
 /**
@@ -15,6 +15,7 @@ import { useAuthStore } from '../../stores/auth-store';
 export function OidcCallbackPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const location = useLocation();
   const setAuth = useAuthStore((s) => s.setAuth);
   const [error, setError] = useState<string | null>(null);
   const exchanged = useRef(false);
@@ -53,11 +54,16 @@ export function OidcCallbackPage() {
         navigate('/', { replace: true });
       } catch (err) {
         setError(err instanceof Error ? err.message : 'SSO login failed');
+        // Strip the one-time login_code from the URL and browser history on the
+        // error path too. The success path already drops it via navigate('/');
+        // without this, a failed exchange left ?login_code=… in history and the
+        // referrer until the user clicked "Back to Login".
+        navigate(location.pathname, { replace: true });
       }
     }
 
     exchangeCode();
-  }, [searchParams, setAuth, navigate]);
+  }, [searchParams, setAuth, navigate, location.pathname]);
 
   if (error) {
     return (

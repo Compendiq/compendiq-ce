@@ -139,6 +139,45 @@ describe('KnowledgeRequestsPage', () => {
     expect(screen.getByTestId('request-title-input')).toBeInTheDocument();
   });
 
+  it('exposes dialog role on the create modal', () => {
+    mockFetch();
+    render(<KnowledgeRequestsPage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('create-request-btn'));
+    const dialog = screen.getByTestId('create-request-modal');
+    expect(dialog).toHaveAttribute('role', 'dialog');
+    // Radix's modal Dialog traps focus and aria-hides the rest of the page
+    // (RemoveScroll + hideOthers), so the create button is unreachable while open.
+    expect(screen.getByRole('dialog')).toBe(dialog);
+  });
+
+  it('closes the create modal when Escape is pressed', async () => {
+    mockFetch();
+    render(<KnowledgeRequestsPage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('create-request-btn'));
+    expect(screen.getByTestId('create-request-modal')).toBeInTheDocument();
+
+    fireEvent.keyDown(screen.getByTestId('create-request-modal'), { key: 'Escape' });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('create-request-modal')).not.toBeInTheDocument();
+    });
+  });
+
+  it('closes the fulfill modal when Escape is pressed', async () => {
+    mockFetch();
+    render(<KnowledgeRequestsPage />, { wrapper: createWrapper() });
+
+    fireEvent.click(await screen.findByTestId('fulfill-req-1'));
+    const dialog = screen.getByTestId('fulfill-modal');
+    expect(dialog).toHaveAttribute('role', 'dialog');
+
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('fulfill-modal')).not.toBeInTheDocument();
+    });
+  });
+
   it('shows fulfill button on open requests', async () => {
     mockFetch();
     render(<KnowledgeRequestsPage />, { wrapper: createWrapper() });

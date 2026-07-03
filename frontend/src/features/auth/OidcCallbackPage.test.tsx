@@ -1,14 +1,21 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { LazyMotion, domMax } from 'framer-motion';
 import { OidcCallbackPage } from './OidcCallbackPage';
 import { useAuthStore } from '../../stores/auth-store';
+
+/** Exposes the live router location so tests can assert query-param stripping. */
+function LocationProbe() {
+  const location = useLocation();
+  return <div data-testid="location-search">{location.search}</div>;
+}
 
 function renderWithRouter(initialEntry: string) {
   return render(
     <LazyMotion features={domMax}>
       <MemoryRouter initialEntries={[initialEntry]}>
+        <LocationProbe />
         <Routes>
           <Route path="/auth/oidc/callback" element={<OidcCallbackPage />} />
           <Route path="/login" element={<div data-testid="login-page">Login</div>} />
@@ -82,5 +89,26 @@ describe('OidcCallbackPage', () => {
       expect(screen.getByText('SSO Login Failed')).toBeInTheDocument();
     });
     expect(screen.getByText(/Invalid or expired login code/)).toBeInTheDocument();
+  });
+
+  it('strips the login_code from the URL on a failed exchange', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ message: 'Invalid or expired login code' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    renderWithRouter('/auth/oidc/callback?login_code=expired-code');
+
+    // The error UI still renders (we stay on the callback route)...
+    await waitFor(() => {
+      expect(screen.getByText('SSO Login Failed')).toBeInTheDocument();
+    });
+    // ...but the one-time credential must be gone from the URL/history.
+    await waitFor(() => {
+      expect(screen.getByTestId('location-search')).toHaveTextContent('');
+    });
+    expect(screen.getByTestId('location-search').textContent).not.toContain('login_code');
   });
 });
