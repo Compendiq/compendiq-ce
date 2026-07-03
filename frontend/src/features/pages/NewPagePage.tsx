@@ -384,11 +384,11 @@ function TemplateGallery({ onSelect, onClose }: { onSelect: (html: string) => vo
               <div key={i} className="h-12 animate-pulse rounded bg-foreground/5" />
             ))}
           </div>
-        ) : !templatesData?.items.length ? (
+        ) : !templatesData?.length ? (
           <p className="py-8 text-center text-sm text-muted-foreground">No templates available</p>
         ) : (
           <div className="max-h-80 space-y-2 overflow-y-auto">
-            {templatesData.items.map((tpl) => (
+            {templatesData.map((tpl) => (
               <button
                 key={tpl.id}
                 onClick={() => handleUse(tpl.id)}

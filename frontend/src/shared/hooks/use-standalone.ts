@@ -13,7 +13,8 @@ export function useTemplates(filters?: { scope?: string; category?: string }) {
       if (filters?.scope) params.set('scope', filters.scope);
       if (filters?.category) params.set('category', filters.category);
       const qs = params.toString();
-      return apiFetch<{ items: Template[]; total: number }>(`/templates${qs ? `?${qs}` : ''}`);
+      // GET /api/templates returns a bare array, not an { items, total } envelope.
+      return apiFetch<Template[]>(`/templates${qs ? `?${qs}` : ''}`);
     },
   });
 }

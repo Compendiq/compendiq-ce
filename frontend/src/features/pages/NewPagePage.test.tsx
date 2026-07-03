@@ -51,7 +51,8 @@ const { mockSetContent, mockEditorInstance, mockUseTemplateMutateAsync, template
 });
 
 vi.mock('../../shared/hooks/use-standalone', () => ({
-  useTemplates: () => ({ data: { items: templatesState.items }, isLoading: false }),
+  // GET /api/templates returns a bare array — mirror the real wire shape.
+  useTemplates: () => ({ data: templatesState.items, isLoading: false }),
   useUseTemplate: () => ({ mutateAsync: mockUseTemplateMutateAsync, isPending: false }),
   useImportMarkdown: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useLocalSpaces: () => ({

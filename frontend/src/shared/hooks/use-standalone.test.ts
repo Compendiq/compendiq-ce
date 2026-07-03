@@ -49,16 +49,18 @@ describe('use-standalone hooks', () => {
 
   describe('useTemplates', () => {
     it('fetches templates list', async () => {
-      const mock = mockFetch({ items: [{ id: 1, title: 'Template A' }], total: 1 });
+      // GET /api/templates returns a bare array (see backend templates.ts),
+      // not an { items, total } envelope.
+      const mock = mockFetch([{ id: 1, title: 'Template A' }]);
       const { result } = renderHook(() => useTemplates(), { wrapper: createWrapper() });
       await waitFor(() => expect(result.current.isSuccess).toBe(true));
-      expect(result.current.data?.items).toHaveLength(1);
-      expect(result.current.data?.items[0].title).toBe('Template A');
+      expect(result.current.data).toHaveLength(1);
+      expect(result.current.data?.[0].title).toBe('Template A');
       expect(mock).toHaveBeenCalledTimes(1);
     });
 
     it('passes scope and category as query params', async () => {
-      const mock = mockFetch({ items: [], total: 0 });
+      const mock = mockFetch([]);
       const { result } = renderHook(
         () => useTemplates({ scope: 'global', category: 'guide' }),
         { wrapper: createWrapper() },
