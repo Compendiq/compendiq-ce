@@ -44,13 +44,16 @@ export async function fetchWebSources(
     const sources: WebSource[] = [];
 
     for (const result of results.slice(0, 2)) {
+      // Title and snippet are attacker-controlled page metadata surfaced by
+      // SearXNG — sanitize them like the fetched body (#820).
+      const title = sanitizeLlmInput(result.title).sanitized;
       try {
         const doc = await fetchDocumentation(result.url, userId, maxLength);
         const { sanitized } = sanitizeLlmInput(doc.markdown);
-        sources.push({ url: result.url, title: result.title, snippet: sanitized });
+        sources.push({ url: result.url, title, snippet: sanitized });
       } catch (fetchErr) {
         logger.warn({ err: fetchErr, url: result.url }, 'Web search: fetch failed, using snippet');
-        sources.push({ url: result.url, title: result.title, snippet: result.snippet });
+        sources.push({ url: result.url, title, snippet: sanitizeLlmInput(result.snippet).sanitized });
       }
     }
 
