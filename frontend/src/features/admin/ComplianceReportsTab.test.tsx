@@ -337,6 +337,19 @@ describe('ComplianceReportsTab', () => {
     });
   });
 
+  it('renders an error state with retry when the catalogue endpoint 500s (not a healthy-but-empty grid)', async () => {
+    setupCatalogue({ status: 500 });
+    render(<ComplianceReportsTab />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('compliance-reports-error')).toBeTruthy();
+    });
+    // A backend failure must be distinguishable from a valid empty grid.
+    expect(screen.queryByTestId('compliance-reports-tab')).toBeNull();
+    expect(screen.queryByTestId('compliance-reports-gated')).toBeNull();
+    expect(screen.getByTestId('compliance-reports-retry')).toBeTruthy();
+  });
+
   it('renders the EE-gated message when the catalogue endpoint returns 404', async () => {
     setupCatalogue({ status: 404 });
     render(<ComplianceReportsTab />, { wrapper: createWrapper() });

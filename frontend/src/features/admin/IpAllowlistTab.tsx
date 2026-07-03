@@ -19,7 +19,7 @@ import type {
   IpAllowlistConfig,
   IpAllowlistTestResponse,
 } from '@compendiq/contracts';
-import { useAuthStore } from '../../stores/auth-store';
+import { fetchJson } from '../../shared/lib/fetch-json';
 import { cn } from '../../shared/lib/cn';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -72,32 +72,9 @@ function configsEqual(a: IpAllowlistConfig, b: IpAllowlistConfig): boolean {
   );
 }
 
-// Direct fetch helpers — we bypass `apiFetch` here because the backend
-// surfaces structured error shapes (`{ error: 'invalid_cidr', cidr }`) that
-// the shared helper flattens to `body.message`. Preserving the raw shape lets
-// the UI highlight the offending CIDR.
-
-async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const { accessToken } = useAuthStore.getState();
-  const headers = new Headers(init?.headers);
-  if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`);
-  if (init?.body && !headers.has('Content-Type')) {
-    headers.set('Content-Type', 'application/json');
-  }
-  const res = await fetch(`/api${path}`, { ...init, headers, credentials: 'include' });
-  if (!res.ok) {
-    const body: BackendErrorBody = await res.json().catch(() => ({}));
-    const err = new Error(body.message ?? body.error ?? res.statusText);
-    (err as Error & { status?: number; body?: BackendErrorBody }).status = res.status;
-    (err as Error & { status?: number; body?: BackendErrorBody }).body = body;
-    throw err;
-  }
-  if (res.status === 204) return undefined as T;
-  if (res.headers.get('content-type')?.includes('application/json')) {
-    return res.json();
-  }
-  return undefined as T;
-}
+// `fetchJson` (shared) preserves the backend's structured error body on
+// `FetchJsonError.body`, so `classifyPutError` can still highlight the offending
+// CIDR from the raw `{ error: 'invalid_cidr', cidr }` shape.
 
 function classifyPutError(err: unknown): PutError {
   if (err instanceof Error) {

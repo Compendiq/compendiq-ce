@@ -106,12 +106,14 @@ export function ProviderListSection() {
           </li>
         ))}
       </ul>
-      <ProviderEditModal
-        mode="create"
-        open={adding}
-        onClose={() => setAdding(false)}
-        onSaved={() => qc.invalidateQueries({ queryKey: ['llm-providers'] })}
-      />
+      {adding && (
+        <ProviderEditModal
+          mode="create"
+          open
+          onClose={() => setAdding(false)}
+          onSaved={() => qc.invalidateQueries({ queryKey: ['llm-providers'] })}
+        />
+      )}
       {editing && (
         <ProviderEditModal
           mode="edit"

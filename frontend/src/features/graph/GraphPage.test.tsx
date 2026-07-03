@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
@@ -107,6 +107,41 @@ describe('GraphPage', () => {
     // Should show space legends (text also appears in filter dropdown)
     expect(screen.getAllByText('DEV').length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText('OPS').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('registers the mousemove tracker only while a node is hovered (perf)', async () => {
+    const ForceGraph2DMock = (await import('react-force-graph-2d'))
+      .default as unknown as ReturnType<typeof vi.fn>;
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => mockGraphData,
+    } as Response);
+
+    const addSpy = vi.spyOn(window, 'addEventListener');
+    render(<GraphPage />, { wrapper: createWrapper(['/graph?full=1']) });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mock-force-graph')).toBeInTheDocument();
+    });
+
+    // No global mousemove listener while nothing is hovered — moving the
+    // cursor anywhere must not drive a per-event setState/re-render storm
+    // on the heavy force-graph canvas.
+    const before = addSpy.mock.calls.filter(([evt]) => evt === 'mousemove');
+    expect(before).toHaveLength(0);
+
+    // Hovering a node attaches the tracker so the tooltip can follow the
+    // cursor; it detaches again when the hover ends.
+    const props =
+      ForceGraph2DMock.mock.calls[ForceGraph2DMock.mock.calls.length - 1][0];
+    act(() => props.onNodeHover(mockGraphData.nodes[0], null));
+
+    await waitFor(() => {
+      const after = addSpy.mock.calls.filter(([evt]) => evt === 'mousemove');
+      expect(after.length).toBeGreaterThan(0);
+    });
   });
 
   it('renders empty state when no pages exist', async () => {

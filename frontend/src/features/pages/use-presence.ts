@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuthStore } from '../../stores/auth-store';
+import { refreshAccessTokenOnce } from '../../shared/lib/api';
 
 export interface PresenceViewer {
   userId: string;
@@ -86,14 +87,30 @@ export function usePresence(pageId: string | null | undefined): {
           },
           signal: abort.signal,
         });
-        if (res.status === 401 || res.status === 403) {
-          // Session is broken — retrying won't help. Park until unmount.
+        if (res.status === 403) {
+          // Forbidden — retrying won't help. Park until unmount.
           cancelled = true;
           if (heartbeatTimer) {
             clearInterval(heartbeatTimer);
             heartbeatTimer = null;
           }
           return;
+        }
+        if (res.status === 401) {
+          // Access token expired — attempt a silent refresh via the httpOnly
+          // cookie. On success, throw to fall through to the normal reconnect
+          // path (which re-reads the refreshed token from the store). Only give
+          // up permanently if the refresh itself fails.
+          const newToken = await refreshAccessTokenOnce();
+          if (!newToken) {
+            cancelled = true;
+            if (heartbeatTimer) {
+              clearInterval(heartbeatTimer);
+              heartbeatTimer = null;
+            }
+            return;
+          }
+          throw new Error('presence: token refreshed, reconnecting');
         }
         if (!res.ok || !res.body) {
           throw new Error(`Presence stream failed: ${res.status}`);

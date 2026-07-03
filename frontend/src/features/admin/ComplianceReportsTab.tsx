@@ -46,6 +46,7 @@ import type { ReportId, ComplianceReportCatalogue } from '@compendiq/contracts';
 import { apiFetch, ApiError } from '../../shared/lib/api';
 import { useAuthStore } from '../../stores/auth-store';
 import { cn } from '../../shared/lib/cn';
+import { ErrorState } from '../../shared/components/feedback/ErrorState';
 
 // ── Catalogue ──────────────────────────────────────────────────────────
 //
@@ -396,7 +397,7 @@ function ReportCard({
 // ── Tab root ───────────────────────────────────────────────────────────
 
 export function ComplianceReportsTab() {
-  const { data, isLoading, error } = useCatalogue();
+  const { data, isLoading, error, refetch } = useCatalogue();
 
   // The enterprise feature-gate is also enforced by SettingsPage's
   // tab list (`requiresFeature: 'compliance_reports'`). Defence-in-depth:
@@ -423,6 +424,23 @@ export function ComplianceReportsTab() {
           </div>
         </m.div>
       </div>
+    );
+  }
+
+  // Any non-gate error (500, network failure) must surface here. Without
+  // this branch, execution falls through to an empty availableSet and
+  // renders the full catalogue with every report badged unavailable — a
+  // backend failure would be indistinguishable from a healthy deployment
+  // with no reports wired.
+  if (error) {
+    return (
+      <ErrorState
+        title="Couldn't load compliance reports"
+        description={error instanceof Error ? error.message : undefined}
+        onRetry={() => refetch()}
+        testId="compliance-reports-error"
+        retryTestId="compliance-reports-retry"
+      />
     );
   }
 
