@@ -331,6 +331,18 @@ This means the Spaces tab always reflects the admin's deliberate sync selection,
 not the implicit "can see everything" fallback, and the Remove action correctly
 removes a space from that selection.
 
+**Write-side guard (#815).** When `PUT /api/settings` self-assigns the editor role
+for the submitted `selectedSpaces`, it first intersects them against the spaces
+reachable by the caller's **own** Confluence PAT (`getClientForUser().getAllSpaces()`,
+the same set the picker `GET /api/spaces/available` offers). Keys the caller's PAT
+cannot see are rejected (`403`), and a request with no configured PAT is rejected
+(`400`). Without this check any authenticated user could insert an editor
+`space_role_assignments` row for an arbitrary space and thereby read every
+already-synced page in it, since `getUserAccessibleSpaces` derives a non-admin's
+readable spaces solely from those rows. Deselection (an empty set, handled by the
+DELETE path) is always safe and skips the PAT lookup. Cross-user space grants remain
+the exclusive domain of the admin-managed RBAC routes.
+
 ## Content pipeline hand-off
 
 The `confluenceToHtml()` call produces `body_html` and `body_text`. The

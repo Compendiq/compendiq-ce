@@ -8,6 +8,7 @@ import { validateUrl, addAllowedBaseUrl, removeAllowedBaseUrl, resolveConfluence
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { getSelectedSyncSpaces, invalidateRbacCache } from '../../core/services/rbac-service.js';
 import { getSyncOverview } from '../../domains/confluence/services/sync-overview-service.js';
+import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
 import { logger } from '../../core/utils/logger.js';
 import { confluenceDispatcher } from '../../core/utils/tls-config.js';
 import { getAiGuardrails, getAiOutputRules } from '../../core/services/ai-safety-service.js';
@@ -164,6 +165,29 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     // Handle selectedSpaces via RBAC space_role_assignments
     if (body.selectedSpaces !== undefined) {
       const newSpaces = body.selectedSpaces;
+
+      // #815: Prevent horizontal privilege escalation. A user may only
+      // self-assign the editor role on spaces reachable by their OWN Confluence
+      // PAT — the same set the picker (GET /spaces/available) offers. Without
+      // this guard any authenticated user could insert an editor
+      // space_role_assignments row for an arbitrary space key and thereby read
+      // every already-synced page in that space, since getUserAccessibleSpaces
+      // derives a non-admin's readable spaces solely from these rows. Only the
+      // INSERT path needs the check; deselecting (empty set / DELETE below) is
+      // always safe and must not require a live PAT lookup.
+      if (newSpaces.length > 0) {
+        const client = await getClientForUser(request.userId);
+        if (!client) {
+          throw fastify.httpErrors.badRequest('Confluence not configured');
+        }
+        const patVisibleSpaces = new Set((await client.getAllSpaces()).map((s) => s.key));
+        const unauthorized = newSpaces.filter((key) => !patVisibleSpaces.has(key));
+        if (unauthorized.length > 0) {
+          throw fastify.httpErrors.forbidden(
+            `Not permitted to select space(s) not visible to your Confluence PAT: ${unauthorized.join(', ')}`,
+          );
+        }
+      }
 
       // Get the editor role ID for default assignment
       const editorRoleResult = await query<{ id: number }>(

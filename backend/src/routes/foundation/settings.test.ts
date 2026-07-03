@@ -66,6 +66,13 @@ vi.mock('../../domains/confluence/services/sync-overview-service.js', () => ({
   getSyncOverview: (...args: unknown[]) => mockGetSyncOverview(...args),
 }));
 
+// #815: PUT /settings must validate selectedSpaces against the caller's own
+// PAT-visible spaces before self-assigning the editor role.
+const mockGetClientForUser = vi.fn();
+vi.mock('../../domains/confluence/services/sync-service.js', () => ({
+  getClientForUser: (...args: unknown[]) => mockGetClientForUser(...args),
+}));
+
 // Spy on ssrf-guard functions to verify allowlist management
 const mockAddAllowedBaseUrl = vi.fn();
 const mockRemoveAllowedBaseUrl = vi.fn();
@@ -417,6 +424,13 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
     vi.clearAllMocks();
     mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
     mockGetSelectedSyncSpaces.mockResolvedValue(['DEV', 'DOCS']);
+    // #815: default to a PAT-configured user whose Confluence PAT can see DEV/DOCS.
+    mockGetClientForUser.mockResolvedValue({
+      getAllSpaces: vi.fn().mockResolvedValue([
+        { key: 'DEV', name: 'Dev', type: 'global' },
+        { key: 'DOCS', name: 'Docs', type: 'global' },
+      ]),
+    });
   });
 
   it('GET /settings returns settings from DB with accessible spaces from RBAC', async () => {
@@ -544,6 +558,88 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
     );
     expect(deleteCalls).toHaveLength(1);
     expect(deleteCalls[0][1]).toContain('test-user-id');
+  });
+
+  it('PUT /settings rejects selectedSpaces the caller\'s PAT cannot see (#815 privilege escalation)', async () => {
+    // Attacker submits a space key that is NOT visible to their own PAT.
+    // The PAT only sees DEV/DOCS (default mock), so CONFIDENTIAL must be rejected
+    // and NO space_role_assignments row may be inserted.
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 3 }], rowCount: 1 }); // editor role (should not be reached, but safe)
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { selectedSpaces: ['CONFIDENTIAL'] },
+    });
+
+    expect(response.statusCode).toBe(403);
+
+    // The privilege-escalation INSERT must never run for an unauthorized space.
+    const insertCalls = mockQuery.mock.calls.filter(
+      (call) => typeof call[0] === 'string' && (call[0] as string).includes('INSERT INTO space_role_assignments'),
+    );
+    expect(insertCalls).toHaveLength(0);
+  });
+
+  it('PUT /settings allows selecting spaces the caller\'s PAT can see (#815)', async () => {
+    // Query: get editor role
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 3 }], rowCount: 1 });
+    // DELETE old assignments
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    // INSERT new assignment
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { selectedSpaces: ['DOCS'] },
+    });
+
+    expect(response.statusCode).toBe(200);
+
+    const insertCalls = mockQuery.mock.calls.filter(
+      (call) => typeof call[0] === 'string' && (call[0] as string).includes('INSERT INTO space_role_assignments'),
+    );
+    expect(insertCalls).toHaveLength(1);
+    expect(insertCalls[0][1]).toContain('DOCS');
+  });
+
+  it('PUT /settings rejects selectedSpaces when the caller has no Confluence PAT (#815)', async () => {
+    mockGetClientForUser.mockResolvedValueOnce(null);
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { selectedSpaces: ['DEV'] },
+    });
+
+    expect(response.statusCode).toBe(400);
+
+    const insertCalls = mockQuery.mock.calls.filter(
+      (call) => typeof call[0] === 'string' && (call[0] as string).includes('INSERT INTO space_role_assignments'),
+    );
+    expect(insertCalls).toHaveLength(0);
+  });
+
+  it('PUT /settings allows deselecting all spaces without a PAT check (#815 preserves DELETE)', async () => {
+    // Empty selection is a pure deselect — must not require a live PAT lookup.
+    mockGetClientForUser.mockResolvedValueOnce(null);
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 3 }], rowCount: 1 }); // editor role
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // DELETE
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { selectedSpaces: [] },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockGetClientForUser).not.toHaveBeenCalled();
+
+    const deleteCalls = mockQuery.mock.calls.filter(
+      (call) => typeof call[0] === 'string' && (call[0] as string).includes('DELETE FROM space_role_assignments'),
+    );
+    expect(deleteCalls).toHaveLength(1);
   });
 
   it('GET /settings returns customPrompts from DB', async () => {
