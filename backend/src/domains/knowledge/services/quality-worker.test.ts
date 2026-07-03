@@ -320,6 +320,27 @@ describe.skipIf(!dbAvailable)('Quality Worker (DB)', () => {
       expect(result.rows[0].quality_retry_count).toBe(0); // reset on success
     });
 
+    it('re-analyzes a retry-exhausted failed page whose content changed since analysis (#828)', async () => {
+      // A page that exhausted MAX_RETRIES sits at 'failed' with retry count 3.
+      // When its content later changes (last_modified_at > quality_analyzed_at)
+      // it must be re-analyzed — otherwise it keeps a stale/absent quality
+      // report forever until an admin runs forceQualityRescan.
+      const longContent = 'This is a sufficiently long article body that exceeds the fifty character minimum threshold for quality analysis processing.';
+      await query(
+        `INSERT INTO pages (confluence_id, space_key, title, body_text, body_html, quality_status, quality_retry_count, quality_analyzed_at, last_modified_at)
+         VALUES ('changed-failed', $1, 'Changed Failed Page', $2, $3, 'failed', 3, NOW() - INTERVAL '1 hour', NOW())`,
+        [testSpaceKey, longContent, `<p>${longContent}</p>`],
+      );
+
+      const processed = await processBatch();
+      expect(processed).toBe(1);
+
+      const result = await query<{ quality_status: string }>(
+        "SELECT quality_status FROM pages WHERE confluence_id = 'changed-failed'",
+      );
+      expect(result.rows[0].quality_status).toBe('analyzed');
+    });
+
     describe('ai.quality.complete webhook emit (#114)', () => {
       beforeEach(() => {
         mockEmitWebhookEvent.mockReset();

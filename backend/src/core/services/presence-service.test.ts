@@ -20,6 +20,7 @@ import {
   removeViewer,
   subscribeToPage,
   _resetForTest,
+  _clearPublishTimersForTest,
   ACTIVE_WINDOW_SEC,
   VIEWERS_TTL_SEC,
 } from './presence-service.js';
@@ -67,6 +68,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!redisAvailable) return;
+  // Clear the per-page publish throttle state (#828) so each test starts on a
+  // leading edge — otherwise a prior test's publish timestamp would throttle
+  // the first heartbeat of the next test.
+  _clearPublishTimersForTest();
   await cleanupKeys();
 });
 
@@ -221,6 +226,28 @@ describe.skipIf(!redisAvailable)('presence-service', () => {
     if (main) {
       const members = await main.sMembers(`presence:editing:${TEST_PAGE}`);
       expect(members).not.toContain('user-alice');
+    }
+  });
+
+  it('coalesces a burst of heartbeats into fewer publishes than heartbeats (#828)', async () => {
+    // The old code recomputed the full viewer list (one hGetAll per viewer)
+    // and republished on EVERY heartbeat — O(V^2) Redis/SSE load per page.
+    // A burst within the throttle window must now collapse to a single
+    // leading-edge publish (the rest coalesce into one deferred trailing
+    // publish that hasn't fired yet at the assertion point).
+    const received: number[] = [];
+    const unsub = subscribeToPage(TEST_PAGE, () => { received.push(Date.now()); });
+
+    try {
+      for (let i = 0; i < 5; i++) {
+        await recordHeartbeat(TEST_PAGE, 'user-alice', false, { name: 'Alice', role: 'user' });
+      }
+      await new Promise((r) => setTimeout(r, 250));
+
+      expect(received.length).toBeGreaterThanOrEqual(1);
+      expect(received.length).toBeLessThan(5);
+    } finally {
+      unsub();
     }
   });
 
