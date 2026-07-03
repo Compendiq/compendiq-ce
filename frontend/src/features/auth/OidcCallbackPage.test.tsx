@@ -107,7 +107,7 @@ describe('OidcCallbackPage', () => {
     });
     // ...but the one-time credential must be gone from the URL/history.
     await waitFor(() => {
-      expect(screen.getByTestId('location-search')).toHaveTextContent('');
+      expect(screen.getByTestId('location-search').textContent).toBe('');
     });
     expect(screen.getByTestId('location-search').textContent).not.toContain('login_code');
   });
