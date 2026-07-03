@@ -209,10 +209,13 @@ test_compose_generation() {
   assert_contains "Has redis service" "$compose_content" "redis:8-alpine"
   assert_contains "Has postgres-data volume" "$compose_content" "postgres-data:"
   assert_contains "Has attachments-data volume" "$compose_content" "attachments-data:"
-  assert_contains "Has internal backend network" "$compose_content" "internal: true"
+  assert_contains "Has internal data-tier network" "$compose_content" "internal: true"
   assert_contains "Backend has healthcheck" "$compose_content" "health/ready"
   assert_contains "Postgres has healthcheck" "$compose_content" "pg_isready"
   assert_contains "Redis has healthcheck" "$compose_content" "redis-cli ping"
+  assert_contains "Has mcp-docs sidecar" "$compose_content" "ghcr.io/compendiq/compendiq-ce-mcp-docs:1.2.3"
+  assert_contains "Has searxng sidecar" "$compose_content" "ghcr.io/compendiq/compendiq-ce-searxng:1.2.3"
+  assert_contains "Backend points at mcp-docs" "$compose_content" "MCP_DOCS_URL:"
 
   teardown
 }
