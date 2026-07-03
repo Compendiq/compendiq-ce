@@ -92,7 +92,18 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
     const genWebSources: WebSource[] = [];
     if (body.searchWeb) {
       const sq = body.searchQuery || sanitized.slice(0, 200);
-      genWebSources.push(...await fetchWebSources(sq, userId));
+      const { sources: fetchedSources, injectionWarnings } = await fetchWebSources(sq, userId);
+      genWebSources.push(...fetchedSources);
+      // One aggregated event per request (#835) — covers every offending web
+      // source so audit volume stays bounded. logAuditEvent never throws.
+      if (injectionWarnings.length > 0) {
+        await logAuditEvent(userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, {
+          warnings: injectionWarnings.flatMap((w) => w.warnings),
+          route: '/llm/generate',
+          field: 'webSearch',
+          urls: injectionWarnings.map((w) => w.url),
+        }, request);
+      }
     }
 
     if (genWebSources.length > 0) {

@@ -78,7 +78,18 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
     const webSources: WebSource[] = [];
     if (body.searchWeb) {
       const sq = body.searchQuery || sanitizedInstruction?.slice(0, 200) || `improve ${type} technical documentation`;
-      webSources.push(...await fetchWebSources(sq, userId));
+      const { sources: fetchedSources, injectionWarnings } = await fetchWebSources(sq, userId);
+      webSources.push(...fetchedSources);
+      // One aggregated event per request (#835) — covers every offending web
+      // source so audit volume stays bounded. logAuditEvent never throws.
+      if (injectionWarnings.length > 0) {
+        await logAuditEvent(userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, {
+          warnings: injectionWarnings.flatMap((w) => w.warnings),
+          route: '/llm/improve',
+          field: 'webSearch',
+          urls: injectionWarnings.map((w) => w.url),
+        }, request);
+      }
     }
 
     let improveContent = sanitized;
