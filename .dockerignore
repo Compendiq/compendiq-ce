@@ -5,6 +5,12 @@ build
 .env
 .env.local
 .env.*.local
+# Recursive so nested secret files (e.g. docker/.env) are excluded from every
+# build context, not just the repo root. Keep the committed .env.example.
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example
 .git
 .vscode
 .idea

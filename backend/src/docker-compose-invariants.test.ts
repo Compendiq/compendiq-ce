@@ -26,7 +26,14 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 const composeProd = readFileSync(join(repoRoot, 'docker', 'docker-compose.yml'), 'utf8');
 const composeDev = readFileSync(join(repoRoot, 'docker', 'docker-compose.dev.yml'), 'utf8');
+const composeTest = readFileSync(join(repoRoot, 'docker', 'docker-compose.test.yml'), 'utf8');
 const installSh = readFileSync(join(repoRoot, 'scripts', 'install.sh'), 'utf8');
+const dockerignore = readFileSync(join(repoRoot, '.dockerignore'), 'utf8');
+const envExample = readFileSync(join(repoRoot, '.env.example'), 'utf8');
+const prCheckWorkflow = readFileSync(
+  join(repoRoot, '.github', 'workflows', 'pr-check.yml'),
+  'utf8',
+);
 
 /**
  * Extract a top-level service block (2-space indented key under `services:`)
@@ -124,5 +131,59 @@ describe('scripts/install.sh invariants', () => {
   it('generates a Redis config with noeviction (BullMQ requirement), not allkeys-lru', () => {
     expect(installSh).toContain('--maxmemory-policy noeviction');
     expect(installSh).not.toContain('allkeys-lru');
+  });
+
+  it('generates the mcp-docs and searxng sidecars so MCP web-docs works out of the box', () => {
+    // The canonical docker/docker-compose.yml ships both sidecars; the
+    // installer compose must not drift or MCP_DOCS_URL points at a host that
+    // does not exist in the generated deployment.
+    expect(installSh).toContain('ghcr.io/compendiq/compendiq-ce-mcp-docs:');
+    expect(installSh).toContain('ghcr.io/compendiq/compendiq-ce-searxng:');
+  });
+
+  it('points the backend at the mcp-docs sidecar', () => {
+    expect(installSh).toContain('MCP_DOCS_URL:');
+  });
+});
+
+describe('docker/docker-compose.test.yml security invariants', () => {
+  it('publishes the test Postgres on loopback only (127.0.0.1), never 0.0.0.0', () => {
+    const pg = extractServiceBlock(composeTest, 'postgres-test');
+    const hostIps = [...pg.matchAll(/host_ip:\s*(\S+)/g)].map((m) => m[1]);
+    expect(hostIps.length).toBeGreaterThanOrEqual(1);
+    for (const ip of hostIps) {
+      expect(ip).toBe('127.0.0.1');
+    }
+    // No short-form "<hostPort>:5432" publish, which binds all interfaces.
+    expect(pg).not.toMatch(/["']?\d+:5432["']?/);
+  });
+});
+
+describe('.dockerignore excludes nested env secrets from build contexts', () => {
+  it('ignores .env at any depth (e.g. docker/.env) via recursive patterns', () => {
+    const patterns = dockerignore.split('\n').map((line) => line.trim());
+    expect(patterns).toContain('**/.env');
+    expect(patterns).toContain('**/.env.*');
+  });
+});
+
+describe('.env.example stays authoritative for env vars the backend reads', () => {
+  it.each([
+    'SEARXNG_URL',
+    'REEMBED_WAIT_LOCKS_MS',
+    'RETENTION_ADMIN_ACCESS_DENIED_DAYS',
+    'RETENTION_PENDING_SYNC_VERSIONS_DAYS',
+  ])('documents %s', (varName) => {
+    expect(envExample).toContain(varName);
+  });
+
+  it('does not document EMBEDDING_CONCURRENCY, which no code reads', () => {
+    expect(envExample).not.toContain('EMBEDDING_CONCURRENCY');
+  });
+});
+
+describe('.github/workflows/pr-check.yml runs validation for every author', () => {
+  it('does not skip typecheck/lint/test/hoist checks for Dependabot PRs', () => {
+    expect(prCheckWorkflow).not.toContain('dependabot[bot]');
   });
 });
