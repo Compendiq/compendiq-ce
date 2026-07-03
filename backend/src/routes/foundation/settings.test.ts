@@ -76,12 +76,14 @@ vi.mock('../../domains/confluence/services/sync-service.js', () => ({
 // Spy on ssrf-guard functions to verify allowlist management
 const mockAddAllowedBaseUrl = vi.fn();
 const mockRemoveAllowedBaseUrl = vi.fn();
-const mockValidateUrl = vi.fn();
+// #819: the probe now validates NON-MUTATINGLY via validateUrlSyntaxAndProtocol
+// instead of round-tripping the process-global allowlist with validateUrl.
+const mockValidateUrlSyntaxAndProtocol = vi.fn();
 const mockResolveConfluenceUrl = vi.fn().mockImplementation((url: string) => url);
 vi.mock('../../core/utils/ssrf-guard.js', () => ({
   addAllowedBaseUrl: (...args: unknown[]) => mockAddAllowedBaseUrl(...args),
   removeAllowedBaseUrl: (...args: unknown[]) => mockRemoveAllowedBaseUrl(...args),
-  validateUrl: (...args: unknown[]) => mockValidateUrl(...args),
+  validateUrlSyntaxAndProtocol: (...args: unknown[]) => mockValidateUrlSyntaxAndProtocol(...args),
   resolveConfluenceUrl: (...args: unknown[]) => mockResolveConfluenceUrl(...args),
 }));
 
@@ -162,7 +164,9 @@ describe('Settings routes – test-confluence', () => {
     );
   });
 
-  it('should return failure with HTTP status on non-2xx response', async () => {
+  it('should return a generic failure message on non-2xx response (#819 no oracle)', async () => {
+    // #819: the raw HTTP status must NOT be reflected — it would turn the probe
+    // into an internal port/host scanner (CWE-918).
     mockUndiciRequest.mockResolvedValue({
       statusCode: 401,
       body: { dump: vi.fn().mockResolvedValue(undefined) },
@@ -177,10 +181,13 @@ describe('Settings routes – test-confluence', () => {
     expect(response.statusCode).toBe(200);
     const body = JSON.parse(response.body);
     expect(body.success).toBe(false);
-    expect(body.message).toBe('HTTP 401');
+    expect(body.message).toBe('Connection failed');
+    expect(body.message).not.toContain('401');
   });
 
-  it('should return detailed error message including cause', async () => {
+  it('should NOT reflect the raw error/cause on connection failure (#819 no oracle)', async () => {
+    // #819: reflecting err.message / err.cause leaks internal reachability
+    // (ECONNREFUSED vs cert error vs ENOTFOUND). Return a generic message.
     const fetchError = new TypeError('fetch failed');
     (fetchError as Error & { cause: Error }).cause = new Error('unable to verify the first certificate');
     mockUndiciRequest.mockRejectedValue(fetchError);
@@ -194,28 +201,15 @@ describe('Settings routes – test-confluence', () => {
     expect(response.statusCode).toBe(200);
     const body = JSON.parse(response.body);
     expect(body.success).toBe(false);
-    expect(body.message).toContain('fetch failed');
-    expect(body.message).toContain('unable to verify the first certificate');
+    expect(body.message).toBe('Connection failed');
+    expect(body.message).not.toContain('fetch failed');
+    expect(body.message).not.toContain('certificate');
   });
 
-  it('should return error message without duplicate when cause matches message', async () => {
-    mockUndiciRequest.mockRejectedValue(new Error('Connection refused'));
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/settings/test-confluence',
-      payload: { url: 'https://confluence.example.com', pat: 'test-pat' },
-    });
-
-    expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.body);
-    expect(body.success).toBe(false);
-    expect(body.message).toBe('Connection refused');
-  });
-
-  it('should allow private network URLs for Confluence (SSRF allowlisted per #480)', async () => {
-    // Private-network Confluence URLs are now allowlisted by the test-confluence
-    // route before validation, so the SSRF check passes and the request proceeds.
+  it('should allow private network URLs for Confluence (#480 on-prem, non-mutating per #819)', async () => {
+    // Private-network Confluence URLs still pass because
+    // validateUrlSyntaxAndProtocol does not block private IPs — only non-HTTP(S)
+    // protocols. Crucially the probe must NOT allowlist the origin (#819).
     mockUndiciRequest.mockResolvedValue({
       statusCode: 200,
       body: { dump: vi.fn().mockResolvedValue(undefined) },
@@ -231,10 +225,12 @@ describe('Settings routes – test-confluence', () => {
     const body = JSON.parse(response.body);
     expect(body.success).toBe(true);
     expect(mockUndiciRequest).toHaveBeenCalled();
+    expect(mockValidateUrlSyntaxAndProtocol).toHaveBeenCalledWith('https://192.168.1.1');
+    expect(mockAddAllowedBaseUrl).not.toHaveBeenCalled();
   });
 
   it('should still block non-HTTP protocols even for Confluence URLs', async () => {
-    mockValidateUrl.mockImplementationOnce(() => {
+    mockValidateUrlSyntaxAndProtocol.mockImplementationOnce(() => {
       throw new Error('SSRF blocked');
     });
 
@@ -249,11 +245,12 @@ describe('Settings routes – test-confluence', () => {
     expect(body.success).toBe(false);
     expect(body.message).toContain('URL blocked');
     expect(mockUndiciRequest).not.toHaveBeenCalled();
-    // URL should be removed from allowlist after SSRF validation failure (#481)
-    expect(mockRemoveAllowedBaseUrl).toHaveBeenCalledWith('ftp://192.168.1.1');
+    // #819: the probe never touches the global allowlist — nothing to remove.
+    expect(mockAddAllowedBaseUrl).not.toHaveBeenCalled();
+    expect(mockRemoveAllowedBaseUrl).not.toHaveBeenCalled();
   });
 
-  it('should remove URL from SSRF allowlist on connection failure (#481)', async () => {
+  it('should NOT mutate the SSRF allowlist on connection failure (#819)', async () => {
     mockUndiciRequest.mockRejectedValue(new Error('Connection refused'));
 
     const response = await app.inject({
@@ -265,12 +262,12 @@ describe('Settings routes – test-confluence', () => {
     expect(response.statusCode).toBe(200);
     const body = JSON.parse(response.body);
     expect(body.success).toBe(false);
-    // URL was added before validation, then removed after failure
-    expect(mockAddAllowedBaseUrl).toHaveBeenCalledWith('https://confluence.example.com');
-    expect(mockRemoveAllowedBaseUrl).toHaveBeenCalledWith('https://confluence.example.com');
+    // The probe validates non-mutatingly, so it neither adds nor removes.
+    expect(mockAddAllowedBaseUrl).not.toHaveBeenCalled();
+    expect(mockRemoveAllowedBaseUrl).not.toHaveBeenCalled();
   });
 
-  it('should remove URL from SSRF allowlist on non-2xx response (#481)', async () => {
+  it('should NOT mutate the SSRF allowlist on non-2xx response (#819)', async () => {
     mockUndiciRequest.mockResolvedValue({
       statusCode: 401,
       body: { dump: vi.fn().mockResolvedValue(undefined) },
@@ -285,10 +282,16 @@ describe('Settings routes – test-confluence', () => {
     expect(response.statusCode).toBe(200);
     const body = JSON.parse(response.body);
     expect(body.success).toBe(false);
-    expect(mockRemoveAllowedBaseUrl).toHaveBeenCalledWith('https://confluence.example.com');
+    expect(mockAddAllowedBaseUrl).not.toHaveBeenCalled();
+    expect(mockRemoveAllowedBaseUrl).not.toHaveBeenCalled();
   });
 
-  it('should keep URL in SSRF allowlist on successful connection (#481)', async () => {
+  it('should NOT poison the SSRF allowlist on a successful probe (#819)', async () => {
+    // The core of #819: a 2xx probe against an internal host previously left
+    // that origin allowlisted in-memory AND broadcast it cluster-wide, weakening
+    // the SSRF guard for every other fetch path until restart. The probe must
+    // never add the origin to the allowlist — that is persisted solely by
+    // PUT /settings when the URL is saved.
     mockUndiciRequest.mockResolvedValue({
       statusCode: 200,
       body: { dump: vi.fn().mockResolvedValue(undefined) },
@@ -303,27 +306,8 @@ describe('Settings routes – test-confluence', () => {
     expect(response.statusCode).toBe(200);
     const body = JSON.parse(response.body);
     expect(body.success).toBe(true);
-    // URL should have been added but NOT removed
-    expect(mockAddAllowedBaseUrl).toHaveBeenCalledWith('https://confluence.example.com');
+    expect(mockAddAllowedBaseUrl).not.toHaveBeenCalled();
     expect(mockRemoveAllowedBaseUrl).not.toHaveBeenCalled();
-  });
-
-  it('should still block non-HTTP protocols even for Confluence URLs (SSRF allowlist flow)', async () => {
-    mockValidateUrl.mockImplementationOnce(() => {
-      throw new Error('SSRF blocked');
-    });
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/settings/test-confluence',
-      payload: { url: 'ftp://192.168.1.1', pat: 'test-pat' },
-    });
-
-    expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.body);
-    expect(body.success).toBe(false);
-    expect(body.message).toContain('URL blocked');
-    expect(mockUndiciRequest).not.toHaveBeenCalled();
   });
 
   it('should reject invalid payload (missing url)', async () => {
