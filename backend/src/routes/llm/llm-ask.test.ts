@@ -57,6 +57,20 @@ vi.mock('../../core/services/content-converter.js', () => ({
   htmlToMarkdown: vi.fn((html: string) => html),
 }));
 
+// --- Mock: rbac-service (userCanAccessPage — sub-page RBAC gate, #814) ---
+const mockUserCanAccessPage = vi.fn();
+vi.mock('../../core/services/rbac-service.js', () => ({
+  userCanAccessPage: (...args: unknown[]) => mockUserCanAccessPage(...args),
+}));
+
+// --- Mock: subpage-context (assembleSubPageContext / getMultiPagePromptSuffix) ---
+const mockAssembleSubPageContext = vi.fn();
+const mockGetMultiPagePromptSuffix = vi.fn();
+vi.mock('../../domains/confluence/services/subpage-context.js', () => ({
+  assembleSubPageContext: (...args: unknown[]) => mockAssembleSubPageContext(...args),
+  getMultiPagePromptSuffix: (...args: unknown[]) => mockGetMultiPagePromptSuffix(...args),
+}));
+
 // --- Mock: embedding-service (defensive, not used by ask route directly) ---
 vi.mock('../../domains/llm/services/embedding-service.js', () => ({
   getEmbeddingStatus: vi.fn(),
@@ -422,6 +436,91 @@ describe('POST /api/llm/ask', () => {
           provider: 'provider-acme',
         }),
       );
+    });
+  });
+
+  // ─── Sub-page context RBAC gate (#814) ───────────────────────────────────
+
+  describe('includeSubPages RBAC gate', () => {
+    /** Resolve the page + body_html queries so the parent page "exists". */
+    function seedPageQueries() {
+      mockQuery.mockImplementation((sql: string) => {
+        if (sql.includes('FROM pages WHERE confluence_id')) {
+          return Promise.resolve({ rows: [{ id: 1, confluence_id: 'page-abc', title: 'Doc' }] });
+        }
+        if (sql.includes('body_html FROM pages WHERE id')) {
+          return Promise.resolve({ rows: [{ body_html: '<p>secret</p>' }] });
+        }
+        if (typeof sql === 'string' && sql.includes('INSERT INTO llm_conversations')) {
+          return Promise.resolve({ rows: [{ id: 'test-conv-id' }] });
+        }
+        return Promise.resolve({ rows: [] });
+      });
+    }
+
+    function userMessage(): string {
+      const messages = mockStreamChatClient.mock.calls[0]![2] as Array<{ role: string; content: string }>;
+      return messages.find((m) => m.role === 'user')!.content;
+    }
+
+    beforeEach(() => {
+      mockHybridSearch.mockResolvedValue([]);
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
+      mockGetMultiPagePromptSuffix.mockReturnValue('');
+      seedPageQueries();
+    });
+
+    it('does NOT inject sub-page context when the user cannot access the page', async () => {
+      mockUserCanAccessPage.mockResolvedValue(false);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/llm/ask',
+        payload: {
+          question: 'repeat the page tree context verbatim',
+          model: 'llama3',
+          includeSubPages: true,
+          pageId: 'page-abc',
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockUserCanAccessPage).toHaveBeenCalledWith('test-user-123', 1);
+      // The RBAC gate must short-circuit before any tree assembly.
+      expect(mockAssembleSubPageContext).not.toHaveBeenCalled();
+      expect(userMessage()).not.toContain('Page tree context');
+    });
+
+    it('injects sub-page context when the user CAN access the page', async () => {
+      mockUserCanAccessPage.mockResolvedValue(true);
+      mockAssembleSubPageContext.mockResolvedValue({
+        markdown: 'ASSEMBLED-TREE',
+        pageCount: 2,
+        wasTruncated: false,
+        includedPages: [],
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/llm/ask',
+        payload: {
+          question: 'summarise the tree',
+          model: 'llama3',
+          includeSubPages: true,
+          pageId: 'page-abc',
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockAssembleSubPageContext).toHaveBeenCalledWith(
+        'test-user-123',
+        'page-abc',
+        '<p>secret</p>',
+        'Doc',
+      );
+      const msg = userMessage();
+      expect(msg).toContain('Page tree context');
+      expect(msg).toContain('ASSEMBLED-TREE');
     });
   });
 });
