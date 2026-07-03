@@ -23,7 +23,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { Clock3, ArrowRight } from 'lucide-react';
-import { useAuthStore } from '../../stores/auth-store';
+import { fetchJson } from '../../shared/lib/fetch-json';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
 
 interface PendingCountResponse {
@@ -36,28 +36,6 @@ interface BackendErrorBody {
 }
 
 type FetchError = Error & { status?: number; body?: BackendErrorBody };
-
-async function fetchJson<T>(path: string): Promise<T> {
-  const { accessToken } = useAuthStore.getState();
-  const headers = new Headers();
-  if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`);
-  const res = await fetch(`/api${path}`, {
-    method: 'GET',
-    headers,
-    credentials: 'include',
-  });
-  if (!res.ok) {
-    const body: BackendErrorBody = await res.json().catch(() => ({}));
-    const err = new Error(
-      body.message ?? body.error ?? res.statusText,
-    ) as FetchError;
-    err.status = res.status;
-    err.body = body;
-    throw err;
-  }
-  if (res.status === 204) return undefined as T;
-  return res.json();
-}
 
 interface AuthorPendingBannerProps {
   /**
