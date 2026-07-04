@@ -29,7 +29,6 @@ flowchart TB
         fSpaces["spaces/<br/>settings · new"]
         fAI["ai/<br/>AiAssistantPage<br/>(ask / improve / generate / summarize)"]
         fSearch["search/"]
-        fTempl["templates/"]
         fAnalytics["analytics/"]
         fGraph["graph/"]
         fSettings["settings/<br/>user + admin"]
@@ -64,7 +63,7 @@ flowchart TB
     classDef sh fill:#fff4e5,stroke:#e5a23c
     classDef st fill:#f5eafd,stroke:#9b59b6
     class providers,rp,qp,ap,ep,tp prov
-    class features,fAuth,fDash,fPages,fSpaces,fAI,fSearch,fKR,fTempl,fAnalytics,fGraph,fSettings,fAdmin feat
+    class features,fAuth,fDash,fPages,fSpaces,fAI,fSearch,fAnalytics,fGraph,fSettings,fAdmin feat
     class shared,sEnt,sComp,sHooks,sLib sh
     class stores,zAuth,zTheme,zUI,zAV,zCmd,zKb st
 ```
