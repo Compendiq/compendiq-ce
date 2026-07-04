@@ -11,6 +11,7 @@ import {
   Plus,
   Globe,
   HardDrive,
+  Settings,
 } from 'lucide-react';
 import { m, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { ShortcutHint } from '../ShortcutHint';
@@ -526,6 +527,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
         <div ref={spaceDropdownRef} className="relative">
           <button
             onClick={() => setSpaceDropdownOpen(!spaceDropdownOpen)}
+            data-testid="space-selector-toggle"
             className="flex w-full items-center justify-between rounded-lg bg-foreground/5 px-2.5 py-1.5 text-xs text-foreground hover:bg-foreground/8 transition-colors"
           >
             <span className="flex items-center gap-1.5 truncate">
@@ -614,6 +616,21 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
                     </button>
                   ))}
                 </>
+              )}
+
+              {/* Manage the selected local space (settings page is local-only) */}
+              {isLocalSpace && treeSidebarSpaceKey && (
+                <button
+                  onClick={() => {
+                    setSpaceDropdownOpen(false);
+                    navigate(`/spaces/${treeSidebarSpaceKey}/settings`);
+                  }}
+                  data-testid="space-settings-link"
+                  className="flex w-full items-center gap-1.5 border-t border-[var(--glass-sidebar-divider)] mt-1 pt-1 rounded-lg px-2.5 py-1.5 text-xs text-foreground hover:bg-[var(--glass-pill-hover)] transition-colors"
+                >
+                  <Settings size={10} />
+                  Space settings
+                </button>
               )}
 
               {/* Create new space link */}
