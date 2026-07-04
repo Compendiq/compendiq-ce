@@ -1,9 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { MemoryRouter } from 'react-router-dom';
-import { SettingsPage } from './SettingsPage';
+import { SyncTab } from './panels/SyncTab';
 
+// SyncTab is prop-less: it self-fetches the sync overview plus the quality /
+// summary worker status, so we render it directly and mock fetch at the
+// network boundary. The auth store is mocked as a module so we can flip
+// admin vs. non-admin (which gates the Force Rescan / Force Re-sync buttons).
 let authState = { user: { role: 'user' as string }, accessToken: 'test-token', setAuth: vi.fn(), clearAuth: vi.fn() };
 vi.mock('../../stores/auth-store', () => ({
   useAuthStore: Object.assign(
@@ -12,21 +15,11 @@ vi.mock('../../stores/auth-store', () => ({
   ),
 }));
 
-const mockSettings = {
-  confluenceUrl: 'https://confluence.example.com',
-  hasConfluencePat: true,
-  selectedSpaces: ['OPS'],
-  ollamaModel: 'qwen3.5',
-  llmProvider: 'ollama' as const,
-  openaiBaseUrl: null,
-  hasOpenaiApiKey: false,
-  openaiModel: null,
-  embeddingModel: 'bge-m3',
-  theme: 'glass-dark',
-  syncIntervalMin: 15,
-  confluenceConnected: true,
-  showSpaceHomeContent: true,
-};
+// Mutation success/error handlers call toast; mock it so the queued toasts
+// don't leak between tests and we don't need a mounted <Toaster>.
+vi.mock('sonner', () => ({
+  toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), message: vi.fn() },
+}));
 
 const mockOverview = {
   sync: {
@@ -89,13 +82,7 @@ function createWrapper() {
   });
 
   return function Wrapper({ children }: { children: React.ReactNode }) {
-    return (
-      <QueryClientProvider client={queryClient}>
-        <MemoryRouter>
-          {children}
-        </MemoryRouter>
-      </QueryClientProvider>
-    );
+    return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
   };
 }
 
@@ -125,12 +112,6 @@ describe('Settings SyncTab', () => {
 
       if (path.includes('/api/settings/sync-overview')) {
         return new Response(JSON.stringify(overview), {
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-
-      if (path.includes('/api/settings') && !path.includes('sync-overview') && !path.includes('test-confluence')) {
-        return new Response(JSON.stringify(mockSettings), {
           headers: { 'Content-Type': 'application/json' },
         });
       }
@@ -177,19 +158,9 @@ describe('Settings SyncTab', () => {
     });
   }
 
-  async function navigateToSyncTab() {
-    render(<SettingsPage />, { wrapper: createWrapper() });
-
-    await waitFor(() => {
-      expect(screen.getByTestId('tab-sync')).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByTestId('tab-sync'));
-  }
-
   it('shows sync metrics, per-space health, and missing files', async () => {
     mockFetchResponses();
-    await navigateToSyncTab();
+    render(<SyncTab />, { wrapper: createWrapper() });
 
     await waitFor(() => {
       expect(screen.getByTestId('sync-overview-status')).toHaveTextContent('Idle');
@@ -220,16 +191,16 @@ describe('Settings SyncTab', () => {
         issues: [],
       },
     });
-    await navigateToSyncTab();
+    render(<SyncTab />, { wrapper: createWrapper() });
 
     await waitFor(() => {
       expect(screen.getByTestId('sync-overview-empty')).toBeInTheDocument();
     });
   });
 
-  it('starts a manual sync from the sync tab', async () => {
+  it('starts a manual sync when Sync Now is clicked', async () => {
     mockFetchResponses();
-    await navigateToSyncTab();
+    render(<SyncTab />, { wrapper: createWrapper() });
 
     await waitFor(() => {
       expect(screen.getByTestId('sync-overview-sync-now')).toBeInTheDocument();
@@ -247,7 +218,7 @@ describe('Settings SyncTab', () => {
 
   it('renders quality analysis section with metric cards', async () => {
     mockFetchResponses();
-    await navigateToSyncTab();
+    render(<SyncTab />, { wrapper: createWrapper() });
 
     await waitFor(() => {
       expect(screen.getByTestId('quality-worker-section')).toBeInTheDocument();
@@ -263,7 +234,7 @@ describe('Settings SyncTab', () => {
 
   it('renders summary worker section with metric cards', async () => {
     mockFetchResponses();
-    await navigateToSyncTab();
+    render(<SyncTab />, { wrapper: createWrapper() });
 
     await waitFor(() => {
       expect(screen.getByTestId('summary-worker-section')).toBeInTheDocument();
@@ -281,7 +252,7 @@ describe('Settings SyncTab', () => {
       quality: { ...mockQualityStatus, isProcessing: true },
       summary: { ...mockSummaryStatus, isProcessing: true },
     });
-    await navigateToSyncTab();
+    render(<SyncTab />, { wrapper: createWrapper() });
 
     await waitFor(() => {
       expect(screen.getByTestId('quality-worker-status')).toHaveTextContent('Analyzing');
@@ -292,7 +263,7 @@ describe('Settings SyncTab', () => {
 
   it('hides Force Rescan buttons for non-admin users', async () => {
     mockFetchResponses();
-    await navigateToSyncTab();
+    render(<SyncTab />, { wrapper: createWrapper() });
 
     await waitFor(() => {
       expect(screen.getByTestId('quality-worker-section')).toBeInTheDocument();
@@ -305,7 +276,7 @@ describe('Settings SyncTab', () => {
   it('shows Force Rescan buttons for admin users', async () => {
     authState = { user: { role: 'admin' }, accessToken: 'test-token', setAuth: vi.fn(), clearAuth: vi.fn() };
     mockFetchResponses();
-    await navigateToSyncTab();
+    render(<SyncTab />, { wrapper: createWrapper() });
 
     await waitFor(() => {
       expect(screen.getByTestId('quality-force-rescan')).toBeInTheDocument();
@@ -326,7 +297,7 @@ describe('Settings SyncTab', () => {
     it('opens a dialog and only POSTs /pages/bulk/sync after confirming', async () => {
       authState = { user: { role: 'admin' }, accessToken: 'test-token', setAuth: vi.fn(), clearAuth: vi.fn() };
       mockFetchResponses();
-      await navigateToSyncTab();
+      render(<SyncTab />, { wrapper: createWrapper() });
 
       await waitFor(() => {
         expect(screen.getByTestId('sync-overview-force-resync-all')).toBeInTheDocument();
@@ -349,7 +320,7 @@ describe('Settings SyncTab', () => {
     it('cancelling does not start the re-sync', async () => {
       authState = { user: { role: 'admin' }, accessToken: 'test-token', setAuth: vi.fn(), clearAuth: vi.fn() };
       mockFetchResponses();
-      await navigateToSyncTab();
+      render(<SyncTab />, { wrapper: createWrapper() });
 
       await waitFor(() => {
         expect(screen.getByTestId('sync-overview-force-resync-all')).toBeInTheDocument();
