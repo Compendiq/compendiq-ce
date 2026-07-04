@@ -908,4 +908,34 @@ describe('SidebarTreeNode memoization', () => {
       expect(screen.getByText('4 pages in DEV')).toBeInTheDocument();
     });
   });
+
+  describe('space settings link', () => {
+    it('shows a Space settings action for a selected local space and navigates to its settings route', () => {
+      useUiStore.setState({ treeSidebarSpaceKey: 'NOTES' });
+      render(<SidebarTreeView />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByTestId('space-selector-toggle'));
+      const link = screen.getByTestId('space-settings-link');
+      expect(link).toBeInTheDocument();
+
+      fireEvent.click(link);
+      expect(mockNavigate).toHaveBeenCalledWith('/spaces/NOTES/settings');
+    });
+
+    it('does not show the Space settings action for a Confluence space (settings page is local-only)', () => {
+      useUiStore.setState({ treeSidebarSpaceKey: 'DEV' });
+      render(<SidebarTreeView />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByTestId('space-selector-toggle'));
+      expect(screen.queryByTestId('space-settings-link')).not.toBeInTheDocument();
+    });
+
+    it('does not show the Space settings action when All Spaces is selected', () => {
+      useUiStore.setState({ treeSidebarSpaceKey: undefined });
+      render(<SidebarTreeView />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByTestId('space-selector-toggle'));
+      expect(screen.queryByTestId('space-settings-link')).not.toBeInTheDocument();
+    });
+  });
 });
