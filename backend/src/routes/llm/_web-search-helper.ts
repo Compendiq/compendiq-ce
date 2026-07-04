@@ -17,7 +17,7 @@ export interface WebSource {
 }
 
 /** Sanitizer detections for one web source, aggregated across its fields (#835). */
-export interface WebInjectionWarning {
+interface WebInjectionWarning {
   url: string;
   warnings: string[];
 }

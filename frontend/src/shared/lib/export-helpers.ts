@@ -36,7 +36,7 @@ function triggerDownload(blob: Blob, filename: string): void {
  * caller; dashboards know their own KPIs better than the generic export
  * helper does.
  */
-export interface PdfKpi {
+interface PdfKpi {
   label: string;
   value: string | number;
   /** Optional trailing unit (%, ms, req/s). Renders next to `value`. */

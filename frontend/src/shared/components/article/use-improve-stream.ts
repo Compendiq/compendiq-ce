@@ -16,7 +16,7 @@ import type { ImprovementType } from '@compendiq/contracts';
  * ephemeral previews, not page-level improvements).
  */
 
-export type ImproveStreamStatus = 'idle' | 'streaming' | 'done' | 'error';
+type ImproveStreamStatus = 'idle' | 'streaming' | 'done' | 'error';
 
 /** SSE chunk shapes emitted by `/llm/improve` (see `streamSSE` on the backend). */
 interface ImproveChunk {

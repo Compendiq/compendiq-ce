@@ -11,7 +11,7 @@ export interface AttachmentImageSource {
   sourceSpaceKey: string | null;
 }
 
-export interface ExternalUrlImageSource {
+interface ExternalUrlImageSource {
   kind: 'external-url';
   url: string;
 }

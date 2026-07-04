@@ -7,7 +7,7 @@ import { ZoomIn, ZoomOut, Maximize, RefreshCw, Info, Layers, Grid3x3, Filter, Se
 import { cn } from '../../shared/lib/cn';
 import { useSearch } from '../../shared/hooks/use-standalone';
 import { useAuthStore } from '../../stores/auth-store';
-import { useGraphData, useLocalGraphData, useRefreshGraph, type LocalGraphFilters } from './graph-hooks';
+import { useGraphData, useLocalGraphData, useRefreshGraph, type LocalGraphFilters, type GraphMeta } from './graph-hooks';
 
 // ---------- Types ----------
 
@@ -719,7 +719,7 @@ function ArticlePickerLanding({ onPick, onShowFullGraph }: ArticlePickerLandingP
 // ---------- Empty-state branches (#358) ----------
 
 interface GraphEmptyStateProps {
-  meta: import('./graph-hooks').GraphMeta | undefined;
+  meta: GraphMeta | undefined;
 }
 
 /**

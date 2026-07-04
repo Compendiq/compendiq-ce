@@ -22,7 +22,17 @@ const config: KnipConfig = {
   ],
   workspaces: {
     'backend': {
-      entry: ['src/index.ts', 'src/app.ts'],
+      entry: [
+        'src/index.ts',
+        'src/app.ts',
+        // CE↔EE extension-point contracts: these files export types the EE
+        // overlay (a separate repo knip cannot see) implements against, so
+        // their exports read as "unused" from CE alone. Treat as public API.
+        'src/core/enterprise/types.ts',
+        'src/core/services/ai-review-hook.ts',
+        'src/core/services/pii-scan-hook.ts',
+        'src/core/services/webhook-emit-hook.ts',
+      ],
       project: ['src/**/*.ts'],
       ignore: ['src/**/*.test.ts', 'src/**/__fixtures__/**'],
       ignoreDependencies: [
@@ -33,11 +43,16 @@ const config: KnipConfig = {
       ],
     },
     'frontend': {
-      entry: ['src/main.tsx'],
+      entry: [
+        'src/main.tsx',
+        // CE↔EE extension-point contract consumed by the EE overlay repo.
+        'src/shared/enterprise/types.ts',
+      ],
       project: ['src/**/*.{ts,tsx}'],
       ignore: ['src/**/*.test.{ts,tsx}'],
       ignoreDependencies: [
         // Consumed via CSS @import in src/index.css (knip cannot trace CSS @imports)
+        '@fontsource-variable/ibm-plex-sans',
         '@fontsource-variable/hanken-grotesk',
         '@fontsource-variable/jetbrains-mono',
         '@fontsource-variable/newsreader',
