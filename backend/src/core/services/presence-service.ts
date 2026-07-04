@@ -78,7 +78,7 @@ const _listeners: Map<string, Set<PresenceListener>> = new Map();
  * O(V^2) Redis reads and SSE writes every heartbeat interval. Throttling caps
  * that to O(V) per window regardless of how many viewers heartbeat.
  */
-export const PUBLISH_THROTTLE_MS = 1000;
+const PUBLISH_THROTTLE_MS = 1000;
 
 // Per-page throttle state: the last time we published, and any pending
 // trailing publish. Cleared on teardown so timers never outlive the process.
