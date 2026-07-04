@@ -121,7 +121,7 @@ export interface AccessContext {
 }
 
 /**
- * Shared visibility predicate — same rules used today in SettingsPage, centralised
+ * Shared visibility predicate — same rules used by SettingsPanelRoute, centralised
  * so the layout and any future consumer (e.g. a search / command palette) agree.
  *
  * Checks are ordered for short-circuiting from cheapest/synchronous to potentially
