@@ -19,34 +19,6 @@ export function useTemplates(filters?: { scope?: string; category?: string }) {
   });
 }
 
-export function useTemplate(id: number) {
-  return useQuery({
-    queryKey: ['templates', id],
-    queryFn: () => apiFetch<Template>(`/templates/${id}`),
-    enabled: id > 0,
-  });
-}
-
-export function useCreateTemplate() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (data: {
-      title: string;
-      bodyJson: string;
-      bodyHtml: string;
-      category?: string;
-      isGlobal?: boolean;
-    }) =>
-      apiFetch<Template>('/templates', {
-        method: 'POST',
-        body: JSON.stringify(data),
-      }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['templates'] });
-    },
-  });
-}
-
 export function useUseTemplate() {
   return useMutation({
     mutationFn: (templateId: number) =>
