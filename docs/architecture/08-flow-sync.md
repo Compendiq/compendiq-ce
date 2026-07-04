@@ -288,7 +288,6 @@ sequenceDiagram
         SV->>DB: DELETE FROM space_role_assignments WHERE space_key = ?
         SV->>DB: DELETE FROM oidc_group_role_mappings WHERE space_key = ?
         SV->>DB: UPDATE templates SET space_key = NULL WHERE space_key = ?
-        SV->>DB: UPDATE knowledge_requests SET space_key = NULL WHERE space_key = ?
         SV->>DB: DELETE FROM spaces WHERE space_key = ?
         SV->>DB: COMMIT (ROLLBACK + re-throw on any error)
         SV-->>R: { pagesDeleted }
@@ -315,9 +314,9 @@ Key properties:
   - `oidc_group_role_mappings` (OIDC group→space RBAC mapping, `space_key` nullable) —
     **DELETE** rows whose `space_key` matches; rows with `space_key IS NULL` are global
     and left untouched.
-  - `templates` and `knowledge_requests` (may hold **user-authored** content, `space_key`
-    nullable per migrations 032/037) — **NULL the `space_key` (detach)** rather than
-    delete, so unsyncing a space never silently destroys user work. The artifact is
+  - `templates` (may hold **user-authored** content, `space_key` nullable per
+    migration 032) — **NULL the `space_key` (detach)** rather than delete, so
+    unsyncing a space never silently destroys user work. The artifact is
     retained, just unscoped.
 - **Attachment cleanup** — `cleanPageAttachments` is best-effort and runs per page
   **before/outside** the DB transaction; filesystem deletes can't be rolled back, so a

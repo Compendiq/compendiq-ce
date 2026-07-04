@@ -29,7 +29,6 @@ flowchart TB
         fSpaces["spaces/<br/>settings · new"]
         fAI["ai/<br/>AiAssistantPage<br/>(ask / improve / generate / summarize)"]
         fSearch["search/"]
-        fKR["knowledge-requests/"]
         fTempl["templates/"]
         fAnalytics["analytics/"]
         fGraph["graph/"]
