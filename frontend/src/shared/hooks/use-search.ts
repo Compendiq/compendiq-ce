@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '../lib/api';
 
-export interface SearchResultItem {
+interface SearchResultItem {
   id: string | number;
   title: string;
   spaceKey: string | null;

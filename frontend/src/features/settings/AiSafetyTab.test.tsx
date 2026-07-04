@@ -193,8 +193,8 @@ describe('AiSafetyTab — Swiss spelling persists across save → unmount → re
       ).toBe(true);
     });
 
-    // 2. Navigate away (tab switch unmounts the component — SettingsPage
-    //    renders tabs conditionally).
+    // 2. Navigate away (tab switch unmounts the component — the settings
+    //    panel router renders tabs conditionally).
     first.unmount();
 
     // 3. Navigate back: remount against the SAME query client.

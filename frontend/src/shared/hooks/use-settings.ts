@@ -12,8 +12,8 @@ export function useSettings() {
 }
 
 /**
- * Shared `PUT /settings` mutation used by both settings UIs
- * (`SettingsPage` tabs and the `SettingsPanelRoute` registry).
+ * Shared `PUT /settings` mutation used by the settings panels
+ * (the `SettingsPanelRoute` registry).
  *
  * Saving Confluence credentials also invalidates the cached page-versions
  * queries: their `backfillStatus: 'skipped_no_credentials'` hint is cached

@@ -1,154 +1,48 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { MemoryRouter } from 'react-router-dom';
-import { SettingsPage } from './SettingsPage';
+import { render, screen, fireEvent } from '@testing-library/react';
+import { ThemeTab } from './ThemeTab';
 import { useThemeStore } from '../../stores/theme-store';
 
-// Mock auth store
-const authState = { user: { role: 'user' }, accessToken: 'test-token', setAuth: vi.fn(), clearAuth: vi.fn() };
-vi.mock('../../stores/auth-store', () => ({
-  useAuthStore: Object.assign(
-    (selector: (state: typeof authState) => unknown) => selector(authState),
-    { getState: () => authState },
-  ),
-}));
-
-const mockSettings = {
-  confluenceUrl: 'https://confluence.example.com',
-  hasConfluencePat: true,
-  selectedSpaces: [],
-  ollamaModel: 'qwen3.5',
-  embeddingModel: 'bge-m3',
-  theme: 'graphite-honey',
-  syncIntervalMin: 15,
-  confluenceConnected: true,
-};
-
-function createWrapper() {
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
-  return function Wrapper({ children }: { children: React.ReactNode }) {
-    return (
-      <QueryClientProvider client={queryClient}>
-        <MemoryRouter>
-          {children}
-        </MemoryRouter>
-      </QueryClientProvider>
-    );
-  };
-}
+// ThemeTab is a pure, self-contained panel: it reads/writes the Zustand theme
+// store and calls the `onSave` prop with `{ theme: id }` when a card is
+// clicked. It needs no router, query client, or fetch — so we render it
+// directly and pass an onSave spy.
 
 describe('ThemeTab', () => {
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  let onSave: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     useThemeStore.setState({ theme: 'graphite-honey' });
-    fetchSpy = vi.spyOn(globalThis, 'fetch');
-    fetchSpy.mockImplementation(async (url: string | URL | Request) => {
-      const path = typeof url === 'string' ? url : url instanceof URL ? url.toString() : url.url;
-
-      if (path.includes('/api/settings') && !path.includes('test-confluence')) {
-        return new Response(JSON.stringify(mockSettings), {
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-
-      return new Response('{}', {
-        headers: { 'Content-Type': 'application/json' },
-      });
-    });
+    onSave = vi.fn();
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  async function navigateToThemeTab() {
-    await waitFor(() => {
-      expect(screen.queryByText('Loading settings...')).not.toBeInTheDocument();
-    });
-    fireEvent.click(screen.getByTestId('tab-theme'));
-  }
-
-  it('displays the Theme tab button', async () => {
-    render(<SettingsPage />, { wrapper: createWrapper() });
-    expect(screen.getByTestId('tab-theme')).toBeInTheDocument();
-    expect(screen.getByTestId('tab-theme')).toHaveTextContent('Theme');
-  });
-
-  it('does not render the Account tab button', () => {
-    render(<SettingsPage />, { wrapper: createWrapper() });
-    expect(screen.queryByTestId('tab-account')).not.toBeInTheDocument();
-  });
-
-  it('renders theme category sections', async () => {
-    render(<SettingsPage />, { wrapper: createWrapper() });
-    await navigateToThemeTab();
+  it('renders a section for each theme category', () => {
+    render(<ThemeTab onSave={onSave} />);
 
     expect(screen.getByTestId('theme-category-dark')).toBeInTheDocument();
     expect(screen.getByTestId('theme-category-light')).toBeInTheDocument();
   });
 
-  it('renders both theme options across categories', async () => {
-    render(<SettingsPage />, { wrapper: createWrapper() });
-    await navigateToThemeTab();
+  it('renders the category header labels', () => {
+    render(<ThemeTab onSave={onSave} />);
+
+    expect(screen.getByText('Dark')).toBeInTheDocument();
+    expect(screen.getByText('Light')).toBeInTheDocument();
+  });
+
+  it('renders every theme option across categories', () => {
+    render(<ThemeTab onSave={onSave} />);
 
     expect(screen.getByTestId('theme-graphite-honey')).toBeInTheDocument();
     expect(screen.getByTestId('theme-honey-linen')).toBeInTheDocument();
   });
 
-  it('shows active badge on the current theme', async () => {
-    render(<SettingsPage />, { wrapper: createWrapper() });
-    await navigateToThemeTab();
-
-    const activeBadge = screen.getByTestId('theme-active-badge');
-    expect(activeBadge).toBeInTheDocument();
-    expect(activeBadge).toHaveTextContent('Active');
-
-    const emberDuskCard = screen.getByTestId('theme-graphite-honey');
-    expect(emberDuskCard.querySelector('[data-testid="theme-active-badge"]')).toBeInTheDocument();
-  });
-
-  it('switches theme when clicking a different theme card', async () => {
-    render(<SettingsPage />, { wrapper: createWrapper() });
-    await navigateToThemeTab();
-
-    fireEvent.click(screen.getByTestId('theme-honey-linen'));
-
-    expect(useThemeStore.getState().theme).toBe('honey-linen');
-  });
-
-  it('switches to honey-linen (light theme)', async () => {
-    render(<SettingsPage />, { wrapper: createWrapper() });
-    await navigateToThemeTab();
-
-    fireEvent.click(screen.getByTestId('theme-honey-linen'));
-
-    expect(useThemeStore.getState().theme).toBe('honey-linen');
-  });
-
-  it('calls onSave with the selected theme id', async () => {
-    render(<SettingsPage />, { wrapper: createWrapper() });
-    await navigateToThemeTab();
-
-    fireEvent.click(screen.getByTestId('theme-honey-linen'));
-
-    await waitFor(() => {
-      const putCalls = fetchSpy.mock.calls.filter((call: unknown[]) => {
-        const opts = call[1] as RequestInit | undefined;
-        return opts?.method === 'PUT';
-      });
-      expect(putCalls.length).toBeGreaterThan(0);
-      const body = JSON.parse((putCalls[0][1] as RequestInit).body as string);
-      expect(body).toEqual({ theme: 'honey-linen' });
-    });
-  });
-
-  it('displays theme labels and descriptions', async () => {
-    render(<SettingsPage />, { wrapper: createWrapper() });
-    await navigateToThemeTab();
+  it('displays theme labels and descriptions', () => {
+    render(<ThemeTab onSave={onSave} />);
 
     expect(screen.getByText('Graphite Honey')).toBeInTheDocument();
     expect(screen.getByText('Honey Linen')).toBeInTheDocument();
@@ -160,11 +54,49 @@ describe('ThemeTab', () => {
     ).toBeInTheDocument();
   });
 
-  it('displays category headers', async () => {
-    render(<SettingsPage />, { wrapper: createWrapper() });
-    await navigateToThemeTab();
+  it('marks the current theme active with a badge and aria-pressed', () => {
+    render(<ThemeTab onSave={onSave} />);
 
-    expect(screen.getByText('Dark')).toBeInTheDocument();
-    expect(screen.getByText('Light')).toBeInTheDocument();
+    const activeBadge = screen.getByTestId('theme-active-badge');
+    expect(activeBadge).toBeInTheDocument();
+    expect(activeBadge).toHaveTextContent('Active');
+
+    const activeCard = screen.getByTestId('theme-graphite-honey');
+    expect(activeCard).toHaveAttribute('aria-pressed', 'true');
+    expect(
+      activeCard.querySelector('[data-testid="theme-active-badge"]'),
+    ).toBeInTheDocument();
+  });
+
+  it('updates the theme store when a different theme card is clicked', () => {
+    render(<ThemeTab onSave={onSave} />);
+
+    fireEvent.click(screen.getByTestId('theme-honey-linen'));
+
+    expect(useThemeStore.getState().theme).toBe('honey-linen');
+  });
+
+  it('calls onSave with the selected theme id', () => {
+    render(<ThemeTab onSave={onSave} />);
+
+    fireEvent.click(screen.getByTestId('theme-honey-linen'));
+
+    expect(onSave).toHaveBeenCalledWith({ theme: 'honey-linen' });
+  });
+
+  it('moves the active badge to the newly selected theme', () => {
+    render(<ThemeTab onSave={onSave} />);
+
+    fireEvent.click(screen.getByTestId('theme-honey-linen'));
+
+    const selectedCard = screen.getByTestId('theme-honey-linen');
+    expect(selectedCard).toHaveAttribute('aria-pressed', 'true');
+    expect(
+      selectedCard.querySelector('[data-testid="theme-active-badge"]'),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('theme-graphite-honey')).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
   });
 });

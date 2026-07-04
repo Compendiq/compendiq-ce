@@ -399,8 +399,8 @@ function ReportCard({
 export function ComplianceReportsTab() {
   const { data, isLoading, error, refetch } = useCatalogue();
 
-  // The enterprise feature-gate is also enforced by SettingsPage's
-  // tab list (`requiresFeature: 'compliance_reports'`). Defence-in-depth:
+  // The enterprise feature-gate is also enforced by the settings nav
+  // (`requiresFeature: 'compliance_reports'`). Defence-in-depth:
   // a 403 / 404 from the catalogue endpoint surfaces here so a direct
   // navigation in dev tooling doesn't render a misleading empty grid.
   if (error instanceof ApiError && (error.statusCode === 402 || error.statusCode === 403 || error.statusCode === 404)) {
