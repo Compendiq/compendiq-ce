@@ -40,7 +40,6 @@ Access tokens are obtained via the login endpoint and have a configurable expiry
 | `GET/POST /api/comments/*` | Page comments |
 | `GET /api/analytics/*` | Content analytics and search analytics |
 | `GET/POST /api/verification/*` | Page verification/review workflow |
-| `GET/POST /api/knowledge-requests/*` | Knowledge gap requests |
 | `GET/POST /api/notifications/*` | User notifications |
 | `GET/POST /api/admin/*` | Admin operations (key rotation, audit log, LLM settings, OIDC, RBAC) |
 

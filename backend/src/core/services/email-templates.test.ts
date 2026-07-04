@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import {
   syncCompleted,
   syncFailed,
-  knowledgeRequestCreated,
   articleComment,
   licenseExpiry,
 } from './email-templates.js';
@@ -31,20 +30,6 @@ describe('email-templates', () => {
     expect(result.subject).toContain('failed');
     expect(result.subject).toContain('DEV');
     expect(result.html).toContain('Connection refused');
-  });
-
-  it('knowledgeRequestCreated generates valid HTML', () => {
-    const result = knowledgeRequestCreated({
-      assigneeName: 'Charlie',
-      requesterName: 'Diana',
-      title: 'API Documentation',
-      description: 'We need docs for the REST API',
-      requestUrl: 'https://app.compendiq.local/requests/1',
-    });
-    expect(result.subject).toContain('API Documentation');
-    expect(result.html).toContain('Charlie');
-    expect(result.html).toContain('Diana');
-    expect(result.html).toContain('View Request');
   });
 
   it('articleComment generates valid HTML', () => {

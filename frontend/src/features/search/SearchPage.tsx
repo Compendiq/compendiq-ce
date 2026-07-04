@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { m } from 'framer-motion';
 import {
   Search, FileText, ChevronLeft, ChevronRight,
-  Filter, X, SlidersHorizontal, Inbox, Loader2, AlertTriangle,
+  X, SlidersHorizontal, Inbox, Loader2, AlertTriangle,
 } from 'lucide-react';
 import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
@@ -493,14 +493,6 @@ export function SearchPage() {
           <p className="mt-1 text-sm text-muted-foreground">
             No pages match &ldquo;{activeQuery}&rdquo;
           </p>
-          <button
-            onClick={() => navigate(`/knowledge-requests?title=${encodeURIComponent(activeQuery)}`)}
-            className="mt-4 inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-            data-testid="request-content-cta"
-          >
-            <Filter size={14} />
-            Request this content
-          </button>
         </div>
       ) : (
         <div className="space-y-3">

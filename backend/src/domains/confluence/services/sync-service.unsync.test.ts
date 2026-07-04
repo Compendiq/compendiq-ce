@@ -68,18 +68,13 @@ async function seedSpace(spaceKey: string): Promise<{ pageId: number; templateId
     [`user-${spaceKey}`],
   );
   const userId = u.rows[0]!.id;
-  // User-authored artifacts referencing the space by plain space_key (nullable).
+  // User-authored artifact referencing the space by plain space_key (nullable).
   const t = await query<{ id: number }>(
     `INSERT INTO templates (title, body_json, body_html, created_by, space_key)
      VALUES ('T', '{}', '<p></p>', $1, $2) RETURNING id`,
     [userId, spaceKey],
   );
-  const kr = await query<{ id: number }>(
-    `INSERT INTO knowledge_requests (title, requested_by, space_key)
-     VALUES ('KR', $1, $2) RETURNING id`,
-    [userId, spaceKey],
-  );
-  return { pageId, templateId: t.rows[0]!.id, krId: kr.rows[0]!.id };
+  return { pageId, templateId: t.rows[0]!.id };
 }
 
 describe('unsyncSpace', () => {
@@ -200,14 +195,9 @@ describe('unsyncSpace', () => {
       `SELECT space_key FROM templates WHERE id=$1`, [target.templateId]);
     expect(tgtTemplate.rows).toHaveLength(1);
     expect(tgtTemplate.rows[0]!.space_key).toBeNull();
-    const tgtKr = await query<{ space_key: string | null }>(
-      `SELECT space_key FROM knowledge_requests WHERE id=$1`, [target.krId]);
-    expect(tgtKr.rows).toHaveLength(1);
-    expect(tgtKr.rows[0]!.space_key).toBeNull();
 
     // No row anywhere still points at the removed space_key.
     expect((await query(`SELECT 1 FROM templates WHERE space_key='ENG'`)).rows).toHaveLength(0);
-    expect((await query(`SELECT 1 FROM knowledge_requests WHERE space_key='ENG'`)).rows).toHaveLength(0);
 
     // ── Other space: completely untouched (no over-deletion) ──────────────
     expect((await query(`SELECT 1 FROM spaces WHERE space_key='OPS'`)).rows).toHaveLength(1);
@@ -219,9 +209,6 @@ describe('unsyncSpace', () => {
     const otherTemplate = await query<{ space_key: string | null }>(
       `SELECT space_key FROM templates WHERE id=$1`, [other.templateId]);
     expect(otherTemplate.rows[0]!.space_key).toBe('OPS');
-    const otherKr = await query<{ space_key: string | null }>(
-      `SELECT space_key FROM knowledge_requests WHERE id=$1`, [other.krId]);
-    expect(otherKr.rows[0]!.space_key).toBe('OPS');
   });
 
   it('rolls back every row delete atomically when a statement fails mid-transaction', async () => {
@@ -270,8 +257,6 @@ describe('unsyncSpace', () => {
     expect((await query(`SELECT 1 FROM oidc_group_role_mappings WHERE space_key='ENG'`)).rows).toHaveLength(1);
     expect((await query<{ space_key: string | null }>(
       `SELECT space_key FROM templates WHERE id=$1`, [target.templateId])).rows[0]!.space_key).toBe('ENG');
-    expect((await query<{ space_key: string | null }>(
-      `SELECT space_key FROM knowledge_requests WHERE id=$1`, [target.krId])).rows[0]!.space_key).toBe('ENG');
 
     // The other space is likewise untouched.
     expect((await query(`SELECT 1 FROM spaces WHERE space_key='OPS'`)).rows).toHaveLength(1);

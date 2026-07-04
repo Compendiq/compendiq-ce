@@ -1,0 +1,12 @@
+-- Migration 080: Remove the Knowledge Requests feature (#841)
+--
+-- The knowledge_requests feature (table + /api/knowledge-requests routes +
+-- frontend page, introduced by migration 037) has been removed: it was never
+-- fully wired (the assignee-notification email template was defined but never
+-- sent) and its only entry point was a search no-results CTA. Dropping the
+-- table completes the removal.
+--
+-- Idempotent. The table has no inbound foreign keys (fulfilled_by_page_id and
+-- the requested_by/assigned_to user refs are OUTBOUND, dropped with the table),
+-- so no dependent objects block the DROP.
+DROP TABLE IF EXISTS knowledge_requests;

@@ -284,7 +284,6 @@ Compendiq can send email notifications for key events. Configure SMTP in **Setti
 
 **Email types:**
 - Sync completed / failed
-- Knowledge request assigned
 - Article comment notification
 - License expiry warning (Enterprise)
 

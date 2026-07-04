@@ -14,14 +14,12 @@ erDiagram
     users ||--o{ notifications : "receives"
     users ||--o{ audit_log : "generates"
     users ||--o{ comments : "authors"
-    users ||--o{ knowledge_requests : "requests"
     users ||--o{ templates : "authors"
 
     pages ||--o{ page_versions : "versioned as"
     pages ||--o{ page_embeddings : "chunked into"
     pages ||--o{ comments : "annotated by"
     pages ||--o{ page_relationships : "related via"
-    pages ||--o{ knowledge_requests : "fulfils"
     pages ||--o{ local_attachments : "owns (standalone pages only)"
     pages ||--o{ spaces : "is custom home of (#352)"
 
@@ -140,17 +138,6 @@ erDiagram
         uuid source_user_id FK
         int source_page_id FK
         bool is_read
-    }
-
-    knowledge_requests {
-        bigint id PK
-        text title
-        text description
-        uuid requested_by FK
-        uuid assigned_to FK
-        text space_key
-        text status
-        int fulfilled_by_page_id FK
     }
 
     templates {

@@ -106,29 +106,6 @@ export function syncFailed(data: SyncFailedData): { subject: string; html: strin
   };
 }
 
-interface KnowledgeRequestData {
-  assigneeName: string;
-  requesterName: string;
-  title: string;
-  description: string;
-  requestUrl?: string;
-}
-
-export function knowledgeRequestCreated(data: KnowledgeRequestData): { subject: string; html: string } {
-  return {
-    subject: `New knowledge request: ${data.title}`,
-    html: wrap('Knowledge Request Assigned', `
-      <p>Hi ${escapeHtml(data.assigneeName)},</p>
-      <p><strong>${escapeHtml(data.requesterName)}</strong> has created a knowledge request and assigned it to you.</p>
-      <div style="padding:12px;background:#f0f9ff;border-radius:6px;border:1px solid #bae6fd;margin:16px 0;">
-        <strong>${escapeHtml(data.title)}</strong>
-        <p style="margin:8px 0 0;color:#475569;font-size:14px;">${escapeHtml(data.description)}</p>
-      </div>
-      ${data.requestUrl ? `<a href="${escapeHtml(data.requestUrl)}" style="${BUTTON}">View Request</a>` : ''}
-    `),
-  };
-}
-
 interface CommentData {
   authorName: string;
   recipientName: string;
