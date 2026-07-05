@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-07-05
+
+> Patch release: a deep review-fix sweep (epic #832) across authorization, prompt-injection surfaces, and backend/frontend correctness, followed by a dead-code purge (~3,000 net lines removed).
+
+### Security
+
+- RBAC enforcement closed where it was missing: sub-page RBAC + soft-delete filtering in `/llm/ask` (#814), `GET /api/spaces/:key/tree` gated by space RBAC (#817), analytics & health read endpoints closed against cross-user/cross-space leaks (#818).
+- `selectedSpaces` is validated against the caller's PAT, blocking editor self-grant (#815); SSRF allowlist poisoning + a response oracle in test-confluence fixed (#819).
+- Prompt-injection hardening: web-search titles/snippets and external doc titles sanitized before reaching the LLM (#820); sanitizer detections now emit `PROMPT_INJECTION_DETECTED` audit events and roll into attestation flags across generate/improve (#835, #839).
+- High-severity production advisories patched (undici, nodemailer, protobufjs, hono, dompurify); nodemailer hoisted to the root tree so production images resolve it (#831). `@opentelemetry/sdk-node` bumped to ^0.220.0 to clear Baggage advisories (#840, #843).
+- CI/infra hardening: action SHAs pinned, installer sidecars given egress, docker/CI config + installer/env drift fixed (#830).
+
+### Fixed
+
+- Backend correctness bundle: soft-delete filtering, re-queue gaps, retention NaN, presence scaling (#828); per-page Confluence sync failures isolated so one bad page no longer aborts the run (#822); `processDirtyPages` interlocked against the reembed-all system lock (#823); webhook response bodies streamed under a byte cap instead of buffered whole (#824); embedding HTTP error bodies surfaced and oversized pages skipped (#821).
+- Frontend: template gallery no longer crashes on the bare-array `/templates` response and "Use Template" inserts into the live TipTap editor (#816); 401 refresh-and-retry added to SSE and bare-fetch call sites (#826); dead nav, stale test-gate, infinite skeletons, and swallowed errors repaired (#827); create-provider modal remounts to clear stale form state (#825); modal a11y fixes and `login_code` stripped on OIDC error (#829); Space settings link added to the sidebar space dropdown (#848).
+
+### Removed
+
+- The **Knowledge Requests** feature (#841, #844) and a wave of dead code: four unreachable page components, the legacy monolithic `SettingsPage`, the dead template-management surface, and knip-reported dead exports (#846, #847, #849).
+
 ## [0.6.1] - 2026-06-15
 
 > Patch release: deep-review follow-ups, the Vite 8 build upgrade, and test/flake hardening.
