@@ -66,7 +66,7 @@ flowchart TB
 | mcp-docs  | MCP server (Node) | 3100 | `ghcr.io/compendiq/compendiq-ce-mcp-docs` |
 | searxng   | Python meta search | 8080 | `ghcr.io/compendiq/compendiq-ce-searxng` |
 
-Each Compendiq image carries three tag classes published by the GitHub Actions Docker workflow: `:latest` (refreshed on every push to `main` — recommended default for production), `:0.4.0` and `:0.4` (refreshed on every `v*` release tag — pin these for exact-version reproducibility), and `:dev` (refreshed on every push to `dev` — useful for staging / smoke environments). The shared `compendiq-ce-frontend` image is consumed by both Community and Enterprise editions; there is no separate `compendiq-ee-frontend` image.
+Each Compendiq image carries three tag classes published by the GitHub Actions Docker workflow: `:latest` (refreshed on every push to `main` — recommended default for production), `:X.Y.Z` and `:X.Y` (e.g. `:0.6.2` / `:0.6`; refreshed on every `v*` release tag — pin these for exact-version reproducibility), and `:dev` (refreshed on every push to `dev` — useful for staging / smoke environments). The shared `compendiq-ce-frontend` image is consumed by both Community and Enterprise editions; there is no separate `compendiq-ee-frontend` image.
 
 ## Background workers
 

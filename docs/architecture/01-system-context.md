@@ -35,8 +35,10 @@ C4Context
 
 - **Confluence PATs** are stored per-user, AES-256-GCM encrypted with
   `PAT_ENCRYPTION_KEY`. They never leave the backend to the browser.
-- **LLM provider** is resolved per-user (user setting) with server-wide
-  fallbacks set via `LLM_PROVIDER`, `OLLAMA_BASE_URL`, `OPENAI_BASE_URL`.
+- **LLM providers** are configured as rows in the `llm_providers` table
+  with per-use-case assignments (ADR-021). `OLLAMA_BASE_URL` /
+  `OPENAI_BASE_URL` survive only as deprecated fresh-install bootstrap
+  fallbacks.
 - **OIDC** is an Enterprise Edition feature gated by
   `ENTERPRISE_FEATURES.OIDC_SSO`. In CE the arrow does not exist.
 - **SMTP** is optional and used by `notification-service`.

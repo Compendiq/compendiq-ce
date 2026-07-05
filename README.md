@@ -128,7 +128,7 @@ Bidirectional sync with XHTML storage format conversion. Round-trip support for 
 | **AI** | Multi-provider LLM (Ollama default, or any OpenAI-compatible API), real-time SSE streaming, conversation history, content summarization, knowledge gap detection, duplicate page detection, LLM request backpressure, audit hook extension point |
 | **Security** | AES-256-GCM PAT encryption, JWT with refresh token rotation, RBAC with custom roles, OIDC/SSO (Enterprise), rate limiting, SSRF protection, prompt injection guard |
 | **Analytics** | Page views, engagement metrics, search pattern tracking, knowledge graph visualization |
-| **Operations** | PDF import/export, page verification workflow, knowledge requests, audit logging, OpenTelemetry tracing, background job queue (BullMQ), email notifications (SMTP), Confluence API rate limiting |
+| **Operations** | PDF import/export, page verification workflow, audit logging, OpenTelemetry tracing, background job queue (BullMQ), email notifications (SMTP), Confluence API rate limiting |
 
 ---
 
@@ -159,7 +159,7 @@ Frontend (React 19 + Vite + TailwindCSS 4)
 | Layer | Technology |
 |-------|-----------|
 | **Backend** | Fastify 5, TypeScript, Node.js 22+, BullMQ |
-| **Frontend** | React 19, Vite 7, TailwindCSS 4, Radix UI, Zustand, TanStack Query, Framer Motion |
+| **Frontend** | React 19, Vite 8, TailwindCSS 4, Radix UI, Zustand, TanStack Query, Framer Motion |
 | **Editor** | TipTap v3 (ProseMirror) |
 | **Database** | PostgreSQL 17 + pgvector |
 | **Cache** | Redis 8 |

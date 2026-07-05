@@ -26,7 +26,8 @@ erDiagram
     roles ||--o{ group_memberships : "granted via"
     groups ||--o{ group_memberships : "has"
     users ||--o{ group_memberships : "member of"
-    groups ||--o{ space_role_assignments : "assigned in"
+    groups ||--o{ space_role_assignments : "assigned in (principal)"
+    users ||--o{ space_role_assignments : "assigned in (principal)"
     roles ||--o{ space_role_assignments : "used in"
 
     users {
@@ -190,7 +191,8 @@ erDiagram
         bigint id PK
         text space_key
         bigint role_id FK
-        bigint group_id FK
+        text principal_type "user | group"
+        text principal_id
     }
 
     local_attachments {

@@ -346,9 +346,9 @@ server-side.
 ## Attachments
 
 Images, drawio diagrams, and PDFs are downloaded during sync to
-`ATTACHMENTS_DIR` (default `data/attachments`) and rewritten to
-Compendiq-local URLs in `body_html`. The original Confluence URLs are
-kept in a sidecar table (`image_references`) for reconciliation.
+`ATTACHMENTS_DIR` (default `data/attachments`) and rewritten in
+`body_html` to Compendiq-local `/api/attachments/{pageId}/{filename}`
+URLs; the on-disk cache is keyed by page and filename.
 
 See [`08-flow-sync.md`](./08-flow-sync.md) for where this hooks into the
 sync pipeline.

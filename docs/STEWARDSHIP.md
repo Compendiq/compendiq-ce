@@ -71,7 +71,7 @@ As of the [v0.3.0 release](./releases/v0.3.0.md), the following capabilities are
 **Knowledge base**
 - Pages CRUD (create, read, update, soft-delete, restore, trash, permanent delete)
 - Markdown/HTML/XHTML round-trip
-- Templates, comments, pinned pages, page versions, knowledge requests
+- Templates, comments, pinned pages, page versions (knowledge requests: removed in v0.6.2, see #841)
 - Full-text search (PostgreSQL, configurable language)
 - Tagging + duplicate detection + content analytics
 - Article feedback + page-view tracking + verification workflow
