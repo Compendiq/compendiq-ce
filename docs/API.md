@@ -12,6 +12,8 @@ http://localhost:3051/api/docs
 
 This is the primary API reference. It is auto-generated from route schemas using `@fastify/swagger` and `@fastify/swagger-ui`, and is always up to date with the running server.
 
+> **Note:** Swagger UI is only served in non-production environments. It is disabled when `NODE_ENV=production` to avoid exposing the full API schema.
+
 ## Authentication
 
 All endpoints except `/api/health` and `/api/auth/*` require a valid JWT Bearer token.
@@ -62,7 +64,7 @@ Response:
     "llm": true
   },
   "llmProvider": "OpenAI Prod",
-  "version": "1.0.0",
+  "version": "0.6.2",
   "uptime": 3600.123
 }
 ```
@@ -156,7 +158,7 @@ Response:
     "postgres": true,
     "redis": true
   },
-  "version": "1.0.0",
+  "version": "0.6.2",
   "uptime": 3600.123
 }
 ```
@@ -165,7 +167,7 @@ Response:
 
 The API enforces rate limiting:
 
-- **Global:** 100 requests per minute per IP
+- **Global:** 300 requests per minute per IP (default; configurable by admins)
 - **Admin endpoints:** stricter limits
 - **LLM endpoints:** stricter limits (due to resource intensity)
 

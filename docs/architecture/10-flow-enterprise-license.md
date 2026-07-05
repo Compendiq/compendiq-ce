@@ -114,7 +114,7 @@ build-time patch, no separate EE SPA. All gating happens at runtime via
 | `backend/src/core/enterprise/noop.ts` | Inert CE stub |
 | `backend/src/core/enterprise/loader.ts` | Dynamic import + fallback |
 | `backend/src/core/types/compendiq-enterprise.d.ts` | Type declaration for the optional EE package |
-| `backend/src/routes/foundation/admin.ts` | CE fallback `GET /api/admin/license` |
+| `backend/src/app.ts` | CE fallback `GET /api/admin/license` (community-mode inline route) |
 | `frontend/src/shared/enterprise/context.tsx` | `EnterpriseProvider` |
 | `frontend/src/shared/enterprise/use-enterprise.ts` | `useEnterprise()` hook |
 | `frontend/src/features/admin/LicenseStatusCard.tsx` | Admin UI for the license |

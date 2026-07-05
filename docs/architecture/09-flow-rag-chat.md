@@ -25,71 +25,65 @@ sequenceDiagram
 
     FE->>BE: POST /api/llm/ask<br/>{ question, model, conversationId,<br/>  includeSubPages, externalUrls, searchWeb }
     BE->>SAN: sanitize(question)
-    alt prompt-injection detected
-        SAN-->>BE: flagged
-        BE->>PG: INSERT audit_log (llm_prompt_injection)
-        BE-->>FE: SSE error (blocked)
-    else clean
-        SAN-->>BE: ok
-        BE->>CACHE: getCachedResponse(key)
-        alt cache hit
-            CACHE-->>BE: answer
-            BE-->>FE: SSE { content, done:true, fromCache:true }
-        else miss (stampede lock)
-            CACHE-->>BE: lock acquired
-            BE->>EMB: POST /v1/embeddings (question)
-            EMB-->>BE: q_vector[N]
-            BE->>RBAC: getUserAccessibleSpacesMemoized(userId)
-            RBAC-->>BE: readableSpaceKeys[] (request-scoped)
-            par vector + keyword
-                BE->>RAG: vectorSearch(userId, q_vector)
-                RAG->>PG: WHERE cp.space_key = ANY(readableSpaceKeys) ...
-                PG-->>RAG: top-K chunks
-            and
-                BE->>RAG: keywordSearch(userId, question)
-                RAG->>PG: tsvector search WHERE same space filter
-                PG-->>RAG: matches
-            end
-            RAG-->>BE: merged + deduped + ranked
-            opt RAG_PERMISSION_ENFORCEMENT (EE)
-                BE->>RBAC: userCanAccessPage(userId, pageId) for each candidate
-                RBAC-->>BE: filter decision (per-page read ACE honoured)
-                note right of BE: candidates were overfetched 1.5x<br/>at vector/fts stage to compensate
-            end
-            opt includeSubPages
-                BE->>RBAC: userCanAccessPage(userId, parentPageId)
-                RBAC-->>BE: allow / deny (#814 — skip tree on deny)
-                BE->>SP: assembleSubPageContext(rootPageId)
-                SP->>RBAC: getUserAccessibleSpacesMemoized(userId)
-                SP->>CF: fetch child tree WHERE deleted_at IS NULL<br/>AND visible to user (space RBAC)
-                CF-->>SP: pages
-                SP-->>BE: tree context
-            end
-            opt externalUrls provided
-                BE->>MCP: fetch urls
-                MCP-->>BE: content
-            end
-            opt searchWeb
-                BE->>MCP: search(question)
-                MCP-->>BE: top results
-            end
-            BE->>BE: build system prompt + context<br/>(resolveSystemPrompt, guardrails)
-            BE->>BE: resolveChatAssignment(model)<br/>(getUsecaseLlmAssignment('chat') — #217)
-            alt admin set chat override (source.provider='usecase' or source.model='usecase')
-                BE->>PROV: providerStreamChatForUsecase(provider, model, prompt)
-            else no override
-                BE->>PROV: providerStreamChat(userId, model, prompt)
-            end
-            loop chunks
-                PROV-->>BE: delta
-                BE-->>FE: SSE { content: delta }
-            end
-            PROV-->>BE: done
-            BE->>CACHE: setCachedResponse(key, answer)
-            BE->>CONV: upsert message + answer + sources
-            BE->>PG: INSERT audit_log (tokens, latency, doc_ids)
-            BE-->>FE: SSE { done:true, conversationId, sources }
+    SAN-->>BE: sanitized question (+ warnings)
+    opt prompt-injection detected
+        BE->>PG: INSERT audit_log (PROMPT_INJECTION_DETECTED)
+        note right of BE: promptInjectionDetected / sanitized attestation<br/>flags set on the llm_audit_log row —<br/>request continues with the sanitized question
+    end
+    BE->>CACHE: getCachedResponse(key)
+    alt cache hit
+        CACHE-->>BE: answer
+        BE-->>FE: SSE { content, done:true, fromCache:true }
+    else miss (stampede lock)
+        CACHE-->>BE: lock acquired
+        BE->>EMB: POST /v1/embeddings (question)
+        EMB-->>BE: q_vector[N]
+        BE->>RBAC: getUserAccessibleSpacesMemoized(userId)
+        RBAC-->>BE: readableSpaceKeys[] (request-scoped)
+        par vector + keyword
+            BE->>RAG: vectorSearch(userId, q_vector)
+            RAG->>PG: WHERE cp.space_key = ANY(readableSpaceKeys) ...
+            PG-->>RAG: top-K chunks
+        and
+            BE->>RAG: keywordSearch(userId, question)
+            RAG->>PG: tsvector search WHERE same space filter
+            PG-->>RAG: matches
         end
+        RAG-->>BE: merged + deduped + ranked
+        opt RAG_PERMISSION_ENFORCEMENT (EE)
+            BE->>RBAC: userCanAccessPage(userId, pageId) for each candidate
+            RBAC-->>BE: filter decision (per-page read ACE honoured)
+            note right of BE: candidates were overfetched 1.5x<br/>at vector/fts stage to compensate
+        end
+        opt includeSubPages
+            BE->>RBAC: userCanAccessPage(userId, parentPageId)
+            RBAC-->>BE: allow / deny (#814 — skip tree on deny)
+            BE->>SP: assembleSubPageContext(rootPageId)
+            SP->>RBAC: getUserAccessibleSpacesMemoized(userId)
+            SP->>CF: fetch child tree WHERE deleted_at IS NULL<br/>AND visible to user (space RBAC)
+            CF-->>SP: pages
+            SP-->>BE: tree context
+        end
+        opt externalUrls provided
+            BE->>MCP: fetch urls
+            MCP-->>BE: content (sanitized; detections audited — same flags)
+        end
+        opt searchWeb
+            BE->>MCP: search(question)
+            MCP-->>BE: top results (sanitized; detections audited — #835)
+        end
+        BE->>BE: build system prompt + context<br/>(resolveSystemPrompt, guardrails)
+        BE->>BE: resolveUsecase('chat')<br/>→ { config, model }
+        BE->>PROV: streamChat(config, resolvedModel, messages)
+        loop chunks
+            PROV-->>BE: delta
+            BE-->>FE: SSE { content: delta }
+        end
+        PROV-->>BE: done
+        BE->>CACHE: setCachedResponse(key, answer)
+        BE->>CONV: upsert message + answer + sources
+        BE->>PG: INSERT audit_log (tokens, latency, doc_ids)
+        BE-->>FE: SSE { done:true, conversationId, sources }
     end
 ```
 
@@ -170,8 +164,8 @@ All of these go through the same provider resolver and sanitization layer:
 | `POST /api/llm/improve` | Improve an existing article |
 | `POST /api/llm/generate` | Generate a new article |
 | `POST /api/llm/summarize` | Summarize a page |
-| `POST /api/llm/diagram` | Generate a Mermaid diagram from prose |
-| `POST /api/llm/pdf/extract` | PDF → text → summary |
+| `POST /api/llm/generate-diagram` | Generate a Mermaid diagram from prose |
+| `POST /api/llm/extract-pdf` | PDF → text extraction (sanitized) |
 
 ## Key files
 
