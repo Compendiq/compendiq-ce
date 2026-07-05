@@ -40,7 +40,6 @@ Access tokens are obtained via the login endpoint and have a configurable expiry
 | `GET/POST /api/comments/*` | Page comments |
 | `GET /api/analytics/*` | Content analytics and search analytics |
 | `GET/POST /api/verification/*` | Page verification/review workflow |
-| `GET/POST /api/knowledge-requests/*` | Knowledge gap requests |
 | `GET/POST /api/notifications/*` | User notifications |
 | `GET/POST /api/admin/*` | Admin operations (key rotation, audit log, LLM settings, OIDC, RBAC) |
 
@@ -62,15 +61,16 @@ Response:
     "redis": true,
     "llm": true
   },
-  "circuitBreakers": {
-    "providers": [
-      { "providerId": "<uuid>", "name": "OpenAI Prod", "state": "closed", "failures": 0 }
-    ]
-  },
+  "llmProvider": "OpenAI Prod",
   "version": "1.0.0",
   "uptime": 3600.123
 }
 ```
+
+> `/api/health` is public (unauthenticated). It reports only coarse status plus
+> the provider name and build version the frontend needs. Internal operational
+> telemetry (per-provider circuit-breaker state, LLM/BullMQ queue metrics) is
+> not exposed here.
 
 ### Register a User
 

@@ -27,7 +27,7 @@ import { verificationRoutes } from './verification.js';
 const TEST_USER_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const VALID_OWNER_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 
-function buildApp(opts?: { rejectAuth?: boolean }) {
+function buildApp(opts?: { rejectAuth?: boolean; rejectAdmin?: boolean }) {
   const app = Fastify({ logger: false });
   app.register(sensible);
 
@@ -49,6 +49,17 @@ function buildApp(opts?: { rejectAuth?: boolean }) {
     });
   } else {
     app.decorate('authenticate', async (request: { userId: string; userRole: string }) => {
+      request.userId = TEST_USER_ID;
+      request.userRole = opts?.rejectAdmin ? 'user' : 'admin';
+    });
+  }
+
+  if (opts?.rejectAdmin) {
+    app.decorate('requireAdmin', async () => {
+      throw app.httpErrors.forbidden('Admin required');
+    });
+  } else {
+    app.decorate('requireAdmin', async (request: { userId: string; userRole: string }) => {
       request.userId = TEST_USER_ID;
       request.userRole = 'admin';
     });
@@ -386,6 +397,50 @@ describe('Verification routes', () => {
       expect(typeof body.unverified).toBe('number');
       expect(typeof body.total).toBe('number');
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Admin-gate suite: verification-health aggregates over ALL pages (#818)
+// ---------------------------------------------------------------------------
+describe('Verification routes — non-admin', () => {
+  let app: ReturnType<typeof Fastify>;
+
+  beforeAll(async () => {
+    app = buildApp({ rejectAdmin: true });
+    await app.ready();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(() => {
+    mockQuery.mockReset();
+    mockGetUserAccessibleSpaces.mockReset();
+    mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
+    mockGetUserAccessibleSpaces.mockResolvedValue(['TEST', 'DEV']);
+  });
+
+  it('GET /api/analytics/verification-health returns 403 for non-admins', async () => {
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/analytics/verification-health',
+    });
+
+    expect(response.statusCode).toBe(403);
+  });
+
+  it('per-page routes stay accessible to non-admins (verify is not admin-gated)', async () => {
+    // assertPageAccess query — no rows → 404, proving the handler ran (not 403).
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/42/verify',
+    });
+
+    expect(response.statusCode).toBe(404);
   });
 });
 

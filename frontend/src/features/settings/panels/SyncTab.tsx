@@ -7,6 +7,7 @@ import { useAuthStore } from '../../../stores/auth-store';
 import { useSync, useForceResyncAll } from '../../../shared/hooks/use-spaces';
 import { ConfirmDialog } from '../../../shared/components/ConfirmDialog';
 import { SkeletonFormFields } from '../../../shared/components/feedback/Skeleton';
+import { ErrorState } from '../../../shared/components/feedback/ErrorState';
 
 interface QualityStatusResponse {
   totalPages: number;
@@ -36,7 +37,7 @@ export function SyncTab() {
   const forceResyncMutation = useForceResyncAll();
   // Force Re-sync All guard (ConfirmDialog replaces native confirm()).
   const [confirmForceResyncOpen, setConfirmForceResyncOpen] = useState(false);
-  const { data, isLoading, isFetching, refetch } = useQuery<SyncOverviewResponse>({
+  const { data, isLoading, isFetching, isError, error, refetch } = useQuery<SyncOverviewResponse>({
     queryKey: ['settings', 'sync-overview'],
     queryFn: () => apiFetch('/settings/sync-overview'),
     refetchInterval: (query) => {
@@ -78,6 +79,20 @@ export function SyncTab() {
     },
     onError: (err) => toast.error(err.message),
   });
+
+  // Distinguish a failed overview fetch from the loading state so a
+  // 500/network error surfaces a retry instead of an infinite skeleton.
+  if (isError) {
+    return (
+      <ErrorState
+        title="Couldn't load sync overview"
+        description={error instanceof Error ? error.message : undefined}
+        onRetry={() => refetch()}
+        testId="sync-tab-error"
+        retryTestId="sync-tab-retry"
+      />
+    );
+  }
 
   if (isLoading || !data) {
     return <SkeletonFormFields />;

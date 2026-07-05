@@ -298,8 +298,8 @@ describe('Local Spaces Routes', () => {
   // ── GET /api/spaces/:key/tree ─────────────────────────────────────────
 
   it('should return page tree for a space', async () => {
-    // Space exists
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 1 }] });
+    // Space exists (local — no RBAC gate)
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'local' }] });
     // Pages
     mockQueryFn.mockResolvedValueOnce({
       rows: [
@@ -332,6 +332,61 @@ describe('Local Spaces Routes', () => {
     });
 
     expect(response.statusCode).toBe(404);
+  });
+
+  it('tree: returns 404 for a Confluence space the user cannot access (#817)', async () => {
+    // Space exists and is Confluence-synced.
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'confluence' }] });
+    // User has no assignment to this space (default mock is []).
+    mockGetUserAccessibleSpaces.mockResolvedValue(['OTHER']);
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/spaces/RESTRICTED/tree',
+    });
+
+    // 404 (not 403) so restricted spaces are indistinguishable from missing ones.
+    expect(response.statusCode).toBe(404);
+    expect(mockGetUserAccessibleSpaces).toHaveBeenCalledWith('test-user-id');
+    // Critical: the page tree must never be queried for a denied space.
+    const treeSelect = mockQueryFn.mock.calls.find(
+      (c) => typeof c[0] === 'string' && (c[0] as string).includes('FROM pages p'),
+    );
+    expect(treeSelect).toBeUndefined();
+  });
+
+  it('tree: returns the tree for a Confluence space the user can access (#817)', async () => {
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'confluence' }] });
+    mockGetUserAccessibleSpaces.mockResolvedValue(['TEAMB']);
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [
+        { id: 1, title: 'Root', parent_numeric_id: null, depth: 0, sort_order: 0, source: 'confluence', confluence_id: 'c1' },
+      ],
+    });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/spaces/TEAMB/tree',
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.payload);
+    expect(body.spaceKey).toBe('TEAMB');
+    expect(body.items).toHaveLength(1);
+  });
+
+  it('tree: serves a local space without an RBAC assignment (#817)', async () => {
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'local' }] });
+    mockQueryFn.mockResolvedValueOnce({ rows: [] });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/spaces/MYLOCAL/tree',
+    });
+
+    expect(response.statusCode).toBe(200);
+    // Local spaces are accessible to all authenticated users — no RBAC lookup.
+    expect(mockGetUserAccessibleSpaces).not.toHaveBeenCalled();
   });
 
   // ── PUT /api/pages/:id/move ───────────────────────────────────────────

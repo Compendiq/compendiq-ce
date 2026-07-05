@@ -328,6 +328,53 @@ describe('CustomRoleEditor', () => {
     });
   });
 
+  // 9b. Delete 409 (role still assigned) shows the friendly guidance even
+  //     when the backend message contains neither "409" nor "assigned".
+  it('shows the still-assigned guidance on a 409 delete conflict via statusCode', async () => {
+    const { toast } = await import('sonner');
+    const errorSpy = vi.spyOn(toast, 'error').mockImplementation(() => 'id');
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      const method = init?.method ?? (typeof input !== 'string' ? (input as Request).method : 'GET');
+      if (url.match(/\/admin\/roles\/\d+$/) && method === 'DELETE') {
+        // 409 with a message that does NOT contain "409" or "assigned" —
+        // the old err.message sniff would fall through to the raw message.
+        return new Response(JSON.stringify({ message: 'Conflict' }), {
+          status: 409,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.match(/\/admin\/roles\/\d+\/assignments/)) {
+        return new Response(JSON.stringify(mockAssignments), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.includes('/admin/permissions')) {
+        return new Response(JSON.stringify(mockPermissions), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({}), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    render(
+      <CustomRoleEditor open={true} onOpenChange={() => {}} editRole={mockRole} />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByTestId('delete-role-btn'));
+    fireEvent.click(screen.getByTestId('confirm-delete-btn'));
+
+    await waitFor(() => {
+      expect(errorSpy).toHaveBeenCalledWith(
+        'Role is still assigned to spaces. Remove assignments first.',
+      );
+    });
+  });
+
   // 10. Shows assignments tab in edit mode
   it('shows assignments tab in edit mode', async () => {
     mockFetch();

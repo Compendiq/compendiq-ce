@@ -7,8 +7,15 @@ services:
       POSTGRES_USER: kb_user
       POSTGRES_PASSWORD: changeme-postgres
       POSTGRES_DB: kb_creator_test
+    # Long-form publish pinned to loopback so the throwaway test DB (weak
+    # hardcoded password) is never reachable from the network — mirrors the
+    # deliberate 127.0.0.1 binding in docker-compose.dev.yml.
     ports:
-      - "5433:5432"
+      - target: 5432
+        host_ip: 127.0.0.1
+        published: 5433
+        protocol: tcp
+        mode: host
     tmpfs:
       - /var/lib/postgresql/data
     healthcheck:

@@ -84,7 +84,6 @@ vi.mock('./routes/knowledge/comments.js', () => ({ commentsRoutes: noopRoute }))
 vi.mock('./routes/knowledge/pages-import.js', () => ({ pagesImportRoutes: noopRoute }));
 vi.mock('./routes/knowledge/content-analytics.js', () => ({ contentAnalyticsRoutes: noopRoute }));
 vi.mock('./routes/knowledge/verification.js', () => ({ verificationRoutes: noopRoute }));
-vi.mock('./routes/knowledge/knowledge-requests.js', () => ({ knowledgeRequestRoutes: noopRoute }));
 vi.mock('./routes/knowledge/search.js', () => ({ searchRoutes: noopRoute }));
 vi.mock('./routes/knowledge/local-spaces.js', () => ({ localSpacesRoutes: noopRoute }));
 vi.mock('./routes/foundation/setup.js', () => ({ setupRoutes: noopRoute }));

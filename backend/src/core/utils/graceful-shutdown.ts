@@ -1,6 +1,6 @@
 import { logger } from './logger.js';
 
-export interface ShutdownStep {
+interface ShutdownStep {
   /** Step name, used in logs when a step fails. */
   name: string;
   /** Cleanup action. May be sync or async; failures are logged and skipped. */

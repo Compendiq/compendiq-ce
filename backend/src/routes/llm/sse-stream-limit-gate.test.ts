@@ -163,7 +163,7 @@ vi.mock('../../core/services/mcp-docs-client.js', () => ({
 }));
 
 vi.mock('./_web-search-helper.js', () => ({
-  fetchWebSources: vi.fn().mockResolvedValue([]),
+  fetchWebSources: vi.fn().mockResolvedValue({ sources: [], injectionWarnings: [] }),
   formatWebContext: vi.fn().mockReturnValue(''),
 }));
 

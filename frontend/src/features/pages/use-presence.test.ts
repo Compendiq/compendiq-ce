@@ -180,7 +180,38 @@ describe('usePresence', () => {
     unmount();
   });
 
-  it('does not reconnect after a 401 from the SSE endpoint', async () => {
+  it('refreshes the token and reconnects after a 401 from the SSE endpoint', async () => {
+    let sseOpens = 0;
+    let refreshCalls = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+      const urlStr = typeof url === 'string' ? url : (url as URL).toString();
+      if (init?.method === 'POST' && urlStr.includes('/heartbeat')) return new Response(null, { status: 204 });
+      if (init?.method === 'DELETE') return new Response(null, { status: 204 });
+      if (urlStr.includes('/auth/refresh')) {
+        refreshCalls += 1;
+        return new Response(
+          JSON.stringify({ accessToken: 'fresh-token', user: { id: 'self', username: 'me', role: 'user' } }),
+          { headers: { 'content-type': 'application/json' } },
+        );
+      }
+      sseOpens += 1;
+      // First open 401s; after the silent refresh the reconnect succeeds.
+      if (sseOpens === 1) return new Response(null, { status: 401 });
+      return makeSseResponse().response;
+    });
+
+    const { unmount } = renderHook(() => usePresence('page-1'));
+    await waitFor(() => expect(sseOpens).toBe(1));
+
+    // Refresh should fire, then the reconnect (1s backoff) should re-open.
+    await waitFor(() => expect(refreshCalls).toBe(1));
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_100); });
+    await waitFor(() => expect(sseOpens).toBeGreaterThanOrEqual(2));
+
+    unmount();
+  });
+
+  it('parks permanently when the refresh itself fails after a 401', async () => {
     let sseOpens = 0;
     let heartbeats = 0;
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
@@ -190,6 +221,7 @@ describe('usePresence', () => {
         return new Response(null, { status: 204 });
       }
       if (init?.method === 'DELETE') return new Response(null, { status: 204 });
+      if (urlStr.includes('/auth/refresh')) return new Response(null, { status: 401 });
       sseOpens += 1;
       return new Response(null, { status: 401 });
     });

@@ -71,6 +71,20 @@ let _subscriber: RedisClientType | null = null;
 let _subscriberReady: Promise<void> | null = null;
 const _listeners: Map<string, Set<PresenceListener>> = new Map();
 
+/**
+ * Minimum interval between recompute-and-publish cycles for a single page
+ * (#828). Each heartbeat used to recompute the full viewer list (one HGETALL
+ * per viewer) and republish it, so a page with V concurrent viewers cost
+ * O(V^2) Redis reads and SSE writes every heartbeat interval. Throttling caps
+ * that to O(V) per window regardless of how many viewers heartbeat.
+ */
+const PUBLISH_THROTTLE_MS = 1000;
+
+// Per-page throttle state: the last time we published, and any pending
+// trailing publish. Cleared on teardown so timers never outlive the process.
+const _lastPublishAt: Map<string, number> = new Map();
+const _publishTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
+
 function parseChannel(channel: string): string | null {
   if (!channel.startsWith('presence:page:')) return null;
   return channel.slice('presence:page:'.length);
@@ -130,6 +144,7 @@ async function teardown(): Promise<void> {
   _subscriber = null;
   _subscriberReady = null;
   _listeners.clear();
+  _clearPublishTimersForTest();
   if (!sub) return;
   try {
     await sub.pUnsubscribe(CHANNEL_PATTERN);
@@ -137,6 +152,47 @@ async function teardown(): Promise<void> {
   } catch (err) {
     logger.warn({ err }, 'presence-service: teardown failed');
   }
+}
+
+/**
+ * Recompute the active-viewer list and publish it to peer pods. Records the
+ * publish timestamp so the throttle can gate the next cycle.
+ */
+async function publishViewers(pageId: string): Promise<void> {
+  const client = _mainClient;
+  if (!client) return;
+  _lastPublishAt.set(pageId, Date.now());
+  const viewers = await getActiveViewers(pageId);
+  await client.publish(channelFor(pageId), JSON.stringify(viewers));
+}
+
+/**
+ * Throttle recompute-and-publish to at most once per {@link PUBLISH_THROTTLE_MS}
+ * per page (#828). Leading edge publishes immediately when the page has been
+ * quiet; a burst of heartbeats within the window coalesces into a single
+ * trailing publish, so a hot page costs O(V) rather than O(V^2) Redis/SSE work
+ * per interval. Each pod throttles independently — duplicate publishes across
+ * pods are harmless (subscribers just receive an identical snapshot).
+ */
+function schedulePublish(pageId: string): Promise<void> {
+  const last = _lastPublishAt.get(pageId) ?? 0;
+  const elapsed = Date.now() - last;
+
+  if (elapsed >= PUBLISH_THROTTLE_MS) {
+    return publishViewers(pageId); // leading edge — publish now
+  }
+
+  // Within the window: ensure exactly one trailing publish is queued.
+  if (!_publishTimers.has(pageId)) {
+    const timer = setTimeout(() => {
+      _publishTimers.delete(pageId);
+      void publishViewers(pageId);
+    }, PUBLISH_THROTTLE_MS - elapsed);
+    // Don't keep the event loop alive for a presence heartbeat.
+    if (typeof timer.unref === 'function') timer.unref();
+    _publishTimers.set(pageId, timer);
+  }
+  return Promise.resolve();
 }
 
 /**
@@ -178,8 +234,9 @@ export async function recordHeartbeat(
       client.expire(metaKey(userId), META_TTL_SEC),
       ...editingOp,
     ]);
-    const viewers = await getActiveViewers(pageId);
-    await client.publish(channelFor(pageId), JSON.stringify(viewers));
+    // #828: throttle the recompute+publish so V heartbeats/interval don't each
+    // trigger an O(V) list rebuild + fan-out. Own-entry writes above always run.
+    await schedulePublish(pageId);
   } catch (err) {
     logger.error({ err, pageId, userId }, 'presence-service: heartbeat failed');
   }
@@ -244,8 +301,15 @@ export async function removeViewer(pageId: string, userId: string): Promise<void
       client.zRem(viewersKey(pageId), userId),
       client.sRem(editingKey(pageId), userId),
     ]);
-    const viewers = await getActiveViewers(pageId);
-    await client.publish(channelFor(pageId), JSON.stringify(viewers));
+    // A viewer leaving is a discrete, low-frequency event — publish the fresh
+    // snapshot immediately (not throttled) so peer pods drop the ghost
+    // promptly. Cancel any pending trailing publish since we just published.
+    const pending = _publishTimers.get(pageId);
+    if (pending) {
+      clearTimeout(pending);
+      _publishTimers.delete(pageId);
+    }
+    await publishViewers(pageId);
   } catch (err) {
     logger.error({ err, pageId, userId }, 'presence-service: removeViewer failed');
   }
@@ -274,6 +338,18 @@ export function subscribeToPage(pageId: string, onUpdate: PresenceListener): () 
     current.delete(onUpdate);
     if (current.size === 0) _listeners.delete(pageId);
   };
+}
+
+/**
+ * Cancel and drop all pending per-page publish timers and throttle timestamps
+ * (#828). Called from teardown; exported so tests can reset the throttle state
+ * between cases (a leftover publish timestamp would suppress the next test's
+ * leading-edge publish).
+ */
+export function _clearPublishTimersForTest(): void {
+  for (const timer of _publishTimers.values()) clearTimeout(timer);
+  _publishTimers.clear();
+  _lastPublishAt.clear();
 }
 
 /**

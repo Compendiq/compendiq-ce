@@ -1,5 +1,6 @@
 import { useState, useCallback } from 'react';
 import { useAuthStore } from '../../stores/auth-store';
+import { refreshAccessTokenOnce } from '../lib/api';
 import type { ExtractPdfResponse } from '@compendiq/contracts';
 
 export type ExtractPdfResult = ExtractPdfResponse;
@@ -20,18 +21,32 @@ export function useExtractPdf() {
       const formData = new FormData();
       formData.append('file', file);
 
-      const { accessToken } = useAuthStore.getState();
-      const headers: HeadersInit = {};
-      if (accessToken) {
-        headers['Authorization'] = `Bearer ${accessToken}`;
-      }
+      const doFetch = (token: string | null) => {
+        const headers: HeadersInit = {};
+        if (token) {
+          headers['Authorization'] = `Bearer ${token}`;
+        }
+        return fetch('/api/llm/extract-pdf', {
+          method: 'POST',
+          headers,
+          credentials: 'include',
+          body: formData,
+        });
+      };
 
-      const res = await fetch('/api/llm/extract-pdf', {
-        method: 'POST',
-        headers,
-        credentials: 'include',
-        body: formData,
-      });
+      const { accessToken } = useAuthStore.getState();
+      let res = await doFetch(accessToken);
+
+      // Reactive token refresh on 401 — mirrors apiFetch. Re-issue the POST once
+      // with a refreshed token before surfacing the failure.
+      if (res.status === 401) {
+        const newToken = await refreshAccessTokenOnce();
+        if (newToken) {
+          res = await doFetch(newToken);
+        } else {
+          useAuthStore.getState().clearAuth();
+        }
+      }
 
       if (!res.ok) {
         const body = await res.json().catch(() => ({ message: res.statusText }));

@@ -367,6 +367,8 @@ async function syncSpace(
 
   // Track progress
   const total = pages.length;
+  // Count pages skipped due to non-fatal per-page fetch/convert failures (#822).
+  let pagesFailed = 0;
   for (let i = 0; i < pages.length; i++) {
     await setSyncStatus(userId, {
       userId,
@@ -375,7 +377,39 @@ async function syncSpace(
     });
 
     const page = pages[i]!;
-    await syncPage(client, userId, spaceKey, page, syncRunStartedAt, ancestorCache, counts, syncRunId, changeSet);
+    // Per-page isolation (#822): a page deleted/restricted between the space
+    // listing and its individual `getPage` (404/403), or content that makes
+    // `confluenceToHtml`/`getPage` throw, must not abort the whole user's sync
+    // run. Log, count, and continue so the remaining pages, deletion
+    // reconciliation, and the space `last_synced` update still happen. A 404
+    // needs no special handling here — `detectDeletedPages` below fetches an
+    // authoritative id list and soft-deletes confirmed-gone pages.
+    //
+    // Only a genuinely connection-fatal error aborts: a 401 means the PAT is
+    // revoked/expired, so every subsequent page would fail identically and
+    // grinding through them is pointless — rethrow to fail the run fast.
+    try {
+      await syncPage(client, userId, spaceKey, page, syncRunStartedAt, ancestorCache, counts, syncRunId, changeSet);
+    } catch (err) {
+      if (err instanceof ConfluenceError && err.statusCode === 401) {
+        throw err;
+      }
+      pagesFailed++;
+      logger.warn(
+        {
+          err,
+          userId,
+          spaceKey,
+          pageId: page.id,
+          status: err instanceof ConfluenceError ? err.statusCode : undefined,
+        },
+        'Page sync failed — skipping page and continuing sync',
+      );
+    }
+  }
+
+  if (pagesFailed > 0) {
+    logger.warn({ userId, spaceKey, pagesFailed, total }, 'Space sync completed with per-page failures');
   }
 
   // During incremental sync, also check for pages with missing attachments
@@ -1565,12 +1599,11 @@ async function purgeDeletedPages(client: ConfluenceClient, spaceKey: string): Pr
  *     space_key row exists solely to map a group into THIS space, so it is
  *     meaningless once the space is gone. Global rows (space_key IS NULL) are
  *     untouched.
- *   - `templates` / `knowledge_requests` — may hold USER-AUTHORED content and
- *     their `space_key` columns are NULLABLE (migrations 032 / 037). We do NOT
- *     destroy user work: we NULL `space_key` to DETACH the artifact from the
- *     removed space while retaining the row. Least-surprising option — a
- *     template or knowledge request authored against a space outlives the
- *     space, just unscoped.
+ *   - `templates` — may hold USER-AUTHORED content and its `space_key` column
+ *     is NULLABLE (migration 032). We do NOT destroy user work: we NULL
+ *     `space_key` to DETACH the artifact from the removed space while retaining
+ *     the row. Least-surprising option — a template authored against a space
+ *     outlives the space, just unscoped.
  */
 export async function unsyncSpace(spaceKey: string): Promise<{ pagesDeleted: number }> {
   // Best-effort, non-transactional filesystem cleanup BEFORE the DB
@@ -1610,7 +1643,6 @@ export async function unsyncSpace(spaceKey: string): Promise<{ pagesDeleted: num
     // User-authored artifacts: detach (retain the row, NULL the space_key)
     // rather than delete, so unsyncing a space never silently destroys work.
     await conn.query('UPDATE templates SET space_key = NULL WHERE space_key = $1', [spaceKey]);
-    await conn.query('UPDATE knowledge_requests SET space_key = NULL WHERE space_key = $1', [spaceKey]);
 
     // Finally the space row itself.
     await conn.query('DELETE FROM spaces WHERE space_key = $1', [spaceKey]);

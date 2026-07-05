@@ -112,6 +112,13 @@ sequenceDiagram
   is written from Confluence's own version counter; no double-writes.
 - **Circuit breaker** — `core/services/circuit-breaker.ts` protects against
   runaway failure against a broken Confluence instance.
+- **Per-page failure isolation (#822)** — the per-page loop in `syncSpace`
+  wraps each `syncPage` in try/catch: a page deleted or restricted between the
+  space listing and its `getPage` (404/403), or content that throws during
+  conversion, is logged, counted (`pagesFailed`), and skipped so the remaining
+  pages, deletion reconciliation, and the space `last_synced` update still run.
+  Only a connection-fatal `ConfluenceError` (401 — revoked/expired PAT) rethrows
+  to abort the whole run fast rather than grinding through every page.
 
 ## Deletion reconciliation (#706)
 
@@ -281,7 +288,6 @@ sequenceDiagram
         SV->>DB: DELETE FROM space_role_assignments WHERE space_key = ?
         SV->>DB: DELETE FROM oidc_group_role_mappings WHERE space_key = ?
         SV->>DB: UPDATE templates SET space_key = NULL WHERE space_key = ?
-        SV->>DB: UPDATE knowledge_requests SET space_key = NULL WHERE space_key = ?
         SV->>DB: DELETE FROM spaces WHERE space_key = ?
         SV->>DB: COMMIT (ROLLBACK + re-throw on any error)
         SV-->>R: { pagesDeleted }
@@ -308,9 +314,9 @@ Key properties:
   - `oidc_group_role_mappings` (OIDC group→space RBAC mapping, `space_key` nullable) —
     **DELETE** rows whose `space_key` matches; rows with `space_key IS NULL` are global
     and left untouched.
-  - `templates` and `knowledge_requests` (may hold **user-authored** content, `space_key`
-    nullable per migrations 032/037) — **NULL the `space_key` (detach)** rather than
-    delete, so unsyncing a space never silently destroys user work. The artifact is
+  - `templates` (may hold **user-authored** content, `space_key` nullable per
+    migration 032) — **NULL the `space_key` (detach)** rather than delete, so
+    unsyncing a space never silently destroys user work. The artifact is
     retained, just unscoped.
 - **Attachment cleanup** — `cleanPageAttachments` is best-effort and runs per page
   **before/outside** the DB transaction; filesystem deletes can't be rolled back, so a
@@ -330,6 +336,18 @@ role assignment (`space_role_assignments JOIN roles WHERE roles.name = 'editor'`
 This means the Spaces tab always reflects the admin's deliberate sync selection,
 not the implicit "can see everything" fallback, and the Remove action correctly
 removes a space from that selection.
+
+**Write-side guard (#815).** When `PUT /api/settings` self-assigns the editor role
+for the submitted `selectedSpaces`, it first intersects them against the spaces
+reachable by the caller's **own** Confluence PAT (`getClientForUser().getAllSpaces()`,
+the same set the picker `GET /api/spaces/available` offers). Keys the caller's PAT
+cannot see are rejected (`403`), and a request with no configured PAT is rejected
+(`400`). Without this check any authenticated user could insert an editor
+`space_role_assignments` row for an arbitrary space and thereby read every
+already-synced page in it, since `getUserAccessibleSpaces` derives a non-admin's
+readable spaces solely from those rows. Deselection (an empty set, handled by the
+DELETE path) is always safe and skips the PAT lookup. Cross-user space grants remain
+the exclusive domain of the admin-managed RBAC routes.
 
 ## Content pipeline hand-off
 

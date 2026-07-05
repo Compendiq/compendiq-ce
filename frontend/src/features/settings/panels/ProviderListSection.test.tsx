@@ -93,6 +93,39 @@ describe('ProviderListSection', () => {
     expect(screen.getByText(/add provider/i)).toBeTruthy();
   });
 
+  it('reopening the create modal after a save shows empty fields (no stale API key)', async () => {
+    const Wrapper = createWrapper();
+    mockFetchJson([
+      { match: (url, init) => url.endsWith('/admin/llm-providers') && (init.method ?? 'GET') === 'GET', body: [] },
+      {
+        match: (url, init) => url.endsWith('/admin/llm-providers') && init.method === 'POST',
+        body: { ...providerB, name: 'First', hasApiKey: true },
+      },
+    ]);
+    render(<ProviderListSection />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.queryByText(/loading/i)).toBeNull());
+
+    // Open create modal, fill in name + API key, save.
+    fireEvent.click(screen.getByRole('button', { name: /\+ add/i }));
+    const nameInput = () => screen.getByRole('dialog').querySelector('input') as HTMLInputElement;
+    const apiKeyInput = () =>
+      screen.getByRole('dialog').querySelector('input[type="password"]') as HTMLInputElement;
+    fireEvent.change(nameInput(), { target: { value: 'First' } });
+    fireEvent.change(screen.getByPlaceholderText('https://api.openai.com/v1'), {
+      target: { value: 'https://api.example.com/v1' },
+    });
+    fireEvent.change(apiKeyInput(), { target: { value: 'sk-secret-key' } });
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+
+    // Modal closes after the successful save.
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+
+    // Reopen the create modal — fields must be reset, not carrying the prior values/secret.
+    fireEvent.click(screen.getByRole('button', { name: /\+ add/i }));
+    expect(nameInput().value).toBe('');
+    expect(apiKeyInput().value).toBe('');
+  });
+
   it('set-default mutation POSTs to correct endpoint', async () => {
     const Wrapper = createWrapper();
     const spy = mockFetchJson([

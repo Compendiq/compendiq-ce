@@ -13,35 +13,8 @@ export function useTemplates(filters?: { scope?: string; category?: string }) {
       if (filters?.scope) params.set('scope', filters.scope);
       if (filters?.category) params.set('category', filters.category);
       const qs = params.toString();
-      return apiFetch<{ items: Template[]; total: number }>(`/templates${qs ? `?${qs}` : ''}`);
-    },
-  });
-}
-
-export function useTemplate(id: number) {
-  return useQuery({
-    queryKey: ['templates', id],
-    queryFn: () => apiFetch<Template>(`/templates/${id}`),
-    enabled: id > 0,
-  });
-}
-
-export function useCreateTemplate() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (data: {
-      title: string;
-      bodyJson: string;
-      bodyHtml: string;
-      category?: string;
-      isGlobal?: boolean;
-    }) =>
-      apiFetch<Template>('/templates', {
-        method: 'POST',
-        body: JSON.stringify(data),
-      }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['templates'] });
+      // GET /api/templates returns a bare array, not an { items, total } envelope.
+      return apiFetch<Template[]>(`/templates${qs ? `?${qs}` : ''}`);
     },
   });
 }
@@ -307,25 +280,6 @@ export function useReorderPage() {
       queryClient.invalidateQueries({ queryKey: ['pages'] });
       queryClient.invalidateQueries({ queryKey: ['space-tree'] });
     },
-  });
-}
-
-// ======== Breadcrumb ========
-
-interface BreadcrumbData {
-  spaceKey: string | null;
-  spaceName: string | null;
-  source: 'confluence' | 'local';
-  ancestors: { id: number; title: string }[];
-  current: { id: number; title: string };
-}
-
-export function usePageBreadcrumb(pageId: string | undefined) {
-  return useQuery({
-    queryKey: ['page-breadcrumb', pageId],
-    queryFn: () => apiFetch<BreadcrumbData>(`/pages/${pageId}/breadcrumb`),
-    enabled: !!pageId,
-    staleTime: 60_000,
   });
 }
 

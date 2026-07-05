@@ -52,7 +52,7 @@ vi.mock('../../domains/llm/services/llm-cache.js', () => {
 });
 
 // --- Mock: _web-search-helper ---
-const mockFetchWebSources = vi.fn().mockResolvedValue([]);
+const mockFetchWebSources = vi.fn().mockResolvedValue({ sources: [], injectionWarnings: [] });
 const mockFormatWebContext = vi.fn().mockReturnValue('');
 
 vi.mock('./_web-search-helper.js', () => ({
@@ -165,7 +165,7 @@ describe('POST /api/llm/summarize - functionality', () => {
     mockSanitizeLlmInput.mockImplementation((input: string) => ({ sanitized: input, warnings: [] }));
     mockBuildOutputPostProcessor.mockResolvedValue((text: string) => text);
     mockStreamSSE.mockResolvedValue(undefined);
-    mockFetchWebSources.mockResolvedValue([]);
+    mockFetchWebSources.mockResolvedValue({ sources: [], injectionWarnings: [] });
     mockStreamChatClient.mockReturnValue((async function* () {
       yield { content: 'Summary text', done: true };
     })());
@@ -377,9 +377,10 @@ describe('POST /api/llm/summarize - functionality', () => {
   // ---------------------------------------------------------------------------
 
   it('should fetch web sources when searchWeb is true', async () => {
-    mockFetchWebSources.mockResolvedValue([
-      { title: 'Web Result', url: 'https://example.com', snippet: 'Some info' },
-    ]);
+    mockFetchWebSources.mockResolvedValue({
+      sources: [{ title: 'Web Result', url: 'https://example.com', snippet: 'Some info' }],
+      injectionWarnings: [],
+    });
     mockFormatWebContext.mockReturnValue('\n\n---\nReference: Web Result\n');
 
     await app.inject({
@@ -413,6 +414,52 @@ describe('POST /api/llm/summarize - functionality', () => {
     });
 
     expect(mockFetchWebSources).not.toHaveBeenCalled();
+  });
+
+  it('emits ONE aggregated PROMPT_INJECTION_DETECTED event when web sources contain injections (#835)', async () => {
+    mockFetchWebSources.mockResolvedValue({
+      sources: [{ title: '[FILTERED] docs', url: 'https://evil.example.com/doc', snippet: 'neutralized' }],
+      injectionWarnings: [
+        { url: 'https://evil.example.com/doc', warnings: ['Detected prompt injection pattern: [SYSTEM] tag'] },
+      ],
+    });
+
+    await app.inject({
+      method: 'POST',
+      url: '/api/llm/summarize',
+      payload: { content: 'Some text', model: 'llama3', searchWeb: true, searchQuery: 'q' },
+    });
+
+    expect(mockLogAuditEvent).toHaveBeenCalledOnce();
+    expect(mockLogAuditEvent).toHaveBeenCalledWith(
+      'test-user-123',
+      'PROMPT_INJECTION_DETECTED',
+      'llm',
+      undefined,
+      {
+        warnings: ['Detected prompt injection pattern: [SYSTEM] tag'],
+        route: '/llm/summarize',
+        field: 'webSearch',
+        urls: ['https://evil.example.com/doc'],
+      },
+      expect.anything(), // request object
+    );
+  });
+
+  it('does not emit an audit event when web sources are clean (#835)', async () => {
+    mockFetchWebSources.mockResolvedValue({
+      sources: [{ title: 'Clean', url: 'https://clean.example.com/doc', snippet: 'safe' }],
+      injectionWarnings: [],
+    });
+
+    await app.inject({
+      method: 'POST',
+      url: '/api/llm/summarize',
+      payload: { content: 'Some text', model: 'llama3', searchWeb: true, searchQuery: 'q' },
+    });
+
+    expect(mockFetchWebSources).toHaveBeenCalledOnce();
+    expect(mockLogAuditEvent).not.toHaveBeenCalled();
   });
 
   // ---------------------------------------------------------------------------

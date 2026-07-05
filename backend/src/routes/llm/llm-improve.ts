@@ -55,10 +55,12 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
     // sub-page branch inside assembleContextIfNeeded never emits tokens.
     const { markdown, multiPageSuffix } = await assembleContextIfNeeded(userId, body.pageId, content, includeSubPages, { protectMedia: true, layoutTokens: true });
 
-    // Sanitize before sending to LLM
+    // Sanitize before sending to LLM. The two flags below are `let` because
+    // the web-search block further down folds its own sanitizer detections
+    // into them (#835) — mirrors `llm-generate.ts`'s accumulator pattern.
     const { sanitized, warnings } = sanitizeLlmInput(markdown);
-    const promptInjectionDetected = warnings.length > 0;
-    const wasSanitized = sanitized !== markdown;
+    let promptInjectionDetected = warnings.length > 0;
+    let wasSanitized = sanitized !== markdown;
     if (promptInjectionDetected) {
       await logAuditEvent(userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/improve' }, request);
     }
@@ -71,6 +73,13 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
       sanitizedInstruction = instrSanitized;
       if (instrWarnings.length > 0) {
         await logAuditEvent(userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings: instrWarnings, route: '/llm/improve', field: 'instruction' }, request);
+        // Roll instruction-field detections into the per-call attestation flags
+        // so llm_audit_log (Report 5) stays consistent with audit_log — same
+        // idiom as the markdown-body (:62-64) and web-search (:98-99) paths.
+        // sanitizeLlmInput only warns when it rewrites a match, so a non-empty
+        // instrWarnings always implies the instruction was sanitized.
+        promptInjectionDetected = true;
+        wasSanitized = true;
       }
     }
 
@@ -78,7 +87,24 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
     const webSources: WebSource[] = [];
     if (body.searchWeb) {
       const sq = body.searchQuery || sanitizedInstruction?.slice(0, 200) || `improve ${type} technical documentation`;
-      webSources.push(...await fetchWebSources(sq, userId));
+      const { sources: fetchedSources, injectionWarnings } = await fetchWebSources(sq, userId);
+      webSources.push(...fetchedSources);
+      // One aggregated event per request (#835) — covers every offending web
+      // source so audit volume stays bounded. logAuditEvent never throws.
+      if (injectionWarnings.length > 0) {
+        await logAuditEvent(userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, {
+          warnings: injectionWarnings.flatMap((w) => w.warnings),
+          route: '/llm/improve',
+          field: 'webSearch',
+          urls: injectionWarnings.map((w) => w.url),
+        }, request);
+        // Roll web-search detections into the per-call attestation flags so
+        // llm_audit_log (Report 5) stays consistent with audit_log — same
+        // idiom as llm-ask.ts / llm-generate.ts. Detections always imply
+        // [FILTERED] rewrites, so `sanitized` flips too.
+        promptInjectionDetected = true;
+        wasSanitized = true;
+      }
     }
 
     let improveContent = sanitized;

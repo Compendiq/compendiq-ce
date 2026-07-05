@@ -32,6 +32,7 @@ export const PageSummarySchema = z.object({
   embeddingDirty: z.boolean(),
   embeddingStatus: PageEmbeddingStatusEnum.default('not_embedded'),
   embeddedAt: z.coerce.date().nullable().optional(),
+  embeddingError: z.string().nullable().optional(),
   qualityScore: z.number().nullable().optional(),
   qualityStatus: PageQualityStatusEnum.nullable().optional(),
   qualityCompleteness: z.number().nullable().optional(),

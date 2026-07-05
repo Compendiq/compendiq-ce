@@ -42,7 +42,7 @@ function createWrapper() {
                 element={<>{children}</>}
               />
               <Route
-                path="/settings/ai/ai-reviews"
+                path="/settings/ai/ai-safety"
                 element={<div data-testid="navigated-to-queue" />}
               />
             </Routes>
@@ -274,6 +274,27 @@ describe('ReviewDetailPage', () => {
       expect(
         screen.getByTestId('ai-review-detail-overlay-missing'),
       ).toBeInTheDocument();
+    });
+  });
+
+  it('back-to-queue on the 404 overlay navigates to the reviewer queue sub-tab', async () => {
+    mockFetch({ getStatus: 404 });
+    const Wrapper = createWrapper();
+    render(<ReviewDetailPage />, { wrapper: Wrapper });
+
+    await waitFor(() => {
+      expect(
+        screen.getByTestId('ai-review-detail-back-btn'),
+      ).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('ai-review-detail-back-btn'));
+
+    // The queue lives at /settings/ai/ai-safety?sub=reviews — not the
+    // dead /settings/ai/ai-reviews path, which resolves to the
+    // "settings page doesn't exist" panel.
+    await waitFor(() => {
+      expect(screen.getByTestId('navigated-to-queue')).toBeInTheDocument();
     });
   });
 

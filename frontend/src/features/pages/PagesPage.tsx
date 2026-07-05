@@ -28,7 +28,7 @@ import { SanitizedHtml } from '../../shared/components/SanitizedHtml';
 interface PageListItemProps {
   pageItem: {
     id: string;
-    spaceKey: string;
+    spaceKey: string | null;
     title: string;
     version: number;
     author: string | null;

@@ -24,6 +24,7 @@
 
 import { getPool } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
+import { safeIntOr } from '../utils/safe-int.js';
 import {
   getAdminAccessDeniedRetentionDays,
   getPendingSyncVersionsRetentionDays,
@@ -50,7 +51,11 @@ export async function runRetentionCleanup(): Promise<Record<string, number>> {
     if (table === 'page_versions') continue;
 
     const envKey = `RETENTION_${table.toUpperCase()}_DAYS`;
-    const retentionDays = parseInt(process.env[envKey] ?? String(days), 10);
+    // #828: safeIntOr (not bare parseInt) so a typo'd env value (e.g.
+    // RETENTION_AUDIT_LOG_DAYS=foo) falls back to the documented default rather
+    // than yielding NaN — a NaN bind makes the DELETE raise every cycle, which
+    // silently disables the sweep and lets the table grow unbounded.
+    const retentionDays = safeIntOr(process.env[envKey], days, 1);
 
     try {
       const { rowCount } = await pool.query(
@@ -102,7 +107,9 @@ export async function runRetentionCleanup(): Promise<Record<string, number>> {
   results['pending_sync_versions'] = await runPendingSyncVersionsRetention();
 
   // Count-based retention for page_versions
-  const maxVersions = parseInt(process.env.RETENTION_VERSIONS_MAX ?? '50', 10);
+  // #828: safeIntOr guards against a non-numeric RETENTION_VERSIONS_MAX (NaN
+  // would break the `WHERE rn > $1` bind and disable page_versions pruning).
+  const maxVersions = safeIntOr(process.env.RETENTION_VERSIONS_MAX, 50, 1);
   try {
     const { rowCount } = await pool.query(`
       DELETE FROM page_versions WHERE id IN (

@@ -1,17 +1,13 @@
 import { FastifyInstance } from 'fastify';
 import { checkConnection as checkPg, query } from '../../core/db/postgres.js';
 import { checkRedisConnection } from '../../core/plugins/redis.js';
-import { listProviderBreakers } from '../../core/services/circuit-breaker.js';
 import {
   checkHealth as providerCheckHealth,
   type ProviderConfig,
 } from '../../domains/llm/services/openai-compatible-client.js';
-import { listProviders } from '../../domains/llm/services/llm-provider-service.js';
 import { decryptPat } from '../../core/utils/crypto.js';
 import { logger } from '../../core/utils/logger.js';
-import { getMetrics as getLlmQueueMetrics } from '../../domains/llm/services/llm-queue.js';
 import { APP_VERSION, APP_BUILD_INFO } from '../../core/utils/version.js';
-import { getQueueMetrics, isBullMQEnabled } from '../../core/services/queue-service.js';
 
 // Track whether startup checks have passed
 let startupComplete = false;
@@ -142,39 +138,15 @@ export async function healthRoutes(fastify: FastifyInstance) {
       const allHealthy = postgres && redis;
       const status = allHealthy ? 'ok' : (postgres || redis) ? 'degraded' : 'error';
 
-      const queueMetrics = isBullMQEnabled() ? await getQueueMetrics() : undefined;
-
-      // Enrich per-provider breaker snapshots with human-readable provider names.
-      // `listProviders()` is cheap (a single SELECT without secrets) and tolerates
-      // providers that never booted a breaker (they simply don't appear here).
-      let providerBreakerSnapshots: Array<{
-        providerId: string; name: string | null; state: string; failures: number;
-      }> = [];
-      try {
-        const breakers = listProviderBreakers();
-        if (breakers.length > 0) {
-          const providers = await listProviders().catch(() => []);
-          const nameById = new Map(providers.map((p) => [p.id, p.name]));
-          providerBreakerSnapshots = breakers.map((b) => ({
-            providerId: b.providerId,
-            name: nameById.get(b.providerId) ?? null,
-            state: b.state,
-            failures: b.failureCount,
-          }));
-        }
-      } catch (err) {
-        logger.debug({ err }, 'Failed to enrich circuit-breaker snapshots');
-      }
-
+      // #818: /api/health is a public, unauthenticated endpoint, so it exposes
+      // only the coarse status/version fields the frontend reads (services,
+      // llmProvider, commit). Internal operational telemetry that leaked here —
+      // per-provider circuit-breaker state/failure counts, LLM queue depth, and
+      // BullMQ queue metrics — has been dropped (it had no consumers).
       reply.status(allHealthy ? 200 : 503).send({
         status,
         services: { postgres, redis, llm: llmStatus.connected },
         llmProvider: llmStatus.providerName,
-        circuitBreakers: {
-          providers: providerBreakerSnapshots,
-        },
-        llmQueue: getLlmQueueMetrics(),
-        ...(queueMetrics && { queues: queueMetrics }),
         version: APP_VERSION,
         edition: APP_BUILD_INFO.edition,
         commit: APP_BUILD_INFO.commit,

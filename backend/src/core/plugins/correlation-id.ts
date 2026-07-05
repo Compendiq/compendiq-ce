@@ -32,7 +32,7 @@ export function createCorrelationLogger(correlationId: string): Logger {
 }
 
 /** Upper bound on an accepted inbound correlation ID (generous; a UUID is 36). */
-export const MAX_CORRELATION_ID_LENGTH = 256;
+const MAX_CORRELATION_ID_LENGTH = 256;
 
 /**
  * Resolve the correlation ID for a request: reuse the inbound `x-correlation-id`
@@ -40,7 +40,7 @@ export const MAX_CORRELATION_ID_LENGTH = 256;
  * mint a fresh UUID. Bounding the length stops an oversized client-supplied
  * value from bloating every log line and the reflected response header.
  */
-export function resolveCorrelationId(raw: string | string[] | undefined): string {
+function resolveCorrelationId(raw: string | string[] | undefined): string {
   const value = Array.isArray(raw) ? raw[0] : raw;
   if (value && value.length > 0 && value.length <= MAX_CORRELATION_ID_LENGTH) {
     return value;

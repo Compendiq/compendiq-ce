@@ -10,7 +10,10 @@ export type PageType = 'page' | 'folder';
 interface PageSummary {
   id: string;
   confluenceId: string | null;
-  spaceKey: string;
+  // Standalone pages have no Confluence space — the list/detail routes return
+  // null for them (backend pages-crud space_key: string | null). Keep this
+  // nullable so consumers guard the dereference instead of assuming a string.
+  spaceKey: string | null;
   title: string;
   pageType: PageType;
   version: number;

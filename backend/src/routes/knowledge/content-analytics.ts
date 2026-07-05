@@ -128,8 +128,10 @@ export async function contentAnalyticsRoutes(fastify: FastifyInstance) {
   });
 
   // ── GET /api/analytics/trending ──────────────────────────────────────────
-  // Most-viewed articles in the last N days
-  fastify.get('/analytics/trending', async (request) => {
+  // Most-viewed articles in the last N days.
+  // Admin-only: aggregates page titles + space_key across ALL spaces with no
+  // per-user visibility filter, so it must not be exposed to non-admins (#818).
+  fastify.get('/analytics/trending', { preHandler: fastify.requireAdmin }, async (request) => {
     const { days, limit } = TrendingQuerySchema.parse(request.query);
 
     const result = await query<{
@@ -170,8 +172,9 @@ export async function contentAnalyticsRoutes(fastify: FastifyInstance) {
   });
 
   // ── GET /api/analytics/content-quality ───────────────────────────────────
-  // Dashboard: pages sorted by "needs attention" (low feedback, stale, few views)
-  fastify.get('/analytics/content-quality', async (request) => {
+  // Dashboard: pages sorted by "needs attention" (low feedback, stale, few views).
+  // Admin-only: returns titles + space_key across ALL pages/spaces (#818).
+  fastify.get('/analytics/content-quality', { preHandler: fastify.requireAdmin }, async (request) => {
     const { limit } = ContentQualityQuerySchema.parse(request.query);
 
     const result = await query<{
@@ -233,8 +236,10 @@ export async function contentAnalyticsRoutes(fastify: FastifyInstance) {
   });
 
   // ── GET /api/analytics/content-gaps ──────────────────────────────────────
-  // Failed/low-score searches → content gap queue (reuses search_analytics table)
-  fastify.get('/analytics/content-gaps', async (request) => {
+  // Failed/low-score searches → content gap queue (reuses search_analytics table).
+  // Admin-only: identical failed-search aggregation to the admin-gated
+  // /analytics/knowledge-gaps (analytics.ts); exposes all users' search terms (#818).
+  fastify.get('/analytics/content-gaps', { preHandler: fastify.requireAdmin }, async (request) => {
     const { days, minOccurrences } = ContentGapsQuerySchema.parse(request.query);
 
     const result = await query<{

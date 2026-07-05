@@ -271,7 +271,14 @@ export async function generateEmbedding(
           body: JSON.stringify({ model, input }),
           dispatcher: dispatcherFor(cfg),
         });
-        if (!res.ok) throw new Error(`generateEmbedding HTTP ${res.status}`);
+        if (!res.ok) {
+          // Include the response body so callers (embedding-service's
+          // isContextLengthError) can detect oversized-input errors such as
+          // Ollama's "input length exceeds context length". Cap the length so a
+          // verbose error page can't bloat logs.
+          const detail = await res.text().catch(() => '');
+          throw new Error(`generateEmbedding HTTP ${res.status}: ${detail.slice(0, 300)}`);
+        }
         const body = await res.json() as { data: Array<{ embedding: number[] }> };
         return body.data.map((d) => d.embedding);
       }),

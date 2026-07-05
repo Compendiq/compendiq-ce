@@ -13,7 +13,7 @@ flowchart LR
         rF["foundation<br/>health, auth, settings,<br/>admin, admin-embedding-locks,<br/>rbac, notifications, setup"]
         rC["confluence<br/>spaces, sync, attachments"]
         rL["llm<br/>llm-ask (SSE), improve, generate,<br/>summarize, diagram, conversations,<br/>embeddings, models, admin, pdf"]
-        rK["knowledge<br/>pages CRUD, versions, tags,<br/>embeddings, duplicates, pinned,<br/>templates, comments, search,<br/>analytics, requests, export/import"]
+        rK["knowledge<br/>pages CRUD, versions, tags,<br/>embeddings, duplicates, pinned,<br/>templates, comments, search,<br/>analytics, export/import"]
     end
 
     subgraph domains["domains/"]

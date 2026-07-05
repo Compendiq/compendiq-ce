@@ -7,7 +7,7 @@ import { ZoomIn, ZoomOut, Maximize, RefreshCw, Info, Layers, Grid3x3, Filter, Se
 import { cn } from '../../shared/lib/cn';
 import { useSearch } from '../../shared/hooks/use-standalone';
 import { useAuthStore } from '../../stores/auth-store';
-import { useGraphData, useLocalGraphData, useRefreshGraph, type LocalGraphFilters } from './graph-hooks';
+import { useGraphData, useLocalGraphData, useRefreshGraph, type LocalGraphFilters, type GraphMeta } from './graph-hooks';
 
 // ---------- Types ----------
 
@@ -224,13 +224,20 @@ export function GraphPage() {
     };
   }, []);
 
+  // Track the pointer only while a node is hovered. tooltipPos is consumed
+  // solely by the hover tooltip, so registering a global mousemove listener
+  // unconditionally would call setState on every pointer move — re-rendering
+  // the heavy force-graph tree at pointer frequency even with nothing
+  // hovered. Keying the effect on hoveredNode confines the cost to the
+  // (brief) hover window.
   useEffect(() => {
+    if (!hoveredNode) return;
     function handleMouseMove(e: MouseEvent) {
       setTooltipPos({ x: e.clientX, y: e.clientY });
     }
     window.addEventListener('mousemove', handleMouseMove);
     return () => window.removeEventListener('mousemove', handleMouseMove);
-  }, []);
+  }, [hoveredNode]);
 
   // Custom node rendering
   const nodeCanvasObject = useCallback(
@@ -712,7 +719,7 @@ function ArticlePickerLanding({ onPick, onShowFullGraph }: ArticlePickerLandingP
 // ---------- Empty-state branches (#358) ----------
 
 interface GraphEmptyStateProps {
-  meta: import('./graph-hooks').GraphMeta | undefined;
+  meta: GraphMeta | undefined;
 }
 
 /**

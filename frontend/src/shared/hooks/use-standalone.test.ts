@@ -4,8 +4,6 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createElement } from 'react';
 import {
   useTemplates,
-  useTemplate,
-  useCreateTemplate,
   useComments,
   useTrash,
   useRestorePage,
@@ -49,16 +47,18 @@ describe('use-standalone hooks', () => {
 
   describe('useTemplates', () => {
     it('fetches templates list', async () => {
-      const mock = mockFetch({ items: [{ id: 1, title: 'Template A' }], total: 1 });
+      // GET /api/templates returns a bare array (see backend templates.ts),
+      // not an { items, total } envelope.
+      const mock = mockFetch([{ id: 1, title: 'Template A' }]);
       const { result } = renderHook(() => useTemplates(), { wrapper: createWrapper() });
       await waitFor(() => expect(result.current.isSuccess).toBe(true));
-      expect(result.current.data?.items).toHaveLength(1);
-      expect(result.current.data?.items[0].title).toBe('Template A');
+      expect(result.current.data).toHaveLength(1);
+      expect(result.current.data?.[0].title).toBe('Template A');
       expect(mock).toHaveBeenCalledTimes(1);
     });
 
     it('passes scope and category as query params', async () => {
-      const mock = mockFetch({ items: [], total: 0 });
+      const mock = mockFetch([]);
       const { result } = renderHook(
         () => useTemplates({ scope: 'global', category: 'guide' }),
         { wrapper: createWrapper() },
@@ -67,37 +67,6 @@ describe('use-standalone hooks', () => {
       const url = (mock.mock.calls[0][0] as string);
       expect(url).toContain('scope=global');
       expect(url).toContain('category=guide');
-    });
-  });
-
-  describe('useTemplate', () => {
-    it('fetches single template by id', async () => {
-      mockFetch({ id: 5, title: 'My Template' });
-      const { result } = renderHook(() => useTemplate(5), { wrapper: createWrapper() });
-      await waitFor(() => expect(result.current.isSuccess).toBe(true));
-      expect(result.current.data?.title).toBe('My Template');
-    });
-
-    it('does not fetch when id is 0', () => {
-      mockFetch({});
-      const { result } = renderHook(() => useTemplate(0), { wrapper: createWrapper() });
-      expect(result.current.isFetching).toBe(false);
-    });
-  });
-
-  describe('useCreateTemplate', () => {
-    it('posts new template', async () => {
-      const mock = mockFetch({ id: 10, title: 'New' });
-      const { result } = renderHook(() => useCreateTemplate(), { wrapper: createWrapper() });
-      await result.current.mutateAsync({
-        title: 'New',
-        bodyJson: '{}',
-        bodyHtml: '<p>Hello</p>',
-      });
-      expect(mock).toHaveBeenCalledTimes(1);
-      const [url, opts] = mock.mock.calls[0] as [string, RequestInit];
-      expect(url).toContain('/templates');
-      expect(opts.method).toBe('POST');
     });
   });
 

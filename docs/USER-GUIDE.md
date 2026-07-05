@@ -292,22 +292,12 @@ Single-key shortcuts (`,`, `.`, `\`, `?`) can be toggled on/off in the shortcuts
 
 On macOS, `Ctrl` is replaced by `Cmd` and `Alt` by `Option`.
 
-## Knowledge Requests
-
-Request new documentation topics when you identify knowledge gaps:
-
-1. Go to **Knowledge Requests** in the sidebar.
-2. Click **New Request**.
-3. Describe the topic you need documented.
-4. Track the status of your request as it progresses.
-
 ## Notifications
 
 Compendiq notifies you of relevant events:
 
 - Page updates and comments on pages you follow
 - Verification requests assigned to you
-- Knowledge request status changes
 
 Access notifications via the bell icon in the top navigation bar.
 

@@ -117,6 +117,19 @@ describe('getSyncOverview', () => {
     expect(overview.issues).toEqual([]);
   });
 
+  it('excludes soft-deleted pages from the overview join (#828)', async () => {
+    // Soft-deleted pages (deleted_at set, purged only after 30 days) must not
+    // inflate pageCount/asset counts/issues or flip a space to 'degraded'. The
+    // predicate must live in the JOIN (not WHERE) so spaces with zero live
+    // pages still appear.
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+
+    await getSyncOverview('user-1');
+
+    const sql = mockQuery.mock.calls[0]![0] as string;
+    expect(sql).toMatch(/LEFT JOIN pages cp[\s\S]*cp\.deleted_at IS NULL/);
+  });
+
   it('shows a space as syncing when background sync is currently on that space', async () => {
     mockQuery.mockResolvedValueOnce({
       rows: [{

@@ -61,7 +61,7 @@ export function SmtpSettingsTab() {
       <div>
         <h3 className="mb-2 text-lg font-semibold">Email / SMTP Configuration</h3>
         <p className="text-sm text-muted-foreground">
-          Configure SMTP to enable email notifications for sync events, knowledge requests, and comments.
+          Configure SMTP to enable email notifications for sync events and comments.
         </p>
       </div>
 

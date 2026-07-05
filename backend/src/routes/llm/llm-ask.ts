@@ -17,10 +17,12 @@ import {
   checkCacheWithLock,
   sendCachedSSE,
   sanitizeLlmInput,
+  resolvePageRef,
   LLM_STREAM_RATE_LIMIT,
   MAX_INPUT_LENGTH,
 } from './_helpers.js';
 import { requireGlobalPermission } from '../../core/utils/rbac-guards.js';
+import { userCanAccessPage } from '../../core/services/rbac-service.js';
 import { acquireStreamSlot } from '../../core/services/sse-stream-limiter.js';
 
 export async function llmAskRoutes(fastify: FastifyInstance) {
@@ -100,13 +102,23 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     // with the sub-page tree content
     let multiPageSuffix = '';
     if (includeSubPages && body.pageId) {
-      const pageResult = await query<{ title: string; body_html: string }>(
-        'SELECT title, body_html FROM pages WHERE confluence_id = $1',
-        [body.pageId],
-      );
-      if (pageResult.rows.length > 0) {
-        const { title, body_html } = pageResult.rows[0]!;
-        const assembled = await assembleSubPageContext(userId, body.pageId, body_html || '', title);
+      // #814: enforce the same access control as GET /pages/:id before pulling
+      // the parent page (and its whole sub-tree) into the LLM prompt. Without
+      // this a caller with only the global `llm:query` permission could
+      // extract the content of any page in a space they cannot access.
+      const resolved = await resolvePageRef(body.pageId);
+      if (resolved && (await userCanAccessPage(userId, resolved.id))) {
+        const bodyResult = await query<{ body_html: string }>(
+          'SELECT body_html FROM pages WHERE id = $1 AND deleted_at IS NULL',
+          [resolved.id],
+        );
+        const parentHtml = bodyResult.rows[0]?.body_html || '';
+        const assembled = await assembleSubPageContext(
+          userId,
+          resolved.confluenceId ?? body.pageId,
+          parentHtml,
+          resolved.title,
+        );
         // Prepend the page tree context before the RAG context
         ragContext = `Page tree context:\n\n${assembled.markdown}\n\n---\n\nAdditional knowledge base context:\n\n${ragContext}`;
         multiPageSuffix = getMultiPagePromptSuffix(assembled.pageCount);
@@ -136,7 +148,9 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
             promptInjectionDetected = true;
           }
           if (sanitizedDoc !== doc.markdown) wasSanitized = true;
-          externalDocs.push({ url: doc.url, title: doc.title, markdown: sanitizedDoc });
+          // The title is attacker-controlled page metadata too — sanitize it
+          // before it is embedded into the external-docs context (#820).
+          externalDocs.push({ url: doc.url, title: sanitizeLlmInput(doc.title).sanitized, markdown: sanitizedDoc });
         } catch (err) {
           logger.warn({ err, url: extUrl }, 'Failed to fetch external doc via MCP');
         }
@@ -154,7 +168,24 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     const askWebSources: WebSource[] = [];
     if (body.searchWeb) {
       const wq = body.searchQuery || sanitizedQuestion.slice(0, 200);
-      askWebSources.push(...await fetchWebSources(wq, userId));
+      const { sources: fetchedSources, injectionWarnings } = await fetchWebSources(wq, userId);
+      askWebSources.push(...fetchedSources);
+      // One aggregated event per request (#835) — covers every offending web
+      // source so audit volume stays bounded. logAuditEvent never throws.
+      if (injectionWarnings.length > 0) {
+        await logAuditEvent(request.userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, {
+          warnings: injectionWarnings.flatMap((w) => w.warnings),
+          route: '/llm/ask',
+          field: 'webSearch',
+          urls: injectionWarnings.map((w) => w.url),
+        }, request);
+        // Roll web-search detections into the per-call attestation flags so
+        // llm_audit_log (Report 5) stays consistent with audit_log — same
+        // idiom as the external-doc loop above. Detections always imply
+        // [FILTERED] rewrites, so `sanitized` flips too.
+        promptInjectionDetected = true;
+        wasSanitized = true;
+      }
     }
 
     if (askWebSources.length > 0) {

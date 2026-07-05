@@ -13,6 +13,7 @@ import { ProviderListSection } from './ProviderListSection';
 import { UsecaseAssignmentsSection } from './UsecaseAssignmentsSection';
 import { EmbeddingReembedBanner } from './EmbeddingReembedBanner';
 import { SkeletonFormFields } from '../../../shared/components/feedback/Skeleton';
+import { ErrorState } from '../../../shared/components/feedback/ErrorState';
 
 const USECASES_ORDERED: LlmUsecase[] = ['chat', 'summary', 'quality', 'auto_tag', 'embedding'];
 
@@ -27,7 +28,13 @@ export function LlmTab() {
     queryKey: ['llm-providers'],
     queryFn: () => apiFetch('/admin/llm-providers'),
   });
-  const { data: rawAssignments, isLoading: assignmentsLoading } = useQuery<UsecaseAssignments>({
+  const {
+    data: rawAssignments,
+    isLoading: assignmentsLoading,
+    isError: assignmentsError,
+    error: assignmentsErrorObj,
+    refetch: refetchAssignments,
+  } = useQuery<UsecaseAssignments>({
     queryKey: ['llm-usecases'],
     queryFn: () => apiFetch('/admin/llm-usecases'),
   });
@@ -109,6 +116,25 @@ export function LlmTab() {
   const currentCapOnServer =
     adminSettings?.llmMaxConcurrentStreamsPerUser ?? DEFAULT_CONCURRENT_STREAMS_CAP;
   const runtimeLimitsDirty = concurrentStreamsCap !== currentCapOnServer;
+
+  // A failed assignments query must surface a distinct, retryable error —
+  // otherwise a 500/network failure falls through to the skeleton guard
+  // below and renders an infinite loading state with no message.
+  if (assignmentsError) {
+    return (
+      <ErrorState
+        title="Couldn't load use-case assignments"
+        description={
+          assignmentsErrorObj instanceof Error
+            ? assignmentsErrorObj.message
+            : undefined
+        }
+        onRetry={() => refetchAssignments()}
+        testId="llm-tab-error"
+        retryTestId="llm-tab-retry"
+      />
+    );
+  }
 
   if (assignmentsLoading || !assignments || !rawAssignments) {
     return <SkeletonFormFields />;

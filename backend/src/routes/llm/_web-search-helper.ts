@@ -16,6 +16,18 @@ export interface WebSource {
   snippet: string;
 }
 
+/** Sanitizer detections for one web source, aggregated across its fields (#835). */
+interface WebInjectionWarning {
+  url: string;
+  warnings: string[];
+}
+
+export interface WebSearchResult {
+  sources: WebSource[];
+  /** One entry per source whose title, body, or snippet tripped the sanitizer. */
+  injectionWarnings: WebInjectionWarning[];
+}
+
 interface WebSearchFormat {
   /** Label prefix for each source, e.g. 'Reference' or 'Web Source' */
   sourceLabel: string;
@@ -26,15 +38,19 @@ interface WebSearchFormat {
 /**
  * Fetch web sources via MCP docs sidecar (SearXNG search + page fetch).
  *
- * Returns an empty array if MCP docs is disabled, or if the search fails.
+ * Returns empty sources if MCP docs is disabled, or if the search fails.
  * Individual fetch failures fall back to the search snippet.
+ *
+ * Sanitizer detections are collected per source into `injectionWarnings`
+ * (#835) so callers can emit a PROMPT_INJECTION_DETECTED audit event —
+ * the sanitizer itself only neutralizes and logs.
  */
 export async function fetchWebSources(
   searchQuery: string,
   userId: string,
   options?: { maxResults?: number; maxLength?: number },
-): Promise<WebSource[]> {
-  if (!await isMcpDocsEnabled()) return [];
+): Promise<WebSearchResult> {
+  if (!await isMcpDocsEnabled()) return { sources: [], injectionWarnings: [] };
 
   const maxResults = options?.maxResults ?? await getSearxngMaxResults();
   const maxLength = options?.maxLength ?? 5000;
@@ -42,22 +58,34 @@ export async function fetchWebSources(
   try {
     const results = await searchDocumentation(searchQuery, userId, maxResults);
     const sources: WebSource[] = [];
+    const injectionWarnings: WebInjectionWarning[] = [];
 
     for (const result of results.slice(0, 2)) {
+      const warnings: string[] = [];
+      // Title and snippet are attacker-controlled page metadata surfaced by
+      // SearXNG — sanitize them like the fetched body (#820).
+      const titleResult = sanitizeLlmInput(result.title);
+      warnings.push(...titleResult.warnings);
       try {
         const doc = await fetchDocumentation(result.url, userId, maxLength);
-        const { sanitized } = sanitizeLlmInput(doc.markdown);
-        sources.push({ url: result.url, title: result.title, snippet: sanitized });
+        const bodyResult = sanitizeLlmInput(doc.markdown);
+        warnings.push(...bodyResult.warnings);
+        sources.push({ url: result.url, title: titleResult.sanitized, snippet: bodyResult.sanitized });
       } catch (fetchErr) {
         logger.warn({ err: fetchErr, url: result.url }, 'Web search: fetch failed, using snippet');
-        sources.push({ url: result.url, title: result.title, snippet: result.snippet });
+        const snippetResult = sanitizeLlmInput(result.snippet);
+        warnings.push(...snippetResult.warnings);
+        sources.push({ url: result.url, title: titleResult.sanitized, snippet: snippetResult.sanitized });
+      }
+      if (warnings.length > 0) {
+        injectionWarnings.push({ url: result.url, warnings });
       }
     }
 
-    return sources;
+    return { sources, injectionWarnings };
   } catch (err) {
     logger.warn({ err }, 'Web search failed, continuing without');
-    return [];
+    return { sources: [], injectionWarnings: [] };
   }
 }
 
