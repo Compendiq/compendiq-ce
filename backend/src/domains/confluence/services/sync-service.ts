@@ -335,14 +335,19 @@ async function syncSpace(
 
   logger.info({ userId, spaceKey }, 'Syncing space');
 
-  // Upsert shared space metadata (no user_id)
+  // Upsert shared space metadata (no user_id).
+  // #860: do NOT stamp last_synced here — the incremental-vs-full decision
+  // below reads it, and stamping NOW() every upsert forces every already-synced
+  // space into the incremental branch forever (killing the ≥24h full-sync
+  // backstop). Only the end-of-sync UPDATE (~line 438) advances last_synced,
+  // and only after a successful run.
   if (space) {
     const homepageId = space.homepage?.id ?? null;
     await query(
       `INSERT INTO spaces (space_key, space_name, homepage_id)
        VALUES ($1, $2, $3)
        ON CONFLICT (space_key)
-       DO UPDATE SET space_name = $2, homepage_id = $3, last_synced = NOW()`,
+       DO UPDATE SET space_name = $2, homepage_id = $3`,
       [spaceKey, space.name, homepageId],
     );
   }
@@ -1943,4 +1948,9 @@ export const __internal = {
   // the per-page fetch is NOT re-materialised locally by the upsert path,
   // without having to drive an entire syncSpace/syncUser walk.
   syncPage,
+  // Exposed for the #860 incremental-vs-full decision test: prove that after a
+  // completed sync the metadata upsert does not overwrite last_synced, so a
+  // >24h-stale space still takes the full-sync branch (getAllPagesInSpace)
+  // rather than the incremental one (getModifiedPages).
+  syncSpace,
 };
