@@ -470,7 +470,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       visibility: string;
     };
 
-    async function executeSearchQuery(wc: string, vals: unknown[], ob: string, pi: number, obVals: unknown[] = []) {
+    async function executeSearchQuery(wc: string, vals: unknown[], ob: string, obVals: unknown[] = []) {
       // Count query uses only WHERE params (no ORDER BY params)
       const countSql = `SELECT COUNT(*) as count FROM pages cp ${wc}`;
       const countResult = await query<{ count: string }>(countSql, [...vals]);
@@ -483,6 +483,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       }
 
       const offset = (page - 1) * limit;
+      // Derive the LIMIT/OFFSET placeholder index from the actual bound-value
+      // count (WHERE params + ORDER BY params) so it never goes stale when the
+      // relevance ORDER BY param is dropped in the ILIKE fallback (#862).
+      const pi = vals.length + obVals.length + 1;
       const dataSql = `
         SELECT cp.id, cp.confluence_id, cp.space_key, cp.title, cp.version,
                cp.parent_id, cp.labels, cp.author, cp.last_modified_at, cp.last_synced,
@@ -503,7 +507,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     }
 
     // First attempt: FTS query
-    let { total, rows } = await executeSearchQuery(whereClause, values, orderBy, paramIdx, orderByValues);
+    let { total, rows } = await executeSearchQuery(whereClause, values, orderBy, orderByValues);
 
     // ILIKE fallback: when FTS returns 0 results and search term >= 3 chars,
     // retry with a broader ILIKE match on title + body_text.
@@ -521,7 +525,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         ilikeOrderBy = 'cp.last_modified_at DESC NULLS LAST';
         ilikeObVals = [];
       }
-      const fallbackResult = await executeSearchQuery(ilikeWhereClause, ilikeValues, ilikeOrderBy, paramIdx, ilikeObVals);
+      const fallbackResult = await executeSearchQuery(ilikeWhereClause, ilikeValues, ilikeOrderBy, ilikeObVals);
       total = fallbackResult.total;
       rows = fallbackResult.rows;
       usedIlikeFallback = true;
