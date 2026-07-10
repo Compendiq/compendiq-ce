@@ -29,7 +29,7 @@ import { query } from '../../../core/db/postgres.js';
 import { ConfluenceError } from './confluence-client.js';
 
 const { __internal } = await import('./sync-service.js');
-const { detectDeletedPages, purgeDeletedPages } = __internal;
+const { detectDeletedPages, purgeDeletedPages, syncPage } = __internal;
 
 const dbAvailable = await isDbAvailable();
 
@@ -436,5 +436,192 @@ describe.skipIf(!dbAvailable)('purgeDeletedPages upstream gone-confirmation (#76
 
     expect(await rowExists('mix-gone')).toBe(false);
     expect(await rowExists('mix-live')).toBe(true);
+  });
+});
+
+// ── syncPage must never resurrect a trashed/gone page (#853) ────────────────
+//
+// Regression of #766: the single/bulk Delete routes are now atomic (they
+// trash upstream then hard-delete the local row), so after a delete the row
+// is gone. But `syncPage` fetches each listed page via `getPage()` and upserts
+// it with `deleted_at = NULL` — with NO status guard. Confluence DC's DELETE
+// TRASHES rather than purges; if a sync captured the page as `current` and it
+// is trashed before the walk reaches it, `getPage()` answers either 200
+// `status:'trashed'` (some DC versions serve trashed content on a direct GET)
+// or 404 (the default status=current filter no longer matches). Without a
+// guard, the 200-trashed case re-materialises the just-deleted article (the
+// #853 report) and the 404 case throws and aborts the whole sync. These tests
+// hit real Postgres and stub only `getPage`/`getPageAttachments`.
+
+/**
+ * Minimal ConfluenceClient stub for driving `syncPage` directly: `getPage`
+ * returns whatever the test configures (a `status:'trashed'`/`'current'` body,
+ * or throws a ConfluenceError). The trashed/404 guards short-circuit before any
+ * attachment fetch, so only `getPage` is needed here; the one current-page test
+ * that reaches the upsert supplies its own `getPageAttachments`.
+ */
+function makeSyncPageClient(getPageImpl: (id: string) => Promise<unknown>) {
+  return { getPage: getPageImpl };
+}
+
+function trashedBody(id: string, version = 2) {
+  return {
+    id,
+    title: `Page ${id}`,
+    status: 'trashed',
+    body: { storage: { value: '<p>trashed content</p>' } },
+    version: { number: version, when: '2026-01-01T00:00:00Z', by: { displayName: 'Author' } },
+    metadata: { labels: { results: [] } },
+    ancestors: [],
+  };
+}
+
+function currentBody(id: string, version = 1) {
+  return {
+    id,
+    title: `Page ${id}`,
+    status: 'current',
+    body: { storage: { value: '<p>live content</p>' } },
+    version: { number: version, when: '2026-01-01T00:00:00Z', by: { displayName: 'Author' } },
+    metadata: { labels: { results: [] } },
+    ancestors: [],
+  };
+}
+
+function freshCounts() {
+  return { pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 };
+}
+
+async function runSyncPage(
+  client: unknown,
+  confluenceId: string,
+  counts = freshCounts(),
+): Promise<typeof counts> {
+  await syncPage(
+    client as never,
+    'sync-user',
+    'DEV',
+    { id: confluenceId } as never,
+    new Date(),
+    new Map(),
+    counts,
+    'run-1',
+  );
+  return counts;
+}
+
+describe.skipIf(!dbAvailable)('syncPage trashed/gone guard (#853)', () => {
+  beforeAll(async () => {
+    await setupTestDb();
+  });
+  afterAll(async () => {
+    await teardownTestDb();
+  });
+  beforeEach(async () => {
+    await truncateAllTables();
+  });
+
+  it('does not re-create a deleted page when getPage returns 200 trashed', async () => {
+    // The Delete button already hard-deleted the local row; a stale sync
+    // iteration reaches this id and getPage answers 200 {status:'trashed'}.
+    // The upsert must NOT fresh-INSERT it as a live, visible article.
+    const client = makeSyncPageClient(async (id) => trashedBody(id, 1));
+
+    const counts = await runSyncPage(client, 'trash-new');
+
+    expect(await rowExists('trash-new')).toBe(false);
+    expect(counts.pagesCreated).toBe(0);
+    expect(counts.pagesUpdated).toBe(0);
+    // No live row existed, so the soft-delete affects nothing — counter stays put.
+    expect(counts.pagesDeleted).toBe(0);
+  });
+
+  it('soft-deletes (does not resurrect) a live local row whose page is trashed upstream', async () => {
+    // A row still live locally (e.g. the delete intent has not hard-deleted it
+    // yet, or a previous soft-delete was cleared) whose page is now trashed
+    // upstream must be converged to hidden — never refreshed back to visible.
+    await insertPage('trash-live', 'DEV'); // deleted_at IS NULL
+    const client = makeSyncPageClient(async (id) => trashedBody(id, 2));
+
+    const counts = await runSyncPage(client, 'trash-live');
+
+    expect(await getDeletedAt('trash-live')).not.toBeNull();
+    expect(counts.pagesDeleted).toBe(1);
+    // Body must not have been overwritten with the trashed content.
+    const row = await query<{ body_html: string }>(
+      'SELECT body_html FROM pages WHERE confluence_id = $1',
+      ['trash-live'],
+    );
+    expect(row.rows[0]!.body_html).not.toContain('trashed content');
+  });
+
+  it('leaves an already soft-deleted row hidden when its page is trashed upstream', async () => {
+    await insertPage('trash-softdel', 'DEV');
+    await softDelete('trash-softdel', 60 * 60); // soft-deleted an hour ago
+    const client = makeSyncPageClient(async (id) => trashedBody(id, 2));
+
+    const counts = await runSyncPage(client, 'trash-softdel');
+
+    expect(await getDeletedAt('trash-softdel')).not.toBeNull();
+    // No live row transitioned, so the deletion counter does not move.
+    expect(counts.pagesDeleted).toBe(0);
+  });
+
+  it('tolerates a 404 on getPage (page trashed/purged mid-sync) without aborting or re-creating', async () => {
+    // On DC versions that answer 404 (not 200-trashed) for a trashed id, the
+    // per-page fetch must not abort the whole sync nor leave/insert a live row.
+    const client = makeSyncPageClient(async () => {
+      throw new ConfluenceError('Resource not found', 404);
+    });
+
+    // Resolving (not rejecting) is the "does not abort the sync" contract.
+    const counts = await runSyncPage(client, 'race-404');
+
+    expect(await rowExists('race-404')).toBe(false);
+    // No live row existed, so nothing transitioned.
+    expect(counts.pagesDeleted).toBe(0);
+  });
+
+  it('soft-deletes a live row when its page 404s mid-sync', async () => {
+    await insertPage('race-404-live', 'DEV');
+    const client = makeSyncPageClient(async () => {
+      throw new ConfluenceError('Resource not found', 404);
+    });
+
+    const counts = await runSyncPage(client, 'race-404-live');
+
+    expect(await getDeletedAt('race-404-live')).not.toBeNull();
+    expect(counts.pagesDeleted).toBe(1);
+  });
+
+  it('re-throws a non-404 getPage error and never soft-deletes on it (5xx/403)', async () => {
+    // A transient/permission failure must NOT be mistaken for a deletion — the
+    // row stays live and the error surfaces so the sync can be retried.
+    await insertPage('err-503', 'DEV');
+    const client = makeSyncPageClient(async () => {
+      throw new ConfluenceError('Service unavailable', 503);
+    });
+
+    await expect(runSyncPage(client, 'err-503')).rejects.toThrow();
+
+    expect(await getDeletedAt('err-503')).toBeNull();
+  });
+
+  it('still upserts a current page normally (guard does not over-correct)', async () => {
+    // Regression pin: the trashed guard must not block the normal path, and a
+    // genuine trash-restore (status back to current) must still re-materialise.
+    // The only case that reaches the upsert, so it needs getPageAttachments.
+    const client = {
+      getPage: async (id: string) => currentBody(id, 1),
+      async getPageAttachments(): Promise<{ results: never[] }> {
+        return { results: [] };
+      },
+    };
+
+    const counts = await runSyncPage(client, 'live-1');
+
+    expect(await rowExists('live-1')).toBe(true);
+    expect(await getDeletedAt('live-1')).toBeNull();
+    expect(counts.pagesCreated).toBe(1);
   });
 });
