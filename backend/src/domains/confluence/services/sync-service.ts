@@ -421,6 +421,46 @@ async function syncSpace(
   });
 }
 
+/**
+ * #853: converge the local row for a Confluence page that the per-page fetch
+ * reports as no longer live — trashed (200 `status: 'trashed'`) or gone (404).
+ * Confluence DC's DELETE trashes rather than purges, so a page can be trashed
+ * upstream between the moment a listing captured it as `current` and the moment
+ * `syncPage` fetches it (e.g. a user clicks Delete mid-sync). Letting `syncPage`
+ * fall through to its upsert would clear `deleted_at` and resurrect the just-
+ * deleted article (regression of #766). Instead we soft-delete the local row —
+ * the same terminal state `detectDeletedPages` produces — so every list/tree/
+ * search query (all filter `deleted_at IS NULL`) hides it and `purgeDeletedPages`
+ * converges it. Only a row we have not already soft-deleted is touched, so an
+ * in-flight delete-route intent is left exactly as it is.
+ */
+async function softDeleteVanishedPage(
+  userId: string,
+  confluenceId: string,
+  spaceKey: string,
+  counts: SyncSpaceCounts,
+  reason: string,
+): Promise<void> {
+  const res = await query(
+    'UPDATE pages SET deleted_at = NOW() WHERE confluence_id = $1 AND deleted_at IS NULL',
+    [confluenceId],
+  );
+  if ((res.rowCount ?? 0) > 0) {
+    counts.pagesDeleted++;
+    await cleanPageAttachments(userId, confluenceId);
+    await clearPageFailures(confluenceId);
+    logger.info(
+      { spaceKey, confluenceId, reason },
+      'Sync skipped upsert of a non-current Confluence page and soft-deleted the local row (#853)',
+    );
+  } else {
+    logger.debug(
+      { spaceKey, confluenceId, reason },
+      'Sync skipped upsert of a non-current Confluence page; no live local row to soft-delete (#853)',
+    );
+  }
+}
+
 async function syncPage(
   client: ConfluenceClient,
   userId: string,
@@ -432,8 +472,32 @@ async function syncPage(
   syncRunId: string,
   changeSet: RestrictionChangeSet = { mode: 'full' },
 ): Promise<void> {
-  // Fetch full page content
-  const page = await client.getPage(pageSummary.id);
+  // Fetch full page content. A page can be trashed upstream between the moment
+  // a listing captured it as `current` and this per-page fetch — e.g. a user
+  // clicks Delete in Compendiq while a sync is walking the space (#853,
+  // regression of #766). Confluence DC's DELETE trashes rather than purges;
+  // depending on the DC version the fetch then answers either 200 with
+  // `status: 'trashed'` (some versions still serve trashed content on a direct
+  // GET) or 404 (the default status=current filter no longer matches). In BOTH
+  // cases the page must NOT be re-materialised — the upsert below clears
+  // `deleted_at`, which would resurrect the article the user just deleted. So
+  // soft-delete the local row and skip the upsert. Only a definitive 404 is
+  // swallowed; any other fetch error (401/403/5xx/network) is a genuine failure
+  // and is re-thrown so a transient problem is never mistaken for a deletion.
+  let page: ConfluencePage;
+  try {
+    page = await client.getPage(pageSummary.id);
+  } catch (err) {
+    if (err instanceof ConfluenceError && err.statusCode === 404) {
+      await softDeleteVanishedPage(userId, pageSummary.id, spaceKey, counts, 'gone (404)');
+      return;
+    }
+    throw err;
+  }
+  if (page.status === 'trashed') {
+    await softDeleteVanishedPage(userId, page.id, spaceKey, counts, 'trashed (200)');
+    return;
+  }
   const bodyStorage = page.body?.storage?.value ?? '';
 
   // Convert to HTML
@@ -1841,4 +1905,9 @@ export const __internal = {
   // gone-confirmation) converges it fully without driving an entire
   // syncSpace run.
   purgeDeletedPages,
+  // Exposed for the #853 trashed-upsert integration tests: prove that a page
+  // Confluence reports as trashed (200 `status: 'trashed'`) or gone (404) on
+  // the per-page fetch is NOT re-materialised locally by the upsert path,
+  // without having to drive an entire syncSpace/syncUser walk.
+  syncPage,
 };
