@@ -1264,10 +1264,12 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
           : [id, body.title, body.bodyHtml, bodyText, newVersion, userId],
       );
 
-      // A visibility change alters what OTHER users can see — their cached
-      // trees/lists would serve stale data for up to the cache TTL (15 min)
-      // if we only invalidated the editor's own cache.
-      if (body.visibility && body.visibility !== existingPage.visibility) {
+      // A shared page's list rows (title/snippet) and a visibility flip both
+      // change what OTHER users see (#893) — their cached trees/lists would
+      // serve stale data for up to the cache TTL (15 min) if we only
+      // invalidated the editor's own cache. Private edits stay per-user.
+      const visibilityChanged = body.visibility && body.visibility !== existingPage.visibility;
+      if (visibilityChanged || existingPage.visibility === 'shared') {
         await cache.invalidateAcrossUsers('pages');
       } else {
         await cache.invalidate(userId, 'pages');
@@ -1352,8 +1354,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
        bodyHtml, bodyText, confPage.version.number],
     );
 
-    // Invalidate cache
-    await cache.invalidate(userId, 'pages');
+    // Confluence pages are visible to every user with space access (#893), so
+    // clear every user's cached lists/trees, not just the editor's.
+    await cache.invalidateAcrossUsers('pages');
 
     await logAuditEvent(userId, 'PAGE_UPDATED', 'page', String(id), { title: body.title }, request);
 
@@ -1383,9 +1386,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // Load the page to determine source
     const existing = await query<{
       id: number; source: string; created_by_user_id: string | null;
-      confluence_id: string | null; space_key: string | null;
+      confluence_id: string | null; space_key: string | null; visibility: string;
     }>(
-      `SELECT id, source, created_by_user_id, confluence_id, space_key FROM pages WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'}`,
+      `SELECT id, source, created_by_user_id, confluence_id, space_key, visibility FROM pages WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'}`,
       [isNumericId ? parseInt(id, 10) : id],
     );
     if (existing.rows.length === 0) {
@@ -1409,7 +1412,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         await query('UPDATE pages SET deleted_at = NOW() WHERE id = $1', [existingPage.id]);
       }
 
-      await cache.invalidate(userId, 'pages');
+      // A shared standalone page is visible to every user (#893), so its
+      // removal must clear all users' cached lists/trees. Private stays per-user.
+      if (existingPage.visibility === 'shared') {
+        await cache.invalidateAcrossUsers('pages');
+      } else {
+        await cache.invalidate(userId, 'pages');
+      }
       await logAuditEvent(userId, 'PAGE_DELETED', 'page', String(id),
         { source: 'standalone', permanent: queryParams.permanent === 'true' }, request);
 
@@ -1538,9 +1547,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       }
     }
 
-    // Invalidate cache
-    await cache.invalidate(userId, 'pages');
-    await cache.invalidate(userId, 'spaces');
+    // Confluence pages are visible to every user with space access (#893), and
+    // deleting one may also drop its space — clear every user's cache.
+    await cache.invalidateAcrossUsers('pages');
+    await cache.invalidateAcrossUsers('spaces');
 
     await logAuditEvent(userId, 'PAGE_DELETED', 'page', String(id), { alreadyGoneRemotely: alreadyGone }, request);
 
@@ -1954,8 +1964,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     }
 
     const succeeded = standaloneSucceeded + confluenceSucceeded;
-    await cache.invalidate(userId, 'pages');
-    await cache.invalidate(userId, 'spaces');
+    // A bulk delete may include Confluence/shared pages visible to every user
+    // (#893), so clear all users' cached lists/trees/spaces unconditionally.
+    await cache.invalidateAcrossUsers('pages');
+    await cache.invalidateAcrossUsers('spaces');
     await logAuditEvent(
       userId,
       'PAGE_DELETED',

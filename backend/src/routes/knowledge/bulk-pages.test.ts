@@ -13,6 +13,8 @@ vi.mock('../../core/services/redis-cache.js', () => {
       get = vi.fn().mockResolvedValue(null);
       set = vi.fn().mockResolvedValue(undefined);
       invalidate = vi.fn().mockResolvedValue(undefined);
+      // Bulk deletes clear every user's cache (#893).
+      invalidateAcrossUsers = vi.fn().mockResolvedValue(undefined);
     },
   };
 });
