@@ -400,6 +400,8 @@ describe('Local Spaces Routes', () => {
     mockQueryFn.mockResolvedValueOnce({
       rows: [{ id: 5, path: '/5' }],
     });
+    // #891 cycle-check: no cycle (empty result)
+    mockQueryFn.mockResolvedValueOnce({ rows: [] });
     // Get parent path
     mockQueryFn.mockResolvedValueOnce({
       rows: [{ path: '/5' }],
@@ -420,6 +422,60 @@ describe('Local Spaces Routes', () => {
     expect(body.parentId).toBe('5');
     expect(body.path).toBe('/5/10');
     expect(body.depth).toBe(1);
+  });
+
+  it('move: rejects making a page its own parent (#891)', async () => {
+    // Existing page
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ id: 5, parent_id: null, space_key: 'PROJ', source: 'standalone', path: '/5' }],
+    });
+    // Parent exists check (parent is the page itself)
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ id: 5, path: '/5' }],
+    });
+    // Cycle-check finds the moved page in the ancestor chain
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ found: 1 }] });
+    // Fallback so any further (unexpected) query resolves harmlessly
+    mockQueryFn.mockResolvedValue({ rows: [] });
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/pages/5/move',
+      payload: { parentId: 5 },
+    });
+
+    expect(response.statusCode).toBe(400);
+    // Critical: no UPDATE must run, so no descendant paths are corrupted.
+    const updateCall = mockQueryFn.mock.calls.find(
+      (c) => typeof c[0] === 'string' && (c[0] as string).includes('UPDATE pages'),
+    );
+    expect(updateCall).toBeUndefined();
+  });
+
+  it('move: rejects moving a Confluence page under its own descendant when path is NULL (#891)', async () => {
+    // Existing page (Confluence-synced, materialized path is NULL)
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ id: 5, parent_id: null, space_key: 'PROJ', source: 'confluence', path: null }],
+    });
+    // Parent exists check (a descendant of page 5, also NULL path)
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ id: 9, path: null }],
+    });
+    // Cycle-check finds the moved page in the ancestor chain
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ found: 1 }] });
+    mockQueryFn.mockResolvedValue({ rows: [] });
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/pages/5/move',
+      payload: { parentId: 9 },
+    });
+
+    expect(response.statusCode).toBe(400);
+    const updateCall = mockQueryFn.mock.calls.find(
+      (c) => typeof c[0] === 'string' && (c[0] as string).includes('UPDATE pages'),
+    );
+    expect(updateCall).toBeUndefined();
   });
 
   it('should return 404 when moving non-existent page', async () => {

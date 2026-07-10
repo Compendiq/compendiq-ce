@@ -357,10 +357,28 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
         throw fastify.httpErrors.badRequest('Parent page not found');
       }
 
-      // Prevent circular reference: cannot move a page under its own descendant
-      const parentPath = parentCheck.rows[0]!.path as string | null;
-      if (parentPath && parentPath.includes(`/${page.id}/`)) {
-        throw fastify.httpErrors.badRequest('Cannot move a page under its own descendant');
+      // Prevent circular reference (#891): reject moving a page under itself or
+      // under any of its own descendants. Walk the ancestor chain of the target
+      // parent (resolving parent_id against both confluence_id and numeric id,
+      // the same dual key used by the tree queries). If the page being moved
+      // appears anywhere in that chain, the move would create a cycle. UNION
+      // (not UNION ALL) dedupes so a pre-existing cycle in the data cannot loop.
+      // This also covers Confluence-synced pages whose materialized `path` is
+      // NULL, where the old path-substring check was a silent no-op.
+      const cycleCheck = await query(
+        `WITH RECURSIVE ancestors AS (
+           SELECT id, parent_id FROM pages WHERE id = $1 AND deleted_at IS NULL
+           UNION
+           SELECT p.id, p.parent_id FROM pages p
+           JOIN ancestors a
+             ON (p.confluence_id = a.parent_id OR CAST(p.id AS TEXT) = a.parent_id)
+           WHERE p.deleted_at IS NULL
+         )
+         SELECT 1 FROM ancestors WHERE id = $2 LIMIT 1`,
+        [newParentId, page.id],
+      );
+      if (cycleCheck.rows.length > 0) {
+        throw fastify.httpErrors.badRequest('Cannot move a page under itself or its own descendant');
       }
     }
 
