@@ -181,6 +181,36 @@ describe('Spaces routes', () => {
     expect(localSpace.pageCount).toBe(5);
   });
 
+  it('GET /spaces excludes soft-deleted (trashed) pages from pageCount (#869, #923)', async () => {
+    mockGetUserAccessibleSpaces.mockResolvedValueOnce(['DEV']);
+    mockQuery
+      .mockResolvedValueOnce({
+        rows: [{
+          space_key: 'DEV',
+          space_name: 'Development',
+          homepage_id: null,
+          homepage_numeric_id: null,
+          custom_home_page_id: null,
+          last_synced: '2026-03-18T10:00:00.000Z',
+          source: 'confluence',
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [{ space_key: 'DEV', count: '1' }] });
+
+    const response = await app.inject({ method: 'GET', url: '/api/spaces' });
+    expect(response.statusCode).toBe(200);
+
+    // The per-space page-count query must filter soft-deleted rows so that
+    // sync-trashed and standalone-trashed pages do not inflate pageCount,
+    // matching the deleted_at IS NULL invariant used by every other count
+    // surface (#828).
+    const countCall = mockQuery.mock.calls.find(
+      (c) => typeof c[0] === 'string' && c[0].includes('GROUP BY cp.space_key'),
+    );
+    expect(countCall).toBeDefined();
+    expect(countCall?.[0]).toMatch(/deleted_at IS NULL/);
+  });
+
   // ---------- #352: PUT /api/spaces/:key/home ----------
 
   it('GET /spaces surfaces customHomePageId when set, overriding the Confluence default (#352)', async () => {
