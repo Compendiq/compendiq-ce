@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { query } from '../../core/db/postgres.js';
+import { userCanAccessPage } from '../../core/services/rbac-service.js';
 
 // ── Request schemas ────────────────────────────────────────────────────────────
 
@@ -40,6 +41,11 @@ export async function contentAnalyticsRoutes(fastify: FastifyInstance) {
     const { id: pageId } = IdParamSchema.parse(request.params);
     const { isHelpful, comment } = FeedbackBodySchema.parse(request.body);
     const userId = request.userId;
+
+    // #890: gate by page access so missing/restricted pages return 404 (not a 500 FK oracle)
+    if (!(await userCanAccessPage(userId, pageId))) {
+      return reply.notFound('Page not found');
+    }
 
     const result = await query<{ id: number }>(
       `INSERT INTO article_feedback (page_id, user_id, is_helpful, comment)
@@ -101,6 +107,11 @@ export async function contentAnalyticsRoutes(fastify: FastifyInstance) {
     const { id: pageId } = IdParamSchema.parse(request.params);
     const { sessionId } = ViewBodySchema.parse(request.body ?? {});
     const userId = request.userId;
+
+    // #890: gate by page access so missing/restricted pages return 404 (not a 500 FK oracle)
+    if (!(await userCanAccessPage(userId, pageId))) {
+      return reply.notFound('Page not found');
+    }
 
     // Deduplicate: skip if same user+page+session viewed within last 30 min
     if (sessionId) {

@@ -8,6 +8,12 @@ vi.mock('../../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mockQuery(...args),
 }));
 
+// --- Mock: page-access gate (boundary) ---
+const mockUserCanAccessPage = vi.fn();
+vi.mock('../../core/services/rbac-service.js', () => ({
+  userCanAccessPage: (...args: unknown[]) => mockUserCanAccessPage(...args),
+}));
+
 import { contentAnalyticsRoutes } from './content-analytics.js';
 
 const TEST_USER_ID = 'user-abc';
@@ -87,9 +93,38 @@ describe('Content analytics routes - authenticated', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // Default-allow so happy-path tests keep passing; individual tests
+    // override with mockResolvedValueOnce(false) to exercise the gate.
+    mockUserCanAccessPage.mockResolvedValue(true);
   });
 
   // ── POST /api/pages/:id/feedback ──────────────────────────────────
+
+  it('returns 404 and does not insert feedback when the user cannot access the page (#890)', async () => {
+    mockUserCanAccessPage.mockResolvedValueOnce(false);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/pages/999999/feedback',
+      payload: { isHelpful: true },
+    });
+
+    expect(res.statusCode).toBe(404);
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 and does not record a view when the user cannot access the page (#890)', async () => {
+    mockUserCanAccessPage.mockResolvedValueOnce(false);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/pages/999999/view',
+      payload: {},
+    });
+
+    expect(res.statusCode).toBe(404);
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
 
   it('should submit feedback', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [{ id: 1 }] });
@@ -355,6 +390,7 @@ describe('Content analytics routes - admin required for aggregates', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockUserCanAccessPage.mockResolvedValue(true);
   });
 
   it('should return 403 for GET /api/analytics/trending without admin', async () => {
