@@ -89,6 +89,12 @@ interface ResolvedBulkRow {
    * are their current tags" needs of the tag/replace-tag routes.
    */
   labels: string[];
+  /**
+   * Owner of the page (`created_by_user_id`). Delete routes use this to
+   * enforce the standalone owner-only rule (#861); other bulk callers ignore
+   * it. NULL for legacy rows with no recorded owner.
+   */
+  createdByUserId: string | null;
 }
 
 interface BulkSelectionResolutionError {
@@ -245,11 +251,12 @@ export async function resolveBulkSelection(
       space_key: string | null;
       source: string;
       labels: string[] | null;
+      created_by_user_id: string | null;
     }>(
       // Deliberately NOT visiblePagesPredicate(): ids-mode grants owners access
       // to their private pages regardless of visibility, and the space branch
       // is not gated on source = 'confluence'.
-      `SELECT cp.id, cp.confluence_id, cp.space_key, cp.source, cp.labels FROM pages cp
+      `SELECT cp.id, cp.confluence_id, cp.space_key, cp.source, cp.labels, cp.created_by_user_id FROM pages cp
        WHERE (cp.id = ANY($1::int[]) OR cp.confluence_id = ANY($2::text[]))
          AND cp.deleted_at IS NULL
          AND ((cp.source = 'standalone' AND (cp.visibility = 'shared' OR cp.created_by_user_id = $3))
@@ -263,6 +270,7 @@ export async function resolveBulkSelection(
       spaceKey: r.space_key,
       source: r.source as 'confluence' | 'standalone',
       labels: r.labels ?? [],
+      createdByUserId: r.created_by_user_id,
     }));
 
     // Map each returned row back to the *original* id the caller supplied so
@@ -340,8 +348,9 @@ export async function resolveBulkSelection(
     space_key: string | null;
     source: string;
     labels: string[] | null;
+    created_by_user_id: string | null;
   }>(
-    `SELECT cp.id, cp.confluence_id, cp.space_key, cp.source, cp.labels FROM pages cp ${where}
+    `SELECT cp.id, cp.confluence_id, cp.space_key, cp.source, cp.labels, cp.created_by_user_id FROM pages cp ${where}
      ORDER BY cp.id ASC
      LIMIT ${HARD_CAP}`,
     allValues,
@@ -353,6 +362,7 @@ export async function resolveBulkSelection(
     spaceKey: r.space_key,
     source: r.source as 'confluence' | 'standalone',
     labels: r.labels ?? [],
+    createdByUserId: r.created_by_user_id,
   }));
 
   return { rows, notFoundIds: [] };

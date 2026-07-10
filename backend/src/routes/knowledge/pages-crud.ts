@@ -1821,7 +1821,18 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     let failed = resolved.notFoundIds.length;
 
     // --- Partition by source ---
-    const standalonePages = resolved.rows.filter((r) => r.source === 'standalone')
+    // #861: standalone delete is owner-only, mirroring DELETE /pages/:id.
+    // Shared standalone pages resolve for every viewer (read/edit is allowed),
+    // but only the owner may trash them. Non-owned standalone rows are reported
+    // as failures exactly like the single-delete 403 ('not the owner').
+    for (const r of resolved.rows) {
+      if (r.source === 'standalone' && r.createdByUserId !== userId) {
+        failed++;
+        errors.push(`Page ${r.id}: not the owner`);
+      }
+    }
+    const standalonePages = resolved.rows
+      .filter((r) => r.source === 'standalone' && r.createdByUserId === userId)
       .map((r) => ({ id: r.id, source: 'standalone', confluence_id: r.confluenceId, space_key: r.spaceKey }));
     const confluencePages = resolved.rows.filter((r) => r.source !== 'standalone')
       .map((r) => ({ id: r.id, source: r.source, confluence_id: r.confluenceId, space_key: r.spaceKey }));
