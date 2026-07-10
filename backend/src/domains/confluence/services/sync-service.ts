@@ -435,7 +435,6 @@ async function syncSpace(
  * in-flight delete-route intent is left exactly as it is.
  */
 async function softDeleteVanishedPage(
-  userId: string,
   confluenceId: string,
   spaceKey: string,
   counts: SyncSpaceCounts,
@@ -447,7 +446,9 @@ async function softDeleteVanishedPage(
   );
   if ((res.rowCount ?? 0) > 0) {
     counts.pagesDeleted++;
-    await cleanPageAttachments(userId, confluenceId);
+    // Attachment dirs are keyed by confluence_id; cleanPageAttachments ignores
+    // its first arg (same call shape detectDeletedPages uses).
+    await cleanPageAttachments('', confluenceId);
     await clearPageFailures(confluenceId);
     logger.info(
       { spaceKey, confluenceId, reason },
@@ -489,13 +490,13 @@ async function syncPage(
     page = await client.getPage(pageSummary.id);
   } catch (err) {
     if (err instanceof ConfluenceError && err.statusCode === 404) {
-      await softDeleteVanishedPage(userId, pageSummary.id, spaceKey, counts, 'gone (404)');
+      await softDeleteVanishedPage(pageSummary.id, spaceKey, counts, 'gone (404)');
       return;
     }
     throw err;
   }
   if (page.status === 'trashed') {
-    await softDeleteVanishedPage(userId, page.id, spaceKey, counts, 'trashed (200)');
+    await softDeleteVanishedPage(page.id, spaceKey, counts, 'trashed (200)');
     return;
   }
   const bodyStorage = page.body?.storage?.value ?? '';

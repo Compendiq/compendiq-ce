@@ -454,18 +454,14 @@ describe.skipIf(!dbAvailable)('purgeDeletedPages upstream gone-confirmation (#76
 // hit real Postgres and stub only `getPage`/`getPageAttachments`.
 
 /**
- * Minimal ConfluenceClient stub for driving `syncPage` directly. `getPage`
+ * Minimal ConfluenceClient stub for driving `syncPage` directly: `getPage`
  * returns whatever the test configures (a `status:'trashed'`/`'current'` body,
- * or throws a ConfluenceError); `getPageAttachments` is a no-op so the
- * current-page control test can reach the upsert without real attachments.
+ * or throws a ConfluenceError). The trashed/404 guards short-circuit before any
+ * attachment fetch, so only `getPage` is needed here; the one current-page test
+ * that reaches the upsert supplies its own `getPageAttachments`.
  */
 function makeSyncPageClient(getPageImpl: (id: string) => Promise<unknown>) {
-  return {
-    getPage: getPageImpl,
-    async getPageAttachments(): Promise<{ results: never[] }> {
-      return { results: [] };
-    },
-  };
+  return { getPage: getPageImpl };
 }
 
 function trashedBody(id: string, version = 2) {
@@ -536,6 +532,8 @@ describe.skipIf(!dbAvailable)('syncPage trashed/gone guard (#853)', () => {
     expect(await rowExists('trash-new')).toBe(false);
     expect(counts.pagesCreated).toBe(0);
     expect(counts.pagesUpdated).toBe(0);
+    // No live row existed, so the soft-delete affects nothing — counter stays put.
+    expect(counts.pagesDeleted).toBe(0);
   });
 
   it('soft-deletes (does not resurrect) a live local row whose page is trashed upstream', async () => {
@@ -576,9 +574,12 @@ describe.skipIf(!dbAvailable)('syncPage trashed/gone guard (#853)', () => {
       throw new ConfluenceError('Resource not found', 404);
     });
 
-    await expect(runSyncPage(client, 'race-404')).resolves.toBeDefined();
+    // Resolving (not rejecting) is the "does not abort the sync" contract.
+    const counts = await runSyncPage(client, 'race-404');
 
     expect(await rowExists('race-404')).toBe(false);
+    // No live row existed, so nothing transitioned.
+    expect(counts.pagesDeleted).toBe(0);
   });
 
   it('soft-deletes a live row when its page 404s mid-sync', async () => {
@@ -609,7 +610,13 @@ describe.skipIf(!dbAvailable)('syncPage trashed/gone guard (#853)', () => {
   it('still upserts a current page normally (guard does not over-correct)', async () => {
     // Regression pin: the trashed guard must not block the normal path, and a
     // genuine trash-restore (status back to current) must still re-materialise.
-    const client = makeSyncPageClient(async (id) => currentBody(id, 1));
+    // The only case that reaches the upsert, so it needs getPageAttachments.
+    const client = {
+      getPage: async (id: string) => currentBody(id, 1),
+      async getPageAttachments(): Promise<{ results: never[] }> {
+        return { results: [] };
+      },
+    };
 
     const counts = await runSyncPage(client, 'live-1');
 
