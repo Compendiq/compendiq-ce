@@ -272,7 +272,7 @@ export async function syncUser(userId: string): Promise<void> {
     // authoritative and must be removed. Admin-authored rows have
     // `source='local'` and never appear in this sweep.
     if (isFeatureEnabled(ENTERPRISE_FEATURES.RAG_PERMISSION_ENFORCEMENT)) {
-      await sweepStaleConfluenceAces(syncRunStartedAt);
+      await sweepStaleConfluenceAces(syncRunStartedAt, spaces);
     }
 
     // Set status to 'embedding' while processing dirty pages
@@ -1158,6 +1158,16 @@ async function syncPageRestrictions(
         },
         'Failed to fetch Confluence restrictions for page — skipping this round; pre-existing ACEs untouched',
       );
+      // Bump this page's existing Confluence ACEs to the current run so the
+      // end-of-run sweep leaves them alone (#859) — matches the documented
+      // contract that they stay authoritative until a later successful sync
+      // rewrites them. Same UPDATE as the incremental-skip fast path above.
+      await query(
+        `UPDATE access_control_entries
+            SET synced_at = $1
+          WHERE resource_type = 'page' AND resource_id = $2 AND source = 'confluence'`,
+        [syncRunStartedAt, pageDbId],
+      );
       return;
     }
     throw err;
@@ -1306,14 +1316,24 @@ async function resolveConfluenceGroup(name: string): Promise<number | null> {
  * exist. Runs once at the end of `syncUser`, outside any per-page
  * transaction, so a partial sync doesn't wipe ACEs for pages we never got
  * to.
+ *
+ * Scoped to `spaceKeys` — the spaces this run actually visited (#859). Without
+ * the scope, one user's end-of-run sweep would age out the ACEs another user's
+ * earlier run wrote for a different space (their `synced_at` predates this run),
+ * silently wiping restrictions across every space but the last one synced.
  */
-async function sweepStaleConfluenceAces(syncRunStartedAt: Date): Promise<void> {
+async function sweepStaleConfluenceAces(
+  syncRunStartedAt: Date,
+  spaceKeys: string[],
+): Promise<void> {
+  if (spaceKeys.length === 0) return;
   const res = await query(
     `DELETE FROM access_control_entries
      WHERE resource_type = 'page'
        AND source = 'confluence'
-       AND (synced_at IS NULL OR synced_at < $1)`,
-    [syncRunStartedAt],
+       AND (synced_at IS NULL OR synced_at < $1)
+       AND resource_id IN (SELECT id FROM pages WHERE space_key = ANY($2))`,
+    [syncRunStartedAt, spaceKeys],
   );
   if (res.rowCount && res.rowCount > 0) {
     logger.info(
