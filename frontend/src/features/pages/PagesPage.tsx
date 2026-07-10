@@ -735,8 +735,12 @@ export function PagesPage() {
             return displayItems.length === 0 ? (
               <EmptyState
                 icon={FolderOpen}
-                title="No pages found"
-                description="Try a different search term or switch to keyword mode"
+                title={searchResults.hasEmbeddings ? 'No pages found' : 'Pages not embedded yet'}
+                description={
+                  searchResults.hasEmbeddings
+                    ? 'Try a different search term or switch to keyword mode'
+                    : 'Configure an embedding provider in Settings → LLM and run an embedding pass to enable semantic search.'
+                }
               />
             ) : (
               <>
