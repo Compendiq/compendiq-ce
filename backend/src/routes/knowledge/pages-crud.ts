@@ -1719,12 +1719,29 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     }
 
     // For Confluence articles, push updated content upstream (best-effort)
+    let publishedVersion = page.version + 1;
     if (page.source === 'confluence' && page.confluence_id) {
       try {
         const client = await getClientForUser(userId);
         if (client) {
           const storageBody = htmlToConfluence(page.draft_body_html!);
-          await client.updatePage(page.confluence_id, page.title, storageBody, page.version + 1);
+          // updatePage() increments internally, so pass the *previous* live
+          // version (page.version) — the version Confluence currently holds
+          // pre-publish. The local row is already at page.version + 1 from the
+          // transaction above.
+          const confPage = await client.updatePage(page.confluence_id, page.title, storageBody, page.version);
+          // Trust the API-returned version over our locally-computed bump so
+          // local `version` can't drift and mis-trigger the next sync's
+          // conflict guard (mirrors the restore route). Persist the storage
+          // Confluence accepted and clear local-edit markers — local state now
+          // matches the remote.
+          publishedVersion = confPage.version?.number ?? publishedVersion;
+          await query(
+            `UPDATE pages SET body_storage = $2, version = $3, last_synced = NOW(),
+               local_modified_at = NULL, local_modified_by = NULL
+             WHERE id = $1`,
+            [page.id, storageBody, publishedVersion],
+          );
         }
       } catch (err) {
         // Log but don't fail — local publish succeeded
@@ -1734,7 +1751,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     await cache.invalidate(userId, 'pages');
     await logAuditEvent(userId, 'DRAFT_PUBLISHED', 'page', String(page.id),
-      { version: page.version + 1 }, request);
+      { version: publishedVersion }, request);
 
     emitWebhookEvent({
       eventType: 'page.updated',
@@ -1746,7 +1763,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       },
     });
 
-    return { id: page.id, version: page.version + 1, published: true };
+    return { id: page.id, version: publishedVersion, published: true };
   });
 
   // DELETE /api/pages/:id/draft — discard draft
