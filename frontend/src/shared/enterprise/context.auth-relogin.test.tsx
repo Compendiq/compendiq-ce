@@ -148,4 +148,71 @@ describe('EnterpriseProvider re-fetches license on auth change (#881)', () => {
     });
     expect(screen.getByTestId('license').textContent).toBe('null');
   });
+
+  it('preserves an already-loaded EE license when a refetch fails transiently (5xx)', async () => {
+    let failLicense = false;
+    let licenseCalls = 0;
+    _setScriptLoaderForTesting(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (window as any).__COMPENDIQ_UI__ = { LicenseStatusCard: () => null, version: '1.0.0' };
+    });
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = urlOf(input as RequestInfo | URL);
+      if (url.includes('/auth/refresh')) {
+        return new Response(null, { status: 401 });
+      }
+      if (url.includes('/admin/license')) {
+        licenseCalls += 1;
+        if (failLicense) return new Response(null, { status: 500 });
+        return new Response(
+          JSON.stringify({
+            edition: 'enterprise',
+            tier: 'enterprise',
+            features: ['oidc_sso'],
+            valid: true,
+            canUpdate: true,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    act(() => {
+      useAuthStore
+        .getState()
+        .setAuth('ee-admin-token', { id: '1', username: 'admin', role: 'admin' });
+    });
+
+    render(
+      <EnterpriseProvider>
+        <TestConsumer />
+      </EnterpriseProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('enterprise').textContent).toBe('true');
+    });
+
+    // Token rotates mid-session (routine refresh) but the refetch hits a 500.
+    const callsBefore = licenseCalls;
+    failLicense = true;
+    act(() => {
+      useAuthStore
+        .getState()
+        .setAuth('ee-admin-token-rotated', { id: '1', username: 'admin', role: 'admin' });
+    });
+
+    await waitFor(() => {
+      expect(licenseCalls).toBeGreaterThan(callsBefore);
+    });
+
+    // Transient failure must NOT flip an EE admin to community.
+    expect(screen.getByTestId('enterprise').textContent).toBe('true');
+    expect(screen.getByTestId('license').textContent).toBe('enterprise');
+    expect(screen.getByTestId('ui').textContent).toBe('loaded');
+    // And no loading flicker on a refetch.
+    expect(screen.getByTestId('loading').textContent).toBe('false');
+  });
 });

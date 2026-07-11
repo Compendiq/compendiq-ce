@@ -95,11 +95,20 @@ ATM-{tier}-{seats}-{expiryYYYYMMDD}-{licenseId}.{ed25519SignatureBase64url}
 
 ```mermaid
 flowchart LR
-    boot(["App mount"]) --> fetch[["GET /api/admin/license"]]
+    boot(["App mount +<br/>every auth change<br/>(login / logout / token refresh)"]) --> fetch[["GET /api/admin/license"]]
     fetch --> decide{edition !== 'community'<br/>AND valid}
     decide -- yes --> ee["isEnterprise = true<br/>→ show OIDC tab,<br/>license form, EE features"]
     decide -- no  --> ce["isEnterprise = false<br/>→ CE UI only"]
+    fetch -- 401 / 403 --> clear["license cleared<br/>(logout / not admin)"]
+    fetch -- network / 5xx --> keep["transient — previously<br/>loaded license preserved"]
 ```
+
+The fetch runs on mount **and whenever the access token changes** (a
+post-mount SPA login must flip EE surfaces on without a reload; logout
+clears the previous session's license/ui from memory). Only a genuine
+auth signal (401/403) clears the license — transient failures (network
+error, 5xx) leave the previously loaded license untouched, and the
+loading skeleton shows on the initial load only.
 
 CE and EE ship the **same frontend image**. There is no IIFE bundle, no
 build-time patch, no separate EE SPA. All gating happens at runtime via

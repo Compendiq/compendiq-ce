@@ -2,7 +2,7 @@ import { useState, useEffect, type ReactNode } from 'react';
 import type { EnterpriseUI, LicenseInfo } from './types';
 import { EnterpriseContext } from './enterprise-context';
 import { loadEnterpriseUI } from './loader';
-import { apiFetch } from '../lib/api';
+import { apiFetch, ApiError } from '../lib/api';
 import { useAuthStore } from '../../stores/auth-store';
 
 /**
@@ -33,18 +33,31 @@ export function EnterpriseProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
-    setIsLoading(true);
+    // isLoading starts true and is only ever set back to false, so skeletons
+    // show on the initial load only — a token-change refetch (routine refresh)
+    // keeps the current UI up while the license is re-checked, no flicker.
 
     async function init() {
       // License first — CE returns edition:'community', EE returns actual
       // tier. The response tells us whether the backend is EE at all.
       let info: LicenseInfo | null = null;
+      let transientFailure = false;
       try {
         info = await apiFetch<LicenseInfo>('/admin/license');
-      } catch {
-        // Not admin, unauthenticated, or endpoint unavailable — license clears
+      } catch (err) {
+        // Only a genuine auth signal (401 logged out / 403 not admin) clears
+        // the license. Anything else — network error, 5xx — is transient and
+        // must NOT flip an EE admin to community mid-session.
+        const isAuthError =
+          err instanceof ApiError && (err.statusCode === 401 || err.statusCode === 403);
+        transientFailure = !isAuthError;
       }
       if (cancelled) return;
+      if (transientFailure) {
+        // Preserve the previously loaded license/ui; just settle loading.
+        setIsLoading(false);
+        return;
+      }
       // Set unconditionally so a logout (fetch now 401s → info null) drops the
       // previous session's license instead of leaving it stale in memory.
       setLicense(info);
