@@ -420,8 +420,12 @@ export function useResyncPage() {
       }),
     onSuccess: (_data, id) => {
       queryClient.invalidateQueries({ queryKey: ['pages', id] });
-      queryClient.invalidateQueries({ queryKey: ['pages'], refetchType: 'none' });
-      queryClient.refetchQueries({ queryKey: ['pages'] });
+      // Mark every 'pages'-prefixed query stale; invalidateQueries defaults to
+      // refetchType 'active', so only currently mounted queries refetch and
+      // inactive (unmounted) entries refetch lazily on next mount. A prior
+      // unfiltered refetchQueries here refetched every inactive entry too,
+      // fanning one click into N network requests (issue #882).
+      queryClient.invalidateQueries({ queryKey: ['pages'] });
     },
   });
 }
@@ -453,8 +457,8 @@ export function useRequalityPage() {
       }),
     onSuccess: (_data, id) => {
       queryClient.invalidateQueries({ queryKey: ['pages', id] });
-      queryClient.invalidateQueries({ queryKey: ['pages'], refetchType: 'none' });
-      queryClient.refetchQueries({ queryKey: ['pages'] });
+      // See useResyncPage: mark stale + refetch only active queries (issue #882).
+      queryClient.invalidateQueries({ queryKey: ['pages'] });
     },
   });
 }

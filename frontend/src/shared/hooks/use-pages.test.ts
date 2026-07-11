@@ -2,7 +2,16 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createElement } from 'react';
-import { usePages, usePageTree, usePinPage, useUnpinPage, type PinnedPage } from './use-pages';
+import {
+  usePages,
+  usePageTree,
+  usePinPage,
+  useUnpinPage,
+  useResyncPage,
+  useReembedPage,
+  useRequalityPage,
+  type PinnedPage,
+} from './use-pages';
 import type { PageFilters } from './use-pages';
 
 // Mock auth store
@@ -370,5 +379,114 @@ describe('useUnpinPage', () => {
       expect(data!.items).toHaveLength(0);
       expect(data!.total).toBe(0);
     });
+  });
+});
+
+// Regression for issue #882: a single-page Re-sync / Re-check-Quality click must
+// NOT eagerly refetch every inactive (unmounted) query under the 'pages' prefix.
+// The onSuccess handlers used to pair invalidateQueries({ refetchType: 'none' })
+// with an unfiltered refetchQueries({ queryKey: ['pages'] }), which — unlike
+// invalidateQueries — has no 'active' default and so refetched inactive cache
+// entries (other page details, the knowledge graph, version history, tree, etc.),
+// fanning one click into N network requests.
+
+/** Seed observer-less, already-fetched cache entries → inactive but isFetched(). */
+async function seedInactivePagesQueries(queryClient: QueryClient) {
+  await queryClient.fetchQuery({
+    queryKey: ['pages', 'other-id'],
+    queryFn: () => apiFetchMock('/pages/other-id'),
+  });
+  await queryClient.fetchQuery({
+    queryKey: ['pages', 'graph', 'global', 'x'],
+    queryFn: () => apiFetchMock('/pages/graph'),
+  });
+  await queryClient.fetchQuery({
+    queryKey: ['pages', 'v-id', 'versions'],
+    queryFn: () => apiFetchMock('/pages/v-id/versions'),
+  });
+}
+
+describe('useResyncPage', () => {
+  it('calls the bulk-sync endpoint and does not refetch inactive pages queries', async () => {
+    apiFetchMock.mockResolvedValue({ succeeded: 1, failed: 0, errors: [] });
+
+    const { queryClient, wrapper } = createQueryClientAndWrapper();
+    await seedInactivePagesQueries(queryClient);
+    apiFetchMock.mockClear();
+
+    const { result } = renderHook(() => useResyncPage(), { wrapper });
+
+    act(() => {
+      result.current.mutate('page-1');
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    const urls = apiFetchMock.mock.calls.map((c) => c[0]);
+    expect(urls).toContain('/pages/bulk/sync');
+    // The inactive, unmounted entries must be left stale — not refetched.
+    expect(urls).not.toContain('/pages/other-id');
+    expect(urls).not.toContain('/pages/graph');
+    expect(urls).not.toContain('/pages/v-id/versions');
+  });
+});
+
+describe('useRequalityPage', () => {
+  it('calls the bulk-quality endpoint and does not refetch inactive pages queries', async () => {
+    apiFetchMock.mockResolvedValue({ succeeded: 1, failed: 0, errors: [] });
+
+    const { queryClient, wrapper } = createQueryClientAndWrapper();
+    await seedInactivePagesQueries(queryClient);
+    apiFetchMock.mockClear();
+
+    const { result } = renderHook(() => useRequalityPage(), { wrapper });
+
+    act(() => {
+      result.current.mutate('page-1');
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    const urls = apiFetchMock.mock.calls.map((c) => c[0]);
+    expect(urls).toContain('/pages/bulk/quality');
+    expect(urls).not.toContain('/pages/other-id');
+    expect(urls).not.toContain('/pages/graph');
+    expect(urls).not.toContain('/pages/v-id/versions');
+  });
+});
+
+describe('useReembedPage', () => {
+  // Regression guard documenting the intended difference: useReembedPage is left
+  // unchanged because refetchQueries({ queryKey: ['embeddings'] }) matches only the
+  // single ['embeddings','status'] query, which it correctly refreshes.
+  it('refetches the embeddings status query but not inactive pages queries', async () => {
+    apiFetchMock.mockResolvedValue({ succeeded: 1, failed: 0, errors: [] });
+
+    const { queryClient, wrapper } = createQueryClientAndWrapper();
+    await seedInactivePagesQueries(queryClient);
+    await queryClient.fetchQuery({
+      queryKey: ['embeddings', 'status'],
+      queryFn: () => apiFetchMock('/embeddings/status'),
+    });
+    apiFetchMock.mockClear();
+
+    const { result } = renderHook(() => useReembedPage(), { wrapper });
+
+    act(() => {
+      result.current.mutate('page-1');
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    await waitFor(() => {
+      const urls = apiFetchMock.mock.calls.map((c) => c[0]);
+      expect(urls).toContain('/embeddings/status');
+    });
+
+    const urls = apiFetchMock.mock.calls.map((c) => c[0]);
+    expect(urls).toContain('/pages/bulk/embed');
+    expect(urls).not.toContain('/pages/other-id');
+    expect(urls).not.toContain('/pages/graph');
+    expect(urls).not.toContain('/pages/v-id/versions');
   });
 });
