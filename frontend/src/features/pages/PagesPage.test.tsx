@@ -913,6 +913,16 @@ describe('PagesPage', () => {
         expect(pagesUrls.some((u) => u.includes('source=local'))).toBe(false);
       });
     });
+
+    it('shows the user-facing label "Local" (not the wire value) in the active-filter pill', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      const select = screen.getByTestId('filter-source') as HTMLSelectElement;
+      fireEvent.change(select, { target: { value: 'standalone' } });
+
+      const pill = screen.getByTestId('filter-pill-sourceFilter');
+      expect(pill).toHaveTextContent('Source: Local');
+      expect(pill).not.toHaveTextContent('standalone');
+    });
   });
 
   describe('performance: virtual scrolling + memoized items (#511, #521)', () => {

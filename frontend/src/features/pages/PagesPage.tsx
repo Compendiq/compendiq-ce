@@ -5,6 +5,7 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import { m } from 'framer-motion';
 import { Search, FileText, Plus, RefreshCw, ChevronLeft, ChevronRight, FolderOpen, Filter, X, List, Loader2, Trash2, Lock, Globe, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
+import { PageSourceEnum, type PageSource } from '@compendiq/contracts';
 import { usePages, usePageFilterOptions, usePage, useEmbeddingStatus, type QualityStatus, type SummaryStatus } from '../../shared/hooks/use-pages';
 import { useSpaces, useSync, useSyncStatus } from '../../shared/hooks/use-spaces';
 import { useSettings } from '../../shared/hooks/use-settings';
@@ -20,6 +21,13 @@ import { cn } from '../../shared/lib/cn';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 import { ShortcutHint } from '../../shared/components/ShortcutHint';
 import { SanitizedHtml } from '../../shared/components/SanitizedHtml';
+
+// User-facing labels for the wire values of PageSourceEnum. Shared between the
+// source-filter <option>s and the active-filter pill so they never diverge.
+const SOURCE_LABELS: Record<PageSource, string> = {
+  confluence: 'Confluence',
+  standalone: 'Local',
+};
 
 // ---------------------------------------------------------------------------
 // Memoized page list item: prevents re-render from embedding-status polling
@@ -184,7 +192,7 @@ export function PagesPage() {
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState<'title' | 'modified' | 'author' | 'quality' | 'relevance'>('modified');
-  const [sourceFilter, setSourceFilter] = useState<string>('');
+  const [sourceFilter, setSourceFilter] = useState<PageSource | ''>('');
   const [searchMode, setSearchMode] = useState<'keyword' | 'semantic' | 'hybrid'>('keyword');
 
   const { data: settings } = useSettings();
@@ -222,7 +230,7 @@ export function PagesPage() {
     freshness: (freshness || undefined) as 'fresh' | 'recent' | 'aging' | 'stale' | undefined,
     embeddingStatus: (embeddingStatus || undefined) as 'pending' | 'done' | undefined,
     ...qualityRange,
-    source: (sourceFilter || undefined) as 'confluence' | 'standalone' | undefined,
+    source: sourceFilter || undefined,
     dateFrom: dateFrom || undefined,
     dateTo: dateTo || undefined,
     page,
@@ -276,14 +284,14 @@ export function PagesPage() {
     if (qualityFilter) filters.push({ key: 'qualityFilter', label: `Quality: ${qualityFilter}` });
     if (dateFrom) filters.push({ key: 'dateFrom', label: `From: ${dateFrom}` });
     if (dateTo) filters.push({ key: 'dateTo', label: `To: ${dateTo}` });
-    if (sourceFilter) filters.push({ key: 'sourceFilter', label: `Source: ${sourceFilter}` });
+    if (sourceFilter) filters.push({ key: 'sourceFilter', label: `Source: ${SOURCE_LABELS[sourceFilter]}` });
     return filters;
   }, [author, labels, freshness, embeddingStatus, qualityFilter, dateFrom, dateTo, sourceFilter]);
 
   const activeFilterCount = activeFilters.length;
 
   const clearFilter = useCallback((key: string) => {
-    const setters: Record<string, (v: string) => void> = {
+    const setters: Record<string, (v: '') => void> = {
       author: setAuthor,
       labels: setLabels,
       freshness: setFreshness,
@@ -482,13 +490,14 @@ export function PagesPage() {
 
           <select
             value={sourceFilter}
-            onChange={(e) => { setSourceFilter(e.target.value); setPage(1); }}
+            onChange={(e) => { setSourceFilter(e.target.value as PageSource | ''); setPage(1); }}
             className="nm-select-md w-32 shrink-0"
             data-testid="filter-source"
           >
             <option value="">All Sources</option>
-            <option value="confluence">Confluence</option>
-            <option value="standalone">Local</option>
+            {PageSourceEnum.options.map((source) => (
+              <option key={source} value={source}>{SOURCE_LABELS[source]}</option>
+            ))}
           </select>
 
           <select
