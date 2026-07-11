@@ -89,6 +89,70 @@ describe('openai-compatible-client — chat', () => {
   });
 });
 
+// ─── #868: early termination must cancel the upstream body ──────────────────
+// When a consumer stops iterating streamChat() early (e.g. streamSSE breaks its
+// loop on client disconnect), the JS runtime calls generator.return(). Without
+// a try/finally around the read loop, reader.cancel() is never called, so the
+// undici response body / TCP socket stays open and the OpenAI-compatible /
+// Ollama backend keeps generating the full response — holding a GPU slot and
+// billing output tokens. This fake server writes ONE frame and then holds the
+// connection open forever (never [DONE], never res.end()), so the only way it
+// can observe a 'close' event is the client tearing down the socket.
+describe('openai-compatible-client — streamChat cancels upstream on early termination (#868)', () => {
+  let leakSrv: Server;
+  let leakBase: string;
+  let serverSawClose = false;
+  let resolveClose!: () => void;
+
+  beforeAll(async () => {
+    leakSrv = createServer((req, res) => {
+      if (req.url === '/v1/chat/completions') {
+        let body = '';
+        req.on('data', (c) => (body += c));
+        req.on('end', () => {
+          res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+          // One frame, then hold the connection open forever: no [DONE], no end().
+          res.write('data: ' + JSON.stringify({ choices: [{ delta: { content: 'hi' } }] }) + '\n\n');
+          // Never completes on its own, so 'close' can only mean the client aborted.
+          res.on('close', () => { serverSawClose = true; resolveClose(); });
+        });
+        return;
+      }
+      res.writeHead(404); res.end();
+    });
+    await new Promise<void>((r) => leakSrv.listen(0, r));
+    const { port } = leakSrv.address() as AddressInfo;
+    leakBase = `http://127.0.0.1:${port}/v1`;
+  });
+  afterAll(() => new Promise<void>((r) => leakSrv.close(() => r())));
+
+  it('breaking out of the for-await loop tears down the upstream connection', async () => {
+    serverSawClose = false;
+    const closePromise = new Promise<void>((r) => { resolveClose = r; });
+
+    let received = '';
+    for await (const c of streamChat(
+      { ...cfg, baseUrl: leakBase, providerId: 'leak-test' },
+      'm',
+      [{ role: 'user', content: 'hi' }],
+    )) {
+      received += c.content;
+      break; // early termination → generator.return() → finally → reader.cancel()
+    }
+    // Confirm we actually consumed a chunk before bailing (the leak scenario).
+    expect(received).toBe('hi');
+
+    // Give the socket teardown up to 1s to reach the server. Pre-fix the reader
+    // is never cancelled, the connection stays open, and this race times out
+    // (serverSawClose stays false). Post-fix reader.cancel() closes the socket.
+    await Promise.race([
+      closePromise,
+      new Promise<void>((r) => setTimeout(r, 1000)),
+    ]);
+    expect(serverSawClose).toBe(true);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Thinking-mode pure function — branches on (provider strictness, model)
 //

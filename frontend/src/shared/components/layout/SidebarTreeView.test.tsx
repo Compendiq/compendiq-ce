@@ -497,6 +497,98 @@ describe('SidebarTreeView', () => {
   });
 });
 
+// #880: tree rows were clickable <div>s with focus-visible classes but no
+// tabIndex/role/onKeyDown, so keyboard-only and screen-reader users could not
+// focus or activate any page title — a WCAG 2.1.1 (Keyboard) failure on the
+// app's primary navigation. Each row is now a focusable role="treeitem" that
+// activates navigation on Enter/Space.
+describe('SidebarTreeView keyboard navigation (#880)', () => {
+  beforeEach(() => {
+    mockNavigate.mockClear();
+    mockTreeData = { ...defaultTreeData };
+    useUiStore.setState({
+      treeSidebarCollapsed: false,
+      treeSidebarSpaceKey: undefined,
+    });
+  });
+
+  it('exposes each row as a focusable treeitem (role + tabIndex 0)', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const row = screen.getByText('API Reference').closest('[role="treeitem"]');
+    expect(row).not.toBeNull();
+    expect(row!.getAttribute('tabindex')).toBe('0');
+  });
+
+  it('navigates on Enter', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const row = screen.getByText('API Reference').closest('[role="treeitem"]')!;
+    fireEvent.keyDown(row, { key: 'Enter' });
+    expect(mockNavigate).toHaveBeenCalledWith('/pages/root-2');
+  });
+
+  it('navigates on Space and prevents the default page-scroll', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const row = screen.getByText('API Reference').closest('[role="treeitem"]')!;
+    // fireEvent returns false when the handler called preventDefault().
+    const notPrevented = fireEvent.keyDown(row, { key: ' ' });
+    expect(notPrevented).toBe(false);
+    expect(mockNavigate).toHaveBeenCalledWith('/pages/root-2');
+  });
+
+  it('exposes aria-expanded on an expandable row and omits it on a leaf', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const expandable = screen.getByText('Getting Started').closest('[role="treeitem"]')!;
+    expect(expandable.getAttribute('aria-expanded')).toBe('false');
+    const leaf = screen.getByText('API Reference').closest('[role="treeitem"]')!;
+    expect(leaf.getAttribute('aria-expanded')).toBeNull();
+  });
+
+  it('ignores keydown bubbling up from the nested chevron button (no double-activation)', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const chevron = screen.getAllByLabelText('Expand')[0]!;
+    // Enter dispatched on the chevron bubbles to the row; the target guard must
+    // stop the row handler from also navigating.
+    fireEvent.keyDown(chevron, { key: 'Enter' });
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+});
+
+// #880 (code-review follow-up): the rows carry role="treeitem" but had no
+// ancestor role="tree" and nested-children wrappers had no role="group", so
+// every treeitem was orphaned — an axe-critical aria-required-parent violation
+// that breaks screen-reader tree semantics. The row list is now a role="tree"
+// and each expanded node's children live in a role="group".
+describe('SidebarTreeView ARIA tree semantics (#880)', () => {
+  beforeEach(() => {
+    mockNavigate.mockClear();
+    mockTreeData = { ...defaultTreeData };
+    useUiStore.setState({
+      treeSidebarCollapsed: false,
+      treeSidebarSpaceKey: undefined,
+    });
+  });
+
+  it('exposes the row list as a labelled ARIA tree (valid required-parent for treeitems)', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const tree = screen.getByRole('tree');
+    expect(tree).toBeInTheDocument();
+    expect(tree.getAttribute('aria-label')).toBeTruthy();
+  });
+
+  it('wraps an expanded node\'s children in role="group" so nested treeitems have a valid parent', () => {
+    // OPS has no homepage, so the full tree renders and "Getting Started" keeps
+    // its children (Installation/Configuration) as a nested, expandable branch.
+    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: 'OPS' });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByLabelText('Expand'));
+    expect(screen.getByText('Installation')).toBeInTheDocument();
+    const group = document.querySelector('[role="group"]');
+    expect(group).not.toBeNull();
+    // The nested treeitem lives inside the group.
+    expect(group!.querySelector('[role="treeitem"]')).not.toBeNull();
+  });
+});
+
 // #707: on reload the tree mounts scrolled to the top; the active page's path
 // is auto-expanded but the row is out of view. The scroll container should
 // scroll the active node into view — unless it is already visible (so manual

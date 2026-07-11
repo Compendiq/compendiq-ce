@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, waitFor, fireEvent } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 // Mock mermaid (must be before component import)
 const mockMermaidRender = vi.fn().mockResolvedValue({ svg: '<svg data-testid="mermaid-svg">diagram</svg>' });
@@ -30,9 +31,11 @@ vi.mock('react-router-dom', async () => {
   };
 });
 
-// Mock apiFetch for ChildrenMacroView
+// Mock apiFetch for ChildrenMacroView (children), usePage (page detail), and
+// AttachmentsMacroView (attachments). A single resolved shape satisfies all
+// three consumers since each reads only its own key.
 vi.mock('../../lib/api', () => ({
-  apiFetch: vi.fn().mockResolvedValue({ children: [] }),
+  apiFetch: vi.fn().mockResolvedValue({ children: [], attachments: [] }),
 }));
 
 import { ArticleViewer } from './ArticleViewer';
@@ -410,6 +413,28 @@ describe('ArticleViewer', () => {
     const view = container.querySelector('[data-testid="children-macro-view"]')!;
     expect(view.textContent).toContain('Child Pages');
     expect(view.textContent).toContain('No child pages');
+  });
+
+  // Regression for #876 (defect 2): the ConfluenceAttachments node must be
+  // registered so read mode hydrates the widget instead of leaking the literal
+  // placeholder text '[Attachments]' emitted by the content converter.
+  it('renders the attachments macro widget in read mode (not literal [Attachments] text)', async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const html = '<div class="confluence-attachments-macro" data-upload="false" data-old="false">[Attachments]</div>';
+
+    const { container } = render(
+      <QueryClientProvider client={queryClient}>
+        <ArticleViewer content={html} />
+      </QueryClientProvider>,
+    );
+
+    // The widget header renders 'Attachments'; the raw placeholder must be gone.
+    await waitFor(() => {
+      expect(container.textContent).toContain('Attachments');
+    });
+    expect(container.textContent).not.toContain('[Attachments]');
   });
 
   it('renders collapsible details/summary sections', async () => {

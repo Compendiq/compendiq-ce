@@ -92,7 +92,7 @@ export async function adminIpAllowlistRoutes(fastify: FastifyInstance) {
     '/admin/ip-allowlist/test',
     { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT },
     async (request, reply) => {
-      const { ip } = IpAllowlistTestRequestSchema.parse(request.body);
+      const { ip, config: candidate } = IpAllowlistTestRequestSchema.parse(request.body);
 
       let addr: ipaddr.IPv4 | ipaddr.IPv6;
       try {
@@ -101,7 +101,10 @@ export async function adminIpAllowlistRoutes(fastify: FastifyInstance) {
         return reply.code(400).send({ error: 'invalid_ip' });
       }
 
-      const config = await getPersistedConfig();
+      // Evaluate against the caller-supplied PENDING config when provided, so the
+      // admin UI's lockout guard is validated against exactly what will be saved
+      // (#871). Fall back to the persisted config when no candidate is sent.
+      const config = candidate ?? await getPersistedConfig();
 
       // Trusted-proxy check is independent of the enabled flag.
       const trustParsed = config.trustedProxies
