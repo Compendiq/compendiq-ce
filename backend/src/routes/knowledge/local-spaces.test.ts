@@ -23,9 +23,32 @@ vi.mock('../../core/utils/logger.js', () => ({
 }));
 
 const mockQueryFn = vi.fn();
+// #891: the move handler runs its cycle check + UPDATEs on a dedicated pool
+// client inside a transaction under an advisory lock. Route the client's data
+// queries through the same mockQueryFn (single sequential mock per test) and
+// answer transaction-control / advisory-lock statements inline so they don't
+// consume queued mockResolvedValueOnce entries.
+const mockTxClient = {
+  query: (...args: unknown[]) => {
+    const sql = args[0];
+    if (typeof sql === 'string') {
+      const trimmed = sql.trim();
+      if (
+        trimmed === 'BEGIN' ||
+        trimmed === 'COMMIT' ||
+        trimmed === 'ROLLBACK' ||
+        trimmed.includes('pg_advisory_xact_lock')
+      ) {
+        return Promise.resolve({ rows: [] });
+      }
+    }
+    return mockQueryFn(...args);
+  },
+  release: vi.fn(),
+};
 vi.mock('../../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mockQueryFn(...args),
-  getPool: vi.fn().mockReturnValue({}),
+  getPool: vi.fn().mockReturnValue({ connect: () => Promise.resolve(mockTxClient) }),
   runMigrations: vi.fn(),
   closePool: vi.fn(),
 }));
@@ -396,16 +419,16 @@ describe('Local Spaces Routes', () => {
     mockQueryFn.mockResolvedValueOnce({
       rows: [{ id: 10, parent_id: null, space_key: 'PROJ', source: 'standalone', path: '/10' }],
     });
-    // Parent exists check
+    // #891: fresh re-read of the page under the advisory lock
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ parent_id: null, space_key: 'PROJ', path: '/10' }],
+    });
+    // Parent exists check (also supplies the parent path)
     mockQueryFn.mockResolvedValueOnce({
       rows: [{ id: 5, path: '/5' }],
     });
     // #891 cycle-check: no cycle (empty result)
     mockQueryFn.mockResolvedValueOnce({ rows: [] });
-    // Get parent path
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ path: '/5' }],
-    });
     // Update page
     mockQueryFn.mockResolvedValueOnce({ rows: [] });
     // Update descendants
@@ -428,6 +451,10 @@ describe('Local Spaces Routes', () => {
     // Existing page
     mockQueryFn.mockResolvedValueOnce({
       rows: [{ id: 5, parent_id: null, space_key: 'PROJ', source: 'standalone', path: '/5' }],
+    });
+    // #891: fresh re-read of the page under the advisory lock
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ parent_id: null, space_key: 'PROJ', path: '/5' }],
     });
     // Parent exists check (parent is the page itself)
     mockQueryFn.mockResolvedValueOnce({
@@ -456,6 +483,10 @@ describe('Local Spaces Routes', () => {
     // Existing page (Confluence-synced, materialized path is NULL)
     mockQueryFn.mockResolvedValueOnce({
       rows: [{ id: 5, parent_id: null, space_key: 'PROJ', source: 'confluence', path: null }],
+    });
+    // #891: fresh re-read of the page under the advisory lock
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ parent_id: null, space_key: 'PROJ', path: null }],
     });
     // Parent exists check (a descendant of page 5, also NULL path)
     mockQueryFn.mockResolvedValueOnce({
@@ -586,6 +617,10 @@ describe('Local Spaces Routes', () => {
     });
     mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'confluence' }] });
     mockGetUserAccessibleSpaces.mockResolvedValue(['TEAMB']);
+    // #891: fresh re-read of the page under the advisory lock
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ parent_id: null, space_key: 'PROJ', path: '/10' }],
+    });
     // UPDATE page + descendants
     mockQueryFn.mockResolvedValue({ rows: [] });
 
@@ -604,6 +639,10 @@ describe('Local Spaces Routes', () => {
       rows: [{ id: 10, parent_id: null, space_key: null, source: 'standalone', path: '/10' }],
     });
     mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'local' }] });
+    // #891: fresh re-read of the page under the advisory lock
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ parent_id: null, space_key: null, path: '/10' }],
+    });
     mockQueryFn.mockResolvedValue({ rows: [] });
 
     const response = await app.inject({
