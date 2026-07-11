@@ -171,7 +171,9 @@ describe('TrialBanner', () => {
     // The banner only renders once the auth-protected endpoint answers, which
     // requires the Bearer token to be attached to the request.
     await screen.findByTestId('trial-banner');
-    const [, init] = fetchSpy.mock.calls[0];
+    const licenseCall = fetchSpy.mock.calls.find(([url]) => url === '/api/license/info');
+    expect(licenseCall).toBeDefined();
+    const [, init] = licenseCall!;
     const headers = new Headers(init?.headers);
     expect(headers.get('Authorization')).toBe('Bearer test-token');
   });
