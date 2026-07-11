@@ -52,6 +52,24 @@ describe('useClearCacheOnLogout', () => {
     expect(queryClient.getQueryData(['permissions', 'manage', 'space', 'SECRET'])).toBeUndefined();
   });
 
+  it('does not clear pre-existing cache when mounted while already logged out', () => {
+    const queryClient = new QueryClient();
+    queryClient.setQueryData(['pages', { page: 1 }], { items: [{ title: 'PRELOGIN' }] });
+
+    // The store is logged out (beforeEach) BEFORE the hook mounts, so there is
+    // no authenticated -> unauthenticated transition. The ref guard starts
+    // "was false", so a correct implementation must leave the cache intact.
+    // A naive `if (!isAuthenticated) queryClient.clear()` on mount would wipe
+    // this pre-login data and fail here — this is the case the ref guard exists
+    // for (the live-session token-refresh test below does not exercise it,
+    // since isAuthenticated stays true and the effect never re-runs).
+    renderProbe(queryClient);
+
+    expect(queryClient.getQueryData(['pages', { page: 1 }])).toEqual({
+      items: [{ title: 'PRELOGIN' }],
+    });
+  });
+
   it('does not clear the cache on a token refresh within a live session', () => {
     const queryClient = new QueryClient();
     queryClient.setQueryData(['pages', { page: 1 }], { items: [{ title: 'SECRET' }] });
