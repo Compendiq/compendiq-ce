@@ -167,4 +167,39 @@ describe('DndLocalSpaceTree', () => {
       expect(span.className).not.toContain('font-medium');
     }
   });
+
+  // #880: local-space tree rows were clickable <div>s with no keyboard access —
+  // reorder AND navigation were mouse-only. Each row is now a focusable
+  // role="treeitem" that navigates on Enter/Space (WCAG 2.1.1).
+  describe('keyboard navigation (#880)', () => {
+    it('exposes each row as a focusable treeitem (role + tabIndex 0)', () => {
+      renderTree();
+      const row = screen.getByText('Page One').closest('[role="treeitem"]');
+      expect(row).not.toBeNull();
+      expect(row!.getAttribute('tabindex')).toBe('0');
+    });
+
+    it('navigates on Enter', () => {
+      renderTree();
+      const row = screen.getByText('Page One').closest('[role="treeitem"]')!;
+      fireEvent.keyDown(row, { key: 'Enter' });
+      expect(mockNavigate).toHaveBeenCalledWith('/pages/p1');
+    });
+
+    it('navigates on Space and prevents the default page-scroll', () => {
+      renderTree();
+      const row = screen.getByText('Page One').closest('[role="treeitem"]')!;
+      const notPrevented = fireEvent.keyDown(row, { key: ' ' });
+      expect(notPrevented).toBe(false);
+      expect(mockNavigate).toHaveBeenCalledWith('/pages/p1');
+    });
+
+    it('exposes aria-expanded on an expandable row and omits it on a leaf', () => {
+      renderTree();
+      const expandable = screen.getByText('Page Two').closest('[role="treeitem"]')!;
+      expect(expandable.getAttribute('aria-expanded')).toBe('false');
+      const leaf = screen.getByText('Page One').closest('[role="treeitem"]')!;
+      expect(leaf.getAttribute('aria-expanded')).toBeNull();
+    });
+  });
 });

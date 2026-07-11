@@ -497,6 +497,62 @@ describe('SidebarTreeView', () => {
   });
 });
 
+// #880: tree rows were clickable <div>s with focus-visible classes but no
+// tabIndex/role/onKeyDown, so keyboard-only and screen-reader users could not
+// focus or activate any page title — a WCAG 2.1.1 (Keyboard) failure on the
+// app's primary navigation. Each row is now a focusable role="treeitem" that
+// activates navigation on Enter/Space.
+describe('SidebarTreeView keyboard navigation (#880)', () => {
+  beforeEach(() => {
+    mockNavigate.mockClear();
+    mockTreeData = { ...defaultTreeData };
+    useUiStore.setState({
+      treeSidebarCollapsed: false,
+      treeSidebarSpaceKey: undefined,
+    });
+  });
+
+  it('exposes each row as a focusable treeitem (role + tabIndex 0)', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const row = screen.getByText('API Reference').closest('[role="treeitem"]');
+    expect(row).not.toBeNull();
+    expect(row!.getAttribute('tabindex')).toBe('0');
+  });
+
+  it('navigates on Enter', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const row = screen.getByText('API Reference').closest('[role="treeitem"]')!;
+    fireEvent.keyDown(row, { key: 'Enter' });
+    expect(mockNavigate).toHaveBeenCalledWith('/pages/root-2');
+  });
+
+  it('navigates on Space and prevents the default page-scroll', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const row = screen.getByText('API Reference').closest('[role="treeitem"]')!;
+    // fireEvent returns false when the handler called preventDefault().
+    const notPrevented = fireEvent.keyDown(row, { key: ' ' });
+    expect(notPrevented).toBe(false);
+    expect(mockNavigate).toHaveBeenCalledWith('/pages/root-2');
+  });
+
+  it('exposes aria-expanded on an expandable row and omits it on a leaf', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const expandable = screen.getByText('Getting Started').closest('[role="treeitem"]')!;
+    expect(expandable.getAttribute('aria-expanded')).toBe('false');
+    const leaf = screen.getByText('API Reference').closest('[role="treeitem"]')!;
+    expect(leaf.getAttribute('aria-expanded')).toBeNull();
+  });
+
+  it('ignores keydown bubbling up from the nested chevron button (no double-activation)', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const chevron = screen.getAllByLabelText('Expand')[0]!;
+    // Enter dispatched on the chevron bubbles to the row; the target guard must
+    // stop the row handler from also navigating.
+    fireEvent.keyDown(chevron, { key: 'Enter' });
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+});
+
 // #707: on reload the tree mounts scrolled to the top; the active page's path
 // is auto-expanded but the row is out of view. The scroll container should
 // scroll the active node into view — unless it is already visible (so manual

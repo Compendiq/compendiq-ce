@@ -366,6 +366,58 @@ describe('ArticleRightPane', () => {
     expect(screen.getByText('No headings on this page.')).toBeInTheDocument();
   });
 
+  // #880: outline rows were clickable <div>s with focus-visible classes but no
+  // tabIndex/role/onKeyDown, so keyboard-only and screen-reader users could not
+  // reach any heading. Each row is now a focusable role="treeitem" that
+  // activates the jump-to-heading on Enter/Space (WCAG 2.1.1).
+  describe('outline keyboard navigation (#880)', () => {
+    it('exposes each outline row as a focusable treeitem (role + tabIndex 0)', () => {
+      useArticleViewStore.setState({
+        headings: [{ id: 'intro', text: 'Introduction', level: 1 }],
+      });
+      render(<ArticleRightPane />, { wrapper: createWrapper() });
+      const row = screen.getByText('Introduction').closest('[role="treeitem"]');
+      expect(row).not.toBeNull();
+      expect(row!.getAttribute('tabindex')).toBe('0');
+    });
+
+    it('activates the heading on Enter (scrolls the container and marks the row active)', () => {
+      useArticleViewStore.setState({
+        headings: [{ id: 'intro', text: 'Introduction', level: 1 }],
+      });
+
+      // handleNavigate resolves the scroll container + heading target from the
+      // live DOM, so seed both and spy on the scroll it performs.
+      const scrollRoot = document.createElement('div');
+      scrollRoot.setAttribute('data-scroll-container', '');
+      const scrollToSpy = vi.fn();
+      scrollRoot.scrollTo = scrollToSpy as unknown as typeof scrollRoot.scrollTo;
+      const target = document.createElement('h1');
+      target.id = 'intro';
+      scrollRoot.appendChild(target);
+      document.body.appendChild(scrollRoot);
+
+      render(<ArticleRightPane />, { wrapper: createWrapper() });
+      const row = screen.getByText('Introduction').closest('[role="treeitem"]')!;
+      fireEvent.keyDown(row, { key: 'Enter' });
+
+      expect(scrollToSpy).toHaveBeenCalled();
+      // setActiveId(headingId) ran → the row gets the active treatment.
+      const activeRow = screen.getByText('Introduction').closest('[role="treeitem"]')!;
+      expect(activeRow.className).toContain('nm-pill-active');
+    });
+
+    it('prevents the default page-scroll on Space', () => {
+      useArticleViewStore.setState({
+        headings: [{ id: 'intro', text: 'Introduction', level: 1 }],
+      });
+      render(<ArticleRightPane />, { wrapper: createWrapper() });
+      const row = screen.getByText('Introduction').closest('[role="treeitem"]')!;
+      const notPrevented = fireEvent.keyDown(row, { key: ' ' });
+      expect(notPrevented).toBe(false);
+    });
+  });
+
   it('renders version and space key in the footer', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
