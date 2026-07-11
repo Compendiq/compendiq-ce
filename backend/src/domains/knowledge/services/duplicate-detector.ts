@@ -98,25 +98,35 @@ export async function findDuplicates(
       // confluence_id IS NULL and Postgres DISTINCT ON treats NULLs as equal,
       // so keying on confluence_id collapses every standalone candidate into a
       // single row. cp2.id is always non-null and unique per page.
+      // The inner DISTINCT ON picks each candidate page's single nearest chunk,
+      // which forces its ORDER BY to lead with cp2.id. We must therefore re-sort
+      // the deduped rows by distance in an OUTER query before applying LIMIT —
+      // otherwise LIMIT keeps the lowest-id pages instead of the nearest ones,
+      // and a near-duplicate whose id sorts past the cap is silently dropped
+      // before the distance-threshold filter runs (#866).
       `WITH source_avg AS (
          SELECT AVG(embedding) AS avg_embedding
          FROM page_embeddings
          WHERE page_id = $1
        )
-       SELECT DISTINCT ON (cp2.id)
-         cp2.id,
-         cp2.confluence_id,
-         cp2.title,
-         cp2.space_key,
-         pe2.embedding <=> source_avg.avg_embedding AS distance
-       FROM page_embeddings pe2
-       JOIN pages cp2 ON pe2.page_id = cp2.id,
-       source_avg
-       WHERE pe2.page_id != $1
-         AND source_avg.avg_embedding IS NOT NULL
-         AND cp2.deleted_at IS NULL
-         AND ${visiblePagesPredicate(3, 4, 'cp2')}
-       ORDER BY cp2.id, pe2.embedding <=> source_avg.avg_embedding
+       SELECT id, confluence_id, title, space_key, distance
+       FROM (
+         SELECT DISTINCT ON (cp2.id)
+           cp2.id,
+           cp2.confluence_id,
+           cp2.title,
+           cp2.space_key,
+           pe2.embedding <=> source_avg.avg_embedding AS distance
+         FROM page_embeddings pe2
+         JOIN pages cp2 ON pe2.page_id = cp2.id,
+         source_avg
+         WHERE pe2.page_id != $1
+           AND source_avg.avg_embedding IS NOT NULL
+           AND cp2.deleted_at IS NULL
+           AND ${visiblePagesPredicate(3, 4, 'cp2')}
+         ORDER BY cp2.id, pe2.embedding <=> source_avg.avg_embedding
+       ) candidates
+       ORDER BY distance
        LIMIT $2`,
       // #733: over-fetch to filter later; candidates restricted to the same
       // retrieval scope as rag-service (accessible Confluence spaces +

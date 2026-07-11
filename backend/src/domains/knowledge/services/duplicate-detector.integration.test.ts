@@ -106,6 +106,27 @@ describe.skipIf(!dbAvailable)('duplicate-detector integration — RBAC kNN filte
     expect(titles).not.toContain('Private note');
   });
 
+  it('surfaces a near-duplicate whose page id sorts after the candidate cap (#866)', async () => {
+    // With limit:1 the candidate query over-fetches limit*3 = 3 pages. Seed 3
+    // low-id NON-duplicates (opposite vector → cosine distance ~2, far past the
+    // 0.15 threshold) first, then the real near-duplicate LAST so it holds the
+    // highest id. If candidates are truncated by id instead of by distance, the
+    // near-duplicate is dropped before the distance-threshold filter runs and
+    // findDuplicates wrongly returns [].
+    const vec = fakeVec(7);
+    const opposite = vec.map((x) => -x);
+    await seedPage({ confluenceId: 'src-1', source: 'confluence', spaceKey: 'TEAMA', title: 'Deploy guide', vec });
+    await seedPage({ confluenceId: 'far-1', source: 'confluence', spaceKey: 'TEAMA', title: 'Unrelated one', vec: opposite });
+    await seedPage({ confluenceId: 'far-2', source: 'confluence', spaceKey: 'TEAMA', title: 'Unrelated two', vec: opposite });
+    await seedPage({ confluenceId: 'far-3', source: 'confluence', spaceKey: 'TEAMA', title: 'Unrelated three', vec: opposite });
+    await seedPage({ confluenceId: 'dup-far-id', source: 'confluence', spaceKey: 'TEAMA', title: 'Deploy guide copy', vec });
+
+    const results = await findDuplicates(USER_A, 'src-1', { limit: 1 });
+
+    expect(results.map((r) => r.confluenceId)).toContain('dup-far-id');
+    expect(results).not.toEqual([]);
+  });
+
   it('returns [] when the source page itself is in an inaccessible space (no existence oracle)', async () => {
     const vec = fakeVec(11);
     await seedPage({ confluenceId: 'secret-src', source: 'confluence', spaceKey: 'SECRET', title: 'Secret source', vec });
