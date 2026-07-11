@@ -11,7 +11,11 @@ interface OverviewRow {
   space_last_synced: Date | null;
   page_id: string | null;
   page_title: string | null;
-  body_storage: string | null;
+  // Persisted per-page asset expectations (#887). pg maps TEXT[] -> string[]
+  // and SQL NULL -> null. NULL means "not yet computed" (lazy-backfilled on
+  // this read); an empty array means "computed, page has no assets".
+  expected_image_files: string[] | null;
+  expected_drawio_files: string[] | null;
 }
 
 function emptyCounts(): AssetSyncCounts {
@@ -61,7 +65,8 @@ export async function getSyncOverview(userId: string): Promise<SyncOverviewRespo
        cs.last_synced AS space_last_synced,
        cp.confluence_id AS page_id,
        cp.title AS page_title,
-       cp.body_storage
+       cp.expected_image_files,
+       cp.expected_drawio_files
      FROM unnest($1::text[]) AS s(space_key)
      LEFT JOIN spaces cs ON cs.space_key = s.space_key
      -- #828: keep the soft-delete filter in the JOIN (not WHERE) so a space
@@ -73,6 +78,38 @@ export async function getSyncOverview(userId: string): Promise<SyncOverviewRespo
      ORDER BY s.space_key, cp.title NULLS LAST`,
     [overviewSpaces],
   );
+
+  // Lazy backfill (#887): rows whose persisted asset columns are still NULL
+  // (legacy pages from before migration 081, or pages the invalidation trigger
+  // just reset after a body_storage change) are recomputed once from raw XHTML
+  // and persisted. Bounded batches keep peak heap small on first-load-after-
+  // upgrade; steady-state reads hit zero NULL rows and do zero JSDOM work.
+  const backfillIds = rowsResult.rows
+    .filter((r) => r.page_id && r.expected_image_files === null)
+    .map((r) => r.page_id!);
+  const computed = new Map<string, { imageFiles: string[]; drawioFiles: string[] }>();
+  const BATCH = 200;
+  for (let i = 0; i < backfillIds.length; i += BATCH) {
+    const chunk = backfillIds.slice(i, i + BATCH);
+    const bodies = await query<{ confluence_id: string; space_key: string; body_storage: string | null }>(
+      `SELECT confluence_id, space_key, body_storage FROM pages
+       WHERE confluence_id = ANY($1) AND deleted_at IS NULL`,
+      [chunk],
+    );
+    for (const b of bodies.rows) {
+      const body = b.body_storage ?? '';
+      const imageFiles = extractImageReferences(body, b.space_key).map((ref) => ref.localFilename);
+      const drawioFiles = extractDrawioDiagramNames(body).map((name) => `${name}.png`);
+      computed.set(b.confluence_id, { imageFiles, drawioFiles });
+      // This UPDATE does not touch body_storage, so both BEFORE UPDATE triggers
+      // on pages (invalidate_pages_expected_assets, set_pages_local_modified)
+      // are no-ops on it.
+      await query(
+        `UPDATE pages SET expected_image_files = $2, expected_drawio_files = $3 WHERE confluence_id = $1`,
+        [b.confluence_id, imageFiles, drawioFiles],
+      );
+    }
+  }
 
   const sync = await getSyncStatus(userId);
   const spaces = new Map<string, SyncOverviewSpace>();
@@ -102,9 +139,9 @@ export async function getSyncOverview(userId: string): Promise<SyncOverviewRespo
 
     space.pageCount += 1;
 
-    const bodyStorage = row.body_storage ?? '';
-    const imageFiles = extractImageReferences(bodyStorage, row.space_key).map((ref) => ref.localFilename);
-    const drawioFiles = extractDrawioDiagramNames(bodyStorage).map((name) => `${name}.png`);
+    const persisted = computed.get(row.page_id);
+    const imageFiles = persisted?.imageFiles ?? row.expected_image_files ?? [];
+    const drawioFiles = persisted?.drawioFiles ?? row.expected_drawio_files ?? [];
 
     if (imageFiles.length > 0 || drawioFiles.length > 0) {
       space.pagesWithAssets += 1;

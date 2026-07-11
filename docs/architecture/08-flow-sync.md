@@ -349,6 +349,25 @@ readable spaces solely from those rows. Deselection (an empty set, handled by th
 DELETE path) is always safe and skips the PAT lookup. Cross-user space grants remain
 the exclusive domain of the admin-managed RBAC routes.
 
+## Sync-overview read path (#887)
+
+`GET /api/settings/sync-overview` (`getSyncOverview`) reports, per accessible
+space, how many expected image / draw.io assets are cached on disk. It once
+re-derived each page's expected filenames from raw XHTML on every request — the
+overview query materialised the whole corpus's `body_storage` and then JSDOM-
+parsed each body twice (`extractImageReferences` + `extractDrawioDiagramNames`),
+so an admin on a large instance blocked the event loop for tens of seconds per
+poll. Those filename sets are a pure function of `body_storage` + `space_key`, so
+they are now persisted on `pages.expected_image_files` / `expected_drawio_files`
+(migration 081) and reset to NULL by the `pages_expected_assets_invalidate`
+BEFORE UPDATE trigger whenever `body_storage` changes. The overview query selects
+the cached arrays instead of `body_storage`; a bounded (200/batch) lazy backfill
+recomputes and persists only the still-NULL rows (legacy pages, or pages just
+invalidated by a sync/edit) using the same extractors in that rare path. The
+per-page `fs.access` cache checks stay at read time (attachment downloads change
+cache state independently of page sync). The `SyncOverviewResponse` contract is
+unchanged, so the frontend needs no change.
+
 ## Content pipeline hand-off
 
 The `confluenceToHtml()` call produces `body_html` and `body_text`. The
