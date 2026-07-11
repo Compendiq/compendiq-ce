@@ -329,4 +329,53 @@ describe.skipIf(!dbAvailable)('POST /api/admin/ip-allowlist/test', () => {
     expect(r.statusCode).toBe(400);
     expect(r.json()).toEqual({ error: 'invalid_ip' });
   });
+
+  it('evaluates the IP against a supplied candidate config, not the persisted one (#871)', async () => {
+    // Persisted config would ALLOW 10.1.2.3 …
+    const put = await app.inject({
+      method: 'PUT',
+      url: '/api/admin/ip-allowlist',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { enabled: true, cidrs: ['10.0.0.0/8'], trustedProxies: [], exceptions: ['/api/health'] },
+    });
+    expect(put.statusCode).toBe(200);
+
+    // … but the pending (candidate) config the admin is about to save would NOT.
+    const r = await app.inject({
+      method: 'POST',
+      url: '/api/admin/ip-allowlist/test',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        ip: '10.1.2.3',
+        config: { enabled: true, cidrs: ['192.168.0.0/16'], trustedProxies: [], exceptions: [] },
+      },
+    });
+    expect(r.statusCode).toBe(200);
+    const body = r.json();
+    expect(body.allowed).toBe(false);
+    expect(body.matchedCidr).toBeNull();
+  });
+
+  it('honours a candidate config that WOULD allow an IP the persisted one blocks (#871)', async () => {
+    await app.inject({
+      method: 'PUT',
+      url: '/api/admin/ip-allowlist',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { enabled: true, cidrs: ['192.168.0.0/16'], trustedProxies: [], exceptions: ['/api/health'] },
+    });
+
+    const r = await app.inject({
+      method: 'POST',
+      url: '/api/admin/ip-allowlist/test',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        ip: '10.1.2.3',
+        config: { enabled: true, cidrs: ['10.0.0.0/8'], trustedProxies: [], exceptions: [] },
+      },
+    });
+    expect(r.statusCode).toBe(200);
+    const body = r.json();
+    expect(body.allowed).toBe(true);
+    expect(body.matchedCidr).toBe('10.0.0.0/8');
+  });
 });
