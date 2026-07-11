@@ -312,6 +312,91 @@ describe('useSearch', () => {
     expect(allHaveSpaceKey).toBe(true);
   });
 
+  it('sends the requested page on the enhanced (hybrid) query URL', async () => {
+    const fetchSpy = mockFetch(
+      makeSearchResponse({ mode: 'keyword', total: 25, totalPages: 3 }),
+      makeSearchResponse({ mode: 'hybrid', hasEmbeddings: true, total: 25, totalPages: 3 }),
+    );
+
+    const { result } = renderHook(
+      () => useSearch({ query: 'kubernetes', mode: 'hybrid', page: 2 }),
+      { wrapper: createWrapper() },
+    );
+
+    await waitFor(() => expect(result.current.isLoadingEnhanced).toBe(false));
+
+    const hybridCalls = fetchSpy.mock.calls.filter(([url]) =>
+      typeof url === 'string' && (url as string).includes('mode=hybrid'),
+    );
+    expect(hybridCalls.length).toBeGreaterThan(0);
+    // The enhanced query must request page 2 — otherwise pagination is dead in
+    // semantic/hybrid mode (results past page 1 are unreachable).
+    expect(hybridCalls.every(([url]) => (url as string).includes('page=2'))).toBe(true);
+  });
+
+  it('refetches the enhanced query when the requested page changes', async () => {
+    const fetchSpy = mockFetch(
+      makeSearchResponse({ mode: 'keyword', total: 25, totalPages: 3 }),
+      makeSearchResponse({ mode: 'hybrid', hasEmbeddings: true, total: 25, totalPages: 3 }),
+    );
+
+    const { result, rerender } = renderHook(
+      ({ page }) => useSearch({ query: 'kubernetes', mode: 'hybrid', page }),
+      { wrapper: createWrapper(), initialProps: { page: 1 } },
+    );
+
+    await waitFor(() => expect(result.current.isLoadingEnhanced).toBe(false));
+
+    rerender({ page: 2 });
+
+    // Changing the page must trigger a fresh enhanced request for page 2.
+    await waitFor(() => {
+      const page2Calls = fetchSpy.mock.calls.filter(([url]) =>
+        typeof url === 'string' &&
+        (url as string).includes('mode=hybrid') &&
+        (url as string).includes('page=2'),
+      );
+      expect(page2Calls.length).toBeGreaterThan(0);
+    });
+  });
+
+  it('retains previous enhanced results while the next page loads (hybrid paging)', async () => {
+    // Hybrid page 1 resolves; hybrid page 2 stays pending so we can observe
+    // what the hook exposes mid-flight.
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      if (url.includes('mode=hybrid') && url.includes('page=2')) {
+        return new Promise(() => {}); // never resolves
+      }
+      const body = url.includes('mode=hybrid')
+        ? makeSearchResponse({
+            items: [{ id: 2, title: 'Vector Result', spaceKey: 'DEV', snippet: '', rank: 0.95 }],
+            mode: 'hybrid',
+            hasEmbeddings: true,
+            total: 25,
+            totalPages: 3,
+          })
+        : makeSearchResponse({ mode: 'keyword', total: 25, totalPages: 3 });
+      return Promise.resolve(new Response(JSON.stringify(body), {
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    });
+
+    const { result, rerender } = renderHook(
+      ({ page }) => useSearch({ query: 'kubernetes', mode: 'hybrid', page }),
+      { wrapper: createWrapper(), initialProps: { page: 1 } },
+    );
+
+    await waitFor(() => expect(result.current.enhancedResults).toBeDefined());
+
+    rerender({ page: 2 });
+
+    // While page 2 is in flight, the previous page's enhanced results must
+    // stay visible (placeholderData) instead of dropping to undefined.
+    expect(result.current.enhancedResults).toBeDefined();
+    expect(result.current.enhancedResults![0].title).toBe('Vector Result');
+  });
+
   it('passes author, date range, and labels→tags to the query URL', async () => {
     const fetchSpy = mockFetch(makeSearchResponse(), makeSearchResponse({ mode: 'hybrid' }));
 
