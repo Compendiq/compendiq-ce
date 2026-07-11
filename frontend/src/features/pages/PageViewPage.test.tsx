@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, createMemoryRouter, RouterProvider } from 'react-router-dom';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { PageViewPage } from './PageViewPage';
@@ -903,6 +903,70 @@ describe('PageViewPage', () => {
       });
       expect(screen.queryByText('Discard changes?')).not.toBeInTheDocument();
       expect(screen.getByText('Edit')).toBeInTheDocument();
+    });
+  });
+
+  // #872 — The /pages/:id route is not keyed, so React Router keeps a single
+  // PageViewPage instance mounted across :id changes. Edit-mode state
+  // (editing/editTitle/editHtml) is component-local and was never reset on
+  // id change, so navigating mid-edit left page A's title+body loaded while
+  // viewing page B — and saving then overwrote page B with page A's content.
+  describe('edit-mode reset on route param change (#872)', () => {
+    it('resets edit state when the :id param changes mid-edit', async () => {
+      // A data router keeps the same PageViewPage instance mounted across
+      // param changes (matching production where App.tsx renders one
+      // un-keyed <Route path="/pages/:id">). router.navigate() drives the
+      // real useParams(), bypassing this file's mocked useNavigate.
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+      const router = createMemoryRouter(
+        [{ path: '/pages/:id', element: <PageViewPage /> }],
+        { initialEntries: ['/pages/page-1'] },
+      );
+
+      currentMockPage = mockPage; // page A: "Engineering Handbook", version 7
+      render(
+        <QueryClientProvider client={queryClient}>
+          <LazyMotion features={domAnimation}>
+            <RouterProvider router={router} />
+          </LazyMotion>
+        </QueryClientProvider>,
+      );
+
+      // Enter edit mode on page A — editor mounts with A's title/body.
+      fireEvent.click(screen.getByText('Edit'));
+      expect(screen.getByLabelText('Article editor')).toBeInTheDocument();
+      expect(screen.getByDisplayValue('Engineering Handbook')).toBeInTheDocument();
+
+      // Navigate to page B while still in edit mode. The instance stays
+      // mounted; only the :id param + page data change.
+      currentMockPage = {
+        ...mockPage,
+        id: 'page-2',
+        title: 'Runbook',
+        bodyHtml: '<p>B</p>',
+        version: 3,
+      };
+      await act(async () => {
+        await router.navigate('/pages/page-2');
+      });
+
+      // Edit mode must have exited — no stale editor holding page A's body.
+      expect(screen.queryByLabelText('Article editor')).not.toBeInTheDocument();
+      expect(screen.getByText('Edit')).toBeInTheDocument();
+
+      // Corruption guard: a Ctrl+S after navigation must not push page A's
+      // title onto page B. Pre-fix, editing stayed true and Save fired
+      // { id: 'page-2', title: 'Engineering Handbook', version: 3 }.
+      const saveShortcut = capturedShortcuts.find((s) => s.key === 'Ctrl+S');
+      expect(saveShortcut).toBeDefined();
+      await act(async () => {
+        saveShortcut!.action();
+      });
+      expect(mockUpdatePage).not.toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'Engineering Handbook' }),
+      );
     });
   });
 
