@@ -207,15 +207,21 @@ export function PageViewPage() {
   // and the react-query page object update. Without this reset, navigating
   // to page B mid-edit leaves page A's editing/editTitle/editHtml loaded,
   // so a subsequent Save (or Ctrl+S) would overwrite page B with page A's
-  // title + body. Draft state is intentionally NOT cleared here: the
-  // per-page localStorage draft is keyed by id and its restore-on-edit
-  // feature must survive navigation.
+  // title + body. Any open confirmation dialog is dismissed too: the
+  // Discard/Trash dialogs live outside the `editing` branch, and a dialog
+  // left open across navigation (e.g. Cancel then browser-Back) would run
+  // its confirm action against page B's draftKey/id — clearing page B's
+  // draft or trashing page B. Draft state is intentionally NOT cleared
+  // here: the per-page localStorage draft is keyed by id and its
+  // restore-on-edit feature must survive navigation.
   useEffect(() => {
     setEditing(false);
     setEditHtml('');
     setEditTitle('');
     setPendingDraft(null);
     setEditorInstance(null);
+    setConfirmDiscardOpen(false);
+    setConfirmTrashOpen(false);
   }, [id]);
 
   useLayoutEffect(() => {

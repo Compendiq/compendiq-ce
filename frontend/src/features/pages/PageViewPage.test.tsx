@@ -968,6 +968,101 @@ describe('PageViewPage', () => {
         expect.objectContaining({ title: 'Engineering Handbook' }),
       );
     });
+
+    // #872 follow-up — the confirmation dialogs (Discard changes? / Move to
+    // trash?) are rendered outside the `editing` branch, so the edit-state
+    // reset alone left them open across a route change. A dialog left open
+    // then acted against page B's draftKey/id (deleting page B's draft or
+    // trashing page B), e.g. after the user hit Cancel then browser-Back.
+    it('dismisses an open discard-confirmation dialog when the :id param changes', async () => {
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+      const router = createMemoryRouter(
+        [{ path: '/pages/:id', element: <PageViewPage /> }],
+        { initialEntries: ['/pages/page-1'] },
+      );
+
+      currentMockPage = mockPage; // page A
+      render(
+        <QueryClientProvider client={queryClient}>
+          <LazyMotion features={domAnimation}>
+            <RouterProvider router={router} />
+          </LazyMotion>
+        </QueryClientProvider>,
+      );
+
+      // Enter edit mode on page A and dirty it so Cancel opens the discard
+      // confirmation (instead of exiting straight to view mode).
+      fireEvent.click(screen.getByText('Edit'));
+      fireEvent.change(screen.getByLabelText('Article editor'), {
+        target: { value: '<p>rewritten page A</p>' },
+      });
+      fireEvent.click(screen.getByText('Cancel'));
+      expect(await screen.findByText('Discard changes?')).toBeInTheDocument();
+
+      // Navigate to page B while the discard dialog is still open.
+      currentMockPage = {
+        ...mockPage,
+        id: 'page-2',
+        title: 'Runbook',
+        bodyHtml: '<p>B</p>',
+        version: 3,
+      };
+      await act(async () => {
+        await router.navigate('/pages/page-2');
+      });
+
+      // The dialog must be dismissed on navigation — otherwise its Discard
+      // action would run against page B's draftKey (clearing page B's draft).
+      // No dialog means the confirm control is gone, so it cannot act on B.
+      expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
+      expect(screen.queryByText('Discard changes?')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('confirm-dialog-confirm')).not.toBeInTheDocument();
+    });
+
+    it('dismisses an open move-to-trash dialog when the :id param changes', async () => {
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+      const router = createMemoryRouter(
+        [{ path: '/pages/:id', element: <PageViewPage /> }],
+        { initialEntries: ['/pages/page-1'] },
+      );
+
+      currentMockPage = mockPage; // page A
+      render(
+        <QueryClientProvider client={queryClient}>
+          <LazyMotion features={domAnimation}>
+            <RouterProvider router={router} />
+          </LazyMotion>
+        </QueryClientProvider>,
+      );
+
+      const deleteShortcut = capturedShortcuts.find((s) => s.key === 'Alt+Shift+D');
+      expect(deleteShortcut).toBeDefined();
+      act(() => {
+        deleteShortcut!.action();
+      });
+      expect(await screen.findByText('Move page to trash?')).toBeInTheDocument();
+
+      currentMockPage = {
+        ...mockPage,
+        id: 'page-2',
+        title: 'Runbook',
+        bodyHtml: '<p>B</p>',
+        version: 3,
+      };
+      await act(async () => {
+        await router.navigate('/pages/page-2');
+      });
+
+      // Left open, confirming would trash page B (mutateAsync(id) with the
+      // new id). It must be dismissed on navigation instead.
+      expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
+      expect(screen.queryByText('Move page to trash?')).not.toBeInTheDocument();
+      expect(mockDeleteMutateAsync).not.toHaveBeenCalled();
+    });
   });
 
 });
