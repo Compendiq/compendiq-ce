@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -515,6 +515,59 @@ describe('VersionHistory', () => {
       expect(body.v2).toBeGreaterThan(0);
       expect(body.model).toBeUndefined();
     });
+  });
+
+  it('text compare shows a change added in the newer version as an addition, not a deletion (#948)', async () => {
+    // GET /pages/:id/versions returns versions newest-first, so at row i,
+    // versions[i + 1] is the OLDER version. Comparing the newer (v3) against
+    // the previous (v2) must color content that only exists in the newer
+    // version as an ADDITION — the regression rendered it as a deletion.
+    const detail = (versionNumber: number, bodyText: string) =>
+      new Response(
+        JSON.stringify({
+          confluenceId: null,
+          versionNumber,
+          title: `Page v${versionNumber}`,
+          bodyHtml: `<p>${bodyText}</p>`,
+          bodyText,
+          isCurrent: versionNumber === 3,
+        }),
+        { headers: { 'Content-Type': 'application/json' } },
+      );
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      // Version detail endpoints end in /versions/<number>.
+      if (/\/versions\/3$/.test(url)) return Promise.resolve(detail(3, 'The happy cat'));
+      if (/\/versions\/2$/.test(url)) return Promise.resolve(detail(2, 'The cat'));
+      return Promise.resolve(mockVersionsResponse());
+    });
+
+    render(
+      <VersionHistory pageId="page-1" model="qwen3.5" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+    await waitFor(() => expect(screen.getByText('v3')).toBeInTheDocument());
+
+    // First compare button = compare current (v3) with previous (v2).
+    fireEvent.click(screen.getAllByTitle('Compare with previous version')[0]!);
+
+    // Wait for the unified diff (both version details resolved).
+    const unified = await screen.findByTestId('unified-diff');
+
+    // "happy" only exists in the newer version → it is an addition.
+    const addedSpan = within(unified).getByText((_, el) =>
+      el?.tagName === 'SPAN' && (el.textContent ?? '').trim() === 'happy',
+    );
+    expect(addedSpan.className).toContain('text-success');
+    expect(addedSpan.className).not.toContain('line-through');
+
+    // Purely additive change: additions > 0, deletions == 0. The inverted bug
+    // reported the opposite (+0 / -N).
+    expect(screen.getByText('-0')).toBeInTheDocument();
+    expect(screen.queryByText('+0')).not.toBeInTheDocument();
   });
 
   it('closes dialog via close button', async () => {
