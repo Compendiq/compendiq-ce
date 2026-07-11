@@ -880,6 +880,51 @@ describe('PagesPage', () => {
     });
   });
 
+  // --- Source filter wire value (#873) ---
+  //
+  // The "Local" source option must send the contract-valid wire value
+  // 'standalone' (PageSourceEnum = ['confluence', 'standalone']). Sending
+  // 'local' fails Zod validation on GET /api/pages and breaks the list.
+  describe('source filter (#873)', () => {
+    it('renders the Local option with the contract value "standalone", not "local"', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      const select = screen.getByTestId('filter-source') as HTMLSelectElement;
+      const localOption = Array.from(select.options).find((o) => o.textContent === 'Local');
+      expect(localOption).toBeTruthy();
+      // 'local' is not a member of PageSourceEnum and would 400 the pages query.
+      expect(localOption!.value).toBe('standalone');
+    });
+
+    it('fires the pages query with source=standalone when Local is selected', async () => {
+      vi.restoreAllMocks();
+      const fetchSpy = mockFetchWithEmbeddingStatus(mockEmbeddingStatusIdle);
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      const select = screen.getByTestId('filter-source') as HTMLSelectElement;
+      const localOption = Array.from(select.options).find((o) => o.textContent === 'Local');
+      fireEvent.change(select, { target: { value: localOption!.value } });
+
+      await waitFor(() => {
+        const urls = fetchSpy.mock.calls.map(([input]) =>
+          typeof input === 'string' ? input : (input as Request).url,
+        );
+        const pagesUrls = urls.filter((u) => /\/pages\?/.test(u));
+        expect(pagesUrls.some((u) => u.includes('source=standalone'))).toBe(true);
+        expect(pagesUrls.some((u) => u.includes('source=local'))).toBe(false);
+      });
+    });
+
+    it('shows the user-facing label "Local" (not the wire value) in the active-filter pill', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      const select = screen.getByTestId('filter-source') as HTMLSelectElement;
+      fireEvent.change(select, { target: { value: 'standalone' } });
+
+      const pill = screen.getByTestId('filter-pill-sourceFilter');
+      expect(pill).toHaveTextContent('Source: Local');
+      expect(pill).not.toHaveTextContent('standalone');
+    });
+  });
+
   describe('performance: virtual scrolling + memoized items (#511, #521)', () => {
     it('renders visible page list items with stable keys (by id, not index)', async () => {
       render(<PagesPage />, { wrapper: createWrapper() });
