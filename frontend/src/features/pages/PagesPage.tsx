@@ -488,7 +488,7 @@ export function PagesPage() {
           >
             <option value="">All Sources</option>
             <option value="confluence">Confluence</option>
-            <option value="local">Local</option>
+            <option value="standalone">Local</option>
           </select>
 
           <select
