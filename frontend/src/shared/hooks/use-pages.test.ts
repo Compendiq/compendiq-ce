@@ -159,6 +159,31 @@ describe('usePages', () => {
     const callUrl = apiFetchMock.mock.calls[0][0] as string;
     expect(callUrl).toBe('/pages');
   });
+
+  it('does not fetch when enabled is false (#874 semantic-mode gate)', async () => {
+    apiFetchMock.mockResolvedValue(MOCK_PAGINATED);
+
+    const { result } = renderHook(
+      () => usePages({ search: 'kubernetes', enabled: false }),
+      { wrapper: createWrapper() },
+    );
+
+    // A disabled query never leaves the idle fetchStatus and never calls apiFetch.
+    await waitFor(() => expect(result.current.fetchStatus).toBe('idle'));
+    expect(apiFetchMock).not.toHaveBeenCalled();
+  });
+
+  it('fetches normally when enabled defaults to true', async () => {
+    apiFetchMock.mockResolvedValue(MOCK_PAGINATED);
+
+    const { result } = renderHook(
+      () => usePages({ search: 'kubernetes' }),
+      { wrapper: createWrapper() },
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(apiFetchMock).toHaveBeenCalledWith(expect.stringContaining('search=kubernetes'));
+  });
 });
 
 describe('usePageTree', () => {
