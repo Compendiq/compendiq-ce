@@ -4,11 +4,16 @@ import sensible from '@fastify/sensible';
 import { ZodError } from 'zod';
 import { pagesCrudRoutes } from './pages-crud.js';
 
+const mockCacheInvalidate = vi.fn();
+const mockCacheInvalidateAcrossUsers = vi.fn();
+
 vi.mock('../../core/services/redis-cache.js', () => ({
   RedisCache: class MockRedisCache {
     get = vi.fn().mockResolvedValue(null);
     set = vi.fn().mockResolvedValue(undefined);
-    invalidate = vi.fn().mockResolvedValue(undefined);
+    invalidate = (...args: unknown[]) => mockCacheInvalidate(...args);
+    // Creating a shared/Confluence page clears every user's cache (#893).
+    invalidateAcrossUsers = (...args: unknown[]) => mockCacheInvalidateAcrossUsers(...args);
   },
 }));
 
@@ -404,5 +409,90 @@ describe('POST /api/pages - parentId validation', () => {
     expect(response.statusCode).toBe(400);
     const body = JSON.parse(response.payload);
     expect(body.error).toContain('Confluence not configured');
+  });
+
+  // #893 review follow-up: a newly created shared/Confluence page appears in
+  // every user's lists/trees, so only invalidating the creator's cache leaves
+  // the page missing for other users for up to the cache TTL (15 min).
+  describe('cache invalidation (#893)', () => {
+    it('invalidates the pages cache across all users when creating a standalone page with default (shared) visibility', async () => {
+      // INSERT returns new page
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ id: 80, title: 'Shared note', version: 1 }],
+      });
+      // UPDATE path
+      mockQueryFn.mockResolvedValueOnce({ rows: [] });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages',
+        payload: {
+          title: 'Shared note',
+          bodyHtml: '<p>Hello</p>',
+          source: 'standalone',
+          // visibility omitted — CreatePageSchema defaults to 'shared'
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledWith('pages');
+      expect(mockCacheInvalidate).not.toHaveBeenCalledWith('test-user-id', 'pages');
+    });
+
+    it('keeps per-user invalidation when creating a private standalone page', async () => {
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ id: 81, title: 'Private note', version: 1 }],
+      });
+      mockQueryFn.mockResolvedValueOnce({ rows: [] });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages',
+        payload: {
+          title: 'Private note',
+          bodyHtml: '<p>Hello</p>',
+          source: 'standalone',
+          visibility: 'private',
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockCacheInvalidateAcrossUsers).not.toHaveBeenCalled();
+      expect(mockCacheInvalidate).toHaveBeenCalledWith('test-user-id', 'pages');
+    });
+
+    it('invalidates pages AND spaces caches across all users when creating a Confluence page', async () => {
+      // Space lookup: CONFSPACE is a Confluence space
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'confluence' }] });
+      // Local cache INSERT + anything after
+      mockQueryFn.mockResolvedValue({ rows: [] });
+
+      const { getClientForUser } = await import('../../domains/confluence/services/sync-service.js');
+      vi.mocked(getClientForUser).mockResolvedValueOnce({
+        createPage: vi.fn().mockResolvedValue({
+          id: 'conf-100',
+          title: 'New Conf Page',
+          version: { number: 1 },
+          body: { storage: { value: '<p>Hello</p>' } },
+        }),
+      } as never);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages',
+        payload: {
+          title: 'New Conf Page',
+          bodyHtml: '<p>Hello</p>',
+          spaceKey: 'CONFSPACE',
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledWith('pages');
+      // The cached GET /api/spaces payload carries per-space pageCount, which
+      // this create just changed for every user with access to the space.
+      expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledWith('spaces');
+      expect(mockCacheInvalidate).not.toHaveBeenCalled();
+    });
   });
 });

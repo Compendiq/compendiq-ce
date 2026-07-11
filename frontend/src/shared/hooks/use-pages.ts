@@ -284,6 +284,18 @@ export interface EmbeddingStatusData {
   isProcessing: boolean;
 }
 
+/**
+ * Shared zero-embeddings detection (#938), reused by the AI chat and the
+ * semantic-search empty state so both surface the real cause instead of
+ * blaming the query. True only when pages exist but none are embedded — the
+ * exact semantics of GraphPage's `meta.pagesEmbedded === 0` branch. The
+ * `totalPages > 0` guard keeps a brand-new install with nothing synced
+ * (totalPages === 0) out of the "not embedded yet" state.
+ */
+export function isZeroEmbeddings(status: EmbeddingStatusData | undefined): boolean {
+  return !!status && status.totalPages > 0 && status.embeddedPages === 0;
+}
+
 export function useEmbeddingStatus() {
   return useQuery<EmbeddingStatusData>({
     queryKey: ['embeddings', 'status'],

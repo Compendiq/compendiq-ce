@@ -47,7 +47,6 @@ FROM node:24-alpine AS runtime
 
 # Copy runtime utilities from tools stage
 COPY --from=tools /usr/bin/dumb-init /usr/bin/dumb-init
-COPY --from=tools /usr/bin/wget /usr/bin/wget
 # Copy pre-created data directory with correct ownership
 COPY --from=tools --chown=node:node /opt/app/data /app/data
 

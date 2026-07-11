@@ -45,11 +45,45 @@ export function refreshAccessTokenOnce(): Promise<string | null> {
   return pendingRefresh;
 }
 
+/**
+ * Decode a JWT's `exp` claim (client-readable; signature not verified — the
+ * backend validates tokens) and report whether it is expired or within a small
+ * skew window of expiring. Returns false for non-JWT / malformed tokens so the
+ * caller falls back to the reactive 401 path.
+ */
+function isTokenExpired(token: string): boolean {
+  try {
+    const payload = token.split('.')[1];
+    if (!payload) return false;
+    const { exp } = JSON.parse(
+      atob(payload.replace(/-/g, '+').replace(/_/g, '/')),
+    ) as { exp?: number };
+    if (typeof exp !== 'number') return false;
+    // Refresh 5s early so a request doesn't expire in flight.
+    return Date.now() >= exp * 1000 - 5000;
+  } catch {
+    return false;
+  }
+}
+
 export async function apiFetch<T = unknown>(
   path: string,
   options: RequestInit = {},
 ): Promise<T> {
-  const { accessToken } = useAuthStore.getState();
+  let { accessToken } = useAuthStore.getState();
+
+  // Proactive refresh: if the in-memory token is already expired, refresh once
+  // (deduped via refreshAccessTokenOnce) BEFORE firing so a burst of concurrent
+  // queries on session resume doesn't each round-trip to a guaranteed 401 (the
+  // "401 storm"). The reactive 401 handler below stays as a fallback for
+  // server-side revocation / clock skew.
+  if (accessToken && isTokenExpired(accessToken)) {
+    accessToken = await refreshAccessTokenOnce();
+    if (!accessToken) {
+      useAuthStore.getState().clearAuth();
+      throw new ApiError(401, 'Session expired');
+    }
+  }
 
   const headers = new Headers(options.headers);
   if (accessToken) {

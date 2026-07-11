@@ -453,6 +453,25 @@ describe('SidebarTreeView', () => {
     expect(screen.getByText('API Reference')).toBeInTheDocument();
   });
 
+  it('keeps the homepage visible when it is the only page in the space (#961)', () => {
+    mockTreeData = {
+      items: [
+        { id: 'root-1', spaceKey: 'DEV', title: 'Getting Started', pageType: 'page' as const, parentId: null, labels: [], lastModifiedAt: '2026-03-01T00:00:00Z', embeddingDirty: false },
+      ],
+      total: 1,
+    };
+    useUiStore.setState({
+      treeSidebarCollapsed: false,
+      treeSidebarSpaceKey: 'DEV',
+    });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    // Hiding the homepage would leave the tree empty, so it stays visible and
+    // navigable instead of rendering a false "empty space" state.
+    expect(screen.getByText('Getting Started')).toBeInTheDocument();
+    expect(screen.queryByText('No pages in this space')).not.toBeInTheDocument();
+    expect(screen.queryByText('This space has no content.')).not.toBeInTheDocument();
+  });
+
   it('has a New Space button in sidebar header', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
     expect(screen.getByLabelText('New Space')).toBeInTheDocument();
