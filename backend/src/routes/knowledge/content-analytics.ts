@@ -63,9 +63,14 @@ export async function contentAnalyticsRoutes(fastify: FastifyInstance) {
 
   // ── GET /api/pages/:id/feedback ──────────────────────────────────────────
   // Feedback summary for a specific page + current user's vote
-  fastify.get('/pages/:id/feedback', async (request) => {
+  fastify.get('/pages/:id/feedback', async (request, reply) => {
     const { id: pageId } = IdParamSchema.parse(request.params);
     const userId = request.userId;
+
+    // #890: gate by page access so missing/restricted pages return 404 (not a 500 FK oracle)
+    if (!(await userCanAccessPage(userId, pageId))) {
+      return reply.notFound('Page not found');
+    }
 
     const [summary, userVote] = await Promise.all([
       query<{

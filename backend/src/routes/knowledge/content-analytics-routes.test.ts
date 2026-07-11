@@ -179,6 +179,16 @@ describe('Content analytics routes - authenticated', () => {
 
   // ── GET /api/pages/:id/feedback ───────────────────────────────────
 
+  it('returns 404 and does not query feedback when the user cannot access the page (#890)', async () => {
+    mockUserCanAccessPage.mockResolvedValueOnce(false);
+
+    const res = await app.inject({ method: 'GET', url: '/api/pages/999999/feedback' });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.json().message).toBe('Page not found');
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
   it('should get feedback summary for a page', async () => {
     // Summary query
     mockQuery.mockResolvedValueOnce({
@@ -197,6 +207,7 @@ describe('Content analytics routes - authenticated', () => {
     expect(body.notHelpful).toBe(2);
     expect(body.total).toBe(7);
     expect(body.userVote).toEqual({ isHelpful: true, comment: 'Nice' });
+    expect(mockUserCanAccessPage).toHaveBeenCalledWith(TEST_USER_ID, 42);
   });
 
   it('should return null userVote when user has not voted', async () => {
