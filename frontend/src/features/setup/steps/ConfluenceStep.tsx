@@ -24,7 +24,7 @@ export function ConfluenceStep({ onNext, onBack }: ConfluenceStepProps) {
       await apiFetch('/settings', {
         method: 'PUT',
         body: JSON.stringify({
-          confluenceBaseUrl: confluenceUrl,
+          confluenceUrl,
           confluencePat: pat,
         }),
       });
