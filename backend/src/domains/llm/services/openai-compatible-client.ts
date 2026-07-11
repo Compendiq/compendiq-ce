@@ -277,7 +277,17 @@ export async function generateEmbedding(
           // Ollama's "input length exceeds context length". Cap the length so a
           // verbose error page can't bloat logs.
           const detail = await res.text().catch(() => '');
-          throw new Error(`generateEmbedding HTTP ${res.status}: ${detail.slice(0, 300)}`);
+          const err = new Error(
+            `generateEmbedding HTTP ${res.status}: ${detail.slice(0, 300)}`,
+          ) as Error & { bypassCircuitBreaker?: boolean };
+          // #867: a deterministic client-input 4xx (e.g. a context-length 400)
+          // proves the provider is reachable — it is NOT an outage. Mark it so
+          // the per-provider circuit breaker treats it as a healthy signal
+          // instead of a failure; otherwise one oversized page's repeated 400s
+          // open the breaker and abort the whole embedding run. The message is
+          // left unchanged so isContextLengthError still matches the skip path.
+          if (res.status === 400) err.bypassCircuitBreaker = true;
+          throw err;
         }
         const body = await res.json() as { data: Array<{ embedding: number[] }> };
         return body.data.map((d) => d.embedding);
