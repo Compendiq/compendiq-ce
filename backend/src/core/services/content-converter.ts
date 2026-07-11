@@ -74,6 +74,27 @@ function getParamValue(macro: Element, name: string): string | null {
 }
 
 /**
+ * Collect a macro's DIRECT ac:parameter children as a name → text map (#865).
+ * Used to persist an unknown macro's arbitrary parameters generically so the
+ * reverse pass can rebuild them. Only direct children are read (so params of a
+ * nested macro inside the body aren't captured), and only text-valued params
+ * with a name are kept — anonymous or element-valued params (e.g. the
+ * `<ac:parameter><ri:page/></ac:parameter>` used by include) are skipped
+ * because they can't be faithfully serialized to a JSON string.
+ */
+function collectDirectTextParams(macro: Element): Record<string, string> {
+  const params: Record<string, string> = {};
+  for (const child of [...macro.children]) {
+    if (child.tagName.toLowerCase() !== 'ac:parameter') continue;
+    const name = child.getAttribute('ac:name');
+    if (!name) continue;
+    if (child.children.length > 0) continue;
+    params[name] = child.textContent ?? '';
+  }
+  return params;
+}
+
+/**
  * Transfer innerHTML from a source element to a target element.
  * Server-side JSDOM only — used for Confluence macro conversion.
  */
@@ -463,7 +484,12 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey
     macro.replaceWith(div);
   }
 
-  // Remove remaining unknown macros - preserve as data attributes
+  // Remaining unknown macros — preserve as a placeholder div so the reverse
+  // pass (htmlToConfluence) can rebuild the ac:structured-macro on write-back.
+  // Dropping the macro here (or emitting a plain <div>) would permanently
+  // delete it from the Confluence page on the first editor save / AI-Improve
+  // apply / draft publish / version restore — exactly the #765 hazard, now
+  // fixed for ALL unhandled macros (excerpt, anchor, gallery, chart, …) (#865).
   for (const macro of byTag(doc, 'ac:structured-macro')) {
     const name = getMacroName(macro) || 'unknown';
     const bodyEl = byTag(macro, 'ac:rich-text-body')[0];
@@ -471,6 +497,12 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey
     const div = doc.createElement('div');
     div.className = 'confluence-macro-unknown';
     div.setAttribute('data-macro-name', name);
+    // Persist the macro's parameters generically (arbitrary names) as a single
+    // JSON attribute so a param-only macro doesn't round-trip as an empty shell.
+    const params = collectDirectTextParams(macro);
+    if (Object.keys(params).length > 0) {
+      div.setAttribute('data-macro-params', JSON.stringify(params));
+    }
     transferInnerHtml(div, bodyEl, `[Confluence macro: ${name}]`);
     macro.replaceWith(div);
   }
@@ -690,6 +722,53 @@ export function htmlToConfluence(html: string): string {
         macro.appendChild(p);
       }
     }
+    div.replaceWith(macro);
+  }
+
+  // Convert unknown-macro placeholders back to their original
+  // ac:structured-macro (#865) so write-back doesn't permanently delete the
+  // macro from the Confluence page. Mirrors the #765 labels handler above.
+  for (const div of doc.querySelectorAll('div.confluence-macro-unknown')) {
+    const name = div.getAttribute('data-macro-name') || 'unknown';
+    const macro = doc.createElement('ac:structured-macro');
+    macro.setAttribute('ac:name', name);
+
+    // Rebuild parameters persisted generically on the forward pass.
+    const rawParams = div.getAttribute('data-macro-params');
+    if (rawParams) {
+      try {
+        const params = JSON.parse(rawParams) as Record<string, unknown>;
+        for (const [paramName, paramValue] of Object.entries(params)) {
+          if (typeof paramValue !== 'string') continue;
+          const p = doc.createElement('ac:parameter');
+          p.setAttribute('ac:name', paramName);
+          p.textContent = paramValue;
+          macro.appendChild(p);
+        }
+      } catch {
+        // Malformed params attribute — preserve the macro without them rather
+        // than fail the whole write-back.
+      }
+    }
+
+    // Restore the rich-text-body. The forward pass only writes the
+    // `[Confluence macro: {name}]` placeholder (see the fallback in the
+    // forward unknown-macro handler) when the source macro had NO
+    // rich-text-body, so treat that exact text as a body-less macro and emit
+    // it without a bogus body. The TipTap editor re-serializes the fabricated
+    // placeholder wrapped in a single block (e.g. `<p>[Confluence macro:
+    // anchor]</p>`), so match on the div's trimmed textContent rather than
+    // requiring zero element children — otherwise the fabricated placeholder
+    // string gets pushed upstream into Confluence as a real body. A div with
+    // genuine content still round-trips to an ac:rich-text-body.
+    const placeholder = `[Confluence macro: ${name}]`;
+    const isPlaceholderOnly = (div.textContent ?? '').trim() === placeholder;
+    if (!isPlaceholderOnly) {
+      const body = doc.createElement('ac:rich-text-body');
+      transferInnerHtml(body, div);
+      macro.appendChild(body);
+    }
+
     div.replaceWith(macro);
   }
 
@@ -918,6 +997,11 @@ const MEDIA_SELECTOR = [
   'div.confluence-mermaid',
   'div.mermaid',
   'div.confluence-labels-macro',
+  // #865: freeze unknown-macro placeholders whole so the AI-Improve
+  // markdown round-trip can't flatten them into prose (which htmlToConfluence
+  // would then rebuild nothing from). Inner prose becomes non-improvable —
+  // the same preserve-over-improve tradeoff already accepted for labels/drawio.
+  'div.confluence-macro-unknown',
 ].join(',');
 
 // #765 review follow-up: legacy section/column wrappers nested inside
@@ -958,7 +1042,7 @@ export function protectMedia(html: string): { html: string; media: ProtectedMedi
       // Legacy section/column wrappers freeze ONLY when nested inside a
       // markdown-constrained container; elsewhere they use boundary tokens.
       if (isLegacyWrapper(n) && !isFrozenLegacyWrapper(n)) return false;
-      if (n.parentElement?.closest('div.confluence-drawio, div.confluence-mermaid, div.mermaid')) return false;
+      if (n.parentElement?.closest('div.confluence-drawio, div.confluence-mermaid, div.mermaid, div.confluence-macro-unknown')) return false;
       // Skip descendants of a frozen wrapper — it is protected whole. If the
       // nearest wrapper ancestor is not frozen, no farther one can be either
       // (frozenness propagates downward: a frozen ancestor's constrained

@@ -101,6 +101,35 @@ describe('protectMedia / restoreMedia', () => {
     // No leftover token fragments.
     expect(restored).not.toContain('CQ_MEDIA_PLACEHOLDER_');
   });
+
+  it('opaque-protects an unknown-macro placeholder so AI-Improve cannot flatten it (#865)', () => {
+    // Before #865 the unknown-macro div was NOT in MEDIA_SELECTOR, so the
+    // AI-Improve HTML→Markdown→HTML round-trip flattened the placeholder text
+    // into prose and htmlToConfluence rebuilt nothing. Freezing it whole keeps
+    // it intact across the round-trip.
+    const unknown =
+      '<div class="confluence-macro-unknown" data-macro-name="roadmap">[Confluence macro: roadmap]</div>';
+    const html = `<p>Intro</p>${unknown}<p>End</p>`;
+    const { html: protectedHtml, media } = protectMedia(html);
+    expect(media).toHaveLength(1);
+    expect(protectedHtml).toContain('CQ_MEDIA_PLACEHOLDER_0');
+    expect(protectedHtml).not.toContain('confluence-macro-unknown');
+
+    const restored = restoreMedia(protectedHtml, media);
+    expect(restored).toContain('class="confluence-macro-unknown"');
+    expect(restored).toContain('data-macro-name="roadmap"');
+  });
+
+  it('unknown-macro placeholder survives a full markdown round-trip (#865)', async () => {
+    const unknown =
+      '<div class="confluence-macro-unknown" data-macro-name="roadmap">[Confluence macro: roadmap]</div>';
+    const html = `<p>Intro</p>${unknown}`;
+    const { html: protectedHtml, media } = protectMedia(html);
+    const md = htmlToMarkdown(protectedHtml);
+    const back = restoreMedia(await markdownToHtml(md), media);
+    expect(back).toContain('confluence-macro-unknown');
+    expect(back).toContain('data-macro-name="roadmap"');
+  });
 });
 
 describe('confluence-drawio turndown <-> markdownToHtml round-trip (#723 converter coverage)', () => {
