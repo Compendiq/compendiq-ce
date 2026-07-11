@@ -314,6 +314,24 @@ describe('ConfluenceClient', () => {
       expect(decodedCql).toContain('space="OPS\\" OR space=\\"SECRET" AND type=page');
       expect(decodedCql).not.toContain('space="OPS" OR space="SECRET"');
     });
+
+    it('uses a minute-granular datetime lower bound widened by a 24h overlap margin (#858)', async () => {
+      const client = new ConfluenceClient(baseUrl, pat);
+      mockRequest.mockResolvedValue({
+        statusCode: 200,
+        body: { text: async () => JSON.stringify({ results: [], start: 0, limit: 50, size: 0 }) },
+      } as never);
+
+      await client.getModifiedPages(new Date('2026-07-10T02:00:00Z'), 'OPS');
+
+      const callUrl = mockRequest.mock.calls[0][0] as string;
+      const decodedCql = decodeURIComponent(callUrl.split('cql=')[1].split('&')[0]);
+      // A minute-granular datetime literal, not a bare calendar date.
+      expect(decodedCql).toMatch(/lastmodified>="\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}"/);
+      // Lower bound widened ~24h below `since` to absorb the instance timezone offset.
+      expect(decodedCql).toContain('lastmodified>="2026/07/09 02:00"');
+      expect(decodedCql).not.toContain('lastmodified>="2026-07-10"');
+    });
   });
 
   describe('label management', () => {

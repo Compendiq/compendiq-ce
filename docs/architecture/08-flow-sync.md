@@ -110,6 +110,16 @@ sequenceDiagram
   `NODE_EXTRA_CA_CERTS` for self-signed internal CAs.
 - **Idempotency** — upsert by `(user_id, confluence_id)`. `version` column
   is written from Confluence's own version counter; no double-writes.
+- **Timezone-safe incremental window (#858)** — `getModifiedPages` builds the
+  `lastmodified >=` lower bound as a **minute-granular CQL datetime literal**
+  (`yyyy/MM/dd HH:mm`, from the UTC wall-clock) widened by a **24h overlap
+  margin**. CQL date/time literals are resolved in the Confluence instance's
+  configured timezone (not UTC, and not exposed to us); the old bare-UTC-date
+  bound silently dropped edits made near a UTC-day boundary on west-of-UTC
+  instances, and the miss was permanent because the bound only advances forward.
+  The 24h margin provably covers the full real-world offset range (−12h…+14h);
+  over-fetching is a no-op because the `version` idempotency guard above skips
+  any re-fetched page whose stored version is already current.
 - **Circuit breaker** — `core/services/circuit-breaker.ts` protects against
   runaway failure against a broken Confluence instance.
 - **Per-page failure isolation (#822)** — the per-page loop in `syncSpace`
