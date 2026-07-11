@@ -143,6 +143,12 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
         // scroll it into view on reload (its ancestors are auto-expanded first).
         data-active={isActive ? 'true' : undefined}
         data-page-id={node.page.id}
+        // #880: make the row a real keyboard-operable widget. role="treeitem"
+        // (not "button") because the chevron is a nested <button> — a button
+        // role here would nest interactive controls. Enter/Space navigate.
+        role="treeitem"
+        tabIndex={0}
+        aria-expanded={hasChildren ? isExpanded : undefined}
         className={cn(
           'group flex items-center gap-1.5 rounded-[10px] h-9 pr-2 text-sm cursor-pointer transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
           isActive
@@ -151,6 +157,15 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
         )}
         style={{ paddingLeft: `${level * 16 + 10}px` }}
         onClick={handleNavigate}
+        onKeyDown={(e) => {
+          // Ignore keydown bubbling up from the nested chevron button so the
+          // row doesn't double-activate when the chevron is focused.
+          if (e.target !== e.currentTarget) return;
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault(); // Space would otherwise scroll the page
+            handleNavigate();
+          }
+        }}
       >
         {hasChildren ? (
           <button
@@ -173,7 +188,9 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
       </div>
 
       {hasChildren && isExpanded && (
-        <div className="relative">
+        // #880: role="group" gives the nested treeitem rows a valid ARIA
+        // required-parent (a treeitem must be owned by a tree or group).
+        <div className="relative" role="group">
           {/* Indent guide line -- click to collapse parent */}
           <button
             type="button"
@@ -746,7 +763,11 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
             />
           </Suspense>
         ) : (
-          <div className="space-y-0.5">
+          // #880: role="tree" + label give the role="treeitem" rows a valid
+          // required-parent context and expose real tree semantics to screen
+          // readers. Keyboard reorder + full roving-tabindex/arrow-key nav
+          // remain a tracked follow-up (epic #856).
+          <div className="space-y-0.5" role="tree" aria-label="Pages">
             {tree.map((node) => (
               <SidebarTreeNode
                 key={node.page.id}

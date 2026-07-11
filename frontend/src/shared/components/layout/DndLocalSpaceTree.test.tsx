@@ -167,4 +167,61 @@ describe('DndLocalSpaceTree', () => {
       expect(span.className).not.toContain('font-medium');
     }
   });
+
+  // #880: local-space tree rows were clickable <div>s with no keyboard access —
+  // reorder AND navigation were mouse-only. Each row is now a focusable
+  // role="treeitem" that navigates on Enter/Space (WCAG 2.1.1).
+  describe('keyboard navigation (#880)', () => {
+    it('exposes each row as a focusable treeitem (role + tabIndex 0)', () => {
+      renderTree();
+      const row = screen.getByText('Page One').closest('[role="treeitem"]');
+      expect(row).not.toBeNull();
+      expect(row!.getAttribute('tabindex')).toBe('0');
+    });
+
+    it('navigates on Enter', () => {
+      renderTree();
+      const row = screen.getByText('Page One').closest('[role="treeitem"]')!;
+      fireEvent.keyDown(row, { key: 'Enter' });
+      expect(mockNavigate).toHaveBeenCalledWith('/pages/p1');
+    });
+
+    it('navigates on Space and prevents the default page-scroll', () => {
+      renderTree();
+      const row = screen.getByText('Page One').closest('[role="treeitem"]')!;
+      const notPrevented = fireEvent.keyDown(row, { key: ' ' });
+      expect(notPrevented).toBe(false);
+      expect(mockNavigate).toHaveBeenCalledWith('/pages/p1');
+    });
+
+    it('exposes aria-expanded on an expandable row and omits it on a leaf', () => {
+      renderTree();
+      const expandable = screen.getByText('Page Two').closest('[role="treeitem"]')!;
+      expect(expandable.getAttribute('aria-expanded')).toBe('false');
+      const leaf = screen.getByText('Page One').closest('[role="treeitem"]')!;
+      expect(leaf.getAttribute('aria-expanded')).toBeNull();
+    });
+  });
+
+  // #880 (code-review follow-up): rows carry role="treeitem" but had no
+  // role="tree" ancestor and nested-children wrappers lacked role="group", so
+  // every treeitem was orphaned (axe-critical aria-required-parent). The row
+  // list is now a role="tree" and each expanded node's children live in a
+  // role="group".
+  describe('ARIA tree semantics (#880)', () => {
+    it('exposes the row list as a labelled ARIA tree', () => {
+      renderTree();
+      const tree = screen.getByRole('tree');
+      expect(tree).toBeInTheDocument();
+      expect(tree.getAttribute('aria-label')).toBeTruthy();
+    });
+
+    it('wraps an expanded node\'s children in role="group" so nested treeitems have a valid parent', () => {
+      renderTree({ expandedIds: new Set(['p2']) });
+      expect(screen.getByText('Child of Two')).toBeInTheDocument();
+      const group = document.querySelector('[role="group"]');
+      expect(group).not.toBeNull();
+      expect(group!.querySelector('[role="treeitem"]')).not.toBeNull();
+    });
+  });
 });
