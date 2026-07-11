@@ -60,6 +60,7 @@ Custom turndown rules handle Confluence-specific macros:
 | `ac:structured-macro[labels]`        | `<div class="confluence-labels-macro" data-showlabels="…">[Labels]</div>` (#765; was dropped per #348) | `[Labels]` placeholder; opaque-protected on Improve |
 | `ac:layout` / `ac:layout-section` / `ac:layout-cell` | `div.confluence-layout` / `div.confluence-layout-section[data-layout-type]` / `div.confluence-layout-cell` | flattened content (default); `[[[LAYOUT]]]` / `[[[LAYOUT-SECTION type]]]` / `[[[LAYOUT-CELL]]]` boundary tokens with `{ layoutTokens: true }` (#765, Improve only) |
 | `ac:structured-macro[section]` / `[column]` (legacy) | `div.confluence-section[data-border]` / `div.confluence-column[data-cell-width]` | flattened content (default); `[[[SECTION border=…]]]` / `[[[COLUMN width=…]]]` boundary tokens with `{ layoutTokens: true }` (#765, Improve only) |
+| any other macro (catch-all) | `<div class="confluence-macro-unknown" data-macro-name="…" data-macro-params="{…}">` (#865; was lossy) | placeholder; opaque-protected on Improve |
 
 ### Round-trip notes (issue #300)
 
@@ -81,6 +82,16 @@ Custom turndown rules handle Confluence-specific macros:
   anonymous `<ac:parameter><ri:page/></ac:parameter>` inside `include` /
   `excerpt-include` is emitted without an `ac:name=""` attribute to
   match the source format byte-for-byte.
+- Every macro with no dedicated handler falls through to the catch-all
+  `div.confluence-macro-unknown` placeholder (#865). It also round-trips:
+  `data-macro-name` restores `ac:name`, and text-valued `ac:parameter`s are
+  stashed as a JSON `data-macro-params` attribute and rebuilt on write-back.
+  The rich-text-body is re-wrapped; a body-less macro (rendered as the
+  `[Confluence macro: name]` placeholder) is emitted without a body rather
+  than embedding the placeholder text. Before #865 the reverse pass had no
+  handler for this div, so opening a synced page with any unhandled macro in
+  the editor and saving (or applying Improve / publishing a draft / restoring
+  a version) permanently deleted the macro from the Confluence page.
 
 ## Why store three forms?
 
