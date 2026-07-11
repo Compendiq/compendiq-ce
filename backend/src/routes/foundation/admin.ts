@@ -78,11 +78,20 @@ export async function adminRoutes(fastify: FastifyInstance) {
       try {
         const reEncrypted = reEncryptPat(row.confluence_pat);
         if (reEncrypted) {
-          await query(
-            'UPDATE user_settings SET confluence_pat = $1 WHERE user_id = $2',
-            [reEncrypted, row.user_id],
+          // Conditional on the exact ciphertext read at snapshot time so a
+          // concurrent PUT /settings that saved a NEW PAT is never clobbered
+          // with a re-encryption of the OLD value (lost-update guard, #889).
+          const updated = await query(
+            'UPDATE user_settings SET confluence_pat = $1 WHERE user_id = $2 AND confluence_pat = $3',
+            [reEncrypted, row.user_id, row.confluence_pat],
           );
-          rotated++;
+          if ((updated.rowCount ?? 0) > 0) {
+            rotated++;
+          } else {
+            // Concurrently replaced by PUT /settings — the new PAT is already
+            // encrypted under the latest key, so it must not be reverted.
+            skipped++;
+          }
         } else {
           skipped++; // Already using latest key
         }

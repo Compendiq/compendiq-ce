@@ -1,5 +1,5 @@
 import { FastifyInstance } from 'fastify';
-import { query } from '../../core/db/postgres.js';
+import { query, getPool } from '../../core/db/postgres.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { userCanAccessPage, getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
@@ -29,6 +29,18 @@ const MovePageSchema = z.object({
 const ReorderPageSchema = z.object({
   sortOrder: z.number().int().min(0),
 });
+
+/**
+ * Global mutex for PUT /pages/:id/move (#891 review follow-up). Arbitrary but
+ * stable application-defined advisory-lock key — must stay unique among
+ * advisory-lock users of this database (the migrations runner uses 745_001).
+ * Taken with pg_advisory_xact_lock, i.e. transaction-scoped: it is released
+ * automatically at COMMIT/ROLLBACK, so an error path can never leak it.
+ * Page moves are rare, so one global lock is acceptable and far simpler than
+ * row-level lock ordering. Exported for the integration test that proves
+ * moves serialize on it.
+ */
+export const PAGE_MOVE_ADVISORY_LOCK_ID = 891_001;
 
 /**
  * Compute the materialized path for a page given its parent's path and its own id.
@@ -324,7 +336,6 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.notFound('Page not found');
     }
 
-    const newParentId = body.parentId !== undefined ? body.parentId : page.parent_id;
     const newSpaceKey = body.spaceKey ?? page.space_key;
 
     // #733: when the move changes the page's space, the target space must
@@ -347,69 +358,133 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
       }
     }
 
-    // If new parent is specified, verify it exists
-    if (newParentId !== null) {
-      const parentCheck = await query(
-        'SELECT id, path FROM pages WHERE id = $1 AND deleted_at IS NULL',
-        [newParentId],
+    // #891 review follow-up: the cycle check and the UPDATEs below must run
+    // atomically AND serialized across requests. Without serialization, two
+    // concurrent moves (A under B, and B under A) can each pass the ancestor
+    // walk against the pre-move state and both commit, creating a mutual
+    // parent_id cycle. Concurrent moves queue on the advisory lock, so each
+    // waiter re-runs its cycle check against the previous winner's committed
+    // state. Must use a dedicated client — pool.query() draws a random
+    // connection per call, so BEGIN/COMMIT would run on different connections
+    // (non-atomic) and the xact-scoped lock would bind to the wrong session.
+    let moved: {
+      id: number;
+      parentId: string | number | null;
+      spaceKey: string | null;
+      path: string;
+      depth: number;
+    };
+    const txClient = await getPool().connect();
+    try {
+      await txClient.query('BEGIN');
+      await txClient.query('SELECT pg_advisory_xact_lock($1)', [PAGE_MOVE_ADVISORY_LOCK_ID]);
+
+      // Re-read the page under the lock: a queued concurrent move may have
+      // changed its parent/path/space between the pre-checks above and now,
+      // and the descendant rewrite below must use the committed old path.
+      const fresh = await txClient.query<{
+        parent_id: string | null;
+        space_key: string | null;
+        path: string | null;
+      }>(
+        'SELECT parent_id, space_key, path FROM pages WHERE id = $1 AND deleted_at IS NULL',
+        [page.id],
       );
-      if (parentCheck.rows.length === 0) {
-        throw fastify.httpErrors.badRequest('Parent page not found');
+      if (fresh.rows.length === 0) {
+        throw fastify.httpErrors.notFound('Page not found');
+      }
+      const current = fresh.rows[0]!;
+      const moveParentId = body.parentId !== undefined ? body.parentId : current.parent_id;
+      const moveSpaceKey = body.spaceKey ?? current.space_key;
+
+      // If new parent is specified, verify it exists (and take its path for
+      // the materialized-path computation below).
+      let parentPath: string | null = null;
+      if (moveParentId !== null) {
+        const parentCheck = await txClient.query<{ path: string | null }>(
+          'SELECT id, path FROM pages WHERE id = $1 AND deleted_at IS NULL',
+          [moveParentId],
+        );
+        if (parentCheck.rows.length === 0) {
+          throw fastify.httpErrors.badRequest('Parent page not found');
+        }
+        parentPath = parentCheck.rows[0]!.path;
+
+        // Prevent circular reference (#891): reject moving a page under itself or
+        // under any of its own descendants. Walk the ancestor chain of the target
+        // parent (resolving parent_id against both confluence_id and numeric id,
+        // the same dual key used by the tree queries). If the page being moved
+        // appears anywhere in that chain, the move would create a cycle. UNION
+        // (not UNION ALL) dedupes so a pre-existing cycle in the data cannot loop.
+        // This also covers Confluence-synced pages whose materialized `path` is
+        // NULL, where the old path-substring check was a silent no-op.
+        const cycleCheck = await txClient.query(
+          `WITH RECURSIVE ancestors AS (
+             SELECT id, parent_id FROM pages WHERE id = $1 AND deleted_at IS NULL
+             UNION
+             SELECT p.id, p.parent_id FROM pages p
+             JOIN ancestors a
+               ON (p.confluence_id = a.parent_id OR CAST(p.id AS TEXT) = a.parent_id)
+             WHERE p.deleted_at IS NULL
+           )
+           SELECT 1 FROM ancestors WHERE id = $2 LIMIT 1`,
+          [moveParentId, page.id],
+        );
+        if (cycleCheck.rows.length > 0) {
+          throw fastify.httpErrors.badRequest('Cannot move a page under itself or its own descendant');
+        }
       }
 
-      // Prevent circular reference: cannot move a page under its own descendant
-      const parentPath = parentCheck.rows[0]!.path as string | null;
-      if (parentPath && parentPath.includes(`/${page.id}/`)) {
-        throw fastify.httpErrors.badRequest('Cannot move a page under its own descendant');
+      const newPath = computePath(parentPath, page.id);
+      const newDepth = computeDepth(newPath);
+      const oldPath = current.path;
+
+      // Update the page itself
+      await txClient.query(
+        `UPDATE pages SET parent_id = $1, space_key = $2, path = $3, depth = $4
+         WHERE id = $5`,
+        [moveParentId !== null ? String(moveParentId) : null, moveSpaceKey, newPath, newDepth, page.id],
+      );
+
+      // Update all descendants: replace old path prefix with new path prefix.
+      // $2 must be cast to int: node-postgres sends parameters untyped, and
+      // without the cast PostgreSQL resolves `substring(text FROM unknown)` to
+      // the POSIX-REGEX overload `substring(text FROM text)` — which treated
+      // the numeric offset as a regex and corrupted (or NULLed) every
+      // descendant path on move. Caught by the real-Postgres integration test.
+      if (oldPath) {
+        await txClient.query(
+          `UPDATE pages
+           SET path = $1 || substring(path FROM $2::int),
+               depth = depth + $3,
+               space_key = COALESCE($4, space_key)
+           WHERE path LIKE $5 AND id != $6 AND deleted_at IS NULL`,
+          [
+            newPath,
+            oldPath.length + 1, // skip old prefix
+            newDepth - computeDepth(oldPath), // depth adjustment
+            moveSpaceKey !== current.space_key ? moveSpaceKey : null,
+            `${oldPath}/%`,
+            page.id,
+          ],
+        );
       }
-    }
 
-    // Compute new path for this page
-    let parentPath: string | null = null;
-    if (newParentId !== null) {
-      const parentResult = await query<{ path: string | null }>(
-        'SELECT path FROM pages WHERE id = $1',
-        [newParentId],
-      );
-      parentPath = parentResult.rows[0]?.path ?? null;
-    }
-
-    const newPath = computePath(parentPath, page.id);
-    const newDepth = computeDepth(newPath);
-    const oldPath = page.path;
-
-    // Update the page itself
-    await query(
-      `UPDATE pages SET parent_id = $1, space_key = $2, path = $3, depth = $4
-       WHERE id = $5`,
-      [newParentId !== null ? String(newParentId) : null, newSpaceKey, newPath, newDepth, page.id],
-    );
-
-    // Update all descendants: replace old path prefix with new path prefix
-    if (oldPath) {
-      await query(
-        `UPDATE pages
-         SET path = $1 || substring(path FROM $2),
-             depth = depth + $3,
-             space_key = COALESCE($4, space_key)
-         WHERE path LIKE $5 AND id != $6 AND deleted_at IS NULL`,
-        [
-          newPath,
-          oldPath.length + 1, // skip old prefix
-          newDepth - computeDepth(oldPath), // depth adjustment
-          newSpaceKey !== page.space_key ? newSpaceKey : null,
-          `${oldPath}/%`,
-          page.id,
-        ],
-      );
+      await txClient.query('COMMIT');
+      moved = { id: page.id, parentId: moveParentId, spaceKey: moveSpaceKey, path: newPath, depth: newDepth };
+    } catch (err) {
+      await txClient.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      txClient.release();
     }
 
     await cache.invalidate(userId, 'pages');
     await cache.invalidate(userId, 'spaces');
     await logAuditEvent(userId, 'PAGE_MOVED', 'page', String(id),
-      { parentId: newParentId, spaceKey: newSpaceKey }, request);
+      { parentId: moved.parentId, spaceKey: moved.spaceKey }, request);
 
-    return { id: page.id, parentId: newParentId, spaceKey: newSpaceKey, path: newPath, depth: newDepth };
+    return moved;
   });
 
   // PUT /api/pages/:id/reorder - reorder page within siblings
