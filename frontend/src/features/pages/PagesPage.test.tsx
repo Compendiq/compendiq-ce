@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { PagesPage } from './PagesPage';
@@ -581,6 +581,91 @@ describe('PagesPage', () => {
       // Wait for re-render
       await screen.findByText('Try a different search term');
       expect(screen.queryByText('Go to Settings')).not.toBeInTheDocument();
+    });
+  });
+
+  // --- Semantic search empty state (#938, review follow-up on #993) ---
+
+  describe('semantic search empty state (#938)', () => {
+    /** Mock fetch where /search returns zero results for every mode, with the
+     *  given hasEmbeddings flag. All other endpoints return their normal mocks. */
+    function mockFetchWithEmptySearch(hasEmbeddings: boolean) {
+      return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+        const url = typeof input === 'string' ? input : (input as Request).url;
+        if (url.includes('/search?')) {
+          const mode = new URL(url, 'http://localhost').searchParams.get('mode') ?? 'keyword';
+          return new Response(
+            JSON.stringify({ items: [], total: 0, page: 1, limit: 10, totalPages: 0, mode, hasEmbeddings }),
+            { headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+        if (url.includes('/embeddings/status')) {
+          return new Response(JSON.stringify(mockEmbeddingStatusIdle), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/pages/filters')) {
+          return new Response(JSON.stringify(mockFilterOptions), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/spaces')) {
+          return new Response(JSON.stringify(mockSpaces), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/sync/status')) {
+          return new Response(JSON.stringify({ status: 'idle' }), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/pages/pinned')) {
+          return new Response(JSON.stringify({ items: [], total: 0 }), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/settings')) {
+          return new Response(JSON.stringify({}), { headers: { 'Content-Type': 'application/json' } });
+        }
+        return new Response(JSON.stringify(mockPagesResponse), { headers: { 'Content-Type': 'application/json' } });
+      });
+    }
+
+    /** Render, switch to semantic mode, and type a query that matches nothing.
+     *  useSearch debounces 300ms before firing, so assertions must findBy/waitFor. */
+    function renderSemanticSearchWithNoResults(hasEmbeddings: boolean) {
+      vi.restoreAllMocks();
+      const fetchSpy = mockFetchWithEmptySearch(hasEmbeddings);
+      render(<PagesPage />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('search-mode-semantic'));
+      fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+        target: { value: 'nonexistent topic' },
+      });
+      return fetchSpy;
+    }
+
+    it('zero embeddings + zero results: empty state acknowledges the keyword fallback and the missing embeddings', async () => {
+      renderSemanticSearchWithNoResults(false);
+
+      // The fallback banner and the empty state show together, so their copy
+      // must not contradict: the banner already says keyword search ran, so
+      // the empty state must not imply embedding alone would find a match.
+      expect(await screen.findByText('No matching pages', undefined, { timeout: 2000 })).toBeInTheDocument();
+      expect(
+        screen.getByText('Keyword search found no matches. Semantic search is unavailable until pages are embedded — configure an embedding provider in Settings → LLM and run an embedding pass.'),
+      ).toBeInTheDocument();
+      expect(screen.getByTestId('no-embeddings-warning')).toBeInTheDocument();
+    });
+
+    it('embeddings exist + zero results: empty state blames the query, not embeddings', async () => {
+      const fetchSpy = renderSemanticSearchWithNoResults(true);
+
+      // Wait for the debounced search queries to actually fire and settle so
+      // the assertion pins the resolved state, not the optimistic first render.
+      await waitFor(
+        () => {
+          const urls = fetchSpy.mock.calls.map(([input]) =>
+            typeof input === 'string' ? input : (input as Request).url,
+          );
+          expect(urls.some((u) => u.includes('/search?') && u.includes('mode=semantic'))).toBe(true);
+        },
+        { timeout: 2000 },
+      );
+
+      expect(await screen.findByTestId('empty-state-title')).toHaveTextContent('No pages found');
+      expect(screen.getByText('Try a different search term or switch to keyword mode')).toBeInTheDocument();
+      expect(screen.queryByTestId('no-embeddings-warning')).not.toBeInTheDocument();
+      expect(screen.queryByText(/Semantic search is unavailable until pages are embedded/)).not.toBeInTheDocument();
     });
   });
 
