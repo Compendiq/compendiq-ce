@@ -44,6 +44,12 @@ vi.mock('../../domains/llm/services/embedding-service.js', () => ({
   isProcessingUser: vi.fn().mockReturnValue(false),
 }));
 
+// The Confluence-create branch now runs an RBAC space guard (#892); grant the
+// spaces these tests target so they still reach getClientForUser as before.
+vi.mock('../../core/services/rbac-service.js', () => ({
+  getUserAccessibleSpaces: vi.fn().mockResolvedValue(['CONFSPACE', 'LOCALSPACE']),
+}));
+
 const mockQueryFn = vi.fn();
 vi.mock('../../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mockQueryFn(...args),

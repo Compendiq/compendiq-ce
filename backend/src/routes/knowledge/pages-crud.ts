@@ -1136,6 +1136,16 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     }
 
     // --- Confluence article: existing flow ---
+    // RBAC: verify the caller may operate on the target space before creating
+    // a page upstream. The Confluence PAT can permit more spaces than the
+    // app-level RBAC scope, so mirror the PUT/DELETE guard here (#892).
+    if (body.spaceKey) {
+      const accessibleSpaces = await getUserAccessibleSpaces(userId);
+      if (!accessibleSpaces.includes(body.spaceKey)) {
+        throw fastify.httpErrors.forbidden('Access denied to this space');
+      }
+    }
+
     const client = await getClientForUser(userId);
     if (!client) {
       throw fastify.httpErrors.badRequest('Confluence not configured');
