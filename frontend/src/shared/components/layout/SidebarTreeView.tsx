@@ -63,9 +63,16 @@ function buildTree(pages: PageTreeItem[], homepageId?: string | null): TreeNode[
     if (homepageNode) {
       const promoted = homepageNode.children;
       const withoutHomepage = roots.filter((r) => r.page.id !== homepageId);
-      return [...promoted, ...withoutHomepage].sort((a, b) =>
-        a.page.title.localeCompare(b.page.title),
-      );
+      const withoutHome = [...promoted, ...withoutHomepage];
+      // #961: hiding the homepage must not leave the sidebar empty. When the
+      // space contains only its homepage (no children, no sibling roots),
+      // keep the homepage visible so the tree doesn't render a false
+      // "empty space" state above a "1 page in <SPACE>" footer.
+      if (withoutHome.length > 0) {
+        return withoutHome.sort((a, b) =>
+          a.page.title.localeCompare(b.page.title),
+        );
+      }
     }
   }
 

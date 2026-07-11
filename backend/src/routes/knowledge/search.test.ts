@@ -721,5 +721,19 @@ describe('Search Routes', () => {
 
       expect(response.statusCode).toBe(400);
     });
+
+    it('should scope suggestions to the requesting user (#895)', async () => {
+      mockQueryFn.mockResolvedValue({ rows: [] });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/search/suggestions?q=redis',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const [sql, params] = mockQueryFn.mock.calls[0];
+      expect(sql).toMatch(/user_id\s*=\s*\$2/);
+      expect(params).toEqual(['redis', 'test-user-id']);
+    });
   });
 });

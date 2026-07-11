@@ -74,6 +74,8 @@ erDiagram
         bool embedding_dirty
         timestamptz local_modified_at "non-null => local edit since last_synced (#305)"
         uuid local_modified_by FK "who last edited locally (#305)"
+        text_array expected_image_files "cached asset filenames; NULL => recompute (#887)"
+        text_array expected_drawio_files "cached draw.io filenames; NULL => recompute (#887)"
         timestamptz deleted_at
     }
 
@@ -315,3 +317,14 @@ erDiagram
   Confluence version so the next sync doesn't clobber the revert. Retention
   keeps the last `RETENTION_VERSIONS_MAX` (default 50) snapshots per page
   (`data-retention-service.ts`).
+- **Cached asset expectations** (`pages.expected_image_files` /
+  `expected_drawio_files`, migration 081, #887). The sync-overview dashboard
+  needs each page's expected image/draw.io filenames; deriving them from raw
+  XHTML on every request materialised the whole corpus's `body_storage` and
+  double-JSDOM-parsed each body. They are now persisted as `TEXT[]` and reset to
+  NULL by the `pages_expected_assets_invalidate` BEFORE UPDATE trigger whenever
+  `body_storage` changes (covering every writer without touching their call
+  sites). `getSyncOverview` lazily recomputes the NULL rows in bounded batches
+  and persists them, so steady-state reads do zero XHTML parsing. NULL means
+  "recompute"; an empty array means "computed, no assets". This trigger is
+  independent of the migration 060 `local_modified` trigger (disjoint columns).

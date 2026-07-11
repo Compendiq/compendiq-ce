@@ -54,7 +54,7 @@ RUN apk add --no-cache wget
 FROM nginx:alpine AS runtime
 
 # Copy wget + shared libraries needed on the minimal runtime image
-COPY --from=tools /usr/bin/wget /usr/bin/wget
+COPY --from=tools /usr/bin/wget /usr/local/bin/wget
 COPY --from=tools /usr/lib/libidn2* /usr/lib/
 COPY --from=tools /usr/lib/libunistring* /usr/lib/
 
@@ -69,7 +69,7 @@ COPY frontend/nginx-cache-drawio.conf /etc/nginx/cache-drawio.conf
 EXPOSE 8081
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-  CMD ["/usr/bin/wget", "--spider", "--quiet", "http://127.0.0.1:8081/"]
+  CMD ["/usr/local/bin/wget", "--spider", "--quiet", "http://127.0.0.1:8081/"]
 
 USER nginx
 # Override the docker-entrypoint.sh from nginx:alpine so CMD ["-g", "daemon off;"]

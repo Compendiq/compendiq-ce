@@ -183,6 +183,36 @@ describe('ConfluenceClient', () => {
       // Not a transient error — withRetry must rethrow without retrying.
       expect(mockRequest).toHaveBeenCalledTimes(1);
     });
+
+    it('resolves (does not throw) on a 204 No Content with an empty body — #853', async () => {
+      const client = new ConfluenceClient(baseUrl, pat);
+      // Confluence DC's DELETE /content/{id} answers 204 with an EMPTY body. An
+      // empty 2xx is a legitimate success with no payload — it must NOT be
+      // treated as a non-JSON error (JSON.parse('') throwing). Before the fix,
+      // deletePage rejected with ConfluenceError(204), and the delete route
+      // mistook that for a failure and rolled back the local delete — leaving
+      // the page visible in Compendiq while it was trashed upstream (#853).
+      mockRequest.mockResolvedValue({
+        statusCode: 204,
+        headers: {},
+        body: { text: async () => '' },
+      } as never);
+
+      await expect(client.deletePage('688131')).resolves.toBeUndefined();
+      // Not a transient error path — no retries.
+      expect(mockRequest).toHaveBeenCalledTimes(1);
+    });
+
+    it('resolves on an empty 200 body (empty success payload)', async () => {
+      const client = new ConfluenceClient(baseUrl, pat);
+      mockRequest.mockResolvedValue({
+        statusCode: 200,
+        headers: {},
+        body: { text: async () => '   ' },
+      } as never);
+
+      await expect(client.deletePage('42')).resolves.toBeUndefined();
+    });
   });
 
   describe('getSpaces homepage expansion', () => {

@@ -107,6 +107,8 @@ describe('POST /api/llm/analyze-quality', () => {
     app.decorateRequest('userId', '');
     app.addHook('onRequest', async (request) => {
       request.userId = 'test-user-123';
+      // Grant all permissions; individual tests here don't exercise RBAC.
+      request.userCan = async () => true;
     });
 
     await app.register(llmQualityRoutes, { prefix: '/api' });
@@ -239,5 +241,46 @@ describe('POST /api/llm/analyze-quality', () => {
     });
 
     expect(response.statusCode).toBe(200);
+  });
+});
+
+// =============================================================================
+// RBAC: a principal lacking the `llm:query` grant must be 403-blocked (#896)
+// =============================================================================
+
+describe('POST /api/llm/analyze-quality - RBAC', () => {
+  let app: ReturnType<typeof Fastify>;
+
+  beforeAll(async () => {
+    app = Fastify({ logger: false });
+    await app.register(sensible);
+
+    app.decorate('authenticate', async () => {});
+    app.decorate('requireAdmin', async () => {});
+    app.decorate('redis', {});
+    app.decorateRequest('userId', '');
+    app.addHook('onRequest', async (request) => {
+      request.userId = 'no-perm-user';
+      // Simulate a custom role holding none of the llm:* grants.
+      request.userCan = async () => false;
+    });
+
+    await app.register(llmQualityRoutes, { prefix: '/api' });
+    await app.ready();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  it('should return 403 when the principal lacks llm:query', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/llm/analyze-quality',
+      payload: { content: '<p>x</p>', model: 'llama3' },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(JSON.parse(response.body).message).toContain('Permission "llm:query" required');
   });
 });

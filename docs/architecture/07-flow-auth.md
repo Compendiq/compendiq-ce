@@ -45,6 +45,21 @@ sequenceDiagram
     BE-->>FE: 200 { accessToken (new) }
 ```
 
+### Client-side token refresh
+
+The SPA keeps the access token in memory (rehydrated from `localStorage` on
+reload) and refreshes it three ways, all funneling through the single-flight
+`refreshAccessTokenOnce()` so concurrent requests trigger exactly one
+`POST /api/auth/refresh`:
+
+- **Scheduled** — `useTokenRefreshTimer` refreshes shortly before expiry.
+- **Proactive (#965)** — `apiFetch` decodes the token's `exp` and, if it is
+  already expired (or within a 5s skew), refreshes **before** sending. This
+  stops a burst of concurrent queries on session resume from each round-tripping
+  to a guaranteed 401 (the "401 storm").
+- **Reactive** — a `401` response still triggers a refresh + retry as the
+  fallback for server-side revocation / clock skew.
+
 ### Registration quirks
 
 - `POST /api/auth/register` is rate-limited (5/min).
@@ -166,5 +181,6 @@ posts to a JSON endpoint and only then receives the real JWT.
 | OIDC routes (EE only) | `@compendiq/enterprise` (loaded via `core/enterprise/loader.ts`) |
 | Frontend session init | `frontend/src/shared/hooks/useSessionInit.ts` |
 | Refresh timer | `frontend/src/shared/hooks/useTokenRefreshTimer.ts` |
+| API client (single-flight + proactive/reactive refresh) | `frontend/src/shared/lib/api.ts` |
 | OIDC callback UI | `frontend/src/features/auth/OidcCallbackPage.tsx` |
 | OIDC admin config UI | `frontend/src/features/admin/OidcSettingsPage.tsx` |
