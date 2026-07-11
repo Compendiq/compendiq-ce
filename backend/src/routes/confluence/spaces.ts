@@ -53,6 +53,7 @@ export async function spacesRoutes(fastify: FastifyInstance) {
       `SELECT cp.space_key, COUNT(*) as count
        FROM pages cp
        WHERE cp.space_key = ANY($1::text[])
+         AND cp.deleted_at IS NULL
        GROUP BY cp.space_key`,
       [userSpaces],
     );

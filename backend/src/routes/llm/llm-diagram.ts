@@ -16,6 +16,7 @@ import {
   MAX_INPUT_LENGTH,
 } from './_helpers.js';
 import { acquireStreamSlot } from '../../core/services/sse-stream-limiter.js';
+import { requireGlobalPermission } from '../../core/utils/rbac-guards.js';
 
 export async function llmDiagramRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
@@ -23,7 +24,7 @@ export async function llmDiagramRoutes(fastify: FastifyInstance) {
   const llmCache = new LlmCache(fastify.redis);
 
   // POST /api/llm/generate-diagram - stream Mermaid diagram from article content
-  fastify.post('/llm/generate-diagram', LLM_STREAM_RATE_LIMIT, async (request, reply) => {
+  fastify.post('/llm/generate-diagram', { ...LLM_STREAM_RATE_LIMIT, preHandler: requireGlobalPermission('llm:generate') }, async (request, reply) => {
     // Per-user concurrent SSE-stream cap (#268). Must fire BEFORE reply.hijack()
     // so rejections can be returned as a normal JSON 429.
     const slot = await acquireStreamSlot(request.userId);

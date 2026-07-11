@@ -24,9 +24,16 @@ vi.mock('../../shared/lib/sse', () => ({
 
 // Default: no page selected
 let mockPageData: { data: unknown; isLoading?: boolean } = { data: undefined };
-vi.mock('../../shared/hooks/use-pages', () => ({
+// Controllable embedding-status feed for the #938 zero-embeddings notice.
+// importActual keeps the real `isZeroEmbeddings` helper exported — the
+// component imports it from this same module, so the mock must not drop it.
+let mockEmbeddingStatus: { data: unknown } = { data: undefined };
+vi.mock('../../shared/hooks/use-pages', async () => ({
+  ...(await vi.importActual<typeof import('../../shared/hooks/use-pages')>(
+    '../../shared/hooks/use-pages',
+  )),
   usePage: () => mockPageData,
-  useEmbeddingStatus: () => ({ data: undefined }),
+  useEmbeddingStatus: () => mockEmbeddingStatus,
 }));
 
 // Mock sonner toast so we can verify error messages
@@ -82,6 +89,7 @@ describe('AiAssistantPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockPageData = { data: undefined };
+    mockEmbeddingStatus = { data: undefined };
     useAuthStore.getState().setAuth('test-token', {
       id: '1',
       username: 'testuser',
@@ -1316,6 +1324,32 @@ describe('AiAssistantPage', () => {
       expect(screen.getByText('Your questions will be answered using RAG over your Confluence pages')).toBeInTheDocument();
       // Should NOT show other mode messages
       expect(screen.queryByText('Select a page and improvement type')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('zero-embeddings notice (#938)', () => {
+    it('warns that pages are not embedded yet in Q&A mode when embeddedPages is 0', () => {
+      // Pages exist but none are embedded — RAG has no context to draw on, so
+      // the user must be told the real cause instead of a misleading answer.
+      mockEmbeddingStatus = {
+        data: { totalPages: 10, embeddedPages: 0, dirtyPages: 10, totalEmbeddings: 0, isProcessing: false },
+      };
+
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      const notice = screen.getByTestId('ai-no-embeddings-notice');
+      expect(notice).toBeInTheDocument();
+      expect(notice.textContent).toMatch(/not embedded/i);
+    });
+
+    it('does not show the notice when pages are embedded', () => {
+      mockEmbeddingStatus = {
+        data: { totalPages: 10, embeddedPages: 10, dirtyPages: 0, totalEmbeddings: 10, isProcessing: false },
+      };
+
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      expect(screen.queryByTestId('ai-no-embeddings-notice')).not.toBeInTheDocument();
     });
   });
 

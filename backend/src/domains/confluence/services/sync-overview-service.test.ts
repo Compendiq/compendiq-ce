@@ -40,10 +40,8 @@ describe('getSyncOverview', () => {
           space_last_synced: new Date('2026-03-11T09:00:00.000Z'),
           page_id: 'page-1',
           page_title: 'Runbook',
-          body_storage: `
-            <ac:image><ri:attachment ri:filename="diagram.png" /></ac:image>
-            <ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">topology</ac:parameter></ac:structured-macro>
-          `,
+          expected_image_files: ['diagram.png'],
+          expected_drawio_files: ['topology.png'],
         },
         {
           space_key: 'OPS',
@@ -51,7 +49,8 @@ describe('getSyncOverview', () => {
           space_last_synced: new Date('2026-03-11T09:00:00.000Z'),
           page_id: 'page-2',
           page_title: 'Overview',
-          body_storage: '<p>No binary assets</p>',
+          expected_image_files: [],
+          expected_drawio_files: [],
         },
       ],
     });
@@ -95,7 +94,8 @@ describe('getSyncOverview', () => {
         space_last_synced: null,
         page_id: null,
         page_title: null,
-        body_storage: null,
+        expected_image_files: null,
+        expected_drawio_files: null,
       }],
     });
 
@@ -138,7 +138,8 @@ describe('getSyncOverview', () => {
         space_last_synced: new Date('2026-03-11T09:00:00.000Z'),
         page_id: 'page-7',
         page_title: 'Architecture',
-        body_storage: '<p>Text only</p>',
+        expected_image_files: [],
+        expected_drawio_files: [],
       }],
     });
     mockGetSyncStatus.mockReturnValue({
@@ -151,5 +152,65 @@ describe('getSyncOverview', () => {
 
     expect(overview.sync.status).toBe('syncing');
     expect(overview.spaces[0]?.status).toBe('syncing');
+  });
+
+  it('reads persisted expected asset filenames without loading body_storage', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [{
+        space_key: 'OPS',
+        space_name: 'Operations',
+        space_last_synced: new Date('2026-03-11T09:00:00.000Z'),
+        page_id: 'page-1',
+        page_title: 'Runbook',
+        expected_image_files: ['diagram.png'],
+        expected_drawio_files: ['topology.png'],
+      }],
+    });
+
+    mockAttachmentExists.mockImplementation(async (_userId: string, pageId: string, filename: string) => {
+      return pageId === 'page-1' && filename === 'topology.png';
+    });
+
+    const overview = await getSyncOverview('user-1');
+
+    expect(overview.totals.images).toEqual({ expected: 1, cached: 0, missing: 1 });
+    expect(overview.totals.drawio).toEqual({ expected: 1, cached: 1, missing: 0 });
+
+    const sql = mockQuery.mock.calls[0]![0] as string;
+    expect(sql).toMatch(/expected_image_files/);
+    expect(sql).not.toMatch(/body_storage/);
+    // No NULL columns -> no lazy backfill query is issued.
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('lazily backfills and persists pages whose expected asset columns are NULL', async () => {
+    mockQuery
+      .mockResolvedValueOnce({
+        rows: [{
+          space_key: 'OPS',
+          space_name: 'Operations',
+          space_last_synced: new Date('2026-03-11T09:00:00.000Z'),
+          page_id: 'page-9',
+          page_title: 'Fresh',
+          expected_image_files: null,
+          expected_drawio_files: null,
+        }],
+      })
+      .mockResolvedValueOnce({
+        rows: [{
+          confluence_id: 'page-9',
+          space_key: 'OPS',
+          body_storage: '<ac:image><ri:attachment ri:filename="a.png" /></ac:image>',
+        }],
+      });
+
+    const overview = await getSyncOverview('user-1');
+
+    // A persist UPDATE writing the recomputed arrays must have been issued.
+    const updateCall = mockQuery.mock.calls.find(
+      (call) => typeof call[0] === 'string' && /UPDATE pages[\s\S]*expected_image_files = \$2/.test(call[0] as string),
+    );
+    expect(updateCall).toBeDefined();
+    expect(overview.totals.images.expected).toBe(1);
   });
 });

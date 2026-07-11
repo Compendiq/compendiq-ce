@@ -1226,11 +1226,17 @@ export function getDraft(key: string): string | null {
   }
 }
 
+// Keys whose pending unmount-flush must be suppressed because the parent
+// explicitly cleared the draft (page saved or edit cancelled). Prevents the
+// #877 flush-on-unmount from resurrecting a draft the user just discarded.
+const suppressedFlushKeys = new Set<string>();
+
 // eslint-disable-next-line react-refresh/only-export-components
 export function clearDraft(key: string): void {
   try {
     localStorage.removeItem(`draft:${key}`);
   } catch { /* ignore */ }
+  suppressedFlushKeys.add(key);
 }
 
 const VIM_STORAGE_KEY = 'compendiq-vim-mode';
@@ -1242,6 +1248,8 @@ function defaultVimDisplayState(): VimState {
 export function Editor({ content, onChange, editable = true, placeholder, draftKey, naked = false, onEditorReady, hideToolbar = false, pageId, onSave, vimEnabled: vimEnabledProp }: EditorProps) {
   const isLight = useIsLightTheme();
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  // Latest debounced draft awaiting write, so unmount can flush it (#877)
+  const pendingDraftRef = useRef<{ key: string; html: string } | null>(null);
   // Ref for the editor instance so async paste/drop handlers can insert images
   const editorRef = useRef<EditorType | null>(null);
   // Keep pageId in a ref so editorProps closures see the latest value
@@ -1280,17 +1288,32 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
 
   const saveDraft = useCallback((html: string) => {
     if (!draftKey) return;
+    // Fresh edits mean there IS unsaved work again — allow it to be flushed.
+    suppressedFlushKeys.delete(draftKey);
+    pendingDraftRef.current = { key: draftKey, html };
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => {
       try {
         localStorage.setItem(`draft:${draftKey}`, html);
       } catch { /* quota exceeded — ignore */ }
+      pendingDraftRef.current = null;
+      timerRef.current = undefined;
     }, AUTO_SAVE_DELAY);
   }, [draftKey]);
 
-  // Cleanup timer on unmount
+  // Flush any pending debounced draft on unmount so navigating away within
+  // the AUTO_SAVE_DELAY window still persists the last edit (#877). Skip keys
+  // the parent explicitly cleared (save/cancel) to avoid resurrecting a
+  // discarded draft. Uses refs only, so [] deps are correct.
   useEffect(() => () => {
     if (timerRef.current) clearTimeout(timerRef.current);
+    const pending = pendingDraftRef.current;
+    if (pending && !suppressedFlushKeys.has(pending.key)) {
+      try {
+        localStorage.setItem(`draft:${pending.key}`, pending.html);
+      } catch { /* quota exceeded — ignore */ }
+    }
+    pendingDraftRef.current = null;
   }, []);
 
   /**
