@@ -1053,4 +1053,108 @@ describe('PagesPage', () => {
       expect(badge.className).not.toMatch(/sky-500|amber|warning|yellow/);
     });
   });
+
+  // --- Search debounce + semantic-mode gating (#874) ---
+  //
+  // The keyword search input used to feed usePages directly, firing an
+  // un-debounced GET /pages?search=… on every keystroke, and it kept firing
+  // that wasted keyword query even in semantic/hybrid mode where the results
+  // come from useSearch. These tests pin the debounce and the enabled gate.
+  describe('search debounce + semantic gating (#874)', () => {
+    /** Fetch mock that serves both /search and /pages, so semantic mode has a
+     *  real /search response while we watch what /pages does. */
+    function mockFetchWithSearchAndPages() {
+      return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+        const url = typeof input === 'string' ? input : (input as Request).url;
+        if (url.includes('/search?')) {
+          const mode = new URL(url, 'http://localhost').searchParams.get('mode') ?? 'keyword';
+          return new Response(
+            JSON.stringify({ items: [], total: 0, page: 1, limit: 10, totalPages: 0, mode, hasEmbeddings: true }),
+            { headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+        if (url.includes('/embeddings/status')) {
+          return new Response(JSON.stringify(mockEmbeddingStatusIdle), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/pages/filters')) {
+          return new Response(JSON.stringify(mockFilterOptions), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/spaces')) {
+          return new Response(JSON.stringify(mockSpaces), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/sync/status')) {
+          return new Response(JSON.stringify({ status: 'idle' }), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/pages/pinned')) {
+          return new Response(JSON.stringify({ items: [], total: 0 }), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/settings')) {
+          return new Response(JSON.stringify({}), { headers: { 'Content-Type': 'application/json' } });
+        }
+        return new Response(JSON.stringify(mockPagesResponse), { headers: { 'Content-Type': 'application/json' } });
+      });
+    }
+
+    /** Extract the exact `search` param value from every GET /pages?… list
+     *  request (ignores /pages/pinned, /pages/filters, /search, etc.). */
+    function pagesSearchValues(fetchSpy: ReturnType<typeof vi.spyOn>): string[] {
+      return fetchSpy.mock.calls
+        .map(([firstArg]) => (typeof firstArg === 'string' ? firstArg : (firstArg as Request).url))
+        .filter((u) => /\/pages\?/.test(u))
+        .map((u) => new URL(u, 'http://localhost').searchParams.get('search'))
+        .filter((v): v is string => v !== null);
+    }
+
+    it('debounces keyword search: only the final term fires a /pages request', async () => {
+      vi.restoreAllMocks();
+      const fetchSpy = mockFetchWithEmbeddingStatus(mockEmbeddingStatusIdle);
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      const input = screen.getByPlaceholderText('Search pages...');
+      // Four rapid keystrokes — the debounce must collapse them to one request.
+      fireEvent.change(input, { target: { value: 'k' } });
+      fireEvent.change(input, { target: { value: 'ku' } });
+      fireEvent.change(input, { target: { value: 'kub' } });
+      fireEvent.change(input, { target: { value: 'kube' } });
+
+      // The debounced term eventually fires exactly one keyword request.
+      await waitFor(
+        () => {
+          expect(pagesSearchValues(fetchSpy)).toContain('kube');
+        },
+        { timeout: 2000 },
+      );
+
+      // The intermediate keystrokes must never have hit the network.
+      const values = pagesSearchValues(fetchSpy);
+      expect(values).not.toContain('k');
+      expect(values).not.toContain('ku');
+      expect(values).not.toContain('kub');
+    });
+
+    it('does not fire a keyword /pages?search= request while in semantic mode', async () => {
+      vi.restoreAllMocks();
+      const fetchSpy = mockFetchWithSearchAndPages();
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByTestId('search-mode-semantic'));
+      fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+        target: { value: 'kubernetes' },
+      });
+
+      // Wait until the debounced semantic search has actually fired.
+      await waitFor(
+        () => {
+          const urls = fetchSpy.mock.calls.map(([firstArg]) =>
+            typeof firstArg === 'string' ? firstArg : (firstArg as Request).url,
+          );
+          expect(urls.some((u) => u.includes('/search?') && u.includes('mode=semantic'))).toBe(true);
+        },
+        { timeout: 2000 },
+      );
+
+      // The wasted keyword query must be gated off entirely.
+      expect(pagesSearchValues(fetchSpy)).toHaveLength(0);
+    });
+  });
 });

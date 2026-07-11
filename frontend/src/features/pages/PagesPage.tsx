@@ -195,6 +195,18 @@ export function PagesPage() {
   const [sourceFilter, setSourceFilter] = useState<PageSource | ''>('');
   const [searchMode, setSearchMode] = useState<'keyword' | 'semantic' | 'hybrid'>('keyword');
 
+  // Debounce the search term before it reaches the keyword /pages query.
+  // Typing stays responsive because `search` still drives the input value,
+  // clear button, sort switch and semantic-mode gate synchronously; only the
+  // network request waits for a 300ms pause (mirrors useSearch). Without this
+  // every keystroke minted a new query key and fired a fresh, rate-limited
+  // GET /pages?search=… (#874).
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(timer);
+  }, [search]);
+
   const { data: settings } = useSettings();
   const { data: spaces } = useSpaces();
   const { data: filterOptions } = usePageFilterOptions();
@@ -222,9 +234,12 @@ export function PagesPage() {
     }
   }, [qualityFilter]);
 
+  // Semantic/hybrid search — only active when there's a search query AND mode is not 'keyword'
+  const useSemanticSearch = !!(search && searchMode !== 'keyword');
+
   const { data: pagesData, isLoading, isFetching: isFetchingPages, error: pagesError, refetch: refetchPages } = usePages({
     spaceKey: spaceKey || undefined,
-    search: search || undefined,
+    search: debouncedSearch || undefined,
     author: author || undefined,
     labels: labels || undefined,
     freshness: (freshness || undefined) as 'fresh' | 'recent' | 'aging' | 'stale' | undefined,
@@ -235,9 +250,11 @@ export function PagesPage() {
     dateTo: dateTo || undefined,
     page,
     sort,
+    // In semantic/hybrid mode the rendered results come from useSearch below,
+    // so the keyword list query would just fire wasted, rate-limited requests
+    // for data that is never shown — gate it off (#874).
+    enabled: !useSemanticSearch,
   });
-  // Semantic/hybrid search — only active when there's a search query AND mode is not 'keyword'
-  const useSemanticSearch = !!(search && searchMode !== 'keyword');
   const searchResults = useSearch({
     query: useSemanticSearch ? search : '',
     mode: searchMode,
