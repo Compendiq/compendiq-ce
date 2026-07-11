@@ -122,6 +122,12 @@ const OutlineNodeItem = memo(function OutlineNodeItem({
   return (
     <div>
       <div
+        // #880: make the outline row a real keyboard-operable widget.
+        // role="treeitem" (not "button") because the collapse chevron is a
+        // nested <button>. Enter/Space jump to the heading.
+        role="treeitem"
+        tabIndex={0}
+        aria-expanded={hasChildren ? isOpen : undefined}
         className={cn(
           'group flex items-center gap-1.5 rounded-[10px] h-9 pr-2 text-sm cursor-pointer transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
           isActive
@@ -130,6 +136,15 @@ const OutlineNodeItem = memo(function OutlineNodeItem({
         )}
         style={{ paddingLeft: `${level * 16 + 8}px` }}
         onClick={() => onNavigate(heading.id)}
+        onKeyDown={(e) => {
+          // Ignore keydown bubbling up from the nested chevron button so the
+          // row doesn't double-activate when the chevron is focused.
+          if (e.target !== e.currentTarget) return;
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault(); // Space would otherwise scroll the page
+            onNavigate(heading.id);
+          }
+        }}
       >
         {hasChildren ? (
           <button
@@ -154,7 +169,9 @@ const OutlineNodeItem = memo(function OutlineNodeItem({
       </div>
 
       {hasChildren && isOpen && (
-        <div>
+        // #880: role="group" gives the nested treeitem rows a valid ARIA
+        // required-parent (a treeitem must be owned by a tree or group).
+        <div role="group">
           {children.map((child) => (
             <OutlineNodeItem
               key={child.heading.id}
@@ -930,7 +947,11 @@ export function ArticleRightPane() {
             No headings on this page.
           </div>
         ) : (
-          <div className="space-y-0.5">
+          // #880: role="tree" + label give the role="treeitem" outline rows a
+          // valid required-parent context and expose real tree semantics to
+          // screen readers. Full roving-tabindex/arrow-key nav remains a tracked
+          // follow-up (epic #856).
+          <div className="space-y-0.5" role="tree" aria-label="Article outline">
             {tree.map((node) => (
               <OutlineNodeItem
                 key={node.heading.id}

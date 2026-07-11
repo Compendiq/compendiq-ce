@@ -40,12 +40,13 @@ vi.mock('../../shared/hooks/use-spaces', () => ({
   }),
 }));
 
-const { mockSetContent, mockEditorInstance, mockUseTemplateMutateAsync, templatesState } = vi.hoisted(() => {
+const { mockSetContent, mockEditorInstance, mockUseTemplateMutateAsync, mockImportMutateAsync, templatesState } = vi.hoisted(() => {
   const setContent = vi.fn();
   return {
     mockSetContent: setContent,
     mockEditorInstance: { commands: { setContent } },
     mockUseTemplateMutateAsync: vi.fn(),
+    mockImportMutateAsync: vi.fn(),
     templatesState: { items: [] as { id: number; title: string; category: string | null }[] },
   };
 });
@@ -54,7 +55,7 @@ vi.mock('../../shared/hooks/use-standalone', () => ({
   // GET /api/templates returns a bare array — mirror the real wire shape.
   useTemplates: () => ({ data: templatesState.items, isLoading: false }),
   useUseTemplate: () => ({ mutateAsync: mockUseTemplateMutateAsync, isPending: false }),
-  useImportMarkdown: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useImportMarkdown: () => ({ mutateAsync: mockImportMutateAsync, isPending: false }),
   useLocalSpaces: () => ({
     data: [
       { key: '__local__', name: 'Default Local Space', source: 'local', description: null, icon: null, pageCount: 0, createdBy: null, createdAt: '2026-01-01T00:00:00Z' },
@@ -114,7 +115,22 @@ describe('NewPagePage', () => {
     mockCreateMutateAsync.mockClear();
     mockSetContent.mockClear();
     mockUseTemplateMutateAsync.mockReset();
+    mockImportMutateAsync.mockReset();
     templatesState.items.length = 0;
+  });
+
+  it('navigates to the imported page using articles[0].id from the import envelope', async () => {
+    mockImportMutateAsync.mockResolvedValue({
+      imported: 1,
+      total: 1,
+      articles: [{ id: 'standalone-xyz', title: 'note', success: true }],
+    });
+    render(<NewPagePage />, { wrapper: createWrapper() });
+    const input = screen.getByTestId('import-markdown-input');
+    const file = new File(['# hi'], 'note.md', { type: 'text/markdown' });
+    fireEvent.change(input, { target: { files: [file] } });
+    // Real bug: the old code read result.id (undefined) → navigated to /pages/undefined.
+    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('/pages/standalone-xyz'));
   });
 
   it('renders the New Page title and form fields', () => {
