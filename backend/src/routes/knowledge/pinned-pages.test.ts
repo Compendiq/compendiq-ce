@@ -12,6 +12,8 @@ vi.mock('../../core/services/redis-cache.js', () => {
       get = vi.fn().mockResolvedValue(null);
       set = vi.fn().mockResolvedValue(undefined);
       invalidate = vi.fn().mockResolvedValue(undefined);
+      // Shared/Confluence mutations clear every user's cache (#893).
+      invalidateAcrossUsers = vi.fn().mockResolvedValue(undefined);
     },
   };
 });
@@ -72,9 +74,11 @@ vi.mock('../../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
-import { getUserAccessibleSpaces as mockGetUserAccessibleSpaces } from '../../core/services/rbac-service.js';
+import { userCanAccessPage } from '../../core/services/rbac-service.js';
 
 vi.mock('../../core/services/rbac-service.js', () => ({
+  userCanAccessPage: vi.fn().mockResolvedValue(true),
+  // Still consumed by the co-registered pages-crud routes (delete cleanup tests).
   getUserAccessibleSpaces: vi.fn().mockResolvedValue(['DEV', 'OPS']),
 }));
 
@@ -228,8 +232,7 @@ describe('Pinned Pages API', () => {
 
   describe('POST /api/pages/:id/pin', () => {
     it('should pin a page by integer PK', async () => {
-      // page exists check (uses integer PK)
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 42 }], rowCount: 1 });
+      // access check passes (default mock returns true)
       // already-pinned check (not pinned)
       mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
       // atomic insert (succeeded)
@@ -245,17 +248,15 @@ describe('Pinned Pages API', () => {
       expect(body.message).toBe('Page pinned');
       expect(body.pageId).toBe('42');
 
-      // Verify the page existence query uses integer PK
-      const existsQuery = mockQueryFn.mock.calls[0][0] as string;
-      expect(existsQuery).toContain('cp.id = $2');
-      expect(existsQuery).not.toContain('confluence_id');
+      // Verify access is gated by userCanAccessPage on the integer PK
+      expect(userCanAccessPage).toHaveBeenCalledWith('test-user-id', 42);
 
-      // Verify the insert stores the integer PK
-      expect(mockQueryFn.mock.calls[2][1]).toEqual(['test-user-id', 42, 8]);
+      // Verify the insert (second query) stores the integer PK
+      expect(mockQueryFn.mock.calls[1][1]).toEqual(['test-user-id', 42, 8]);
     });
 
     it('should return 404 when page does not exist', async () => {
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      vi.mocked(userCanAccessPage).mockResolvedValueOnce(false);
 
       const response = await app.inject({
         method: 'POST',
@@ -275,8 +276,6 @@ describe('Pinned Pages API', () => {
     });
 
     it('should return 400 when max pin limit is reached', async () => {
-      // page exists
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 42 }], rowCount: 1 });
       // already-pinned check (not pinned)
       mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
       // atomic insert returns 0 rows (count >= MAX_PINS in subquery)
@@ -293,8 +292,6 @@ describe('Pinned Pages API', () => {
     });
 
     it('should be idempotent when pinning an already-pinned page', async () => {
-      // page exists
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 42 }], rowCount: 1 });
       // already-pinned check (already pinned — early return)
       mockQueryFn.mockResolvedValueOnce({ rows: [{ page_id: 42 }], rowCount: 1 });
 
@@ -306,13 +303,11 @@ describe('Pinned Pages API', () => {
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
       expect(body.message).toBe('Page pinned');
-      // Should not have attempted the INSERT (only 2 queries, not 3)
-      expect(mockQueryFn).toHaveBeenCalledTimes(2);
+      // Should not have attempted the INSERT (only the already-pinned query ran)
+      expect(mockQueryFn).toHaveBeenCalledTimes(1);
     });
 
     it('should return 200 when re-pinning an already-pinned page at max capacity', async () => {
-      // page exists
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 42 }], rowCount: 1 });
       // already-pinned check (already pinned — early return before count check)
       mockQueryFn.mockResolvedValueOnce({ rows: [{ page_id: 42 }], rowCount: 1 });
 
@@ -325,13 +320,14 @@ describe('Pinned Pages API', () => {
       const body = JSON.parse(response.body);
       expect(body.message).toBe('Page pinned');
       expect(body.pageId).toBe('42');
-      // Only page-exists and already-pinned queries ran, no INSERT attempted
-      expect(mockQueryFn).toHaveBeenCalledTimes(2);
+      // Only the already-pinned query ran, no INSERT attempted
+      expect(mockQueryFn).toHaveBeenCalledTimes(1);
     });
 
-    it('should filter out soft-deleted pages', async () => {
-      // page exists check returns nothing (page is soft-deleted, excluded by deleted_at IS NULL)
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    it('should return 404 for a soft-deleted page', async () => {
+      // userCanAccessPage does its own deleted_at IS NULL filter and returns
+      // false for a soft-deleted page.
+      vi.mocked(userCanAccessPage).mockResolvedValueOnce(false);
 
       const response = await app.inject({
         method: 'POST',
@@ -339,14 +335,9 @@ describe('Pinned Pages API', () => {
       });
 
       expect(response.statusCode).toBe(404);
-      // Verify the query includes deleted_at filter
-      const sql = mockQueryFn.mock.calls[0][0] as string;
-      expect(sql).toContain('deleted_at IS NULL');
     });
 
     it('should use atomic INSERT with count subquery to prevent race conditions', async () => {
-      // page exists
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 42 }], rowCount: 1 });
       // already-pinned check (not pinned)
       mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
       // atomic insert
@@ -357,8 +348,8 @@ describe('Pinned Pages API', () => {
         url: '/api/pages/42/pin',
       });
 
-      // The third call should be the atomic INSERT with subquery count check
-      const insertCall = mockQueryFn.mock.calls[2];
+      // The second call should be the atomic INSERT with subquery count check
+      const insertCall = mockQueryFn.mock.calls[1];
       expect(insertCall[0]).toContain('SELECT $1, $2');
       expect(insertCall[0]).toContain('WHERE (SELECT COUNT(*) FROM pinned_pages WHERE user_id = $1) < $3');
       expect(insertCall[1]).toEqual(['test-user-id', 42, 8]);
@@ -420,8 +411,6 @@ describe('Pinned Pages API', () => {
     });
 
     it('should pass the correct userId to pin insert', async () => {
-      // page exists
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 42 }], rowCount: 1 });
       // already-pinned check (not pinned)
       mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
       // atomic insert
@@ -432,18 +421,18 @@ describe('Pinned Pages API', () => {
         url: '/api/pages/42/pin',
       });
 
-      // The insert query should use userId
-      const insertCall = mockQueryFn.mock.calls[2];
+      // The insert query (second call) should use userId
+      const insertCall = mockQueryFn.mock.calls[1];
       expect(insertCall[1]).toContain('test-user-id');
     });
   });
 
-  describe('RBAC integration (#409)', () => {
-    it('should use getUserAccessibleSpaces for page existence check when pinning', async () => {
-      // getUserAccessibleSpaces returns ['DEV', 'OPS'] by default
-      // page exists in DEV space — should succeed
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 42 }], rowCount: 1 });
+  describe('RBAC integration (#409, #894)', () => {
+    it('should gate pinning on userCanAccessPage with the numeric page id', async () => {
+      vi.mocked(userCanAccessPage).mockResolvedValueOnce(true);
+      // already-pinned check (not pinned)
       mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      // atomic insert
       mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
 
       const response = await app.inject({
@@ -452,29 +441,12 @@ describe('Pinned Pages API', () => {
       });
 
       expect(response.statusCode).toBe(200);
-      // The page existence query should filter by RBAC-accessible spaces
-      const pageQuery = mockQueryFn.mock.calls[0][0] as string;
-      expect(pageQuery).toContain('space_key = ANY($1::text[])');
-      expect(mockGetUserAccessibleSpaces).toHaveBeenCalledWith('test-user-id');
+      expect(userCanAccessPage).toHaveBeenCalledWith('test-user-id', 42);
     });
 
-    it('should return 404 when user has no RBAC-accessible spaces', async () => {
-      // Override the mock to return empty spaces
-      (mockGetUserAccessibleSpaces as ReturnType<typeof vi.fn>).mockResolvedValueOnce([]);
-      // No page matches empty space list
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/42/pin',
-      });
-
-      expect(response.statusCode).toBe(404);
-    });
-
-    it('should return 404 when page is not in users accessible spaces', async () => {
-      // getUserAccessibleSpaces returns ['DEV', 'OPS'] but page is in 'HR'
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    it('should return 404 when the user cannot access the page', async () => {
+      // userCanAccessPage returns false for a restricted page
+      vi.mocked(userCanAccessPage).mockResolvedValueOnce(false);
 
       const response = await app.inject({
         method: 'POST',
@@ -487,8 +459,7 @@ describe('Pinned Pages API', () => {
 
   describe('Standalone page pinning (no confluence_id)', () => {
     it('should pin a standalone page that has no confluence_id', async () => {
-      // Standalone page found by integer PK (confluence_id is NULL)
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 100 }], rowCount: 1 });
+      // access check passes (default mock returns true)
       // Not already pinned
       mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
       // Insert succeeds
@@ -504,8 +475,35 @@ describe('Pinned Pages API', () => {
       expect(body.message).toBe('Page pinned');
       expect(body.pageId).toBe('100');
 
-      // Verify the insert stores the integer PK
-      expect(mockQueryFn.mock.calls[2][1]).toEqual(['test-user-id', 100, 8]);
+      // Verify the insert (second query) stores the integer PK
+      expect(mockQueryFn.mock.calls[1][1]).toEqual(['test-user-id', 100, 8]);
+    });
+
+    it('pins a standalone page (space_key NULL) via userCanAccessPage', async () => {
+      // #894: standalone pages have space_key = NULL, so the old
+      // `space_key = ANY(...)` check filtered them out (NULL = ANY → NULL).
+      // The route now gates on userCanAccessPage, which permits standalone
+      // shared/own-private pages.
+      vi.mocked(userCanAccessPage).mockResolvedValueOnce(true);
+      // already-pinned check (not pinned)
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      // atomic insert (succeeded)
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/100/pin',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.message).toBe('Page pinned');
+      expect(body.pageId).toBe('100');
+      expect(userCanAccessPage).toHaveBeenCalledWith('test-user-id', 100);
+
+      // The insert (last query) stores the integer PK
+      const lastCall = mockQueryFn.mock.calls[mockQueryFn.mock.calls.length - 1];
+      expect(lastCall[1]).toEqual(['test-user-id', 100, 8]);
     });
 
     it('should unpin a standalone page that has no confluence_id', async () => {

@@ -735,8 +735,16 @@ export function PagesPage() {
             return displayItems.length === 0 ? (
               <EmptyState
                 icon={FolderOpen}
-                title="No pages found"
-                description="Try a different search term or switch to keyword mode"
+                title={searchResults.hasEmbeddings ? 'No pages found' : 'No matching pages'}
+                description={
+                  searchResults.hasEmbeddings
+                    ? 'Try a different search term or switch to keyword mode'
+                    // Zero embeddings: the banner above already says keyword
+                    // fallback ran, so acknowledge both facts — the query
+                    // matched nothing AND semantic search is unavailable
+                    // (#938; copy reconciled in the #993 review).
+                    : 'Keyword search found no matches. Semantic search is unavailable until pages are embedded — configure an embedding provider in Settings → LLM and run an embedding pass.'
+                }
               />
             ) : (
               <>

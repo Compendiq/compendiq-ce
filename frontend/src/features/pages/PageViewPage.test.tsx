@@ -828,5 +828,83 @@ describe('PageViewPage', () => {
     });
   });
 
+  // #944 — Cancel in the editor must not silently discard unsaved work. When
+  // the working title/body diverges from the persisted page, Cancel opens a
+  // destructive discard confirmation instead of dropping out of edit mode.
+  // A pristine editor (no edits) still exits immediately.
+  describe('cancel discard confirmation', () => {
+    it('prompts before discarding when the editor has unsaved changes', async () => {
+      render(<PageViewPage />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByText('Edit'));
+      fireEvent.change(screen.getByLabelText('Article editor'), {
+        target: { value: '<p>rewritten</p>' },
+      });
+      fireEvent.click(screen.getByText('Cancel'));
+
+      // The discard confirmation appears and the editor stays mounted — the
+      // work is NOT thrown away until the user confirms.
+      expect(await screen.findByText('Discard changes?')).toBeInTheDocument();
+      expect(screen.getByLabelText('Article editor')).toBeInTheDocument();
+
+      // Close the portal dialog before teardown (afterEach wipes document.body).
+      fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+      await waitFor(() => {
+        expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
+      });
+    });
+
+    it('confirming the discard exits edit mode', async () => {
+      render(<PageViewPage />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByText('Edit'));
+      fireEvent.change(screen.getByLabelText('Article editor'), {
+        target: { value: '<p>rewritten</p>' },
+      });
+      fireEvent.click(screen.getByText('Cancel'));
+
+      await screen.findByText('Discard changes?');
+      fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
+
+      await waitFor(() => {
+        expect(screen.queryByLabelText('Article editor')).not.toBeInTheDocument();
+      });
+      expect(screen.getByText('Edit')).toBeInTheDocument();
+    });
+
+    it('keeps editing when the discard dialog is dismissed', async () => {
+      render(<PageViewPage />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByText('Edit'));
+      fireEvent.change(screen.getByLabelText('Article editor'), {
+        target: { value: '<p>rewritten</p>' },
+      });
+      fireEvent.click(screen.getByText('Cancel'));
+
+      await screen.findByText('Discard changes?');
+      fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+
+      await waitFor(() => {
+        expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
+      });
+      // Still editing — the work is preserved.
+      expect(screen.getByLabelText('Article editor')).toBeInTheDocument();
+    });
+
+    it('exits immediately without a prompt when the editor is pristine', async () => {
+      render(<PageViewPage />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByText('Edit'));
+      // No edits made — Cancel should exit straight to view mode.
+      fireEvent.click(screen.getByText('Cancel'));
+
+      await waitFor(() => {
+        expect(screen.queryByLabelText('Article editor')).not.toBeInTheDocument();
+      });
+      expect(screen.queryByText('Discard changes?')).not.toBeInTheDocument();
+      expect(screen.getByText('Edit')).toBeInTheDocument();
+    });
+  });
+
 });
 

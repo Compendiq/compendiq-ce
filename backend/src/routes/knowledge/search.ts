@@ -461,11 +461,12 @@ export async function searchRoutes(fastify: FastifyInstance) {
     }>(
       `SELECT LOWER(TRIM(query)) AS query_text, COUNT(*) AS frequency
        FROM search_analytics
-       WHERE LOWER(TRIM(query)) LIKE LOWER($1) || '%' ESCAPE '\\'
+       WHERE user_id = $2
+         AND LOWER(TRIM(query)) LIKE LOWER($1) || '%' ESCAPE '\\'
        GROUP BY LOWER(TRIM(query))
        ORDER BY COUNT(*) DESC
        LIMIT 10`,
-      [escapedQ],
+      [escapedQ, request.userId],
     );
 
     return {
