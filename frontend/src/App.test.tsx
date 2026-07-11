@@ -132,6 +132,69 @@ describe('App – ProtectedRoute token restoration', () => {
   });
 });
 
+describe('App – ProtectedRoute setup-status fail-safe (#932)', () => {
+  const fetchSpy = vi.spyOn(globalThis, 'fetch');
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    useAuthStore.getState().clearAuth();
+  });
+
+  function renderApp(initialPath = '/') {
+    const queryClient = new QueryClient({
+      // useSetupStatus pins retry: 2; a zero retryDelay lets those retries
+      // exhaust instantly so the query settles into its error state quickly.
+      defaultOptions: { queries: { retryDelay: () => 0 } },
+    });
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={[initialPath]}>
+          <App />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  it('does not dump an authenticated user into the setup wizard when the setup-status fetch fails', async () => {
+    useAuthStore.setState({
+      accessToken: 'persisted-token',
+      user: { id: '1', username: 'test', role: 'user' },
+      isAuthenticated: true,
+    });
+
+    // Simulate the backend restarting: /api/health/setup-status returns a
+    // transient 5xx while every other call succeeds.
+    fetchSpy.mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      if (url.includes('/api/health/setup-status')) {
+        return new Response('Internal Server Error', { status: 500 });
+      }
+      return new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+
+    renderApp('/');
+
+    // The authenticated user must stay in the app shell (AppLayout's header
+    // renders a "Toggle sidebar" button) rather than being redirected into
+    // the first-run wizard on a transient setup-status error. The generous
+    // timeout lets useSetupStatus exhaust its pinned retries and settle into
+    // the error state (mirrors useSetupStatus.test.ts).
+    await waitFor(
+      () => {
+        expect(screen.getByLabelText('Toggle sidebar')).toBeInTheDocument();
+      },
+      { timeout: 8000 },
+    );
+    expect(screen.queryByText('Welcome to Compendiq')).not.toBeInTheDocument();
+  }, 15000);
+});
+
 describe('PageLoadingFallback', () => {
   it('renders a glassmorphic loading indicator', () => {
     render(<PageLoadingFallback />);

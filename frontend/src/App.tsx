@@ -98,23 +98,31 @@ export function PageLoadingFallback() {
  * Redirects to "/" once setup has been finished.
  */
 function SetupRoute({ children }: { children: React.ReactNode }) {
-  const { setupComplete, isLoading } = useSetupStatus();
+  const { setupComplete, isLoading, error } = useSetupStatus();
   const [searchParams] = useSearchParams();
   const isRerun = searchParams.get('rerun') === 'true';
   if (isLoading) return <PageLoadingFallback />;
+  // A failed setup-status fetch leaves setupComplete defaulting to false.
+  // Don't render the first-run wizard on that ambiguity — an already
+  // configured instance would otherwise show setup to a real user (#932).
+  if (error) return <PageLoadingFallback />;
   if (setupComplete && !isRerun) return <Navigate to="/" replace />;
   return <>{children}</>;
 }
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
-  const { setupComplete, isLoading } = useSetupStatus();
+  const { setupComplete, isLoading, error } = useSetupStatus();
 
   // While checking setup status, show loading
   if (isLoading) return <PageLoadingFallback />;
 
-  // Redirect to setup wizard if setup is not complete
-  if (!setupComplete) return <Navigate to="/setup" replace />;
+  // Redirect to the setup wizard only when we positively know setup is
+  // incomplete. A failed/undefined setup-status fetch (backend restart,
+  // transient 5xx, network blip) must NOT be treated as "setup incomplete":
+  // doing so would dump an authenticated user into the first-run wizard and
+  // destroy their deep link (#932). Fail safe and fall through instead.
+  if (!error && !setupComplete) return <Navigate to="/setup" replace />;
 
   // accessToken is now persisted in localStorage, so new tabs have it
   // immediately. If the token expired, apiFetch's 401 interceptor or
