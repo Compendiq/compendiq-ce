@@ -88,11 +88,15 @@ describe('EnterpriseProvider re-fetches license on auth change (#881)', () => {
     });
 
     // The license must be re-fetched so EE surfaces switch on without a reload.
+    // Assert the fully-settled state INSIDE waitFor: the provider flips
+    // isEnterprise via setLicense first, then loads the overlay bundle on a
+    // separate async tick (`await loadEnterpriseUI()` → setUi). Gating only on
+    // `enterprise` and then asserting `ui` synchronously races that later tick.
     await waitFor(() => {
       expect(screen.getByTestId('enterprise').textContent).toBe('true');
+      expect(screen.getByTestId('license').textContent).toBe('enterprise');
+      expect(screen.getByTestId('ui').textContent).toBe('loaded');
     });
-    expect(screen.getByTestId('license').textContent).toBe('enterprise');
-    expect(screen.getByTestId('ui').textContent).toBe('loaded');
   });
 
   it("clears the previous admin's license and ui from memory on logout", async () => {
@@ -191,8 +195,12 @@ describe('EnterpriseProvider re-fetches license on auth change (#881)', () => {
       </EnterpriseProvider>,
     );
 
+    // Wait for the FULLY-settled EE state (incl. the overlay bundle) before
+    // triggering the refetch — `ui` loads a tick after the license, so the
+    // preservation assertions below would otherwise race the initial load.
     await waitFor(() => {
       expect(screen.getByTestId('enterprise').textContent).toBe('true');
+      expect(screen.getByTestId('ui').textContent).toBe('loaded');
     });
 
     // Token rotates mid-session (routine refresh) but the refetch hits a 500.
