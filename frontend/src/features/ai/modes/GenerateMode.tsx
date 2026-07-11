@@ -167,6 +167,7 @@ function ParentPagePicker({
 // ---------------------------------------------------------------------------
 
 function PdfUploadZone({
+  extractPdf,
   onExtracted,
   pdfData,
   pdfFilename,
@@ -174,6 +175,7 @@ function PdfUploadZone({
   isExtracting,
   disabled,
 }: {
+  extractPdf: (file: File) => Promise<ExtractPdfResult>;
   onExtracted: (result: ExtractPdfResult, filename: string) => void;
   pdfData: ExtractPdfResult | null;
   pdfFilename: string | null;
@@ -181,7 +183,6 @@ function PdfUploadZone({
   isExtracting: boolean;
   disabled: boolean;
 }) {
-  const { extractPdf } = useExtractPdf();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragOver, setIsDragOver] = useState(false);
 
@@ -493,8 +494,10 @@ export function GenerateModeInput() {
   });
   const mcpEnabled = mcpSettings?.enabled ?? false;
 
-  // PDF upload state
-  const { isExtracting } = useExtractPdf();
+  // PDF upload state — a single useExtractPdf instance shared with PdfUploadZone
+  // so that `isExtracting` reflects the same extraction that PdfUploadZone runs
+  // (#940). Two separate instances left the spinner/disabled state stuck.
+  const { extractPdf, isExtracting } = useExtractPdf();
   const [pdfData, setPdfData] = useState<ExtractPdfResult | null>(null);
   const [pdfFilename, setPdfFilename] = useState<string | null>(null);
 
@@ -509,7 +512,9 @@ export function GenerateModeInput() {
   }, []);
 
   const handleGenerate = useCallback(async () => {
-    if (!input.trim() || isStreaming) return;
+    // Block generation while a PDF extraction is in flight — otherwise the
+    // prompt would be sent without the pdfText that is still being extracted (#940).
+    if (!input.trim() || isStreaming || isExtracting) return;
     if (!model) {
       toast.error('No model available. Check your LLM provider settings.');
       return;
@@ -544,7 +549,7 @@ export function GenerateModeInput() {
         }
       },
     });
-  }, [input, model, isStreaming, pdfData, pdfFilename, searchWeb, thinkingMode, setInput, setMessages, runStream]);
+  }, [input, model, isStreaming, isExtracting, pdfData, pdfFilename, searchWeb, thinkingMode, setInput, setMessages, runStream]);
 
   const handleSubmit = () => handleGenerate();
 
@@ -566,6 +571,7 @@ export function GenerateModeInput() {
 
       <div className="mt-3 space-y-3 border-t border-border/40 pt-3">
         <PdfUploadZone
+          extractPdf={extractPdf}
           onExtracted={handlePdfExtracted}
           pdfData={pdfData}
           pdfFilename={pdfFilename}
@@ -599,7 +605,7 @@ export function GenerateModeInput() {
           />
           <button
             onClick={handleSubmit}
-            disabled={isStreaming || !input.trim() || !model}
+            disabled={isStreaming || isExtracting || !input.trim() || !model}
             aria-label={isStreaming ? 'Sending...' : 'Send message'}
             className="shrink-0 flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50"
           >
