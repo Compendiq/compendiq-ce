@@ -94,27 +94,58 @@ export function PageLoadingFallback() {
 }
 
 /**
+ * Terminal error state for SetupRoute: the setup-status fetch failed and we
+ * have no cached data to route on. Offers an explicit retry instead of an
+ * infinite spinner (useSetupStatus disables refetchOnWindowFocus, so once
+ * retries are exhausted nothing would ever recover on its own).
+ */
+function SetupStatusUnavailable({ onRetry }: { onRetry: () => void }) {
+  return (
+    <div className="flex items-center justify-center h-64">
+      <div className="nm-card p-8 text-center">
+        <p className="mb-6 text-sm text-muted-foreground">
+          Could not check the setup status. The server may be restarting.
+        </p>
+        <button onClick={onRetry} className="nm-button-primary">
+          Try Again
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
  * SetupRoute — only accessible when setup is NOT complete.
  * Redirects to "/" once setup has been finished.
  */
 function SetupRoute({ children }: { children: React.ReactNode }) {
-  const { setupComplete, isLoading } = useSetupStatus();
+  const { setupComplete, hasData, isLoading, error, refetch } = useSetupStatus();
   const [searchParams] = useSearchParams();
   const isRerun = searchParams.get('rerun') === 'true';
   if (isLoading) return <PageLoadingFallback />;
+  // A failed setup-status fetch with no cached data leaves setup state truly
+  // unknown. Don't render the first-run wizard on that ambiguity — an already
+  // configured instance would otherwise show setup to a real user (#932) —
+  // but do offer a retry rather than spinning forever. When React Query still
+  // holds stale successful data, fall through and route on that instead.
+  if (error && !hasData) return <SetupStatusUnavailable onRetry={() => void refetch()} />;
   if (setupComplete && !isRerun) return <Navigate to="/" replace />;
   return <>{children}</>;
 }
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
-  const { setupComplete, isLoading } = useSetupStatus();
+  const { setupComplete, isLoading, error } = useSetupStatus();
 
   // While checking setup status, show loading
   if (isLoading) return <PageLoadingFallback />;
 
-  // Redirect to setup wizard if setup is not complete
-  if (!setupComplete) return <Navigate to="/setup" replace />;
+  // Redirect to the setup wizard only when we positively know setup is
+  // incomplete. A failed/undefined setup-status fetch (backend restart,
+  // transient 5xx, network blip) must NOT be treated as "setup incomplete":
+  // doing so would dump an authenticated user into the first-run wizard and
+  // destroy their deep link (#932). Fail safe and fall through instead.
+  if (!error && !setupComplete) return <Navigate to="/setup" replace />;
 
   // accessToken is now persisted in localStorage, so new tabs have it
   // immediately. If the token expired, apiFetch's 401 interceptor or
