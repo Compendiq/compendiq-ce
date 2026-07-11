@@ -59,7 +59,9 @@ export function LlmTab() {
   // concurrent admin save) returns a new object whenever its payload differs
   // from cache, and re-seeding on every reference change would silently revert
   // the admin's unsaved edits. Seed each form once, then leave it under the
-  // admin's control until they Save (which invalidates + re-mounts the data).
+  // admin's control until they Save — whose onSuccess drops the guard again
+  // (same reset IpAllowlistTab does) so the form re-hydrates from the fresh
+  // server state.
   const [assignmentsInitialized, setAssignmentsInitialized] = useState(false);
   const [capInitialized, setCapInitialized] = useState(false);
 
@@ -97,8 +99,14 @@ export function LlmTab() {
   const save = useMutation({
     mutationFn: (diff: UpdateUsecaseAssignmentsInput) =>
       apiFetch('/admin/llm-usecases', { method: 'PUT', body: JSON.stringify(diff) }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['llm-usecases'] });
+    onSuccess: async () => {
+      // Refetch the canonical assignments, then drop the one-shot hydration
+      // guard so the form re-seeds from the fresh server state (#949) — the
+      // same post-save reset IpAllowlistTab does. Awaiting the invalidation
+      // first ensures the re-seed reads the refetched document rather than
+      // the stale cache entry.
+      await qc.invalidateQueries({ queryKey: ['llm-usecases'] });
+      setAssignmentsInitialized(false);
       // #355 (Finding 1, AC-3): cascade the change to consumers of the
       // resolved per-use-case default (notably the AI chat input pane in
       // AiContext.tsx) and the use-case-scoped models list. Prefix-match on
@@ -117,8 +125,11 @@ export function LlmTab() {
   const saveRuntimeLimits = useMutation({
     mutationFn: (body: { llmMaxConcurrentStreamsPerUser: number }) =>
       apiFetch('/admin/settings', { method: 'PUT', body: JSON.stringify(body) }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['admin-settings'] });
+    onSuccess: async () => {
+      // Same post-save guard reset as the assignments mutation above (#949):
+      // re-hydrate the cap from the refetched settings document.
+      await qc.invalidateQueries({ queryKey: ['admin-settings'] });
+      setCapInitialized(false);
       toast.success('Runtime limits updated (takes effect within 60 seconds)');
     },
     onError: (e: Error) => toast.error(e.message),
