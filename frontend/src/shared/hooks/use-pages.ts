@@ -77,6 +77,13 @@ export interface PageFilters {
   page?: number;
   limit?: number;
   sort?: 'title' | 'modified' | 'author' | 'quality' | 'relevance';
+  /**
+   * Gate the keyword list query. Defaults to true. Callers pass `false` to
+   * suppress the fetch when the keyword results are not being displayed — e.g.
+   * PagesPage in semantic/hybrid search mode, where results come from useSearch
+   * and firing this query would just waste a rate-limited request (#874).
+   */
+  enabled?: boolean;
 }
 
 export function usePages(params: PageFilters = {}) {
@@ -84,6 +91,7 @@ export function usePages(params: PageFilters = {}) {
     spaceKey, search, author, labels, freshness,
     embeddingStatus, qualityMin, qualityMax, qualityStatus,
     source, dateFrom, dateTo, page, limit, sort,
+    enabled = true,
   } = params;
 
   const queryKey = useMemo(
@@ -114,11 +122,16 @@ export function usePages(params: PageFilters = {}) {
   return useQuery<PaginatedPages>({
     queryKey,
     queryFn: () => apiFetch(`/pages${qs ? `?${qs}` : ''}`),
+    enabled,
     // Cache list responses for 30s so rapid back/forward between list and
     // detail pages reuses cached data instead of firing a fresh request on
     // every remount — that pattern can otherwise trip the backend's global
     // rate limit and leave the query in an unrecoverable error state.
     staleTime: 30_000,
+    // Keep the previous page's rows on screen while the next key loads so
+    // filter/search/pagination changes don't collapse the list to skeletons
+    // (matches useSearch). Without this every keystroke re-enters isLoading.
+    placeholderData: (prev) => prev,
   });
 }
 
