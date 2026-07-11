@@ -956,6 +956,35 @@ describe('content-converter', () => {
       expect(xhtml).not.toContain('confluence-macro-unknown');
     });
 
+    it('editor-wrapped body-less unknown macro does not push the placeholder text upstream (#865)', () => {
+      // The TipTap editor serializes a body-less unknown macro's placeholder
+      // as a single wrapped block: <p>[Confluence macro: anchor]</p>. The
+      // reverse handler must still treat it as body-less — otherwise the
+      // fabricated `[Confluence macro: anchor]` string gets written back into
+      // Confluence as a real rich-text-body.
+      const editorHtml =
+        '<div class="confluence-macro-unknown" data-macro-name="anchor"><p>[Confluence macro: anchor]</p></div>';
+      const xhtml = htmlToConfluence(editorHtml);
+      expect(xhtml).toContain('ac:name="anchor"');
+      // The fabricated placeholder must never leak upstream into Confluence.
+      expect(xhtml).not.toContain('[Confluence macro:');
+      // Body-less: no rich-text-body wrapping the placeholder.
+      expect(xhtml).not.toContain('<ac:rich-text-body>');
+      expect(xhtml).not.toContain('confluence-macro-unknown');
+    });
+
+    it('editor-wrapped unknown macro with a REAL body still round-trips to a rich-text-body (#865)', () => {
+      // A genuine body (not the fabricated placeholder) must survive as an
+      // ac:rich-text-body — the placeholder heuristic must not swallow it.
+      const editorHtml =
+        '<div class="confluence-macro-unknown" data-macro-name="x"><p>real content</p></div>';
+      const xhtml = htmlToConfluence(editorHtml);
+      expect(xhtml).toContain('ac:name="x"');
+      expect(xhtml).toContain('<ac:rich-text-body>');
+      expect(xhtml).toContain('real content');
+      expect(xhtml).not.toContain('confluence-macro-unknown');
+    });
+
     it('TOC macro now round-trips back to ac:structured-macro[name=toc] (#300)', () => {
       const html = confluenceToHtml(TOC_PAGE);
       const xhtml = htmlToConfluence(html);

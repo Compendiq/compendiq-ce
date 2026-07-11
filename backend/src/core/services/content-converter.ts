@@ -752,12 +752,17 @@ export function htmlToConfluence(html: string): string {
     }
 
     // Restore the rich-text-body. The forward pass only writes the
-    // `[Confluence macro: {name}]` placeholder when the source macro had NO
-    // rich-text-body, so treat that exact text (with no element children) as a
-    // body-less macro and emit it without a bogus body.
+    // `[Confluence macro: {name}]` placeholder (see the fallback in the
+    // forward unknown-macro handler) when the source macro had NO
+    // rich-text-body, so treat that exact text as a body-less macro and emit
+    // it without a bogus body. The TipTap editor re-serializes the fabricated
+    // placeholder wrapped in a single block (e.g. `<p>[Confluence macro:
+    // anchor]</p>`), so match on the div's trimmed textContent rather than
+    // requiring zero element children — otherwise the fabricated placeholder
+    // string gets pushed upstream into Confluence as a real body. A div with
+    // genuine content still round-trips to an ac:rich-text-body.
     const placeholder = `[Confluence macro: ${name}]`;
-    const isPlaceholderOnly =
-      div.children.length === 0 && (div.textContent ?? '').trim() === placeholder;
+    const isPlaceholderOnly = (div.textContent ?? '').trim() === placeholder;
     if (!isPlaceholderOnly) {
       const body = doc.createElement('ac:rich-text-body');
       transferInnerHtml(body, div);
