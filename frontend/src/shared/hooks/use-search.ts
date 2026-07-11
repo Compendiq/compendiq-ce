@@ -145,6 +145,10 @@ export function useSearch({ query, mode, spaceKey, page: requestedPage = 1, sort
     queryFn: () => apiFetch<SearchApiResponse>(buildUrl(mode as 'semantic' | 'hybrid', requestedPage)),
     enabled: isQueryEnabled && mode !== 'keyword',
     staleTime: 0,
+    // Keep the previous page's results visible while the next page loads —
+    // without this, every page flip drops enhanced data to undefined, which
+    // re-enables the immediate keyword query and causes visible churn.
+    placeholderData: (prev) => prev,
   });
 
   // Track whether enhanced results have arrived so the immediate query
