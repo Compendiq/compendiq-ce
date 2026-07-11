@@ -1058,9 +1058,10 @@ export function isInConfluenceLayout(editor: Editor): boolean {
 
 /**
  * UnknownMacro node — catch-all for unsupported Confluence macros. Preserves
- * the macro name (`data-macro-name`) and inner rich-text body so the macro
- * survives an editor save round-trip instead of being flattened to plain text
- * (#857).
+ * the macro name (`data-macro-name`), its serialized parameters
+ * (`data-macro-params`, written by the #865 backend forward pass) and inner
+ * rich-text body so the macro survives an editor save round-trip instead of
+ * being flattened to plain text or losing its parameters (#857).
  */
 export const UnknownMacro = Node.create({
   name: 'unknownMacro',
@@ -1074,6 +1075,12 @@ export const UnknownMacro = Node.create({
         parseHTML: (element) => element.getAttribute('data-macro-name'),
         renderHTML: (attributes) =>
           attributes.macroName ? { 'data-macro-name': attributes.macroName } : {},
+      },
+      macroParams: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-macro-params'),
+        renderHTML: (attributes) =>
+          attributes.macroParams ? { 'data-macro-params': attributes.macroParams } : {},
       },
     };
   },

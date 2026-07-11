@@ -182,7 +182,7 @@ describe('Editor', () => {
         '<p><span class="confluence-jira-issue" data-key="KEY-1">[JIRA: KEY-1]</span></p>',
         '<div class="confluence-include-macro" data-macro-name="include" data-page-title="Shared" data-space-key="OPS">[Include: Shared]</div>',
         '<div class="confluence-labels-macro" data-max="5">[Labels]</div>',
-        '<div class="confluence-macro-unknown" data-macro-name="roadmap">[Confluence macro: roadmap]</div>',
+        '<div class="confluence-macro-unknown" data-macro-name="roadmap" data-macro-params=\'{"key":"v"}\'>[Confluence macro: roadmap]</div>',
         '<p><span class="confluence-user-mention" data-username="alice">@alice</span></p>',
       ].join('\n');
 
@@ -215,9 +215,13 @@ describe('Editor', () => {
       expect(html).toContain('data-space-key="OPS"');
       // Labels macro.
       expect(html).toContain('confluence-labels-macro');
-      // Unknown macro — the macro name must round-trip.
+      // Unknown macro — the macro name AND its serialized params (the #865
+      // backend forward pass writes data-macro-params to preserve an unknown
+      // macro's parameters) must both round-trip.
       expect(html).toContain('confluence-macro-unknown');
       expect(html).toContain('data-macro-name="roadmap"');
+      expect(html).toContain('data-macro-params');
+      expect(html).toContain('&quot;key&quot;:&quot;v&quot;');
       // User mention.
       expect(html).toContain('confluence-user-mention');
       expect(html).toContain('data-username="alice"');
