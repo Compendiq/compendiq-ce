@@ -711,7 +711,7 @@ describe('embedding-service', () => {
       expect(result.alreadyProcessing).toBeUndefined();
     });
 
-    it('should store error message when embedding fails', async () => {
+    it('should store a sanitized, user-safe error message when embedding fails', async () => {
       const embeddingError = new Error('Model bge-m3 not found');
 
       mockChunkSettings();
@@ -746,10 +746,15 @@ describe('embedding-service', () => {
       );
       expect(failedUpdateCall).toBeDefined();
       expect(failedUpdateCall![0]).toContain('embedding_error');
-      expect(failedUpdateCall![1]).toContain('Model bge-m3 not found');
+      // The raw provider text ('Model bge-m3 not found' -> "not found") is mapped
+      // to a safe, category-based message and never persisted verbatim.
+      expect(failedUpdateCall![1][1]).toBe(
+        'The embedding model is not available. Check the model configuration and try again.',
+      );
+      expect(failedUpdateCall![1][1]).not.toContain('Model bge-m3');
     });
 
-    it('should truncate long error messages to 1000 characters', async () => {
+    it('should not persist raw provider text in the embedding error column', async () => {
       const longMessage = 'x'.repeat(2000);
       const longError = new Error(longMessage);
 
@@ -781,10 +786,14 @@ describe('embedding-service', () => {
         (call) => typeof call[0] === 'string' && (call[0] as string).includes("embedding_status = 'failed'"),
       );
       expect(failedUpdateCall).toBeDefined();
-      // The error message in params should be truncated to 1000 chars
+      // The mapper returns a fixed generic fallback for opaque errors; the raw
+      // provider payload (the 'x'.repeat(2000) string) is never persisted.
       // Error message is at [1][1]: params are [confluenceId, errorMessage]
       const storedError = failedUpdateCall![1][1] as string;
-      expect(storedError).toHaveLength(1000);
+      expect(storedError).toBe(
+        'Embedding failed due to a provider error. See server logs for details.',
+      );
+      expect(storedError).not.toContain('xxxx');
     });
 
     it('should clear error when embedding succeeds after previous failure', async () => {
@@ -951,7 +960,12 @@ describe('embedding-service', () => {
       expect(completeEvent!.errors).toBeDefined();
       expect(completeEvent!.errors!.length).toBe(1);
       expect(completeEvent!.errors![0]).toContain('Failing');
-      expect(completeEvent!.errors![0]).toContain('Network timeout');
+      // The SSE error list carries the sanitized message, not the raw provider
+      // text ('Network timeout' is mapped to the connectivity message).
+      expect(completeEvent!.errors![0]).toContain(
+        'Could not reach the embedding service. Check the provider connection and try again.',
+      );
+      expect(completeEvent!.errors![0]).not.toContain('Network timeout');
     });
 
     it('should wait and retry on CircuitBreakerOpenError instead of marking page as failed', async () => {
