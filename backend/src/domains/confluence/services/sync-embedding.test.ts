@@ -431,6 +431,17 @@ describe('incremental sync with missing attachments', () => {
     expect(syncImageAttachments).not.toHaveBeenCalled();
   });
 
+  it('pre-filters pages by attachment markers in the SQL query (#888)', async () => {
+    setupIncrementalSync({ cachedPages: [] });
+    await syncUser('user-prefilter');
+    const selectCall = mocks.query.mock.calls.find(
+      ([sql]) => typeof sql === 'string' && sql.includes('FROM pages') && sql.includes('space_key'),
+    );
+    expect(selectCall).toBeDefined();
+    expect(selectCall![0]).toContain("LIKE '%<ac:image%'");
+    expect(selectCall![0]).toContain("LIKE '%drawio%'");
+  });
+
   it('does not run syncMissingAttachments during full sync', async () => {
     mocks.query
       // 1. getClientForUser

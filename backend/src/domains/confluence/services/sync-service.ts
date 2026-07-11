@@ -147,6 +147,9 @@ async function releaseSyncLock(lockId: string): Promise<void> {
 
 const MAX_ATTACHMENT_FAILURES = REDIS_MAX_ATTACHMENT_FAILURES;
 
+/** Page batch size for the missing-attachment retry pass — bounds peak heap (#888). */
+const MISSING_ATTACHMENT_BATCH_SIZE = 500;
+
 /** Clear all attachment failure counters for a page (delegates to Redis). */
 async function clearPageFailures(pageId: string): Promise<void> {
   const redis = getRedisClient();
@@ -335,14 +338,19 @@ async function syncSpace(
 
   logger.info({ userId, spaceKey }, 'Syncing space');
 
-  // Upsert shared space metadata (no user_id)
+  // Upsert shared space metadata (no user_id).
+  // #860: do NOT stamp last_synced here — the incremental-vs-full decision
+  // below reads it, and stamping NOW() every upsert forces every already-synced
+  // space into the incremental branch forever (killing the ≥24h full-sync
+  // backstop). Only the end-of-sync UPDATE (~line 438) advances last_synced,
+  // and only after a successful run.
   if (space) {
     const homepageId = space.homepage?.id ?? null;
     await query(
       `INSERT INTO spaces (space_key, space_name, homepage_id)
        VALUES ($1, $2, $3)
        ON CONFLICT (space_key)
-       DO UPDATE SET space_name = $2, homepage_id = $3, last_synced = NOW()`,
+       DO UPDATE SET space_name = $2, homepage_id = $3`,
       [spaceKey, space.name, homepageId],
     );
   }
@@ -1359,63 +1367,79 @@ async function syncMissingAttachments(
 ): Promise<void> {
   const redis = getRedisClient();
 
-  // Query pages in this space that have XHTML content (body_storage)
-  const pagesResult = await query<{ confluence_id: string; body_storage: string }>(
-    'SELECT confluence_id, body_storage FROM pages WHERE space_key = $1 AND body_storage IS NOT NULL',
-    [spaceKey],
-  );
-
   let retried = 0;
-  for (const row of pagesResult.rows) {
-    const allMissing = await getMissingAttachments(userId, row.confluence_id, row.body_storage, spaceKey);
-    if (allMissing.length === 0) continue;
-
-    // Filter out attachments that have exceeded the failure threshold
-    const retriableChecks = await Promise.all(
-      allMissing.map(async (f) => ({
-        filename: f,
-        count: await getAttachmentFailureCount(redis, row.confluence_id, f),
-      })),
-    );
-    const retriable = retriableChecks
-      .filter((c) => c.count < MAX_ATTACHMENT_FAILURES)
-      .map((c) => c.filename);
-
-    if (retriable.length === 0) continue;
-
-    logger.info(
-      { pageId: row.confluence_id, missing: retriable.length },
-      'Retrying missing attachments for unchanged page',
+  let offset = 0;
+  for (;;) {
+    // Only load pages whose XHTML actually references an attachment. `<ac:image`
+    // covers both `<ri:attachment>` and external `<ri:url>` image forms; `drawio`
+    // covers the drawio structured-macro. This cheap string pre-filter avoids
+    // pulling every body into heap and JSDOM-parsing pages with no attachments
+    // (#888). Batched LIMIT/OFFSET bounds peak memory on large spaces.
+    const pagesResult = await query<{ confluence_id: string; body_storage: string }>(
+      `SELECT confluence_id, body_storage FROM pages
+       WHERE space_key = $1 AND body_storage IS NOT NULL
+         AND (body_storage LIKE '%<ac:image%' OR body_storage LIKE '%drawio%')
+       ORDER BY confluence_id
+       LIMIT $2 OFFSET $3`,
+      [spaceKey, MISSING_ATTACHMENT_BATCH_SIZE, offset],
     );
 
-    try {
-      const { results: attachments } = await client.getPageAttachments(row.confluence_id);
-      await syncDrawioAttachments(client, userId, row.confluence_id, row.body_storage, attachments);
-      await syncImageAttachments(client, userId, row.confluence_id, row.body_storage, attachments, spaceKey);
+    if (pagesResult.rows.length === 0) break;
 
-      // Check which are still missing and update failure counts
-      const stillMissing = new Set(
-        await getMissingAttachments(userId, row.confluence_id, row.body_storage, spaceKey),
+    for (const row of pagesResult.rows) {
+      const allMissing = await getMissingAttachments(userId, row.confluence_id, row.body_storage, spaceKey);
+      if (allMissing.length === 0) continue;
+
+      // Filter out attachments that have exceeded the failure threshold
+      const retriableChecks = await Promise.all(
+        allMissing.map(async (f) => ({
+          filename: f,
+          count: await getAttachmentFailureCount(redis, row.confluence_id, f),
+        })),
+      );
+      const retriable = retriableChecks
+        .filter((c) => c.count < MAX_ATTACHMENT_FAILURES)
+        .map((c) => c.filename);
+
+      if (retriable.length === 0) continue;
+
+      logger.info(
+        { pageId: row.confluence_id, missing: retriable.length },
+        'Retrying missing attachments for unchanged page',
       );
 
-      for (const f of retriable) {
-        if (stillMissing.has(f)) {
-          await recordAttachmentFailure(redis, row.confluence_id, f);
-          const count = await getAttachmentFailureCount(redis, row.confluence_id, f);
-          if (count >= MAX_ATTACHMENT_FAILURES) {
-            logger.warn(
-              { pageId: row.confluence_id, filename: f, failures: count },
-              'Attachment permanently failed — skipping until TTL expiry',
-            );
-          }
-        }
-        // No explicit delete needed: Redis keys expire via TTL
-      }
+      try {
+        const { results: attachments } = await client.getPageAttachments(row.confluence_id);
+        await syncDrawioAttachments(client, userId, row.confluence_id, row.body_storage, attachments);
+        await syncImageAttachments(client, userId, row.confluence_id, row.body_storage, attachments, spaceKey);
 
-      retried++;
-    } catch (err) {
-      logger.error({ err, pageId: row.confluence_id }, 'Failed to retry missing attachments');
+        // Check which are still missing and update failure counts
+        const stillMissing = new Set(
+          await getMissingAttachments(userId, row.confluence_id, row.body_storage, spaceKey),
+        );
+
+        for (const f of retriable) {
+          if (stillMissing.has(f)) {
+            await recordAttachmentFailure(redis, row.confluence_id, f);
+            const count = await getAttachmentFailureCount(redis, row.confluence_id, f);
+            if (count >= MAX_ATTACHMENT_FAILURES) {
+              logger.warn(
+                { pageId: row.confluence_id, filename: f, failures: count },
+                'Attachment permanently failed — skipping until TTL expiry',
+              );
+            }
+          }
+          // No explicit delete needed: Redis keys expire via TTL
+        }
+
+        retried++;
+      } catch (err) {
+        logger.error({ err, pageId: row.confluence_id }, 'Failed to retry missing attachments');
+      }
     }
+
+    if (pagesResult.rows.length < MISSING_ATTACHMENT_BATCH_SIZE) break;
+    offset += MISSING_ATTACHMENT_BATCH_SIZE;
   }
 
   if (retried > 0) {
@@ -1963,4 +1987,9 @@ export const __internal = {
   // the per-page fetch is NOT re-materialised locally by the upsert path,
   // without having to drive an entire syncSpace/syncUser walk.
   syncPage,
+  // Exposed for the #860 incremental-vs-full decision test: prove that after a
+  // completed sync the metadata upsert does not overwrite last_synced, so a
+  // >24h-stale space still takes the full-sync branch (getAllPagesInSpace)
+  // rather than the incremental one (getModifiedPages).
+  syncSpace,
 };

@@ -193,13 +193,24 @@ export class ConfluenceClient {
       throw error;
     }
 
+    // An empty 2xx body is a legitimate success with no payload — most commonly
+    // Confluence DC's `DELETE /content/{id}`, which answers `204 No Content`.
+    // Treating it as a non-JSON error (JSON.parse('') throwing) made every page
+    // delete look like a failure: `deletePage` rejected with ConfluenceError(204)
+    // and the delete route rolled back the local removal, leaving the page
+    // visible in Compendiq while it was trashed upstream (#853). Return undefined
+    // for callers that don't expect a body (e.g. deletePage: Promise<void>).
+    if (text.trim() === '') {
+      return undefined as T;
+    }
+
     try {
       return JSON.parse(text) as T;
     } catch {
-      // A 2xx response whose body isn't JSON (e.g. a reverse proxy or SSO
-      // portal answering 200 with an HTML login page) must surface as a typed
-      // ConfluenceError with a body excerpt — not a raw SyntaxError whose
-      // opaque "Unexpected token" message aborts the whole sync (#746).
+      // A NON-empty 2xx response whose body isn't JSON (e.g. a reverse proxy or
+      // SSO portal answering 200 with an HTML login page) must surface as a typed
+      // ConfluenceError with a body excerpt — not a raw SyntaxError whose opaque
+      // "Unexpected token" message aborts the whole sync (#746).
       logger.error({ statusCode, url, body: text.slice(0, 500) }, 'Confluence API returned non-JSON response');
       throw new ConfluenceError(
         `Confluence API returned non-JSON response (HTTP ${statusCode}): ${text.slice(0, 200)}`,
@@ -628,8 +639,16 @@ export class ConfluenceClient {
   }
 
   async getModifiedPages(since: Date, spaceKey: string): Promise<ConfluencePage[]> {
-    const dateStr = since.toISOString().split('T')[0];
-    const cql = `space="${this.escapeCqlValue(spaceKey)}" AND type=page AND lastmodified>="${dateStr}" ORDER BY lastmodified DESC`;
+    // CQL date/datetime literals are evaluated in the Confluence instance's
+    // configured timezone, not UTC. We don't know that timezone, so we widen the
+    // lower bound by a generous overlap margin (covering the full -12h..+14h
+    // offset range) and use minute-granular datetime format, so edits made near
+    // a UTC-day boundary on a west-of-UTC instance are not silently missed (#858).
+    // Over-fetching is harmless: syncPage's version guard skips unchanged pages.
+    const OVERLAP_MS = 24 * 60 * 60 * 1000;
+    const from = new Date(since.getTime() - OVERLAP_MS);
+    const cqlDate = formatCqlDateTime(from);
+    const cql = `space="${this.escapeCqlValue(spaceKey)}" AND type=page AND lastmodified>="${cqlDate}" ORDER BY lastmodified DESC`;
     const pages: ConfluencePage[] = [];
     let start = 0;
     const limit = 50;
@@ -975,6 +994,20 @@ export class ConfluenceClient {
     );
     return res.body?.storage?.value ?? '';
   }
+}
+
+/**
+ * Formats an instant as a Confluence CQL minute-granular datetime literal
+ * (`yyyy/MM/dd HH:mm`), built from its UTC wall-clock. Used by
+ * `getModifiedPages` for the incremental-sync lower bound (#858).
+ */
+export function formatCqlDateTime(d: Date): string {
+  const y = d.getUTCFullYear();
+  const mo = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const da = String(d.getUTCDate()).padStart(2, '0');
+  const h = String(d.getUTCHours()).padStart(2, '0');
+  const mi = String(d.getUTCMinutes()).padStart(2, '0');
+  return `${y}/${mo}/${da} ${h}:${mi}`;
 }
 
 /**
