@@ -167,6 +167,7 @@ function ParentPagePicker({
 // ---------------------------------------------------------------------------
 
 function PdfUploadZone({
+  extractPdf,
   onExtracted,
   pdfData,
   pdfFilename,
@@ -174,6 +175,7 @@ function PdfUploadZone({
   isExtracting,
   disabled,
 }: {
+  extractPdf: (file: File) => Promise<ExtractPdfResult>;
   onExtracted: (result: ExtractPdfResult, filename: string) => void;
   pdfData: ExtractPdfResult | null;
   pdfFilename: string | null;
@@ -181,7 +183,6 @@ function PdfUploadZone({
   isExtracting: boolean;
   disabled: boolean;
 }) {
-  const { extractPdf } = useExtractPdf();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragOver, setIsDragOver] = useState(false);
 
@@ -493,8 +494,10 @@ export function GenerateModeInput() {
   });
   const mcpEnabled = mcpSettings?.enabled ?? false;
 
-  // PDF upload state
-  const { isExtracting } = useExtractPdf();
+  // PDF upload state — a single useExtractPdf instance shared with PdfUploadZone
+  // so that `isExtracting` reflects the same extraction that PdfUploadZone runs
+  // (#940). Two separate instances left the spinner/disabled state stuck.
+  const { extractPdf, isExtracting } = useExtractPdf();
   const [pdfData, setPdfData] = useState<ExtractPdfResult | null>(null);
   const [pdfFilename, setPdfFilename] = useState<string | null>(null);
 
@@ -566,6 +569,7 @@ export function GenerateModeInput() {
 
       <div className="mt-3 space-y-3 border-t border-border/40 pt-3">
         <PdfUploadZone
+          extractPdf={extractPdf}
           onExtracted={handlePdfExtracted}
           pdfData={pdfData}
           pdfFilename={pdfFilename}
