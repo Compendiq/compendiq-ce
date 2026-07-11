@@ -449,7 +449,18 @@ describe('Draft-while-published routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(mockHtmlToConfluence).toHaveBeenCalledWith('<p>draft</p>');
-      expect(mockUpdatePage).toHaveBeenCalledWith('conf-123', 'Confluence Article', '<p>storage</p>', 4);
+      // updatePage() increments internally, so it must receive the *previous*
+      // live version (page.version = 3), not page.version + 1 (4). Passing 4
+      // makes Confluence receive version 5 while it holds 3 → silent 409 (#863).
+      expect(mockUpdatePage).toHaveBeenCalledWith('conf-123', 'Confluence Article', '<p>storage</p>', 3);
+      // Trust the API-returned version (5) over the local bump (4)
+      expect(response.json().version).toBe(5);
+      // The API version is persisted back so local `version` can't drift
+      const persistCall = mockQuery.mock.calls.find(
+        (c) => typeof c[0] === 'string' && c[0].includes('version = $3') && c[0].includes('last_synced'),
+      );
+      expect(persistCall).toBeDefined();
+      expect(persistCall![1]).toEqual([10, '<p>storage</p>', 5]);
     });
 
     // #893 review follow-up: publishing a draft writes new live content — the
