@@ -101,16 +101,22 @@ export function NewPagePage() {
       const result = await importMarkdownMutation.mutateAsync({
         markdown,
         title: fileTitle,
-        spaceKey: spaceKey || undefined,
       });
-      navigate(`/pages/${result.id}`);
-      toast.success('Markdown imported successfully');
+      // The backend returns a batch envelope; the created page's id is the
+      // synthetic standalone-<uuid> confluence id in articles[0].
+      const newId = result.articles[0]?.id;
+      if (newId) {
+        navigate(`/pages/${newId}`);
+        toast.success('Markdown imported successfully');
+      } else {
+        toast.error('Import did not return a page');
+      }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to import markdown');
     }
     // Reset file input so the same file can be re-selected
     if (fileInputRef.current) fileInputRef.current.value = '';
-  }, [spaceKey, importMarkdownMutation, navigate]);
+  }, [importMarkdownMutation, navigate]);
 
   const isCreateDisabled = createMutation.isPending
     || !title.trim()
