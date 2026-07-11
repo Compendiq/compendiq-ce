@@ -263,7 +263,10 @@ describe('PUT /api/pages/:id', () => {
       expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledWith('pages');
     });
 
-    it('keeps per-user invalidation when the payload sends the same visibility', async () => {
+    it('invalidates across users when a shared page is edited with the same visibility (#893)', async () => {
+      // A shared page's list rows (title/snippet) are visible to every user, so
+      // an edit that keeps visibility='shared' must still clear every user's
+      // cache — not just the editor's — or others see the stale title for 15 min.
       mockStandalonePage('shared');
 
       const response = await app.inject({
@@ -273,8 +276,20 @@ describe('PUT /api/pages/:id', () => {
       });
 
       expect(response.statusCode).toBe(200);
-      expect(mockCacheInvalidateAcrossUsers).not.toHaveBeenCalled();
-      expect(mockCacheInvalidate).toHaveBeenCalledWith('user-1', 'pages');
+      expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledWith('pages');
+    });
+
+    it('invalidates across users when a shared page is edited and the payload omits visibility (#893)', async () => {
+      mockStandalonePage('shared');
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/pages/7',
+        payload: { title: 'Note', bodyHtml: '<p>note</p>', version: 3 },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledWith('pages');
     });
 
     it('keeps per-user invalidation when the payload omits visibility', async () => {
@@ -289,6 +304,23 @@ describe('PUT /api/pages/:id', () => {
       expect(response.statusCode).toBe(200);
       expect(mockCacheInvalidateAcrossUsers).not.toHaveBeenCalled();
       expect(mockCacheInvalidate).toHaveBeenCalledWith('user-1', 'pages');
+    });
+  });
+
+  describe('Confluence-push edit — cache invalidation (#893)', () => {
+    it('invalidates the pages cache across all users after a Confluence-push edit', async () => {
+      // Default beforeEach mock resolves a Confluence-backed page (id 42),
+      // which every user with space access can see — so its cached list rows
+      // must be cleared for all users, not just the editor's.
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/pages/page-1',
+        payload: { title: 'Updated title', bodyHtml: '<p>updated body</p>', version: 7 },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledWith('pages');
+      expect(mockCacheInvalidate).not.toHaveBeenCalledWith('user-1', 'pages');
     });
   });
 });

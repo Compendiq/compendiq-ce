@@ -16,6 +16,13 @@ vi.mock('../../stores/auth-store', () => ({
 // Import after mocks are set up
 const { apiFetch, logoutApi } = await import('./api');
 
+/** Build a JWT whose payload carries the given `exp` (seconds since epoch). */
+function makeJwt(exp: number): string {
+  const header = btoa(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+  const payload = btoa(JSON.stringify({ exp }));
+  return `${header}.${payload}.sig`;
+}
+
 describe('apiFetch', () => {
   beforeEach(() => {
     storeState = {
@@ -144,6 +151,41 @@ describe('apiFetch', () => {
 
     // Only ONE refresh call should have been made (deduplication)
     expect(refreshCallCount).toBe(1);
+  });
+
+  it('proactively refreshes an already-expired JWT before firing the request', async () => {
+    // Token expired 60s ago — the "401 storm" scenario on session resume.
+    storeState.accessToken = makeJwt(Math.floor(Date.now() / 1000) - 60);
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(
+      async (input: string | URL | Request) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        if (url === '/api/auth/refresh') {
+          return new Response(
+            JSON.stringify({
+              accessToken: 'fresh-token',
+              user: { id: '1', username: 'test', role: 'user' },
+            }),
+            { headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+        return new Response(JSON.stringify({ ok: true }), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      },
+    );
+
+    const result = await apiFetch('/data');
+
+    expect(result).toEqual({ ok: true });
+    // The FIRST network call must be the proactive refresh, not /api/data.
+    expect(fetchSpy.mock.calls[0][0]).toBe('/api/auth/refresh');
+    // /api/data must be fetched exactly once, carrying the refreshed token.
+    const dataCalls = fetchSpy.mock.calls.filter((c) => c[0] === '/api/data');
+    expect(dataCalls).toHaveLength(1);
+    expect((dataCalls[0][1]?.headers as Headers).get('Authorization')).toBe('Bearer fresh-token');
+    // Auth store received the fresh token.
+    expect(mockSetAuth).toHaveBeenCalledWith('fresh-token', { id: '1', username: 'test', role: 'user' });
   });
 
   it('attempts refresh on 401 when accessToken exists but expired', async () => {

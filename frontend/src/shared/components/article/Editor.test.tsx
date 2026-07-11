@@ -27,7 +27,7 @@ vi.mock('sonner', () => ({
   },
 }));
 
-import { Editor, EditorToolbar } from './Editor';
+import { Editor, EditorToolbar, clearDraft } from './Editor';
 import type { Editor as EditorType } from '@tiptap/react';
 
 // Minimal mock of a TipTap Editor instance for toolbar-level tests
@@ -726,6 +726,73 @@ describe('Editor', () => {
         }
       });
     });
+  });
+});
+
+describe('draft auto-save flush on unmount (#877)', () => {
+  // Real timers + async TipTap init (immediatelyRender:false). Fake timers
+  // conflict with the editor's async setup, so we lean on the fact that the
+  // AUTO_SAVE_DELAY (2000ms) never elapses within a synchronous test body —
+  // the debounced write is still pending when we unmount.
+  beforeEach(() => {
+    // Wipe drafts AND the module-level suppressedFlushKeys' observable effect
+    // between tests so unique keys can't bleed across cases.
+    localStorage.clear();
+    mockFetchAuthenticatedBlob.mockResolvedValue(null);
+  });
+
+  it('flushes a pending debounced draft to localStorage when the editor unmounts', async () => {
+    let editor: EditorType | null = null;
+    const { unmount } = render(
+      <Editor
+        content="<p>seed</p>"
+        editable={true}
+        draftKey="page-877-flush"
+        onEditorReady={(e) => { editor = e; }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(editor).not.toBeNull();
+    });
+
+    // A real doc change fires onUpdate -> saveDraft, scheduling the 2000ms
+    // debounce. The write has NOT happened yet (test runs in ms).
+    editor!.commands.insertContent(' typed');
+    expect(localStorage.getItem('draft:page-877-flush')).toBeNull();
+
+    // Navigating away unmounts the Editor within the debounce window. Pre-fix
+    // this cleared the timer without writing, silently losing the edit.
+    unmount();
+
+    const draft = localStorage.getItem('draft:page-877-flush');
+    expect(draft).not.toBeNull();
+    expect(draft).toContain('typed');
+  });
+
+  it('does not resurrect a draft the parent explicitly cleared before unmount', async () => {
+    let editor: EditorType | null = null;
+    const { unmount } = render(
+      <Editor
+        content="<p>seed</p>"
+        editable={true}
+        draftKey="page-877-suppress"
+        onEditorReady={(e) => { editor = e; }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(editor).not.toBeNull();
+    });
+
+    // Schedule a pending debounced save…
+    editor!.commands.insertContent(' typed');
+    // …then the parent saves/cancels, which clears the draft and unmounts.
+    clearDraft('page-877-suppress');
+    unmount();
+
+    // The unmount flush must skip the suppressed key — no resurrection.
+    expect(localStorage.getItem('draft:page-877-suppress')).toBeNull();
   });
 });
 
