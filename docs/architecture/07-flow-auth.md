@@ -48,7 +48,7 @@ sequenceDiagram
 ### Client-side token refresh
 
 The SPA keeps the access token in memory (rehydrated from `localStorage` on
-reload) and refreshes it three ways, all funneling through the single-flight
+reload) and refreshes it four ways, all funneling through the single-flight
 `refreshAccessTokenOnce()` so concurrent requests trigger exactly one
 `POST /api/auth/refresh`:
 
@@ -59,6 +59,13 @@ reload) and refreshes it three ways, all funneling through the single-flight
   to a guaranteed 401 (the "401 storm").
 - **Reactive** — a `401` response still triggers a refresh + retry as the
   fallback for server-side revocation / clock skew.
+- **Session init (#884)** — `useSessionInit` fires once on app load when the
+  user looks authenticated but has no in-memory token (e.g. `localStorage`
+  migrated from an older key). It must go through the single-flight helper too:
+  in that state every mounted query also 401s and refreshes, so an independent
+  refresh here would race the deduped path — the loser presents an
+  already-rotated (revoked) JTI, tripping token-family reuse detection and
+  logging the user out despite a valid session.
 
 ### Registration quirks
 
