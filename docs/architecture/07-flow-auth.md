@@ -75,6 +75,15 @@ reload) and refreshes it three ways, all funneling through the single-flight
 and records `audit_log(action='logout')`. The access token is short-lived
 enough that blacklisting is not needed in CE; EE may add it.
 
+On the client, `useClearCacheOnLogout` (wired in `App.tsx`) wipes the
+in-memory TanStack Query cache on every authenticated→unauthenticated
+transition. The single SPA-scoped QueryClient would otherwise survive a
+logout→relogin in the same tab and serve the next user the previous user's
+cached pages, search results, and `allowed` permission results — query keys
+carry no user identity (#885). A ref guard means a token refresh (`setAuth`
+while still authenticated) does not drop a live session's cache; only a true
+logout does.
+
 ## Per-request revocation check (#737)
 
 `authenticate` does not trust the JWT alone: after signature verification it
