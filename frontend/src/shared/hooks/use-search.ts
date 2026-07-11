@@ -141,8 +141,8 @@ export function useSearch({ query, mode, spaceKey, page: requestedPage = 1, sort
   // ── Phase 2: Enhanced semantic/hybrid results ────────────────────────────
   // Only fires when mode is not 'keyword'
   const enhancedQuery = useQuery<SearchApiResponse>({
-    queryKey: ['search', 'enhanced', trimmedQuery, mode, spaceKey, author, dateFrom, dateTo, labels],
-    queryFn: () => apiFetch<SearchApiResponse>(buildUrl(mode as 'semantic' | 'hybrid')),
+    queryKey: ['search', 'enhanced', trimmedQuery, mode, spaceKey, requestedPage, author, dateFrom, dateTo, labels],
+    queryFn: () => apiFetch<SearchApiResponse>(buildUrl(mode as 'semantic' | 'hybrid', requestedPage)),
     enabled: isQueryEnabled && mode !== 'keyword',
     staleTime: 0,
   });
