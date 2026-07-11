@@ -180,6 +180,46 @@ function stripHtml(html: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Strip model preamble / trailing meta-chatter from generated summaries (#912)
+// ---------------------------------------------------------------------------
+
+/**
+ * Remove framing text some models wrap around the actual summary — a leading
+ * "Here's a summary…" line and trailing offer/meta lines (e.g. "…please provide
+ * it so I can respond in German."). Deliberately conservative so a genuine
+ * summary is never eaten: the leading strip requires an explicit framing opener
+ * plus the word "summary" plus a following newline, and the trailing strip only
+ * peels a final line that carries an explicit offer/meta phrase.
+ */
+export function stripSummaryPreamble(markdown: string): string {
+  let text = markdown.trim();
+
+  // Leading framing line, e.g. "Here's a concise summary of the article in
+  // Markdown format:" / "Below is a summary:". Requires a following newline so
+  // the real summary (on later lines) is never eaten.
+  text = text.replace(
+    /^\s*(?:sure[,.!]?\s*)?(?:here(?:'s|\s+is|\s+are)|below\s+is|the\s+following\s+is)\b[^\n]*?\bsummary\b[^\n]*?\n+/i,
+    '',
+  );
+
+  // Bare heading-style preamble line: "Summary:" / "**Summary:**".
+  text = text.replace(/^\s*\**\s*summary\s*\**\s*:?\s*\n+/i, '');
+
+  // Trailing meta/offer lines (optionally bold). Match only lines carrying an
+  // explicit offer/meta phrase so real summary sentences beginning with "If"
+  // survive. Loop to peel multiple trailing meta lines.
+  const TRAILING_META =
+    /\n+\s*\**[^\n]*\b(?:please\s+(?:provide|let\s+me\s+know|note)|let\s+me\s+know|feel\s+free|would\s+you\s+like|i\s+can\s+(?:help|provide|assist)|if\s+you(?:'d| would)\s+like|i\s+hope\s+this\s+helps|respond\s+in\s+(?:german|english))\b[^\n]*\**\s*$/i;
+  let prev: string;
+  do {
+    prev = text;
+    text = text.replace(TRAILING_META, '');
+  } while (text !== prev);
+
+  return text.trim();
+}
+
+// ---------------------------------------------------------------------------
 // Core batch processing
 // ---------------------------------------------------------------------------
 
@@ -258,7 +298,10 @@ async function summarizePage(
       },
       { role: 'user', content: sanitized },
     ]);
-    const markdownSummary = await collectStream(generator);
+    const rawSummary = await collectStream(generator);
+    // Strip model framing/meta-chatter before the empty-check, PII scan, and
+    // HTML conversion so both summary_text and summary_html are stored clean (#912).
+    const markdownSummary = stripSummaryPreamble(rawSummary);
 
     if (!markdownSummary.trim()) {
       throw new Error('LLM returned empty summary');

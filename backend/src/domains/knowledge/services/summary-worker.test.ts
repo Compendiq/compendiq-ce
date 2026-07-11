@@ -9,10 +9,40 @@ import {
   runSummaryBatch,
   startSummaryWorker,
   stopSummaryWorker,
+  stripSummaryPreamble,
 } from './summary-worker.js';
 import { setPiiScanHook, _resetPiiScanHookForTests } from '../../../core/services/pii-scan-hook.js';
 
 const dbAvailable = await isDbAvailable();
+
+// Pure-function tests: run without Postgres so the strip logic is always covered.
+describe('stripSummaryPreamble', () => {
+  it('strips a leading framing line', () => {
+    expect(
+      stripSummaryPreamble(
+        "Here's a summary of the article in Markdown format:\n\n- Point one\n- Point two",
+      ),
+    ).toBe('- Point one\n- Point two');
+  });
+
+  it('strips a trailing meta/offer line', () => {
+    expect(
+      stripSummaryPreamble(
+        'The system deploys nightly.\n\nIf the text was in German, please provide it so I can respond in German.',
+      ),
+    ).toBe('The system deploys nightly.');
+  });
+
+  it('does not strip a real sentence that merely starts with a conditional', () => {
+    expect(
+      stripSummaryPreamble('If the deployment fails, roll back to the prior release.'),
+    ).toBe('If the deployment fails, roll back to the prior release.');
+  });
+
+  it('is a no-op on clean input', () => {
+    expect(stripSummaryPreamble('- A\n- B')).toBe('- A\n- B');
+  });
+});
 
 // Mock the LLM streaming helper to avoid real LLM calls in tests.
 // The worker streams via `streamChat` from openai-compatible-client using
@@ -236,6 +266,37 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
       expect(result.rows[0].summary_html).toContain('test');
       expect(result.rows[0].summary_model).toBe('test-model');
       expect(result.rows[0].summary_content_hash).toHaveLength(64);
+    });
+
+    it('strips model preamble/meta framing before persisting the summary (#912)', async () => {
+      const { streamChat } = await import('../../llm/services/openai-compatible-client.js');
+      vi.mocked(streamChat).mockImplementationOnce(() => {
+        async function* g() {
+          yield {
+            content:
+              "Here's a summary of the article in Markdown format:\n\n- Deploys nightly.\n\nIf the text was in German, please provide it so I can respond in German.",
+            done: false,
+          };
+          yield { content: '', done: true };
+        }
+        return g();
+      });
+
+      await query(
+        `INSERT INTO pages (confluence_id, space_key, title, body_text, summary_status)
+         VALUES ('preamble1', $1, 'Preamble Page', $2, 'pending')`,
+        [testSpaceKey, 'A'.repeat(200)],
+      );
+
+      await runSummaryBatch('test-model');
+
+      const row = await query<{ summary_status: string; summary_text: string }>(
+        "SELECT summary_status, summary_text FROM pages WHERE confluence_id = 'preamble1'",
+      );
+      expect(row.rows[0].summary_status).toBe('summarized');
+      expect(row.rows[0].summary_text).toContain('Deploys nightly');
+      expect(row.rows[0].summary_text).not.toContain('Here');
+      expect(row.rows[0].summary_text).not.toContain('please provide');
     });
 
     describe('PII guard (EE #119)', () => {
