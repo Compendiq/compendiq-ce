@@ -88,11 +88,15 @@ describe('EnterpriseProvider re-fetches license on auth change (#881)', () => {
     });
 
     // The license must be re-fetched so EE surfaces switch on without a reload.
+    // Assert the fully-settled state INSIDE waitFor: the provider flips
+    // isEnterprise via setLicense first, then loads the overlay bundle on a
+    // separate async tick (`await loadEnterpriseUI()` → setUi). Gating only on
+    // `enterprise` and then asserting `ui` synchronously races that later tick.
     await waitFor(() => {
       expect(screen.getByTestId('enterprise').textContent).toBe('true');
+      expect(screen.getByTestId('license').textContent).toBe('enterprise');
+      expect(screen.getByTestId('ui').textContent).toBe('loaded');
     });
-    expect(screen.getByTestId('license').textContent).toBe('enterprise');
-    expect(screen.getByTestId('ui').textContent).toBe('loaded');
   });
 
   it("clears the previous admin's license and ui from memory on logout", async () => {
@@ -135,8 +139,12 @@ describe('EnterpriseProvider re-fetches license on auth change (#881)', () => {
       </EnterpriseProvider>,
     );
 
+    // Confirm the EE state — including the overlay bundle — is fully loaded
+    // before we log out, so the clear assertions below genuinely exercise the
+    // teardown path rather than passing trivially against a never-loaded ui.
     await waitFor(() => {
       expect(screen.getByTestId('enterprise').textContent).toBe('true');
+      expect(screen.getByTestId('ui').textContent).toBe('loaded');
     });
 
     act(() => {
@@ -146,7 +154,11 @@ describe('EnterpriseProvider re-fetches license on auth change (#881)', () => {
     await waitFor(() => {
       expect(screen.getByTestId('enterprise').textContent).toBe('false');
     });
+    // The previous admin's license AND ui must both be dropped from memory (the
+    // test name promises both) — a stale ui would leak the prior session's
+    // overlay bundle into the next, unauthenticated, tab occupant.
     expect(screen.getByTestId('license').textContent).toBe('null');
+    expect(screen.getByTestId('ui').textContent).toBe('null');
   });
 
   it('preserves an already-loaded EE license when a refetch fails transiently (5xx)', async () => {
@@ -191,8 +203,12 @@ describe('EnterpriseProvider re-fetches license on auth change (#881)', () => {
       </EnterpriseProvider>,
     );
 
+    // Wait for the FULLY-settled EE state (incl. the overlay bundle) before
+    // triggering the refetch — `ui` loads a tick after the license, so the
+    // preservation assertions below would otherwise race the initial load.
     await waitFor(() => {
       expect(screen.getByTestId('enterprise').textContent).toBe('true');
+      expect(screen.getByTestId('ui').textContent).toBe('loaded');
     });
 
     // Token rotates mid-session (routine refresh) but the refetch hits a 500.
@@ -206,6 +222,15 @@ describe('EnterpriseProvider re-fetches license on auth change (#881)', () => {
 
     await waitFor(() => {
       expect(licenseCalls).toBeGreaterThan(callsBefore);
+    });
+    // licenseCalls increments when the mock fetch is INVOKED, before the
+    // provider awaits/parses the 500 and runs its transient-failure branch.
+    // Flush the microtask chain (fetch → apiFetch reject → catch → setState) so
+    // that branch has executed before we assert — otherwise a regression that
+    // cleared license/ui on a 5xx could slip past assertions that ran too early.
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
     });
 
     // Transient failure must NOT flip an EE admin to community.
