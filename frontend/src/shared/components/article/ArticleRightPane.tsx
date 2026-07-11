@@ -169,7 +169,9 @@ const OutlineNodeItem = memo(function OutlineNodeItem({
       </div>
 
       {hasChildren && isOpen && (
-        <div>
+        // #880: role="group" gives the nested treeitem rows a valid ARIA
+        // required-parent (a treeitem must be owned by a tree or group).
+        <div role="group">
           {children.map((child) => (
             <OutlineNodeItem
               key={child.heading.id}
@@ -945,7 +947,11 @@ export function ArticleRightPane() {
             No headings on this page.
           </div>
         ) : (
-          <div className="space-y-0.5">
+          // #880: role="tree" + label give the role="treeitem" outline rows a
+          // valid required-parent context and expose real tree semantics to
+          // screen readers. Full roving-tabindex/arrow-key nav remains a tracked
+          // follow-up (epic #856).
+          <div className="space-y-0.5" role="tree" aria-label="Article outline">
             {tree.map((node) => (
               <OutlineNodeItem
                 key={node.heading.id}

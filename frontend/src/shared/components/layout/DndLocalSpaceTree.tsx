@@ -121,7 +121,9 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
       </div>
 
       {hasChildren && isExpanded && (
-        <div className="relative">
+        // #880: role="group" gives the nested treeitem rows a valid ARIA
+        // required-parent (a treeitem must be owned by a tree or group).
+        <div className="relative" role="group">
           {/* Indent guide line -- click to collapse parent */}
           <button
             type="button"
@@ -181,7 +183,11 @@ export default function DndLocalSpaceTree({
 
   return (
     <DragDropProvider onDragEnd={handleDragEnd}>
-      <div className="space-y-0.5">
+      {/* #880: role="tree" + label give the role="treeitem" rows a valid
+          required-parent context and expose real tree semantics to screen
+          readers. Keyboard reorder + full roving-tabindex/arrow-key nav remain
+          a tracked follow-up (epic #856). */}
+      <div className="space-y-0.5" role="tree" aria-label="Pages">
         {tree.map((node, idx) => (
           <DndSortableTreeNode
             key={node.page.id}

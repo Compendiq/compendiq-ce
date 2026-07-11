@@ -553,6 +553,42 @@ describe('SidebarTreeView keyboard navigation (#880)', () => {
   });
 });
 
+// #880 (code-review follow-up): the rows carry role="treeitem" but had no
+// ancestor role="tree" and nested-children wrappers had no role="group", so
+// every treeitem was orphaned — an axe-critical aria-required-parent violation
+// that breaks screen-reader tree semantics. The row list is now a role="tree"
+// and each expanded node's children live in a role="group".
+describe('SidebarTreeView ARIA tree semantics (#880)', () => {
+  beforeEach(() => {
+    mockNavigate.mockClear();
+    mockTreeData = { ...defaultTreeData };
+    useUiStore.setState({
+      treeSidebarCollapsed: false,
+      treeSidebarSpaceKey: undefined,
+    });
+  });
+
+  it('exposes the row list as a labelled ARIA tree (valid required-parent for treeitems)', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const tree = screen.getByRole('tree');
+    expect(tree).toBeInTheDocument();
+    expect(tree.getAttribute('aria-label')).toBeTruthy();
+  });
+
+  it('wraps an expanded node\'s children in role="group" so nested treeitems have a valid parent', () => {
+    // OPS has no homepage, so the full tree renders and "Getting Started" keeps
+    // its children (Installation/Configuration) as a nested, expandable branch.
+    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: 'OPS' });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByLabelText('Expand'));
+    expect(screen.getByText('Installation')).toBeInTheDocument();
+    const group = document.querySelector('[role="group"]');
+    expect(group).not.toBeNull();
+    // The nested treeitem lives inside the group.
+    expect(group!.querySelector('[role="treeitem"]')).not.toBeNull();
+  });
+});
+
 // #707: on reload the tree mounts scrolled to the top; the active page's path
 // is auto-expanded but the row is out of view. The scroll container should
 // scroll the active node into view — unless it is already visible (so manual

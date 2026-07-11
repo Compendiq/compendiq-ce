@@ -418,6 +418,39 @@ describe('ArticleRightPane', () => {
     });
   });
 
+  // #880 (code-review follow-up): outline rows carry role="treeitem" but had no
+  // role="tree" ancestor and nested-children wrappers lacked role="group", so
+  // every treeitem was orphaned (axe-critical aria-required-parent). The outline
+  // list is now a role="tree" and each expanded heading's sub-headings live in a
+  // role="group".
+  describe('outline ARIA tree semantics (#880)', () => {
+    it('exposes the outline list as a labelled ARIA tree', () => {
+      useArticleViewStore.setState({
+        headings: [{ id: 'intro', text: 'Introduction', level: 1 }],
+      });
+      render(<ArticleRightPane />, { wrapper: createWrapper() });
+      const tree = screen.getByRole('tree');
+      expect(tree).toBeInTheDocument();
+      expect(tree.getAttribute('aria-label')).toBeTruthy();
+    });
+
+    it('wraps nested sub-headings in role="group" so nested treeitems have a valid parent', () => {
+      // A level-2 heading nests under the preceding level-1 heading; outline
+      // branches are expanded by default (collapsedIds is empty).
+      useArticleViewStore.setState({
+        headings: [
+          { id: 'intro', text: 'Introduction', level: 1 },
+          { id: 'usage', text: 'Usage', level: 2 },
+        ],
+      });
+      render(<ArticleRightPane />, { wrapper: createWrapper() });
+      expect(screen.getByText('Usage')).toBeInTheDocument();
+      const group = document.querySelector('[role="group"]');
+      expect(group).not.toBeNull();
+      expect(group!.querySelector('[role="treeitem"]')).not.toBeNull();
+    });
+  });
+
   it('renders version and space key in the footer', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 

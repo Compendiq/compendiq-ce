@@ -202,4 +202,26 @@ describe('DndLocalSpaceTree', () => {
       expect(leaf.getAttribute('aria-expanded')).toBeNull();
     });
   });
+
+  // #880 (code-review follow-up): rows carry role="treeitem" but had no
+  // role="tree" ancestor and nested-children wrappers lacked role="group", so
+  // every treeitem was orphaned (axe-critical aria-required-parent). The row
+  // list is now a role="tree" and each expanded node's children live in a
+  // role="group".
+  describe('ARIA tree semantics (#880)', () => {
+    it('exposes the row list as a labelled ARIA tree', () => {
+      renderTree();
+      const tree = screen.getByRole('tree');
+      expect(tree).toBeInTheDocument();
+      expect(tree.getAttribute('aria-label')).toBeTruthy();
+    });
+
+    it('wraps an expanded node\'s children in role="group" so nested treeitems have a valid parent', () => {
+      renderTree({ expandedIds: new Set(['p2']) });
+      expect(screen.getByText('Child of Two')).toBeInTheDocument();
+      const group = document.querySelector('[role="group"]');
+      expect(group).not.toBeNull();
+      expect(group!.querySelector('[role="treeitem"]')).not.toBeNull();
+    });
+  });
 });
