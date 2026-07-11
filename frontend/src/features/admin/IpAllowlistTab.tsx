@@ -123,6 +123,12 @@ export function IpAllowlistTab() {
   // the *current* form before we let them turn the switch on and apply it.
   const [lastConfirmedIp, setLastConfirmedIp] = useState<string | null>(null);
   const [lastConfirmedIpAllowed, setLastConfirmedIpAllowed] = useState(false);
+  // The exact config snapshot the confirming test ran against. Binding the
+  // unlock to this (not a bare boolean) closes the residual hole where a
+  // *further* edit after a passing test left the guard trusting a config that
+  // was never tested — because the [dirty] effect below only re-fires on the
+  // false→true edge, not on edits that keep the form dirty.
+  const [lastConfirmedConfig, setLastConfirmedConfig] = useState<IpAllowlistConfig | null>(null);
 
   // Inline validation (from the most recent PUT attempt).
   const [putError, setPutError] = useState<PutError | null>(null);
@@ -157,6 +163,7 @@ export function IpAllowlistTab() {
     if (dirty) {
       setLastConfirmedIp(null);
       setLastConfirmedIpAllowed(false);
+      setLastConfirmedConfig(null);
     }
     // We intentionally depend on `dirty` only — the individual edit setters
     // will flip it true exactly when the form diverges from the loaded
@@ -165,10 +172,16 @@ export function IpAllowlistTab() {
 
   // Save-button guard:
   //   - must be dirty
-  //   - if the form would enable the allowlist, an IP must have tested as allowed
+  //   - if the form would enable the allowlist, an IP must have tested as
+  //     allowed AGAINST THE EXACT config that is about to be saved
   //   - disabling the allowlist is always safe (no one is being locked out)
   const saveEnabled =
-    dirty && (!working.enabled || (lastConfirmedIpAllowed && lastConfirmedIp !== null));
+    dirty &&
+    (!working.enabled ||
+      (lastConfirmedIpAllowed &&
+        lastConfirmedIp !== null &&
+        lastConfirmedConfig !== null &&
+        configsEqual(working, lastConfirmedConfig)));
 
   // ── Mutations ───────────────────────────────────────────────────────────────
 
@@ -185,6 +198,7 @@ export function IpAllowlistTab() {
       // config is no longer authoritative.
       setLastConfirmedIp(null);
       setLastConfirmedIpAllowed(false);
+      setLastConfirmedConfig(null);
       // Force re-hydration from the new server-side state on next render.
       setInitialized(false);
       toast.success('IP allowlist saved');
@@ -204,22 +218,26 @@ export function IpAllowlistTab() {
 
   const testMutation = useMutation({
     // Send the PENDING (working) config so the backend dry-runs the tested IP
-    // against exactly what will be saved, not the stale persisted config — this
-    // is what makes the Save-unlock guard trustworthy (#871).
+    // against exactly what will be saved, not the stale persisted config. The
+    // Save-unlock guard then binds to this same config snapshot (#871).
     mutationFn: ({ ip, config }: { ip: string; config: IpAllowlistConfig }) =>
       fetchJson<IpAllowlistTestResponse>('/admin/ip-allowlist/test', {
         method: 'POST',
         body: JSON.stringify({ ip, config }),
       }),
-    onSuccess: (result, { ip }) => {
+    onSuccess: (result, { ip, config }) => {
       setTestInvalidIp(false);
       setTestResult(result);
       if (result.allowed) {
         setLastConfirmedIp(ip);
         setLastConfirmedIpAllowed(true);
+        // Pin the confirmation to the exact config that was tested — any later
+        // edit makes `working` diverge from this and re-locks Save.
+        setLastConfirmedConfig(config);
       } else {
         setLastConfirmedIp(null);
         setLastConfirmedIpAllowed(false);
+        setLastConfirmedConfig(null);
       }
     },
     onError: (err: unknown) => {
@@ -230,12 +248,14 @@ export function IpAllowlistTab() {
         setTestResult(null);
         setLastConfirmedIp(null);
         setLastConfirmedIpAllowed(false);
+        setLastConfirmedConfig(null);
         return;
       }
       setTestInvalidIp(false);
       setTestResult(null);
       setLastConfirmedIp(null);
       setLastConfirmedIpAllowed(false);
+      setLastConfirmedConfig(null);
       toast.error(err instanceof Error ? err.message : 'Test failed');
     },
   });

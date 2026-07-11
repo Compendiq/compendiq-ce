@@ -243,6 +243,40 @@ describe('IpAllowlistTab', () => {
     expect(screen.getByTestId('ip-allowlist-save-btn')).toBeDisabled();
   });
 
+  it('re-locks save when the config is edited AFTER a confirming test (#871 residual)', async () => {
+    // Test always returns allowed, so the only thing that can re-lock Save is
+    // the working config diverging from the snapshot that was actually tested.
+    mockFetch();
+    render(<IpAllowlistTab />, { wrapper: createWrapper() });
+
+    // Config A: dirty the form, still enabled.
+    const cidrs = await screen.findByTestId('ip-allowlist-cidrs');
+    fireEvent.change(cidrs, { target: { value: '10.0.0.0/8\n172.16.0.0/12' } });
+
+    // Confirm an IP against config A.
+    const testInput = screen.getByTestId('ip-allowlist-test-ip');
+    fireEvent.change(testInput, { target: { value: '10.0.0.5' } });
+    fireEvent.click(screen.getByTestId('ip-allowlist-test-btn'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('ip-allowlist-test-outcome')).toHaveTextContent('allowed');
+    });
+
+    // Save unlocks for config A.
+    await waitFor(() => {
+      expect(screen.getByTestId('ip-allowlist-save-btn')).not.toBeDisabled();
+    });
+
+    // Config B: the admin edits the CIDRs again WITHOUT retesting. The form is
+    // still dirty (so the [dirty] invalidation effect never re-fires), yet the
+    // pending config was never confirmed — Save must re-lock.
+    fireEvent.change(cidrs, { target: { value: '192.168.0.0/16' } });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('ip-allowlist-save-btn')).toBeDisabled();
+    });
+  });
+
   it('save button is enabled when dirty + enabled=false', async () => {
     mockFetch();
     render(<IpAllowlistTab />, { wrapper: createWrapper() });
