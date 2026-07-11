@@ -512,7 +512,9 @@ export function GenerateModeInput() {
   }, []);
 
   const handleGenerate = useCallback(async () => {
-    if (!input.trim() || isStreaming) return;
+    // Block generation while a PDF extraction is in flight — otherwise the
+    // prompt would be sent without the pdfText that is still being extracted (#940).
+    if (!input.trim() || isStreaming || isExtracting) return;
     if (!model) {
       toast.error('No model available. Check your LLM provider settings.');
       return;
@@ -547,7 +549,7 @@ export function GenerateModeInput() {
         }
       },
     });
-  }, [input, model, isStreaming, pdfData, pdfFilename, searchWeb, thinkingMode, setInput, setMessages, runStream]);
+  }, [input, model, isStreaming, isExtracting, pdfData, pdfFilename, searchWeb, thinkingMode, setInput, setMessages, runStream]);
 
   const handleSubmit = () => handleGenerate();
 
@@ -603,7 +605,7 @@ export function GenerateModeInput() {
           />
           <button
             onClick={handleSubmit}
-            disabled={isStreaming || !input.trim() || !model}
+            disabled={isStreaming || isExtracting || !input.trim() || !model}
             aria-label={isStreaming ? 'Sending...' : 'Send message'}
             className="shrink-0 flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50"
           >

@@ -113,4 +113,28 @@ describe('GenerateMode PDF extraction busy state (#940)', () => {
     });
     expect(screen.getByTestId('pdf-upload-zone')).toBeDisabled();
   });
+
+  it('disables the Generate (send) button while extraction is in progress', async () => {
+    render(<GenerateModeInput />, { wrapper: createWrapper() });
+
+    // Type a prompt and wait until the send button is enabled (model loaded),
+    // so the later assertion can only fail on the extraction state.
+    const promptInput = screen.getByPlaceholderText('Describe the page to generate...');
+    fireEvent.change(promptInput, { target: { value: 'Summarize the attached PDF' } });
+    const sendButton = screen.getByRole('button', { name: 'Send message' });
+    await waitFor(() => {
+      expect(sendButton).not.toBeDisabled();
+    });
+
+    // Kick off an extraction that stays pending.
+    const fileInput = screen.getByTestId('pdf-file-input');
+    const pdfFile = new File(['%PDF-1.4 dummy content'], 'report.pdf', { type: 'application/pdf' });
+    fireEvent.change(fileInput, { target: { files: [pdfFile] } });
+
+    // Clicking Generate mid-extraction would send the prompt without pdfText,
+    // so the button must be disabled until extraction settles (#940).
+    await waitFor(() => {
+      expect(sendButton).toBeDisabled();
+    });
+  });
 });
