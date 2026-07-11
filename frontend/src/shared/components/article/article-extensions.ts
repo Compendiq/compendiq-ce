@@ -148,6 +148,49 @@ export const DetailsSummary = Node.create({
 });
 
 /**
+ * A pass-through `data-*` attribute definition used by the Confluence macro
+ * placeholder nodes. `default: null` (widened to string|null so a `label`
+ * attr with a `''` default can sit in the same object) plus a `parseHTML`
+ * that reads `data-<name>`.
+ */
+type MacroParamAttr = {
+  default: string | null;
+  parseHTML: (element: HTMLElement) => string | null;
+};
+
+/**
+ * Build pass-through `data-*` attribute definitions for a placeholder macro
+ * node. Each name maps to a `data-<name>` attribute that round-trips unchanged
+ * so the backend's htmlToConfluence pass can rebuild the original
+ * ac:structured-macro. Dropping these wrappers permanently deletes the macro
+ * from the Confluence page on the next editor save (#765 / #857).
+ */
+function dataParamAttributes(names: readonly string[]): Record<string, MacroParamAttr> {
+  const attrs: Record<string, MacroParamAttr> = {};
+  for (const name of names) {
+    attrs[name] = {
+      default: null,
+      parseHTML: (element) => element.getAttribute(`data-${name}`),
+    };
+  }
+  return attrs;
+}
+
+/** Serialize the pass-through `data-*` attributes back onto the element. */
+function renderDataParams(
+  attrs: Record<string, unknown>,
+  names: readonly string[],
+  base: Record<string, string>,
+): Record<string, string> {
+  const out: Record<string, string> = { ...base };
+  for (const name of names) {
+    const value = attrs[name];
+    if (value != null) out[`data-${name}`] = String(value);
+  }
+  return out;
+}
+
+/**
  * Panel node — renders Confluence info/warning/note/tip panels.
  */
 export const Panel = Node.create({
@@ -292,19 +335,35 @@ export const DrawioDiagram = Node.create({
 });
 
 /**
- * ConfluenceToc node — placeholder for Confluence TOC macros.
+ * Confluence TOC macro parameters (lowercased data-* suffixes). Must match the
+ * names the backend converter emits/consumes (content-converter.ts).
+ */
+const TOC_PARAMS = ['maxlevel', 'minlevel', 'outline', 'style', 'type', 'printable', 'absoluteurl'] as const;
+
+/**
+ * ConfluenceToc node — placeholder for Confluence TOC macros. Round-trips the
+ * macro's parameters as data-* attributes so htmlToConfluence can rebuild the
+ * ac:structured-macro[name=toc] losslessly (#857).
  */
 export const ConfluenceToc = Node.create({
   name: 'confluenceToc',
   group: 'block',
   atom: true,
 
+  addAttributes() {
+    return dataParamAttributes(TOC_PARAMS);
+  },
+
   parseHTML() {
     return [{ tag: 'div.confluence-toc' }];
   },
 
-  renderHTML() {
-    return ['div', { class: 'confluence-toc' }, 'Table of Contents is displayed in the sidebar'];
+  renderHTML({ node }) {
+    return [
+      'div',
+      renderDataParams(node.attrs, TOC_PARAMS, { class: 'confluence-toc' }),
+      'Table of Contents is displayed in the sidebar',
+    ];
   },
 });
 
@@ -431,6 +490,132 @@ export const ConfluenceAttachments = Node.create({
 
   addNodeView() {
     return ReactNodeViewRenderer(AttachmentsMacroView);
+  },
+});
+
+// Macro-placeholder parameter sets (lowercased data-* suffixes). Each must
+// match exactly what the backend converter emits/consumes so the reverse pass
+// rebuilds the original ac:structured-macro / ri:user element (#857).
+const JIRA_PARAMS = ['key', 'server-id', 'server', 'columns', 'display'] as const;
+const MENTION_PARAMS = ['username', 'userkey'] as const;
+const INCLUDE_PARAMS = ['macro-name', 'page-title', 'space-key'] as const;
+const LABELS_PARAMS = ['max', 'spaces', 'excludedlabels', 'showlabels'] as const;
+
+/** Shared `label` attribute — captures the placeholder's visible text. */
+const labelAttribute: MacroParamAttr = {
+  default: '',
+  parseHTML: (element) => element.textContent ?? '',
+};
+
+/**
+ * ConfluenceJiraIssue node — inline placeholder for Confluence JIRA-issue
+ * macros. Preserves the issue key + server/columns/display params so
+ * htmlToConfluence can rebuild ac:structured-macro[name=jira] (#857).
+ * Inline atom (non-editable), mirroring ConfluenceStatus.
+ */
+export const ConfluenceJiraIssue = Node.create({
+  name: 'confluenceJiraIssue',
+  group: 'inline',
+  inline: true,
+  atom: true,
+
+  addAttributes() {
+    return { ...dataParamAttributes(JIRA_PARAMS), label: labelAttribute };
+  },
+
+  parseHTML() {
+    return [{ tag: 'span.confluence-jira-issue' }];
+  },
+
+  renderHTML({ node }) {
+    return [
+      'span',
+      renderDataParams(node.attrs, JIRA_PARAMS, { class: 'confluence-jira-issue' }),
+      node.attrs.label,
+    ];
+  },
+});
+
+/**
+ * ConfluenceUserMention node — inline placeholder for user mentions.
+ * Preserves data-username/data-userkey so htmlToConfluence can rebuild the
+ * ri:user element wrapped in ac:link (#857). Inline atom (non-editable).
+ */
+export const ConfluenceUserMention = Node.create({
+  name: 'confluenceUserMention',
+  group: 'inline',
+  inline: true,
+  atom: true,
+
+  addAttributes() {
+    return { ...dataParamAttributes(MENTION_PARAMS), label: labelAttribute };
+  },
+
+  parseHTML() {
+    return [{ tag: 'span.confluence-user-mention' }];
+  },
+
+  renderHTML({ node }) {
+    return [
+      'span',
+      renderDataParams(node.attrs, MENTION_PARAMS, { class: 'confluence-user-mention' }),
+      node.attrs.label,
+    ];
+  },
+});
+
+/**
+ * ConfluenceIncludeMacro node — block placeholder for include / excerpt-include
+ * macros. Preserves the referenced page title + space key so htmlToConfluence
+ * can rebuild the ac:structured-macro with its ri:page reference (#857).
+ * Block-level atom (non-editable).
+ */
+export const ConfluenceIncludeMacro = Node.create({
+  name: 'confluenceIncludeMacro',
+  group: 'block',
+  atom: true,
+
+  addAttributes() {
+    return { ...dataParamAttributes(INCLUDE_PARAMS), label: labelAttribute };
+  },
+
+  parseHTML() {
+    return [{ tag: 'div.confluence-include-macro' }];
+  },
+
+  renderHTML({ node }) {
+    return [
+      'div',
+      renderDataParams(node.attrs, INCLUDE_PARAMS, { class: 'confluence-include-macro' }),
+      node.attrs.label,
+    ];
+  },
+});
+
+/**
+ * ConfluenceLabelsMacro node — block placeholder for the labels macro.
+ * Preserves its params so htmlToConfluence can rebuild
+ * ac:structured-macro[name=labels] (#765 / #857). Block-level atom.
+ */
+export const ConfluenceLabelsMacro = Node.create({
+  name: 'confluenceLabelsMacro',
+  group: 'block',
+  atom: true,
+
+  addAttributes() {
+    return { ...dataParamAttributes(LABELS_PARAMS), label: labelAttribute };
+  },
+
+  parseHTML() {
+    return [{ tag: 'div.confluence-labels-macro' }];
+  },
+
+  renderHTML({ node }) {
+    return [
+      'div',
+      renderDataParams(node.attrs, LABELS_PARAMS, { class: 'confluence-labels-macro' }),
+      node.attrs.label,
+    ];
   },
 });
 
@@ -872,12 +1057,33 @@ export function isInConfluenceLayout(editor: Editor): boolean {
 }
 
 /**
- * UnknownMacro node — catch-all for unsupported Confluence macros.
+ * UnknownMacro node — catch-all for unsupported Confluence macros. Preserves
+ * the macro name (`data-macro-name`), its serialized parameters
+ * (`data-macro-params`, written by the #865 backend forward pass) and inner
+ * rich-text body so the macro survives an editor save round-trip instead of
+ * being flattened to plain text or losing its parameters (#857).
  */
 export const UnknownMacro = Node.create({
   name: 'unknownMacro',
   group: 'block',
   content: 'block*',
+
+  addAttributes() {
+    return {
+      macroName: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-macro-name'),
+        renderHTML: (attributes) =>
+          attributes.macroName ? { 'data-macro-name': attributes.macroName } : {},
+      },
+      macroParams: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-macro-params'),
+        renderHTML: (attributes) =>
+          attributes.macroParams ? { 'data-macro-params': attributes.macroParams } : {},
+      },
+    };
+  },
 
   parseHTML() {
     return [{ tag: 'div.confluence-macro-unknown' }];

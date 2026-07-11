@@ -413,6 +413,29 @@ describe('openai-compatible-client — generateEmbedding surfaces HTTP error bod
       generateEmbedding({ ...cfg, providerId: 'emb-err-821', baseUrl: errBase }, 'bge-m3', ['too long']),
     ).rejects.toThrow(/generateEmbedding HTTP 400.*input length exceeds the context length/s);
   });
+
+  // ─── #867: deterministic 400s must NOT trip the provider breaker ──────────
+  // A context-length HTTP 400 proves the provider is reachable and healthy — it
+  // is a client-input error, not an outage. Counting it as a breaker failure
+  // means one oversized page can open the breaker after 3 consecutive batches,
+  // which then aborts the whole embedding run (embedding-service.ts) and stalls
+  // every dirty page behind the poison page. The breaker must stay CLOSED so the
+  // oversized-batch-skip path can proceed.
+  it('repeated 400 context-length errors do NOT trip the provider breaker (#867)', async () => {
+    const providerId = 'emb-400-notrip-' + Math.random().toString(36).slice(2);
+    invalidateBreaker(providerId);
+    // Four consecutive 400s: one more than failureThreshold (3). Before the fix
+    // the 4th call is short-circuited by an OPEN breaker (CircuitBreakerOpenError
+    // → "temporarily unavailable"), which never reaches the server and does not
+    // match /HTTP 400/.
+    for (let i = 0; i < 4; i++) {
+      await expect(
+        generateEmbedding({ ...cfg, providerId, baseUrl: errBase }, 'bge-m3', ['too long']),
+      ).rejects.toThrow(/HTTP 400/);
+    }
+    const { getProviderBreaker } = await import('../../../core/services/circuit-breaker.js');
+    expect(getProviderBreaker(providerId).getStatus().state).toBe('CLOSED');
+  });
 });
 
 // ─── Queue wrapping ─────────────────────────────────────────────────────────

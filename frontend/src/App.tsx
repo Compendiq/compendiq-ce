@@ -3,6 +3,7 @@ import { Routes, Route, Navigate, useSearchParams } from 'react-router-dom';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { useAuthStore } from './stores/auth-store';
 import { useSessionInit } from './shared/hooks/useSessionInit';
+import { useClearCacheOnLogout } from './shared/hooks/useClearCacheOnLogout';
 import { useThemeEffect } from './shared/hooks/useThemeEffect';
 import { useTokenRefreshTimer } from './shared/hooks/useTokenRefreshTimer';
 import { useSetupStatus } from './shared/hooks/useSetupStatus';
@@ -156,6 +157,7 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 
 export function App() {
   useSessionInit();
+  useClearCacheOnLogout();
   useTokenRefreshTimer();
   useThemeEffect();
 
