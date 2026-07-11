@@ -1,7 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useAuthStore } from '../../stores/auth-store';
-
-const API_BASE = '/api';
+import { refreshAccessTokenOnce } from '../lib/api';
 
 /**
  * On app load, if the user appears authenticated (from persisted localStorage)
@@ -10,6 +9,17 @@ const API_BASE = '/api';
  * refresh fails (expired session, revoked token, etc.), clear auth so the user
  * is redirected to login immediately instead of seeing broken API errors.
  *
+ * The refresh is routed through the shared refreshAccessTokenOnce() helper so it
+ * joins the same single-flight promise as apiFetch's reactive 401 refresh. In
+ * this exact state (authenticated, no in-memory token) every mounted query also
+ * 401s and triggers refreshAccessTokenOnce(); firing an independent /auth/refresh
+ * here would race that deduped path, and the loser would present an
+ * already-rotated (revoked) refresh JTI — tripping the backend's token-family
+ * reuse detection and forcibly logging the user out despite a valid session.
+ *
+ * On success refreshAccessTokenOnce persists the new token+user via the store
+ * (see api.ts), so no explicit setAuth is needed here.
+ *
  * Note: The access token IS persisted in localStorage for cross-tab session
  * sharing (see auth-store). Short token expiry and refresh token rotation
  * mitigate the localStorage exposure risk.
@@ -17,7 +27,6 @@ const API_BASE = '/api';
 export function useSessionInit() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const accessToken = useAuthStore((s) => s.accessToken);
-  const setAuth = useAuthStore((s) => s.setAuth);
   const clearAuth = useAuthStore((s) => s.clearAuth);
   const attempted = useRef(false);
 
@@ -26,20 +35,8 @@ export function useSessionInit() {
     attempted.current = true;
 
     (async () => {
-      try {
-        const res = await fetch(`${API_BASE}/auth/refresh`, {
-          method: 'POST',
-          credentials: 'include',
-        });
-        if (!res.ok) {
-          clearAuth();
-          return;
-        }
-        const data = await res.json();
-        setAuth(data.accessToken, data.user);
-      } catch {
-        clearAuth();
-      }
+      const token = await refreshAccessTokenOnce();
+      if (!token) clearAuth();
     })();
-  }, [isAuthenticated, accessToken, setAuth, clearAuth]);
+  }, [isAuthenticated, accessToken, clearAuth]);
 }
