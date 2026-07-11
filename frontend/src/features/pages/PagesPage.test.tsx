@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { PagesPage } from './PagesPage';
@@ -1051,6 +1051,201 @@ describe('PagesPage', () => {
       expect(badge.className).toMatch(/bg-\[#e6effb\]/);
       expect(badge.className).toMatch(/text-\[#1c3e72\]/);
       expect(badge.className).not.toMatch(/sky-500|amber|warning|yellow/);
+    });
+  });
+
+  // --- Search debounce + semantic-mode gating (#874) ---
+  //
+  // The keyword search input used to feed usePages directly, firing an
+  // un-debounced GET /pages?search=… on every keystroke, and it kept firing
+  // that wasted keyword query even in semantic/hybrid mode where the results
+  // come from useSearch. These tests pin the debounce and the enabled gate.
+  describe('search debounce + semantic gating (#874)', () => {
+    /** Fetch mock that serves both /search and /pages, so semantic mode has a
+     *  real /search response while we watch what /pages does. */
+    function mockFetchWithSearchAndPages() {
+      return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+        const url = typeof input === 'string' ? input : (input as Request).url;
+        if (url.includes('/search?')) {
+          const mode = new URL(url, 'http://localhost').searchParams.get('mode') ?? 'keyword';
+          return new Response(
+            JSON.stringify({ items: [], total: 0, page: 1, limit: 10, totalPages: 0, mode, hasEmbeddings: true }),
+            { headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+        if (url.includes('/embeddings/status')) {
+          return new Response(JSON.stringify(mockEmbeddingStatusIdle), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/pages/filters')) {
+          return new Response(JSON.stringify(mockFilterOptions), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/spaces')) {
+          return new Response(JSON.stringify(mockSpaces), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/sync/status')) {
+          return new Response(JSON.stringify({ status: 'idle' }), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/pages/pinned')) {
+          return new Response(JSON.stringify({ items: [], total: 0 }), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/settings')) {
+          return new Response(JSON.stringify({}), { headers: { 'Content-Type': 'application/json' } });
+        }
+        return new Response(JSON.stringify(mockPagesResponse), { headers: { 'Content-Type': 'application/json' } });
+      });
+    }
+
+    /** Extract the exact `search` param value from every GET /pages?… list
+     *  request (ignores /pages/pinned, /pages/filters, /search, etc.). */
+    function pagesSearchValues(fetchSpy: ReturnType<typeof vi.spyOn>): string[] {
+      return fetchSpy.mock.calls
+        .map(([firstArg]) => (typeof firstArg === 'string' ? firstArg : (firstArg as Request).url))
+        .filter((u) => /\/pages\?/.test(u))
+        .map((u) => new URL(u, 'http://localhost').searchParams.get('search'))
+        .filter((v): v is string => v !== null);
+    }
+
+    it('debounces keyword search: only the final term fires a /pages request', async () => {
+      vi.restoreAllMocks();
+      const fetchSpy = mockFetchWithEmbeddingStatus(mockEmbeddingStatusIdle);
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      const input = screen.getByPlaceholderText('Search pages...');
+      // Four rapid keystrokes — the debounce must collapse them to one request.
+      fireEvent.change(input, { target: { value: 'k' } });
+      fireEvent.change(input, { target: { value: 'ku' } });
+      fireEvent.change(input, { target: { value: 'kub' } });
+      fireEvent.change(input, { target: { value: 'kube' } });
+
+      // The debounced term eventually fires exactly one keyword request.
+      await waitFor(
+        () => {
+          expect(pagesSearchValues(fetchSpy)).toContain('kube');
+        },
+        { timeout: 2000 },
+      );
+
+      // The intermediate keystrokes must never have hit the network.
+      const values = pagesSearchValues(fetchSpy);
+      expect(values).not.toContain('k');
+      expect(values).not.toContain('ku');
+      expect(values).not.toContain('kub');
+    });
+
+    it('does not fire a keyword /pages?search= request while in semantic mode', async () => {
+      vi.restoreAllMocks();
+      const fetchSpy = mockFetchWithSearchAndPages();
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByTestId('search-mode-semantic'));
+      fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+        target: { value: 'kubernetes' },
+      });
+
+      // Wait until the debounced semantic search has actually fired.
+      await waitFor(
+        () => {
+          const urls = fetchSpy.mock.calls.map(([firstArg]) =>
+            typeof firstArg === 'string' ? firstArg : (firstArg as Request).url,
+          );
+          expect(urls.some((u) => u.includes('/search?') && u.includes('mode=semantic'))).toBe(true);
+        },
+        { timeout: 2000 },
+      );
+
+      // The wasted keyword query must be gated off entirely.
+      expect(pagesSearchValues(fetchSpy)).toHaveLength(0);
+    });
+
+    // --- Atomic query key: the QUERY sort must track the DEBOUNCED term ---
+    //
+    // `search` is debounced (300ms) into the /pages query key, but `sort` was
+    // flipped synchronously by the search input's onChange (→ 'relevance' on the
+    // first keystroke, → 'modified' on clear). Because both feed the same query
+    // key, the key was non-atomic: the first keystroke minted a key with the new
+    // sort but the OLD (empty) search → an immediate GET /pages?sort=relevance
+    // with no search term, and the clear button minted a key with the new sort
+    // but the STALE debounced term → a wasted stale-term fetch. These tests
+    // instrument EVERY /pages? list request (including sort-only ones the
+    // `pagesSearchValues` helper is blind to).
+    describe('atomic query key: sort tracks the debounced term (#874)', () => {
+      beforeEach(() => {
+        vi.useFakeTimers();
+      });
+
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      /** Every GET /pages?… list request (not /pages/pinned|filters|tree, not
+       *  /search), with its parsed `search` and `sort` params — including
+       *  requests that carry NO search term (search === null). */
+      function pagesListRequests(fetchSpy: ReturnType<typeof vi.spyOn>) {
+        return fetchSpy.mock.calls
+          .map(([firstArg]) => (typeof firstArg === 'string' ? firstArg : (firstArg as Request).url))
+          .filter((u) => /\/pages\?/.test(u))
+          .map((u) => {
+            const params = new URL(u, 'http://localhost').searchParams;
+            return { url: u, search: params.get('search'), sort: params.get('sort') };
+          });
+      }
+
+      it('first keystroke does not fire an immediate sort=relevance request before the 300ms debounce', async () => {
+        vi.restoreAllMocks();
+        const fetchSpy = mockFetchWithEmbeddingStatus(mockEmbeddingStatusIdle);
+        render(<PagesPage />, { wrapper: createWrapper() });
+
+        // Flush the initial browse-list query (sort=modified, no search).
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+        const baseline = pagesListRequests(fetchSpy);
+
+        // One character. onChange flips `sort` to 'relevance' synchronously; the
+        // debounced term is still ''. The query sort must track the DEBOUNCED
+        // term, so the key must not change and no request may fire yet.
+        fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+          target: { value: 'k' },
+        });
+        // Flush microtasks WITHOUT advancing to the 300ms debounce boundary.
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+        const afterKeystroke = pagesListRequests(fetchSpy);
+        // No new request, and specifically no sort=relevance request that
+        // carries no search term (the wrong-data-flash / wasted request).
+        expect(afterKeystroke).toHaveLength(baseline.length);
+        expect(afterKeystroke.some((r) => r.sort === 'relevance' && r.search === null)).toBe(false);
+
+        // Now let the debounce elapse — exactly ONE new request, the debounced
+        // one, carrying the term and the relevance sort together.
+        await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+        const newRequests = pagesListRequests(fetchSpy).slice(baseline.length);
+        expect(newRequests).toHaveLength(1);
+        expect(newRequests[0].search).toBe('k');
+        expect(newRequests[0].sort).toBe('relevance');
+      });
+
+      it('clear button does not fire a request carrying the stale search term', async () => {
+        vi.restoreAllMocks();
+        const fetchSpy = mockFetchWithEmbeddingStatus(mockEmbeddingStatusIdle);
+        render(<PagesPage />, { wrapper: createWrapper() });
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+        // Type a term and let its debounced request actually fire.
+        fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+          target: { value: 'kube' },
+        });
+        await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+        expect(pagesListRequests(fetchSpy).some((r) => r.search === 'kube')).toBe(true);
+
+        const beforeClear = pagesListRequests(fetchSpy).length;
+
+        // Clear the search. The debounced value must be reset synchronously so
+        // no request re-fetches the stale 'kube' term.
+        fireEvent.click(screen.getByTestId('search-clear'));
+        await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+
+        const afterClear = pagesListRequests(fetchSpy).slice(beforeClear);
+        expect(afterClear.some((r) => r.search === 'kube')).toBe(false);
+      });
     });
   });
 });
