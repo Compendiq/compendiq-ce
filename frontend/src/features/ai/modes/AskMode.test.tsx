@@ -92,6 +92,14 @@ describe('AskMode', () => {
     expect(screen.getByRole('button')).toBeInTheDocument();
   });
 
+  it('prefills the composer from the ?q param carried by the command palette (#957)', () => {
+    render(<AskModeInput />, {
+      wrapper: createWrapper(['/ai?q=how%20do%20I%20configure%20sync%20intervals']),
+    });
+    const input = screen.getByPlaceholderText('Ask a question...') as HTMLInputElement;
+    expect(input.value).toBe('how do I configure sync intervals');
+  });
+
   it('focuses the input on mount (#350)', async () => {
     render(<AskModeInput />, { wrapper: createWrapper() });
     const input = screen.getByPlaceholderText('Ask a question...');

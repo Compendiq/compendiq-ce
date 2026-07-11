@@ -203,7 +203,9 @@ export function AiProvider({ children }: { children: ReactNode }) {
   const urlMode = VALID_MODES.includes(rawMode as Mode) ? (rawMode as Mode) : null;
   const [mode, setMode] = useState<Mode>(urlMode ?? (pageId ? 'improve' : 'ask'));
   const [messages, setMessages] = useState<Message[]>([]);
-  const [input, setInput] = useState('');
+  // Prefill the composer from the ?q param once on mount so a question typed in
+  // the command palette's AI mode isn't dropped on navigation (#957).
+  const [input, setInput] = useState(() => searchParams.get('q') ?? '');
   const [isStreaming, setIsStreaming] = useState(false);
   const [isThinking, setIsThinking] = useState(false);
   const [thinkingElapsed, setThinkingElapsed] = useState(false);

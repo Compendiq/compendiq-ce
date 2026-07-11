@@ -332,6 +332,21 @@ describe('CommandPalette', () => {
       unmount();
     });
 
+    it('carries the typed question through as a q param (#957)', () => {
+      useCommandPaletteStore.getState().open();
+      const { unmount } = render(<CommandPalette />, { wrapper: createWrapper() });
+
+      const input = screen.getByLabelText('Search');
+      fireEvent.change(input, { target: { value: '/ai how do I configure sync intervals' } });
+
+      // Press Enter to select — the typed question must not be dropped.
+      fireEvent.keyDown(input, { key: 'Enter' });
+      expect(mockNavigate).toHaveBeenCalledWith(
+        `/ai?q=${encodeURIComponent('how do I configure sync intervals')}`,
+      );
+      unmount();
+    });
+
     it('hides /ai hint in footer when in AI mode', () => {
       useCommandPaletteStore.getState().open();
       const { unmount } = render(<CommandPalette />, { wrapper: createWrapper() });

@@ -128,7 +128,9 @@ export function CommandPalette() {
         id: 'ai-ask',
         type: 'ai',
         label: aiQuery ? `Ask AI: ${aiQuery}` : 'Ask AI',
-        path: '/ai',
+        // Carry the typed question through so the AI page can prefill its
+        // composer (#957) instead of dropping it.
+        path: aiQuery ? `/ai?q=${encodeURIComponent(aiQuery)}` : '/ai',
       });
     } else if (query.trim()) {
       results.forEach((r) => {
