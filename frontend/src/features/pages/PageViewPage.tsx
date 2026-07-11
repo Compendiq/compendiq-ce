@@ -157,6 +157,9 @@ export function PageViewPage() {
   const [drawioEditingDiagram, setDrawioEditingDiagram] = useState<string | null>(null);
   const [drawioXml, setDrawioXml] = useState<string>('');
   const [confirmTrashOpen, setConfirmTrashOpen] = useState(false);
+  // Discard-changes guard (#944): while true, the Cancel flow shows a
+  // confirmation instead of dropping the in-progress edit.
+  const [confirmDiscardOpen, setConfirmDiscardOpen] = useState(false);
   // Draft awaiting a restore decision (ConfirmDialog replaces native confirm()).
   // While non-null, edit mode is deferred until the user picks a side.
   const [pendingDraft, setPendingDraft] = useState<string | null>(null);
@@ -244,10 +247,35 @@ export function PageViewPage() {
     setEditing(true);
   }, [page]);
 
-  const handleCancelEditing = useCallback(() => {
+  // The editor is dirty when the working title/body diverges from the
+  // persisted page. editHtml starts equal to page.bodyHtml (or the restored
+  // draft) and only changes on a genuine Editor onChange, so a pristine
+  // editor produces no false positive (#944).
+  const isEditorDirty = useCallback(() => {
+    if (!page) return false;
+    return editTitle !== page.title || editHtml !== page.bodyHtml;
+  }, [page, editTitle, editHtml]);
+
+  const discardAndExit = useCallback(() => {
     if (draftKey) clearDraft(draftKey);
     setEditing(false);
   }, [draftKey]);
+
+  // Cancel guards against silently throwing away unsaved work: when dirty it
+  // opens the discard confirmation, otherwise it exits immediately. Backs the
+  // Cancel button plus the Ctrl+E / Escape shortcuts (#944).
+  const handleCancelEditing = useCallback(() => {
+    if (isEditorDirty()) {
+      setConfirmDiscardOpen(true);
+      return;
+    }
+    discardAndExit();
+  }, [isEditorDirty, discardAndExit]);
+
+  const handleConfirmDiscard = useCallback(() => {
+    setConfirmDiscardOpen(false);
+    discardAndExit();
+  }, [discardAndExit]);
 
   const handleSave = useCallback(async () => {
     if (!id || !page) return;
@@ -803,6 +831,22 @@ export function PageViewPage() {
         destructive
         onConfirm={handleConfirmMoveToTrash}
         onCancel={() => setConfirmTrashOpen(false)}
+      />
+
+      {/* Discard changes — guards the Cancel path when the editor is dirty
+          (#944). Confirming runs the original clearDraft + exit; Cancel /
+          Escape / overlay just close the dialog and stay in edit mode so the
+          in-progress work (e.g. a full AI rewrite) is not lost. */}
+      <ConfirmDialog
+        open={confirmDiscardOpen}
+        title="Discard changes?"
+        description="This page has unsaved changes. Discarding them cannot be undone."
+        confirmLabel="Discard changes"
+        cancelLabel="Keep editing"
+        destructive
+        onConfirm={handleConfirmDiscard}
+        onCancel={() => setConfirmDiscardOpen(false)}
+        onDismiss={() => setConfirmDiscardOpen(false)}
       />
 
       {/* Draft restore — drafts are autosaved to localStorage on this device
