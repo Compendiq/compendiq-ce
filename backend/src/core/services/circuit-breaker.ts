@@ -90,7 +90,17 @@ export class CircuitBreaker {
       this.onSuccess();
       return result;
     } catch (err) {
-      this.onFailure();
+      // #867: deterministic client-input errors (e.g. a context-length HTTP
+      // 400) carry a duck-typed `bypassCircuitBreaker` marker. The provider
+      // responded, so this proves it is reachable — count it as a healthy
+      // signal (which also heals a HALF_OPEN probe) instead of a failure that
+      // would open the breaker on an otherwise-healthy provider. Duck-typing
+      // (not an imported class) keeps `core` free of any domain import.
+      if ((err as { bypassCircuitBreaker?: boolean })?.bypassCircuitBreaker) {
+        this.onSuccess();
+      } else {
+        this.onFailure();
+      }
       throw err;
     } finally {
       // onSuccess/onFailure may have flipped state to CLOSED/OPEN, so clear the
