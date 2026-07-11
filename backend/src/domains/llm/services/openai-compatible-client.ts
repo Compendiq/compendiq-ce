@@ -236,23 +236,33 @@ export async function* streamChat(
   const reader = res.body!.getReader();
   const dec = new TextDecoder();
   let buf = '';
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buf += dec.decode(value, { stream: true });
-    let idx;
-    while ((idx = buf.indexOf('\n\n')) !== -1) {
-      const frame = buf.slice(0, idx).trim();
-      buf = buf.slice(idx + 2);
-      if (!frame.startsWith('data:')) continue;
-      const data = frame.slice(5).trim();
-      if (data === '[DONE]') { yield { content: '', done: true }; return; }
-      try {
-        const parsed = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string } }> };
-        const content = parsed.choices?.[0]?.delta?.content ?? '';
-        if (content) yield { content, done: false };
-      } catch { /* ignore parse errors on malformed frames */ }
+  // The try/finally guarantees teardown on ANY exit — including the early
+  // generator.return() the runtime triggers when a consumer stops iterating
+  // (e.g. streamSSE breaks its loop on client disconnect). reader.cancel()
+  // aborts the undici body and destroys the socket, so an abandoned stream no
+  // longer leaves the upstream backend generating (GPU slot / billed tokens).
+  // On normal completion the stream is already drained, so cancel() is a no-op.
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf('\n\n')) !== -1) {
+        const frame = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 2);
+        if (!frame.startsWith('data:')) continue;
+        const data = frame.slice(5).trim();
+        if (data === '[DONE]') { yield { content: '', done: true }; return; }
+        try {
+          const parsed = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string } }> };
+          const content = parsed.choices?.[0]?.delta?.content ?? '';
+          if (content) yield { content, done: false };
+        } catch { /* ignore parse errors on malformed frames */ }
+      }
     }
+  } finally {
+    await reader.cancel().catch(() => { /* already closed / benign cancel race */ });
   }
   yield { content: '', done: true };
 }

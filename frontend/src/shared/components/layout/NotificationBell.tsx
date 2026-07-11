@@ -1,7 +1,7 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
+import * as Popover from '@radix-ui/react-popover';
 import { Bell, Settings } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
 import { NotificationDropdown, type Notification } from './NotificationDropdown';
@@ -66,6 +66,14 @@ function useMarkAllRead() {
 
 export function NotificationBell() {
   const navigate = useNavigate();
+  // The panel is a Radix Popover (not a DropdownMenu): its rich, scrollable,
+  // multi-action content is a popover, not a WAI-ARIA command menu. A menu would
+  // trap keyboard focus to registered Items (roving focus + Tab preventDefault),
+  // leaving the plain-button notifications and "Mark all as read" unreachable by
+  // keyboard (#879, WCAG 2.1.1). A Popover keeps every inner button focusable,
+  // but plain buttons no longer auto-dismiss, so we control open state and close
+  // it explicitly on the actions that used to be menu Items.
+  const [open, setOpen] = useState(false);
   const { data: notifications } = useNotifications();
   const markRead = useMarkNotificationRead();
   const markAllRead = useMarkAllRead();
@@ -83,6 +91,7 @@ export function NotificationBell() {
       if (notification.link) {
         navigate(notification.link);
       }
+      setOpen(false);
     },
     [markRead, navigate],
   );
@@ -92,8 +101,8 @@ export function NotificationBell() {
   }, [markAllRead]);
 
   return (
-    <DropdownMenu.Root>
-      <DropdownMenu.Trigger asChild>
+    <Popover.Root open={open} onOpenChange={setOpen}>
+      <Popover.Trigger asChild>
         <button
           className="relative flex items-center justify-center rounded-md p-1.5 text-muted-foreground hover:bg-foreground/5 hover:text-foreground transition-colors outline-none"
           aria-label="Notifications"
@@ -112,10 +121,10 @@ export function NotificationBell() {
             </span>
           )}
         </button>
-      </DropdownMenu.Trigger>
+      </Popover.Trigger>
 
-      <DropdownMenu.Portal>
-        <DropdownMenu.Content
+      <Popover.Portal>
+        <Popover.Content
           align="end"
           sideOffset={8}
           className="z-50 w-[360px] rounded-xl border border-border/50 bg-card/90 shadow-2xl backdrop-blur-xl"
@@ -123,16 +132,17 @@ export function NotificationBell() {
           {/* Title bar */}
           <div className="flex items-center justify-between border-b border-border/30 px-3 py-2.5">
             <span className="text-sm font-semibold">Notifications</span>
-            <DropdownMenu.Item asChild>
-              <button
-                onClick={() => navigate('/settings')}
-                className="rounded-md p-1 text-muted-foreground outline-none hover:bg-foreground/5 hover:text-foreground transition-colors"
-                aria-label="Notification settings"
-                data-testid="notification-settings"
-              >
-                <Settings size={14} />
-              </button>
-            </DropdownMenu.Item>
+            <button
+              onClick={() => {
+                navigate('/settings');
+                setOpen(false);
+              }}
+              className="rounded-md p-1 text-muted-foreground outline-none hover:bg-foreground/5 hover:text-foreground transition-colors"
+              aria-label="Notification settings"
+              data-testid="notification-settings"
+            >
+              <Settings size={14} />
+            </button>
           </div>
 
           {/* Content */}
@@ -141,8 +151,8 @@ export function NotificationBell() {
             onClickNotification={handleClickNotification}
             onMarkAllRead={handleMarkAllRead}
           />
-        </DropdownMenu.Content>
-      </DropdownMenu.Portal>
-    </DropdownMenu.Root>
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
   );
 }

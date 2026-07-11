@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { File, FileText, FileImage, FileArchive, FileCode, Loader2 } from 'lucide-react';
 import { useParams } from 'react-router-dom';
 import { apiFetch } from '../../lib/api';
+import { usePage } from '../../hooks/use-pages';
 import type { NodeViewProps } from '@tiptap/react';
 
 interface Attachment {
@@ -45,20 +46,36 @@ export function AttachmentsMacroView({ editor }: NodeViewProps) {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const params = useParams<{ pageId?: string; id?: string }>();
-  const pageId = params.pageId ?? params.id;
+  // The route only ever exposes `:id` — the internal integer PK. Confluence
+  // pages must be keyed by their confluence_id (the backend list route resolves
+  // confluence_id only), while standalone pages key by the numeric PK against
+  // /local-attachments. Resolve the page detail to branch correctly (#302 Gap 4,
+  // #876). usePage reuses the already-cached ['pages', id] query.
+  const { id } = useParams<{ id?: string }>();
+  const { data: page, isLoading: isPageLoading } = usePage(id);
+  const confluenceId = page?.confluenceId ?? null;
 
   useEffect(() => {
-    if (!pageId) {
+    if (!id) {
       setLoading(false);
       return;
     }
+    // Wait until the page detail has loaded so we know whether to key by
+    // confluence_id (/attachments) or the internal PK (/local-attachments).
+    // Firing before it resolves would send a wrong /local-attachments/<PK>
+    // request for what is actually a Confluence page.
+    if (isPageLoading) return;
+
+    const attachmentKey = confluenceId ?? id;
+    const basePath = confluenceId ? '/attachments' : '/local-attachments';
 
     let cancelled = false;
+    setLoading(true);
+    setError(null);
     (async () => {
       try {
         const data = await apiFetch<{ attachments?: Attachment[] }>(
-          `/attachments/${encodeURIComponent(pageId)}/list`,
+          `${basePath}/${encodeURIComponent(attachmentKey)}/list`,
         );
         if (!cancelled) {
           setAttachments(data.attachments ?? []);
@@ -75,7 +92,7 @@ export function AttachmentsMacroView({ editor }: NodeViewProps) {
     })();
 
     return () => { cancelled = true; };
-  }, [pageId]);
+  }, [id, isPageLoading, confluenceId]);
 
   const isEditable = editor.isEditable;
 
@@ -105,7 +122,7 @@ export function AttachmentsMacroView({ editor }: NodeViewProps) {
 
           {!loading && !error && attachments.length === 0 && (
             <p className="text-sm text-muted-foreground py-2">
-              {pageId ? 'No attachments found.' : 'Save the page to view attachments.'}
+              {id ? 'No attachments found.' : 'Save the page to view attachments.'}
             </p>
           )}
 
