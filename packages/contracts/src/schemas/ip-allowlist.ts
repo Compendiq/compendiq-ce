@@ -23,6 +23,12 @@ export type IpAllowlistConfig = z.infer<typeof IpAllowlistConfigSchema>;
 
 export const IpAllowlistTestRequestSchema = z.object({
   ip: z.string().min(1),
+  // Optional candidate config to dry-run the IP against. When present, the
+  // route evaluates the IP against THIS pending (unsaved) config instead of the
+  // persisted one, so the admin UI can validate its lockout guard against
+  // exactly what will be saved. Omitted by callers that only want to test the
+  // currently-persisted config, preserving backward compatibility.
+  config: IpAllowlistConfigSchema.optional(),
 });
 
 export type IpAllowlistTestRequest = z.infer<typeof IpAllowlistTestRequestSchema>;

@@ -208,6 +208,41 @@ describe('IpAllowlistTab', () => {
     });
   });
 
+  it('sends the pending config to /test and keeps save locked when the edited config blocks the IP (#871)', async () => {
+    // The backend evaluates the CANDIDATE config and blocks the tested IP.
+    const fetchSpy = mockFetch({
+      testResponse: { allowed: false, matchedCidr: null, isTrustedProxy: false, reason: 'blocked (no matching CIDR)' },
+    });
+    render(<IpAllowlistTab />, { wrapper: createWrapper() });
+
+    // Admin edits the CIDR list to a range that no longer includes their IP.
+    const cidrs = await screen.findByTestId('ip-allowlist-cidrs');
+    fireEvent.change(cidrs, { target: { value: '192.168.0.0/16' } });
+
+    const testInput = screen.getByTestId('ip-allowlist-test-ip');
+    fireEvent.change(testInput, { target: { value: '10.1.2.3' } });
+    fireEvent.click(screen.getByTestId('ip-allowlist-test-btn'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('ip-allowlist-test-outcome')).toHaveTextContent('blocked');
+    });
+
+    // The /test request must carry the PENDING (edited) config, not just the ip —
+    // otherwise the guard would validate against the stale persisted config.
+    const testCall = fetchSpy.mock.calls.find((call) => {
+      const url = typeof call[0] === 'string' ? call[0] : (call[0] as Request).url;
+      const method = (call[1]?.method ?? '').toUpperCase();
+      return url.includes('/admin/ip-allowlist/test') && method === 'POST';
+    });
+    expect(testCall).toBeTruthy();
+    const sentBody = JSON.parse(testCall![1]!.body as string) as { ip: string; config?: IpAllowlistConfig };
+    expect(sentBody.ip).toBe('10.1.2.3');
+    expect(sentBody.config?.cidrs).toEqual(['192.168.0.0/16']);
+
+    // Guard stays locked: the config being saved would lock the admin out.
+    expect(screen.getByTestId('ip-allowlist-save-btn')).toBeDisabled();
+  });
+
   it('save button is enabled when dirty + enabled=false', async () => {
     mockFetch();
     render(<IpAllowlistTab />, { wrapper: createWrapper() });

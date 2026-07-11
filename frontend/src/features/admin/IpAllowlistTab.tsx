@@ -203,12 +203,15 @@ export function IpAllowlistTab() {
   });
 
   const testMutation = useMutation({
-    mutationFn: (ip: string) =>
+    // Send the PENDING (working) config so the backend dry-runs the tested IP
+    // against exactly what will be saved, not the stale persisted config — this
+    // is what makes the Save-unlock guard trustworthy (#871).
+    mutationFn: ({ ip, config }: { ip: string; config: IpAllowlistConfig }) =>
       fetchJson<IpAllowlistTestResponse>('/admin/ip-allowlist/test', {
         method: 'POST',
-        body: JSON.stringify({ ip }),
+        body: JSON.stringify({ ip, config }),
       }),
-    onSuccess: (result, ip) => {
+    onSuccess: (result, { ip }) => {
       setTestInvalidIp(false);
       setTestResult(result);
       if (result.allowed) {
@@ -246,8 +249,8 @@ export function IpAllowlistTab() {
     }
     setTestInvalidIp(false);
     setTestResult(null);
-    testMutation.mutate(ip);
-  }, [testIp, testMutation]);
+    testMutation.mutate({ ip, config: working });
+  }, [testIp, testMutation, working]);
 
   const handleSave = useCallback(() => {
     if (!saveEnabled) return;
