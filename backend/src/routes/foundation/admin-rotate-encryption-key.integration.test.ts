@@ -15,6 +15,7 @@ import {
   teardownTestDb,
   isDbAvailable,
 } from '../../test-db-helper.js';
+import * as pg from '../../core/db/postgres.js';
 import { query } from '../../core/db/postgres.js';
 import { encryptPat, decryptPat } from '../../core/utils/crypto.js';
 import { adminRoutes } from './admin.js';
@@ -140,6 +141,62 @@ describe.skipIf(!dbAvailable)(
       expect(res.statusCode).toBe(200);
       expect(res.json()).toMatchObject({ rotated: 0, skipped: 1, errors: 0, total: 1 });
       expect(await readSmtpPass()).toBe(current);
+    });
+
+    it('does not clobber a PAT that was concurrently replaced mid-rotation (lost-update guard, #889)', async () => {
+      // Seed the user's PAT under key version 0 (the "old" ciphertext the
+      // rotation loop snapshots).
+      await query(`INSERT INTO user_settings (user_id, confluence_pat) VALUES ($1, $2)`, [
+        adminId,
+        encryptPat('old-pat'),
+      ]);
+
+      // Operator rotates: introduce key version 1 so reEncryptPat re-encrypts
+      // the snapshotted old ciphertext (rotation actually happens for this row).
+      process.env.PAT_ENCRYPTION_KEY_V1 = 'versioned-key-one-at-least-32-chars!!';
+
+      // A concurrent PUT /settings saves a brand-new PAT under the latest key.
+      const newCipher = encryptPat('new-pat');
+
+      // Simulate the race: land the concurrent write AFTER the rotation's
+      // snapshot SELECT but BEFORE the per-row UPDATE. Capture the real query
+      // fn first so the injected write and passthrough bypass the spy.
+      const realQuery = pg.query;
+      let injected = false;
+      const spy = vi
+        .spyOn(pg, 'query')
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .mockImplementation(async (sql: any, params?: any) => {
+          const res = await realQuery(sql, params);
+          if (!injected && /SELECT user_id, confluence_pat FROM user_settings/i.test(String(sql))) {
+            injected = true;
+            await realQuery(
+              'UPDATE user_settings SET confluence_pat = $1 WHERE user_id = $2',
+              [newCipher, adminId],
+            );
+          }
+          return res;
+        });
+
+      try {
+        const res = await app.inject({ method: 'POST', url: '/api/admin/rotate-encryption-key' });
+        expect(res.statusCode).toBe(200);
+        // The raced row must not be counted as rotated; it is a no-op skip.
+        expect(res.json()).toMatchObject({ rotated: 0, skipped: 1, errors: 0, total: 1 });
+      } finally {
+        spy.mockRestore();
+      }
+
+      // The concurrently-saved new PAT survived — it was NOT reverted to a
+      // re-encryption of the stale snapshot value.
+      const pat = (
+        await query<{ confluence_pat: string }>(
+          `SELECT confluence_pat FROM user_settings WHERE user_id = $1`,
+          [adminId],
+        )
+      ).rows[0]!.confluence_pat;
+      expect(pat).toBe(newCipher);
+      expect(decryptPat(pat)).toBe('new-pat');
     });
 
     it('ignores an empty smtp_pass row (cleared password is not a secret)', async () => {

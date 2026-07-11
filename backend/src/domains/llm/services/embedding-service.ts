@@ -12,6 +12,7 @@ import { CircuitBreakerOpenError, getProviderBreaker } from '../../../core/servi
 import { getReembedHistoryRetention } from '../../../core/services/admin-settings-service.js';
 import { enqueueJob } from '../../../core/services/queue-service.js';
 import { listRelationshipProducers } from './embedding-relationship-hooks.js';
+import { toUserFacingEmbeddingError } from './embedding-error-message.js';
 import pgvector from 'pgvector';
 
 const CHUNK_SIZE = 500;          // ~500 tokens target
@@ -740,17 +741,18 @@ export async function processDirtyPages(
                 break; // Success, move to next page
               } catch (retryErr) {
                 if (!isCircuitBreakerError(retryErr)) {
-                  // Different error, mark as failed and move on
-                  const errorMessage = retryErr instanceof Error ? retryErr.message : String(retryErr);
+                  // Different error, mark as failed and move on. The raw provider
+                  // text stays in the server log below; the user-facing column and
+                  // SSE progress get a sanitized, category-based message only.
                   logger.error({ err: retryErr, pageId: page.id }, 'Failed to embed page after circuit breaker recovery');
                   await query(
                     `UPDATE pages SET embedding_status = 'failed', embedding_error = $2 WHERE id = $1`,
-                    [page.id, errorMessage.slice(0, 1000)],
+                    [page.id, toUserFacingEmbeddingError(retryErr)],
                   ).catch((updateErr) => logger.error({ err: updateErr }, 'Failed to update embedding_status to failed'));
                   totalErrors++;
                   batchRemainingDirty++;
                   consecutiveFailures++;
-                  errorList.push(`${page.title}: ${errorMessage.slice(0, 200)}`);
+                  errorList.push(`${page.title}: ${toUserFacingEmbeddingError(retryErr)}`);
                   cbSuccess = true; // Mark as handled (failed, but handled)
                   break;
                 }
@@ -771,18 +773,19 @@ export async function processDirtyPages(
             continue; // handled by circuit breaker path
           }
 
-          // Non-circuit-breaker error: mark page as failed
+          // Non-circuit-breaker error: mark page as failed. The raw provider text
+          // stays in the server log above; the user-facing column and SSE progress
+          // get a sanitized, category-based message only.
           logger.error({ err, pageId: page.id }, 'Failed to embed page');
-          const errorMessage = err instanceof Error ? err.message : String(err);
           await query(
             `UPDATE pages SET embedding_status = 'failed', embedding_error = $2 WHERE id = $1`,
-            [page.id, errorMessage.slice(0, 1000)],
+            [page.id, toUserFacingEmbeddingError(err)],
           ).catch((updateErr) => logger.error({ err: updateErr }, 'Failed to update embedding_status to failed'));
           totalErrors++;
           batchRemainingDirty++;
           pagesProcessedSinceGuardCheck++;
           consecutiveFailures++;
-          errorList.push(`${page.title}: ${errorMessage.slice(0, 200)}`);
+          errorList.push(`${page.title}: ${toUserFacingEmbeddingError(err)}`);
 
           // Pause after too many consecutive failures to let the server recover
           if (consecutiveFailures >= CONSECUTIVE_FAILURE_PAUSE_THRESHOLD) {

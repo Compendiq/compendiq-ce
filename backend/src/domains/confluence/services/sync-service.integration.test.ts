@@ -424,8 +424,8 @@ describe.skipIf(!dbAvailable)('sync-service per-page restriction branch (EE #112
     expect(await getInheritPerms(pageDbId)).toBe(true);
     // ACE for alice is still there (sweep hasn't run yet inside syncUser).
 
-    // Now simulate the end-of-run sweep.
-    await __internal.sweepStaleConfluenceAces(secondStartedAt);
+    // Now simulate the end-of-run sweep (scoped to this run's space).
+    await __internal.sweepStaleConfluenceAces(secondStartedAt, ['DOCS']);
 
     // The confluence-sourced ACE for alice is gone.
     const pageAces = await getAces(pageDbId);
@@ -435,6 +435,84 @@ describe.skipIf(!dbAvailable)('sync-service per-page restriction branch (EE #112
     const otherAces = await getAces(otherPageDbId);
     expect(otherAces).toHaveLength(2);
     expect(otherAces.map((a) => a.source).sort()).toEqual(['confluence', 'local']);
+  });
+
+  it('stale-ACE sweep is scoped to the run\'s spaces — ACEs in spaces this run did not visit survive', async () => {
+    // Regression for #859 (Fix 1): the end-of-run sweep must only age out
+    // ACEs for pages in the spaces this run actually synced. A run over
+    // SPACEX must not wipe ACEs another user's run wrote for SPACEY.
+    const userA = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    await insertUser(userA, 'alice');
+    await ensureSpace('SPACEX');
+    await ensureSpace('SPACEY');
+    const pageX = await insertPage('c-x', 'SPACEX');
+    const pageY = await insertPage('c-y', 'SPACEY');
+
+    // Both pages have a stale Confluence ACE (synced in a prior run).
+    const oldSyncedAt = new Date('2026-01-01T10:00:00Z');
+    for (const pid of [pageX, pageY]) {
+      await query(
+        `INSERT INTO access_control_entries
+           (resource_type, resource_id, principal_type, principal_id,
+            permission, source, synced_at)
+         VALUES ('page', $1, 'user', $2, 'read', 'confluence', $3)`,
+        [pid, userA, oldSyncedAt],
+      );
+    }
+
+    // This run only visited SPACEX.
+    await __internal.sweepStaleConfluenceAces(
+      new Date('2026-01-02T10:00:00Z'),
+      ['SPACEX'],
+    );
+
+    // pageX's stale ACE is gone (its space was in the run).
+    expect(await getAces(pageX)).toHaveLength(0);
+    // pageY's ACE survives (SPACEY was not part of this run).
+    expect(await getAces(pageY)).toHaveLength(1);
+  });
+
+  it('failed restriction fetch bumps synced_at so the scoped sweep keeps pre-existing ACEs', async () => {
+    // Regression for #859 (Fix 2): when computeEffectivePageReadRestrictions
+    // throws a ConfluenceError, syncPageRestrictions must bump the page's
+    // existing Confluence ACEs to the current run so the end-of-run sweep —
+    // which covers this page's own space — leaves them alone.
+    const userA = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    await insertUser(userA, 'alice');
+    await ensureSpace('DOCS');
+    const pageDbId = await insertPage('c-500', 'DOCS');
+
+    // Pre-existing Confluence ACE from a prior run.
+    await query(
+      `INSERT INTO access_control_entries
+         (resource_type, resource_id, principal_type, principal_id,
+          permission, source, synced_at)
+       VALUES ('page', $1, 'user', $2, 'read', 'confluence', $3)`,
+      [pageDbId, userA, new Date('2026-01-01T10:00:00Z')],
+    );
+
+    // Restriction fetch fails this round.
+    const client = makeMockClient();
+    client.getPageRestrictions = async () => {
+      throw new ConfluenceError('boom', 503);
+    };
+
+    const runStartedAt = new Date('2026-01-02T10:00:00Z');
+    await __internal.syncPageRestrictions(
+      client as never,
+      fakePage('c-500'),
+      runStartedAt,
+      new Map(),
+    );
+
+    // The existing ACE is preserved and its synced_at bumped to this run.
+    const aces = await getAces(pageDbId);
+    expect(aces).toHaveLength(1);
+    expect(aces[0]!.synced_at?.getTime()).toBe(runStartedAt.getTime());
+
+    // The scoped end-of-run sweep therefore leaves it in place.
+    await __internal.sweepStaleConfluenceAces(runStartedAt, ['DOCS']);
+    expect(await getAces(pageDbId)).toHaveLength(1);
   });
 
   it('emits ACE_SYNC_SKIPPED_UNMAPPED_USER audit and persists no ACE for an unknown userKey', async () => {

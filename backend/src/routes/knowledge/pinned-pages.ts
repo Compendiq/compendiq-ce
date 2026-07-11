@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
-import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
+import { userCanAccessPage } from '../../core/services/rbac-service.js';
 import { z } from 'zod';
 
 const IdParamSchema = z.object({ id: z.string().min(1) });
@@ -62,20 +62,17 @@ export async function pinnedPagesRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.badRequest('Invalid page ID');
     }
 
-    // Verify the page exists and user has access via RBAC
-    const pinSpaces = await getUserAccessibleSpaces(userId);
-    const pageResult = await query<{ id: number }>(
-      `SELECT cp.id FROM pages cp
-       WHERE cp.space_key = ANY($1::text[])
-         AND cp.id = $2
-         AND cp.deleted_at IS NULL`,
-      [pinSpaces, numericId],
-    );
-    if (pageResult.rows.length === 0) {
+    // Verify the page exists and the user can access it. userCanAccessPage()
+    // handles confluence (RBAC spaces + page-level ACEs), standalone
+    // (shared/private visibility), and local-space pages, plus the
+    // system-admin bypass, and returns false for missing/soft-deleted pages —
+    // matching GET /pages/:id semantics so a restricted or nonexistent page is
+    // a 404 in either case.
+    if (!(await userCanAccessPage(userId, numericId))) {
       throw fastify.httpErrors.notFound('Page not found');
     }
 
-    const pageId = pageResult.rows[0]!.id;
+    const pageId = numericId;
 
     // If already pinned, return 200 immediately (idempotent)
     const alreadyPinned = await query<{ page_id: number }>(
