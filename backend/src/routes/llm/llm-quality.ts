@@ -16,6 +16,7 @@ import {
   MAX_INPUT_LENGTH,
 } from './_helpers.js';
 import { acquireStreamSlot } from '../../core/services/sse-stream-limiter.js';
+import { requireGlobalPermission } from '../../core/utils/rbac-guards.js';
 
 export async function llmQualityRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
@@ -23,7 +24,7 @@ export async function llmQualityRoutes(fastify: FastifyInstance) {
   const llmCache = new LlmCache(fastify.redis);
 
   // POST /api/llm/analyze-quality - stream article quality analysis
-  fastify.post('/llm/analyze-quality', LLM_STREAM_RATE_LIMIT, async (request, reply) => {
+  fastify.post('/llm/analyze-quality', { ...LLM_STREAM_RATE_LIMIT, preHandler: requireGlobalPermission('llm:query') }, async (request, reply) => {
     // Per-user concurrent SSE-stream cap (#268). Must fire BEFORE reply.hijack()
     // so rejections can be returned as a normal JSON 429.
     const slot = await acquireStreamSlot(request.userId);
