@@ -237,6 +237,17 @@ export function PagesPage() {
   // Semantic/hybrid search — only active when there's a search query AND mode is not 'keyword'
   const useSemanticSearch = !!(search && searchMode !== 'keyword');
 
+  // Keep the /pages query key atomic: `search` is debounced, so the `sort` that
+  // feeds the key must track the DEBOUNCED term, not the raw one. Otherwise the
+  // first keystroke (which flips `sort` to 'relevance' synchronously while the
+  // debounced term is still empty) mints a key with sort=relevance + no search
+  // and fires an immediate wrong-data GET /pages?sort=relevance before the
+  // debounce elapses. The visible `sort` dropdown and the auto-switch-to-
+  // relevance UX are unchanged — only the query sort waits for the term (#874).
+  const querySort = debouncedSearch.trim()
+    ? sort
+    : (sort === 'relevance' ? 'modified' : sort);
+
   const { data: pagesData, isLoading, isFetching: isFetchingPages, error: pagesError, refetch: refetchPages } = usePages({
     spaceKey: spaceKey || undefined,
     search: debouncedSearch || undefined,
@@ -249,7 +260,7 @@ export function PagesPage() {
     dateFrom: dateFrom || undefined,
     dateTo: dateTo || undefined,
     page,
-    sort,
+    sort: querySort,
     // In semantic/hybrid mode the rendered results come from useSearch below,
     // so the keyword list query would just fire wasted, rate-limited requests
     // for data that is never shown — gate it off (#874).
@@ -453,15 +464,19 @@ export function PagesPage() {
                 setPage(1);
                 if (val.trim()) {
                   setSort('relevance');
-                } else if (sort === 'relevance') {
-                  setSort('modified');
+                } else {
+                  // Field emptied: reset the debounced term synchronously so the
+                  // pending 300ms fetch never fires the stale term, and drop the
+                  // relevance sort back to modified (#874).
+                  setDebouncedSearch('');
+                  if (sort === 'relevance') setSort('modified');
                 }
               }}
               className="nm-input pl-10 pr-10"
             />
             {search && (
               <button
-                onClick={() => { setSearch(''); setPage(1); setSearchMode('keyword'); if (sort === 'relevance') setSort('modified'); searchInputRef.current?.focus(); }}
+                onClick={() => { setSearch(''); setDebouncedSearch(''); setPage(1); setSearchMode('keyword'); if (sort === 'relevance') setSort('modified'); searchInputRef.current?.focus(); }}
                 className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full p-0.5 text-muted-foreground hover:text-foreground"
                 data-testid="search-clear"
                 aria-label="Clear search"
