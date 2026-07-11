@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LlmTab } from './LlmTab';
 import { useAuthStore } from '../../../stores/auth-store';
@@ -174,6 +174,216 @@ describe('LlmTab', () => {
     });
     await waitFor(() => {
       expect(screen.queryByRole('button', { name: /probe/i })).toBeTruthy();
+    });
+  });
+
+  // #949: a background refetch (window focus, or a concurrent admin save)
+  // returns a new object whenever its payload differs from cache. The old
+  // no-guard hydration effect re-ran setAssignments on every reference change,
+  // silently reverting the admin's unsaved dropdown edits. The one-shot guard
+  // must keep the working copy under the admin's control.
+  it('preserves unsaved use-case edits when the query refetches with changed data (#949)', async () => {
+    const { Wrapper, qc } = createWrapperWithClient();
+    mockRoutes();
+
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByText('Use case assignments');
+
+    // Admin pins Chat to providerB but has NOT saved yet.
+    const chatSelect = screen.getByTestId('usecase-chat-provider') as HTMLSelectElement;
+    fireEvent.change(chatSelect, { target: { value: providerB.id } });
+    expect(chatSelect.value).toBe(providerB.id);
+
+    // Simulate a background refetch landing changed data (e.g. a concurrent
+    // admin pins Summary to providerB): the ['llm-usecases'] cache receives a
+    // NEW object with different contents. setQueryData drives the exact code
+    // path a window-focus/refetch would. The macrotask flush lets TanStack
+    // Query's (async) store notification propagate and React run the resulting
+    // render + hydration effect, so any un-guarded reset has fully applied
+    // before we assert — a plain synchronous check would observe the pre-clobber
+    // value and pass spuriously.
+    await act(async () => {
+      qc.setQueryData(['llm-usecases'], {
+        ...assignments,
+        summary: { ...assignments.summary, providerId: providerB.id },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    // The admin's unsaved Chat edit must survive the refetch.
+    expect((screen.getByTestId('usecase-chat-provider') as HTMLSelectElement).value).toBe(
+      providerB.id,
+    );
+  });
+
+  // #949 (companion): the concurrent-streams cap input is hydrated from the
+  // shared ['admin-settings'] cache. A background refetch must not clobber an
+  // unsaved edit to the cap either.
+  it('preserves an unsaved concurrent-streams cap edit when settings refetch (#949)', async () => {
+    const { Wrapper, qc } = createWrapperWithClient();
+    mockRoutes({ concurrentStreamsCap: 3 });
+
+    render(<LlmTab />, { wrapper: Wrapper });
+    const input = (await screen.findByTestId(
+      'llm-max-concurrent-streams-per-user',
+    )) as HTMLInputElement;
+
+    // Admin edits the cap to 8 but has NOT saved yet.
+    fireEvent.change(input, { target: { value: '8' } });
+    expect(input.value).toBe('8');
+
+    // A background settings refetch lands a changed cap. See the assignments
+    // test above for why setQueryData + a macrotask flush reproduces this
+    // deterministically.
+    await act(async () => {
+      qc.setQueryData(['admin-settings'], {
+        ftsLanguage: 'simple',
+        embeddingChunkSize: 500,
+        embeddingChunkOverlap: 50,
+        drawioEmbedUrl: null,
+        embeddingDimensions: 1024,
+        llmMaxConcurrentStreamsPerUser: 5,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    // The admin's unsaved edit must survive.
+    expect(
+      (screen.getByTestId('llm-max-concurrent-streams-per-user') as HTMLInputElement).value,
+    ).toBe('8');
+  });
+
+  // #949 (review follow-up): the one-shot guard must be dropped again after a
+  // successful Save (IpAllowlistTab's onSuccess setInitialized(false) pattern)
+  // so the post-save refetch re-hydrates the form from the fresh server state.
+  it('re-hydrates the form from the refetched server state after a successful Save (#949)', async () => {
+    const Wrapper = createWrapper();
+    // Stateful mock: PUT persists the diff server-side AND simulates a
+    // concurrent admin having pinned Summary meanwhile. The post-save GET
+    // returns the merged document; the form must reflect it — including the
+    // Summary row this admin never edited, which only happens if the guard
+    // was reset and the form re-seeded.
+    let serverAssignments = assignments;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init = {}) => {
+      const url = typeof input === 'string' ? input : (input as URL).toString();
+      const method = (init as RequestInit).method;
+      if (url.endsWith('/admin/llm-providers')) {
+        return new Response(JSON.stringify([providerA, providerB]), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/admin/llm-usecases') && method === 'PUT') {
+        serverAssignments = {
+          ...serverAssignments,
+          chat: { ...serverAssignments.chat, providerId: providerB.id },
+          summary: { ...serverAssignments.summary, providerId: providerB.id },
+        };
+        return new Response(JSON.stringify(serverAssignments), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/admin/llm-usecases')) {
+        return new Response(JSON.stringify(serverAssignments), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/admin/settings')) {
+        return new Response(
+          JSON.stringify({
+            ftsLanguage: 'simple',
+            embeddingChunkSize: 500,
+            embeddingChunkOverlap: 50,
+            drawioEmbedUrl: null,
+            embeddingDimensions: 1024,
+            llmMaxConcurrentStreamsPerUser: 3,
+          }),
+          { headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByText('Use case assignments');
+
+    fireEvent.change(screen.getByTestId('usecase-chat-provider'), {
+      target: { value: providerB.id },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /save use-case assignments/i }));
+
+    // After Save + refetch, the form mirrors the server document again.
+    await waitFor(() => {
+      expect(
+        (screen.getByTestId('usecase-summary-provider') as HTMLSelectElement).value,
+      ).toBe(providerB.id);
+    });
+    // The admin's own saved edit is reflected too (round-tripped via server).
+    expect((screen.getByTestId('usecase-chat-provider') as HTMLSelectElement).value).toBe(
+      providerB.id,
+    );
+  });
+
+  // #949 (review follow-up, companion): the cap guard is likewise dropped
+  // after a successful runtime-limits save so the input re-hydrates from the
+  // refetched settings (which may include a concurrent admin's newer value).
+  it('re-hydrates the concurrent-streams cap from the refetched settings after Save (#949)', async () => {
+    const Wrapper = createWrapper();
+    // First GET returns cap 3; after the PUT the "server" holds 12 (simulating
+    // a concurrent admin save that won). The post-save refetch must win over
+    // the local working copy of 8.
+    let serverCap = 3;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init = {}) => {
+      const url = typeof input === 'string' ? input : (input as URL).toString();
+      const method = (init as RequestInit).method;
+      if (url.endsWith('/admin/llm-providers')) {
+        return new Response(JSON.stringify([providerA, providerB]), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/admin/llm-usecases')) {
+        return new Response(JSON.stringify(assignments), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/admin/settings') && method === 'PUT') {
+        serverCap = 12;
+        return new Response(JSON.stringify({ message: 'Admin settings updated' }), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/admin/settings')) {
+        return new Response(
+          JSON.stringify({
+            ftsLanguage: 'simple',
+            embeddingChunkSize: 500,
+            embeddingChunkOverlap: 50,
+            drawioEmbedUrl: null,
+            embeddingDimensions: 1024,
+            llmMaxConcurrentStreamsPerUser: serverCap,
+          }),
+          { headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    render(<LlmTab />, { wrapper: Wrapper });
+    const input = (await screen.findByTestId(
+      'llm-max-concurrent-streams-per-user',
+    )) as HTMLInputElement;
+
+    fireEvent.change(input, { target: { value: '8' } });
+    fireEvent.click(screen.getByTestId('llm-runtime-limits-save'));
+
+    // After Save + refetch, the input reflects the authoritative server value.
+    await waitFor(() => {
+      expect(
+        (screen.getByTestId('llm-max-concurrent-streams-per-user') as HTMLInputElement).value,
+      ).toBe('12');
     });
   });
 
