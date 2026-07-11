@@ -3,6 +3,7 @@ import type { EnterpriseUI, LicenseInfo } from './types';
 import { EnterpriseContext } from './enterprise-context';
 import { loadEnterpriseUI } from './loader';
 import { apiFetch } from '../lib/api';
+import { useAuthStore } from '../../stores/auth-store';
 
 /**
  * Provider that fetches license info and, only on EE backends, loads the
@@ -23,9 +24,16 @@ export function EnterpriseProvider({ children }: { children: ReactNode }) {
   const [ui, setUi] = useState<EnterpriseUI | null>(null);
   const [license, setLicense] = useState<LicenseInfo | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  // Re-fetch whenever the access token changes. A login performed after mount
+  // is a pure SPA transition (LoginPage/OidcCallbackPage do setAuth + navigate,
+  // no reload), so without this dependency an EE admin who logs in from a fresh
+  // tab would stay in the community fallback all session. The same dependency
+  // clears the previous admin's license/ui from memory on logout.
+  const accessToken = useAuthStore((s) => s.accessToken);
 
   useEffect(() => {
     let cancelled = false;
+    setIsLoading(true);
 
     async function init() {
       // License first — CE returns edition:'community', EE returns actual
@@ -34,10 +42,12 @@ export function EnterpriseProvider({ children }: { children: ReactNode }) {
       try {
         info = await apiFetch<LicenseInfo>('/admin/license');
       } catch {
-        // Not admin, or endpoint unavailable — license stays null
+        // Not admin, unauthenticated, or endpoint unavailable — license clears
       }
       if (cancelled) return;
-      if (info) setLicense(info);
+      // Set unconditionally so a logout (fetch now 401s → info null) drops the
+      // previous session's license instead of leaving it stale in memory.
+      setLicense(info);
 
       // Only an EE backend (which marks itself with canUpdate: true) can
       // serve the overlay bundle, so don't even attempt the load otherwise.
@@ -51,6 +61,9 @@ export function EnterpriseProvider({ children }: { children: ReactNode }) {
         const enterpriseUi = await loadEnterpriseUI();
         if (cancelled) return;
         setUi(enterpriseUi);
+      } else {
+        // Not EE (or logged out) — drop any bundle loaded for a prior session.
+        setUi(null);
       }
 
       setIsLoading(false);
@@ -60,7 +73,7 @@ export function EnterpriseProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [accessToken]);
 
   const hasFeature = (feature: string): boolean => {
     if (!license || !license.valid) return false;
