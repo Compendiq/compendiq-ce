@@ -32,14 +32,17 @@ import {
 // --- Boundary mocks (everything else is real) ---
 
 // No Redis in tests — no-op cache so every request hits the real DB.
+// Shared spies so tests can assert which invalidation path a route took (#893).
+const mockCacheInvalidate = vi.fn();
+const mockCacheInvalidateAcrossUsers = vi.fn();
 vi.mock('../../core/services/redis-cache.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../core/services/redis-cache.js')>()),
   RedisCache: class MockRedisCache {
     get = vi.fn().mockResolvedValue(null);
     set = vi.fn().mockResolvedValue(undefined);
-    invalidate = vi.fn().mockResolvedValue(undefined);
-    // Shared/Confluence deletes clear every user's cache (#893).
-    invalidateAcrossUsers = vi.fn().mockResolvedValue(undefined);
+    invalidate = (...args: unknown[]) => mockCacheInvalidate(...args);
+    // Shared/Confluence mutations clear every user's cache (#893).
+    invalidateAcrossUsers = (...args: unknown[]) => mockCacheInvalidateAcrossUsers(...args);
   },
 }));
 
@@ -148,6 +151,39 @@ describe.skipIf(!dbAvailable)('GET /api/pages/trash + standalone auto-purge (DB)
 
     // Second run finds nothing — count is per-run, not cumulative.
     expect(await purgeExpiredStandalonePages()).toBe(0);
+  });
+
+  // #893 review follow-up: a restored shared standalone page reappears in
+  // every user's lists/trees, so restore must clear all users' caches — not
+  // just the owner's — or the page stays missing for others up to the TTL.
+  describe('POST /api/pages/:id/restore — cache invalidation (#893)', () => {
+    it('invalidates the pages cache across all users when restoring a shared page', async () => {
+      const pageId = await insertStandalonePage('Shared trashed note', 'shared', userA, 'NOTES', {
+        deletedAt: new Date(),
+      });
+
+      currentUserId = userA;
+      const response = await app.inject({ method: 'POST', url: `/api/pages/${pageId}/restore` });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().restored).toBe(true);
+      expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledWith('pages');
+      expect(mockCacheInvalidate).not.toHaveBeenCalledWith(userA, 'pages');
+    });
+
+    it('keeps per-user invalidation when restoring a private page', async () => {
+      const pageId = await insertStandalonePage('Private trashed note', 'private', userA, 'NOTES', {
+        deletedAt: new Date(),
+      });
+
+      currentUserId = userA;
+      const response = await app.inject({ method: 'POST', url: `/api/pages/${pageId}/restore` });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().restored).toBe(true);
+      expect(mockCacheInvalidateAcrossUsers).not.toHaveBeenCalled();
+      expect(mockCacheInvalidate).toHaveBeenCalledWith(userA, 'pages');
+    });
   });
 
   // Nested here to reuse the real-DB app bootstrap + seeders (this file is

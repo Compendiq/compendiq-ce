@@ -993,9 +993,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     const existing = await query<{
       id: number; title: string; source: string;
-      created_by_user_id: string | null; deleted_at: Date | null;
+      created_by_user_id: string | null; deleted_at: Date | null; visibility: string;
     }>(
-      'SELECT id, title, source, created_by_user_id, deleted_at FROM pages WHERE id = $1',
+      'SELECT id, title, source, created_by_user_id, deleted_at, visibility FROM pages WHERE id = $1',
       [id],
     );
     if (existing.rows.length === 0) {
@@ -1015,7 +1015,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     await query('UPDATE pages SET deleted_at = NULL WHERE id = $1', [page.id]);
 
-    await cache.invalidate(userId, 'pages');
+    // A restored shared page reappears in every user's lists/trees (#893) —
+    // mirror the delete path: clear all users' caches. Private stays per-user.
+    if (page.visibility === 'shared') {
+      await cache.invalidateAcrossUsers('pages');
+    } else {
+      await cache.invalidate(userId, 'pages');
+    }
     await logAuditEvent(userId, 'PAGE_RESTORED', 'page', String(id),
       { source: 'standalone', title: page.title }, request);
 
@@ -1057,6 +1063,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     if (isStandalone) {
       // --- Standalone article: no Confluence call, store locally ---
+      const visibility = body.visibility ?? 'shared';
       const isFolder = pageType === 'folder';
       const effectiveBodyHtml = isFolder ? '' : body.bodyHtml;
       const { htmlToText } = await import('../../core/services/content-converter.js');
@@ -1091,7 +1098,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
                  $8, $9, 'not_embedded', NOW())
          RETURNING id, title, version`,
         [body.title, effectiveBodyHtml, bodyText, userId,
-         body.visibility ?? 'shared', spaceKey, body.parentId ?? null,
+         visibility, spaceKey, body.parentId ?? null,
          pageType, !isFolder],
       );
 
@@ -1103,9 +1110,16 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       await query('UPDATE pages SET path = $1, depth = $2 WHERE id = $3',
         [newPath, depth, newPage.id]);
 
-      await cache.invalidate(userId, 'pages');
+      // A new shared page appears in every user's lists/trees (#893) — clear
+      // all users' caches so it isn't missing for them until the TTL expires.
+      // Private pages only concern the creator.
+      if (visibility === 'shared') {
+        await cache.invalidateAcrossUsers('pages');
+      } else {
+        await cache.invalidate(userId, 'pages');
+      }
       await logAuditEvent(userId, 'PAGE_CREATED', 'page', String(newPage.id),
-        { source: 'standalone', title: body.title, visibility: body.visibility ?? 'shared', spaceKey, pageType }, request);
+        { source: 'standalone', title: body.title, visibility, spaceKey, pageType }, request);
 
       emitWebhookEvent({
         eventType: 'page.created',
@@ -1162,9 +1176,11 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
        bodyHtml, bodyText, page.version.number, body.parentId ?? null],
     );
 
-    // Invalidate cache
-    await cache.invalidate(userId, 'pages');
-    await cache.invalidate(userId, 'spaces');
+    // A new Confluence page is visible to every user with space access (#893),
+    // and the cached spaces payload carries per-space pageCount which this
+    // create just changed — clear both caches for every user.
+    await cache.invalidateAcrossUsers('pages');
+    await cache.invalidateAcrossUsers('spaces');
 
     await logAuditEvent(userId, 'PAGE_CREATED', 'page', page.id, { spaceKey: body.spaceKey, title: body.title }, request);
 
@@ -1742,7 +1758,14 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       }
     }
 
-    await cache.invalidate(userId, 'pages');
+    // Publishing a draft rewrites the live content — the same mutation class
+    // as PUT /pages/:id (#893): Confluence/shared pages are visible to other
+    // users, so their cached lists/trees must be cleared for everyone.
+    if (page.source === 'confluence' || page.visibility === 'shared') {
+      await cache.invalidateAcrossUsers('pages');
+    } else {
+      await cache.invalidate(userId, 'pages');
+    }
     await logAuditEvent(userId, 'DRAFT_PUBLISHED', 'page', String(page.id),
       { version: page.version + 1 }, request);
 

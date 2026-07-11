@@ -7,14 +7,17 @@ import { pagesCrudRoutes } from './pages-crud.js';
 const mockConfluenceToHtml = vi.fn().mockReturnValue('<p>content</p>');
 
 // Mock external dependencies
+// Shared spies so tests can assert which invalidation path a route took (#893).
+const mockCacheInvalidate = vi.fn();
+const mockCacheInvalidateAcrossUsers = vi.fn();
 vi.mock('../../core/services/redis-cache.js', () => {
   return {
     RedisCache: class MockRedisCache {
       get = vi.fn().mockResolvedValue(null);
       set = vi.fn().mockResolvedValue(undefined);
-      invalidate = vi.fn().mockResolvedValue(undefined);
+      invalidate = (...args: unknown[]) => mockCacheInvalidate(...args);
       // Bulk deletes clear every user's cache (#893).
-      invalidateAcrossUsers = vi.fn().mockResolvedValue(undefined);
+      invalidateAcrossUsers = (...args: unknown[]) => mockCacheInvalidateAcrossUsers(...args);
     },
   };
 });
@@ -181,6 +184,13 @@ describe('Bulk Pages Routes (Parallelized)', () => {
       expect(body.succeeded).toBe(2);
       expect(body.failed).toBe(0);
       expect(body.errors).toEqual([]);
+
+      // #893: a bulk delete may remove Confluence/shared pages from every
+      // user's view — both the pages and spaces caches (the latter carries
+      // per-space pageCount) must be cleared across all users.
+      expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledWith('pages');
+      expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledWith('spaces');
+      expect(mockCacheInvalidate).not.toHaveBeenCalled();
     });
 
     it('should return 400 for empty ids', async () => {
