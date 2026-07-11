@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LlmTab } from './LlmTab';
 import { useAuthStore } from '../../../stores/auth-store';
@@ -175,6 +175,82 @@ describe('LlmTab', () => {
     await waitFor(() => {
       expect(screen.queryByRole('button', { name: /probe/i })).toBeTruthy();
     });
+  });
+
+  // #949: a background refetch (window focus, or a concurrent admin save)
+  // returns a new object whenever its payload differs from cache. The old
+  // no-guard hydration effect re-ran setAssignments on every reference change,
+  // silently reverting the admin's unsaved dropdown edits. The one-shot guard
+  // must keep the working copy under the admin's control.
+  it('preserves unsaved use-case edits when the query refetches with changed data (#949)', async () => {
+    const { Wrapper, qc } = createWrapperWithClient();
+    mockRoutes();
+
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByText('Use case assignments');
+
+    // Admin pins Chat to providerB but has NOT saved yet.
+    const chatSelect = screen.getByTestId('usecase-chat-provider') as HTMLSelectElement;
+    fireEvent.change(chatSelect, { target: { value: providerB.id } });
+    expect(chatSelect.value).toBe(providerB.id);
+
+    // Simulate a background refetch landing changed data (e.g. a concurrent
+    // admin pins Summary to providerB): the ['llm-usecases'] cache receives a
+    // NEW object with different contents. setQueryData drives the exact code
+    // path a window-focus/refetch would. The macrotask flush lets TanStack
+    // Query's (async) store notification propagate and React run the resulting
+    // render + hydration effect, so any un-guarded reset has fully applied
+    // before we assert — a plain synchronous check would observe the pre-clobber
+    // value and pass spuriously.
+    await act(async () => {
+      qc.setQueryData(['llm-usecases'], {
+        ...assignments,
+        summary: { ...assignments.summary, providerId: providerB.id },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    // The admin's unsaved Chat edit must survive the refetch.
+    expect((screen.getByTestId('usecase-chat-provider') as HTMLSelectElement).value).toBe(
+      providerB.id,
+    );
+  });
+
+  // #949 (companion): the concurrent-streams cap input is hydrated from the
+  // shared ['admin-settings'] cache. A background refetch must not clobber an
+  // unsaved edit to the cap either.
+  it('preserves an unsaved concurrent-streams cap edit when settings refetch (#949)', async () => {
+    const { Wrapper, qc } = createWrapperWithClient();
+    mockRoutes({ concurrentStreamsCap: 3 });
+
+    render(<LlmTab />, { wrapper: Wrapper });
+    const input = (await screen.findByTestId(
+      'llm-max-concurrent-streams-per-user',
+    )) as HTMLInputElement;
+
+    // Admin edits the cap to 8 but has NOT saved yet.
+    fireEvent.change(input, { target: { value: '8' } });
+    expect(input.value).toBe('8');
+
+    // A background settings refetch lands a changed cap. See the assignments
+    // test above for why setQueryData + a macrotask flush reproduces this
+    // deterministically.
+    await act(async () => {
+      qc.setQueryData(['admin-settings'], {
+        ftsLanguage: 'simple',
+        embeddingChunkSize: 500,
+        embeddingChunkOverlap: 50,
+        drawioEmbedUrl: null,
+        embeddingDimensions: 1024,
+        llmMaxConcurrentStreamsPerUser: 5,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    // The admin's unsaved edit must survive.
+    expect(
+      (screen.getByTestId('llm-max-concurrent-streams-per-user') as HTMLInputElement).value,
+    ).toBe('8');
   });
 
   it('Save button PUTs diff to /admin/llm-usecases', async () => {

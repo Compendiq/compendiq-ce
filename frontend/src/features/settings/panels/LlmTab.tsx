@@ -55,22 +55,33 @@ export function LlmTab() {
   const [concurrentStreamsCap, setConcurrentStreamsCap] = useState<number>(
     DEFAULT_CONCURRENT_STREAMS_CAP,
   );
+  // One-shot hydration guards (#949). A background refetch (window focus, or a
+  // concurrent admin save) returns a new object whenever its payload differs
+  // from cache, and re-seeding on every reference change would silently revert
+  // the admin's unsaved edits. Seed each form once, then leave it under the
+  // admin's control until they Save (which invalidates + re-mounts the data).
+  const [assignmentsInitialized, setAssignmentsInitialized] = useState(false);
+  const [capInitialized, setCapInitialized] = useState(false);
 
   // Mirror the server-provided assignments once per load. Using useEffect
   // keeps the setState out of render (avoids an infinite update loop).
   useEffect(() => {
-    if (rawAssignments) setAssignments(rawAssignments);
-  }, [rawAssignments]);
+    if (rawAssignments && !assignmentsInitialized) {
+      setAssignments(rawAssignments);
+      setAssignmentsInitialized(true);
+    }
+  }, [rawAssignments, assignmentsInitialized]);
 
   // Mirror the server-provided concurrent-streams cap. Falls back to 3 when
   // the field is absent (legacy backend that has not yet been migrated).
   useEffect(() => {
-    if (adminSettings) {
+    if (adminSettings && !capInitialized) {
       setConcurrentStreamsCap(
         adminSettings.llmMaxConcurrentStreamsPerUser ?? DEFAULT_CONCURRENT_STREAMS_CAP,
       );
+      setCapInitialized(true);
     }
-  }, [adminSettings]);
+  }, [adminSettings, capInitialized]);
 
   const embeddingPending = useMemo(() => {
     if (!rawAssignments || !assignments) return null;
