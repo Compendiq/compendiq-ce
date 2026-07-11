@@ -167,6 +167,63 @@ describe('Editor', () => {
     expect(img).toHaveAttribute('data-confluence-owner-space-key', 'OPS');
   });
 
+  describe('Confluence macro round-trip schema (#857)', () => {
+    // The edit-mode ProseMirror schema must register a node for every macro
+    // placeholder the backend emits into body_html. If a wrapper has no
+    // matching parse rule, ProseMirror silently unwraps it — and editor
+    // saves (getHTML → htmlToConfluence → updatePage) then permanently
+    // delete the macro from the Confluence page (#765/#857). This asserts the
+    // wrappers survive a load → serialize round-trip so htmlToConfluence can
+    // rebuild the ac:structured-macro / ri:user elements.
+    it('preserves panel/toc/jira/include/labels/unknown-macro/mention wrappers in editor.getHTML()', async () => {
+      const fixture = [
+        '<div class="panel-info"><p>hi</p></div>',
+        '<div class="confluence-toc" data-maxlevel="3">[Table of Contents]</div>',
+        '<p><span class="confluence-jira-issue" data-key="KEY-1">[JIRA: KEY-1]</span></p>',
+        '<div class="confluence-include-macro" data-macro-name="include" data-page-title="Shared" data-space-key="OPS">[Include: Shared]</div>',
+        '<div class="confluence-labels-macro" data-max="5">[Labels]</div>',
+        '<div class="confluence-macro-unknown" data-macro-name="roadmap">[Confluence macro: roadmap]</div>',
+        '<p><span class="confluence-user-mention" data-username="alice">@alice</span></p>',
+      ].join('\n');
+
+      let editor: EditorType | null = null;
+      render(
+        <Editor
+          content={fixture}
+          editable={true}
+          onEditorReady={(e) => { editor = e; }}
+        />,
+      );
+
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+
+      const html = editor!.getHTML();
+
+      // Panel wrapper — reverse pass keys off `.panel-info`.
+      expect(html).toContain('panel-info');
+      // TOC placeholder + round-tripped param.
+      expect(html).toContain('confluence-toc');
+      expect(html).toContain('data-maxlevel="3"');
+      // JIRA inline macro.
+      expect(html).toContain('confluence-jira-issue');
+      expect(html).toContain('data-key="KEY-1"');
+      // Include macro + page/space reference.
+      expect(html).toContain('confluence-include-macro');
+      expect(html).toContain('data-page-title="Shared"');
+      expect(html).toContain('data-space-key="OPS"');
+      // Labels macro.
+      expect(html).toContain('confluence-labels-macro');
+      // Unknown macro — the macro name must round-trip.
+      expect(html).toContain('confluence-macro-unknown');
+      expect(html).toContain('data-macro-name="roadmap"');
+      // User mention.
+      expect(html).toContain('confluence-user-mention');
+      expect(html).toContain('data-username="alice"');
+    });
+  });
+
   describe('clipboard image paste (#17)', () => {
     it('renders and accepts the pageId prop', async () => {
       const { container } = render(

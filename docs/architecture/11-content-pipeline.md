@@ -81,6 +81,19 @@ Custom turndown rules handle Confluence-specific macros:
   anonymous `<ac:parameter><ri:page/></ac:parameter>` inside `include` /
   `excerpt-include` is emitted without an `ac:name=""` attribute to
   match the source format byte-for-byte.
+- **Editor schema must stay in sync with these placeholders (#857).**
+  The round-trip only holds if the TipTap ProseMirror schema has a node
+  whose `parseHTML` matches each placeholder (`panel-*`,
+  `confluence-toc`, `confluence-jira-issue`, `confluence-include-macro`,
+  `confluence-labels-macro`, `confluence-macro-unknown`,
+  `confluence-user-mention`) and whose `renderHTML` re-emits the same
+  class + `data-*` attributes. ProseMirror silently unwraps any element
+  with no matching parse rule, so a placeholder the editor doesn't know
+  about is dropped from `getHTML()` and then permanently deleted from the
+  Confluence page on the next save. The edit-mode schema
+  (`Editor.tsx`) and the read-only schema (`ArticleViewer.tsx`) both draw
+  these nodes from `article-extensions.ts` — any new converter placeholder
+  must be registered in **both** editor extension lists.
 
 ## Why store three forms?
 
