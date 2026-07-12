@@ -415,8 +415,13 @@ export async function embedPage(
       );
     }
 
+    // Materialize this page's average embedding for indexed kNN (#919). The
+    // subquery sees the rows just inserted above (same transaction) and is a
+    // single-page AVG — cheap — so the relationship computation no longer has
+    // to AVG the whole page_embeddings table on every run.
     await client.query(
-      `UPDATE pages SET embedding_dirty = FALSE, embedding_status = 'embedded', embedded_at = NOW(), embedding_error = NULL
+      `UPDATE pages SET embedding_dirty = FALSE, embedding_status = 'embedded', embedded_at = NOW(), embedding_error = NULL,
+              page_avg_embedding = (SELECT AVG(embedding) FROM page_embeddings WHERE page_id = $1)
        WHERE id = $1`,
       [pageId],
     );
@@ -959,32 +964,37 @@ export async function computePageRelationships(changedPageIds?: number[]): Promi
     }
 
     // Compute embedding similarity edges using pgvector <=> operator.
-    // We compute average embedding per page, then find top-K nearest neighbors.
-    // When changedPageIds is provided, only use those pages as sources in the LATERAL join.
+    // The per-page average embedding is materialized on pages.page_avg_embedding
+    // (migration 083) and served from an HNSW index, so each source page runs a
+    // bounded top-K index probe instead of the old whole-table AVG + exact
+    // pairwise scan that timed out at scale (#919). When changedPageIds is
+    // provided only those pages are sources, so an incremental sync costs
+    // O(changed) index probes.
     const useIncremental = changedPageIds && changedPageIds.length > 0;
     const similarityResult = await client.query<{ page_id_1: number; page_id_2: number; score: number }>(
-      `WITH page_avg AS (
-         SELECT pe.page_id, AVG(pe.embedding) AS avg_embedding
-         FROM page_embeddings pe
-         JOIN pages p ON pe.page_id = p.id
+      `WITH sources AS (
+         SELECT p.id AS page_id, p.page_avg_embedding AS avg_embedding
+         FROM pages p
          WHERE p.deleted_at IS NULL
-         GROUP BY pe.page_id
+           AND p.page_avg_embedding IS NOT NULL
+           AND ($3::int[] IS NULL OR p.id = ANY($3))
        ),
        neighbors AS (
          SELECT
-           a.page_id AS page_id_1,
-           b.page_id AS page_id_2,
-           (1 - (a.avg_embedding <=> b.avg_embedding)) AS score
-         FROM page_avg a
+           s.page_id AS page_id_1,
+           b.id AS page_id_2,
+           (1 - (s.avg_embedding <=> b.page_avg_embedding)) AS score
+         FROM sources s
          CROSS JOIN LATERAL (
-           SELECT page_id, avg_embedding
-           FROM page_avg b
-           WHERE b.page_id != a.page_id
-           ORDER BY a.avg_embedding <=> b.avg_embedding
+           SELECT p2.id, p2.page_avg_embedding
+           FROM pages p2
+           WHERE p2.deleted_at IS NULL
+             AND p2.page_avg_embedding IS NOT NULL
+             AND p2.id != s.page_id
+           ORDER BY s.avg_embedding <=> p2.page_avg_embedding
            LIMIT $1
          ) b
-         WHERE (1 - (a.avg_embedding <=> b.avg_embedding)) >= $2
-           AND ($3::int[] IS NULL OR a.page_id = ANY($3))
+         WHERE (1 - (s.avg_embedding <=> b.page_avg_embedding)) >= $2
        )
        INSERT INTO page_relationships (page_id_1, page_id_2, relationship_type, score)
        SELECT page_id_1, page_id_2, 'embedding_similarity', score
@@ -1220,17 +1230,24 @@ export async function enqueueReembedAll(
     // HNSW on plain vector; falling back to halfvec or seq-scan keeps them usable.
     let columnType: string;
     let indexSql: string | null;
+    // pages.page_avg_embedding (#919) must stay the same type/dimension as
+    // page_embeddings.embedding so embedPage's `AVG(embedding)` assigns cleanly,
+    // and its HNSW index uses the matching opclass.
+    let avgIndexSql: string | null;
     // HNSW tuning parameters match migration 011 and 048 (m=16, ef_construction=200).
     const HNSW_PARAMS = `WITH (m = 16, ef_construction = 200)`;
     if (n <= 2000) {
       columnType = `vector(${n})`;
       indexSql = `CREATE INDEX idx_page_embeddings_hnsw ON page_embeddings USING hnsw (embedding vector_cosine_ops) ${HNSW_PARAMS}`;
+      avgIndexSql = `CREATE INDEX idx_pages_page_avg_embedding_hnsw ON pages USING hnsw (page_avg_embedding vector_cosine_ops) ${HNSW_PARAMS}`;
     } else if (n <= 4000) {
       columnType = `halfvec(${n})`;
       indexSql = `CREATE INDEX idx_page_embeddings_hnsw ON page_embeddings USING hnsw (embedding halfvec_cosine_ops) ${HNSW_PARAMS}`;
+      avgIndexSql = `CREATE INDEX idx_pages_page_avg_embedding_hnsw ON pages USING hnsw (page_avg_embedding halfvec_cosine_ops) ${HNSW_PARAMS}`;
     } else {
       columnType = `vector(${n})`;
       indexSql = null;
+      avgIndexSql = null;
     }
     const client = await getPool().connect();
     try {
@@ -1243,8 +1260,15 @@ export async function enqueueReembedAll(
       // and the opclass only accepts vector, or (b) the new dim is >2000.
       // Dropping the index first disentangles the ALTER from the rebuild.
       await client.query(`DROP INDEX IF EXISTS idx_page_embeddings_hnsw`);
+      await client.query(`DROP INDEX IF EXISTS idx_pages_page_avg_embedding_hnsw`);
       await client.query(
         `ALTER TABLE page_embeddings ALTER COLUMN embedding TYPE ${columnType}`,
+      );
+      // Keep pages.page_avg_embedding in lockstep with the new dimension (#919).
+      // page_embeddings was just truncated and every page is re-embedded below,
+      // so discard the now stale/wrong-dimension averages with USING NULL.
+      await client.query(
+        `ALTER TABLE pages ALTER COLUMN page_avg_embedding TYPE ${columnType} USING NULL`,
       );
       await client.query(
         `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
@@ -1255,6 +1279,7 @@ export async function enqueueReembedAll(
       );
       if (indexSql) {
         await client.query(indexSql);
+        if (avgIndexSql) await client.query(avgIndexSql);
       } else {
         logger.warn(
           { dimensions: n },
