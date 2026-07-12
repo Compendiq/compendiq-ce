@@ -273,6 +273,26 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
       expect(result.rows[0].summary_content_hash).toHaveLength(64);
     });
 
+    it('re-queues pages orphaned in summarizing after a crash (#911)', async () => {
+      // A prior batch marked this page 'summarizing' then crashed before finishing.
+      // The next batch runs under the single-worker lock, so any leftover
+      // 'summarizing' row is necessarily orphaned and must be reset + reprocessed.
+      const longContent = 'F'.repeat(200);
+      await query(
+        `INSERT INTO pages (confluence_id, space_key, title, body_text, summary_status)
+         VALUES ('orphan1', $1, 'Orphaned Page', $2, 'summarizing')`,
+        [testSpaceKey, longContent],
+      );
+
+      await runSummaryBatch('test-model');
+
+      const row = await query<{ summary_status: string; summary_text: string | null }>(
+        "SELECT summary_status, summary_text FROM pages WHERE confluence_id = 'orphan1'",
+      );
+      expect(row.rows[0].summary_status).toBe('summarized');
+      expect(row.rows[0].summary_text).toBeTruthy();
+    });
+
     it('strips model preamble/meta framing before persisting the summary (#912)', async () => {
       const { streamChat } = await import('../../llm/services/openai-compatible-client.js');
       vi.mocked(streamChat).mockImplementationOnce(() => {
