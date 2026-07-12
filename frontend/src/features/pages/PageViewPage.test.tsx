@@ -67,25 +67,52 @@ vi.mock('../../shared/components/article/ArticleViewer', async () => {
 // Configurable draft content so tests can exercise the restore-draft dialog.
 let mockDraftContent: string | null = null;
 
-vi.mock('../../shared/components/article/Editor', () => ({
-  Editor: ({
-    content,
-    onChange,
-  }: {
-    content: string;
-    onChange: (value: string) => void;
-  }) => (
-    <textarea
-      aria-label="Article editor"
-      value={content}
-      onChange={(event) => onChange(event.target.value)}
-    />
-  ),
-  EditorToolbar: () => null,
-  TableContextToolbar: () => null,
-  getDraft: () => mockDraftContent,
-  clearDraft: vi.fn(),
-}));
+vi.mock('../../shared/components/article/Editor', async () => {
+  const React = await vi.importActual<typeof import('react')>('react');
+  return {
+    // Mirrors the real Editor's contract (#954): the body is owned by the
+    // editor instance (read via getHTML() on save), NOT pushed to the parent
+    // per keystroke. onChange is a cheap boolean dirty signal. The textarea is
+    // uncontrolled so typed text persists and is reflected by getHTML().
+    Editor: ({
+      content,
+      onChange,
+      onEditorReady,
+    }: {
+      content: string;
+      onChange?: (dirty: boolean) => void;
+      onEditorReady?: (editor: { getHTML: () => string } | null) => void;
+    }) => {
+      const htmlRef = React.useRef(content);
+      React.useEffect(() => {
+        // `state.doc.descendants` lets the save path's draw.io drain walk an
+        // empty doc (no diagrams) without throwing on the fake instance.
+        const instance = {
+          getHTML: () => htmlRef.current,
+          state: { doc: { descendants: () => {} } },
+        };
+        onEditorReady?.(instance as never);
+        return () => onEditorReady?.(null);
+      }, [onEditorReady]);
+      return (
+        <textarea
+          aria-label="Article editor"
+          defaultValue={content}
+          onChange={(event) => {
+            htmlRef.current = event.target.value;
+            onChange?.(true);
+          }}
+        />
+      );
+    },
+    EditorToolbar: () => null,
+    TableContextToolbar: () => null,
+    LayoutContextToolbar: () => null,
+    ColumnContextToolbar: () => null,
+    getDraft: () => mockDraftContent,
+    clearDraft: vi.fn(),
+  };
+});
 
 vi.mock('../../shared/components/feedback/FeatureErrorBoundary', () => ({
   FeatureErrorBoundary: ({ children }: { children: React.ReactNode }) => <>{children}</>,

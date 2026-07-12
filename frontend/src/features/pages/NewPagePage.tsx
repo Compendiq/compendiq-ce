@@ -26,6 +26,9 @@ export function NewPagePage() {
   const [title, setTitle] = useState('');
   const [spaceKey, setSpaceKey] = useState('');
   const [parentId, setParentId] = useState<string | undefined>();
+  // Seeds the editor's initial content (empty, or a template applied before
+  // the editor has mounted). The live body is read from the editor instance on
+  // create (#954) — it is not synced per keystroke.
   const [bodyHtml, setBodyHtml] = useState('');
   const [articleType, setArticleType] = useState<ArticleType>('local');
   const [visibility, setVisibility] = useState<Visibility>('private');
@@ -76,10 +79,13 @@ export function NewPagePage() {
       return;
     }
     try {
+      // Read the live HTML off the editor instance (#954). `bodyHtml` is only a
+      // fallback seed (empty, or a template applied before the editor mounted).
+      const bodyToSave = editorInstance?.getHTML() ?? bodyHtml;
       const result = await createMutation.mutateAsync({
         spaceKey: spaceKey,
         title: title.trim(),
-        bodyHtml,
+        bodyHtml: bodyToSave,
         ...(parentId ? { parentId } : {}),
         ...(selectedSpace?.source === 'local' ? { visibility } : {}),
       } as Parameters<typeof createMutation.mutateAsync>[0]);
@@ -329,8 +335,7 @@ export function NewPagePage() {
           {/* Editor body */}
           <FeatureErrorBoundary featureName="Editor">
             <Editor
-              content=""
-              onChange={setBodyHtml}
+              content={bodyHtml}
               placeholder="Start writing your page..."
               draftKey={NEW_PAGE_DRAFT_KEY}
               naked
@@ -345,14 +350,15 @@ export function NewPagePage() {
       {showTemplateGallery && (
         <TemplateGallery
           onSelect={(html) => {
-            // Push the template into the live TipTap editor — the Editor is
-            // mounted with content="" and never re-reads the prop, so state
-            // alone would stay invisible and be overwritten by the first
-            // keystroke's onUpdate. emitUpdate fires onUpdate, which keeps
-            // bodyHtml and the localStorage draft in sync.
+            // Push the template into the live TipTap editor — the Editor never
+            // re-reads the content prop after mount, so setContent is how the
+            // template becomes visible. emitUpdate fires onUpdate so the
+            // localStorage draft is written; the body is read back from the
+            // editor instance on create (#954).
             editorInstance?.commands.setContent(html, { emitUpdate: true });
-            // Fallback for the brief window before TipTap finishes mounting
-            // (immediatelyRender: false), when editorInstance is still null.
+            // Seed fallback for the brief window before TipTap finishes
+            // mounting (immediatelyRender: false), when editorInstance is still
+            // null: the Editor picks this up as its initial content.
             setBodyHtml(html);
             setShowTemplateGallery(false);
           }}

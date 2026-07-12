@@ -40,11 +40,17 @@ vi.mock('../../shared/hooks/use-spaces', () => ({
   }),
 }));
 
-const { mockSetContent, mockEditorInstance, mockUseTemplateMutateAsync, mockImportMutateAsync, templatesState } = vi.hoisted(() => {
-  const setContent = vi.fn();
+const { editorHtml, mockSetContent, mockEditorInstance, mockUseTemplateMutateAsync, mockImportMutateAsync, templatesState } = vi.hoisted(() => {
+  // Live HTML the fake editor owns. setContent (template apply) and the
+  // textarea's onChange (typing) both write here; getHTML reads it — mirroring
+  // the real Editor now that the body is read off the instance, not synced to
+  // parent state per keystroke (#954).
+  const html = { current: '' };
+  const setContent = vi.fn((content: string) => { html.current = content; });
   return {
+    editorHtml: html,
     mockSetContent: setContent,
-    mockEditorInstance: { commands: { setContent } },
+    mockEditorInstance: { commands: { setContent }, getHTML: () => html.current },
     mockUseTemplateMutateAsync: vi.fn(),
     mockImportMutateAsync: vi.fn(),
     templatesState: { items: [] as { id: number; title: string; category: string | null }[] },
@@ -70,7 +76,7 @@ vi.mock('../../shared/hooks/use-standalone', () => ({
 vi.mock('../../shared/components/article/Editor', async () => {
   const { useEffect } = await import('react');
   return {
-    Editor: ({ onChange, onEditorReady }: { content: string; onChange: (html: string) => void; placeholder: string; draftKey: string; onEditorReady?: (editor: unknown) => void }) => {
+    Editor: ({ onChange, onEditorReady }: { content: string; onChange?: (dirty: boolean) => void; placeholder: string; draftKey: string; onEditorReady?: (editor: unknown) => void }) => {
       useEffect(() => {
         onEditorReady?.(mockEditorInstance);
         return () => onEditorReady?.(null);
@@ -78,7 +84,12 @@ vi.mock('../../shared/components/article/Editor', async () => {
       return (
         <textarea
           data-testid="mock-editor"
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) => {
+            // Typing writes the live HTML the fake instance serves via getHTML,
+            // then signals dirty (the parent no longer receives the HTML).
+            editorHtml.current = e.target.value;
+            onChange?.(true);
+          }}
         />
       );
     },
@@ -117,6 +128,7 @@ describe('NewPagePage', () => {
     mockUseTemplateMutateAsync.mockReset();
     mockImportMutateAsync.mockReset();
     templatesState.items.length = 0;
+    editorHtml.current = '';
   });
 
   it('navigates to the imported page using articles[0].id from the import envelope', async () => {
