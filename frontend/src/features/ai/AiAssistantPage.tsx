@@ -420,6 +420,23 @@ function AiAssistantInner() {
         })()}
       </div>
 
+      {/* Primed polite live region for completed answers (#937). The error
+          announcer above only speaks failures; without this, a screen-reader
+          user hears nothing when an answer finishes and the streamed text is
+          silently painted into the bubble. Gated on !isStreaming so we announce
+          the finished answer once, not mid-stream (which would interrupt the
+          visible streaming). Keyed by the completed message id so a fresh node
+          is inserted per answer — that insertion is what AT re-announces. */}
+      <div role="status" aria-live="polite" data-testid="ai-answer-announcer" className="sr-only">
+        {(() => {
+          if (isStreaming) return null;
+          const lastAnswer = [...messages].reverse().find(
+            (msg) => msg.role === 'assistant' && !msg.isError && msg.content,
+          );
+          return lastAnswer ? <span key={lastAnswer.id}>Answer ready</span> : null;
+        })()}
+      </div>
+
       {/* Messages — clean document-like surface, no heavy glass.
           flex-1 so the messages area grows to fill the column, pushing
           the sticky input bar to the bottom of the page. */}
