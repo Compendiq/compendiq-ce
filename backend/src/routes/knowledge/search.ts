@@ -312,7 +312,13 @@ export async function searchRoutes(fastify: FastifyInstance) {
               substring(cp.body_text, 1, 300) AS body_text,
               similarity(cp.title, $1) AS rank
        FROM pages cp
-       WHERE similarity(cp.title, $1) > $4
+       -- cp.title % $1 is the sargable pg_trgm operator: it lets the planner use
+       -- the GIN index idx_pages_title_trgm (Bitmap Index Scan) instead of a Seq
+       -- Scan. The % operator uses pg_trgm's default 0.3 threshold, which matches
+       -- TRGM_SIMILARITY_THRESHOLD, so the retained similarity() > $4 keeps the
+       -- threshold check exact without changing which rows match.
+       WHERE cp.title % $1
+         AND similarity(cp.title, $1) > $4
          AND cp.title IS NOT NULL
          AND ${visiblePagesPredicate(2, 3)}
          AND cp.deleted_at IS NULL
