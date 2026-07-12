@@ -1258,10 +1258,12 @@ describe('embedPage', () => {
     const result = await embedPage('user-1', 101, 'Short Page', 'DEV', '<p>tiny</p>');
 
     expect(result).toBe(0);
-    // Should have called UPDATE to clear embedding_dirty (using pages.id, not confluence_id)
+    // Should have called UPDATE to clear embedding_dirty AND set the terminal
+    // 'not_embedded' status (clearing any error) so short pages don't stay stuck
+    // showing the transient 'embedding' status (using pages.id, not confluence_id).
     expect(mocks.query).toHaveBeenCalledTimes(1);
     expect(mocks.query).toHaveBeenCalledWith(
-      'UPDATE pages SET embedding_dirty = FALSE WHERE id = $1',
+      `UPDATE pages SET embedding_dirty = FALSE, embedding_status = 'not_embedded', embedding_error = NULL WHERE id = $1`,
       [101],
     );
   });
@@ -1273,9 +1275,10 @@ describe('embedPage', () => {
     const result = await embedPage('user-1', 102, 'Empty Page', 'DEV', '<p></p>');
 
     expect(result).toBe(0);
+    // Same terminal-status write as the too-short case for empty text.
     expect(mocks.query).toHaveBeenCalledTimes(1);
     expect(mocks.query).toHaveBeenCalledWith(
-      'UPDATE pages SET embedding_dirty = FALSE WHERE id = $1',
+      `UPDATE pages SET embedding_dirty = FALSE, embedding_status = 'not_embedded', embedding_error = NULL WHERE id = $1`,
       [102],
     );
   });
