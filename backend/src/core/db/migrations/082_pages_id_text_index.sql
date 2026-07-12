@@ -1,0 +1,16 @@
+-- Migration 082: expression index on pages ((id::text)) for parent joins (#927)
+--
+-- A page's parent is referenced by pages.parent_id (TEXT), which may hold
+-- either the parent's Confluence id or, for local-only pages, the parent's
+-- numeric DB id rendered as text. The tree/homepage joins therefore match on:
+--
+--   parent_page.confluence_id = child.parent_id
+--   OR CAST(parent_page.id AS TEXT) = child.parent_id
+--
+-- (GET /pages/tree — pages-crud.ts; GET /spaces homepage — spaces.ts.)
+--
+-- confluence_id is already covered by its UNIQUE index, but the CAST(id AS TEXT)
+-- arm was unindexable, forcing a full inner-table scan of pages per outer row.
+-- Indexing the same (id::text) expression lets the planner BitmapOr both arms,
+-- turning the nested loop's inner side into index lookups.
+CREATE INDEX IF NOT EXISTS pages_id_text_idx ON pages ((id::text));
