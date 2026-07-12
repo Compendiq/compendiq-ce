@@ -513,6 +513,7 @@ export function PagesPage() {
             value={spaceKey}
             onChange={(e) => { setSpaceKey(e.target.value); setPage(1); setForcePageList(false); }}
             className="nm-select-md w-40 shrink-0"
+            aria-label="Filter by space"
           >
             <option value="">All Spaces</option>
             {spaces?.map((s) => (
@@ -525,6 +526,7 @@ export function PagesPage() {
             onChange={(e) => { setSourceFilter(e.target.value as PageSource | ''); setPage(1); }}
             className="nm-select-md w-32 shrink-0"
             data-testid="filter-source"
+            aria-label="Filter by source"
           >
             <option value="">All Sources</option>
             {PageSourceEnum.options.map((source) => (
@@ -536,6 +538,7 @@ export function PagesPage() {
             value={sort}
             onChange={(e) => setSort(e.target.value as typeof sort)}
             className="nm-select-md w-40 shrink-0"
+            aria-label="Sort pages"
           >
             <option value="modified">Last Modified</option>
             <option value="title">Title</option>
@@ -574,8 +577,9 @@ export function PagesPage() {
           <div className="grid grid-cols-2 items-end gap-3 border-t border-border/40 pt-3 sm:grid-cols-3 lg:grid-cols-4" data-testid="advanced-filters-panel">
             {/* Author filter */}
             <div className="min-w-40">
-              <label className="mb-1 block text-xs text-muted-foreground">Author</label>
+              <label htmlFor="filter-author-select" className="mb-1 block text-xs text-muted-foreground">Author</label>
               <select
+                id="filter-author-select"
                 value={author}
                 onChange={(e) => { setAuthor(e.target.value); setPage(1); }}
                 className="nm-select-md w-full"
@@ -590,8 +594,9 @@ export function PagesPage() {
 
             {/* Labels filter */}
             <div className="min-w-40">
-              <label className="mb-1 block text-xs text-muted-foreground">Labels</label>
+              <label htmlFor="filter-labels-select" className="mb-1 block text-xs text-muted-foreground">Labels</label>
               <select
+                id="filter-labels-select"
                 value={labels}
                 onChange={(e) => { setLabels(e.target.value); setPage(1); }}
                 className="nm-select-md w-full"
@@ -606,8 +611,9 @@ export function PagesPage() {
 
             {/* Freshness filter */}
             <div className="min-w-32">
-              <label className="mb-1 block text-xs text-muted-foreground">Freshness</label>
+              <label htmlFor="filter-freshness-select" className="mb-1 block text-xs text-muted-foreground">Freshness</label>
               <select
+                id="filter-freshness-select"
                 value={freshness}
                 onChange={(e) => { setFreshness(e.target.value); setPage(1); }}
                 className="nm-select-md w-full"
@@ -623,8 +629,9 @@ export function PagesPage() {
 
             {/* Embedding status filter */}
             <div className="min-w-36">
-              <label className="mb-1 block text-xs text-muted-foreground">Embedding</label>
+              <label htmlFor="filter-embedding-select" className="mb-1 block text-xs text-muted-foreground">Embedding</label>
               <select
+                id="filter-embedding-select"
                 value={embeddingStatus}
                 onChange={(e) => { setEmbeddingStatus(e.target.value); setPage(1); }}
                 className="nm-select-md w-full"
@@ -638,8 +645,9 @@ export function PagesPage() {
 
             {/* Quality score filter */}
             <div className="min-w-36">
-              <label className="mb-1 block text-xs text-muted-foreground">Quality</label>
+              <label htmlFor="filter-quality-select" className="mb-1 block text-xs text-muted-foreground">Quality</label>
               <select
+                id="filter-quality-select"
                 value={qualityFilter}
                 onChange={(e) => { setQualityFilter(e.target.value); setPage(1); }}
                 className="nm-select-md w-full"
@@ -655,8 +663,9 @@ export function PagesPage() {
 
             {/* Date range */}
             <div className="min-w-36">
-              <label className="mb-1 block text-xs text-muted-foreground">Modified From</label>
+              <label htmlFor="filter-date-from-input" className="mb-1 block text-xs text-muted-foreground">Modified From</label>
               <input
+                id="filter-date-from-input"
                 type="date"
                 value={dateFrom}
                 onChange={(e) => { setDateFrom(e.target.value); setPage(1); }}
@@ -665,8 +674,9 @@ export function PagesPage() {
               />
             </div>
             <div className="min-w-36">
-              <label className="mb-1 block text-xs text-muted-foreground">Modified To</label>
+              <label htmlFor="filter-date-to-input" className="mb-1 block text-xs text-muted-foreground">Modified To</label>
               <input
+                id="filter-date-to-input"
                 type="date"
                 value={dateTo}
                 onChange={(e) => { setDateTo(e.target.value); setPage(1); }}
