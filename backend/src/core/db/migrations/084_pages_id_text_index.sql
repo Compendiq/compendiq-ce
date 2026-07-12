@@ -1,4 +1,4 @@
--- Migration 082: expression index on pages ((id::text)) for parent joins (#927)
+-- Migration 084: expression index on pages ((id::text)) for parent joins (#927)
 --
 -- A page's parent is referenced by pages.parent_id (TEXT), which may hold
 -- either the parent's Confluence id or, for local-only pages, the parent's

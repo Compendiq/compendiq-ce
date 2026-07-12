@@ -4,7 +4,7 @@ import { query } from '../../postgres.js';
 
 const dbAvailable = await isDbAvailable();
 
-describe.skipIf(!dbAvailable)('Migration 082 — pages ((id::text)) expression index (#927)', () => {
+describe.skipIf(!dbAvailable)('Migration 084 — pages ((id::text)) expression index (#927)', () => {
   beforeAll(async () => { await setupTestDb(); });
   afterAll(async () => { await teardownTestDb(); });
   beforeEach(async () => { await truncateAllTables(); });
