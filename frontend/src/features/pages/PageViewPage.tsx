@@ -161,8 +161,16 @@ export function PageViewPage() {
   const [editing, setEditing] = useState(false);
   const [editorInstance, setEditorInstance] = useState<EditorType | null>(null);
 
+  // `editHtml` seeds the editor's initial content when entering edit mode
+  // (published body or a restored draft). It is NOT updated per keystroke —
+  // the live HTML is read from `editorInstance.getHTML()` on save (#954).
   const [editHtml, setEditHtml] = useState('');
   const [editTitle, setEditTitle] = useState('');
+  // Dirty flag flipped by the editor's onChange (#954). A cheap boolean avoids
+  // storing/serializing the whole document on every keystroke: after the first
+  // change setIsDirty(true) is a no-op re-render, so typing no longer re-renders
+  // this page.
+  const [isDirty, setIsDirty] = useState(false);
   const [headings, setHeadings] = useState<TocHeading[]>([]);
   const [lightboxSrc, setLightboxSrc] = useState<{ alt: string; src: string } | null>(null);
   const [drawioEditingDiagram, setDrawioEditingDiagram] = useState<string | null>(null);
@@ -229,6 +237,7 @@ export function PageViewPage() {
     setEditing(false);
     setEditHtml('');
     setEditTitle('');
+    setIsDirty(false);
     setPendingDraft(null);
     setEditorInstance(null);
     setConfirmDiscardOpen(false);
@@ -275,12 +284,16 @@ export function PageViewPage() {
       return;
     }
     setEditHtml(page.bodyHtml);
+    setIsDirty(false);
     setEditing(true);
   }, [id, page]);
 
   const handleRestoreDraft = useCallback(() => {
     if (pendingDraft === null) return;
     setEditHtml(pendingDraft);
+    // A restored draft diverges from the published page, so the editor is
+    // dirty from the outset — Cancel must guard it and Save must persist it.
+    setIsDirty(true);
     setPendingDraft(null);
     setEditing(true);
   }, [pendingDraft]);
@@ -289,20 +302,23 @@ export function PageViewPage() {
     setPendingDraft(null);
     if (!page) return;
     setEditHtml(page.bodyHtml);
+    setIsDirty(false);
     setEditing(true);
   }, [page]);
 
-  // The editor is dirty when the working title/body diverges from the
-  // persisted page. editHtml starts equal to page.bodyHtml (or the restored
-  // draft) and only changes on a genuine Editor onChange, so a pristine
-  // editor produces no false positive (#944).
+  // The editor is dirty when the title diverges from the persisted page or the
+  // body was touched. `isDirty` is set by the Editor's onChange (and seeded
+  // true when a draft is restored), so a pristine editor produces no false
+  // positive (#944). Body edits are tracked via the flag rather than a live
+  // HTML string so typing doesn't re-render the page (#954).
   const isEditorDirty = useCallback(() => {
     if (!page) return false;
-    return editTitle !== page.title || editHtml !== page.bodyHtml;
-  }, [page, editTitle, editHtml]);
+    return editTitle !== page.title || isDirty;
+  }, [page, editTitle, isDirty]);
 
   const discardAndExit = useCallback(() => {
     if (draftKey) clearDraft(draftKey);
+    setIsDirty(false);
     setEditing(false);
   }, [draftKey]);
 
@@ -337,8 +353,11 @@ export function PageViewPage() {
       for (const msg of drain.errors) {
         toast.warning(msg);
       }
-      // `editor.getHTML()` reflects the newly-committed node attributes,
-      // so pull the post-drain HTML rather than the pre-drain `editHtml`.
+      // Read the live HTML straight off the editor instance (#954) — it's the
+      // single source of truth for body content, and also reflects the
+      // newly-committed draw.io node attributes from the drain above. The
+      // `editHtml` seed is only a fallback for the (practically unreachable)
+      // case where the editor instance isn't ready.
       const bodyToSave = editorInstance?.getHTML() ?? editHtml;
 
       await updateMutation.mutateAsync({
@@ -348,6 +367,7 @@ export function PageViewPage() {
         version: page.version,
       });
       if (draftKey) clearDraft(draftKey);
+      setIsDirty(false);
       setEditing(false);
       toast.success('Page saved.');
     } catch (error) {
@@ -769,7 +789,7 @@ export function PageViewPage() {
                 experience matches the reader's line length exactly. */}
             <div className="mx-auto max-w-[1200px]">
               <FeatureErrorBoundary featureName="Editor">
-                <Editor content={editHtml} onChange={setEditHtml} draftKey={draftKey} naked onEditorReady={setEditorInstance} hideToolbar pageId={id} onSave={handleSave} vimEnabled={vimEnabled} />
+                <Editor content={editHtml} onChange={() => setIsDirty(true)} draftKey={draftKey} naked onEditorReady={setEditorInstance} hideToolbar pageId={id} onSave={handleSave} vimEnabled={vimEnabled} />
               </FeatureErrorBoundary>
             </div>
           </>

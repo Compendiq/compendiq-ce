@@ -67,6 +67,41 @@ describe('Editor', () => {
     mockFetchAuthenticatedBlob.mockResolvedValue(null);
   });
 
+  it('signals dirty via a boolean onChange, not a serialized HTML string (#954)', async () => {
+    // Perf invariant: the hot per-keystroke onUpdate path must NOT serialize
+    // the whole document (getHTML) and hand it to the parent. onChange fires a
+    // cheap boolean dirty flag instead, so the parent can flip an isDirty flag
+    // without re-rendering on every keystroke and without paying the O(doc)
+    // serialization cost each time.
+    const onChange = vi.fn();
+    let editor: EditorType | null = null;
+    render(
+      <Editor
+        content="<p>seed</p>"
+        editable={true}
+        draftKey="page-954"
+        onChange={onChange}
+        onEditorReady={(e) => { editor = e; }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(editor).not.toBeNull();
+    });
+
+    editor!.commands.insertContent(' x');
+
+    await waitFor(() => {
+      expect(onChange).toHaveBeenCalled();
+    });
+
+    const lastArg = onChange.mock.calls.at(-1)![0];
+    // Pre-fix this was the serialized HTML string (`<p>seed x</p>`). Post-fix
+    // it is a boolean dirty signal.
+    expect(typeof lastArg).toBe('boolean');
+    expect(lastArg).toBe(true);
+  });
+
   it('sticky toolbar reads as the top of the article card (#30 overhaul)', async () => {
     // The internal toolbar must look like the visual top of the article card
     // below — same bg, rounded only on top, sticks at top:0 when scrolling.
