@@ -935,8 +935,23 @@ export async function computePageRelationships(changedPageIds?: number[]): Promi
 
     // Delete only affected relationships when changedPageIds provided, otherwise full recompute
     if (changedPageIds && changedPageIds.length > 0) {
+      // #916: embedding_similarity edges are DIRECTED — page_id_1 is the source
+      // (a re-embedded page), page_id_2 its KNN neighbour. Only the source-side
+      // edges are re-inserted below (LATERAL join keyed on a.page_id), so a
+      // both-sides delete would drop reverse edges Y→X owned by an unchanged
+      // page Y and never rebuild them. Scope this delete to the source side.
       await client.query(
-        'DELETE FROM page_relationships WHERE page_id_1 = ANY($1) OR page_id_2 = ANY($1)',
+        `DELETE FROM page_relationships
+         WHERE relationship_type = 'embedding_similarity' AND page_id_1 = ANY($1)`,
+        [changedPageIds],
+      );
+      // All other edge types (label_overlap, parent_child, explicit_link) are
+      // symmetric and stored canonically (lower id first), and are fully
+      // recomputed for any pair touching a changed page — so delete both sides.
+      await client.query(
+        `DELETE FROM page_relationships
+         WHERE relationship_type <> 'embedding_similarity'
+           AND (page_id_1 = ANY($1) OR page_id_2 = ANY($1))`,
         [changedPageIds],
       );
     } else {
