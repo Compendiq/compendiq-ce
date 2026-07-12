@@ -155,6 +155,18 @@ describe('docker/docker-compose.yml security invariants', () => {
     expect(redis).toContain('--maxmemory-policy noeviction');
     expect(composeProd).not.toContain('allkeys-lru');
   });
+
+  it('gives the backend a stop_grace_period long enough for graceful shutdown (issue #931)', () => {
+    // Docker defaults stop_grace_period to 10s and SIGKILLs the container after
+    // it, which aborts the in-process graceful-shutdown timer
+    // (DEFAULT_SHUTDOWN_TIMEOUT_MS = 50s in core/utils/graceful-shutdown.ts).
+    // The grace period must exceed that timeout so the handler force-exits
+    // itself before Docker resorts to SIGKILL. ADR-024 mandates 60s.
+    const backend = extractServiceBlock(composeProd, 'backend');
+    const match = backend.match(/^\s+stop_grace_period:\s*(\d+)s\b/m);
+    expect(match, 'backend service must declare stop_grace_period').not.toBeNull();
+    expect(Number(match![1])).toBeGreaterThanOrEqual(60);
+  });
 });
 
 describe('docker/docker-compose.dev.yml security invariants', () => {
@@ -190,6 +202,17 @@ describe('scripts/install.sh invariants', () => {
 
   it('points the backend at the mcp-docs sidecar', () => {
     expect(installSh).toContain('MCP_DOCS_URL:');
+  });
+
+  it('gives the installed backend a stop_grace_period for graceful shutdown (issue #931)', () => {
+    // The installer-generated compose must match docker/docker-compose.yml so
+    // installed deployments also survive the 50s graceful-shutdown drain
+    // instead of being SIGKILLed at Docker's 10s default.
+    const compose = extractInstallerCompose(installSh);
+    const backend = extractServiceBlock(compose, 'backend');
+    const match = backend.match(/^\s+stop_grace_period:\s*(\d+)s\b/m);
+    expect(match, 'installer backend service must declare stop_grace_period').not.toBeNull();
+    expect(Number(match![1])).toBeGreaterThanOrEqual(60);
   });
 
   it('attaches mcp-docs and searxng to a non-internal network so they can reach the internet', () => {
