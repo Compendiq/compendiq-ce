@@ -61,6 +61,11 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
+    # SIGTERM → drain BullMQ workers + HTTP → close DB pools before SIGKILL.
+    # Must exceed the in-process SHUTDOWN_TIMEOUT_MS (default 50s) so the
+    # handler force-exits itself first; 60s leaves Docker a 10s margin.
+    # See ADR-024 (Graceful-shutdown order) and issue #931.
+    stop_grace_period: 60s
     volumes:
       - attachments:/app/data
       - "${HOST_CA_BUNDLE_PATH:-/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem}:${CONTAINER_CA_BUNDLE_PATH:-/etc/ssl/certs/ca-certificates.crt}:ro"

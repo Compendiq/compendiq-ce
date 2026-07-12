@@ -288,6 +288,9 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
+    # SIGTERM → drain BullMQ workers + HTTP → close DB pools before SIGKILL.
+    # Must exceed SHUTDOWN_TIMEOUT_MS (default 50s); see ADR-024 / issue #931.
+    stop_grace_period: 60s
     volumes:
       - attachments-data:/app/data
     healthcheck:
