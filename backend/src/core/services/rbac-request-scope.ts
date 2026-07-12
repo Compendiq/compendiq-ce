@@ -14,7 +14,7 @@
 // from this scope first and falls back to the normal resolver on miss.
 import { AsyncLocalStorage } from 'node:async_hooks';
 
-interface RbacScope {
+export interface RbacScope {
   userId: string;
   // Undefined until the first resolver call in this request populates it.
   spaces?: string[];
@@ -31,13 +31,24 @@ export function runWithRbacScope<T>(userId: string, fn: () => Promise<T>): Promi
 }
 
 /**
- * Enter a fresh RBAC scope on the current async chain. Used from Fastify's
- * `authenticate` hook so that all downstream work for this request (including
- * the route handler) shares the same scope without wrapping the whole pipeline
- * in a callback. Safe to call once per request after authentication succeeds.
+ * Enter a fresh RBAC scope on the current async chain and return it. Used from
+ * Fastify's `authenticate` hook so that all downstream work for this request
+ * (including the route handler) shares the same scope without wrapping the
+ * whole pipeline in a callback.
+ *
+ * MUST be called synchronously, before the hook's first `await`. `enterWith`
+ * only propagates the store to continuations that descend from the frame it
+ * was called in; entering it *after* an await binds the store to a resumed
+ * frame the route handler never inherits, so the memo would be dead at runtime
+ * (#899). The caller therefore enters an empty scope up front and assigns
+ * `userId` on the returned object once authentication succeeds — the transient
+ * empty-userId window is safe because `getScopedSpaces` gates on a matching
+ * `userId`, returning null (a resolver fall-through) until it is filled in.
  */
-export function enterRbacScope(userId: string): void {
-  storage.enterWith({ userId });
+export function enterRbacScope(): RbacScope {
+  const scope: RbacScope = { userId: '' };
+  storage.enterWith(scope);
+  return scope;
 }
 
 export function setScopedSpaces(spaces: string[]): void {

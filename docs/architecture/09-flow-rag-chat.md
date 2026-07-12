@@ -94,9 +94,13 @@ caller's readable space keys. The resolver
 (`rbac-service.getUserAccessibleSpaces`) is memoised per request via
 `AsyncLocalStorage`, so a single hybrid query touches the RBAC path once
 regardless of how many retrieval calls execute. The Fastify `authenticate`
-hook enters the scope on every authenticated request via `enterRbacScope`; the
-memoised wrapper falls back to the raw resolver outside a scope (background
-workers, tests that skip the opt-in).
+hook enters the scope on every authenticated request via `enterRbacScope`,
+synchronously before its first `await` (the scope's `userId` is filled in once
+token verification succeeds) — `enterWith` only propagates the store to
+continuations descending from the frame it is called in, so entering it after
+an await would leave the route handler without the scope and the memo dead at
+runtime (#899). The memoised wrapper falls back to the raw resolver outside a
+scope (background workers, tests that skip the opt-in).
 
 Per ADR-023 (EE — `RAG_PERMISSION_ENFORCEMENT`), a second post-filter runs
 after the RRF merge when the feature is active. It calls
