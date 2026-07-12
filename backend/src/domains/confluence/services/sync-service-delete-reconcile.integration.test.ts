@@ -86,6 +86,22 @@ async function insertPage(confluenceId: string, spaceKey: string): Promise<numbe
   return res.rows[0]!.id;
 }
 
+/**
+ * Insert a standalone KB article (source 'standalone', NULL confluence_id) that
+ * still carries a `space_key`, so it is swept up by the space-scoped candidate
+ * query. Such rows have no upstream Confluence page to reconcile against (#905).
+ */
+async function insertStandaloneNullIdPage(spaceKey: string): Promise<number> {
+  const res = await query<{ id: number }>(
+    `INSERT INTO pages (confluence_id, source, space_key, title, body_text,
+                         body_storage, body_html, inherit_perms)
+     VALUES (NULL, 'standalone', $1, 'Standalone', 'text', '', '', TRUE)
+     RETURNING id`,
+    [spaceKey],
+  );
+  return res.rows[0]!.id;
+}
+
 async function getDeletedAt(confluenceId: string): Promise<Date | null> {
   const res = await query<{ deleted_at: Date | null }>(
     'SELECT deleted_at FROM pages WHERE confluence_id = $1',
@@ -278,6 +294,34 @@ describe.skipIf(!dbAvailable)('sync-service deletion reconciliation (#706)', () 
 
     expect(client.getPageCalls).toHaveLength(200);
     expect(counts.pagesDeleted).toBe(200);
+  });
+
+  it('ignores standalone rows with a NULL confluence_id — never fetches getPage(null) nor inflates the count (#905)', async () => {
+    // A standalone KB article carries a space_key but no confluence_id, so it is
+    // swept up by the space-scoped candidate query. Its NULL id can never appear
+    // in the live listing, so without the `confluence_id IS NOT NULL` guard it
+    // becomes a bogus deletion candidate: getPage(null) is issued (a real client
+    // 404s on it), which is then mistaken for "gone" and inflates the delete
+    // count — while the UPDATE (WHERE confluence_id = NULL) matches nothing.
+    await insertPage('keep-905', 'DEV'); // real live Confluence page
+    const standaloneId = await insertStandaloneNullIdPage('DEV');
+
+    const client = makeClient({
+      liveIds: ['keep-905'], // the NULL-id row can never be in the live set
+      getPageError: () => new ConfluenceError('Resource not found', 404),
+    });
+    const counts = { pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 };
+
+    await detectDeletedPages(client as never, 'DEV', counts);
+
+    // The standalone row has no upstream — it must never be a deletion candidate.
+    expect(client.getPageCalls).toEqual([]); // no bogus getPage(null)
+    expect(counts.pagesDeleted).toBe(0); // no phantom delete counted
+    const res = await query<{ deleted_at: Date | null }>(
+      'SELECT deleted_at FROM pages WHERE id = $1',
+      [standaloneId],
+    );
+    expect(res.rows[0]!.deleted_at).toBeNull(); // row untouched
   });
 
   // ── revival cross-check (#766 review) ────────────────────────────────────

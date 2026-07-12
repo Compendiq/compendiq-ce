@@ -1528,9 +1528,13 @@ async function detectDeletedPages(
     );
   }
 
-  // Local non-deleted rows for this space.
+  // Local non-deleted rows for this space. Only rows backed by a Confluence page
+  // are reconcilable — standalone KB articles carry a space_key but a NULL
+  // confluence_id and have no upstream to confirm against. Excluding them here
+  // (mirroring the guard in purgeDeletedPages) keeps a NULL id from becoming a
+  // bogus candidate that fires getPage(null) and aborts the sync (#905).
   const existingResult = await query<{ confluence_id: string }>(
-    'SELECT confluence_id FROM pages WHERE space_key = $1 AND deleted_at IS NULL',
+    'SELECT confluence_id FROM pages WHERE space_key = $1 AND deleted_at IS NULL AND confluence_id IS NOT NULL',
     [spaceKey],
   );
 
