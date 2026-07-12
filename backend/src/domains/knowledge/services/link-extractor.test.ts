@@ -200,6 +200,22 @@ function makeClient(opts: {
       }
       if (s.includes('SELECT id, body_html FROM pages')) {
         opts.onPageSelect?.(s, params);
+        // Incremental scan (`id = ANY` / `LIKE ANY`) is a single fetch.
+        if (s.includes('LIKE ANY') || s.includes('id = ANY')) {
+          return { rows: opts.pageRows, rowCount: opts.pageRows.length };
+        }
+        // Full-recompute keyset pagination (#908): return rows with id > $1,
+        // ascending, capped at the $2 LIMIT — then an empty batch terminates.
+        if (s.includes('id > $')) {
+          const cursor = Number(params?.[0] ?? 0);
+          const limit = Number(params?.[1] ?? opts.pageRows.length);
+          const batch = opts.pageRows
+            .filter((r) => r.id > cursor)
+            .sort((a, b) => a.id - b.id)
+            .slice(0, limit);
+          return { rows: batch, rowCount: batch.length };
+        }
+        // Legacy unpaginated full fetch (pre-fix): one result set.
         return { rows: opts.pageRows, rowCount: opts.pageRows.length };
       }
       if (s.includes('INSERT INTO page_relationships')) {
@@ -243,6 +259,50 @@ describe('runExplicitLinkProducer — Finding 2 (producer contract)', () => {
       typeof c[0] === 'string' && (c[0] as string).includes('SELECT id, title FROM pages'),
     );
     expect(titleCall).toBeDefined();
+  });
+
+  it('full-mode recompute keyset-paginates the corpus instead of one unbounded SELECT (#908)', async () => {
+    // The full scan must never buffer/parse the whole corpus in one result
+    // set. Each page-select is a bounded keyset query (`id > $` / `ORDER BY
+    // id` / `LIMIT`), the cursor advances across batches, and the resulting
+    // edge count is identical to the old single-query behavior.
+    const titleRows = [
+      { id: 1, title: 'A' },
+      { id: 2, title: 'B' },
+      { id: 3, title: 'C' },
+    ];
+    // Chain 1→2→3: two edges total (1↔2, 2↔3).
+    const pageRows = [
+      { id: 1, body_html: '<a href="/pages/2">to 2</a>' },
+      { id: 2, body_html: '<a href="/pages/3">to 3</a>' },
+      { id: 3, body_html: '<p>leaf</p>' },
+    ];
+    const selectSqls: string[] = [];
+    const selectCursors: unknown[] = [];
+    const client = makeClient({
+      titleRows,
+      pageRows,
+      onPageSelect: (sql, params) => {
+        selectSqls.push(sql);
+        selectCursors.push(params?.[0]);
+      },
+    });
+
+    const count = await runExplicitLinkProducer(client as unknown as PoolClient);
+
+    // Every full-mode page-select is a bounded keyset query.
+    expect(selectSqls.length).toBeGreaterThan(0);
+    for (const sql of selectSqls) {
+      expect(sql).toContain('id > $');
+      expect(sql).toContain('ORDER BY id');
+      expect(sql).toContain('LIMIT');
+    }
+    // Multiple keyset queries were issued and the cursor advanced past 0.
+    expect(selectSqls.length).toBeGreaterThan(1);
+    expect(selectCursors[0]).toBe(0);
+    expect(selectCursors.some((c) => Number(c) > 0)).toBe(true);
+    // Correctness preserved: edge output unchanged vs the single-query scan.
+    expect(count).toBe(2);
   });
 });
 

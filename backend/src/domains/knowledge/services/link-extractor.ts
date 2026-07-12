@@ -39,6 +39,13 @@ import { logger } from '../../../core/utils/logger.js';
 const APP_PAGE_PATH_RE = /^\/pages\/(\d+)(?:\/|$|\?|#)/;
 const CONFLUENCE_PAGE_HASH_PREFIX = '#confluence-page:';
 
+/**
+ * Keyset page size for the full-recompute corpus scan (#908). Bounds how much
+ * `body_html` is buffered/JSDOM-parsed in memory at once; each batch's rows are
+ * released before the next fetch instead of materialising the whole corpus.
+ */
+const FULL_SCAN_BATCH_SIZE = 500;
+
 interface ExtractedLink {
   /** Internal pages.id of the link target. */
   targetPageId: number;
@@ -228,37 +235,13 @@ export async function runExplicitLinkProducer(
 
   const useIncremental = changedPageIds && changedPageIds.length > 0;
 
-  let pagesResult: { rows: { id: number; body_html: string | null }[] };
-  if (useIncremental) {
-    // Build the LIKE-pattern list for the "find referrers" pass. Anchor
-    // each pattern with `%/pages/<id>%` (catches both relative `/pages/42`
-    // and absolute `https://host/pages/42`) and `%#confluence-page:<title>%`
-    // for the Confluence-sync placeholder shape. Substring patterns are
-    // intentionally loose — any false-positive page just gets re-parsed by
-    // JSDOM and contributes 0 edges, which is correct (idempotent).
-    const idArr = Array.from(changedPageIds!);
-    const patterns: string[] = [];
-    for (const id of idArr) {
-      patterns.push(`%/pages/${id}%`);
-      const title = idToTitle.get(id);
-      if (title && title.length > 0) {
-        patterns.push(`%#confluence-page:${escapeLikePattern(title)}%`);
-      }
-    }
-    pagesResult = await client.query<{ id: number; body_html: string | null }>(
-      `SELECT id, body_html FROM pages
-       WHERE deleted_at IS NULL
-         AND (id = ANY($1::int[]) OR body_html LIKE ANY($2::text[]))`,
-      [idArr, patterns],
-    );
-  } else {
-    pagesResult = await client.query<{ id: number; body_html: string | null }>(
-      `SELECT id, body_html FROM pages WHERE deleted_at IS NULL`,
-    );
-  }
-
   let edgesWritten = 0;
-  for (const page of pagesResult.rows) {
+  let pageCount = 0;
+
+  // Parse one page's body_html and persist its (source → target) edges. Shared
+  // by both scan modes so the parse+INSERT loop stays identical regardless of
+  // how the rows are fetched.
+  const writeEdgesForPage = async (page: { id: number; body_html: string | null }) => {
     const links = extractInternalLinks(page.body_html, titleToId, internalHosts);
     for (const link of links) {
       if (link.targetPageId === page.id) continue; // self-loops are noise
@@ -276,9 +259,60 @@ export async function runExplicitLinkProducer(
       );
       edgesWritten += r.rowCount ?? 0;
     }
+  };
+
+  if (useIncremental) {
+    // Build the LIKE-pattern list for the "find referrers" pass. Anchor
+    // each pattern with `%/pages/<id>%` (catches both relative `/pages/42`
+    // and absolute `https://host/pages/42`) and `%#confluence-page:<title>%`
+    // for the Confluence-sync placeholder shape. Substring patterns are
+    // intentionally loose — any false-positive page just gets re-parsed by
+    // JSDOM and contributes 0 edges, which is correct (idempotent).
+    const idArr = Array.from(changedPageIds!);
+    const patterns: string[] = [];
+    for (const id of idArr) {
+      patterns.push(`%/pages/${id}%`);
+      const title = idToTitle.get(id);
+      if (title && title.length > 0) {
+        patterns.push(`%#confluence-page:${escapeLikePattern(title)}%`);
+      }
+    }
+    const pagesResult = await client.query<{ id: number; body_html: string | null }>(
+      `SELECT id, body_html FROM pages
+       WHERE deleted_at IS NULL
+         AND (id = ANY($1::int[]) OR body_html LIKE ANY($2::text[]))`,
+      [idArr, patterns],
+    );
+    pageCount = pagesResult.rows.length;
+    for (const page of pagesResult.rows) {
+      await writeEdgesForPage(page);
+    }
+  } else {
+    // Full recompute: keyset-paginate by id so the entire corpus's body_html is
+    // never buffered/JSDOM-parsed in a single result set (#908). Each batch is
+    // processed and released before the next fetch, bounding peak memory and
+    // letting statement/lock pressure ease between batches. Output is unchanged
+    // — the parse+INSERT is identical and stays idempotent via ON CONFLICT.
+    let lastId = 0;
+    for (;;) {
+      const batch = await client.query<{ id: number; body_html: string | null }>(
+        `SELECT id, body_html FROM pages
+         WHERE deleted_at IS NULL AND id > $1
+         ORDER BY id
+         LIMIT $2`,
+        [lastId, FULL_SCAN_BATCH_SIZE],
+      );
+      if (batch.rows.length === 0) break;
+      for (const page of batch.rows) {
+        await writeEdgesForPage(page);
+      }
+      pageCount += batch.rows.length;
+      lastId = batch.rows[batch.rows.length - 1]!.id;
+    }
   }
+
   logger.info(
-    { edgesWritten, pageCount: pagesResult.rows.length, mode: useIncremental ? 'incremental' : 'full' },
+    { edgesWritten, pageCount, mode: useIncremental ? 'incremental' : 'full' },
     'explicit_link edges produced',
   );
   return edgesWritten;
