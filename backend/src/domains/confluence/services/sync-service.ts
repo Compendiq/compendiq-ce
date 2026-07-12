@@ -113,6 +113,16 @@ const RECONCILE_DEDUPE_TTL = Math.max(
 /** Lua script: only delete the lock if the caller owns it (value matches). */
 const RELEASE_LOCK_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end`;
 
+/** Lua script: only extend the lock TTL if the caller still owns it (value matches). */
+const RENEW_LOCK_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("expire", KEYS[1], ARGV[2]) else return 0 end`;
+
+/**
+ * Heartbeat interval (ms) at which a running sync re-extends its lock TTL.
+ * TTL/3 gives two renewal chances before expiry so a single slow/dropped
+ * heartbeat can't let the lock lapse mid-run (#906).
+ */
+const SYNC_LOCK_RENEW_INTERVAL_MS = Math.floor((SYNC_LOCK_TTL / 3) * 1000);
+
 /**
  * Attempt to acquire the sync worker lock via Redis SET NX EX.
  * Returns a unique lock id if acquired, or null if already held.
@@ -142,6 +152,27 @@ async function releaseSyncLock(lockId: string): Promise<void> {
     await redis.eval(RELEASE_LOCK_SCRIPT, { keys: [SYNC_LOCK_KEY], arguments: [lockId] });
   } catch (err) {
     logger.error({ err }, 'Failed to release sync lock');
+  }
+}
+
+/**
+ * Re-extend the sync worker lock's TTL, but only while this caller still owns
+ * it (Lua ownership check mirrors {@link releaseSyncLock}). A sync run that
+ * outlasts the fixed {@link SYNC_LOCK_TTL} would otherwise let the lock expire
+ * and a second worker start concurrently — this heartbeat keeps mutual
+ * exclusion in force for the whole run (#906). Best-effort: a Redis hiccup is
+ * logged and the run continues (the TTL is the safety net if renewals stop).
+ */
+async function renewSyncLock(lockId: string): Promise<void> {
+  const redis = getRedisClient();
+  if (!redis) return;
+  try {
+    await redis.eval(RENEW_LOCK_SCRIPT, {
+      keys: [SYNC_LOCK_KEY],
+      arguments: [lockId, String(SYNC_LOCK_TTL)],
+    });
+  } catch (err) {
+    logger.error({ err }, 'Failed to renew sync lock');
   }
 }
 
@@ -1844,6 +1875,12 @@ export async function runScheduledSync(): Promise<number> {
   const lockId = await acquireSyncLock();
   if (!lockId) return 0;
 
+  // Keep the lock alive for the whole run so long syncs don't let the fixed
+  // TTL expire and admit a second concurrent worker (#906).
+  const heartbeat = setInterval(() => {
+    void renewSyncLock(lockId);
+  }, SYNC_LOCK_RENEW_INTERVAL_MS);
+
   try {
     const users = await query<{ user_id: string }>(
       `SELECT DISTINCT us.user_id FROM user_settings us
@@ -1866,6 +1903,7 @@ export async function runScheduledSync(): Promise<number> {
     logger.error({ err }, 'Background sync worker error');
     return 0;
   } finally {
+    clearInterval(heartbeat);
     await releaseSyncLock(lockId);
   }
 }
@@ -1881,6 +1919,12 @@ export function startSyncWorker(intervalMinutes = 15): void {
   syncIntervalHandle = setInterval(async () => {
     const lockId = await acquireSyncLock();
     if (!lockId) return; // another process holds the lock
+
+    // Keep the lock alive for the whole run so long syncs don't let the fixed
+    // TTL expire and admit a second concurrent worker (#906).
+    const heartbeat = setInterval(() => {
+      void renewSyncLock(lockId);
+    }, SYNC_LOCK_RENEW_INTERVAL_MS);
 
     try {
       // Get all users with configured connections and RBAC space assignments
@@ -1903,6 +1947,7 @@ export function startSyncWorker(intervalMinutes = 15): void {
     } catch (err) {
       logger.error({ err }, 'Background sync worker error');
     } finally {
+      clearInterval(heartbeat);
       await releaseSyncLock(lockId);
     }
   }, intervalMs);

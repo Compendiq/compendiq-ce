@@ -107,7 +107,7 @@ vi.mock('../../../core/services/redis-cache.js', () => ({
 }));
 
 // Now import the module under test
-import { getSyncStatus, setSyncStatus, startSyncWorker, stopSyncWorker, syncUser } from './sync-service.js';
+import { getSyncStatus, setSyncStatus, startSyncWorker, stopSyncWorker, syncUser, runScheduledSync } from './sync-service.js';
 import { query } from '../../../core/db/postgres.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { cleanPageAttachments } from './attachment-handler.js';
@@ -315,6 +315,81 @@ describe('sync-service', () => {
       startSyncWorker(15);
 
       expect(setIntervalSpy).toHaveBeenCalledOnce();
+    });
+  });
+
+  // ── lock heartbeat / renewal (#906) ───────────────────────────────────────
+
+  describe('sync lock heartbeat (#906)', () => {
+    /**
+     * Drive a `runScheduledSync()` whose single user's sync is held open on a
+     * gate, then advance fake timers past the lock-renewal interval (TTL/3 =
+     * 200s) while the run is still in-flight. Before the fix nothing re-extends
+     * the lock, so its fixed 600s TTL lapses mid-run and a second worker could
+     * start concurrently. After the fix the ownership-checked renew script
+     * fires on each heartbeat and stops once the run finishes.
+     */
+    function setupOneSlowUser() {
+      mockRedisSet.mockResolvedValue('OK'); // lock acquired
+      mockRedisEval.mockResolvedValue(1);
+
+      let releaseSpaces!: () => void;
+      const spacesGate = new Promise<string[]>((resolve) => {
+        releaseSpaces = () => resolve([]);
+      });
+      // syncUser awaits getUserAccessibleSpaces right after building the client;
+      // keeping it pending holds the whole run open across the heartbeat window.
+      vi.mocked(getUserAccessibleSpaces).mockReturnValue(spacesGate);
+
+      vi.mocked(query).mockImplementation(async (sql: string) => {
+        const s = typeof sql === 'string' ? sql : '';
+        const empty = { rows: [], rowCount: 0, command: '', oid: 0, fields: [] } as QueryResult;
+        if (s.includes('SELECT DISTINCT us.user_id')) {
+          return { rows: [{ user_id: 'user-1' }], rowCount: 1, command: '', oid: 0, fields: [] } as QueryResult;
+        }
+        if (s.includes('confluence_url') && s.includes('user_settings')) {
+          return {
+            rows: [{ confluence_url: 'https://confluence.test', confluence_pat: 'encrypted-pat' }],
+            rowCount: 1, command: '', oid: 0, fields: [],
+          } as QueryResult;
+        }
+        return empty;
+      });
+
+      return { releaseSpaces: () => releaseSpaces() };
+    }
+
+    const renewCalls = () =>
+      mockRedisEval.mock.calls.filter(
+        (c) => typeof c[0] === 'string' && (c[0] as string).includes('redis.call("expire"'),
+      );
+
+    it('renews the lock TTL while a long-running sync is in flight', async () => {
+      const { releaseSpaces } = setupOneSlowUser();
+
+      const runPromise = runScheduledSync();
+      // Let the lock be acquired and the run reach the pending spaces gate.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(renewCalls()).toHaveLength(0);
+
+      // Cross one heartbeat window (TTL/3 = 200s) with the run still pending.
+      await vi.advanceTimersByTimeAsync(200_000);
+
+      expect(renewCalls().length).toBeGreaterThanOrEqual(1);
+      expect(mockRedisEval).toHaveBeenCalledWith(
+        expect.stringContaining('redis.call("expire", KEYS[1], ARGV[2])'),
+        expect.objectContaining({
+          keys: ['sync:worker:lock'],
+          arguments: [expect.any(String), '600'],
+        }),
+      );
+
+      // Finish the run and confirm the heartbeat stops (interval cleared).
+      releaseSpaces();
+      await runPromise;
+      const afterRun = renewCalls().length;
+      await vi.advanceTimersByTimeAsync(400_000);
+      expect(renewCalls().length).toBe(afterRun);
     });
   });
 
