@@ -46,9 +46,14 @@ function buildTree(pages: PageTreeItem[], homepageId?: string | null): TreeNode[
     }
   });
 
-  // Sort children alphabetically
+  // #959: order siblings by the persisted sortOrder first (set by drag-reorder
+  // via PUT /pages/:id/reorder), falling back to title. Without this the tree
+  // always re-sorted alphabetically, so a drop snapped straight back.
+  const bySortOrderThenTitle = (a: TreeNode, b: TreeNode) =>
+    a.page.sortOrder - b.page.sortOrder || a.page.title.localeCompare(b.page.title);
+
   function sortChildren(nodes: TreeNode[]) {
-    nodes.sort((a, b) => a.page.title.localeCompare(b.page.title));
+    nodes.sort(bySortOrderThenTitle);
     nodes.forEach((n) => sortChildren(n.children));
   }
   sortChildren(roots);
@@ -69,9 +74,7 @@ function buildTree(pages: PageTreeItem[], homepageId?: string | null): TreeNode[
       // keep the homepage visible so the tree doesn't render a false
       // "empty space" state above a "1 page in <SPACE>" footer.
       if (withoutHome.length > 0) {
-        return withoutHome.sort((a, b) =>
-          a.page.title.localeCompare(b.page.title),
-        );
+        return withoutHome.sort(bySortOrderThenTitle);
       }
     }
   }

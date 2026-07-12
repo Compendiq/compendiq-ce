@@ -610,6 +610,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       title: string;
       page_type: string;
       parent_numeric_id: number | null;
+      sort_order: number;
       labels: string[];
       last_modified_at: Date | null;
       embedding_dirty: boolean;
@@ -617,8 +618,12 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       embedded_at: Date | null;
       embedding_error: string | null;
     }>(
+      // #959: order by sort_order first so a persisted drag-reorder (written by
+      // PUT /pages/:id/reorder) survives the tree refetch instead of snapping
+      // back to alphabetical order. Confluence pages default to sort_order 0,
+      // so they still fall back to title order within each sibling group.
       `SELECT cp.id, cp.confluence_id, cp.space_key, cp.title, cp.page_type,
-              parent_page.id as parent_numeric_id,
+              parent_page.id as parent_numeric_id, cp.sort_order,
               cp.labels, cp.last_modified_at,
               cp.embedding_dirty, cp.embedding_status, cp.embedded_at, cp.embedding_error
        FROM pages cp
@@ -627,7 +632,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
          OR CAST(parent_page.id AS TEXT) = cp.parent_id
        ) AND parent_page.deleted_at IS NULL
        ${treeWhereClause}
-       ORDER BY cp.title ASC`,
+       ORDER BY cp.sort_order ASC, cp.title ASC`,
       values,
     );
 
@@ -638,6 +643,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         title: row.title,
         pageType: row.page_type ?? 'page',
         parentId: row.parent_numeric_id ? String(row.parent_numeric_id) : null,
+        sortOrder: row.sort_order,
         labels: row.labels,
         lastModifiedAt: row.last_modified_at,
         embeddingDirty: row.embedding_dirty,

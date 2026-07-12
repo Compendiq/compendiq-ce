@@ -123,6 +123,7 @@ describe('GET /api/pages/tree', () => {
           space_key: 'DEV',
           title: 'Root Page',
           parent_numeric_id: null,
+          sort_order: 0,
           labels: ['architecture'],
           last_modified_at: new Date('2026-03-01'),
           embedding_dirty: false,
@@ -159,6 +160,7 @@ describe('GET /api/pages/tree', () => {
       title: 'Root Page',
       pageType: 'page',
       parentId: null,
+      sortOrder: 0,
       labels: ['architecture'],
       lastModifiedAt: '2026-03-01T00:00:00.000Z',
       embeddingDirty: false,
@@ -166,6 +168,34 @@ describe('GET /api/pages/tree', () => {
       embeddedAt: '2026-03-01T00:00:00.000Z',
     });
     expect(body.items[1].parentId).toBe('10');
+  });
+
+  it('should return sort_order and order siblings by it (#959)', async () => {
+    // Local spaces lookup returns a local space
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ space_key: 'MY_NOTES' }] });
+    // Tree pages: two siblings whose stored sort_order (B before A) deliberately
+    // contradicts alphabetical order, mirroring a user drag-reorder.
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [
+        { id: 2, confluence_id: null, space_key: 'MY_NOTES', title: 'Page B', page_type: 'page', parent_numeric_id: null, sort_order: 1, labels: [], last_modified_at: null, embedding_dirty: false, embedding_status: 'not_embedded', embedded_at: null, embedding_error: null },
+        { id: 1, confluence_id: null, space_key: 'MY_NOTES', title: 'Page A', page_type: 'page', parent_numeric_id: null, sort_order: 2, labels: [], last_modified_at: null, embedding_dirty: false, embedding_status: 'not_embedded', embedded_at: null, embedding_error: null },
+      ],
+    });
+
+    const response = await app.inject({ method: 'GET', url: '/api/pages/tree' });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.payload);
+
+    // (a) The SQL must select and order by sort_order so a persisted drag
+    //     reorder survives the tree refetch instead of snapping back to title.
+    const sql = mockQueryFn.mock.calls[1][0] as string;
+    expect(sql).toContain('sort_order');
+    expect(sql).toMatch(/ORDER BY[\s\S]*sort_order/i);
+
+    // (b) Each item exposes sortOrder so the frontend can honour the order.
+    expect(body.items[0].sortOrder).toBe(1);
+    expect(body.items[1].sortOrder).toBe(2);
   });
 
   it('should filter by spaceKey', async () => {
