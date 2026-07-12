@@ -965,7 +965,11 @@ export function htmlToConfluence(html: string): string {
     (_, content: string) => {
       // Unescape HTML entities back to raw text for CDATA
       const raw = he.decode(content);
-      return `<ac:plain-text-body><![CDATA[${raw}]]></ac:plain-text-body>`;
+      // #900: a literal ']]>' inside the content would prematurely close the
+      // CDATA section, producing invalid XHTML. Split it across two adjacent
+      // CDATA sections (the standard escape) so the terminator survives intact.
+      const safe = raw.replace(/\]\]>/g, ']]]]><![CDATA[>');
+      return `<ac:plain-text-body><![CDATA[${safe}]]></ac:plain-text-body>`;
     },
   );
 

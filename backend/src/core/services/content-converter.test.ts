@@ -434,6 +434,20 @@ describe('content-converter', () => {
       expect(xhtml).toContain('<![CDATA[a < b && c > d]]>');
     });
 
+    it('splits embedded CDATA terminators in code block content (#900)', () => {
+      const xhtml = htmlToConfluence('<pre><code>printf("]]&gt;");</code></pre>');
+      // The literal ]]> must be split across two adjacent CDATA sections so
+      // the wrapping section is not prematurely closed.
+      expect(xhtml).toContain('<![CDATA[printf("]]]]><![CDATA[>");]]>');
+    });
+
+    it('round-trips code blocks containing ]]> (#900)', () => {
+      const html = '<pre><code>printf("]]&gt;");</code></pre>';
+      const xhtml = htmlToConfluence(html);
+      const roundTripped = confluenceToHtml(xhtml);
+      expect(roundTripped).toContain('printf("]]&gt;");');
+    });
+
     it('round-trips code blocks', () => {
       const html = confluenceToHtml(CODE_BLOCK_PAGE);
       const xhtml = htmlToConfluence(html);
