@@ -1076,5 +1076,72 @@ describe('PageViewPage', () => {
     });
   });
 
+  // #943 — In-place refetches of the SAME page (tag add/remove, resync,
+  // requality, drawio save → invalidateQueries(['pages', id])) hand React a
+  // fresh page object with an unchanged id + version. The scroll-reset effect
+  // must key off navigation (id / version), not the page object identity;
+  // otherwise every background invalidation yanks the reader's scroll position
+  // back to the top of the article. A version bump (a genuinely new revision)
+  // still resets, matching navigation semantics.
+  describe('scroll position preservation on in-place refetch (#943)', () => {
+    it('does not reset scroll when the page object changes but id + version are unchanged', async () => {
+      const scrollContainer = document.createElement('div');
+      scrollContainer.setAttribute('data-scroll-container', '');
+      document.body.appendChild(scrollContainer);
+      const scrollSpy = vi.spyOn(scrollContainer, 'scrollTo');
+
+      currentMockPage = mockPage;
+      const { rerender } = render(<PageViewPage />, { wrapper: createWrapper() });
+
+      // Initial mount scrolls to top (navigation reset). Wait for it, then
+      // clear the spy so we only observe the refetch behaviour.
+      await waitFor(() => {
+        expect(scrollSpy).toHaveBeenCalledWith({ top: 0, left: 0, behavior: 'auto' });
+      });
+      scrollSpy.mockClear();
+
+      // Simulate an optimistic write / invalidation: a brand-new page object
+      // with the SAME id and version (e.g. a label was added).
+      currentMockPage = {
+        ...mockPage,
+        labels: [...mockPage.labels, 'newly-added'],
+      };
+      rerender(<PageViewPage />);
+
+      // Give any effects + double-rAF a chance to fire, then assert the scroll
+      // container was NOT reset — the reader keeps their place.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      expect(scrollSpy).not.toHaveBeenCalled();
+
+      scrollContainer.remove();
+    });
+
+    it('still resets scroll when the page version changes (a genuine new revision)', async () => {
+      const scrollContainer = document.createElement('div');
+      scrollContainer.setAttribute('data-scroll-container', '');
+      document.body.appendChild(scrollContainer);
+      const scrollSpy = vi.spyOn(scrollContainer, 'scrollTo');
+
+      currentMockPage = mockPage;
+      const { rerender } = render(<PageViewPage />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(scrollSpy).toHaveBeenCalledWith({ top: 0, left: 0, behavior: 'auto' });
+      });
+      scrollSpy.mockClear();
+
+      currentMockPage = { ...mockPage, version: mockPage.version + 1 };
+      rerender(<PageViewPage />);
+
+      await waitFor(() => {
+        expect(scrollSpy).toHaveBeenCalledWith({ top: 0, left: 0, behavior: 'auto' });
+      });
+
+      scrollContainer.remove();
+    });
+  });
+
 });
 

@@ -239,10 +239,21 @@ export function PageViewPage() {
     scrollArticleToTop();
   }, [id]);
 
+  // Reset scroll to the top only on navigation-like transitions: a new page
+  // id, or a genuine new revision (version bump). Keying off `page` object
+  // identity — as this once did — reran on every in-place refetch (label
+  // add/remove, resync, requality, drawio save all invalidate ['pages', id]
+  // and hand React a fresh object with the same version), yanking the reader
+  // back to the top mid-article (#943). The `if (!page) return` guard covers
+  // the initial loading render.
   useEffect(() => {
     if (!page) return;
     scrollArticleToTop();
-  }, [id, page?.version, page]);
+    // `page` is referenced only by the null guard; depending on its object
+    // identity is exactly the bug (#943). Navigation is captured by id +
+    // page?.version, so those are the only deps we want.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, page?.version]);
 
   const handleImageClick = useCallback((src: string, alt: string) => {
     setLightboxSrc({ alt, src });
