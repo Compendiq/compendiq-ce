@@ -10,6 +10,7 @@ import {
   getRedisClient,
   acquireEmbeddingLock,
   releaseEmbeddingLock,
+  refreshEmbeddingLock,
   isEmbeddingLocked,
   listActiveEmbeddingLocks,
   forceReleaseEmbeddingLock,
@@ -199,6 +200,59 @@ describe('redis-cache embedding lock', () => {
       setRedisClient(null as any);
 
       await expect(releaseEmbeddingLock('user-1', 'some-lock-id')).resolves.toBeUndefined();
+    });
+  });
+
+  describe('refreshEmbeddingLock', () => {
+    it('renews the TTL and reports still-mine when the stored value matches lockId (issue #913)', async () => {
+      // The refresh Lua script returns the current holder value (ARGV[1] here,
+      // because it matches); on a match it also PEXPIREs the key. The mock
+      // echoes the stored value the script would GET back.
+      mockRedis.eval.mockImplementation(
+        async (_script: string, opts: { arguments: string[] }) => opts.arguments[0],
+      );
+      const lockId = 'lock-id-abc';
+
+      const result = await refreshEmbeddingLock('user-42', lockId);
+
+      expect(result).toBe(lockId); // still mine
+      expect(mockRedis.eval).toHaveBeenCalledTimes(1);
+      const [script, opts] = mockRedis.eval.mock.calls[0];
+      // Single atomic script: ownership check gates the TTL bump.
+      expect((script as string).toLowerCase()).toContain('get');
+      expect((script as string).toLowerCase()).toContain('pexpire');
+      expect((script as string)).toEqual(expect.stringContaining('== ARGV[1]'));
+      expect(opts).toEqual({
+        keys: ['embedding:lock:user-42'],
+        // arguments = [lockId, ttlMs]. TTL is the full EMBEDDING_LOCK_TTL_MS.
+        arguments: [lockId, '3600000'],
+      });
+    });
+
+    it('reports the foreign holder value (not-mine) so callers can abort on force-release', async () => {
+      // Key was re-acquired/force-released by another process: GET returns a
+      // different value, the script does NOT PEXPIRE, and returns that value.
+      mockRedis.eval.mockResolvedValue('someone-elses-lock');
+
+      const result = await refreshEmbeddingLock('user-42', 'my-lock');
+
+      expect(result).toBe('someone-elses-lock');
+      expect(result).not.toBe('my-lock');
+    });
+
+    it('returns null when the lock key is gone (expired/force-released)', async () => {
+      mockRedis.eval.mockResolvedValue(null);
+
+      const result = await refreshEmbeddingLock('user-42', 'my-lock');
+
+      expect(result).toBeNull();
+    });
+
+    it('returns null and does not throw when Redis client is not available', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      setRedisClient(null as any);
+
+      await expect(refreshEmbeddingLock('user-1', 'my-lock')).resolves.toBeNull();
     });
   });
 

@@ -5,7 +5,7 @@ import { generateEmbedding } from './openai-compatible-client.js';
 import { htmlToText } from '../../../core/services/content-converter.js';
 import { logger } from '../../../core/utils/logger.js';
 import { safeIntOr } from '../../../core/utils/safe-int.js';
-import { invalidateGraphCache, acquireEmbeddingLock, releaseEmbeddingLock, isEmbeddingLocked, getRedisClient, listActiveEmbeddingLocks } from '../../../core/services/redis-cache.js';
+import { invalidateGraphCache, acquireEmbeddingLock, releaseEmbeddingLock, refreshEmbeddingLock, isEmbeddingLocked, getRedisClient, listActiveEmbeddingLocks } from '../../../core/services/redis-cache.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { visiblePagesPredicate } from '../../../core/services/page-visibility.js';
 import { CircuitBreakerOpenError, getProviderBreaker } from '../../../core/services/circuit-breaker.js';
@@ -569,7 +569,6 @@ export async function processDirtyPages(
     // no duplicate/destructive release happens.
     const GUARD_CHECK_EVERY = 20;
     let pagesProcessedSinceGuardCheck = 0;
-    const guardLockKey = `embedding:lock:${userId}`;
 
     for (;;) {
       if (batchAborted) break;
@@ -581,7 +580,10 @@ export async function processDirtyPages(
         const redis = getRedisClient();
         if (redis) {
           try {
-            const stillMine = await redis.get(guardLockKey);
+            // Renew-if-mine: bump the lock TTL while we still own it (issue
+            // #913) so a legitimately long run never expires mid-flight, and
+            // read back the current holder to detect force-release / re-acquire.
+            const stillMine = await refreshEmbeddingLock(userId, lockId);
             if (stillMine !== lockId) {
               logger.warn(
                 { userId, expected: lockId, actual: stillMine },
@@ -637,7 +639,10 @@ export async function processDirtyPages(
           const redis = getRedisClient();
           if (redis) {
             try {
-              const stillMine = await redis.get(guardLockKey);
+              // Renew-if-mine: bump the lock TTL while we still own it (issue
+            // #913) so a legitimately long run never expires mid-flight, and
+            // read back the current holder to detect force-release / re-acquire.
+            const stillMine = await refreshEmbeddingLock(userId, lockId);
               if (stillMine !== lockId) {
                 logger.warn(
                   { userId, expected: lockId, actual: stillMine },

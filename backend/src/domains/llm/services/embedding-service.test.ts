@@ -26,6 +26,9 @@ const mocks = vi.hoisted(() => ({
   toSql: vi.fn().mockReturnValue('[0.1,0.2]'),
   acquireEmbeddingLock: vi.fn().mockResolvedValue('fake-lock-id-for-tests'),
   releaseEmbeddingLock: vi.fn().mockResolvedValue(undefined),
+  // Holder-epoch guard (issue #913) renews-if-mine every 20 pages and returns
+  // the current holder value. Default: still ours (guard does not fire).
+  refreshEmbeddingLock: vi.fn().mockResolvedValue('fake-lock-id-for-tests'),
   isEmbeddingLocked: vi.fn().mockResolvedValue(false),
   listActiveEmbeddingLocks: vi.fn().mockResolvedValue([]),
   forceReleaseEmbeddingLock: vi.fn().mockResolvedValue({ released: true, previousHolderEpoch: null }),
@@ -75,6 +78,7 @@ vi.mock('../../../core/utils/logger.js', () => ({
 vi.mock('../../../core/services/redis-cache.js', () => ({
   acquireEmbeddingLock: (...args: unknown[]) => mocks.acquireEmbeddingLock(...args),
   releaseEmbeddingLock: (...args: unknown[]) => mocks.releaseEmbeddingLock(...args),
+  refreshEmbeddingLock: (...args: unknown[]) => mocks.refreshEmbeddingLock(...args),
   isEmbeddingLocked: (...args: unknown[]) => mocks.isEmbeddingLocked(...args),
   listActiveEmbeddingLocks: (...args: unknown[]) => mocks.listActiveEmbeddingLocks(...args),
   forceReleaseEmbeddingLock: (...args: unknown[]) => mocks.forceReleaseEmbeddingLock(...args),
@@ -177,6 +181,8 @@ describe('embedding-service', () => {
       if (typeof key === 'string' && key.startsWith('embedding:lock:')) return FAKE_LOCK_ID;
       return null;
     });
+    // Holder-epoch guard renew-if-mine (issue #913): default still-ours.
+    mocks.refreshEmbeddingLock.mockResolvedValue(FAKE_LOCK_ID);
     mocks.enqueueJob.mockResolvedValue('reembed-all');
     // Default: htmlToText returns non-trivial text so embedPage proceeds
     mocks.htmlToText.mockReturnValue('Some substantial page content for embedding that is long enough');
@@ -1922,6 +1928,7 @@ describe('chunkText', () => {
       mocks.toSql.mockReturnValue('[0.1,0.2]');
       mocks.acquireEmbeddingLock.mockResolvedValue(FAKE_LOCK_ID);
       mocks.releaseEmbeddingLock.mockResolvedValue(undefined);
+      mocks.refreshEmbeddingLock.mockResolvedValue(FAKE_LOCK_ID);
       mocks.isEmbeddingLocked.mockResolvedValue(false);
       mocks.invalidateGraphCache.mockResolvedValue(undefined);
       mocks.htmlToText.mockReturnValue('Some substantial page content for embedding that is long enough');
@@ -1975,11 +1982,12 @@ describe('chunkText', () => {
       mocks.getPool.mockReturnValue({ connect: async () => mockClient });
       mockClient.query.mockResolvedValue({ rows: [], rowCount: 1 });
 
-      // Holder-epoch guard: every redisGet returns null → the VERY FIRST
-      // guard check (after page 20) detects the mismatch and aborts. We
-      // expect ≤ 20 processed because the inner loop breaks immediately on
-      // page 21 before any more embedPage calls.
-      mocks.redisGet.mockImplementation(async () => null);
+      // Holder-epoch guard (issue #913): the renew-if-mine call returns null
+      // (lock gone / force-released) → the VERY FIRST guard check (after page
+      // 20) detects the mismatch and aborts. We expect ≤ 20 processed because
+      // the inner loop breaks immediately on page 21 before any more embedPage
+      // calls.
+      mocks.refreshEmbeddingLock.mockResolvedValue(null);
 
       const { processed, errors } = await processDirtyPages('alice');
 
@@ -1987,8 +1995,8 @@ describe('chunkText', () => {
       expect(processed).toBeLessThanOrEqual(20);
       expect(errors).toBe(0);
       expect(mocks.releaseEmbeddingLock).toHaveBeenCalledWith('alice', FAKE_LOCK_ID);
-      // Guard check was actually invoked.
-      expect(mocks.redisGet).toHaveBeenCalledWith('embedding:lock:alice');
+      // Guard check was actually invoked with our lockId (renews-if-mine).
+      expect(mocks.refreshEmbeddingLock).toHaveBeenCalledWith('alice', FAKE_LOCK_ID);
     });
   });
 });
