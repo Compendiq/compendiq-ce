@@ -264,6 +264,11 @@ export async function hybridSearch(
   // Start keyword search outside the try block so DB errors in keyword
   // search are not silently caught as "embedding failures".
   const keywordPromise = keywordSearch(userId, question, stageLimit);
+  // Observe the promise so a rejection can never go unhandled if the embedding
+  // path short-circuits (e.g. rethrowing CircuitBreakerOpenError) before the
+  // `await keywordPromise` below runs. This no-op observer does not consume the
+  // result — the await at the end still throws/propagates in the normal path.
+  keywordPromise.catch(() => {});
 
   try {
     // Resolve the `embedding` use-case to the provider+model that generated

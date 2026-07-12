@@ -372,6 +372,36 @@ describe('RAG Service', () => {
       );
     });
 
+    it('should not orphan the keyword promise when re-throwing CircuitBreakerOpenError', async () => {
+      // Regression for #921: on the CircuitBreakerOpenError rethrow path the
+      // in-flight keywordSearch promise is never awaited. If its underlying DB
+      // query rejects, that rejection must still be observed — otherwise it
+      // surfaces as an unhandledRejection that can crash the process.
+      const unhandled: unknown[] = [];
+      const onUnhandled = (reason: unknown) => unhandled.push(reason);
+      process.on('unhandledRejection', onUnhandled);
+      try {
+        const cbError = new CircuitBreakerOpenError('LLM server temporarily unavailable');
+        mocks.mockGenerateEmbedding.mockRejectedValue(cbError);
+        mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
+
+        // keywordSearch's DB query rejects — this is the promise that gets
+        // orphaned when the CB error short-circuits the function.
+        mocks.mockQuery.mockRejectedValue(new Error('connection terminated'));
+
+        await expect(hybridSearch('user-1', 'test query')).rejects.toThrow(
+          'LLM server temporarily unavailable',
+        );
+
+        // Flush microtasks/timers so any orphaned rejection would fire.
+        await new Promise((resolve) => setTimeout(resolve, 10));
+
+        expect(unhandled).toEqual([]);
+      } finally {
+        process.off('unhandledRejection', onUnhandled);
+      }
+    });
+
     it('should record keyword_fallback search type when embedding fails', async () => {
       mocks.mockGenerateEmbedding.mockRejectedValue(new Error('Ollama unreachable'));
       mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
