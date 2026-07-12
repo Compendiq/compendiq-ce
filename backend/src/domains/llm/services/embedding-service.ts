@@ -308,7 +308,7 @@ export async function embedPage(
   if (!plainText || plainText.length < 20) {
     logger.debug({ pageId, pageTitle }, 'Skipping empty/short page for embedding');
     await query(
-      'UPDATE pages SET embedding_dirty = FALSE WHERE id = $1',
+      `UPDATE pages SET embedding_dirty = FALSE, embedding_status = 'not_embedded', embedding_error = NULL WHERE id = $1`,
       [pageId],
     );
     return 0;

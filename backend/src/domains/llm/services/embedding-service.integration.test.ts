@@ -6,6 +6,7 @@ import {
   isDbAvailable,
 } from '../../../test-db-helper.js';
 import { query } from '../../../core/db/postgres.js';
+import { embedPage } from './embedding-service.js';
 import pgvector from 'pgvector';
 
 // Deterministic 1024-dim vector for fixtures
@@ -84,5 +85,48 @@ describe.skipIf(!dbAvailable)('page_embeddings (page_id, chunk_index) uniqueness
       'SELECT COUNT(*)::text AS count FROM page_embeddings',
     );
     expect(rows[0]!.count).toBe('2');
+  });
+});
+
+// Regression for #918: the empty/short-page short-circuit in embedPage cleared
+// embedding_dirty but never moved embedding_status off the transient 'embedding'
+// value set when the batch was marked. That left short pages stuck showing
+// "embedding" forever. The branch must land on the terminal 'not_embedded'.
+describe.skipIf(!dbAvailable)('embedPage short-page short-circuit — issue #918', () => {
+  beforeAll(async () => {
+    await setupTestDb();
+  }, 30_000);
+  afterAll(async () => {
+    await teardownTestDb();
+  });
+  beforeEach(async () => {
+    await truncateAllTables();
+  });
+
+  async function seedShortPage(): Promise<number> {
+    const page = await query<{ id: number }>(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html,
+                          embedding_status, embedding_dirty)
+       VALUES (gen_random_uuid()::text, 'confluence', 'DEV', 'Short', 'hi', '', '<p>hi</p>',
+               'embedding', TRUE)
+       RETURNING id`,
+    );
+    return page.rows[0]!.id;
+  }
+
+  it('clears embedding_dirty and lands on terminal not_embedded status', async () => {
+    const pageId = await seedShortPage();
+
+    // '<p>hi</p>' has <20 chars of text, so embedPage short-circuits before any
+    // LLM call — no provider mock needed.
+    const written = await embedPage('user-1', pageId, 'Short', 'DEV', '<p>hi</p>');
+    expect(written).toBe(0);
+
+    const { rows } = await query<{ embedding_status: string; embedding_dirty: boolean }>(
+      'SELECT embedding_status, embedding_dirty FROM pages WHERE id = $1',
+      [pageId],
+    );
+    expect(rows[0]!.embedding_dirty).toBe(false);
+    expect(rows[0]!.embedding_status).toBe('not_embedded');
   });
 });
