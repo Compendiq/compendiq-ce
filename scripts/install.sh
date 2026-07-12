@@ -344,6 +344,7 @@ services:
   mcp-docs:
     image: ghcr.io/compendiq/compendiq-ce-mcp-docs:__VERSION__
     environment:
+      NODE_ENV: production
       PORT: "3100"
       MCP_DOCS_HOST: "0.0.0.0"
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
