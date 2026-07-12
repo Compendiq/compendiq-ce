@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Save, Upload, LayoutTemplate, Globe, Lock } from 'lucide-react';
+import { ArrowLeft, Save, Upload, LayoutTemplate, Globe, Lock, X } from 'lucide-react';
+import * as Dialog from '@radix-ui/react-dialog';
 import { useCreatePage } from '../../shared/hooks/use-pages';
 import { useSpaces } from '../../shared/hooks/use-spaces';
 import { useTemplates, useUseTemplate, useImportMarkdown, useLocalSpaces } from '../../shared/hooks/use-standalone';
@@ -377,42 +378,57 @@ function TemplateGallery({ onSelect, onClose }: { onSelect: (html: string) => vo
     }
   };
 
+  // Radix Dialog supplies role=dialog, aria-modal, focus trap + initial focus,
+  // focus restore, Escape-to-close and overlay-click-to-close for free — the
+  // hand-rolled div had none of these (#942). Mounted already-open, so
+  // onOpenChange only ever fires for a close request.
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" data-testid="template-gallery-modal">
-      <div className="nm-card w-full max-w-lg p-6">
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-lg font-semibold">Choose a Template</h2>
-          <button onClick={onClose} className="text-muted-foreground hover:text-foreground">&times;</button>
-        </div>
-        {isLoading ? (
-          <div className="space-y-3">
-            {Array.from({ length: 3 }).map((_, i) => (
-              <div key={i} className="h-12 animate-pulse rounded bg-foreground/5" />
-            ))}
+    <Dialog.Root open onOpenChange={(next) => { if (!next) onClose(); }}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm" />
+        <Dialog.Content
+          className="nm-card fixed left-1/2 top-1/2 z-50 w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 p-6 outline-none"
+          data-testid="template-gallery-modal"
+        >
+          <div className="mb-4 flex items-center justify-between">
+            <Dialog.Title className="text-lg font-semibold">Choose a Template</Dialog.Title>
+            <Dialog.Close
+              aria-label="Close template gallery"
+              className="text-muted-foreground hover:text-foreground"
+            >
+              <X size={18} />
+            </Dialog.Close>
           </div>
-        ) : !templatesData?.length ? (
-          <p className="py-8 text-center text-sm text-muted-foreground">No templates available</p>
-        ) : (
-          <div className="max-h-80 space-y-2 overflow-y-auto">
-            {templatesData.map((tpl) => (
-              <button
-                key={tpl.id}
-                onClick={() => handleUse(tpl.id)}
-                disabled={useTemplateMutation.isPending}
-                className="nm-card-interactive flex w-full items-center justify-between p-3 text-left"
-              >
-                <div>
-                  <p className="font-medium">{tpl.title}</p>
-                  {tpl.category && (
-                    <span className="text-xs text-muted-foreground">{tpl.category}</span>
-                  )}
-                </div>
-                <LayoutTemplate size={16} className="text-muted-foreground" />
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
+          {isLoading ? (
+            <div className="space-y-3">
+              {Array.from({ length: 3 }).map((_, i) => (
+                <div key={i} className="h-12 animate-pulse rounded bg-foreground/5" />
+              ))}
+            </div>
+          ) : !templatesData?.length ? (
+            <p className="py-8 text-center text-sm text-muted-foreground">No templates available</p>
+          ) : (
+            <div className="max-h-80 space-y-2 overflow-y-auto">
+              {templatesData.map((tpl) => (
+                <button
+                  key={tpl.id}
+                  onClick={() => handleUse(tpl.id)}
+                  disabled={useTemplateMutation.isPending}
+                  className="nm-card-interactive flex w-full items-center justify-between p-3 text-left"
+                >
+                  <div>
+                    <p className="font-medium">{tpl.title}</p>
+                    {tpl.category && (
+                      <span className="text-xs text-muted-foreground">{tpl.category}</span>
+                    )}
+                  </div>
+                  <LayoutTemplate size={16} className="text-muted-foreground" />
+                </button>
+              ))}
+            </div>
+          )}
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 }

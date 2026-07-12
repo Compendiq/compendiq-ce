@@ -181,13 +181,13 @@ describe('App – ProtectedRoute setup-status fail-safe (#932)', () => {
     renderApp('/');
 
     // The authenticated user must stay in the app shell (AppLayout's header
-    // renders a "Toggle sidebar" button) rather than being redirected into
-    // the first-run wizard on a transient setup-status error. The generous
+    // renders the mobile navigation-menu toggle) rather than being redirected
+    // into the first-run wizard on a transient setup-status error. The generous
     // timeout lets useSetupStatus exhaust its pinned retries and settle into
     // the error state (mirrors useSetupStatus.test.ts).
     await waitFor(
       () => {
-        expect(screen.getByLabelText('Toggle sidebar')).toBeInTheDocument();
+        expect(screen.getByLabelText('Open navigation menu')).toBeInTheDocument();
       },
       { timeout: 8000 },
     );

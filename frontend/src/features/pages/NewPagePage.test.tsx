@@ -430,6 +430,31 @@ describe('NewPagePage', () => {
       expect(screen.queryByTestId('template-gallery-modal')).not.toBeInTheDocument();
     });
 
+    it('exposes the template gallery with role="dialog" for assistive tech', async () => {
+      templatesState.items.push({ id: 1, title: 'Meeting Notes', category: 'General' });
+
+      render(<NewPagePage />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByTestId('use-template-btn'));
+
+      expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    });
+
+    it('closes the template gallery on Escape', async () => {
+      templatesState.items.push({ id: 1, title: 'Meeting Notes', category: 'General' });
+
+      render(<NewPagePage />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByTestId('use-template-btn'));
+
+      const dialog = await screen.findByRole('dialog');
+      fireEvent.keyDown(dialog, { key: 'Escape' });
+
+      await waitFor(() => {
+        expect(screen.queryByTestId('template-gallery-modal')).not.toBeInTheDocument();
+      });
+    });
+
     it('includes the applied template content in the create payload', async () => {
       templatesState.items.push({ id: 1, title: 'Meeting Notes', category: null });
       mockUseTemplateMutateAsync.mockResolvedValueOnce({ bodyJson: null, bodyHtml: '<p>Template body</p>' });

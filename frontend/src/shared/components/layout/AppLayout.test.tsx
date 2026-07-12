@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, act } from '@testing-library/react';
+import { render, screen, fireEvent, act, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
@@ -8,10 +8,15 @@ import { useCommandPaletteStore } from '../../../stores/command-palette-store';
 import { useUiStore } from '../../../stores/ui-store';
 import * as keyboardShortcutsModule from '../../hooks/use-keyboard-shortcuts';
 
-// Mock SidebarTreeView to isolate AppLayout tests
+// Mock SidebarTreeView to isolate AppLayout tests. It renders a couple of
+// focusable controls so the mobile slide-over focus-trap can be exercised.
 vi.mock('./SidebarTreeView', () => ({
   SidebarTreeView: ({ onNavigate: _onNavigate }: { onNavigate?: () => void }) => (
-    <div data-testid="sidebar-tree-view">Tree Sidebar</div>
+    <nav data-testid="sidebar-tree-view">
+      <a href="/pages/first">First page</a>
+      <a href="/pages/second">Second page</a>
+      <button type="button">Sidebar action</button>
+    </nav>
   ),
 }));
 
@@ -164,6 +169,75 @@ describe('AppLayout', () => {
     expect(mobileBtn).toHaveAttribute('aria-expanded', 'true');
   });
 
+  it('mobile slide-over exposes dialog semantics and closes on Escape', async () => {
+    render(
+      <AppLayout>
+        <div>content</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/') },
+    );
+
+    // Open the slide-over via the hamburger toggle.
+    fireEvent.click(screen.getByLabelText('Open navigation menu'));
+
+    const slideOver = screen.getByRole('dialog', { name: 'Navigation menu' });
+    expect(slideOver).toHaveAttribute('aria-modal', 'true');
+
+    // Escape must dismiss it (AnimatePresence exit defers the unmount).
+    fireEvent.keyDown(slideOver, { key: 'Escape' });
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Navigation menu' })).not.toBeInTheDocument();
+    });
+  });
+
+  it('mobile slide-over moves focus inside on open, traps Tab, and restores focus on close', async () => {
+    render(
+      <AppLayout>
+        <div>content</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/') },
+    );
+
+    // Focus the hamburger the way a keyboard user would before activating it,
+    // so we can assert focus is restored here after the slide-over closes.
+    const toggle = screen.getByLabelText('Open navigation menu');
+    toggle.focus();
+    expect(document.activeElement).toBe(toggle);
+
+    fireEvent.click(toggle);
+    const slideOver = screen.getByRole('dialog', { name: 'Navigation menu' });
+
+    // Focus must move into the slide-over on open (not left on the trigger).
+    await waitFor(() => {
+      expect(slideOver.contains(document.activeElement)).toBe(true);
+    });
+
+    const focusables = [
+      ...within(slideOver).getAllByRole('link'),
+      ...within(slideOver).getAllByRole('button'),
+    ] as HTMLElement[];
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    expect(focusables.length).toBeGreaterThan(1);
+
+    // Tab from the last focusable wraps back to the first (contained).
+    last.focus();
+    fireEvent.keyDown(document, { key: 'Tab' });
+    expect(document.activeElement).toBe(first);
+
+    // Shift+Tab from the first focusable wraps to the last (contained).
+    first.focus();
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(last);
+
+    // Closing restores focus to the element that opened the slide-over.
+    fireEvent.keyDown(slideOver, { key: 'Escape' });
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Navigation menu' })).not.toBeInTheDocument();
+    });
+    expect(document.activeElement).toBe(toggle);
+  });
+
   it('search bar is absolutely centered in header', () => {
     render(
       <AppLayout>
@@ -309,7 +383,7 @@ describe('AppLayout', () => {
       </AppLayout>,
       { wrapper: createWrapper('/') },
     );
-    expect(screen.getByLabelText('Toggle sidebar')).toBeInTheDocument();
+    expect(screen.getByLabelText('Open navigation menu')).toBeInTheDocument();
   });
 
   it('does not have sidebar toggle button in header (moved to sidebar panel)', () => {

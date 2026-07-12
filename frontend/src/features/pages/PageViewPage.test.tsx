@@ -337,6 +337,17 @@ describe('PageViewPage', () => {
     });
   });
 
+  it('moves focus to the close button when the lightbox opens', async () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByText('Preview image'));
+
+    const closeButton = await screen.findByLabelText('Close preview');
+    await waitFor(() => {
+      expect(closeButton).toHaveFocus();
+    });
+  });
+
   it('shows save and cancel buttons in edit mode', () => {
     render(<PageViewPage />, { wrapper: createWrapper() });
 
