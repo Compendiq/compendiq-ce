@@ -1515,6 +1515,54 @@ describe('AiAssistantPage', () => {
       expect(screen.queryByTestId('streaming-cursor')).not.toBeInTheDocument();
     });
 
+    it('announces a completed answer via a primed polite live region (#937)', async () => {
+      mockModelApis();
+
+      let releaseStream: (() => void) | undefined;
+      const gate = new Promise<void>((resolve) => { releaseStream = resolve; });
+      async function* gatedStream() {
+        yield { content: 'The answer.' };
+        await gate;
+      }
+      streamSSEMock.mockReturnValue(gatedStream());
+
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.queryByText('Loading models...')).not.toBeInTheDocument();
+      });
+
+      // The answer announcer must exist EMPTY and polite before any answer, so
+      // AT watches it for content changes (mirrors the error announcer priming).
+      const announcer = screen.getByTestId('ai-answer-announcer');
+      expect(announcer).toHaveAttribute('aria-live', 'polite');
+      expect(announcer).toHaveTextContent('');
+
+      const input = screen.getByPlaceholderText('Ask a question...');
+      fireEvent.change(input, { target: { value: 'Ask me' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+
+      // While the stream is in flight the announcer stays empty — announcing
+      // mid-stream would interrupt the visible streaming answer.
+      await waitFor(() => {
+        expect(screen.getByTestId('streaming-message')).toBeInTheDocument();
+      });
+      expect(screen.getByTestId('ai-answer-announcer')).toHaveTextContent('');
+
+      // Finish the stream — the completed answer is now announced.
+      await act(async () => {
+        releaseStream?.();
+      });
+
+      await waitFor(() => {
+        expect(screen.queryByTestId('streaming-message')).not.toBeInTheDocument();
+      });
+      const done = screen.getByTestId('ai-answer-announcer');
+      expect(done).toHaveTextContent('Answer ready');
+      // A keyed child node is mounted so AT re-announces on each new answer.
+      expect(done.firstElementChild).not.toBeNull();
+    });
+
     it('commits partial content to the message list when the stream is aborted', async () => {
       mockModelApis();
 
