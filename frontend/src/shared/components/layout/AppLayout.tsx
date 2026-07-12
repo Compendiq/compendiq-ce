@@ -35,6 +35,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const singleKeyShortcutsEnabled = useUiStore((s) => s.singleKeyShortcutsEnabled);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const mobileSidebarRef = useRef<HTMLDivElement>(null);
   const isArticleRoute = /^\/pages\/[^/]+$/.test(location.pathname);
   // On /settings* we swap the Pages tree for a Settings-specific sidebar so
   // the main nav (Pages / AI / Graph) stays accessible — otherwise users land
@@ -169,15 +170,56 @@ export function AppLayout({ children }: { children: ReactNode }) {
     setMobileSidebarOpen(false);
   }, [location.pathname]);
 
-  // Escape dismisses the mobile slide-over — hand-rolled overlays otherwise
-  // trap keyboard users with no way out (#942).
+  // Focus containment for the mobile slide-over (#942): mirror the hand-rolled
+  // dialog treatment ImageLightbox uses — move focus into the panel on open,
+  // trap Tab within it, restore focus to the trigger on close — plus the
+  // Escape/overlay dismissal. Hand-rolled overlays otherwise strand keyboard
+  // and screen-reader users behind the backdrop with no way out.
   useEffect(() => {
     if (!mobileSidebarOpen) return;
+    const panel = mobileSidebarRef.current;
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+
+    const focusableSelector =
+      'a[href], button:not([disabled]), textarea:not([disabled]), ' +
+      'input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+    const getFocusable = () =>
+      panel ? Array.from(panel.querySelectorAll<HTMLElement>(focusableSelector)) : [];
+
+    // Move focus into the slide-over on open (first control, or the panel).
+    (getFocusable()[0] ?? panel)?.focus();
+
     const handleKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') closeMobileSidebar();
+      if (event.key === 'Escape') {
+        closeMobileSidebar();
+        return;
+      }
+      if (event.key !== 'Tab' || !panel) return;
+      const items = getFocusable();
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (!first || !last) {
+        event.preventDefault();
+        panel.focus();
+        return;
+      }
+      const active = document.activeElement;
+      if (event.shiftKey) {
+        if (active === first || !panel.contains(active)) {
+          event.preventDefault();
+          last.focus();
+        }
+      } else if (active === last || !panel.contains(active)) {
+        event.preventDefault();
+        first.focus();
+      }
     };
+
     document.addEventListener('keydown', handleKey);
-    return () => document.removeEventListener('keydown', handleKey);
+    return () => {
+      document.removeEventListener('keydown', handleKey);
+      previouslyFocused?.focus?.();
+    };
   }, [mobileSidebarOpen, closeMobileSidebar]);
 
   // Reset scroll to top on every route change (use location.key so it fires
@@ -274,10 +316,12 @@ export function AppLayout({ children }: { children: ReactNode }) {
             />
             {/* Slide-over panel */}
             <m.div
+              ref={mobileSidebarRef}
               id="mobile-nav-sidebar"
               role="dialog"
               aria-modal="true"
               aria-label="Navigation menu"
+              tabIndex={-1}
               initial={{ x: '-100%' }}
               animate={{ x: 0 }}
               exit={{ x: '-100%' }}
