@@ -146,6 +146,34 @@ describe('NewPagePage', () => {
     expect(screen.getByTestId('article-type-confluence')).toBeInTheDocument();
   });
 
+  it('exposes aria-pressed on the article type toggle buttons (#955)', () => {
+    // These are toggle buttons — screen-reader users need aria-pressed to know
+    // which type is currently selected. Default is Local.
+    render(<NewPagePage />, { wrapper: createWrapper() });
+    expect(screen.getByTestId('article-type-local')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('article-type-confluence')).toHaveAttribute('aria-pressed', 'false');
+
+    fireEvent.click(screen.getByTestId('article-type-confluence'));
+    expect(screen.getByTestId('article-type-local')).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByTestId('article-type-confluence')).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('exposes aria-pressed on the visibility toggle buttons (#955)', async () => {
+    render(<NewPagePage />, { wrapper: createWrapper() });
+    // Visibility picker only renders once a local space is selected.
+    fireEvent.change(screen.getByTestId('space-selector'), { target: { value: '__local__' } });
+    await waitFor(() => {
+      expect(screen.getByTestId('visibility-picker')).toBeInTheDocument();
+    });
+    // Default visibility is Private.
+    expect(screen.getByTestId('visibility-private')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('visibility-shared')).toHaveAttribute('aria-pressed', 'false');
+
+    fireEvent.click(screen.getByTestId('visibility-shared'));
+    expect(screen.getByTestId('visibility-private')).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByTestId('visibility-shared')).toHaveAttribute('aria-pressed', 'true');
+  });
+
   it('shows space selector always visible', () => {
     render(<NewPagePage />, { wrapper: createWrapper() });
     // Space selector is always shown regardless of article type

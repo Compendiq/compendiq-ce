@@ -205,6 +205,7 @@ export function NewPagePage() {
             <div className="flex gap-1" data-testid="article-type-toggle">
               <button
                 onClick={() => setArticleType('local')}
+                aria-pressed={articleType === 'local'}
                 className={cn(
                   'flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors',
                   articleType === 'local'
@@ -217,6 +218,7 @@ export function NewPagePage() {
               </button>
               <button
                 onClick={() => setArticleType('confluence')}
+                aria-pressed={articleType === 'confluence'}
                 className={cn(
                   'flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors',
                   articleType === 'confluence'
@@ -258,6 +260,7 @@ export function NewPagePage() {
               <div className="flex gap-1" data-testid="visibility-picker">
                 <button
                   onClick={() => setVisibility('private')}
+                  aria-pressed={visibility === 'private'}
                   className={cn(
                     'flex items-center justify-center gap-1 rounded-lg px-2.5 py-1.5 text-sm transition-colors',
                     visibility === 'private'
@@ -270,6 +273,7 @@ export function NewPagePage() {
                 </button>
                 <button
                   onClick={() => setVisibility('shared')}
+                  aria-pressed={visibility === 'shared'}
                   className={cn(
                     'flex items-center justify-center gap-1 rounded-lg px-2.5 py-1.5 text-sm transition-colors',
                     visibility === 'shared'
