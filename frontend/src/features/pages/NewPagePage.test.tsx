@@ -140,6 +140,11 @@ describe('NewPagePage', () => {
     expect(screen.getByPlaceholderText('Untitled page')).toBeInTheDocument();
   });
 
+  it('exposes an accessible name on the back button (#939)', () => {
+    render(<NewPagePage />, { wrapper: createWrapper() });
+    expect(screen.getByRole('button', { name: /back to pages/i })).toBeInTheDocument();
+  });
+
   it('shows article type toggle defaulting to Local Article', () => {
     render(<NewPagePage />, { wrapper: createWrapper() });
     expect(screen.getByTestId('article-type-local')).toBeInTheDocument();

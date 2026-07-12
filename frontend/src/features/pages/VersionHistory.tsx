@@ -533,6 +533,7 @@ function CompareView({
         </h4>
         <button
           onClick={onClose}
+          aria-label="Close comparison"
           className="rounded p-1 text-muted-foreground hover:bg-foreground/5"
         >
           <X size={12} />

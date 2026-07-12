@@ -251,6 +251,7 @@ function PdfUploadZone({
           type="button"
           onClick={onRemove}
           disabled={disabled}
+          aria-label="Remove PDF"
           className="shrink-0 rounded p-1 text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
           data-testid="pdf-remove-button"
         >
