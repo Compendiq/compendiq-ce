@@ -459,6 +459,84 @@ describe('GraphPage', () => {
     expect(fillTextCalls.some((t: string) => t.includes('Getting Started'))).toBe(true);
   });
 
+  // ---------- #941: node labels must be theme-aware, not hardcoded white ----------
+
+  // Helper: render the full graph, grab the nodeCanvasObject callback, invoke
+  // it against a fillStyle-recording stub context and return the fillStyle
+  // values captured during the individual-node label paint.
+  async function captureLabelFillStyles(): Promise<string[]> {
+    const ForceGraph2DMock = (await import('react-force-graph-2d'))
+      .default as unknown as ReturnType<typeof vi.fn>;
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => mockGraphData,
+    } as Response);
+
+    render(<GraphPage />, { wrapper: createWrapper(['/graph?full=1']) });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mock-force-graph')).toBeInTheDocument();
+    });
+
+    const lastCall =
+      ForceGraph2DMock.mock.calls[ForceGraph2DMock.mock.calls.length - 1];
+    const nodeCanvasObject = lastCall[0].nodeCanvasObject;
+
+    const fillStyles: string[] = [];
+    let currentFill = '';
+    const mockCtx = {
+      beginPath: vi.fn(),
+      arc: vi.fn(),
+      fill: vi.fn(),
+      stroke: vi.fn(),
+      roundRect: vi.fn(),
+      measureText: vi.fn(() => ({ width: 10 })),
+      // Record the fillStyle in effect at each fillText call — that is the
+      // colour the label text is actually painted with.
+      fillText: vi.fn(() => fillStyles.push(currentFill)),
+      set fillStyle(v: string) { currentFill = v; },
+      get fillStyle() { return currentFill; },
+      set strokeStyle(_v: string) { /* noop */ },
+      set lineWidth(_v: number) { /* noop */ },
+      set font(_v: string) { /* noop */ },
+      set textAlign(_v: string) { /* noop */ },
+      set textBaseline(_v: string) { /* noop */ },
+      set globalAlpha(_v: number) { /* noop */ },
+    };
+
+    const testNode = { ...mockGraphData.nodes[0], x: 0, y: 0 };
+    nodeCanvasObject(testNode, mockCtx, 0.5);
+    return fillStyles;
+  }
+
+  it('paints node labels in a near-black colour on the light theme (#941)', async () => {
+    const { useThemeStore } = await import('../../stores/theme-store');
+    act(() => useThemeStore.getState().setTheme('honey-linen'));
+
+    const fillStyles = await captureLabelFillStyles();
+
+    // The label is painted after the node circle; its fillStyle must NOT be
+    // white on the light theme (invisible on the linen surface).
+    const labelFill = fillStyles[fillStyles.length - 1];
+    expect(labelFill).toBeDefined();
+    expect(labelFill).not.toMatch(/rgba?\(\s*255\s*,\s*255\s*,\s*255/);
+    expect(labelFill).toMatch(/rgba?\(\s*10\s*,\s*10\s*,\s*10/);
+
+    act(() => useThemeStore.getState().setTheme('graphite-honey'));
+  });
+
+  it('keeps node labels white on the dark theme (#941)', async () => {
+    const { useThemeStore } = await import('../../stores/theme-store');
+    act(() => useThemeStore.getState().setTheme('graphite-honey'));
+
+    const fillStyles = await captureLabelFillStyles();
+
+    const labelFill = fillStyles[fillStyles.length - 1];
+    expect(labelFill).toMatch(/rgba?\(\s*255\s*,\s*255\s*,\s*255/);
+  });
+
   it('switches to clustered view when toggle is clicked', async () => {
     // First fetch for individual view
     vi.spyOn(globalThis, 'fetch')
