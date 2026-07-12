@@ -22,7 +22,7 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 import { query as mockQuery } from '../db/postgres.js';
-import { runWithRbacScope } from './rbac-request-scope.js';
+import { enterRbacScope, runWithRbacScope } from './rbac-request-scope.js';
 import { getUserAccessibleSpacesMemoized } from './rbac-service.js';
 
 describe('rbac-request-scope', () => {
@@ -57,6 +57,43 @@ describe('rbac-request-scope', () => {
     // First call inside the scope triggers isSystemAdmin (1 query) + the
     // space-lookup (1 query). Every subsequent call returns the memoised
     // array without touching the DB. Expect exactly 2 total DB hits.
+    expect((mockQuery as ReturnType<typeof vi.fn>).mock.calls.length).toBe(2);
+  });
+
+  it('scope entered from an awaited hook still memoises the route handler (#899)', async () => {
+    // Reproduces the runtime shape of Fastify's `authenticate` onRequest hook:
+    // an awaited async hook enters the RBAC scope, then a *separate* awaited
+    // continuation (the route handler) consults the memoised resolver. The
+    // ADR-022 memo only works if the scope entered by the hook propagates to
+    // that sibling continuation. `enterWith` bound AFTER an await does NOT
+    // propagate to the caller's next continuation (Node async-context
+    // semantics), so the fix must enter the scope synchronously (before the
+    // first await) and fill in the userId afterwards.
+    async function authenticateHook(): Promise<void> {
+      // Enter synchronously, before any await — mirrors the fixed auth plugin.
+      const scope = enterRbacScope();
+      // Simulate `await verifyToken()` + `await getUserSecurityState()`.
+      await Promise.resolve();
+      await Promise.resolve();
+      // userId only known once auth succeeds; mutate the already-entered scope.
+      if (scope) scope.userId = 'u1';
+    }
+    async function handler(): Promise<void> {
+      // Retrieval paths inside a single request consult the readable-space set
+      // more than once; the memo must collapse these to one resolver hit.
+      await getUserAccessibleSpacesMemoized('u1');
+      await getUserAccessibleSpacesMemoized('u1');
+    }
+
+    await (async () => {
+      await authenticateHook();
+      await handler();
+    })();
+
+    // First handler call resolves via isSystemAdmin (1 query) + space lookup
+    // (1 query); the second is served from the request scope. If the scope
+    // failed to propagate across the awaited-hook boundary the memo is dead and
+    // the DB is hit 4 times.
     expect((mockQuery as ReturnType<typeof vi.fn>).mock.calls.length).toBe(2);
   });
 

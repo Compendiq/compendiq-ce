@@ -222,6 +222,16 @@ export default fp(async (fastify: FastifyInstance) => {
     }
 
     try {
+      // Open the request-scoped AsyncLocalStorage frame BEFORE the first await
+      // so RBAC space-resolution is memoised for the rest of this request. It
+      // must be entered synchronously here: `enterWith` only propagates the
+      // store to continuations descending from the current frame, so entering
+      // it after an await would leave the route handler without the scope and
+      // the memo dead at runtime (#899). `userId` is filled in below once auth
+      // succeeds; the empty-userId window is safe (getScopedSpaces gates on a
+      // matching userId). See ADR-022.
+      const rbacScope = enterRbacScope();
+
       const token = authHeader.slice(7);
       const payload = await verifyToken(token);
 
@@ -249,12 +259,9 @@ export default fp(async (fastify: FastifyInstance) => {
       request.username = payload.username;
       request.userRole = payload.role;
 
-      // Open a request-scoped AsyncLocalStorage frame so RBAC space-resolution
-      // is memoised for the rest of this request. `enterWith` binds the store
-      // to the current async chain without requiring a callback, so the route
-      // handler and every downstream hook inherit the scope automatically.
-      // See ADR-022.
-      enterRbacScope(request.userId);
+      // Now that authentication has succeeded, bind the user to the scope
+      // opened at the top of this hook so downstream RBAC lookups memoise.
+      rbacScope.userId = payload.sub;
 
       // Attach RBAC permission checker to request
       request.userCan = async (
