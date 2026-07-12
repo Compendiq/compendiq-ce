@@ -28,6 +28,7 @@ sequenceDiagram
         S-->>T: skip (another run in progress)
     else acquired
         R-->>S: OK
+        Note over S,R: Heartbeat every TTL/3 (200s): EXPIRE sync:worker:lock 600<br/>if still owned, so long runs never let the lock lapse (#906)
         S->>DB: SELECT user_settings (decrypt PAT)
         S->>CL: getSpaces(pat)
         CL->>CF: GET /rest/api/space
@@ -95,8 +96,11 @@ sequenceDiagram
 
 ## Concurrency & safety
 
-- **Redis lock (`sync:worker:lock`)** — single active sync per instance;
-  TTL acts as a dead-man's switch.
+- **Redis lock (`sync:worker:lock`)** — single active sync per instance. The
+  600s TTL acts as a dead-man's switch; while a run is in flight an
+  ownership-checked heartbeat re-`EXPIRE`s the key every TTL/3 (200s) so a sync
+  that outlasts one TTL can't lapse and admit a second concurrent worker
+  (#906). The heartbeat is cleared alongside the lock release in `finally`.
 - **Per-user PAT scope** — each sync decrypts the PAT just-in-time, uses it
   for the duration of the run, and never logs it.
 - **SSRF guard** — `confluence-client` uses the shared SSRF guard from
