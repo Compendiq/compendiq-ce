@@ -1013,31 +1013,26 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY backend/package.json ./backend/
 COPY packages/contracts/package.json ./packages/contracts/
-COPY .npmrc.enterprise ./.npmrc
 
-# Install all deps including enterprise
-ARG GITHUB_TOKEN
-RUN --mount=type=cache,target=/root/.npm \
-    GITHUB_TOKEN=${GITHUB_TOKEN} npm ci -w backend -w @compendiq/contracts && \
-    npm install @compendiq/enterprise@^1.0.0
+# Install all deps including enterprise. The GitHub Packages token is passed as a
+# BuildKit secret (never an ARG/ENV) and the .npmrc that carries it is created and
+# removed inside this single RUN, so no image layer or exported cache holds it.
+RUN --mount=type=secret,id=github_token --mount=type=cache,target=/root/.npm \
+    sh -c 'echo "@compendiq:registry=https://npm.pkg.github.com" > .npmrc && \
+    echo "//npm.pkg.github.com/:_authToken=$(cat /run/secrets/github_token)" >> .npmrc && \
+    npm ci -w backend -w @compendiq/contracts && \
+    npm install @compendiq/enterprise@^1.0.0 && \
+    rm -f .npmrc'
 
 # Continue with standard build...
 ```
 
-Alternatively, use a `docker-compose.enterprise.yml` overlay:
+Build it with the token supplied as a secret (BuildKit is required):
 
-```yaml
-# docker/docker-compose.enterprise.yml
-# Use with: docker compose -f docker-compose.yml -f docker-compose.enterprise.yml up
-services:
-  backend:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile.enterprise
-      args:
-        GITHUB_TOKEN: ${GITHUB_TOKEN}
-    environment:
-      COMPENDIQ_LICENSE_KEY: ${COMPENDIQ_LICENSE_KEY}
+```bash
+docker build -f docker/Dockerfile.enterprise \
+  --secret id=github_token,env=GITHUB_TOKEN \
+  -t compendiq-enterprise:latest .
 ```
 
 ### 8.4 GitHub Packages Publishing (CI in private repo)

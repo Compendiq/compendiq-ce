@@ -34,6 +34,10 @@ const prCheckWorkflow = readFileSync(
   join(repoRoot, '.github', 'workflows', 'pr-check.yml'),
   'utf8',
 );
+const dockerfileEnterprise = readFileSync(
+  join(repoRoot, 'docker', 'Dockerfile.enterprise'),
+  'utf8',
+);
 
 /**
  * Extract a top-level service block (2-space indented key under `services:`)
@@ -266,6 +270,23 @@ describe('.env.example stays authoritative for env vars the backend reads', () =
 describe('.github/workflows/pr-check.yml runs validation for every author', () => {
   it('does not skip typecheck/lint/test/hoist checks for Dependabot PRs', () => {
     expect(prCheckWorkflow).not.toContain('dependabot[bot]');
+  });
+});
+
+describe('docker/Dockerfile.enterprise keeps the GitHub token out of image layers (issue #930)', () => {
+  it('never writes the token into a persisted .npmrc via a build-arg', () => {
+    // A build-arg written to .npmrc in its own RUN bakes the token into that
+    // layer forever — a later `rm -f .npmrc` cannot purge earlier layer history
+    // or the exported build cache. Assert no layer interpolates the token into
+    // .npmrc from an ARG.
+    expect(dockerfileEnterprise).not.toMatch(/_authToken=\$\{GITHUB_TOKEN\}/);
+    expect(dockerfileEnterprise).not.toMatch(/^\s*ARG GITHUB_TOKEN\s*$/m);
+  });
+
+  it('injects the token via a BuildKit secret mount instead', () => {
+    // BuildKit secret mounts (`--mount=type=secret`) expose the value only for
+    // the duration of that RUN and are never committed to a layer or the cache.
+    expect(dockerfileEnterprise).toMatch(/--mount=type=secret,id=github_token/);
   });
 });
 
