@@ -6,7 +6,7 @@ import {
   isDbAvailable,
 } from '../../../test-db-helper.js';
 import { query } from '../../../core/db/postgres.js';
-import { computePageRelationships } from './embedding-service.js';
+import { embedPage, computePageRelationships } from './embedding-service.js';
 import pgvector from 'pgvector';
 
 // Deterministic 1024-dim vector for fixtures
@@ -88,6 +88,49 @@ describe.skipIf(!dbAvailable)('page_embeddings (page_id, chunk_index) uniqueness
   });
 });
 
+// Regression for #918: the empty/short-page short-circuit in embedPage cleared
+// embedding_dirty but never moved embedding_status off the transient 'embedding'
+// value set when the batch was marked. That left short pages stuck showing
+// "embedding" forever. The branch must land on the terminal 'not_embedded'.
+describe.skipIf(!dbAvailable)('embedPage short-page short-circuit — issue #918', () => {
+  beforeAll(async () => {
+    await setupTestDb();
+  }, 30_000);
+  afterAll(async () => {
+    await teardownTestDb();
+  });
+  beforeEach(async () => {
+    await truncateAllTables();
+  });
+
+  async function seedShortPage(): Promise<number> {
+    const page = await query<{ id: number }>(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html,
+                          embedding_status, embedding_dirty)
+       VALUES (gen_random_uuid()::text, 'confluence', 'DEV', 'Short', 'hi', '', '<p>hi</p>',
+               'embedding', TRUE)
+       RETURNING id`,
+    );
+    return page.rows[0]!.id;
+  }
+
+  it('clears embedding_dirty and lands on terminal not_embedded status', async () => {
+    const pageId = await seedShortPage();
+
+    // '<p>hi</p>' has <20 chars of text, so embedPage short-circuits before any
+    // LLM call — no provider mock needed.
+    const written = await embedPage('user-1', pageId, 'Short', 'DEV', '<p>hi</p>');
+    expect(written).toBe(0);
+
+    const { rows } = await query<{ embedding_status: string; embedding_dirty: boolean }>(
+      'SELECT embedding_status, embedding_dirty FROM pages WHERE id = $1',
+      [pageId],
+    );
+    expect(rows[0]!.embedding_dirty).toBe(false);
+    expect(rows[0]!.embedding_status).toBe('not_embedded');
+  });
+});
+
 // Regression for #916: embedding_similarity edges are DIRECTED (page_id_1 is
 // the source, page_id_2 the KNN neighbour). The incremental recompute deleted
 // every edge touching a changed page on EITHER side, but only re-inserted the
@@ -133,6 +176,15 @@ describe.skipIf(!dbAvailable)('computePageRelationships — directed similarity 
         pgvector.toSql(unitVec(angleDeg)),
         JSON.stringify({ page_title: title, section_title: title, space_key: 'DEV' }),
       ],
+    );
+    // computePageRelationships ranks KNN by the materialized pages.page_avg_embedding
+    // column (#919), not page_embeddings directly. In production embedPage populates
+    // it; mirror that here so the similarity graph is built for this fixture.
+    await query(
+      `UPDATE pages SET page_avg_embedding = (
+         SELECT AVG(embedding) FROM page_embeddings WHERE page_id = $1
+       ) WHERE id = $1`,
+      [pageId],
     );
     return pageId;
   }
