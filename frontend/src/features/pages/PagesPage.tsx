@@ -689,9 +689,21 @@ export function PagesPage() {
           </div>
         )}
 
-        {/* Active filter pills */}
+        {/* Active filter pills.
+            Semantic/hybrid search ignores advanced filters (the backend
+            vector/hybrid paths never receive them), so when semantic search is
+            running we visually mark the pills as inactive rather than pretend
+            they still filter the results (#945). */}
         {activeFilters.length > 0 && (
-          <div className="flex flex-wrap items-center gap-2 border-t border-border/50 pt-3" data-testid="active-filter-pills">
+          <div
+            className={cn(
+              'flex flex-wrap items-center gap-2 border-t border-border/50 pt-3',
+              useSemanticSearch && 'opacity-50',
+            )}
+            data-testid="active-filter-pills"
+            data-inactive={useSemanticSearch ? 'true' : undefined}
+            aria-disabled={useSemanticSearch || undefined}
+          >
             {activeFilters.map((f) => (
               <button
                 key={f.key}
@@ -712,6 +724,19 @@ export function PagesPage() {
               Clear all
             </button>
           </div>
+        )}
+
+        {/* Honest notice: advanced filters are keyword-only. In semantic/hybrid
+            mode the backend ignores them, so tell the user instead of silently
+            dropping them (#945). */}
+        {useSemanticSearch && activeFilterCount > 0 && (
+          <p
+            className="flex items-center gap-1.5 text-xs text-muted-foreground"
+            data-testid="filters-ignored-notice"
+          >
+            <AlertTriangle size={12} className="shrink-0 text-warning" aria-hidden="true" />
+            Advanced filters apply to keyword search only — they don't affect semantic or hybrid results.
+          </p>
         )}
       </div>
 

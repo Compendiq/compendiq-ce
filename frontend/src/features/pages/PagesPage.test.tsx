@@ -752,6 +752,48 @@ describe('PagesPage', () => {
     expect(screen.queryByTestId('filter-pill-embeddingStatus')).not.toBeInTheDocument();
   });
 
+  // --- Advanced filters ignored in semantic/hybrid search (#945) ---
+  //
+  // The backend applies author/date/label/etc. filters only in keyword mode —
+  // semantic (vectorSearch) and hybrid (hybridSearch) ignore them entirely.
+  // The UI must stop pretending they're active: show a notice and visually
+  // mark the active-filter pills as inactive whenever semantic/hybrid search
+  // is running, so users aren't misled into thinking their filters applied.
+  describe('advanced filters honesty in semantic/hybrid search (#945)', () => {
+    it('shows an "ignored" notice and marks pills inactive when a filter is set in semantic mode', async () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      // Activate an advanced filter → pill appears.
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+      fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+      expect(screen.getByTestId('filter-pill-freshness')).toBeInTheDocument();
+
+      // Keyword mode honors the filter: no notice, pills are active.
+      expect(screen.queryByTestId('filters-ignored-notice')).not.toBeInTheDocument();
+      expect(screen.getByTestId('active-filter-pills')).not.toHaveAttribute('data-inactive', 'true');
+
+      // Switch to semantic mode and enter a query — the backend now ignores
+      // the filter, so the UI must say so.
+      fireEvent.click(screen.getByTestId('search-mode-semantic'));
+      fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+        target: { value: 'kubernetes' },
+      });
+
+      const notice = await screen.findByTestId('filters-ignored-notice');
+      expect(notice).toBeInTheDocument();
+      expect(screen.getByTestId('active-filter-pills')).toHaveAttribute('data-inactive', 'true');
+    });
+
+    it('does not show the notice in semantic mode when no advanced filters are active', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('search-mode-semantic'));
+      fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+        target: { value: 'kubernetes' },
+      });
+      expect(screen.queryByTestId('filters-ignored-notice')).not.toBeInTheDocument();
+    });
+  });
+
   // --- Visual divider test ---
 
   it('renders a visual divider between sort and filters toggle', () => {
