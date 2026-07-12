@@ -320,6 +320,48 @@ describe.skipIf(!dbAvailable)('Quality Worker (DB)', () => {
       expect(result.rows[0].quality_retry_count).toBe(0); // reset on success
     });
 
+    it('recovers a page stuck in analyzing after a mid-batch crash/restart (#909)', async () => {
+      // A crash/restart while analyzePageQuality was mid-flight leaves the page
+      // at quality_status='analyzing' forever: no priority query ever selects
+      // 'analyzing', so the page is orphaned. The stale-analyzing sweep at the
+      // top of processBatch must flip it back to 'pending' so it gets re-scored.
+      const longContent = 'This is a sufficiently long article body that exceeds the fifty character minimum threshold for quality analysis processing.';
+      await query(
+        `INSERT INTO pages (confluence_id, space_key, title, body_text, body_html, quality_status, quality_analyzed_at)
+         VALUES ('stuck-analyzing', $1, 'Stuck Page', $2, $3, 'analyzing', NULL)`,
+        [testSpaceKey, longContent, `<p>${longContent}</p>`],
+      );
+
+      const processed = await processBatch();
+      expect(processed).toBe(1);
+
+      const result = await query<{ quality_status: string; quality_score: number }>(
+        "SELECT quality_status, quality_score FROM pages WHERE confluence_id = 'stuck-analyzing'",
+      );
+      expect(result.rows[0].quality_status).toBe('analyzed');
+      expect(result.rows[0].quality_score).toBe(75);
+    });
+
+    it('does not reset a freshly analyzing page within the 1h guard (#909)', async () => {
+      // A page marked 'analyzing' with a recent quality_analyzed_at is presumed
+      // to be actively processing (the 1h/NULL guard hedges against a double-
+      // acquired lock). The sweep must leave it alone.
+      const longContent = 'This is a sufficiently long article body that exceeds the fifty character minimum threshold for quality analysis processing.';
+      await query(
+        `INSERT INTO pages (confluence_id, space_key, title, body_text, body_html, quality_status, quality_analyzed_at)
+         VALUES ('fresh-analyzing', $1, 'Fresh Page', $2, $3, 'analyzing', NOW())`,
+        [testSpaceKey, longContent, `<p>${longContent}</p>`],
+      );
+
+      const processed = await processBatch();
+      expect(processed).toBe(0);
+
+      const result = await query<{ quality_status: string }>(
+        "SELECT quality_status FROM pages WHERE confluence_id = 'fresh-analyzing'",
+      );
+      expect(result.rows[0].quality_status).toBe('analyzing');
+    });
+
     it('re-analyzes a retry-exhausted failed page whose content changed since analysis (#828)', async () => {
       // A page that exhausted MAX_RETRIES sits at 'failed' with retry count 3.
       // When its content later changes (last_modified_at > quality_analyzed_at)
