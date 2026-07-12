@@ -403,7 +403,12 @@ export async function runSummaryBatch(
 
   if (!assignment || !effectiveModel) {
     const flipped = await query(
-      `UPDATE pages SET summary_status = 'skipped'
+      // Clear summary_error so every no-model config-skip is consistently
+      // identifiable by `summary_error IS NULL` in rescanAllSummaries (#910).
+      // A page re-synced to 'pending' after a prior failure still carries its
+      // stale summary_error; without this reset it would be excluded from
+      // recovery and never re-summarized.
+      `UPDATE pages SET summary_status = 'skipped', summary_error = NULL
        WHERE summary_status = 'pending' AND deleted_at IS NULL`,
     );
     logger.warn(
@@ -522,8 +527,12 @@ export function stopSummaryWorker(): void {
 }
 
 /**
- * Reset all summary_content_hash values to trigger full re-summarization.
- * Admin-only operation.
+ * Reset summary state to trigger full re-summarization. Admin-only operation.
+ *
+ * Recovers config-skipped pages (skipped with no summary_error, i.e. the
+ * no-model path at runSummaryBatch) so this is the documented no-model
+ * recovery route (#910). Deliberate skips carrying a non-null summary_error
+ * (content-too-short, PII-blocked) stay skipped and are not reprocessed.
  */
 export async function rescanAllSummaries(): Promise<number> {
   const result = await query(
@@ -531,8 +540,8 @@ export async function rescanAllSummaries(): Promise<number> {
      SET summary_content_hash = NULL,
          summary_status = 'pending',
          summary_retry_count = 0
-     WHERE summary_status != 'skipped'
-       AND deleted_at IS NULL
+     WHERE deleted_at IS NULL
+       AND (summary_status != 'skipped' OR summary_error IS NULL)
      RETURNING confluence_id`,
   );
   return result.rowCount ?? 0;
