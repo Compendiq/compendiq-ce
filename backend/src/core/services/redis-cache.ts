@@ -135,6 +135,46 @@ export async function releaseEmbeddingLock(userId: string, lockId: string): Prom
 }
 
 /**
+ * Refresh Lua — bump the per-user lock's TTL, but only while the caller still
+ * owns it. The GET/PEXPIRE pair runs atomically so a concurrent force-release
+ * or re-acquisition can never be masked by a stale renewal. Returns the current
+ * stored holder value (or nil) so the caller can compare against its own lockId
+ * exactly as a plain GET would — a mismatch still signals "not mine, abort".
+ *
+ *   KEYS[1] = embedding:lock:<userId>
+ *   ARGV[1] = lockId (UUID the caller believes it holds)
+ *   ARGV[2] = TTL in milliseconds (stringified)
+ */
+const REFRESH_LOCK_SCRIPT = `local cur = redis.call("get", KEYS[1]) if cur == ARGV[1] then redis.call("pexpire", KEYS[1], ARGV[2]) end return cur`;
+
+/**
+ * Renew the embedding processing lock's TTL for a long-running holder (issue
+ * #913). The lock is written with a 1-hour safety TTL by `acquireEmbeddingLock`;
+ * a re-embed-all run over a large space can legitimately exceed that, at which
+ * point the key would expire mid-run, the holder-epoch write-guard would read a
+ * missing key and silently abort, and the job would report success with only
+ * partial results. Calling this on the guard cadence keeps the TTL sliding
+ * forward while — and only while — the caller still owns the lock.
+ *
+ * Atomically PEXPIRE-bumps the TTL when the stored value matches `lockId`, and
+ * always returns the current holder value so the caller can still detect a
+ * force-release / re-acquisition (returned value differs from `lockId`) or an
+ * expiry (null). Errors are propagated so the caller's guard try/catch can
+ * decide whether to continue — matching the previous inline `redis.get` shape.
+ */
+export async function refreshEmbeddingLock(
+  userId: string,
+  lockId: string | null,
+): Promise<string | null> {
+  if (!_redisClient) return null;
+  const result = await _redisClient.eval(REFRESH_LOCK_SCRIPT, {
+    keys: [embeddingLockKey(userId)],
+    arguments: [lockId ?? '', String(EMBEDDING_LOCK_TTL_MS)],
+  });
+  return typeof result === 'string' ? result : null;
+}
+
+/**
  * Check if the embedding processing lock is held for a user.
  * Returns false if Redis is not available.
  */
