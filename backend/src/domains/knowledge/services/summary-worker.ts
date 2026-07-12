@@ -463,8 +463,8 @@ export function startSummaryWorker(intervalMinutes?: number): void {
 
   workerIntervalHandle = setInterval(async () => {
     if (workerLock) return;
-    const acquired = await acquireWorkerLock('summary-worker', 600);
-    if (!acquired) return;
+    const lockToken = await acquireWorkerLock('summary-worker', 600);
+    if (!lockToken) return;
     workerLock = true;
     isProcessing = true;
 
@@ -478,7 +478,7 @@ export function startSummaryWorker(intervalMinutes?: number): void {
     } finally {
       workerLock = false;
       isProcessing = false;
-      await releaseWorkerLock('summary-worker');
+      await releaseWorkerLock('summary-worker', lockToken);
     }
   }, interval);
 
@@ -494,8 +494,8 @@ export function startSummaryWorker(intervalMinutes?: number): void {
  */
 export async function triggerSummaryBatch(): Promise<void> {
   if (workerLock) return;
-  const acquired = await acquireWorkerLock('summary-worker', 600);
-  if (!acquired) return;
+  const lockToken = await acquireWorkerLock('summary-worker', 600);
+  if (!lockToken) return;
   workerLock = true;
   isProcessing = true;
 
@@ -509,7 +509,7 @@ export async function triggerSummaryBatch(): Promise<void> {
   } finally {
     workerLock = false;
     isProcessing = false;
-    await releaseWorkerLock('summary-worker');
+    await releaseWorkerLock('summary-worker', lockToken);
   }
 }
 

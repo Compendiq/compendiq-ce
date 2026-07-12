@@ -394,8 +394,8 @@ export function startQualityWorker(intervalMinutes?: number): void {
 
   qualityIntervalHandle = setInterval(async () => {
     if (qualityLock) return;
-    const acquired = await acquireWorkerLock('quality-worker', 600);
-    if (!acquired) return;
+    const lockToken = await acquireWorkerLock('quality-worker', 600);
+    if (!lockToken) return;
     qualityLock = true;
     isProcessing = true;
 
@@ -409,7 +409,7 @@ export function startQualityWorker(intervalMinutes?: number): void {
     } finally {
       qualityLock = false;
       isProcessing = false;
-      await releaseWorkerLock('quality-worker');
+      await releaseWorkerLock('quality-worker', lockToken);
     }
   }, intervalMs);
 
@@ -425,8 +425,8 @@ export function startQualityWorker(intervalMinutes?: number): void {
  */
 export async function triggerQualityBatch(): Promise<void> {
   if (qualityLock) return;
-  const acquired = await acquireWorkerLock('quality-worker', 600);
-  if (!acquired) return;
+  const lockToken = await acquireWorkerLock('quality-worker', 600);
+  if (!lockToken) return;
   qualityLock = true;
   isProcessing = true;
 
@@ -440,7 +440,7 @@ export async function triggerQualityBatch(): Promise<void> {
   } finally {
     qualityLock = false;
     isProcessing = false;
-    await releaseWorkerLock('quality-worker');
+    await releaseWorkerLock('quality-worker', lockToken);
   }
 }
 

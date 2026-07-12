@@ -315,32 +315,55 @@ export async function forceReleaseEmbeddingLock(
 // preserving single-node behaviour.
 
 /**
- * Attempt to acquire a named worker lock via Redis SET NX EX.
- * Returns true if the lock was acquired, false if another holder has it.
- * Falls back to true when Redis is not available (single-node fallback).
+ * Release Lua — only delete the worker lock if the caller still owns it (the
+ * stored value matches the token handed out at acquisition). Prevents a batch
+ * that outlives its TTL from deleting the lock a *different* pod has since
+ * re-acquired (issue #902). Mirrors RELEASE_LOCK_SCRIPT above.
+ *
+ *   KEYS[1] = worker:lock:<name>
+ *   ARGV[1] = ownership token (UUID)
  */
-export async function acquireWorkerLock(name: string, ttlSeconds = 300): Promise<boolean> {
-  if (!_redisClient) return true; // single-node fallback
+const WORKER_RELEASE_LOCK_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end`;
+
+/**
+ * Attempt to acquire a named worker lock via Redis SET NX EX.
+ * Returns a unique ownership token if the lock was acquired, or null if another
+ * holder has it. The token must be passed to releaseWorkerLock to prove
+ * ownership so a stale holder cannot delete a lock re-acquired by another pod.
+ * Falls back to a generated token when Redis is not available (single-node
+ * fallback — callers still proceed on truthiness).
+ */
+export async function acquireWorkerLock(
+  name: string,
+  ttlSeconds = 300,
+): Promise<string | null> {
+  const token = randomUUID();
+  if (!_redisClient) return token; // single-node fallback
   try {
-    const result = await _redisClient.set(`worker:lock:${name}`, '1', {
+    const result = await _redisClient.set(`worker:lock:${name}`, token, {
       NX: true,
       EX: ttlSeconds,
     });
-    return result !== null;
+    return result !== null ? token : null;
   } catch (err) {
     logger.error({ err, name }, 'Failed to acquire worker lock');
-    return true; // degrade to local execution
+    return token; // degrade to local execution
   }
 }
 
 /**
- * Release a named worker lock.
- * Safe to call when Redis is unavailable (no-op).
+ * Release a named worker lock, but only if the caller still owns it.
+ * Uses a Lua script to compare-and-delete against the ownership token, so a
+ * process whose lock already expired (and was re-acquired elsewhere) cannot
+ * delete the new holder's lock. Safe to call when Redis is unavailable (no-op).
  */
-export async function releaseWorkerLock(name: string): Promise<void> {
+export async function releaseWorkerLock(name: string, token: string): Promise<void> {
   if (!_redisClient) return;
   try {
-    await _redisClient.del(`worker:lock:${name}`);
+    await _redisClient.eval(WORKER_RELEASE_LOCK_SCRIPT, {
+      keys: [`worker:lock:${name}`],
+      arguments: [token],
+    });
   } catch (err) {
     logger.error({ err, name }, 'Failed to release worker lock');
   }
