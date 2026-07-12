@@ -286,6 +286,27 @@ export async function processBatch(): Promise<number> {
     return 0;
   }
 
+  // Recover pages stuck in 'analyzing' (#909). A crash/restart while
+  // analyzePageQuality was mid-flight leaves the page at 'analyzing' forever —
+  // no priority query below ever selects that status, so the page is orphaned.
+  // The redis worker-lock guarantees one batch at a time and analyzePageQuality
+  // runs pages sequentially, so no page is legitimately 'analyzing' at batch
+  // start; the 1h / NULL-timestamp guard is a cheap hedge against a
+  // double-acquired lock reclaiming a page another worker is actively scoring.
+  const recovered = await query(
+    `UPDATE pages
+     SET quality_status = 'pending'
+     WHERE quality_status = 'analyzing'
+       AND deleted_at IS NULL
+       AND (quality_analyzed_at IS NULL OR quality_analyzed_at < NOW() - INTERVAL '1 hour')`,
+  );
+  if (recovered.rowCount && recovered.rowCount > 0) {
+    logger.warn(
+      { count: recovered.rowCount },
+      'Recovered pages stuck in quality_status=analyzing (likely a crash/restart mid-batch) — reset to pending',
+    );
+  }
+
   // Priority 1: Unscored pages (status = 'pending')
   const pendingResult = await query<{
     id: number;
