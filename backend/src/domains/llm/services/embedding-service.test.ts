@@ -544,6 +544,28 @@ describe('embedding-service', () => {
       expect(mocks.query).not.toHaveBeenCalled();
     });
 
+    it('short-circuits with alreadyProcessing when another user already holds an embedding lock (#914)', async () => {
+      // Per-user lock is free and no reembed-all is running, but another user
+      // already holds their own embedding lock. Because the dirty-page scan is
+      // GLOBAL (not per-user), proceeding here would re-embed the same pages the
+      // other holder is already working through. Back off instead.
+      mocks.acquireEmbeddingLock.mockResolvedValue(FAKE_LOCK_ID);
+      mocks.isEmbeddingLocked.mockResolvedValue(false);
+      mocks.listActiveEmbeddingLocks.mockResolvedValue([
+        { userId: 'other-user', holderEpoch: 'x', ttlRemainingMs: 60000 },
+        { userId: 'sync-user', holderEpoch: 'y', ttlRemainingMs: 60000 },
+      ]);
+
+      const result = await processDirtyPages('sync-user');
+
+      expect(result).toEqual({ processed: 0, errors: 0, alreadyProcessing: true });
+      // The just-acquired per-user lock must be released again so it is not leaked.
+      expect(mocks.releaseEmbeddingLock).toHaveBeenCalledWith('sync-user', FAKE_LOCK_ID);
+      // No dirty-page scan should have run: only the lock checks happened, no
+      // chunk-settings or COUNT queries were issued.
+      expect(mocks.query).not.toHaveBeenCalled();
+    });
+
     it('does not consult the reembed-all lock when the caller already holds the lock (#823)', async () => {
       // runReembedAllJob path: lockAlreadyHeld=true and userId is the system
       // user itself — the guard must be skipped so the global run proceeds.
@@ -1923,6 +1945,7 @@ describe('chunkText', () => {
       mocks.acquireEmbeddingLock.mockResolvedValue(FAKE_LOCK_ID);
       mocks.releaseEmbeddingLock.mockResolvedValue(undefined);
       mocks.isEmbeddingLocked.mockResolvedValue(false);
+      mocks.listActiveEmbeddingLocks.mockResolvedValue([]);
       mocks.invalidateGraphCache.mockResolvedValue(undefined);
       mocks.htmlToText.mockReturnValue('Some substantial page content for embedding that is long enough');
       vi.mocked(getSharedLlmSettings).mockResolvedValue({

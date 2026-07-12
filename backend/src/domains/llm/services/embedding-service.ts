@@ -526,6 +526,27 @@ export async function processDirtyPages(
       logger.info({ userId }, 'Reembed-all in progress — skipping competing dirty-page scan');
       return { processed: 0, errors: 0, alreadyProcessing: true };
     }
+    // Issue #914 — cross-user interlock: the per-user lock only protects a
+    // single user's key, but the dirty-page scan below is GLOBAL (it selects
+    // every `embedding_dirty = TRUE` page, not just this user's). If another
+    // user already holds their own embedding lock, launching a second scan here
+    // would redundantly re-embed the same pages the other holder is already
+    // working through. After acquiring our own lock, back off if any OTHER
+    // holder exists. Mirrors runReembedAllJob's post-acquire recheck: in a
+    // simultaneous-start race both sides back off and retry on the next cycle.
+    if (userId !== REEMBED_ALL_LOCK_USER) {
+      const otherHolders = (await listActiveEmbeddingLocks()).filter(
+        (l) => l.userId !== userId && l.userId !== REEMBED_ALL_LOCK_USER,
+      );
+      if (otherHolders.length > 0) {
+        await releaseEmbeddingLock(userId, lockId);
+        logger.info(
+          { userId, otherHolders: otherHolders.map((l) => l.userId) },
+          'Another user is already embedding — skipping competing global dirty-page scan',
+        );
+        return { processed: 0, errors: 0, alreadyProcessing: true };
+      }
+    }
   }
 
   await setLastEmbeddingRunAt(new Date());
