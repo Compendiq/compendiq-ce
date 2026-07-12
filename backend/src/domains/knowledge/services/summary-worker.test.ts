@@ -176,27 +176,32 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
   });
 
   describe('rescanAllSummaries', () => {
-    it('should reset all non-skipped pages to pending', async () => {
+    it('resets non-skipped pages and config-skips, but not content/PII skips', async () => {
+      // p3 is a content-too-short skip (non-null summary_error) → must stay skipped.
+      // p4 is a config-skip (summary_error IS NULL) → the documented no-model
+      // recovery path (#910) must reset it to pending.
       await query(
-        `INSERT INTO pages (confluence_id, space_key, title, body_text, summary_status, summary_retry_count)
-         VALUES ('p1', $1, 'Page 1', 'content one', 'summarized', 0),
-                ('p2', $1, 'Page 2', 'content two', 'failed', 3),
-                ('p3', $1, 'Page 3', 'short', 'skipped', 0)`,
+        `INSERT INTO pages (confluence_id, space_key, title, body_text, summary_status, summary_retry_count, summary_error)
+         VALUES ('p1', $1, 'Page 1', 'content one', 'summarized', 0, NULL),
+                ('p2', $1, 'Page 2', 'content two', 'failed', 3, NULL),
+                ('p3', $1, 'Page 3', 'short', 'skipped', 0, 'Content too short for summarization'),
+                ('p4', $1, 'Page 4', 'content four', 'skipped', 0, NULL)`,
         [testSpaceKey],
       );
 
       const resetCount = await rescanAllSummaries();
-      expect(resetCount).toBe(2); // p1 and p2, not p3 (skipped)
+      expect(resetCount).toBe(3); // p1, p2, p4 — not p3 (content skip)
 
       const result = await query<{ confluence_id: string; summary_status: string; summary_retry_count: number }>(
         'SELECT confluence_id, summary_status, summary_retry_count FROM pages ORDER BY confluence_id',
       );
 
-      expect(result.rows[0].summary_status).toBe('pending');
+      expect(result.rows[0].summary_status).toBe('pending'); // p1
       expect(result.rows[0].summary_retry_count).toBe(0);
-      expect(result.rows[1].summary_status).toBe('pending');
+      expect(result.rows[1].summary_status).toBe('pending'); // p2
       expect(result.rows[1].summary_retry_count).toBe(0);
-      expect(result.rows[2].summary_status).toBe('skipped'); // unchanged
+      expect(result.rows[2].summary_status).toBe('skipped'); // p3 content skip — unchanged
+      expect(result.rows[3].summary_status).toBe('pending'); // p4 config skip — recovered
     });
   });
 
