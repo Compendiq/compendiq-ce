@@ -610,6 +610,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       title: string;
       page_type: string;
       parent_numeric_id: number | null;
+      sort_order: number;
       labels: string[];
       last_modified_at: Date | null;
       embedding_dirty: boolean;
@@ -617,8 +618,12 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       embedded_at: Date | null;
       embedding_error: string | null;
     }>(
+      // #959: order by sort_order first so a persisted drag-reorder (written by
+      // PUT /pages/:id/reorder) survives the tree refetch instead of snapping
+      // back to alphabetical order. Confluence pages default to sort_order 0,
+      // so they still fall back to title order within each sibling group.
       `SELECT cp.id, cp.confluence_id, cp.space_key, cp.title, cp.page_type,
-              parent_page.id as parent_numeric_id,
+              parent_page.id as parent_numeric_id, cp.sort_order,
               cp.labels, cp.last_modified_at,
               cp.embedding_dirty, cp.embedding_status, cp.embedded_at, cp.embedding_error
        FROM pages cp
@@ -627,7 +632,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
          OR CAST(parent_page.id AS TEXT) = cp.parent_id
        ) AND parent_page.deleted_at IS NULL
        ${treeWhereClause}
-       ORDER BY cp.title ASC`,
+       ORDER BY cp.sort_order ASC, cp.title ASC`,
       values,
     );
 
@@ -638,6 +643,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         title: row.title,
         pageType: row.page_type ?? 'page',
         parentId: row.parent_numeric_id ? String(row.parent_numeric_id) : null,
+        sortOrder: row.sort_order,
         labels: row.labels,
         lastModifiedAt: row.last_modified_at,
         embeddingDirty: row.embedding_dirty,
@@ -1271,7 +1277,14 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       // index for local_modified_by based on whether the visibility
       // column is being written in the same statement.
       const userIdParamIndex = body.visibility ? 7 : 6;
-      await query(
+      // #926: guard the write with the version we just read. The JS pre-check
+      // above only rejects a client that SENDS a stale body.version; it can't
+      // see a write that landed between our SELECT and this UPDATE. Binding
+      // `AND version = <read version>` makes a concurrent writer's row (already
+      // bumped to newVersion) fail to match, so we detect the lost update via
+      // rowCount instead of silently clobbering it (last-write-wins).
+      const versionGuardIndex = body.visibility ? 8 : 7;
+      const updateResult = await query(
         `UPDATE pages SET
            title = $2, body_html = $3, body_text = $4,
            version = $5, last_modified_at = NOW(), embedding_dirty = TRUE,
@@ -1288,11 +1301,15 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
            -- touched the page last.
            local_modified_at = NOW(), local_modified_by = $${userIdParamIndex}
            ${body.visibility ? ', visibility = $6' : ''}
-         WHERE id = $1`,
+         WHERE id = $1 AND version = $${versionGuardIndex}`,
         body.visibility
-          ? [id, body.title, body.bodyHtml, bodyText, newVersion, body.visibility, userId]
-          : [id, body.title, body.bodyHtml, bodyText, newVersion, userId],
+          ? [id, body.title, body.bodyHtml, bodyText, newVersion, body.visibility, userId, existingPage.version]
+          : [id, body.title, body.bodyHtml, bodyText, newVersion, userId, existingPage.version],
       );
+
+      if ((updateResult.rowCount ?? 0) === 0) {
+        throw fastify.httpErrors.conflict('Page has been modified since you loaded it. Please refresh and try again.');
+      }
 
       // A shared page's list rows (title/snippet) and a visibility flip both
       // change what OTHER users see (#893) — their cached trees/lists would

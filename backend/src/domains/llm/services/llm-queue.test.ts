@@ -211,6 +211,29 @@ describe('llm-queue', () => {
       expect(getMetrics().maxQueueDepth).toBe(50);
     });
 
+    // Regression for #920 — on a queue timeout, the abandoned in-flight
+    // request must be ABORTED (not merely forgotten). Pre-fix, `enqueue`
+    // called `fn()` with no argument and rejected with LlmTimeoutError while
+    // the underlying fetch kept running — leaking the undici connection slot
+    // and hiding the failure from the per-provider circuit breaker. Post-fix,
+    // `enqueue` threads an AbortSignal into `fn(signal)` and aborts it before
+    // rejecting, so the fetch tears down and the breaker records a failure.
+    it('aborts the in-flight fn and rejects with LlmTimeoutError on timeout', async () => {
+      process.env.LLM_STREAM_TIMEOUT_MS = '50';
+      vi.resetModules();
+      const { enqueue } = await import('./llm-queue.js');
+
+      let capturedSignal: AbortSignal | undefined;
+      const pending = enqueue((signal) => new Promise<never>((_, reject) => {
+        capturedSignal = signal;
+        signal.addEventListener('abort', () => reject(new Error('fetch aborted')));
+      }));
+
+      await expect(pending).rejects.toMatchObject({ name: 'LlmTimeoutError' });
+      expect(capturedSignal).toBeInstanceOf(AbortSignal);
+      expect(capturedSignal?.aborted).toBe(true);
+    });
+
     it('LLM_CONCURRENCY=1 limits actual concurrent execution', async () => {
       process.env.LLM_CONCURRENCY = '1';
       vi.resetModules();

@@ -29,6 +29,7 @@ vi.mock('../../../core/db/postgres.js', () => ({
 
 vi.mock('../../../core/services/rbac-service.js', () => ({
   getUserAccessibleSpaces: (...args: unknown[]) => mocks.mockGetUserAccessibleSpaces(...args),
+  getUserAccessibleSpacesMemoized: (...args: unknown[]) => mocks.mockGetUserAccessibleSpaces(...args),
 }));
 
 vi.mock('../../../core/utils/logger.js', () => ({
@@ -275,68 +276,101 @@ describe('DuplicateDetector', () => {
       expect(scanSQL).not.toContain('cp.confluence_id = pe.confluence_id');
     });
 
-    it('should return pairs when duplicates are found', async () => {
+    it('should return pairs from the single self-join pass', async () => {
       mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
-      // Pages scan returns one page
+      // The rewritten scan issues one self-join query returning candidate pairs.
       mocks.mockQuery.mockResolvedValueOnce({
-        rows: [{ id: 10, confluence_id: 'page-a', title: 'Page A' }],
-      });
-
-      // findDuplicates for 'page-a': preliminary SELECT
-      mocks.mockQuery.mockResolvedValueOnce({
-        rows: [{ id: 10, title: 'Page A', space_key: 'DEV' }],
-      });
-      // findDuplicates: BEGIN, SET LOCAL, CTE (1 neighbor), COMMIT
-      mocks.mockClientQuery.mockResolvedValueOnce(undefined); // BEGIN
-      mocks.mockClientQuery.mockResolvedValueOnce(undefined); // SET LOCAL
-      mocks.mockClientQuery.mockResolvedValueOnce({
         rows: [
-          { id: 20, confluence_id: 'page-b', title: 'Page B', space_key: 'DEV', distance: 0.08 },
+          {
+            page1_id: 10, page1_confluence_id: 'page-a', page1_title: 'Page A',
+            page2_id: 20, page2_confluence_id: 'page-b', page2_title: 'Page B',
+            page2_space_key: 'DEV', distance: 0.08,
+          },
         ],
-      }); // CTE
-      mocks.mockClientQuery.mockResolvedValueOnce(undefined); // COMMIT
+      });
 
       const pairs = await scanAllDuplicates('user-1', { distanceThreshold: 0.15 });
 
       expect(pairs).toHaveLength(1);
       expect(pairs[0].page1.confluenceId).toBe('page-a');
+      expect(pairs[0].page1.sourceId).toBe('page-a');
       expect(pairs[0].page2.confluenceId).toBe('page-b');
+      expect(pairs[0].page2.spaceKey).toBe('DEV');
+      expect(pairs[0].page2.embeddingDistance).toBe(0.08);
+      expect(pairs[0].page2.combinedScore).toBeGreaterThan(0);
     });
 
-    it('should deduplicate A->B and B->A pairs', async () => {
+    it('restricts both pair members to the caller-readable set and binds the threshold (#733/#907)', async () => {
+      mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
+      mocks.mockQuery.mockResolvedValueOnce({ rows: [] });
+
+      await scanAllDuplicates('user-1', { distanceThreshold: 0.2 });
+
+      expect(mocks.mockQuery).toHaveBeenCalledTimes(1);
+      const [sql, params] = mocks.mockQuery.mock.calls[0];
+      const scanSQL = sql as string;
+      // Same visibility scope as findDuplicates, applied inside the averaging CTE…
+      expect(scanSQL).toContain("cp.source = 'confluence' AND cp.space_key = ANY($1::text[])");
+      expect(scanSQL).toContain("cp.source = 'standalone' AND cp.visibility = 'shared'");
+      expect(scanSQL).toContain("cp.visibility = 'private' AND cp.created_by_user_id = $2");
+      // …with each unordered pair returned exactly once via the self-join.
+      expect(scanSQL).toContain('a.page_id < b.page_id');
+      // Params: [accessibleSpaces, userId, distanceThreshold]
+      expect(params).toEqual([['DEV', 'OPS'], 'user-1', 0.2]);
+    });
+
+    it('caps how many pairs a single page may appear in (maxPairsPerPage)', async () => {
       mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
-      // Pages scan returns two pages
+      // Page 10 forms a near-duplicate pair with 20, 30 and 40. With
+      // maxPairsPerPage=2 only its two strongest (closest) pairs survive.
       mocks.mockQuery.mockResolvedValueOnce({
         rows: [
-          { id: 10, confluence_id: 'page-a', title: 'Page A' },
-          { id: 20, confluence_id: 'page-b', title: 'Page B' },
+          { page1_id: 10, page1_confluence_id: 'a', page1_title: 'A', page2_id: 20, page2_confluence_id: 'b', page2_title: 'B', page2_space_key: 'DEV', distance: 0.02 },
+          { page1_id: 10, page1_confluence_id: 'a', page1_title: 'A', page2_id: 30, page2_confluence_id: 'c', page2_title: 'C', page2_space_key: 'DEV', distance: 0.03 },
+          { page1_id: 10, page1_confluence_id: 'a', page1_title: 'A', page2_id: 40, page2_confluence_id: 'd', page2_title: 'D', page2_space_key: 'DEV', distance: 0.04 },
         ],
       });
 
-      // findDuplicates for 'page-a' → finds page-b
-      mocks.mockQuery.mockResolvedValueOnce({ rows: [{ id: 10, title: 'Page A', space_key: 'DEV' }] });
-      mocks.mockClientQuery
-        .mockResolvedValueOnce(undefined) // BEGIN
-        .mockResolvedValueOnce(undefined) // SET LOCAL
-        .mockResolvedValueOnce({
-          rows: [{ id: 20, confluence_id: 'page-b', title: 'Page B', space_key: 'DEV', distance: 0.08 }],
-        }) // CTE
-        .mockResolvedValueOnce(undefined); // COMMIT
+      const pairs = await scanAllDuplicates('user-1', { distanceThreshold: 0.15, maxPairsPerPage: 2 });
 
-      // findDuplicates for 'page-b' → finds page-a (same pair, should be deduplicated)
-      mocks.mockQuery.mockResolvedValueOnce({ rows: [{ id: 20, title: 'Page B', space_key: 'DEV' }] });
-      mocks.mockClientQuery
-        .mockResolvedValueOnce(undefined) // BEGIN
-        .mockResolvedValueOnce(undefined) // SET LOCAL
-        .mockResolvedValueOnce({
-          rows: [{ id: 10, confluence_id: 'page-a', title: 'Page A', space_key: 'DEV', distance: 0.08 }],
-        }) // CTE
-        .mockResolvedValueOnce(undefined); // COMMIT
+      expect(pairs).toHaveLength(2);
+      // The two closest (highest-scoring) partners of page 10 are kept.
+      expect(pairs.map((p) => p.page2.confluenceId)).toEqual(['b', 'c']);
+    });
+
+    it('resolves accessible spaces once and scans in a single query pass (#907)', async () => {
+      // The rewritten scan issues ONE self-join query and resolves the caller's
+      // readable spaces ONCE. The old per-page loop paid an RBAC lookup plus a
+      // dedicated kNN transaction for EVERY page (O(N) round trips + O(N×M)
+      // chunk-distance evals) — this asserts those are collapsed to a single pass.
+      mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
+      mocks.mockQuery.mockResolvedValue({
+        rows: [
+          {
+            page1_id: 10, page1_confluence_id: 'page-a', page1_title: 'Page A',
+            page2_id: 20, page2_confluence_id: 'page-b', page2_title: 'Page B',
+            page2_space_key: 'DEV', distance: 0.05,
+          },
+          {
+            page1_id: 10, page1_confluence_id: 'page-a', page1_title: 'Page A',
+            page2_id: 30, page2_confluence_id: 'page-c', page2_title: 'Page C',
+            page2_space_key: 'DEV', distance: 0.06,
+          },
+        ],
+      });
 
       const pairs = await scanAllDuplicates('user-1', { distanceThreshold: 0.15 });
 
-      // Only 1 pair (A-B), not 2 (A-B and B-A)
-      expect(pairs).toHaveLength(1);
+      // One RBAC resolution for the whole scan (was 1 + N).
+      expect(mocks.mockGetUserAccessibleSpaces).toHaveBeenCalledTimes(1);
+      // One SQL pass — no per-page preliminary SELECT, no per-page transaction.
+      expect(mocks.mockQuery).toHaveBeenCalledTimes(1);
+      expect(mocks.mockPool.connect).not.toHaveBeenCalled();
+
+      // Each unordered pair is reported once, mapped from the self-join rows.
+      expect(pairs).toHaveLength(2);
+      expect(pairs[0].page1.confluenceId).toBe('page-a');
+      expect(pairs.map((p) => p.page2.confluenceId).sort()).toEqual(['page-b', 'page-c']);
     });
   });
 });

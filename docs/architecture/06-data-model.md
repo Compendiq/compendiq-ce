@@ -72,6 +72,7 @@ erDiagram
         text visibility "private | shared"
         uuid created_by_user_id FK
         bool embedding_dirty
+        vector page_avg_embedding "materialized avg of chunk vectors, HNSW-indexed (#919)"
         timestamptz local_modified_at "non-null => local edit since last_synced (#305)"
         uuid local_modified_by FK "who last edited locally (#305)"
         text_array expected_image_files "cached asset filenames; NULL => recompute (#887)"
@@ -176,6 +177,7 @@ erDiagram
         bigint id PK
         text name
         jsonb permissions
+        text description
     }
 
     groups {
@@ -269,6 +271,15 @@ erDiagram
   larger models (e.g. `qwen3-embedding:8b` at 4096) fall to the seq-scan tier.
   Query-time `ef_search` is set per request. Source of truth:
   `backend/src/domains/llm/services/embedding-service.ts` (`enqueueReembedAll`).
+- **Materialized page averages (#919).** `pages.page_avg_embedding` stores each
+  page's average chunk vector, written by `embedPage` inside the same
+  transaction as the chunk inserts, with its own HNSW index
+  (`idx_pages_page_avg_embedding_hnsw`, same type/opclass/params as
+  `page_embeddings.embedding`; kept in lockstep by `enqueueReembedAll`). The
+  knowledge-graph relationship builder (`computePageRelationships`) serves
+  top-K nearest-neighbour edges from this index scoped to the changed pages,
+  instead of AVG-ing the whole `page_embeddings` table and doing an index-less
+  pairwise scan on every embedding run.
 - **Encryption at rest.** `user_settings.confluence_pat` is stored as a
   ciphertext blob (AES-256-GCM, key from `PAT_ENCRYPTION_KEY`). Never
   log or expose it to the frontend. The AES key is derived via HKDF-SHA256

@@ -154,10 +154,10 @@ export interface StreamChatOptions {
 export async function listModels(cfg: ProviderConfig): Promise<LlmModel[]> {
   return withSpan(
     'llm.list_models',
-    () => enqueue(() =>
+    () => enqueue((signal) =>
       getProviderBreaker(cfg.providerId).execute(async () => {
         const res = await undiciFetch(`${cfg.baseUrl}/models`, {
-          headers: headers(cfg), dispatcher: dispatcherFor(cfg),
+          headers: headers(cfg), dispatcher: dispatcherFor(cfg), signal,
         });
         if (!res.ok) throw new Error(`listModels HTTP ${res.status}`);
         const body = await res.json() as { data?: Array<{ id: string }> };
@@ -186,13 +186,14 @@ export async function chat(
   // disabled (withSpan passes straight through).
   return withSpan(
     'llm.chat',
-    () => enqueue(() =>
+    () => enqueue((signal) =>
       getProviderBreaker(cfg.providerId).execute(async () => {
         const res = await undiciFetch(`${cfg.baseUrl}/chat/completions`, {
           method: 'POST',
           headers: headers(cfg),
           body: JSON.stringify({ model, messages, stream: false, ...thinkingExtras(cfg.baseUrl, model, opts?.thinking) }),
           dispatcher: dispatcherFor(cfg),
+          signal,
         });
         if (!res.ok) throw new Error(`chat HTTP ${res.status}`);
         const body = await res.json() as { choices: Array<{ message: { content: string } }> };
@@ -273,13 +274,14 @@ export async function generateEmbedding(
   const input = Array.isArray(text) ? text : [text];
   return withSpan(
     'llm.embeddings',
-    () => enqueue(() =>
+    () => enqueue((signal) =>
       getProviderBreaker(cfg.providerId).execute(async () => {
         const res = await undiciFetch(`${cfg.baseUrl}/embeddings`, {
           method: 'POST',
           headers: headers(cfg),
           body: JSON.stringify({ model, input }),
           dispatcher: dispatcherFor(cfg),
+          signal,
         });
         if (!res.ok) {
           // Include the response body so callers (embedding-service's

@@ -752,6 +752,48 @@ describe('PagesPage', () => {
     expect(screen.queryByTestId('filter-pill-embeddingStatus')).not.toBeInTheDocument();
   });
 
+  // --- Advanced filters ignored in semantic/hybrid search (#945) ---
+  //
+  // The backend applies author/date/label/etc. filters only in keyword mode —
+  // semantic (vectorSearch) and hybrid (hybridSearch) ignore them entirely.
+  // The UI must stop pretending they're active: show a notice and visually
+  // mark the active-filter pills as inactive whenever semantic/hybrid search
+  // is running, so users aren't misled into thinking their filters applied.
+  describe('advanced filters honesty in semantic/hybrid search (#945)', () => {
+    it('shows an "ignored" notice and marks pills inactive when a filter is set in semantic mode', async () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      // Activate an advanced filter → pill appears.
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+      fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+      expect(screen.getByTestId('filter-pill-freshness')).toBeInTheDocument();
+
+      // Keyword mode honors the filter: no notice, pills are active.
+      expect(screen.queryByTestId('filters-ignored-notice')).not.toBeInTheDocument();
+      expect(screen.getByTestId('active-filter-pills')).not.toHaveAttribute('data-inactive', 'true');
+
+      // Switch to semantic mode and enter a query — the backend now ignores
+      // the filter, so the UI must say so.
+      fireEvent.click(screen.getByTestId('search-mode-semantic'));
+      fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+        target: { value: 'kubernetes' },
+      });
+
+      const notice = await screen.findByTestId('filters-ignored-notice');
+      expect(notice).toBeInTheDocument();
+      expect(screen.getByTestId('active-filter-pills')).toHaveAttribute('data-inactive', 'true');
+    });
+
+    it('does not show the notice in semantic mode when no advanced filters are active', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('search-mode-semantic'));
+      fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+        target: { value: 'kubernetes' },
+      });
+      expect(screen.queryByTestId('filters-ignored-notice')).not.toBeInTheDocument();
+    });
+  });
+
   // --- Visual divider test ---
 
   it('renders a visual divider between sort and filters toggle', () => {
@@ -922,6 +964,35 @@ describe('PagesPage', () => {
       const pill = screen.getByTestId('filter-pill-sourceFilter');
       expect(pill).toHaveTextContent('Source: Local');
       expect(pill).not.toHaveTextContent('standalone');
+    });
+  });
+
+  // --- Accessibility: filter/sort controls have accessible names (#946) ---
+  //
+  // The three top-row selects (space / source / sort) had no accessible name,
+  // and the advanced-panel <label>s were not programmatically associated with
+  // their controls (no htmlFor/id). Screen readers announced these as unnamed
+  // "combobox"/"edit" fields. These tests pin the aria-label + label/for wiring.
+  describe('filter control accessible names (#946)', () => {
+    it('top-row space/source/sort selects expose an accessible name', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      expect(screen.getByRole('combobox', { name: /filter by space/i })).toBeInTheDocument();
+      expect(screen.getByRole('combobox', { name: /filter by source/i })).toBeInTheDocument();
+      expect(screen.getByRole('combobox', { name: /sort pages/i })).toBeInTheDocument();
+    });
+
+    it('advanced-panel labels are programmatically associated with their controls', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+
+      // Role-name / label-text queries only match once htmlFor/id wiring exists.
+      expect(screen.getByRole('combobox', { name: /author/i })).toBeInTheDocument();
+      expect(screen.getByRole('combobox', { name: /labels/i })).toBeInTheDocument();
+      expect(screen.getByRole('combobox', { name: /freshness/i })).toBeInTheDocument();
+      expect(screen.getByRole('combobox', { name: /embedding/i })).toBeInTheDocument();
+      expect(screen.getByRole('combobox', { name: /quality/i })).toBeInTheDocument();
+      expect(screen.getByLabelText(/modified from/i)).toBeInTheDocument();
+      expect(screen.getByLabelText(/modified to/i)).toBeInTheDocument();
     });
   });
 
@@ -1246,6 +1317,63 @@ describe('PagesPage', () => {
         const afterClear = pagesListRequests(fetchSpy).slice(beforeClear);
         expect(afterClear.some((r) => r.search === 'kube')).toBe(false);
       });
+    });
+  });
+
+  // --- Pagination chevron accessible names (#947) ---
+  //
+  // The prev/next chevron buttons are icon-only (a bare <ChevronLeft/> or
+  // <ChevronRight/>), so without an aria-label they have no accessible name and
+  // screen-reader / keyboard users cannot tell them apart. There are two
+  // identical pairs — one for the keyword/browse list and one for the
+  // semantic/hybrid results — so both must expose names.
+  describe('pagination accessibility (#947)', () => {
+    const json = (body: unknown) =>
+      new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
+
+    /** Mock fetch so every list/search response reports multiple pages, forcing
+     *  the pagination controls to render in either mode. */
+    function mockFetchWithMultiplePages(totalPages: number) {
+      const items = makeManyPages(3).items;
+      return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+        const url = typeof input === 'string' ? input : (input as Request).url;
+        if (url.includes('/embeddings/status')) return json(mockEmbeddingStatusIdle);
+        if (url.includes('/pages/filters')) return json(mockFilterOptions);
+        if (url.includes('/spaces')) return json(mockSpaces);
+        if (url.includes('/sync/status')) return json({ status: 'idle' });
+        if (url.includes('/pages/pinned')) return json({ items: [], total: 0 });
+        if (url.includes('/settings')) return json({});
+        if (url.includes('/search?')) {
+          const mode = new URL(url, 'http://localhost').searchParams.get('mode') ?? 'keyword';
+          return json({ items, total: items.length, page: 1, limit: 3, totalPages, mode, hasEmbeddings: true });
+        }
+        return json({ items, total: items.length, page: 1, limit: 3, totalPages });
+      });
+    }
+
+    it('keyword-mode pagination chevrons expose Previous/Next accessible names', async () => {
+      vi.restoreAllMocks();
+      mockFetchWithMultiplePages(3);
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      expect(await screen.findByRole('button', { name: /previous page/i })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /next page/i })).toBeInTheDocument();
+    });
+
+    it('semantic-mode pagination chevrons expose Previous/Next accessible names', async () => {
+      vi.restoreAllMocks();
+      mockFetchWithMultiplePages(3);
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByTestId('search-mode-semantic'));
+      fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+        target: { value: 'kubernetes' },
+      });
+
+      expect(
+        await screen.findByRole('button', { name: /previous page/i }, { timeout: 2000 }),
+      ).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /next page/i })).toBeInTheDocument();
     });
   });
 });

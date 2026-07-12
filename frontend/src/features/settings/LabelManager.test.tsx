@@ -80,6 +80,19 @@ describe('LabelManager', () => {
     expect(screen.getByTestId('rename-input')).toHaveValue('architecture');
   });
 
+  it('exposes accessible names on the rename confirm/cancel buttons (#939)', async () => {
+    render(<LabelManager />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('rename-architecture')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('rename-architecture'));
+
+    expect(screen.getByRole('button', { name: 'Confirm rename' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Cancel rename' })).toBeInTheDocument();
+  });
+
   it('shows delete confirmation when delete button is clicked', async () => {
     render(<LabelManager />, { wrapper: createWrapper() });
 

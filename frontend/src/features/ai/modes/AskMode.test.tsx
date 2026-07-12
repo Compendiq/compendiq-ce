@@ -312,6 +312,51 @@ describe('AskMode', () => {
     expect(callBody).not.toHaveProperty('conversationId', null);
   });
 
+  describe('icon-only button accessible names (#939)', () => {
+    beforeEach(() => {
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/mcp-docs/status') {
+          return Promise.resolve({ enabled: true });
+        }
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.resolve([{ name: 'llama3' }]);
+        }
+        if (path === '/llm/conversations') {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve([]);
+      });
+    });
+
+    it('exposes an accessible name on the add-URL and close buttons', async () => {
+      render(<AskModeInput />, { wrapper: createWrapper() });
+
+      const attach = await screen.findByTestId('attach-url-button');
+      fireEvent.click(attach);
+
+      expect(screen.getByRole('button', { name: 'Add URL' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Close URL input' })).toBeInTheDocument();
+    });
+
+    it('exposes an accessible name on each URL chip remove button', async () => {
+      render(<AskModeInput />, { wrapper: createWrapper() });
+
+      const attach = await screen.findByTestId('attach-url-button');
+      fireEvent.click(attach);
+
+      const urlInput = screen.getByTestId('external-url-input');
+      fireEvent.change(urlInput, { target: { value: 'https://docs.example.com/guide' } });
+      fireEvent.keyDown(urlInput, { key: 'Enter' });
+
+      expect(
+        await screen.findByRole('button', { name: 'Remove docs.example.com' }),
+      ).toBeInTheDocument();
+    });
+  });
+
   it('clears input after submission', async () => {
     apiFetchMock.mockImplementation((path: string) => {
       if (path === '/settings') {

@@ -1,6 +1,6 @@
 import { lazy, Suspense } from 'react';
 import { Routes, Route, Navigate, useSearchParams } from 'react-router-dom';
-import { LazyMotion, domAnimation } from 'framer-motion';
+import { LazyMotion, MotionConfig, domAnimation } from 'framer-motion';
 import { useAuthStore } from './stores/auth-store';
 import { useSessionInit } from './shared/hooks/useSessionInit';
 import { useClearCacheOnLogout } from './shared/hooks/useClearCacheOnLogout';
@@ -163,64 +163,66 @@ export function App() {
 
   return (
     <LazyMotion features={domAnimation}>
-      <ErrorBoundary>
-        <Suspense fallback={<PageLoadingFallback />}>
-          <Routes>
-            <Route path="/setup" element={<SetupRoute><SetupWizard /></SetupRoute>} />
-            <Route path="/login" element={<LoginPage />} />
-            <Route path="/auth/oidc/callback" element={<OidcCallbackPage />} />
-            <Route
-              path="/*"
-              element={
-                <ProtectedRoute>
-                  <AppLayout>
-                    <ErrorBoundary>
-                      <Suspense fallback={<PageLoadingFallback />}>
-                        <Routes>
-                          <Route path="/" element={<PagesPage />} />
-                          <Route
-                            path="/pages"
-                            element={<Navigate to="/" replace />}
-                          />
-                          <Route
-                            path="/pages/new"
-                            element={<NewPagePage />}
-                          />
-                          <Route
-                            path="/pages/:id"
-                            element={<PageViewPage />}
-                          />
-                          <Route path="/trash" element={<TrashPage />} />
-                          <Route path="/ai" element={<AiAssistantPage />} />
-                          <Route path="/graph" element={<GraphPage />} />
-                          <Route path="/spaces/new" element={<NewSpacePage />} />
-                          <Route path="/spaces/:key/settings" element={<SpaceSettingsPage />} />
-                          <Route path="/admin/analytics" element={<AnalyticsPage />} />
-                          <Route
-                            path="/settings/ai-reviews/:id"
-                            element={<ReviewDetailPage />}
-                          />
-                          <Route path="/settings" element={<SettingsLayout />}>
-                            <Route index element={<SettingsIndexRedirect />} />
+      <MotionConfig reducedMotion="user">
+        <ErrorBoundary>
+          <Suspense fallback={<PageLoadingFallback />}>
+            <Routes>
+              <Route path="/setup" element={<SetupRoute><SetupWizard /></SetupRoute>} />
+              <Route path="/login" element={<LoginPage />} />
+              <Route path="/auth/oidc/callback" element={<OidcCallbackPage />} />
+              <Route
+                path="/*"
+                element={
+                  <ProtectedRoute>
+                    <AppLayout>
+                      <ErrorBoundary>
+                        <Suspense fallback={<PageLoadingFallback />}>
+                          <Routes>
+                            <Route path="/" element={<PagesPage />} />
                             <Route
-                              path=":category/:item"
-                              element={<SettingsPanelRoute />}
+                              path="/pages"
+                              element={<Navigate to="/" replace />}
                             />
-                          </Route>
-                          <Route
-                            path="*"
-                            element={<Navigate to="/" replace />}
-                          />
-                        </Routes>
-                      </Suspense>
-                    </ErrorBoundary>
-                  </AppLayout>
-                </ProtectedRoute>
-              }
-            />
-          </Routes>
-        </Suspense>
-      </ErrorBoundary>
+                            <Route
+                              path="/pages/new"
+                              element={<NewPagePage />}
+                            />
+                            <Route
+                              path="/pages/:id"
+                              element={<PageViewPage />}
+                            />
+                            <Route path="/trash" element={<TrashPage />} />
+                            <Route path="/ai" element={<AiAssistantPage />} />
+                            <Route path="/graph" element={<GraphPage />} />
+                            <Route path="/spaces/new" element={<NewSpacePage />} />
+                            <Route path="/spaces/:key/settings" element={<SpaceSettingsPage />} />
+                            <Route path="/admin/analytics" element={<AnalyticsPage />} />
+                            <Route
+                              path="/settings/ai-reviews/:id"
+                              element={<ReviewDetailPage />}
+                            />
+                            <Route path="/settings" element={<SettingsLayout />}>
+                              <Route index element={<SettingsIndexRedirect />} />
+                              <Route
+                                path=":category/:item"
+                                element={<SettingsPanelRoute />}
+                              />
+                            </Route>
+                            <Route
+                              path="*"
+                              element={<Navigate to="/" replace />}
+                            />
+                          </Routes>
+                        </Suspense>
+                      </ErrorBoundary>
+                    </AppLayout>
+                  </ProtectedRoute>
+                }
+              />
+            </Routes>
+          </Suspense>
+        </ErrorBoundary>
+      </MotionConfig>
     </LazyMotion>
   );
 }

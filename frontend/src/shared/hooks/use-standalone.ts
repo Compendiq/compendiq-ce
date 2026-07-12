@@ -284,8 +284,9 @@ export function useReorderPage() {
         body: JSON.stringify({ sortOrder }),
       }),
     onSuccess: () => {
+      // ['pages'] covers the sidebar tree query (['pages', 'tree', …]). The old
+      // extra ['space-tree'] invalidation matched no query — dead key (#959).
       queryClient.invalidateQueries({ queryKey: ['pages'] });
-      queryClient.invalidateQueries({ queryKey: ['space-tree'] });
     },
   });
 }

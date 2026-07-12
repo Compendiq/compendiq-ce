@@ -29,7 +29,7 @@ export function TrashPage() {
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center gap-3">
-        <button onClick={() => navigate('/')} className="nm-icon-button">
+        <button onClick={() => navigate('/')} aria-label="Back to dashboard" className="nm-icon-button">
           <ArrowLeft size={18} />
         </button>
         <div>

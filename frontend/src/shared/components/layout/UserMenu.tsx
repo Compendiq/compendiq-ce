@@ -42,7 +42,7 @@ export function UserMenu() {
           <DropdownMenu.Separator className="my-1 h-px bg-foreground/10" />
           <DropdownMenu.Item
             onSelect={() => navigate('/settings')}
-            className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-sm text-muted-foreground outline-none hover:bg-foreground/5 hover:text-foreground transition-colors"
+            className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-sm text-muted-foreground outline-none hover:bg-foreground/5 hover:text-foreground data-[highlighted]:bg-foreground/10 data-[highlighted]:text-foreground transition-colors"
           >
             <Settings size={14} />
             Settings
@@ -55,7 +55,7 @@ export function UserMenu() {
             // server-side on each /admin/analytics/* endpoint.
             <DropdownMenu.Item
               onSelect={() => navigate('/admin/analytics')}
-              className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-sm text-muted-foreground outline-none hover:bg-foreground/5 hover:text-foreground transition-colors"
+              className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-sm text-muted-foreground outline-none hover:bg-foreground/5 hover:text-foreground data-[highlighted]:bg-foreground/10 data-[highlighted]:text-foreground transition-colors"
             >
               <BarChart3 size={14} />
               Analytics
@@ -63,7 +63,7 @@ export function UserMenu() {
           )}
           <DropdownMenu.Item
             onSelect={openShortcuts}
-            className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-sm text-muted-foreground outline-none hover:bg-foreground/5 hover:text-foreground transition-colors"
+            className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-sm text-muted-foreground outline-none hover:bg-foreground/5 hover:text-foreground data-[highlighted]:bg-foreground/10 data-[highlighted]:text-foreground transition-colors"
           >
             <Keyboard size={14} />
             Keyboard Shortcuts
@@ -75,7 +75,7 @@ export function UserMenu() {
               e.preventDefault();
               setSingleKeyEnabled(!singleKeyEnabled);
             }}
-            className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-sm text-muted-foreground outline-none hover:bg-foreground/5 hover:text-foreground transition-colors"
+            className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-sm text-muted-foreground outline-none hover:bg-foreground/5 hover:text-foreground data-[highlighted]:bg-foreground/10 data-[highlighted]:text-foreground transition-colors"
           >
             <span className="flex-1">Single-key shortcuts</span>
             <Switch.Root
@@ -92,7 +92,7 @@ export function UserMenu() {
           <DropdownMenu.Separator className="my-1 h-px bg-foreground/10" />
           <DropdownMenu.Item
             onSelect={() => void logoutApi()}
-            className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-sm text-muted-foreground outline-none hover:bg-foreground/5 hover:text-foreground transition-colors"
+            className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-sm text-muted-foreground outline-none hover:bg-foreground/5 hover:text-foreground data-[highlighted]:bg-foreground/10 data-[highlighted]:text-foreground transition-colors"
           >
             <LogOut size={14} />
             Sign out

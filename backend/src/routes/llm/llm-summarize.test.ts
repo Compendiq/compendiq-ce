@@ -197,14 +197,22 @@ describe('POST /api/llm/summarize - functionality', () => {
     expect(response.statusCode).toBeGreaterThanOrEqual(400);
   });
 
-  it('should return 400 when model is missing', async () => {
+  it('should accept a request without model and resolve it server-side (#929)', async () => {
+    // #929: `model` is optional in the contract — the route resolves it per
+    // use-case via resolveUsecase() and ignores any body value (ADR-021).
     const response = await app.inject({
       method: 'POST',
       url: '/api/llm/summarize',
       payload: { content: 'Some text to summarize' },
     });
 
-    expect(response.statusCode).toBeGreaterThanOrEqual(400);
+    // Not rejected for a missing model — the stream path runs instead.
+    expect(response.statusCode).toBeLessThan(400);
+    expect(mockStreamSSE).toHaveBeenCalledOnce();
+    expect(mockStreamChatClient).toHaveBeenCalledOnce();
+    // The server-resolved model ('m'), not the absent body value, is used.
+    const [, model] = mockStreamChatClient.mock.calls[0] as [unknown, string];
+    expect(model).toBe('m');
   });
 
   it('should return 400 when content exceeds MAX_INPUT_LENGTH', async () => {

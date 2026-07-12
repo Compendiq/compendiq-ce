@@ -1032,6 +1032,43 @@ describe('ConfluenceClient', () => {
       expect(ids.has('200')).toBe(true);
       expect(mockRequest).toHaveBeenCalledTimes(2);
     });
+
+    it('follows _links.next even when a page is shorter than the limit (#903)', async () => {
+      // Confluence DC may clamp a page below the requested limit (permission
+      // filtering, server-side max) while still advertising more via _links.next.
+      // The listing must be driven by the presence of `next`, not by size<limit,
+      // or the remaining ids are silently truncated.
+      const client = new ConfluenceClient(baseUrl, pat);
+      const firstPage = Array.from({ length: 40 }, (_, i) => ({ id: String(i) }));
+      const secondPage = Array.from({ length: 10 }, (_, i) => ({ id: String(40 + i) }));
+      mockRequest
+        .mockResolvedValueOnce({
+          statusCode: 200,
+          body: {
+            text: async () =>
+              JSON.stringify({
+                results: firstPage,
+                start: 0,
+                limit: 200,
+                size: 40,
+                _links: { next: '/rest/api/content?spaceKey=DEV&type=page&start=40&limit=200' },
+              }),
+          },
+        } as never)
+        .mockResolvedValueOnce({
+          statusCode: 200,
+          body: {
+            text: async () =>
+              JSON.stringify({ results: secondPage, start: 40, limit: 200, size: 10 }),
+          },
+        } as never);
+
+      const ids = await client.getAllPageIds('DEV');
+
+      expect(ids.size).toBe(50);
+      expect(ids.has('49')).toBe(true);
+      expect(mockRequest).toHaveBeenCalledTimes(2);
+    });
   });
 });
 

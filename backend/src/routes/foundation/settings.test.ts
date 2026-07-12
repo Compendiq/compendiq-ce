@@ -691,6 +691,34 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
     expect(updateCalls[0][1]).toContain(JSON.stringify({ improve_clarity: 'Be clear!' }));
   });
 
+  it('PUT /settings clears the stored PAT when confluencePat is null (#924)', async () => {
+    // #924: confluencePat: null is a valid nullable value meaning "disconnect".
+    // The handler must issue `confluence_pat = NULL` so the PAT is actually
+    // wiped. Previously null was silently ignored — the PAT survived while
+    // invalidateUserData still nuked the user's space_role_assignments, leaving
+    // a connected PAT with no space access.
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 }); // UPDATE user_settings
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { confluencePat: null },
+    });
+
+    expect(response.statusCode).toBe(200);
+
+    // The UPDATE must set confluence_pat = NULL.
+    const nullPatUpdate = mockQuery.mock.calls.filter(
+      (call) =>
+        typeof call[0] === 'string' &&
+        (call[0] as string).includes('UPDATE user_settings') &&
+        (call[0] as string).includes('confluence_pat = NULL'),
+    );
+    expect(nullPatUpdate).toHaveLength(1);
+    // Must never encrypt a null PAT (no ciphertext bound into the query).
+    expect(nullPatUpdate[0][1]).not.toContain('encrypted-pat');
+  });
+
   it('PUT /settings removes old Confluence URL from SSRF allowlist when URL changes (#481)', async () => {
     // Query 1: SELECT old confluence_url
     mockQuery.mockResolvedValueOnce({

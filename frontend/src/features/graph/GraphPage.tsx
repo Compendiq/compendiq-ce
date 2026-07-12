@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { ZoomIn, ZoomOut, Maximize, RefreshCw, Info, Layers, Grid3x3, Filter, Search, X, Settings, Loader2 } from 'lucide-react';
 import { cn } from '../../shared/lib/cn';
 import { useSearch } from '../../shared/hooks/use-standalone';
+import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 import { useAuthStore } from '../../stores/auth-store';
 import { useGraphData, useLocalGraphData, useRefreshGraph, type LocalGraphFilters, type GraphMeta } from './graph-hooks';
 
@@ -72,6 +73,40 @@ const EDGE_COLORS: Record<string, string> = {
 };
 
 const MAX_TOOLTIP_LABELS = 5;
+
+// #941: node text/border colours must adapt to the active theme. On the light
+// (Honey Linen) theme the previously-hardcoded white label was invisible
+// against the linen surface. Text goes near-black on light, white on dark;
+// borders mirror that so the outline reads on both surfaces. The honey
+// center-node stroke stays theme-independent (it reads on both).
+interface GraphCanvasColors {
+  label: string;
+  title: string;
+  badge: string;
+  border: string;
+  borderHover: string;
+  hoverStroke: string;
+}
+
+function getCanvasColors(isLight: boolean): GraphCanvasColors {
+  return isLight
+    ? {
+        label: 'rgba(10,10,10,0.85)',
+        title: 'rgba(10,10,10,0.95)',
+        badge: 'rgba(10,10,10,0.7)',
+        border: 'rgba(10,10,10,0.4)',
+        borderHover: 'rgba(10,10,10,0.9)',
+        hoverStroke: 'rgba(10,10,10,0.8)',
+      }
+    : {
+        label: 'rgba(255,255,255,0.85)',
+        title: 'rgba(255,255,255,0.95)',
+        badge: 'rgba(255,255,255,0.7)',
+        border: 'rgba(255,255,255,0.4)',
+        borderHover: 'rgba(255,255,255,0.9)',
+        hoverStroke: 'rgba(255,255,255,0.8)',
+      };
+}
 
 // ---------- Component ----------
 
@@ -155,6 +190,11 @@ export function GraphPage() {
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
   const [hoveredNode, setHoveredNode] = useState<(GraphNode | ClusterNode) | null>(null);
   const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
+
+  // #941: derive theme-aware canvas colours so node labels/borders stay
+  // legible on both the dark (Graphite Honey) and light (Honey Linen) themes.
+  const isLight = useIsLightTheme();
+  const canvasColors = useMemo(() => getCanvasColors(isLight), [isLight]);
 
   const prefersReducedMotion = useMemo(() => {
     if (typeof window === 'undefined') return false;
@@ -262,7 +302,7 @@ export function GraphPage() {
         ctx.globalAlpha = 1;
 
         // Thicker border for clusters
-        ctx.strokeStyle = isHovered ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.4)';
+        ctx.strokeStyle = isHovered ? canvasColors.borderHover : canvasColors.border;
         ctx.lineWidth = (isHovered ? 2.5 : 1.5) / globalScale;
         ctx.stroke();
 
@@ -271,14 +311,14 @@ export function GraphPage() {
         ctx.font = `bold ${fontSize}px Inter, system-ui, sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillStyle = 'rgba(255,255,255,0.95)';
+        ctx.fillStyle = canvasColors.title;
         const truncated = node.title.length > 20 ? node.title.slice(0, 17) + '...' : node.title;
         ctx.fillText(truncated, x, y - 3 / globalScale);
 
         // Count badge
         const badgeFontSize = Math.max(9 / globalScale, 1.2);
         ctx.font = `${badgeFontSize}px Inter, system-ui, sans-serif`;
-        ctx.fillStyle = 'rgba(255,255,255,0.7)';
+        ctx.fillStyle = canvasColors.badge;
         ctx.fillText(`${node.articleCount} pages`, x, y + fontSize);
         return;
       }
@@ -295,7 +335,7 @@ export function GraphPage() {
       ctx.fill();
 
       if (isHovered || isCenter) {
-        ctx.strokeStyle = isCenter ? 'rgba(245, 158, 66, 0.9)' : 'rgba(255,255,255,0.8)';
+        ctx.strokeStyle = isCenter ? 'rgba(245, 158, 66, 0.9)' : canvasColors.hoverStroke;
         ctx.lineWidth = (isCenter ? 2 : 1.5) / globalScale;
         ctx.stroke();
       }
@@ -305,12 +345,12 @@ export function GraphPage() {
         ctx.font = `${isHovered || isCenter ? 'bold ' : ''}${fontSize}px Inter, system-ui, sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
-        ctx.fillStyle = 'rgba(255,255,255,0.85)';
+        ctx.fillStyle = canvasColors.label;
         const truncated = label.length > 30 ? label.slice(0, 27) + '...' : label;
         ctx.fillText(truncated, x, y + size + 2 / globalScale);
       }
     },
-    [spaceKeys, hoveredNode, data?.centerId],
+    [spaceKeys, hoveredNode, data?.centerId, canvasColors],
   );
 
   const nodePointerAreaPaint = useCallback(

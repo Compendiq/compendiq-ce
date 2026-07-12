@@ -40,8 +40,8 @@ export function startTokenCleanupWorker(): void {
 
   cleanupIntervalHandle = setInterval(async () => {
     if (cleanupLock) return;
-    const acquired = await acquireWorkerLock('token-cleanup', 300);
-    if (!acquired) return;
+    const lockToken = await acquireWorkerLock('token-cleanup', 300);
+    if (!lockToken) return;
     cleanupLock = true;
 
     try {
@@ -51,7 +51,7 @@ export function startTokenCleanupWorker(): void {
       logger.error({ err }, 'Token cleanup worker error');
     } finally {
       cleanupLock = false;
-      await releaseWorkerLock('token-cleanup');
+      await releaseWorkerLock('token-cleanup', lockToken);
     }
   }, intervalHours * 60 * 60 * 1000);
 

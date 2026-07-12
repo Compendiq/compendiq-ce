@@ -126,9 +126,17 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       }
     }
 
-    if (body.confluencePat !== undefined && body.confluencePat !== null) {
-      updates.push(`confluence_pat = $${paramIdx++}`);
-      values.push(encryptPat(body.confluencePat));
+    if (body.confluencePat !== undefined) {
+      // #924: confluencePat is nullable — null means "disconnect", so clear the
+      // stored PAT. Ignoring null left a live PAT behind while invalidateUserData
+      // still wiped the user's space_role_assignments, stranding them with a
+      // connected credential but no space access.
+      if (body.confluencePat === null) {
+        updates.push('confluence_pat = NULL');
+      } else {
+        updates.push(`confluence_pat = $${paramIdx++}`);
+        values.push(encryptPat(body.confluencePat));
+      }
     }
 
     if (body.theme !== undefined) {

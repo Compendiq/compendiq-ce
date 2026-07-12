@@ -46,9 +46,14 @@ function buildTree(pages: PageTreeItem[], homepageId?: string | null): TreeNode[
     }
   });
 
-  // Sort children alphabetically
+  // #959: order siblings by the persisted sortOrder first (set by drag-reorder
+  // via PUT /pages/:id/reorder), falling back to title. Without this the tree
+  // always re-sorted alphabetically, so a drop snapped straight back.
+  const bySortOrderThenTitle = (a: TreeNode, b: TreeNode) =>
+    a.page.sortOrder - b.page.sortOrder || a.page.title.localeCompare(b.page.title);
+
   function sortChildren(nodes: TreeNode[]) {
-    nodes.sort((a, b) => a.page.title.localeCompare(b.page.title));
+    nodes.sort(bySortOrderThenTitle);
     nodes.forEach((n) => sortChildren(n.children));
   }
   sortChildren(roots);
@@ -69,9 +74,7 @@ function buildTree(pages: PageTreeItem[], homepageId?: string | null): TreeNode[
       // keep the homepage visible so the tree doesn't render a false
       // "empty space" state above a "1 page in <SPACE>" footer.
       if (withoutHome.length > 0) {
-        return withoutHome.sort((a, b) =>
-          a.page.title.localeCompare(b.page.title),
-        );
+        return withoutHome.sort(bySortOrderThenTitle);
       }
     }
   }
@@ -103,6 +106,11 @@ export interface SidebarTreeNodeProps {
   expandedSet: Set<string>;
   toggleExpand: (id: string) => void;
   activePageId: string | undefined;
+  // #960: derived once by the parent from location.pathname and passed down as
+  // a stable prop. Rows must NOT call useLocation() themselves — that subscribed
+  // every memoized row to every location/searchParams change, defeating the memo
+  // comparator and re-rendering the whole tree on each navigation.
+  isAiRoute: boolean;
 }
 
 export const SidebarTreeNode = memo(function SidebarTreeNode({
@@ -111,13 +119,12 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
   expandedSet,
   toggleExpand,
   activePageId,
+  isAiRoute,
 }: SidebarTreeNodeProps) {
   const navigate = useNavigate();
-  const location = useLocation();
   const isExpanded = expandedSet.has(node.page.id);
   const hasChildren = node.children.length > 0;
   const isActive = node.page.id === activePageId;
-  const isAiRoute = location.pathname === '/ai';
 
   const handleNavigate = useCallback(() => {
     if (hasChildren) toggleExpand(node.page.id);
@@ -208,6 +215,7 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
               expandedSet={expandedSet}
               toggleExpand={toggleExpand}
               activePageId={activePageId}
+              isAiRoute={isAiRoute}
             />
           ))}
         </div>
@@ -219,7 +227,8 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
     prev.node === next.node &&
     prev.level === next.level &&
     prev.activePageId === next.activePageId &&
-    prev.expandedSet === next.expandedSet
+    prev.expandedSet === next.expandedSet &&
+    prev.isAiRoute === next.isAiRoute
   );
 });
 
@@ -294,6 +303,9 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
   const homepageId = selectedSpaceOption?.homepageId;
   const tree = useMemo(() => buildTree(pages, homepageId), [pages, homepageId]);
   const isLocalSpace = selectedSpaceOption?.source === 'local';
+  // #960: derive the /ai signal once here and thread it into every row as a
+  // stable prop so the rows themselves don't subscribe to location.
+  const isAiRoute = location.pathname === '/ai';
 
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
 
@@ -759,6 +771,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
               expandedIds={expandedIds}
               toggleExpand={toggleExpand}
               activePageId={activePageId}
+              isAiRoute={isAiRoute}
               reorderPage={reorderPage}
             />
           </Suspense>
@@ -775,6 +788,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
                 expandedSet={expandedIds}
                 toggleExpand={toggleExpand}
                 activePageId={activePageId}
+                isAiRoute={isAiRoute}
               />
             ))}
           </div>

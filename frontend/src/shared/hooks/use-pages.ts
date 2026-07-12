@@ -141,6 +141,9 @@ export interface PageTreeItem {
   title: string;
   pageType: PageType;
   parentId: string | null;
+  // Persisted sibling order (PUT /pages/:id/reorder). Confluence pages default
+  // to 0, so buildTree falls back to title within a group of equal sortOrder.
+  sortOrder: number;
   labels: string[];
   lastModifiedAt: string | null;
   embeddingDirty: boolean;

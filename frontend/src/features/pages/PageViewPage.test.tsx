@@ -67,25 +67,52 @@ vi.mock('../../shared/components/article/ArticleViewer', async () => {
 // Configurable draft content so tests can exercise the restore-draft dialog.
 let mockDraftContent: string | null = null;
 
-vi.mock('../../shared/components/article/Editor', () => ({
-  Editor: ({
-    content,
-    onChange,
-  }: {
-    content: string;
-    onChange: (value: string) => void;
-  }) => (
-    <textarea
-      aria-label="Article editor"
-      value={content}
-      onChange={(event) => onChange(event.target.value)}
-    />
-  ),
-  EditorToolbar: () => null,
-  TableContextToolbar: () => null,
-  getDraft: () => mockDraftContent,
-  clearDraft: vi.fn(),
-}));
+vi.mock('../../shared/components/article/Editor', async () => {
+  const React = await vi.importActual<typeof import('react')>('react');
+  return {
+    // Mirrors the real Editor's contract (#954): the body is owned by the
+    // editor instance (read via getHTML() on save), NOT pushed to the parent
+    // per keystroke. onChange is a cheap boolean dirty signal. The textarea is
+    // uncontrolled so typed text persists and is reflected by getHTML().
+    Editor: ({
+      content,
+      onChange,
+      onEditorReady,
+    }: {
+      content: string;
+      onChange?: (dirty: boolean) => void;
+      onEditorReady?: (editor: { getHTML: () => string } | null) => void;
+    }) => {
+      const htmlRef = React.useRef(content);
+      React.useEffect(() => {
+        // `state.doc.descendants` lets the save path's draw.io drain walk an
+        // empty doc (no diagrams) without throwing on the fake instance.
+        const instance = {
+          getHTML: () => htmlRef.current,
+          state: { doc: { descendants: () => {} } },
+        };
+        onEditorReady?.(instance as never);
+        return () => onEditorReady?.(null);
+      }, [onEditorReady]);
+      return (
+        <textarea
+          aria-label="Article editor"
+          defaultValue={content}
+          onChange={(event) => {
+            htmlRef.current = event.target.value;
+            onChange?.(true);
+          }}
+        />
+      );
+    },
+    EditorToolbar: () => null,
+    TableContextToolbar: () => null,
+    LayoutContextToolbar: () => null,
+    ColumnContextToolbar: () => null,
+    getDraft: () => mockDraftContent,
+    clearDraft: vi.fn(),
+  };
+});
 
 vi.mock('../../shared/components/feedback/FeatureErrorBoundary', () => ({
   FeatureErrorBoundary: ({ children }: { children: React.ReactNode }) => <>{children}</>,
@@ -334,6 +361,17 @@ describe('PageViewPage', () => {
 
     await waitFor(() => {
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+  });
+
+  it('moves focus to the close button when the lightbox opens', async () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByText('Preview image'));
+
+    const closeButton = await screen.findByLabelText('Close preview');
+    await waitFor(() => {
+      expect(closeButton).toHaveFocus();
     });
   });
 
@@ -1062,6 +1100,73 @@ describe('PageViewPage', () => {
       expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
       expect(screen.queryByText('Move page to trash?')).not.toBeInTheDocument();
       expect(mockDeleteMutateAsync).not.toHaveBeenCalled();
+    });
+  });
+
+  // #943 — In-place refetches of the SAME page (tag add/remove, resync,
+  // requality, drawio save → invalidateQueries(['pages', id])) hand React a
+  // fresh page object with an unchanged id + version. The scroll-reset effect
+  // must key off navigation (id / version), not the page object identity;
+  // otherwise every background invalidation yanks the reader's scroll position
+  // back to the top of the article. A version bump (a genuinely new revision)
+  // still resets, matching navigation semantics.
+  describe('scroll position preservation on in-place refetch (#943)', () => {
+    it('does not reset scroll when the page object changes but id + version are unchanged', async () => {
+      const scrollContainer = document.createElement('div');
+      scrollContainer.setAttribute('data-scroll-container', '');
+      document.body.appendChild(scrollContainer);
+      const scrollSpy = vi.spyOn(scrollContainer, 'scrollTo');
+
+      currentMockPage = mockPage;
+      const { rerender } = render(<PageViewPage />, { wrapper: createWrapper() });
+
+      // Initial mount scrolls to top (navigation reset). Wait for it, then
+      // clear the spy so we only observe the refetch behaviour.
+      await waitFor(() => {
+        expect(scrollSpy).toHaveBeenCalledWith({ top: 0, left: 0, behavior: 'auto' });
+      });
+      scrollSpy.mockClear();
+
+      // Simulate an optimistic write / invalidation: a brand-new page object
+      // with the SAME id and version (e.g. a label was added).
+      currentMockPage = {
+        ...mockPage,
+        labels: [...mockPage.labels, 'newly-added'],
+      };
+      rerender(<PageViewPage />);
+
+      // Give any effects + double-rAF a chance to fire, then assert the scroll
+      // container was NOT reset — the reader keeps their place.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      expect(scrollSpy).not.toHaveBeenCalled();
+
+      scrollContainer.remove();
+    });
+
+    it('still resets scroll when the page version changes (a genuine new revision)', async () => {
+      const scrollContainer = document.createElement('div');
+      scrollContainer.setAttribute('data-scroll-container', '');
+      document.body.appendChild(scrollContainer);
+      const scrollSpy = vi.spyOn(scrollContainer, 'scrollTo');
+
+      currentMockPage = mockPage;
+      const { rerender } = render(<PageViewPage />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(scrollSpy).toHaveBeenCalledWith({ top: 0, left: 0, behavior: 'auto' });
+      });
+      scrollSpy.mockClear();
+
+      currentMockPage = { ...mockPage, version: mockPage.version + 1 };
+      rerender(<PageViewPage />);
+
+      await waitFor(() => {
+        expect(scrollSpy).toHaveBeenCalledWith({ top: 0, left: 0, behavior: 'auto' });
+      });
+
+      scrollContainer.remove();
     });
   });
 

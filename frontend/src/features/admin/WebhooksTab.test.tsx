@@ -346,6 +346,10 @@ describe('WebhooksTab', () => {
 
     await waitFor(() => screen.getByTestId('webhook-rotate-dialog'));
 
+    // The dialog must not advertise a "Complete rotation" action — no such
+    // control/endpoint exists; the overlap ends automatically (issue #936).
+    expect(screen.queryByText(/Complete rotation/i)).toBeNull();
+
     fireEvent.change(screen.getByTestId('webhook-rotate-secret-input'), {
       target: { value: 'brand-new-strong-secret-xyz' },
     });
@@ -360,6 +364,12 @@ describe('WebhooksTab', () => {
     // The `until` text is a localized Date string — assert that the ISO has been
     // parsed and rendered (year + "2026" will always appear in any locale).
     expect(screen.getByTestId('webhook-rotate-until').textContent).toMatch(/2026/);
+    // The staged-rotation copy must describe the automatic retirement, not a
+    // nonexistent "Complete rotation" button (issue #936).
+    expect(screen.queryByText(/Complete rotation/i)).toBeNull();
+    expect(
+      screen.getByTestId('webhook-rotate-result').textContent,
+    ).toMatch(/automatically/i);
     expect(toastSuccess).toHaveBeenCalledWith('Secret rotated');
   });
 

@@ -523,19 +523,30 @@ describe('Local Spaces Routes', () => {
 
   // ── PUT /api/pages/:id/reorder ────────────────────────────────────────
 
-  it('should reorder a page', async () => {
+  it('should reorder a page and renumber the whole sibling group (#959)', async () => {
+    // 1) existence check, 2) resolve sibling group, 3) sibling list.
     mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 10 }] });
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ space_key: 'PROJ', parent_num: 5 }] });
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 11 }, { id: 12 }, { id: 10 }] });
+    // Per-row UPDATEs + any other tx query.
+    mockQueryFn.mockResolvedValue({ rows: [] });
 
     const response = await app.inject({
       method: 'PUT',
       url: '/api/pages/10/reorder',
-      payload: { sortOrder: 3 },
+      payload: { sortOrder: 0 },
     });
 
     expect(response.statusCode).toBe(200);
     const body = JSON.parse(response.payload);
-    expect(body.sortOrder).toBe(3);
+    expect(body.sortOrder).toBe(0);
+
+    // The dragged page (10) plus both untouched siblings (11, 12) are each
+    // rewritten to a dense position — not just the dragged row.
+    const updatedIds = mockQueryFn.mock.calls
+      .filter((c) => typeof c[0] === 'string' && (c[0] as string).startsWith('UPDATE pages SET sort_order'))
+      .map((c) => (c[1] as unknown[])[1]);
+    expect(updatedIds).toEqual([10, 11, 12]);
   });
 
   it('should return 404 when reordering non-existent page', async () => {

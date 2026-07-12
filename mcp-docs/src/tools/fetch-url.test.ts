@@ -302,3 +302,41 @@ describe('fetchUrl — streaming reader (chunked, no Content-Length)', () => {
     await expect(fetchUrl(TEST_URL, null, {})).rejects.toThrow(/Response body is not readable/);
   });
 });
+
+describe('fetchUrl — DNS-rebinding defence (connection pinned to the vetted address)', () => {
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  let auditSpy: ReturnType<typeof vi.spyOn>;
+  let getCachedDocSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.mocked(lookup).mockResolvedValue([{ address: '93.184.216.34', family: 4 }] as never);
+    fetchSpy = vi.spyOn(globalThis, 'fetch');
+    auditSpy = vi.spyOn(auditLogger, 'logOutboundRequest').mockImplementation(() => {});
+    getCachedDocSpy = vi.spyOn(DocsCache.prototype, 'getCachedDoc').mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('pins the connection: fetch receives a dispatcher (undici Agent) so the guard and the connect resolve to the same IP', async () => {
+    fetchSpy.mockResolvedValue(
+      new Response('<html><title>OK</title><body><main>hi</main></body></html>', {
+        status: 200,
+        headers: { 'Content-Type': 'text/html' },
+      }),
+    );
+
+    await fetchUrl(TEST_URL, null, {});
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const [, requestInit] = fetchSpy.mock.calls[0]!;
+    // Without a dispatcher, undici does its own second DNS resolution at connect
+    // time — the rebinding window between guard and fetch. A pinned Agent closes it.
+    expect(requestInit).toBeDefined();
+    expect((requestInit as { dispatcher?: unknown }).dispatcher).toBeDefined();
+    expect(
+      typeof (requestInit as { dispatcher?: { dispatch?: unknown } }).dispatcher?.dispatch,
+    ).toBe('function');
+  });
+});

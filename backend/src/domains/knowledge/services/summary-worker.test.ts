@@ -176,27 +176,32 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
   });
 
   describe('rescanAllSummaries', () => {
-    it('should reset all non-skipped pages to pending', async () => {
+    it('resets non-skipped pages and config-skips, but not content/PII skips', async () => {
+      // p3 is a content-too-short skip (non-null summary_error) → must stay skipped.
+      // p4 is a config-skip (summary_error IS NULL) → the documented no-model
+      // recovery path (#910) must reset it to pending.
       await query(
-        `INSERT INTO pages (confluence_id, space_key, title, body_text, summary_status, summary_retry_count)
-         VALUES ('p1', $1, 'Page 1', 'content one', 'summarized', 0),
-                ('p2', $1, 'Page 2', 'content two', 'failed', 3),
-                ('p3', $1, 'Page 3', 'short', 'skipped', 0)`,
+        `INSERT INTO pages (confluence_id, space_key, title, body_text, summary_status, summary_retry_count, summary_error)
+         VALUES ('p1', $1, 'Page 1', 'content one', 'summarized', 0, NULL),
+                ('p2', $1, 'Page 2', 'content two', 'failed', 3, NULL),
+                ('p3', $1, 'Page 3', 'short', 'skipped', 0, 'Content too short for summarization'),
+                ('p4', $1, 'Page 4', 'content four', 'skipped', 0, NULL)`,
         [testSpaceKey],
       );
 
       const resetCount = await rescanAllSummaries();
-      expect(resetCount).toBe(2); // p1 and p2, not p3 (skipped)
+      expect(resetCount).toBe(3); // p1, p2, p4 — not p3 (content skip)
 
       const result = await query<{ confluence_id: string; summary_status: string; summary_retry_count: number }>(
         'SELECT confluence_id, summary_status, summary_retry_count FROM pages ORDER BY confluence_id',
       );
 
-      expect(result.rows[0].summary_status).toBe('pending');
+      expect(result.rows[0].summary_status).toBe('pending'); // p1
       expect(result.rows[0].summary_retry_count).toBe(0);
-      expect(result.rows[1].summary_status).toBe('pending');
+      expect(result.rows[1].summary_status).toBe('pending'); // p2
       expect(result.rows[1].summary_retry_count).toBe(0);
-      expect(result.rows[2].summary_status).toBe('skipped'); // unchanged
+      expect(result.rows[2].summary_status).toBe('skipped'); // p3 content skip — unchanged
+      expect(result.rows[3].summary_status).toBe('pending'); // p4 config skip — recovered
     });
   });
 
@@ -266,6 +271,26 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
       expect(result.rows[0].summary_html).toContain('test');
       expect(result.rows[0].summary_model).toBe('test-model');
       expect(result.rows[0].summary_content_hash).toHaveLength(64);
+    });
+
+    it('re-queues pages orphaned in summarizing after a crash (#911)', async () => {
+      // A prior batch marked this page 'summarizing' then crashed before finishing.
+      // The next batch runs under the single-worker lock, so any leftover
+      // 'summarizing' row is necessarily orphaned and must be reset + reprocessed.
+      const longContent = 'F'.repeat(200);
+      await query(
+        `INSERT INTO pages (confluence_id, space_key, title, body_text, summary_status)
+         VALUES ('orphan1', $1, 'Orphaned Page', $2, 'summarizing')`,
+        [testSpaceKey, longContent],
+      );
+
+      await runSummaryBatch('test-model');
+
+      const row = await query<{ summary_status: string; summary_text: string | null }>(
+        "SELECT summary_status, summary_text FROM pages WHERE confluence_id = 'orphan1'",
+      );
+      expect(row.rows[0].summary_status).toBe('summarized');
+      expect(row.rows[0].summary_text).toBeTruthy();
     });
 
     it('strips model preamble/meta framing before persisting the summary (#912)', async () => {
@@ -457,6 +482,50 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
         "SELECT summary_status FROM pages WHERE confluence_id = 'noskip1'",
       );
       expect(pageResult.rows[0].summary_status).toBe('skipped');
+    });
+
+    it('clears a stale summary_error when the no-model path skips a re-synced page, so rescan recovers it (#910)', async () => {
+      // A page that previously FAILED (non-null summary_error) then got
+      // re-synced to 'pending' WITHOUT clearing summary_error. When the
+      // no-model path flips it to 'skipped', it must also null the stale
+      // error — otherwise rescanAllSummaries excludes it (config-skips are
+      // identified by summary_error IS NULL) and it never recovers.
+      const { resolveUsecase } = await import(
+        '../../llm/services/llm-provider-resolver.js'
+      );
+      vi.mocked(resolveUsecase).mockResolvedValueOnce({
+        config: {
+          providerId: 'p1', id: 'p1', name: 'X',
+          baseUrl: 'http://x/v1', apiKey: null,
+          authType: 'none', verifySsl: true, defaultModel: null,
+        },
+        model: '',
+      });
+
+      await query(
+        `INSERT INTO pages (confluence_id, space_key, title, body_text, summary_status, summary_error)
+         VALUES ('stale-err', $1, 'Re-synced Page', 'Some content', 'pending', 'LLM timeout from a prior failure')`,
+        [testSpaceKey],
+      );
+
+      const result = await runSummaryBatch('');
+      expect(result.processed).toBe(0);
+
+      // (a) The no-model skip must null the stale error and mark it skipped.
+      const afterSkip = await query<{ summary_status: string; summary_error: string | null }>(
+        "SELECT summary_status, summary_error FROM pages WHERE confluence_id = 'stale-err'",
+      );
+      expect(afterSkip.rows[0].summary_status).toBe('skipped');
+      expect(afterSkip.rows[0].summary_error).toBeNull();
+
+      // (b) rescan must now re-select and re-queue it as a config-skip.
+      const resetCount = await rescanAllSummaries();
+      expect(resetCount).toBe(1);
+
+      const afterRescan = await query<{ summary_status: string }>(
+        "SELECT summary_status FROM pages WHERE confluence_id = 'stale-err'",
+      );
+      expect(afterRescan.rows[0].summary_status).toBe('pending');
     });
 
     it('should summarize standalone pages with NULL confluence_id', async () => {

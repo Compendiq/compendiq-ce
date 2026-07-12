@@ -134,14 +134,26 @@ describe('POST /api/llm/analyze-quality', () => {
     expect(response.statusCode).toBeGreaterThanOrEqual(400);
   });
 
-  it('should reject request when model is missing', async () => {
+  it('should accept a request without model and resolve it server-side (#929)', async () => {
+    // #929: `model` is optional in the contract — the route resolves it per
+    // use-case via resolveUsecase() and ignores any body value (ADR-021).
+    async function* mockGenerator() {
+      yield { content: '## Overall Quality Score: 75/100', done: true };
+    }
+    mockStreamChatClient.mockReturnValue(mockGenerator());
+
     const response = await app.inject({
       method: 'POST',
       url: '/api/llm/analyze-quality',
       payload: { content: '<p>Some article text</p>' },
     });
 
-    expect(response.statusCode).toBeGreaterThanOrEqual(400);
+    // Not rejected for a missing model — the stream path runs instead.
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toBe('text/event-stream');
+    // The server-resolved model ('m'), not the absent body value, is used.
+    const [, model] = mockStreamChatClient.mock.calls[0] as [unknown, string];
+    expect(model).toBe('m');
   });
 
   it('should return 400 when content exceeds max length', async () => {

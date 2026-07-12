@@ -160,6 +160,31 @@ describe('LocationPicker', () => {
     expect(screen.getByText('Configuration')).toBeInTheDocument();
   });
 
+  it('exposes the folder expander as a keyboard-focusable native button', async () => {
+    render(
+      <LocationPicker
+        spaceKey="DEV"
+        onSelect={mockOnSelect}
+      />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByLabelText('Select page location'));
+
+    await waitFor(() => {
+      expect(screen.getByText('Getting Started')).toBeInTheDocument();
+    });
+
+    const expandCtl = screen.getAllByLabelText('Expand')[0];
+    // Must be a real <button> (not a nested span[role=button]) so it is
+    // Tab-focusable and Enter/Space activatable — no interactive nesting.
+    expect(expandCtl.tagName).toBe('BUTTON');
+    expect(expandCtl).toHaveAttribute('aria-expanded', 'false');
+    expect(expandCtl).not.toHaveAttribute('tabindex', '-1');
+    // The expander must not be nested inside another interactive element.
+    expect(expandCtl.closest('button')).toBe(expandCtl);
+  });
+
   it('calls onSelect with correct data when Confirm is clicked', async () => {
     render(
       <LocationPicker

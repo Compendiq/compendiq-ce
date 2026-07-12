@@ -40,11 +40,17 @@ vi.mock('../../shared/hooks/use-spaces', () => ({
   }),
 }));
 
-const { mockSetContent, mockEditorInstance, mockUseTemplateMutateAsync, mockImportMutateAsync, templatesState } = vi.hoisted(() => {
-  const setContent = vi.fn();
+const { editorHtml, mockSetContent, mockEditorInstance, mockUseTemplateMutateAsync, mockImportMutateAsync, templatesState } = vi.hoisted(() => {
+  // Live HTML the fake editor owns. setContent (template apply) and the
+  // textarea's onChange (typing) both write here; getHTML reads it — mirroring
+  // the real Editor now that the body is read off the instance, not synced to
+  // parent state per keystroke (#954).
+  const html = { current: '' };
+  const setContent = vi.fn((content: string) => { html.current = content; });
   return {
+    editorHtml: html,
     mockSetContent: setContent,
-    mockEditorInstance: { commands: { setContent } },
+    mockEditorInstance: { commands: { setContent }, getHTML: () => html.current },
     mockUseTemplateMutateAsync: vi.fn(),
     mockImportMutateAsync: vi.fn(),
     templatesState: { items: [] as { id: number; title: string; category: string | null }[] },
@@ -70,7 +76,7 @@ vi.mock('../../shared/hooks/use-standalone', () => ({
 vi.mock('../../shared/components/article/Editor', async () => {
   const { useEffect } = await import('react');
   return {
-    Editor: ({ onChange, onEditorReady }: { content: string; onChange: (html: string) => void; placeholder: string; draftKey: string; onEditorReady?: (editor: unknown) => void }) => {
+    Editor: ({ onChange, onEditorReady }: { content: string; onChange?: (dirty: boolean) => void; placeholder: string; draftKey: string; onEditorReady?: (editor: unknown) => void }) => {
       useEffect(() => {
         onEditorReady?.(mockEditorInstance);
         return () => onEditorReady?.(null);
@@ -78,7 +84,12 @@ vi.mock('../../shared/components/article/Editor', async () => {
       return (
         <textarea
           data-testid="mock-editor"
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) => {
+            // Typing writes the live HTML the fake instance serves via getHTML,
+            // then signals dirty (the parent no longer receives the HTML).
+            editorHtml.current = e.target.value;
+            onChange?.(true);
+          }}
         />
       );
     },
@@ -117,6 +128,7 @@ describe('NewPagePage', () => {
     mockUseTemplateMutateAsync.mockReset();
     mockImportMutateAsync.mockReset();
     templatesState.items.length = 0;
+    editorHtml.current = '';
   });
 
   it('navigates to the imported page using articles[0].id from the import envelope', async () => {
@@ -140,10 +152,43 @@ describe('NewPagePage', () => {
     expect(screen.getByPlaceholderText('Untitled page')).toBeInTheDocument();
   });
 
+  it('exposes an accessible name on the back button (#939)', () => {
+    render(<NewPagePage />, { wrapper: createWrapper() });
+    expect(screen.getByRole('button', { name: /back to pages/i })).toBeInTheDocument();
+  });
+
   it('shows article type toggle defaulting to Local Article', () => {
     render(<NewPagePage />, { wrapper: createWrapper() });
     expect(screen.getByTestId('article-type-local')).toBeInTheDocument();
     expect(screen.getByTestId('article-type-confluence')).toBeInTheDocument();
+  });
+
+  it('exposes aria-pressed on the article type toggle buttons (#955)', () => {
+    // These are toggle buttons — screen-reader users need aria-pressed to know
+    // which type is currently selected. Default is Local.
+    render(<NewPagePage />, { wrapper: createWrapper() });
+    expect(screen.getByTestId('article-type-local')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('article-type-confluence')).toHaveAttribute('aria-pressed', 'false');
+
+    fireEvent.click(screen.getByTestId('article-type-confluence'));
+    expect(screen.getByTestId('article-type-local')).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByTestId('article-type-confluence')).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('exposes aria-pressed on the visibility toggle buttons (#955)', async () => {
+    render(<NewPagePage />, { wrapper: createWrapper() });
+    // Visibility picker only renders once a local space is selected.
+    fireEvent.change(screen.getByTestId('space-selector'), { target: { value: '__local__' } });
+    await waitFor(() => {
+      expect(screen.getByTestId('visibility-picker')).toBeInTheDocument();
+    });
+    // Default visibility is Private.
+    expect(screen.getByTestId('visibility-private')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('visibility-shared')).toHaveAttribute('aria-pressed', 'false');
+
+    fireEvent.click(screen.getByTestId('visibility-shared'));
+    expect(screen.getByTestId('visibility-private')).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByTestId('visibility-shared')).toHaveAttribute('aria-pressed', 'true');
   });
 
   it('shows space selector always visible', () => {
@@ -423,6 +468,31 @@ describe('NewPagePage', () => {
         expect(mockSetContent).toHaveBeenCalledWith('<p>Template body</p>', { emitUpdate: true });
       });
       expect(screen.queryByTestId('template-gallery-modal')).not.toBeInTheDocument();
+    });
+
+    it('exposes the template gallery with role="dialog" for assistive tech', async () => {
+      templatesState.items.push({ id: 1, title: 'Meeting Notes', category: 'General' });
+
+      render(<NewPagePage />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByTestId('use-template-btn'));
+
+      expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    });
+
+    it('closes the template gallery on Escape', async () => {
+      templatesState.items.push({ id: 1, title: 'Meeting Notes', category: 'General' });
+
+      render(<NewPagePage />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByTestId('use-template-btn'));
+
+      const dialog = await screen.findByRole('dialog');
+      fireEvent.keyDown(dialog, { key: 'Escape' });
+
+      await waitFor(() => {
+        expect(screen.queryByTestId('template-gallery-modal')).not.toBeInTheDocument();
+      });
     });
 
     it('includes the applied template content in the create payload', async () => {

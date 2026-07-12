@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "tsx watch --env-file=../.env src/index.ts",
     "build": "tsc -p tsconfig.build.json",
-    "start": "node --env-file-if-exists=.env dist/index.js",
+    "start": "node --env-file-if-exists=.env --import ./dist/telemetry-register.js dist/index.js",
     "lint": "eslint --max-warnings=0 src/",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

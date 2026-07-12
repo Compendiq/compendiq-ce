@@ -122,23 +122,38 @@ class LlmTimeoutError extends Error {
   }
 }
 
-export async function enqueue<T>(fn: () => Promise<T>): Promise<T> {
+export async function enqueue<T>(fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
   if (_limiter.pendingCount >= _maxQueueDepth) {
     _totalRejected++;
     throw new QueueFullError(_limiter.pendingCount, _maxQueueDepth);
   }
 
   return _limiter(async () => {
+    // #920: thread an AbortController into `fn` so a timeout can tear down the
+    // in-flight upstream request instead of abandoning it. Aborting fixes two
+    // defects at once: undici stops the connection (no leaked concurrency slot)
+    // AND the wrapped `breaker.execute` rejects with the AbortError, so the
+    // per-provider circuit breaker records a failure on timeout rather than a
+    // slow success.
+    const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeoutPromise = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
         _totalTimedOut++;
+        // Reject the race with LlmTimeoutError FIRST, then abort. Ordering
+        // matters: `controller.abort()` can settle `fn` synchronously (an
+        // abort listener that rejects inline), which would otherwise win the
+        // race and surface the transport's AbortError to the caller instead
+        // of our LlmTimeoutError. Rejecting first pins the caller-visible
+        // error; the subsequent abort still tears down the in-flight request
+        // and feeds the AbortError to the wrapped breaker.
         reject(new LlmTimeoutError(_timeoutMs));
+        controller.abort();
       }, _timeoutMs);
     });
 
     try {
-      const result = await Promise.race([fn(), timeoutPromise]);
+      const result = await Promise.race([fn(controller.signal), timeoutPromise]);
       _totalProcessed++;
       return result;
     } catch (err) {

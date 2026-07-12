@@ -205,8 +205,10 @@ describe('Folder pages (#414)', () => {
           page_type: 'folder',
         }],
       });
-      // UPDATE query
-      mockQueryFn.mockResolvedValueOnce({ rows: [] });
+      // UPDATE query — #926 guards the write with `AND version = <read version>`
+      // and treats rowCount 0 as a lost update (409). The version matches here,
+      // so the title-only write lands: rowCount 1 = success.
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
 
       const response = await app.inject({
         method: 'PUT',

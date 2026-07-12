@@ -570,6 +570,41 @@ describe('VersionHistory', () => {
     expect(screen.queryByText('+0')).not.toBeInTheDocument();
   });
 
+  it('exposes an accessible name on the comparison close button (#939)', async () => {
+    const detail = (versionNumber: number, bodyText: string) =>
+      new Response(
+        JSON.stringify({
+          confluenceId: null,
+          versionNumber,
+          title: `Page v${versionNumber}`,
+          bodyHtml: `<p>${bodyText}</p>`,
+          bodyText,
+          isCurrent: versionNumber === 3,
+        }),
+        { headers: { 'Content-Type': 'application/json' } },
+      );
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (/\/versions\/3$/.test(url)) return Promise.resolve(detail(3, 'The happy cat'));
+      if (/\/versions\/2$/.test(url)) return Promise.resolve(detail(2, 'The cat'));
+      return Promise.resolve(mockVersionsResponse());
+    });
+
+    render(
+      <VersionHistory pageId="page-1" model="qwen3.5" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+    await waitFor(() => expect(screen.getByText('v3')).toBeInTheDocument());
+
+    fireEvent.click(screen.getAllByTitle('Compare with previous version')[0]!);
+    await screen.findByTestId('unified-diff');
+
+    expect(screen.getByRole('button', { name: 'Close comparison' })).toBeInTheDocument();
+  });
+
   it('closes dialog via close button', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(

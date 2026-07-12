@@ -236,7 +236,15 @@ const ConfluenceImage = Image.extend({
 
 interface EditorProps {
   content?: string;
-  onChange?: (html: string) => void;
+  /**
+   * Fired on every document change with a `dirty` flag (always `true`). This is
+   * intentionally a cheap boolean, NOT the serialized HTML: serializing the
+   * whole document (getHTML) on the hot per-keystroke path is O(doc) and, when
+   * the parent stored the result in React state, re-rendered the page on every
+   * keystroke (#954). Read the current HTML from the editor instance
+   * (via `onEditorReady`) only when you actually need it — e.g. on save.
+   */
+  onChange?: (dirty: boolean) => void;
   editable?: boolean;
   placeholder?: string;
   /** Key for localStorage auto-save (e.g. "page-draft-12345"). Omit to disable. */
@@ -273,6 +281,7 @@ function ToolbarButton({
       onClick={onClick}
       disabled={disabled}
       title={title}
+      aria-pressed={active}
       className={cn(
         'rounded p-1.5 transition-colors',
         active ? 'bg-action/20 text-action ring-1 ring-action/30' : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
@@ -1255,8 +1264,10 @@ function defaultVimDisplayState(): VimState {
 export function Editor({ content, onChange, editable = true, placeholder, draftKey, naked = false, onEditorReady, hideToolbar = false, pageId, onSave, vimEnabled: vimEnabledProp }: EditorProps) {
   const isLight = useIsLightTheme();
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
-  // Latest debounced draft awaiting write, so unmount can flush it (#877)
-  const pendingDraftRef = useRef<{ key: string; html: string } | null>(null);
+  // draftKey of a debounced draft awaiting write, so unmount can flush it
+  // (#877). We store only the key and serialize the editor lazily at flush
+  // time (#954) rather than snapshotting getHTML() on every keystroke.
+  const pendingDraftRef = useRef<string | null>(null);
   // Ref for the editor instance so async paste/drop handlers can insert images
   const editorRef = useRef<EditorType | null>(null);
   // Keep pageId in a ref so editorProps closures see the latest value
@@ -1293,15 +1304,19 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
     });
   };
 
-  const saveDraft = useCallback((html: string) => {
+  const saveDraft = useCallback(() => {
     if (!draftKey) return;
     // Fresh edits mean there IS unsaved work again — allow it to be flushed.
     suppressedFlushKeys.delete(draftKey);
-    pendingDraftRef.current = { key: draftKey, html };
+    pendingDraftRef.current = draftKey;
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => {
+      // Serialize lazily here (once per debounce window) instead of on every
+      // keystroke (#954). editorRef is still live — the timer only fires while
+      // mounted; the unmount path clears it and flushes separately below.
       try {
-        localStorage.setItem(`draft:${draftKey}`, html);
+        const html = editorRef.current?.getHTML();
+        if (html != null) localStorage.setItem(`draft:${draftKey}`, html);
       } catch { /* quota exceeded — ignore */ }
       pendingDraftRef.current = null;
       timerRef.current = undefined;
@@ -1314,10 +1329,13 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
   // discarded draft. Uses refs only, so [] deps are correct.
   useEffect(() => () => {
     if (timerRef.current) clearTimeout(timerRef.current);
-    const pending = pendingDraftRef.current;
-    if (pending && !suppressedFlushKeys.has(pending.key)) {
+    const pendingKey = pendingDraftRef.current;
+    if (pendingKey && !suppressedFlushKeys.has(pendingKey)) {
+      // This cleanup runs before useEditor's own teardown, so editorRef still
+      // points at a live editor we can serialize (#954).
       try {
-        localStorage.setItem(`draft:${pending.key}`, pending.html);
+        const html = editorRef.current?.getHTML();
+        if (html != null) localStorage.setItem(`draft:${pendingKey}`, html);
       } catch { /* quota exceeded — ignore */ }
     }
     pendingDraftRef.current = null;
@@ -1391,10 +1409,10 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       ...(vimEnabled ? [VimExtension.configure({
         onStateChange: setVimDisplayState,
         onSave: () => {
-          // Flush current editor content to React state, then trigger server-side save
-          if (editorRef.current) {
-            onChange?.(editorRef.current.getHTML());
-          }
+          // Mark dirty then trigger the server-side save. The save handler
+          // reads the current HTML straight off the editor instance (#954),
+          // so there's no editor→React-state flush to do here.
+          onChange?.(true);
           onSaveRef.current?.();
         },
       })] : []),
@@ -1467,10 +1485,13 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
     content,
     editable,
     immediatelyRender: false,
-    onUpdate: ({ editor: ed }) => {
-      const html = ed.getHTML();
-      onChange?.(html);
-      saveDraft(html);
+    onUpdate: () => {
+      // Hot path: fire a cheap dirty signal and schedule the debounced draft
+      // save. Do NOT serialize getHTML() here (#954) — that runs on every
+      // keystroke and, when the parent stored it in state, re-rendered the
+      // whole page each time. The draft/save paths serialize lazily instead.
+      onChange?.(true);
+      saveDraft();
     },
   }, [vimEnabled]);
 

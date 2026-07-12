@@ -221,14 +221,25 @@ describe('POST /api/llm/ask', () => {
     expect(response.statusCode).toBeGreaterThanOrEqual(400);
   });
 
-  it('should return 400 when model is missing', async () => {
+  it('should accept a request without model and resolve it server-side (#929)', async () => {
+    // #929: `model` is optional in the contract — the route resolves it per
+    // use-case via resolveUsecase() and ignores any body value (ADR-021).
+    mockHybridSearch.mockResolvedValue([]);
+    mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
+    mockStreamChatClient.mockReturnValue(singleChunkGenerator('The deployment uses CI/CD.'));
+
     const response = await app.inject({
       method: 'POST',
       url: '/api/llm/ask',
       payload: { question: 'What is the deployment process?' },
     });
 
-    expect(response.statusCode).toBeGreaterThanOrEqual(400);
+    // Not rejected for a missing model — the stream path runs instead.
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toBe('text/event-stream');
+    // The server-resolved model ('m'), not the absent body value, is used.
+    const [, model] = mockStreamChatClient.mock.calls[0] as [unknown, string];
+    expect(model).toBe('m');
   });
 
   it('should return 400 when question exceeds maximum length', async () => {

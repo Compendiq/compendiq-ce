@@ -3,8 +3,14 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { toast } from 'sonner';
 import { RbacPage } from './RbacPage';
 import { useAuthStore } from '../../stores/auth-store';
+
+// ── Mock sonner toast ──────────────────────────────────────────────────────────
+vi.mock('sonner', () => ({
+  toast: { error: vi.fn(), success: vi.fn() },
+}));
 
 // ── Mock useEnterprise ─────────────────────────────────────────────────────────
 let mockHasFeature: (feature: string) => boolean = (_feature) => false;
@@ -339,5 +345,45 @@ describe('RbacPage', () => {
     });
     // The modal title and button both contain "Create Custom Role", verify the modal is open via testid
     expect(screen.getByTestId('role-name-input')).toBeInTheDocument();
+  });
+
+  // ── Mutation error surfacing (issue #934) ───────────────────────────────────
+
+  it('surfaces a toast error when creating a group fails', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      const method = init?.method ?? 'GET';
+      if (url.includes('/groups') && method === 'POST') {
+        return new Response(JSON.stringify({ message: 'Group name already exists' }), {
+          status: 409,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.includes('/groups')) {
+        return new Response(JSON.stringify(mockGroups), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify([]), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    render(<RbacPage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('rbac-tab-groups'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('create-group-btn')).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTestId('create-group-btn'));
+
+    fireEvent.change(screen.getByTestId('group-name-input'), {
+      target: { value: 'Engineering' },
+    });
+    fireEvent.click(screen.getByTestId('submit-group'));
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith('Group name already exists');
+    });
   });
 });

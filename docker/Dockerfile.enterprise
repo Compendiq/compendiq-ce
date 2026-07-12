@@ -18,8 +18,12 @@
 #
 # Usage (in compendiq-enterprise CI):
 #   docker build -f docker/Dockerfile.enterprise \
-#     --build-arg GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }} \
+#     --secret id=github_token,env=GITHUB_TOKEN \
 #     -t compendiq-enterprise:latest .
+#
+# The GitHub Packages token is passed as a BuildKit secret (never a build-arg):
+# it is mounted only for the RUN steps that need it and is never written into a
+# persisted image layer or the exported build cache.
 #
 # ─────────────────────────────────────────────────────────────────────
 
@@ -30,15 +34,17 @@ RUN apk add --no-cache python3 make g++
 
 WORKDIR /app
 
-# Configure GitHub Packages registry for @compendiq scope
-ARG GITHUB_TOKEN
-RUN echo "@compendiq:registry=https://npm.pkg.github.com" > .npmrc && \
-    echo "//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}" >> .npmrc
-
 COPY package.json package-lock.json ./
 COPY backend/package.json ./backend/
 COPY packages/contracts/package.json ./packages/contracts/
-RUN --mount=type=cache,target=/root/.npm npm ci -w backend -w @compendiq/contracts
+# The GitHub Packages token is mounted as a BuildKit secret and the .npmrc that
+# carries it is created and removed inside this single RUN, so no image layer or
+# exported cache ever contains the token.
+RUN --mount=type=secret,id=github_token --mount=type=cache,target=/root/.npm \
+    sh -c 'echo "@compendiq:registry=https://npm.pkg.github.com" > .npmrc && \
+    echo "//npm.pkg.github.com/:_authToken=$(cat /run/secrets/github_token)" >> .npmrc && \
+    npm ci -w backend -w @compendiq/contracts && \
+    rm -f .npmrc'
 
 # Build contracts
 COPY packages/contracts/ ./packages/contracts/
@@ -48,9 +54,6 @@ RUN npm run build -w @compendiq/contracts
 COPY backend/tsconfig.json backend/tsconfig.build.json ./backend/
 COPY backend/src/ backend/src/
 RUN npm run build -w backend
-
-# Clean up .npmrc (contains token)
-RUN rm -f .npmrc
 
 # ── Stage 2: Obfuscate enterprise code (Layer 2) ───────────────────
 FROM node:24-alpine AS obfuscator
@@ -83,17 +86,16 @@ RUN apk add --no-cache python3 make g++
 
 WORKDIR /app
 
-ARG GITHUB_TOKEN
-RUN echo "@compendiq:registry=https://npm.pkg.github.com" > .npmrc && \
-    echo "//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}" >> .npmrc
-
 COPY package.json package-lock.json ./
 COPY backend/package.json ./backend/
 COPY packages/contracts/package.json ./packages/contracts/
-RUN --mount=type=cache,target=/root/.npm npm ci -w backend -w @compendiq/contracts --omit=dev
-
-# Clean up .npmrc
-RUN rm -f .npmrc
+# Token mounted as a BuildKit secret; .npmrc created and removed in this same RUN
+# so it never lands in a persisted layer or the exported cache.
+RUN --mount=type=secret,id=github_token --mount=type=cache,target=/root/.npm \
+    sh -c 'echo "@compendiq:registry=https://npm.pkg.github.com" > .npmrc && \
+    echo "//npm.pkg.github.com/:_authToken=$(cat /run/secrets/github_token)" >> .npmrc && \
+    npm ci -w backend -w @compendiq/contracts --omit=dev && \
+    rm -f .npmrc'
 
 # ── Stage 4: Chromium (for PDF export) ─────────────────────────────
 FROM alpine:3.23 AS chromium

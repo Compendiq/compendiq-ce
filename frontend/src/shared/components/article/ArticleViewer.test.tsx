@@ -59,6 +59,20 @@ describe('ArticleViewer', () => {
     expect(mockFetchAuthenticatedBlob).toHaveBeenCalledWith('/api/attachments/page-1/dashboard.png');
   });
 
+  it('rewrites protected local-attachment images (standalone draw.io PNGs) to authenticated blob URLs', async () => {
+    mockFetchAuthenticatedBlob.mockResolvedValueOnce('blob:diagram');
+
+    const html = '<p><img src="/api/local-attachments/42/diagram.png" alt="Diagram" /></p>';
+    const { container } = render(<ArticleViewer content={html} />);
+
+    await waitFor(() => {
+      const img = container.querySelector('img');
+      expect(img).toHaveAttribute('src', 'blob:diagram');
+    });
+
+    expect(mockFetchAuthenticatedBlob).toHaveBeenCalledWith('/api/local-attachments/42/diagram.png');
+  });
+
   it('replaces failed image with error placeholder containing a Retry button', async () => {
     mockFetchAuthenticatedBlob.mockResolvedValueOnce(null);
 

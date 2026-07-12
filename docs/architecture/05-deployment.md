@@ -157,8 +157,9 @@ flowchart LR
 
 2. **`stop_grace_period: 60s` on the `backend` service** so SIGTERM has
    time to drain HTTP handlers + finish active BullMQ jobs before
-   SIGKILL. Set in `docker/docker-compose.ee.yml` for EE; CE operators
-   running multi-replica should set it on their compose. See ADR-024 →
+   SIGKILL. Shipped in `docker/docker-compose.yml`, the installer compose
+   (`scripts/install.sh`), and `docker/docker-compose.ee.yml`, so both CE
+   and EE deployments get it out of the box. See ADR-024 →
    Graceful-shutdown order.
 
 3. **Redis must be reachable from every replica** with low latency

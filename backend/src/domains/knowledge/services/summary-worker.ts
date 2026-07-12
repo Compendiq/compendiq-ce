@@ -403,7 +403,12 @@ export async function runSummaryBatch(
 
   if (!assignment || !effectiveModel) {
     const flipped = await query(
-      `UPDATE pages SET summary_status = 'skipped'
+      // Clear summary_error so every no-model config-skip is consistently
+      // identifiable by `summary_error IS NULL` in rescanAllSummaries (#910).
+      // A page re-synced to 'pending' after a prior failure still carries its
+      // stale summary_error; without this reset it would be excluded from
+      // recovery and never re-summarized.
+      `UPDATE pages SET summary_status = 'skipped', summary_error = NULL
        WHERE summary_status = 'pending' AND deleted_at IS NULL`,
     );
     logger.warn(
@@ -417,6 +422,17 @@ export async function runSummaryBatch(
     config: assignment.config,
     model: effectiveModel,
   };
+
+  // Phase 0: Re-queue pages orphaned in 'summarizing' by a crashed prior run (#911).
+  // Every batch runs under the redis + in-memory single-worker lock, so no other
+  // run can legitimately hold a row in 'summarizing' concurrently — any leftover
+  // is necessarily stale and would otherwise never be re-selected by findCandidates.
+  await query(
+    `UPDATE pages
+     SET summary_status = 'pending'
+     WHERE summary_status = 'summarizing'
+       AND deleted_at IS NULL`,
+  );
 
   // Phase 1: Detect content changes via timestamp and mark as pending.
   // Uses last_modified_at > summary_generated_at instead of recomputing
@@ -463,8 +479,8 @@ export function startSummaryWorker(intervalMinutes?: number): void {
 
   workerIntervalHandle = setInterval(async () => {
     if (workerLock) return;
-    const acquired = await acquireWorkerLock('summary-worker', 600);
-    if (!acquired) return;
+    const lockToken = await acquireWorkerLock('summary-worker', 600);
+    if (!lockToken) return;
     workerLock = true;
     isProcessing = true;
 
@@ -478,7 +494,7 @@ export function startSummaryWorker(intervalMinutes?: number): void {
     } finally {
       workerLock = false;
       isProcessing = false;
-      await releaseWorkerLock('summary-worker');
+      await releaseWorkerLock('summary-worker', lockToken);
     }
   }, interval);
 
@@ -494,8 +510,8 @@ export function startSummaryWorker(intervalMinutes?: number): void {
  */
 export async function triggerSummaryBatch(): Promise<void> {
   if (workerLock) return;
-  const acquired = await acquireWorkerLock('summary-worker', 600);
-  if (!acquired) return;
+  const lockToken = await acquireWorkerLock('summary-worker', 600);
+  if (!lockToken) return;
   workerLock = true;
   isProcessing = true;
 
@@ -509,7 +525,7 @@ export async function triggerSummaryBatch(): Promise<void> {
   } finally {
     workerLock = false;
     isProcessing = false;
-    await releaseWorkerLock('summary-worker');
+    await releaseWorkerLock('summary-worker', lockToken);
   }
 }
 
@@ -522,8 +538,12 @@ export function stopSummaryWorker(): void {
 }
 
 /**
- * Reset all summary_content_hash values to trigger full re-summarization.
- * Admin-only operation.
+ * Reset summary state to trigger full re-summarization. Admin-only operation.
+ *
+ * Recovers config-skipped pages (skipped with no summary_error, i.e. the
+ * no-model path at runSummaryBatch) so this is the documented no-model
+ * recovery route (#910). Deliberate skips carrying a non-null summary_error
+ * (content-too-short, PII-blocked) stay skipped and are not reprocessed.
  */
 export async function rescanAllSummaries(): Promise<number> {
   const result = await query(
@@ -531,8 +551,8 @@ export async function rescanAllSummaries(): Promise<number> {
      SET summary_content_hash = NULL,
          summary_status = 'pending',
          summary_retry_count = 0
-     WHERE summary_status != 'skipped'
-       AND deleted_at IS NULL
+     WHERE deleted_at IS NULL
+       AND (summary_status != 'skipped' OR summary_error IS NULL)
      RETURNING confluence_id`,
   );
   return result.rowCount ?? 0;

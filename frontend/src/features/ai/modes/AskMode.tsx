@@ -115,7 +115,11 @@ export function AskModeInput() {
             >
               <Link2 size={10} />
               {new URL(url).hostname}
-              <button onClick={() => removeUrl(url)} className="hover:text-red-400">
+              <button
+                onClick={() => removeUrl(url)}
+                aria-label={`Remove ${new URL(url).hostname}`}
+                className="hover:text-red-400"
+              >
                 <X size={10} />
               </button>
             </span>
@@ -137,12 +141,14 @@ export function AskModeInput() {
           />
           <button
             onClick={addUrl}
+            aria-label="Add URL"
             className="shrink-0 rounded-md px-2 py-1 text-xs text-primary-ink hover:bg-primary/10"
           >
             <Plus size={12} />
           </button>
           <button
             onClick={() => { setShowUrlInput(false); setUrlInput(''); }}
+            aria-label="Close URL input"
             className="shrink-0 rounded-md p-1 text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
           >
             <X size={12} />

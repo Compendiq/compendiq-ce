@@ -8,8 +8,10 @@ vi.mock('../utils/logger.js', () => ({
 import {
   setRedisClient,
   getRedisClient,
+  invalidateGraphCache,
   acquireEmbeddingLock,
   releaseEmbeddingLock,
+  refreshEmbeddingLock,
   isEmbeddingLocked,
   listActiveEmbeddingLocks,
   forceReleaseEmbeddingLock,
@@ -199,6 +201,59 @@ describe('redis-cache embedding lock', () => {
       setRedisClient(null as any);
 
       await expect(releaseEmbeddingLock('user-1', 'some-lock-id')).resolves.toBeUndefined();
+    });
+  });
+
+  describe('refreshEmbeddingLock', () => {
+    it('renews the TTL and reports still-mine when the stored value matches lockId (issue #913)', async () => {
+      // The refresh Lua script returns the current holder value (ARGV[1] here,
+      // because it matches); on a match it also PEXPIREs the key. The mock
+      // echoes the stored value the script would GET back.
+      mockRedis.eval.mockImplementation(
+        async (_script: string, opts: { arguments: string[] }) => opts.arguments[0],
+      );
+      const lockId = 'lock-id-abc';
+
+      const result = await refreshEmbeddingLock('user-42', lockId);
+
+      expect(result).toBe(lockId); // still mine
+      expect(mockRedis.eval).toHaveBeenCalledTimes(1);
+      const [script, opts] = mockRedis.eval.mock.calls[0];
+      // Single atomic script: ownership check gates the TTL bump.
+      expect((script as string).toLowerCase()).toContain('get');
+      expect((script as string).toLowerCase()).toContain('pexpire');
+      expect((script as string)).toEqual(expect.stringContaining('== ARGV[1]'));
+      expect(opts).toEqual({
+        keys: ['embedding:lock:user-42'],
+        // arguments = [lockId, ttlMs]. TTL is the full EMBEDDING_LOCK_TTL_MS.
+        arguments: [lockId, '3600000'],
+      });
+    });
+
+    it('reports the foreign holder value (not-mine) so callers can abort on force-release', async () => {
+      // Key was re-acquired/force-released by another process: GET returns a
+      // different value, the script does NOT PEXPIRE, and returns that value.
+      mockRedis.eval.mockResolvedValue('someone-elses-lock');
+
+      const result = await refreshEmbeddingLock('user-42', 'my-lock');
+
+      expect(result).toBe('someone-elses-lock');
+      expect(result).not.toBe('my-lock');
+    });
+
+    it('returns null when the lock key is gone (expired/force-released)', async () => {
+      mockRedis.eval.mockResolvedValue(null);
+
+      const result = await refreshEmbeddingLock('user-42', 'my-lock');
+
+      expect(result).toBeNull();
+    });
+
+    it('returns null and does not throw when Redis client is not available', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      setRedisClient(null as any);
+
+      await expect(refreshEmbeddingLock('user-1', 'my-lock')).resolves.toBeNull();
     });
   });
 
@@ -539,25 +594,31 @@ describe('redis-cache embedding lock', () => {
   });
 
   describe('acquireWorkerLock', () => {
-    it('returns true when lock is acquired (SET NX returns OK)', async () => {
+    it('returns a UUID token when lock is acquired (SET NX stores that token, not "1")', async () => {
       mockRedis.set.mockResolvedValue('OK');
 
-      const acquired = await acquireWorkerLock('quality-worker');
+      const token = await acquireWorkerLock('quality-worker');
 
-      expect(acquired).toBe(true);
+      // Ownership token — a UUID, never the legacy bare '1' value.
+      expect(token).toBeTypeOf('string');
+      expect(token).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+      );
       expect(mockRedis.set).toHaveBeenCalledWith(
         'worker:lock:quality-worker',
-        '1',
+        token,
         { NX: true, EX: 300 },
       );
+      // The stored value must be the token, never the legacy sentinel '1'.
+      expect(mockRedis.set.mock.calls[0][1]).not.toBe('1');
     });
 
-    it('returns false when lock is already held', async () => {
+    it('returns null when lock is already held', async () => {
       mockRedis.set.mockResolvedValue(null);
 
-      const acquired = await acquireWorkerLock('quality-worker');
+      const token = await acquireWorkerLock('quality-worker');
 
-      expect(acquired).toBe(false);
+      expect(token).toBeNull();
     });
 
     it('uses custom TTL when provided', async () => {
@@ -569,45 +630,134 @@ describe('redis-cache embedding lock', () => {
       expect(call[2]).toEqual({ NX: true, EX: 600 });
     });
 
-    it('falls back to true when Redis is not available', async () => {
+    it('falls back to a token when Redis is not available', async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       setRedisClient(null as any);
 
-      const acquired = await acquireWorkerLock('test-worker');
+      const token = await acquireWorkerLock('test-worker');
 
-      expect(acquired).toBe(true);
+      // Truthy fallback so single-node callers still proceed.
+      expect(token).toBeTypeOf('string');
+      expect(token).toBeTruthy();
     });
 
-    it('falls back to true when Redis throws', async () => {
+    it('falls back to a token when Redis throws', async () => {
       mockRedis.set.mockRejectedValue(new Error('Redis down'));
 
-      const acquired = await acquireWorkerLock('test-worker');
+      const token = await acquireWorkerLock('test-worker');
 
-      expect(acquired).toBe(true);
+      expect(token).toBeTypeOf('string');
+      expect(token).toBeTruthy();
     });
   });
 
   describe('releaseWorkerLock', () => {
-    it('deletes the lock key', async () => {
-      mockRedis.del.mockResolvedValue(1);
+    it('releases via an ownership-checked Lua script, not a bare del (plan RED)', async () => {
+      mockRedis.eval.mockResolvedValue(1);
 
-      await releaseWorkerLock('quality-worker');
+      await releaseWorkerLock('quality-worker', 'token-abc');
 
-      expect(mockRedis.del).toHaveBeenCalledWith('worker:lock:quality-worker');
+      // Must NOT unconditionally DEL — that deletes another pod's lock when the
+      // TTL lapsed and a different holder re-acquired.
+      expect(mockRedis.del).not.toHaveBeenCalled();
+      expect(mockRedis.eval).toHaveBeenCalledTimes(1);
+      const [script, opts] = mockRedis.eval.mock.calls[0];
+      expect(script).toEqual(
+        expect.stringContaining('redis.call("get", KEYS[1]) == ARGV[1]'),
+      );
+      expect((script as string).toLowerCase()).toContain('del');
+      expect(opts).toEqual({
+        keys: ['worker:lock:quality-worker'],
+        arguments: ['token-abc'],
+      });
     });
 
     it('is a no-op when Redis is not available', async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       setRedisClient(null as any);
 
-      await expect(releaseWorkerLock('test-worker')).resolves.toBeUndefined();
+      await expect(releaseWorkerLock('test-worker', 'token')).resolves.toBeUndefined();
     });
 
     it('does not throw when Redis throws', async () => {
-      mockRedis.del.mockRejectedValue(new Error('Redis timeout'));
+      mockRedis.eval.mockRejectedValue(new Error('Redis timeout'));
 
-      await expect(releaseWorkerLock('test-worker')).resolves.toBeUndefined();
+      await expect(releaseWorkerLock('test-worker', 'token')).resolves.toBeUndefined();
     });
+  });
+});
+
+// ─── Issue #915 — graph-cache invalidation across all users via SCAN ──────
+describe('invalidateGraphCache (#915)', () => {
+  let mockRedis: ReturnType<typeof createMockRedisClient>;
+
+  beforeEach(() => {
+    mockRedis = createMockRedisClient();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    setRedisClient(mockRedis as any);
+  });
+
+  afterEach(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    setRedisClient(null as any);
+  });
+
+  it('SCANs the cross-user graph pattern and deletes every matching key', async () => {
+    // The graph cache is written under `kb:<userId>:pages:graph:<view>:<spaceKey>`
+    // (see routes/knowledge/pages-embeddings.ts). page_relationships is shared,
+    // so invalidation must clear every user's graph cache, not just one exact key.
+    mockRedis.scan.mockResolvedValueOnce({
+      cursor: '0',
+      keys: ['kb:u1:pages:graph:standard:all', 'kb:u2:pages:graph:clustered:ENG'],
+    });
+    mockRedis.del.mockResolvedValue(2);
+
+    await invalidateGraphCache();
+
+    expect(mockRedis.scan).toHaveBeenCalledWith('0', {
+      MATCH: 'kb:*:pages:graph:*',
+      COUNT: 100,
+    });
+    expect(mockRedis.del).toHaveBeenCalledWith([
+      'kb:u1:pages:graph:standard:all',
+      'kb:u2:pages:graph:clustered:ENG',
+    ]);
+    // Must NOT delete a bare exact key that is never written.
+    expect(mockRedis.del).not.toHaveBeenCalledWith('kb:u1:pages:graph');
+  });
+
+  it('walks the cursor across multiple SCAN pages', async () => {
+    mockRedis.scan
+      .mockResolvedValueOnce({ cursor: '7', keys: ['kb:u1:pages:graph:standard:all'] })
+      .mockResolvedValueOnce({ cursor: '0', keys: ['kb:u2:pages:graph:standard:all'] });
+    mockRedis.del.mockResolvedValue(1);
+
+    await invalidateGraphCache();
+
+    expect(mockRedis.scan).toHaveBeenCalledTimes(2);
+    expect(mockRedis.del).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not call DEL when SCAN returns no keys', async () => {
+    mockRedis.scan.mockResolvedValueOnce({ cursor: '0', keys: [] });
+
+    await invalidateGraphCache();
+
+    expect(mockRedis.del).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op when Redis client is not available', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    setRedisClient(null as any);
+
+    await expect(invalidateGraphCache()).resolves.toBeUndefined();
+    expect(mockRedis.scan).not.toHaveBeenCalled();
+  });
+
+  it('soft-fails when SCAN throws (logs, does not raise)', async () => {
+    mockRedis.scan.mockRejectedValue(new Error('Redis down'));
+
+    await expect(invalidateGraphCache()).resolves.toBeUndefined();
   });
 });
 

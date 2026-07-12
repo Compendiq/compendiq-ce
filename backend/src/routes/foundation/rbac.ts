@@ -153,7 +153,8 @@ export async function rbacRoutes(fastify: FastifyInstance) {
         is_system: boolean;
         permissions: string[];
         created_at: string;
-      }>('SELECT id, name, display_name, is_system, permissions, created_at FROM roles ORDER BY id');
+        description: string | null;
+      }>('SELECT id, name, display_name, is_system, permissions, created_at, description FROM roles ORDER BY id');
 
       return result.rows.map((r) => ({
         id: r.id,
@@ -162,6 +163,7 @@ export async function rbacRoutes(fastify: FastifyInstance) {
         isSystem: r.is_system,
         permissions: r.permissions,
         createdAt: r.created_at,
+        description: r.description,
       }));
     });
 
