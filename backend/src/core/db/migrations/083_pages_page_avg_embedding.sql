@@ -1,4 +1,4 @@
--- Migration 082: Materialize per-page average embeddings for indexed kNN.
+-- Migration 083: Materialize per-page average embeddings for indexed kNN.
 --
 -- Issue #919: computePageRelationships computed AVG(embedding) over the ENTIRE
 -- page_embeddings table and then ran an exact, index-less pairwise

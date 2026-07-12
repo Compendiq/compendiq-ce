@@ -5,7 +5,7 @@
  * run an exact (index-less) pairwise nearest-neighbour scan on every embedding
  * run, hitting the 120s statement timeout as the corpus grew. The fix
  * materializes each page's average embedding on `pages.page_avg_embedding`
- * (migration 082) and serves kNN from an HNSW index.
+ * (migration 083) and serves kNN from an HNSW index.
  *
  * These tests exercise the real SQL that the pure-vi.fn unit tests in
  * embedding-service.test.ts cannot observe:
