@@ -1,4 +1,4 @@
--- Migration 082: add description column to roles (#935)
+-- Migration 085: add description column to roles (#935)
 --
 -- Custom roles carry a human-readable description entered in the role editor.
 -- Without a persisted column the editor could not round-trip the value: it
