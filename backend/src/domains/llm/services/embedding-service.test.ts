@@ -458,15 +458,20 @@ describe('embedding-service', () => {
     });
 
     it('should delete only affected rows when changedPageIds is provided (incremental)', async () => {
-      // 7 query slots: BEGIN, SET LOCAL, DELETE, similarity INSERT, label INSERT,
+      // 8 query slots: BEGIN, SET LOCAL, DELETE (directed similarity edges),
+      // DELETE (symmetric edges), similarity INSERT, label INSERT,
       // parent_child INSERT (#362), COMMIT. Each must be explicitly mocked so the
       // assertions below pin the bind params for the new edge type instead of
       // relying on the beforeEach catch-all (which would silently absorb a missing
       // slot and let a regression slip through).
+      // #916: the incremental delete is split — directed embedding_similarity
+      // edges are pruned source-side only (page_id_1 = ANY), while symmetric
+      // edge types are deleted on both sides — so there are now TWO DELETE slots.
       mockClient.query
         .mockResolvedValueOnce({ rows: [] })                                                          // BEGIN
         .mockResolvedValueOnce({ rows: [] })                                                          // SET LOCAL statement_timeout
-        .mockResolvedValueOnce({ rows: [], rowCount: 2 })                                             // DELETE WHERE page_id_1 = ANY($1) OR page_id_2 = ANY($1)
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 })                                             // DELETE directed embedding_similarity WHERE page_id_1 = ANY($1)
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 })                                             // DELETE symmetric edges WHERE page_id_1 = ANY($1) OR page_id_2 = ANY($1)
         .mockResolvedValueOnce({ rows: [{ page_id_1: 1, page_id_2: 2, score: 0.9 }], rowCount: 1 })   // similarity INSERT
         .mockResolvedValueOnce({ rows: [], rowCount: 0 })                                             // label INSERT
         .mockResolvedValueOnce({ rows: [], rowCount: 0 })                                             // parent_child INSERT (#362)
@@ -477,30 +482,43 @@ describe('embedding-service', () => {
       expect(totalEdges).toBe(1);
       // Sanity: pin the slot count so a future producer that adds another query
       // can't quietly shift the assertions below to the wrong call index.
-      expect(mockClient.query).toHaveBeenCalledTimes(7);
+      expect(mockClient.query).toHaveBeenCalledTimes(8);
 
-      // DELETE should contain ANY($1)
-      const deleteCall = mockClient.query.mock.calls[2][0] as string;
-      expect(deleteCall).toContain('ANY($1)');
+      // #916: directed similarity edges are pruned SOURCE-SIDE ONLY. This delete
+      // must target relationship_type = 'embedding_similarity' and match only
+      // page_id_1 = ANY($1) — never page_id_2 — so reverse edges Y→X owned by an
+      // unchanged page Y survive.
+      const directedDeleteCall = mockClient.query.mock.calls[2][0] as string;
+      expect(directedDeleteCall).toContain("relationship_type = 'embedding_similarity'");
+      expect(directedDeleteCall).toContain('page_id_1 = ANY($1)');
+      expect(directedDeleteCall).not.toContain('page_id_2');
       expect(mockClient.query.mock.calls[2][1]).toEqual([[1, 3]]);
 
+      // #916: all symmetric edge types are deleted on BOTH sides and must
+      // explicitly exclude the directed embedding_similarity type.
+      const symmetricDeleteCall = mockClient.query.mock.calls[3][0] as string;
+      expect(symmetricDeleteCall).toContain("relationship_type <> 'embedding_similarity'");
+      expect(symmetricDeleteCall).toContain('page_id_1 = ANY($1)');
+      expect(symmetricDeleteCall).toContain('page_id_2 = ANY($1)');
+      expect(mockClient.query.mock.calls[3][1]).toEqual([[1, 3]]);
+
       // similarity query $3 should be changedPageIds
-      const similarityCall = mockClient.query.mock.calls[3];
+      const similarityCall = mockClient.query.mock.calls[4];
       expect(similarityCall[1][2]).toEqual([1, 3]);
 
       // label query $1 should be changedPageIds
-      const labelCall = mockClient.query.mock.calls[4];
+      const labelCall = mockClient.query.mock.calls[5];
       expect(labelCall[1][0]).toEqual([1, 3]);
 
       // parent_child query (#362) $1 should be changedPageIds — pins the
       // incremental contract for the new edge type.
-      const parentChildCall = mockClient.query.mock.calls[5];
+      const parentChildCall = mockClient.query.mock.calls[6];
       expect(parentChildCall[0]).toContain("'parent_child'");
       expect(parentChildCall[1][0]).toEqual([1, 3]);
 
       // COMMIT must be the final call (would silently fall through to the
       // beforeEach catch-all if the slot count above were wrong).
-      expect(mockClient.query.mock.calls[6][0]).toBe('COMMIT');
+      expect(mockClient.query.mock.calls[7][0]).toBe('COMMIT');
     });
   });
 
