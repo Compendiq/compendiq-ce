@@ -464,6 +464,50 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
       expect(pageResult.rows[0].summary_status).toBe('skipped');
     });
 
+    it('clears a stale summary_error when the no-model path skips a re-synced page, so rescan recovers it (#910)', async () => {
+      // A page that previously FAILED (non-null summary_error) then got
+      // re-synced to 'pending' WITHOUT clearing summary_error. When the
+      // no-model path flips it to 'skipped', it must also null the stale
+      // error — otherwise rescanAllSummaries excludes it (config-skips are
+      // identified by summary_error IS NULL) and it never recovers.
+      const { resolveUsecase } = await import(
+        '../../llm/services/llm-provider-resolver.js'
+      );
+      vi.mocked(resolveUsecase).mockResolvedValueOnce({
+        config: {
+          providerId: 'p1', id: 'p1', name: 'X',
+          baseUrl: 'http://x/v1', apiKey: null,
+          authType: 'none', verifySsl: true, defaultModel: null,
+        },
+        model: '',
+      });
+
+      await query(
+        `INSERT INTO pages (confluence_id, space_key, title, body_text, summary_status, summary_error)
+         VALUES ('stale-err', $1, 'Re-synced Page', 'Some content', 'pending', 'LLM timeout from a prior failure')`,
+        [testSpaceKey],
+      );
+
+      const result = await runSummaryBatch('');
+      expect(result.processed).toBe(0);
+
+      // (a) The no-model skip must null the stale error and mark it skipped.
+      const afterSkip = await query<{ summary_status: string; summary_error: string | null }>(
+        "SELECT summary_status, summary_error FROM pages WHERE confluence_id = 'stale-err'",
+      );
+      expect(afterSkip.rows[0].summary_status).toBe('skipped');
+      expect(afterSkip.rows[0].summary_error).toBeNull();
+
+      // (b) rescan must now re-select and re-queue it as a config-skip.
+      const resetCount = await rescanAllSummaries();
+      expect(resetCount).toBe(1);
+
+      const afterRescan = await query<{ summary_status: string }>(
+        "SELECT summary_status FROM pages WHERE confluence_id = 'stale-err'",
+      );
+      expect(afterRescan.rows[0].summary_status).toBe('pending');
+    });
+
     it('should summarize standalone pages with NULL confluence_id', async () => {
       const longContent = 'E'.repeat(200);
       const insertResult = await query<{ id: number }>(

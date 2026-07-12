@@ -403,7 +403,12 @@ export async function runSummaryBatch(
 
   if (!assignment || !effectiveModel) {
     const flipped = await query(
-      `UPDATE pages SET summary_status = 'skipped'
+      // Clear summary_error so every no-model config-skip is consistently
+      // identifiable by `summary_error IS NULL` in rescanAllSummaries (#910).
+      // A page re-synced to 'pending' after a prior failure still carries its
+      // stale summary_error; without this reset it would be excluded from
+      // recovery and never re-summarized.
+      `UPDATE pages SET summary_status = 'skipped', summary_error = NULL
        WHERE summary_status = 'pending' AND deleted_at IS NULL`,
     );
     logger.warn(
