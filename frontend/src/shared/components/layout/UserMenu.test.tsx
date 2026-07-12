@@ -223,6 +223,27 @@ describe('UserMenu', () => {
     });
   });
 
+  // Radix applies data-[highlighted] to the roving-focus menu item during
+  // keyboard navigation. With only hover:* styles and outline-none, keyboard
+  // users get no visible highlight (issue #962). Assert every menu item carries
+  // a data-[highlighted] style so the focused item is always visible.
+  it('every menu item has a data-[highlighted] style for keyboard focus visibility', async () => {
+    mockUser = { username: 'adminuser', role: 'admin' };
+    renderUserMenu();
+    const trigger = screen.getByRole('button');
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' });
+
+    await vi.waitFor(() => {
+      expect(trigger).toHaveAttribute('data-state', 'open');
+    });
+
+    const items = screen.getAllByRole('menuitem');
+    expect(items.length).toBeGreaterThan(0);
+    for (const item of items) {
+      expect(item.className).toMatch(/data-\[highlighted\]:/);
+    }
+  });
+
   // Task 5 — avatar initial bubble is brand chrome (not an AI affordance), so
   // it must route to ink-action and not amber. The Playwright contrast spec in
   // Task 6 will catch the colour combo at run-time; this guards the contract
