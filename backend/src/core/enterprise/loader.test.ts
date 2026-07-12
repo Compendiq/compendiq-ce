@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { loadEnterprisePlugin, getEnterprisePlugin, _resetForTesting } from './loader.js';
 import { noopPlugin } from './noop.js';
+import { logger } from '../utils/logger.js';
 
 vi.mock('../utils/logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
@@ -9,6 +10,7 @@ vi.mock('../utils/logger.js', () => ({
 describe('Enterprise loader', () => {
   beforeEach(() => {
     _resetForTesting();
+    vi.mocked(logger.error).mockClear();
   });
 
   describe('loadEnterprisePlugin', () => {
@@ -25,6 +27,37 @@ describe('Enterprise loader', () => {
 
       expect(first).toBe(second);
       expect(first).toBe(noopPlugin);
+    });
+
+    it('should stay silent when the package is genuinely absent (community mode)', async () => {
+      const plugin = await loadEnterprisePlugin();
+
+      expect(plugin).toBe(noopPlugin);
+      expect(logger.error).not.toHaveBeenCalled();
+    });
+
+    describe('when @compendiq/enterprise is present but fails to load', () => {
+      afterEach(() => {
+        vi.doUnmock('@compendiq/enterprise');
+        vi.resetModules();
+      });
+
+      it('should log an error and fall back to noop instead of swallowing the failure', async () => {
+        // Simulate a broken/misconfigured EE package: the module resolves but
+        // its top-level evaluation throws (e.g. a missing transitive dep or a
+        // boot error) — NOT a genuine "package not installed" case.
+        vi.doMock('@compendiq/enterprise', () => {
+          throw new Error('top-level EE boot failure');
+        });
+
+        _resetForTesting();
+        const plugin = await loadEnterprisePlugin();
+
+        expect(plugin).toBe(noopPlugin);
+        expect(logger.error).toHaveBeenCalledTimes(1);
+        const [, message] = vi.mocked(logger.error).mock.calls[0];
+        expect(String(message)).toContain('failed to load');
+      });
     });
   });
 

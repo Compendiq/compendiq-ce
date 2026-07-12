@@ -21,6 +21,10 @@ let currentLicense: LicenseInfo | null = null;
  *   it is returned and cached.
  * - If the package is not installed (normal for community edition),
  *   the noop plugin is returned silently. No error, no warning.
+ * - If the package IS present but fails to load (broken build, missing
+ *   transitive dep, top-level boot error), the failure is logged at error
+ *   level before falling back to noop — this is a real misconfiguration,
+ *   not normal community mode, and must not be swallowed.
  * - Result is cached after the first call; subsequent calls are synchronous.
  */
 export async function loadEnterprisePlugin(): Promise<EnterprisePlugin> {
@@ -42,9 +46,24 @@ export async function loadEnterprisePlugin(): Promise<EnterprisePlugin> {
       logger.warn('Enterprise package found but exports are invalid');
       cached = null;
     }
-  } catch {
-    // Package not installed — this is normal for community edition.
-    // No log output: community mode is not an error condition.
+  } catch (err) {
+    // Only genuine package-absence is silent (normal for community edition).
+    // Node reports it as ERR_MODULE_NOT_FOUND whose message quotes the
+    // missing specifier: "Cannot find package '@compendiq/enterprise' ...".
+    // A missing transitive dependency raises the same code but quotes the
+    // DEP's name instead, so the specifier check keeps this discriminating.
+    const e = err as NodeJS.ErrnoException;
+    const packageMissing =
+      e?.code === 'ERR_MODULE_NOT_FOUND' &&
+      typeof e.message === 'string' &&
+      e.message.includes("'@compendiq/enterprise'");
+
+    if (!packageMissing) {
+      logger.error(
+        { err },
+        'Enterprise package present but failed to load — falling back to community mode',
+      );
+    }
     cached = null;
   }
 
