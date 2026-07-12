@@ -66,6 +66,22 @@ beforeEach(async () => {
        USING hnsw (embedding vector_cosine_ops)
        WITH (m = 16, ef_construction = 200)`,
   );
+  // Issue #919: enqueueReembedAll now keeps pages.page_avg_embedding in lockstep
+  // with page_embeddings.embedding on a dimension change. The dimension-change
+  // tests below therefore leave page_avg_embedding at the last dimension they set
+  // (e.g. vector(4096), no index) — a leak that breaks later test files sharing
+  // this Postgres (the #919 integration suites embed 1024-dim vectors). Restore
+  // it here too, mirroring the page_embeddings reset (table is empty post-truncate
+  // so USING NULL avoids any cross-dimension cast).
+  await query(`DROP INDEX IF EXISTS idx_pages_page_avg_embedding_hnsw`);
+  await query(
+    `ALTER TABLE pages ALTER COLUMN page_avg_embedding TYPE vector(1024) USING NULL`,
+  );
+  await query(
+    `CREATE INDEX idx_pages_page_avg_embedding_hnsw ON pages
+       USING hnsw (page_avg_embedding vector_cosine_ops)
+       WITH (m = 16, ef_construction = 200)`,
+  );
   await query(
     `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
      VALUES ('embedding_dimensions', '1024', NOW())
