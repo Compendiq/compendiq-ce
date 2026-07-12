@@ -243,8 +243,12 @@ export class ConfluenceClient {
     while (true) {
       const response = await this.getSpaces(start, limit);
       spaces.push(...response.results);
-      if (response.size < limit || !response._links?.next) break;
-      start += limit;
+      // Drive pagination by the presence of `_links.next`, not `size < limit`:
+      // Confluence DC may clamp a page below the requested limit while more
+      // results remain, so `size < limit` truncated the listing (#903). Advance
+      // by the count actually returned; an empty page guards against non-progress.
+      if (!response._links?.next || response.results.length === 0) break;
+      start += response.results.length;
     }
 
     return spaces;
@@ -308,8 +312,9 @@ export class ConfluenceClient {
         });
       }
 
-      if ((response.size ?? 0) < limit || !response._links?.next) break;
-      start += limit;
+      // See getAllSpaces: follow `_links.next` rather than `size < limit` (#903).
+      if (!response._links?.next || (response.results?.length ?? 0) === 0) break;
+      start += response.results?.length ?? 0;
     }
 
     return records;
@@ -656,8 +661,9 @@ export class ConfluenceClient {
     while (true) {
       const response = await this.searchPages(cql, start, limit);
       pages.push(...response.results);
-      if (response.size < limit || !response._links?.next) break;
-      start += limit;
+      // See getAllSpaces: follow `_links.next` rather than `size < limit` (#903).
+      if (!response._links?.next || response.results.length === 0) break;
+      start += response.results.length;
     }
 
     return pages;
@@ -829,8 +835,9 @@ export class ConfluenceClient {
     while (true) {
       const response = await this.getChildPages(parentId, start, limit);
       pages.push(...response.results);
-      if (response.size < limit || !response._links?.next) break;
-      start += limit;
+      // See getAllSpaces: follow `_links.next` rather than `size < limit` (#903).
+      if (!response._links?.next || response.results.length === 0) break;
+      start += response.results.length;
     }
 
     return pages;
@@ -874,8 +881,9 @@ export class ConfluenceClient {
     while (true) {
       const response = await this.getPages(spaceKey, start, limit);
       pages.push(...response.results);
-      if (response.size < limit || !response._links?.next) break;
-      start += limit;
+      // See getAllSpaces: follow `_links.next` rather than `size < limit` (#903).
+      if (!response._links?.next || response.results.length === 0) break;
+      start += response.results.length;
     }
 
     return pages;
@@ -899,8 +907,9 @@ export class ConfluenceClient {
         `/rest/api/content?spaceKey=${encodeURIComponent(spaceKey)}&type=page&start=${start}&limit=${limit}`,
       );
       for (const { id } of response.results) ids.add(id);
-      if (response.size < limit || !response._links?.next) break;
-      start += limit;
+      // See getAllSpaces: follow `_links.next` rather than `size < limit` (#903).
+      if (!response._links?.next || response.results.length === 0) break;
+      start += response.results.length;
     }
 
     return ids;
