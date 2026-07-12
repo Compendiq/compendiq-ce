@@ -1002,6 +1002,21 @@ const MEDIA_SELECTOR = [
   // would then rebuild nothing from). Inner prose becomes non-improvable —
   // the same preserve-over-improve tradeoff already accepted for labels/drawio.
   'div.confluence-macro-unknown',
+  // #901: freeze atomic macro placeholders — toc / children / attachments /
+  // include (block) and jira / status / user-mention (inline). Like labels and
+  // unknown-macro they carry NO LLM-editable prose (only a synthetic visible
+  // label such as [Table of Contents] / [JIRA: PROJ-42] / @alice). Without the
+  // freeze, the AI-Improve HTML→Markdown→HTML round-trip flattens that label
+  // into prose and htmlToConfluence rebuilds nothing, permanently deleting the
+  // macro on write-back. The now-redundant turndown flatten rules stay as
+  // fallbacks for non-Improve flows where protectMedia is not run.
+  'div.confluence-toc',
+  'div.confluence-children-macro',
+  'div.confluence-attachments-macro',
+  'div.confluence-include-macro',
+  'span.confluence-jira-issue',
+  'span.confluence-status',
+  'span.confluence-user-mention',
 ].join(',');
 
 // #765 review follow-up: legacy section/column wrappers nested inside
