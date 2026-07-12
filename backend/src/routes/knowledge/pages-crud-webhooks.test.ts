@@ -231,8 +231,10 @@ describe('pages-crud webhook emit call-sites', () => {
           confluence_id: null, deleted_at: null, page_type: 'page',
         }],
       });
-      // UPDATE
-      mockQueryFn.mockResolvedValueOnce({ rows: [] });
+      // UPDATE — #926 guards the write with `AND version = <read version>` and
+      // treats rowCount 0 as a lost update (409). The version matches here, so
+      // the row is written: rowCount 1 = success.
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
 
       const response = await app.inject({
         method: 'PUT',

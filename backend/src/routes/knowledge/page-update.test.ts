@@ -195,6 +195,10 @@ describe('PUT /api/pages/:id', () => {
             }],
           });
         }
+        // A matching, guarded UPDATE affects exactly one row (#926).
+        if (sql.includes('UPDATE pages SET')) {
+          return Promise.resolve({ rows: [], rowCount: 1 });
+        }
         return Promise.resolve({ rows: [] });
       });
 
@@ -243,6 +247,10 @@ describe('PUT /api/pages/:id', () => {
               confluence_id: null, deleted_at: null, page_type: 'page',
             }],
           });
+        }
+        // A matching, guarded UPDATE affects exactly one row (#926).
+        if (sql.includes('UPDATE pages SET')) {
+          return Promise.resolve({ rows: [], rowCount: 1 });
         }
         return Promise.resolve({ rows: [] });
       });
@@ -304,6 +312,73 @@ describe('PUT /api/pages/:id', () => {
       expect(response.statusCode).toBe(200);
       expect(mockCacheInvalidateAcrossUsers).not.toHaveBeenCalled();
       expect(mockCacheInvalidate).toHaveBeenCalledWith('user-1', 'pages');
+    });
+  });
+
+  // #926 — the standalone update read the current version, computed
+  // newVersion = version + 1, then wrote with a bare `WHERE id = $1`. Two
+  // concurrent writers that both read version N both write N+1, and the
+  // slower one silently clobbers the faster one's edit (last-write-wins,
+  // no 409). The JS pre-check only rejects a client that sends a STALE
+  // body.version; it can't see a write that landed after the SELECT. The
+  // UPDATE must carry an atomic `AND version = <read version>` guard and
+  // return 409 when it matches no row.
+  describe('standalone update — atomic version guard (#926)', () => {
+    function mockStandalonePageWithUpdate(updateResult: { rows: unknown[]; rowCount: number }) {
+      mockQuery.mockImplementation((sql: string) => {
+        if (sql.includes('SELECT id, version, space_key')) {
+          return Promise.resolve({
+            rows: [{
+              id: 7, version: 5, space_key: 'NOTES', source: 'standalone',
+              created_by_user_id: 'user-1', visibility: 'private',
+              confluence_id: null, deleted_at: null, page_type: 'page',
+            }],
+          });
+        }
+        if (sql.includes('UPDATE pages SET')) {
+          return Promise.resolve(updateResult);
+        }
+        return Promise.resolve({ rows: [] });
+      });
+    }
+
+    it('returns 409 when the UPDATE matches no row because a concurrent writer bumped the version', async () => {
+      // A concurrent writer already advanced the row from 5 to 6, so the
+      // guarded UPDATE (`AND version = 5`) matches nothing → rowCount 0.
+      mockStandalonePageWithUpdate({ rows: [], rowCount: 0 });
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/pages/7',
+        // body.version === current read version, so the JS pre-check passes
+        // and only the atomic guard can catch the lost-update race.
+        payload: { title: 'Note', bodyHtml: '<p>note</p>', version: 5 },
+      });
+
+      expect(response.statusCode).toBe(409);
+    });
+
+    it('locks the read version into the UPDATE WHERE clause as a bound parameter', async () => {
+      mockStandalonePageWithUpdate({ rows: [], rowCount: 1 });
+
+      await app.inject({
+        method: 'PUT',
+        url: '/api/pages/7',
+        payload: { title: 'Note', bodyHtml: '<p>note</p>', version: 5 },
+      });
+
+      const call = mockQuery.mock.calls.find(
+        (c) => typeof c[0] === 'string'
+          && (c[0] as string).includes('UPDATE pages SET')
+          && (c[0] as string).includes('local_modified_by'),
+      );
+      if (!call) throw new Error('no standalone UPDATE pages call');
+      const sql = call[0] as string;
+      const params = call[1] as unknown[];
+      // Guard predicate present and parameterised (never string-interpolated).
+      expect(sql).toMatch(/version\s*=\s*\$\d+/);
+      // The bound value is the version read from the SELECT (5).
+      expect(params).toContain(5);
     });
   });
 
