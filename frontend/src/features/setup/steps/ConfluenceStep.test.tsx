@@ -17,13 +17,23 @@ function renderStep(onNext = vi.fn(), onBack = vi.fn()) {
   return { onNext, onBack };
 }
 
+function jsonResponse(payload: unknown) {
+  return new Response(JSON.stringify(payload), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+// Route by URL/method: the wizard must probe POST /settings/test-confluence
+// (which actually authenticates against Confluence), not a local read.
 function mockOkFetch() {
-  return vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
-    new Response(JSON.stringify([]), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    }),
-  );
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const url = typeof input === 'string' ? input : (input as Request).url;
+    if (url.includes('/settings/test-confluence') && (init as RequestInit | undefined)?.method === 'POST') {
+      return jsonResponse({ success: true, message: 'Connection successful' });
+    }
+    return jsonResponse([]);
+  });
 }
 
 describe('ConfluenceStep', () => {
@@ -103,6 +113,48 @@ describe('ConfluenceStep', () => {
     // The whole payload must validate against the contract the backend parses with.
     const parsed = UpdateSettingsSchema.parse(body);
     expect(parsed.confluenceUrl).toBe('https://confluence.example.com');
+  });
+
+  it('keeps Continue disabled when the connection probe reports failure (#950)', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      if (url.includes('/settings/test-confluence') && (init as RequestInit | undefined)?.method === 'POST') {
+        // The credentials are wrong: the backend probe fails even though the
+        // settings save (PUT /settings) succeeds.
+        return jsonResponse({ success: false, message: 'Connection failed' });
+      }
+      return jsonResponse([]);
+    });
+    renderStep();
+
+    fireEvent.change(screen.getByTestId('confluence-url'), {
+      target: { value: 'https://confluence.example.com' },
+    });
+    fireEvent.change(screen.getByTestId('confluence-pat'), {
+      target: { value: 'bad-pat' },
+    });
+
+    fireEvent.click(screen.getByTestId('test-confluence-btn'));
+
+    // The failure must surface and the wizard must NOT let the user proceed.
+    await waitFor(() => {
+      expect(screen.getByTestId('confluence-test-result')).toHaveTextContent(
+        'Connection failed',
+      );
+    });
+    expect(screen.getByTestId('confluence-next-btn')).toBeDisabled();
+
+    // Prove the wizard hit the real probe endpoint with the entered credentials.
+    const probeCall = fetchSpy.mock.calls.find(
+      ([reqUrl, init]) =>
+        (typeof reqUrl === 'string' ? reqUrl : (reqUrl as Request).url).includes(
+          '/settings/test-confluence',
+        ) && (init as RequestInit | undefined)?.method === 'POST',
+    );
+    expect(probeCall).toBeDefined();
+    const probeBody = JSON.parse((probeCall![1] as RequestInit).body as string);
+    expect(probeBody.url).toBe('https://confluence.example.com');
+    expect(probeBody.pat).toBe('bad-pat');
   });
 
   it('re-requires a test after the PAT is edited following a passing test', async () => {
