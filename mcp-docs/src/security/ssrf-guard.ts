@@ -5,6 +5,7 @@
  */
 
 import { lookup } from 'node:dns/promises';
+import type { LookupAddress } from 'node:dns';
 
 const BLOCKED_IPV4_PATTERNS = [
   /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/,
@@ -77,25 +78,33 @@ export function validateUrl(urlString: string): URL {
  * cloud metadata, 127.0.0.1, a Docker-internal service, or a DNS-rebinding
  * domain) — the literal-string checks in validateUrl() never see that IP.
  *
- * NOTE: a TOCTOU gap remains between this lookup and the TCP connect; callers
- * that follow redirects must re-validate each hop (fetch-url.ts uses
- * redirect: 'manual' and rejects 3xx, so the connect target is fixed here).
+ * Returns the parsed URL alongside the *vetted* resolved addresses. Callers
+ * MUST pin the outbound connection to these addresses (see fetch-url.ts'
+ * undici Agent) — otherwise the HTTP client performs its own second DNS
+ * resolution at connect time and a rebinding domain can swap the answer for an
+ * internal IP in the gap between this guard and the connect (CVE-class TOCTOU
+ * / DNS-rebinding bypass). Redirects must also be re-validated per hop
+ * (fetch-url.ts uses redirect: 'manual' and rejects 3xx).
  *
- * @throws SsrfError if the URL is malformed, non-HTTP(S), or any resolved
- *   address is private/internal.
+ * @throws SsrfError if the URL is malformed, non-HTTP(S), fails to resolve, or
+ *   any resolved address is private/internal.
  */
-export async function validateUrlWithDns(urlString: string): Promise<URL> {
+export async function validateUrlWithDns(
+  urlString: string,
+): Promise<{ url: URL; addresses: LookupAddress[] }> {
   // All sync syntax/protocol/literal-IP/hostname checks first.
   const parsed = validateUrl(urlString);
 
   // Resolve A + AAAA records and reject if ANY resolved address is private.
-  let addresses: Array<{ address: string }>;
+  let addresses: LookupAddress[];
   try {
     addresses = await lookup(parsed.hostname, { all: true });
   } catch {
-    // DNS failures (ENOTFOUND, etc.) are surfaced by the HTTP client later;
-    // a name that does not resolve cannot reach an internal address here.
-    return parsed;
+    // Fail CLOSED. Previously we returned the parsed URL here, but the fetch
+    // layer then resolved the name itself — so an unresolvable-at-guard-time
+    // (or rebinding) domain slipped past unvalidated. If we can't vet the
+    // target address, we refuse to connect.
+    throw new SsrfError(`SSRF blocked: DNS resolution failed for '${parsed.hostname}'`);
   }
 
   for (const { address } of addresses) {
@@ -106,7 +115,7 @@ export async function validateUrlWithDns(urlString: string): Promise<URL> {
     }
   }
 
-  return parsed;
+  return { url: parsed, addresses };
 }
 
 function isBlockedIpv4(hostname: string): boolean {
