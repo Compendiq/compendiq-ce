@@ -107,6 +107,12 @@ describe('TrashPage', () => {
     expect(screen.getByText(/29 days until auto-purge/)).toBeInTheDocument();
   });
 
+  it('exposes an accessible name on the back button (#939)', () => {
+    mockApi({ items: [], total: 0 });
+    render(<TrashPage />, { wrapper: createWrapper() });
+    expect(screen.getByRole('button', { name: /back to dashboard/i })).toBeInTheDocument();
+  });
+
   it('shows a restore button for each trash item', async () => {
     mockApi(mockTrashData);
     render(<TrashPage />, { wrapper: createWrapper() });

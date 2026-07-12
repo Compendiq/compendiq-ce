@@ -140,7 +140,7 @@ export function NewPagePage() {
           {/* Action bar */}
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <button onClick={() => navigate('/pages')} className="nm-icon-button">
+              <button onClick={() => navigate('/pages')} aria-label="Back to pages" className="nm-icon-button">
                 <ArrowLeft size={18} />
               </button>
               <h1 className="text-xl font-bold">New Page</h1>
