@@ -212,6 +212,36 @@ describe('scripts/install.sh invariants', () => {
     }
   });
 
+  it('does not revive the removed LLM_PROVIDER two-slot toggle (issue #970)', () => {
+    // ADR-021 replaced the legacy `LLM_PROVIDER` switch wholesale with the
+    // llm_providers table. Seeding it from the installer resurrects dead config.
+    expect(installSh).not.toMatch(/LLM_PROVIDER:/);
+  });
+
+  it('does not default OPENAI_BASE_URL to a real endpoint (issue #970)', () => {
+    // A non-empty OPENAI_BASE_URL default makes the fresh-install bootstrap OR
+    // condition true, seeding a phantom keyless OpenAI provider even when the
+    // operator only wants Ollama. Only a pure pass-through (empty default) is
+    // acceptable so the row is seeded solely when the user opts in.
+    const compose = extractInstallerCompose(installSh);
+    const backend = extractServiceBlock(compose, 'backend');
+    const usages = interpolationsOf(backend, 'OPENAI_BASE_URL');
+    expect(usages.length).toBeGreaterThan(0);
+    for (const modifier of usages) {
+      // Empty pass-through only: `:-` (or bare) — never a baked-in URL default.
+      expect(modifier).toMatch(/^:?-?$/);
+    }
+    expect(backend).not.toContain('api.openai.com');
+  });
+
+  it('does not seed the deprecated EMBEDDING_MODEL env default (issue #970)', () => {
+    // EMBEDDING_MODEL is a deprecated bootstrap fallback; baking bge-m3 into the
+    // installer keeps env-driven LLM config alive instead of the providers table.
+    const compose = extractInstallerCompose(installSh);
+    const backend = extractServiceBlock(compose, 'backend');
+    expect(backend).not.toMatch(/EMBEDDING_MODEL:/);
+  });
+
   it('keeps postgres and redis on an internal network (no host egress for the data tier)', () => {
     // The egress fix must not accidentally expose the data tier: postgres/redis
     // must still sit on an `internal: true` network per CLAUDE.md infra rules.
