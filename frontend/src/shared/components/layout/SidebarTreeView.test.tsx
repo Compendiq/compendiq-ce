@@ -140,6 +140,21 @@ describe('SidebarTreeView', () => {
     expect(screen.getByText('API Reference')).toBeInTheDocument();
   });
 
+  it('orders sibling roots by sortOrder, not alphabetically (#959)', () => {
+    // "Zebra" is stored before "Alpha" (drag-reorder), so honouring sortOrder
+    // must beat the title tiebreak — otherwise a drop snaps back to A→Z.
+    mockTreeData = {
+      items: [
+        { id: 'p-alpha', spaceKey: 'DEV', title: 'Alpha', pageType: 'page' as const, parentId: null, sortOrder: 2, labels: [], lastModifiedAt: null, embeddingDirty: false },
+        { id: 'p-zebra', spaceKey: 'DEV', title: 'Zebra', pageType: 'page' as const, parentId: null, sortOrder: 1, labels: [], lastModifiedAt: null, embeddingDirty: false },
+      ],
+      total: 2,
+    };
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const titles = screen.getAllByRole('treeitem').map((el) => el.textContent);
+    expect(titles).toEqual(['Zebra', 'Alpha']);
+  });
+
   it('children are hidden by default', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
     expect(screen.queryByText('Installation')).not.toBeInTheDocument();

@@ -506,16 +506,79 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.notFound('Page not found');
     }
 
-    await query(
-      'UPDATE pages SET sort_order = $1 WHERE id = $2',
-      [body.sortOrder, id],
-    );
+    // #959 review follow-up: writing sort_order only for the dragged page left
+    // every untouched sibling at its original value (typically 0), so the drop
+    // index was not honoured within a multi-sibling group — a page dropped at
+    // the top still sorted after siblings that shared its sort_order. Renumber
+    // the ENTIRE sibling group to a dense 0..N-1 sequence reflecting the new
+    // order: read siblings in the tree's own order (sort_order ASC, title ASC),
+    // splice the dragged id in at the requested drop index, then persist each
+    // row's new position. Runs on a dedicated client inside a transaction so
+    // the multi-row renumber commits atomically.
+    const pageId = parseInt(String(id), 10);
+    let newIndex = body.sortOrder;
+    const txClient = await getPool().connect();
+    try {
+      await txClient.query('BEGIN');
+
+      // Resolve the dragged page's sibling group. `parent_id` may hold the
+      // parent's confluence_id or its numeric id as text (the dual key the tree
+      // queries use), so resolve it to the parent's numeric id. A NULL parent
+      // means a space-root group, grouped by space_key instead.
+      const groupRes = await txClient.query<{ space_key: string | null; parent_num: number | null }>(
+        `SELECT p.space_key,
+                (SELECT tp.id FROM pages tp
+                 WHERE (tp.confluence_id = p.parent_id OR CAST(tp.id AS TEXT) = p.parent_id)
+                   AND tp.deleted_at IS NULL
+                 LIMIT 1) AS parent_num
+         FROM pages p
+         WHERE p.id = $1 AND p.deleted_at IS NULL`,
+        [pageId],
+      );
+      const group = groupRes.rows[0]!;
+
+      const siblingsRes =
+        group.parent_num !== null
+          ? await txClient.query<{ id: number }>(
+              `SELECT s.id FROM pages s
+               WHERE s.deleted_at IS NULL
+                 AND EXISTS (
+                   SELECT 1 FROM pages sp
+                   WHERE (sp.confluence_id = s.parent_id OR CAST(sp.id AS TEXT) = s.parent_id)
+                     AND sp.deleted_at IS NULL AND sp.id = $1
+                 )
+               ORDER BY s.sort_order ASC, s.title ASC`,
+              [group.parent_num],
+            )
+          : await txClient.query<{ id: number }>(
+              `SELECT s.id FROM pages s
+               WHERE s.deleted_at IS NULL AND s.parent_id IS NULL
+                 AND s.space_key IS NOT DISTINCT FROM $1
+               ORDER BY s.sort_order ASC, s.title ASC`,
+              [group.space_key],
+            );
+
+      const orderedIds = siblingsRes.rows.map((r) => Number(r.id)).filter((sid) => sid !== pageId);
+      newIndex = Math.max(0, Math.min(body.sortOrder, orderedIds.length));
+      orderedIds.splice(newIndex, 0, pageId);
+
+      for (let i = 0; i < orderedIds.length; i++) {
+        await txClient.query('UPDATE pages SET sort_order = $1 WHERE id = $2', [i, orderedIds[i]]);
+      }
+
+      await txClient.query('COMMIT');
+    } catch (err) {
+      await txClient.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      txClient.release();
+    }
 
     await cache.invalidate(userId, 'pages');
     await logAuditEvent(userId, 'PAGE_REORDERED', 'page', String(id),
-      { sortOrder: body.sortOrder }, request);
+      { sortOrder: newIndex }, request);
 
-    return { id: parseInt(String(id), 10), sortOrder: body.sortOrder };
+    return { id: pageId, sortOrder: newIndex };
   });
 
   // GET /api/pages/:id/breadcrumb - get parent chain for breadcrumb display
