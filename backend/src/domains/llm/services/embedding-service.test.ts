@@ -133,6 +133,7 @@ import {
   splitByWords,
   getEmbedBreakerNextRetryTime,
   enqueueReembedAll,
+  reEmbedAll,
   runReembedAllJob,
   CHUNK_HARD_LIMIT,
   DIRTY_PAGE_BATCH_SIZE,
@@ -1989,6 +1990,45 @@ describe('chunkText', () => {
       expect(mocks.releaseEmbeddingLock).toHaveBeenCalledWith('alice', FAKE_LOCK_ID);
       // Guard check was actually invoked.
       expect(mocks.redisGet).toHaveBeenCalledWith('embedding:lock:alice');
+    });
+  });
+
+  describe('reEmbedAll', () => {
+    // Issue #917 — reEmbedAll must NOT wipe the whole embedding index up front.
+    // embedPage atomically replaces each page's embeddings inside its own
+    // transaction, so re-embedding shrinks-then-grows the index page by page
+    // and RAG search never sees an empty window. A blanket
+    // `DELETE FROM page_embeddings` before the multi-hour loop would black out
+    // vector search for the entire run.
+    it('does not issue a blanket DELETE FROM page_embeddings before re-embedding', async () => {
+      // No dirty pages → processDirtyPages returns immediately after the count.
+      mocks.query.mockImplementation(async (sql: string) => {
+        if (sql.includes('admin_settings') && sql.includes('embedding_chunk_size')) {
+          return { rows: [] };
+        }
+        if (sql.includes('SELECT user_id FROM user_settings')) {
+          return { rows: [{ user_id: 'sys-1' }] };
+        }
+        if (sql.includes('COUNT(*)') && sql.includes('embedding_dirty')) {
+          return { rows: [{ count: '0' }] };
+        }
+        return { rows: [], rowCount: 0 };
+      });
+
+      await reEmbedAll();
+
+      // The whole-index DELETE (page-scoped `DELETE ... WHERE page_id` from
+      // embedPage runs on the pooled client, not this pool-level `query`).
+      const blanketDelete = mocks.query.mock.calls.find((call) =>
+        /DELETE\s+FROM\s+page_embeddings\s*$/i.test((call[0] as string).trim()),
+      );
+      expect(blanketDelete).toBeUndefined();
+
+      // It still marks every page dirty so the per-page loop re-embeds them.
+      const dirtyUpdate = mocks.query.mock.calls.find((call) =>
+        /UPDATE\s+pages\s+SET\s+embedding_dirty\s*=\s*TRUE/i.test(call[0] as string),
+      );
+      expect(dirtyUpdate).toBeDefined();
     });
   });
 });

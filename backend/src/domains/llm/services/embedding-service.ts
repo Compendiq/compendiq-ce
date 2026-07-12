@@ -1125,9 +1125,15 @@ export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatu
  * Re-embed all pages (admin action).
  */
 export async function reEmbedAll(): Promise<void> {
-  await query('DELETE FROM page_embeddings');
+  // Issue #917 — do NOT wipe the whole index up front. `embedPage` atomically
+  // replaces each page's embeddings inside its own transaction (Phase 2), so
+  // marking every page dirty and re-embedding page by page shrinks-then-grows
+  // the index incrementally and RAG vector search never sees an empty window.
+  // A blanket `DELETE FROM page_embeddings` here would black out search for the
+  // entire multi-hour run. This mirrors `runReembedAllJob`, which also relies
+  // on per-page replacement rather than an up-front delete.
   await query(`UPDATE pages SET embedding_dirty = TRUE, embedding_status = 'not_embedded', embedded_at = NULL, embedding_error = NULL`);
-  logger.info('All embeddings cleared, pages marked dirty for re-embedding');
+  logger.info('All pages marked dirty for incremental re-embedding');
 
   // Use a system user ID for provider selection (pick any active user with settings)
   const usersResult = await query<{ user_id: string }>(
