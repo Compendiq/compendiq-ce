@@ -177,6 +177,7 @@ erDiagram
         bigint id PK
         text name
         jsonb permissions
+        text description
     }
 
     groups {
