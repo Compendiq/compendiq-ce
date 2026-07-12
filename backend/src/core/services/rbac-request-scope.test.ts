@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+// JWT_SECRET must be set before the auth plugin's verifyToken/generateAccessToken
+// run (they read it at call time). 32+ chars to satisfy getJwtSecret().
+process.env.JWT_SECRET = 'test-jwt-secret-value-that-is-32-chars-long-abcdef';
+
 // Mock the DB so we can count resolver invocations without a real Postgres.
 // `getUserAccessibleSpaces` issues a single SELECT against
 // `space_role_assignments`; counting that call tells us whether the memoised
@@ -21,9 +25,20 @@ vi.mock('../utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
+// The auth hook's only DB-touching external dep on the happy path is the cached
+// liveness/role check (#737). Mock it to a live non-admin user so the hook never
+// hits the DB itself — every query the test counts then belongs to RBAC space
+// resolution, which is the thing the memo is supposed to deduplicate.
+vi.mock('./user-security-cache.js', () => ({
+  getUserSecurityState: vi.fn().mockResolvedValue({ kind: 'active', role: 'user' }),
+}));
+
+import Fastify from 'fastify';
+import sensible from '@fastify/sensible';
 import { query as mockQuery } from '../db/postgres.js';
-import { enterRbacScope, runWithRbacScope } from './rbac-request-scope.js';
+import { runWithRbacScope } from './rbac-request-scope.js';
 import { getUserAccessibleSpacesMemoized } from './rbac-service.js';
+import authPlugin, { generateAccessToken } from '../plugins/auth.js';
 
 describe('rbac-request-scope', () => {
   beforeEach(() => {
@@ -60,40 +75,48 @@ describe('rbac-request-scope', () => {
     expect((mockQuery as ReturnType<typeof vi.fn>).mock.calls.length).toBe(2);
   });
 
-  it('scope entered from an awaited hook still memoises the route handler (#899)', async () => {
-    // Reproduces the runtime shape of Fastify's `authenticate` onRequest hook:
-    // an awaited async hook enters the RBAC scope, then a *separate* awaited
-    // continuation (the route handler) consults the memoised resolver. The
-    // ADR-022 memo only works if the scope entered by the hook propagates to
-    // that sibling continuation. `enterWith` bound AFTER an await does NOT
-    // propagate to the caller's next continuation (Node async-context
-    // semantics), so the fix must enter the scope synchronously (before the
-    // first await) and fill in the userId afterwards.
-    async function authenticateHook(): Promise<void> {
-      // Enter synchronously, before any await — mirrors the fixed auth plugin.
-      const scope = enterRbacScope();
-      // Simulate `await verifyToken()` + `await getUserSecurityState()`.
-      await Promise.resolve();
-      await Promise.resolve();
-      // userId only known once auth succeeds; mutate the already-entered scope.
-      if (scope) scope.userId = 'u1';
-    }
-    async function handler(): Promise<void> {
-      // Retrieval paths inside a single request consult the readable-space set
-      // more than once; the memo must collapse these to one resolver hit.
-      await getUserAccessibleSpacesMemoized('u1');
-      await getUserAccessibleSpacesMemoized('u1');
-    }
+  it('real auth.ts hook enters the scope so the route handler memoises (#899)', async () => {
+    // Regression guard that exercises the ACTUAL `authenticate` decorator from
+    // auth.ts (not a stand-in) driven through a real Fastify request lifecycle.
+    // The auth hook enters the RBAC scope *synchronously* before its first
+    // `await` (verifyToken / getUserSecurityState); ADR-022's per-request memo
+    // then survives into the route handler that Fastify runs as a separate
+    // awaited continuation. `enterWith` bound AFTER an await binds a resumed
+    // frame the handler never inherits, so if enterRbacScope() were reordered
+    // back below an await inside auth.ts the scope would be dead in the handler
+    // and every retrieval path would re-hit the DB. This test asserts the memo
+    // holds end-to-end, so that reordering would flip the query count 2 -> 4
+    // and fail here — catching the regression inside auth.ts itself, not merely
+    // a local model of it.
+    const app = Fastify();
+    // @fastify/sensible provides fastify.httpErrors, which the auth hook uses.
+    await app.register(sensible);
+    await app.register(authPlugin);
+    // Register the REAL authenticate hook exactly as protected routes do.
+    app.get('/probe', { onRequest: [app.authenticate] }, async (request) => {
+      // A single request consults the readable-space set from multiple paths;
+      // the memo must collapse these to one resolver hit for the whole request.
+      await getUserAccessibleSpacesMemoized(request.userId);
+      await getUserAccessibleSpacesMemoized(request.userId);
+      return { ok: true };
+    });
+    await app.ready();
 
-    await (async () => {
-      await authenticateHook();
-      await handler();
-    })();
+    // A genuinely valid token — verifyToken (jose) runs for real; nothing about
+    // the auth ordering is stubbed. Only the external liveness check is mocked.
+    const token = await generateAccessToken({ sub: 'u1', username: 'u1', role: 'user' });
+    const res = await app.inject({
+      method: 'GET',
+      url: '/probe',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    await app.close();
 
+    expect(res.statusCode).toBe(200);
     // First handler call resolves via isSystemAdmin (1 query) + space lookup
-    // (1 query); the second is served from the request scope. If the scope
-    // failed to propagate across the awaited-hook boundary the memo is dead and
-    // the DB is hit 4 times.
+    // (1 query); the second is served from the request scope entered by the real
+    // auth hook. If the hook failed to propagate its scope into the handler the
+    // memo is dead and the DB is hit 4 times.
     expect((mockQuery as ReturnType<typeof vi.fn>).mock.calls.length).toBe(2);
   });
 
