@@ -23,16 +23,35 @@ export function getRedisClient(): RedisClientType | null {
 }
 
 /**
- * Invalidate the graph cache for a specific user.
+ * Invalidate the knowledge-graph cache for every user.
+ *
+ * Graph responses are cached under `kb:<userId>:pages:graph:<view>:<spaceKey>`
+ * (see `routes/knowledge/pages-embeddings.ts`), so a single exact-key delete
+ * never matches a real entry. Because `page_relationships` is shared across
+ * users, recomputing relationships after an embedding run must clear *all*
+ * users' graph caches — hence a SCAN-delete over `kb:*:pages:graph:*` rather
+ * than a per-user key. Uses the same cursor loop as `scanAndDelete` so it is
+ * O(1) per call and never issues a blocking `KEYS`.
+ *
  * Safe to call even if Redis is not initialised (no-op).
  */
-export async function invalidateGraphCache(userId: string): Promise<void> {
+export async function invalidateGraphCache(): Promise<void> {
   if (!_redisClient) return;
   try {
-    await _redisClient.del(key(userId, 'pages', 'graph'));
-    logger.debug({ userId }, 'Invalidated graph cache');
+    let cursor = '0';
+    do {
+      const result = await _redisClient.scan(cursor, {
+        MATCH: 'kb:*:pages:graph:*',
+        COUNT: 100,
+      });
+      cursor = String(result.cursor);
+      if (result.keys.length > 0) {
+        await _redisClient.del(result.keys);
+      }
+    } while (cursor !== '0');
+    logger.debug('Invalidated graph cache for all users');
   } catch (err) {
-    logger.error({ err, userId }, 'Failed to invalidate graph cache');
+    logger.error({ err }, 'Failed to invalidate graph cache');
   }
 }
 

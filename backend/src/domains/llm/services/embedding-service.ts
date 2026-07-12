@@ -888,8 +888,10 @@ export async function processDirtyPages(
   if (totalProcessed > 0) {
     try {
       await computePageRelationships(processedPageIds);
-      // Invalidate cached graph data so the next request reflects new relationships
-      await invalidateGraphCache(userId);
+      // Invalidate cached graph data so the next request reflects new
+      // relationships. page_relationships is shared, so clear every user's
+      // graph cache — not just this run's user (#915).
+      await invalidateGraphCache();
     } catch (err) {
       logger.error({ err, userId }, 'Failed to compute page relationships after embedding');
     }
