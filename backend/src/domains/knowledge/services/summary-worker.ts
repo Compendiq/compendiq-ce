@@ -418,6 +418,17 @@ export async function runSummaryBatch(
     model: effectiveModel,
   };
 
+  // Phase 0: Re-queue pages orphaned in 'summarizing' by a crashed prior run (#911).
+  // Every batch runs under the redis + in-memory single-worker lock, so no other
+  // run can legitimately hold a row in 'summarizing' concurrently — any leftover
+  // is necessarily stale and would otherwise never be re-selected by findCandidates.
+  await query(
+    `UPDATE pages
+     SET summary_status = 'pending'
+     WHERE summary_status = 'summarizing'
+       AND deleted_at IS NULL`,
+  );
+
   // Phase 1: Detect content changes via timestamp and mark as pending.
   // Uses last_modified_at > summary_generated_at instead of recomputing
   // SHA-256 hashes for every summarized page on every batch cycle.
