@@ -115,8 +115,20 @@ describe('validateUrlWithDns — DNS-resolving guard', () => {
 
   it('allows a public hostname that resolves to a public address', async () => {
     lookupMock.mockResolvedValue([{ address: '93.184.216.34', family: 4 }] as never);
-    const parsed = await validateUrlWithDns('https://docs.example.com/api');
-    expect(parsed.hostname).toBe('docs.example.com');
+    const { url } = await validateUrlWithDns('https://docs.example.com/api');
+    expect(url.hostname).toBe('docs.example.com');
+  });
+
+  it('returns the vetted resolved addresses so the caller can pin the connection', async () => {
+    lookupMock.mockResolvedValue([
+      { address: '93.184.216.34', family: 4 },
+      { address: '2606:2800:220:1:248:1893:25c8:1946', family: 6 },
+    ] as never);
+    const { addresses } = await validateUrlWithDns('https://docs.example.com/api');
+    expect(addresses).toEqual([
+      { address: '93.184.216.34', family: 4 },
+      { address: '2606:2800:220:1:248:1893:25c8:1946', family: 6 },
+    ]);
   });
 
   it('still enforces the sync checks before resolving (literal private IP)', async () => {
@@ -125,9 +137,11 @@ describe('validateUrlWithDns — DNS-resolving guard', () => {
     expect(lookupMock).not.toHaveBeenCalled();
   });
 
-  it('does not block when DNS resolution fails (handled by the HTTP client later)', async () => {
+  it('rejects (fails closed) when DNS resolution fails — an unresolvable name must not fall through unvalidated', async () => {
+    // Failing open here reopened the SSRF hole: the guard resolved nothing but
+    // the fetch layer resolved (and connected to) whatever the name pointed at,
+    // so a rebinding domain that errored on the first lookup slipped past.
     lookupMock.mockRejectedValue(Object.assign(new Error('ENOTFOUND'), { code: 'ENOTFOUND' }));
-    const parsed = await validateUrlWithDns('https://does-not-resolve.example.com');
-    expect(parsed.hostname).toBe('does-not-resolve.example.com');
+    await expect(validateUrlWithDns('https://does-not-resolve.example.com')).rejects.toThrow(SsrfError);
   });
 });
