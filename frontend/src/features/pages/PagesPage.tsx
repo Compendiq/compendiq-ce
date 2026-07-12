@@ -870,16 +870,18 @@ export function PagesPage() {
               <button
                 onClick={() => setPage((p) => Math.max(1, p - 1))}
                 disabled={page <= 1}
+                aria-label="Previous page"
                 className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm p-2 disabled:opacity-30"
               >
                 <ChevronLeft size={18} />
               </button>
-              <span className="text-sm text-muted-foreground">
+              <span className="text-sm text-muted-foreground" aria-live="polite">
                 Page {page} of {searchResults.totalPages}
               </span>
               <button
                 onClick={() => setPage((p) => Math.min(searchResults.totalPages, p + 1))}
                 disabled={page >= searchResults.totalPages}
+                aria-label="Next page"
                 className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm p-2 disabled:opacity-30"
               >
                 <ChevronRight size={18} />
@@ -964,16 +966,18 @@ export function PagesPage() {
               <button
                 onClick={() => setPage((p) => Math.max(1, p - 1))}
                 disabled={page <= 1}
+                aria-label="Previous page"
                 className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm p-2 disabled:opacity-30"
               >
                 <ChevronLeft size={18} />
               </button>
-              <span className="text-sm text-muted-foreground">
+              <span className="text-sm text-muted-foreground" aria-live="polite">
                 Page {page} of {pagesData.totalPages}
               </span>
               <button
                 onClick={() => setPage((p) => Math.min(pagesData.totalPages, p + 1))}
                 disabled={page >= pagesData.totalPages}
+                aria-label="Next page"
                 className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm p-2 disabled:opacity-30"
               >
                 <ChevronRight size={18} />
