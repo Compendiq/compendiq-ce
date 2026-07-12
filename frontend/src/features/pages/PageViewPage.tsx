@@ -48,6 +48,7 @@ function ImageLightbox({
   src: string;
 }) {
   const { blobSrc, loading } = useAuthenticatedSrc(src);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     const handleKey = (event: KeyboardEvent) => {
@@ -57,6 +58,14 @@ function ImageLightbox({
     return () => document.removeEventListener('keydown', handleKey);
   }, [onClose]);
 
+  // Move focus into the dialog on open and restore it to the trigger on close,
+  // so keyboard/screen-reader users are not stranded behind the overlay (#942).
+  useEffect(() => {
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    closeButtonRef.current?.focus();
+    return () => previouslyFocused?.focus?.();
+  }, []);
+
   return (
     <m.div
       initial={{ opacity: 0 }}
@@ -65,9 +74,11 @@ function ImageLightbox({
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
       onClick={onClose}
       role="dialog"
+      aria-modal="true"
       aria-label={`Image preview: ${alt}`}
     >
       <button
+        ref={closeButtonRef}
         onClick={onClose}
         className="absolute right-4 top-4 rounded-full bg-white/10 p-2 text-white transition-colors hover:bg-white/20"
         aria-label="Close preview"

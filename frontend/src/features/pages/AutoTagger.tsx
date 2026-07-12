@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { m, AnimatePresence } from 'framer-motion';
+import * as Dialog from '@radix-ui/react-dialog';
 import { Check, X, Loader2, Tag } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiFetch } from '../../shared/lib/api';
@@ -100,42 +100,32 @@ export function AutoTagger({ pageId, currentLabels, model, className }: AutoTagg
         <span className="truncate">Auto-tag</span>
       </button>
 
-      {/* Tag suggestion dialog */}
-      <AnimatePresence>
-        {showDialog && (
-          <m.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
-            onClick={() => setShowDialog(false)}
-          >
-            <m.div
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              onClick={(e) => e.stopPropagation()}
-              className="nm-card mx-4 w-full max-w-md overflow-hidden"
-            >
+      {/* Tag suggestion dialog — Radix Dialog gives role=dialog, aria-modal,
+          focus trap + restore and Escape-to-close for free, which the previous
+          hand-rolled framer-motion overlay lacked (#942). */}
+      <Dialog.Root open={showDialog} onOpenChange={(next) => { if (!next) setShowDialog(false); }}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm" />
+          <Dialog.Content className="nm-card fixed left-1/2 top-1/2 z-50 w-[calc(100%-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 overflow-hidden p-0 outline-none">
               {/* Dialog header */}
               <div className="flex items-center justify-between border-b border-border/50 px-5 py-4">
                 <div className="flex items-center gap-2">
                   <Tag size={16} className="text-primary" />
-                  <h3 className="font-semibold">Suggested Tags</h3>
+                  <Dialog.Title className="font-semibold">Suggested Tags</Dialog.Title>
                 </div>
-                <button
-                  onClick={() => setShowDialog(false)}
+                <Dialog.Close
+                  aria-label="Close"
                   className="rounded p-1 text-muted-foreground hover:bg-foreground/5"
                 >
                   <X size={16} />
-                </button>
+                </Dialog.Close>
               </div>
 
               {/* Tag chips */}
               <div className="p-5">
-                <p className="mb-3 text-sm text-muted-foreground">
+                <Dialog.Description className="mb-3 text-sm text-muted-foreground">
                   Select the tags you want to apply:
-                </p>
+                </Dialog.Description>
                 <div className="flex flex-wrap gap-2">
                   {suggestedTags.map((tag) => (
                     <button
@@ -192,10 +182,9 @@ export function AutoTagger({ pageId, currentLabels, model, className }: AutoTagg
                   Apply {selectedTags.size} {selectedTags.size === 1 ? 'tag' : 'tags'}
                 </button>
               </div>
-            </m.div>
-          </m.div>
-        )}
-      </AnimatePresence>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
     </>
   );
 }

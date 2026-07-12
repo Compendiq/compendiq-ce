@@ -169,6 +169,17 @@ export function AppLayout({ children }: { children: ReactNode }) {
     setMobileSidebarOpen(false);
   }, [location.pathname]);
 
+  // Escape dismisses the mobile slide-over — hand-rolled overlays otherwise
+  // trap keyboard users with no way out (#942).
+  useEffect(() => {
+    if (!mobileSidebarOpen) return;
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeMobileSidebar();
+    };
+    document.addEventListener('keydown', handleKey);
+    return () => document.removeEventListener('keydown', handleKey);
+  }, [mobileSidebarOpen, closeMobileSidebar]);
+
   // Reset scroll to top on every route change (use location.key so it fires
   // on every navigation, including between same-pathname routes like /pages/id1 → /pages/id2)
   useEffect(() => {
@@ -197,7 +208,9 @@ export function AppLayout({ children }: { children: ReactNode }) {
         <button
           onClick={() => setMobileSidebarOpen((v) => !v)}
           className="nm-icon-button mr-2 md:hidden"
-          aria-label="Toggle sidebar"
+          aria-label={mobileSidebarOpen ? 'Close navigation menu' : 'Open navigation menu'}
+          aria-expanded={mobileSidebarOpen}
+          aria-controls="mobile-nav-sidebar"
         >
           {mobileSidebarOpen ? <X size={18} /> : <Menu size={18} />}
         </button>
@@ -261,6 +274,10 @@ export function AppLayout({ children }: { children: ReactNode }) {
             />
             {/* Slide-over panel */}
             <m.div
+              id="mobile-nav-sidebar"
+              role="dialog"
+              aria-modal="true"
+              aria-label="Navigation menu"
               initial={{ x: '-100%' }}
               animate={{ x: 0 }}
               exit={{ x: '-100%' }}

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, act } from '@testing-library/react';
+import { render, screen, fireEvent, act, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
@@ -164,6 +164,27 @@ describe('AppLayout', () => {
     expect(mobileBtn).toHaveAttribute('aria-expanded', 'true');
   });
 
+  it('mobile slide-over exposes dialog semantics and closes on Escape', async () => {
+    render(
+      <AppLayout>
+        <div>content</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/') },
+    );
+
+    // Open the slide-over via the hamburger toggle.
+    fireEvent.click(screen.getByLabelText('Open navigation menu'));
+
+    const slideOver = screen.getByRole('dialog', { name: 'Navigation menu' });
+    expect(slideOver).toHaveAttribute('aria-modal', 'true');
+
+    // Escape must dismiss it (AnimatePresence exit defers the unmount).
+    fireEvent.keyDown(slideOver, { key: 'Escape' });
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Navigation menu' })).not.toBeInTheDocument();
+    });
+  });
+
   it('search bar is absolutely centered in header', () => {
     render(
       <AppLayout>
@@ -309,7 +330,7 @@ describe('AppLayout', () => {
       </AppLayout>,
       { wrapper: createWrapper('/') },
     );
-    expect(screen.getByLabelText('Toggle sidebar')).toBeInTheDocument();
+    expect(screen.getByLabelText('Open navigation menu')).toBeInTheDocument();
   });
 
   it('does not have sidebar toggle button in header (moved to sidebar panel)', () => {
