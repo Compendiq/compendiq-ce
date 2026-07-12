@@ -1030,4 +1030,24 @@ describe('EditorToolbar — header numbering toggle', () => {
     const toolbar = screen.getByRole('toolbar', { name: 'Page editor toolbar' });
     expect(toolbar).toBeInTheDocument();
   });
+
+  // ---------- #955 toolbar toggle buttons expose pressed state ----------
+
+  it('exposes aria-pressed on active and inactive toggle buttons (#955)', () => {
+    // Screen readers announce a toggle button's on/off state via aria-pressed.
+    // Without it, users can't tell whether Bold (or any formatting toggle) is
+    // currently applied. Build a mock editor whose selection is inside bold
+    // text so Bold reads active and Italic reads inactive.
+    const base = createMockEditor();
+    const editor = {
+      ...base,
+      isActive: (name: string) => name === 'bold',
+    } as unknown as EditorType;
+    render(<EditorToolbar editor={editor} />);
+
+    const boldBtn = screen.getByTitle('Bold (Ctrl+B)');
+    const italicBtn = screen.getByTitle('Italic (Ctrl+I)');
+    expect(boldBtn).toHaveAttribute('aria-pressed', 'true');
+    expect(italicBtn).toHaveAttribute('aria-pressed', 'false');
+  });
 });
