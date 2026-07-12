@@ -8,6 +8,7 @@ vi.mock('../utils/logger.js', () => ({
 import {
   setRedisClient,
   getRedisClient,
+  invalidateGraphCache,
   acquireEmbeddingLock,
   releaseEmbeddingLock,
   isEmbeddingLocked,
@@ -608,6 +609,80 @@ describe('redis-cache embedding lock', () => {
 
       await expect(releaseWorkerLock('test-worker')).resolves.toBeUndefined();
     });
+  });
+});
+
+// ─── Issue #915 — graph-cache invalidation across all users via SCAN ──────
+describe('invalidateGraphCache (#915)', () => {
+  let mockRedis: ReturnType<typeof createMockRedisClient>;
+
+  beforeEach(() => {
+    mockRedis = createMockRedisClient();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    setRedisClient(mockRedis as any);
+  });
+
+  afterEach(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    setRedisClient(null as any);
+  });
+
+  it('SCANs the cross-user graph pattern and deletes every matching key', async () => {
+    // The graph cache is written under `kb:<userId>:pages:graph:<view>:<spaceKey>`
+    // (see routes/knowledge/pages-embeddings.ts). page_relationships is shared,
+    // so invalidation must clear every user's graph cache, not just one exact key.
+    mockRedis.scan.mockResolvedValueOnce({
+      cursor: '0',
+      keys: ['kb:u1:pages:graph:standard:all', 'kb:u2:pages:graph:clustered:ENG'],
+    });
+    mockRedis.del.mockResolvedValue(2);
+
+    await invalidateGraphCache();
+
+    expect(mockRedis.scan).toHaveBeenCalledWith('0', {
+      MATCH: 'kb:*:pages:graph:*',
+      COUNT: 100,
+    });
+    expect(mockRedis.del).toHaveBeenCalledWith([
+      'kb:u1:pages:graph:standard:all',
+      'kb:u2:pages:graph:clustered:ENG',
+    ]);
+    // Must NOT delete a bare exact key that is never written.
+    expect(mockRedis.del).not.toHaveBeenCalledWith('kb:u1:pages:graph');
+  });
+
+  it('walks the cursor across multiple SCAN pages', async () => {
+    mockRedis.scan
+      .mockResolvedValueOnce({ cursor: '7', keys: ['kb:u1:pages:graph:standard:all'] })
+      .mockResolvedValueOnce({ cursor: '0', keys: ['kb:u2:pages:graph:standard:all'] });
+    mockRedis.del.mockResolvedValue(1);
+
+    await invalidateGraphCache();
+
+    expect(mockRedis.scan).toHaveBeenCalledTimes(2);
+    expect(mockRedis.del).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not call DEL when SCAN returns no keys', async () => {
+    mockRedis.scan.mockResolvedValueOnce({ cursor: '0', keys: [] });
+
+    await invalidateGraphCache();
+
+    expect(mockRedis.del).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op when Redis client is not available', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    setRedisClient(null as any);
+
+    await expect(invalidateGraphCache()).resolves.toBeUndefined();
+    expect(mockRedis.scan).not.toHaveBeenCalled();
+  });
+
+  it('soft-fails when SCAN throws (logs, does not raise)', async () => {
+    mockRedis.scan.mockRejectedValue(new Error('Redis down'));
+
+    await expect(invalidateGraphCache()).resolves.toBeUndefined();
   });
 });
 
