@@ -925,6 +925,35 @@ describe('PagesPage', () => {
     });
   });
 
+  // --- Accessibility: filter/sort controls have accessible names (#946) ---
+  //
+  // The three top-row selects (space / source / sort) had no accessible name,
+  // and the advanced-panel <label>s were not programmatically associated with
+  // their controls (no htmlFor/id). Screen readers announced these as unnamed
+  // "combobox"/"edit" fields. These tests pin the aria-label + label/for wiring.
+  describe('filter control accessible names (#946)', () => {
+    it('top-row space/source/sort selects expose an accessible name', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      expect(screen.getByRole('combobox', { name: /filter by space/i })).toBeInTheDocument();
+      expect(screen.getByRole('combobox', { name: /filter by source/i })).toBeInTheDocument();
+      expect(screen.getByRole('combobox', { name: /sort pages/i })).toBeInTheDocument();
+    });
+
+    it('advanced-panel labels are programmatically associated with their controls', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+
+      // Role-name / label-text queries only match once htmlFor/id wiring exists.
+      expect(screen.getByRole('combobox', { name: /author/i })).toBeInTheDocument();
+      expect(screen.getByRole('combobox', { name: /labels/i })).toBeInTheDocument();
+      expect(screen.getByRole('combobox', { name: /freshness/i })).toBeInTheDocument();
+      expect(screen.getByRole('combobox', { name: /embedding/i })).toBeInTheDocument();
+      expect(screen.getByRole('combobox', { name: /quality/i })).toBeInTheDocument();
+      expect(screen.getByLabelText(/modified from/i)).toBeInTheDocument();
+      expect(screen.getByLabelText(/modified to/i)).toBeInTheDocument();
+    });
+  });
+
   describe('performance: virtual scrolling + memoized items (#511, #521)', () => {
     it('renders visible page list items with stable keys (by id, not index)', async () => {
       render(<PagesPage />, { wrapper: createWrapper() });
