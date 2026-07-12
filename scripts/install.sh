@@ -261,10 +261,8 @@ services:
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
       PAT_ENCRYPTION_KEY: ${PAT_ENCRYPTION_KEY:?PAT_ENCRYPTION_KEY is required}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
-      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
-      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-bge-m3}
       LLM_BEARER_TOKEN: ${LLM_BEARER_TOKEN:-}
       LLM_AUTH_TYPE: ${LLM_AUTH_TYPE:-bearer}
       LLM_VERIFY_SSL: ${LLM_VERIFY_SSL:-true}
