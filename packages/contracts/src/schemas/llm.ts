@@ -11,7 +11,7 @@ export const ImprovementTypeSchema = z.enum([
 export const ImproveRequestSchema = z.object({
   content: z.string().min(1),
   type: ImprovementTypeSchema,
-  model: z.string().min(1),
+  model: z.string().min(1).optional(), // #929: optional — resolved server-side per ADR-021, body value ignored
   pageId: z.string().optional(),
   includeSubPages: z.boolean().optional(),
   instruction: z.string().max(10000).optional(),
@@ -23,7 +23,7 @@ export const ImproveRequestSchema = z.object({
 export const GenerateRequestSchema = z.object({
   prompt: z.string().min(1),
   template: z.enum(['runbook', 'howto', 'architecture', 'troubleshooting']).optional(),
-  model: z.string().min(1),
+  model: z.string().min(1).optional(), // #929: optional — resolved server-side per ADR-021, body value ignored
   spaceKey: z.string().optional(),
   parentId: z.string().optional(),
   pdfText: z.string().max(200_000).optional(),
@@ -41,7 +41,7 @@ export const ExtractPdfResponseSchema = z.object({
 
 export const SummarizeRequestSchema = z.object({
   content: z.string().min(1),
-  model: z.string().min(1),
+  model: z.string().min(1).optional(), // #929: optional — resolved server-side per ADR-021, body value ignored
   length: z.enum(['short', 'medium', 'detailed']).default('medium'),
   pageId: z.string().optional(),
   includeSubPages: z.boolean().optional(),
@@ -52,7 +52,7 @@ export const SummarizeRequestSchema = z.object({
 
 export const AskRequestSchema = z.object({
   question: z.string().min(1),
-  model: z.string().min(1),
+  model: z.string().min(1).optional(), // #929: optional — resolved server-side per ADR-021, body value ignored
   conversationId: z.string().uuid().optional(),
   pageId: z.string().optional(),
   includeSubPages: z.boolean().optional(),
@@ -64,7 +64,7 @@ export const AskRequestSchema = z.object({
 
 export const GenerateDiagramRequestSchema = z.object({
   content: z.string().min(1),
-  model: z.string().min(1),
+  model: z.string().min(1).optional(), // #929: optional — resolved server-side per ADR-021, body value ignored
   diagramType: z.enum(['flowchart', 'sequence', 'state', 'mindmap']).default('flowchart'),
   pageId: z.string().optional(),
   thinking: z.boolean().optional(),
@@ -72,7 +72,7 @@ export const GenerateDiagramRequestSchema = z.object({
 
 export const AnalyzeQualityRequestSchema = z.object({
   content: z.string().min(1),
-  model: z.string().min(1),
+  model: z.string().min(1).optional(), // #929: optional — resolved server-side per ADR-021, body value ignored
   pageId: z.string().optional(),
   includeSubPages: z.boolean().optional(),
   thinking: z.boolean().optional(),
