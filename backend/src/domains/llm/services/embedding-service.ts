@@ -922,7 +922,7 @@ export async function computePageRelationships(changedPageIds?: number[]): Promi
 
     // Compute embedding similarity edges using pgvector <=> operator.
     // The per-page average embedding is materialized on pages.page_avg_embedding
-    // (migration 082) and served from an HNSW index, so each source page runs a
+    // (migration 083) and served from an HNSW index, so each source page runs a
     // bounded top-K index probe instead of the old whole-table AVG + exact
     // pairwise scan that timed out at scale (#919). When changedPageIds is
     // provided only those pages are sources, so an incremental sync costs
