@@ -23,6 +23,7 @@ interface Role {
   isSystem: boolean;
   permissions: string[];
   createdAt: string;
+  description?: string | null;
 }
 
 interface Group {
@@ -203,7 +204,7 @@ function RolesTab() {
   const handleEdit = (role: Role) => {
     setEditRole({
       ...role,
-      description: (role as Role & { description?: string }).description ?? '',
+      description: role.description ?? '',
       updatedAt: (role as Role & { updatedAt?: string }).updatedAt ?? role.createdAt,
     });
     setEditorOpen(true);
