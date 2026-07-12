@@ -1836,7 +1836,9 @@ h1, h2, h3, h4, h5, h6,
   z-index: 1;
 }
 
-pre:hover .code-copy-btn {
+pre:hover .code-copy-btn,
+pre:focus-within .code-copy-btn,
+.code-copy-btn:focus-visible {
   opacity: 1;
 }
 
@@ -2178,7 +2180,9 @@ pre:hover .code-copy-btn {
   backdrop-filter: blur(4px);
 }
 
-.confluence-drawio:hover .drawio-inline-edit-btn {
+.confluence-drawio:hover .drawio-inline-edit-btn,
+.confluence-drawio:focus-within .drawio-inline-edit-btn,
+.drawio-inline-edit-btn:focus-visible {
   opacity: 1;
 }
 
@@ -2285,7 +2289,8 @@ pre:hover .code-copy-btn {
   transition: opacity 0.2s ease;
 }
 
-.drawio-nodeview:hover .drawio-nodeview__overlay {
+.drawio-nodeview:hover .drawio-nodeview__overlay,
+.drawio-nodeview:focus-within .drawio-nodeview__overlay {
   opacity: 1;
 }
 
