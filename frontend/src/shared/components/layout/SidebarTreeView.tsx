@@ -106,6 +106,11 @@ export interface SidebarTreeNodeProps {
   expandedSet: Set<string>;
   toggleExpand: (id: string) => void;
   activePageId: string | undefined;
+  // #960: derived once by the parent from location.pathname and passed down as
+  // a stable prop. Rows must NOT call useLocation() themselves — that subscribed
+  // every memoized row to every location/searchParams change, defeating the memo
+  // comparator and re-rendering the whole tree on each navigation.
+  isAiRoute: boolean;
 }
 
 export const SidebarTreeNode = memo(function SidebarTreeNode({
@@ -114,13 +119,12 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
   expandedSet,
   toggleExpand,
   activePageId,
+  isAiRoute,
 }: SidebarTreeNodeProps) {
   const navigate = useNavigate();
-  const location = useLocation();
   const isExpanded = expandedSet.has(node.page.id);
   const hasChildren = node.children.length > 0;
   const isActive = node.page.id === activePageId;
-  const isAiRoute = location.pathname === '/ai';
 
   const handleNavigate = useCallback(() => {
     if (hasChildren) toggleExpand(node.page.id);
@@ -211,6 +215,7 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
               expandedSet={expandedSet}
               toggleExpand={toggleExpand}
               activePageId={activePageId}
+              isAiRoute={isAiRoute}
             />
           ))}
         </div>
@@ -222,7 +227,8 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
     prev.node === next.node &&
     prev.level === next.level &&
     prev.activePageId === next.activePageId &&
-    prev.expandedSet === next.expandedSet
+    prev.expandedSet === next.expandedSet &&
+    prev.isAiRoute === next.isAiRoute
   );
 });
 
@@ -297,6 +303,9 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
   const homepageId = selectedSpaceOption?.homepageId;
   const tree = useMemo(() => buildTree(pages, homepageId), [pages, homepageId]);
   const isLocalSpace = selectedSpaceOption?.source === 'local';
+  // #960: derive the /ai signal once here and thread it into every row as a
+  // stable prop so the rows themselves don't subscribe to location.
+  const isAiRoute = location.pathname === '/ai';
 
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
 
@@ -762,6 +771,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
               expandedIds={expandedIds}
               toggleExpand={toggleExpand}
               activePageId={activePageId}
+              isAiRoute={isAiRoute}
               reorderPage={reorderPage}
             />
           </Suspense>
@@ -778,6 +788,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
                 expandedSet={expandedIds}
                 toggleExpand={toggleExpand}
                 activePageId={activePageId}
+                isAiRoute={isAiRoute}
               />
             ))}
           </div>

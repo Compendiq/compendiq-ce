@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useSearchParams } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SidebarTreeView, SidebarTreeNode } from './SidebarTreeView';
 import type { TreeNode, SidebarTreeNodeProps } from './SidebarTreeView';
@@ -24,11 +24,16 @@ vi.mock('./DndLocalSpaceTree', () => ({
 }));
 
 const mockNavigate = vi.fn();
+// #960: count how often a tree row consuming useNavigate renders. Each row
+// calls useNavigate() exactly once per render (before and after the fix), so
+// this spy is a reliable render counter — React's <Profiler> onRender proved
+// unreliable for context-driven re-renders under jsdom.
+const mockUseNavigate = vi.fn(() => mockNavigate);
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');
   return {
     ...actual,
-    useNavigate: () => mockNavigate,
+    useNavigate: () => mockUseNavigate(),
   };
 });
 
@@ -760,6 +765,7 @@ describe('SidebarTreeNode memoization', () => {
       expandedSet,
       toggleExpand: vi.fn(),
       activePageId: 'page-1',
+      isAiRoute: false,
     };
 
     expect(component.compare(props, { ...props, toggleExpand: vi.fn() })).toBe(true);
@@ -772,8 +778,8 @@ describe('SidebarTreeNode memoization', () => {
     const node = makeNode('page-1', 'Test');
     const expandedSet = new Set<string>();
     const toggleExpand = vi.fn();
-    const prev: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: undefined };
-    const next: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: 'page-1' };
+    const prev: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: undefined, isAiRoute: false };
+    const next: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: 'page-1', isAiRoute: false };
 
     expect(component.compare(prev, next)).toBe(false);
   });
@@ -784,8 +790,21 @@ describe('SidebarTreeNode memoization', () => {
     };
     const node = makeNode('page-1', 'Test');
     const toggleExpand = vi.fn();
-    const prev: SidebarTreeNodeProps = { node, level: 0, expandedSet: new Set<string>(), toggleExpand, activePageId: undefined };
-    const next: SidebarTreeNodeProps = { node, level: 0, expandedSet: new Set<string>(), toggleExpand, activePageId: undefined };
+    const prev: SidebarTreeNodeProps = { node, level: 0, expandedSet: new Set<string>(), toggleExpand, activePageId: undefined, isAiRoute: false };
+    const next: SidebarTreeNodeProps = { node, level: 0, expandedSet: new Set<string>(), toggleExpand, activePageId: undefined, isAiRoute: false };
+
+    expect(component.compare(prev, next)).toBe(false);
+  });
+
+  it('custom comparator returns false (re-render) when isAiRoute changes (#960)', () => {
+    const component = SidebarTreeNode as unknown as {
+      compare: (prev: SidebarTreeNodeProps, next: SidebarTreeNodeProps) => boolean;
+    };
+    const node = makeNode('page-1', 'Test');
+    const expandedSet = new Set<string>();
+    const toggleExpand = vi.fn();
+    const prev: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: undefined, isAiRoute: false };
+    const next: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: undefined, isAiRoute: true };
 
     expect(component.compare(prev, next)).toBe(false);
   });
@@ -798,8 +817,8 @@ describe('SidebarTreeNode memoization', () => {
     const toggleExpand = vi.fn();
     const node1 = makeNode('page-1', 'Test');
     const node2 = makeNode('page-1', 'Test Changed');
-    const prev: SidebarTreeNodeProps = { node: node1, level: 0, expandedSet, toggleExpand, activePageId: undefined };
-    const next: SidebarTreeNodeProps = { node: node2, level: 0, expandedSet, toggleExpand, activePageId: undefined };
+    const prev: SidebarTreeNodeProps = { node: node1, level: 0, expandedSet, toggleExpand, activePageId: undefined, isAiRoute: false };
+    const next: SidebarTreeNodeProps = { node: node2, level: 0, expandedSet, toggleExpand, activePageId: undefined, isAiRoute: false };
 
     expect(component.compare(prev, next)).toBe(false);
   });
@@ -817,6 +836,7 @@ describe('SidebarTreeNode memoization', () => {
           expandedSet={expandedSet}
           toggleExpand={toggleExpand}
           activePageId={undefined}
+          isAiRoute={false}
         />
       </MemoryRouter>,
     );
@@ -879,6 +899,7 @@ describe('SidebarTreeNode memoization', () => {
           expandedSet={expandedSet}
           toggleExpand={toggleExpand}
           activePageId={undefined}
+          isAiRoute={false}
         />
       </MemoryRouter>,
     );
@@ -903,6 +924,7 @@ describe('SidebarTreeNode memoization', () => {
           expandedSet={expandedSet}
           toggleExpand={toggleExpand}
           activePageId={undefined}
+          isAiRoute={false}
         />
       </MemoryRouter>,
     );
@@ -925,6 +947,7 @@ describe('SidebarTreeNode memoization', () => {
           expandedSet={expandedSet}
           toggleExpand={toggleExpand}
           activePageId={undefined}
+          isAiRoute={false}
         />
       </MemoryRouter>,
     );
@@ -947,6 +970,7 @@ describe('SidebarTreeNode memoization', () => {
           expandedSet={expandedSet}
           toggleExpand={toggleExpand}
           activePageId={undefined}
+          isAiRoute={false}
         />
       </MemoryRouter>,
     );
@@ -968,6 +992,7 @@ describe('SidebarTreeNode memoization', () => {
           expandedSet={expandedSet}
           toggleExpand={toggleExpand}
           activePageId={undefined}
+          isAiRoute={false}
         />
       </MemoryRouter>,
     );
@@ -1032,6 +1057,55 @@ describe('SidebarTreeNode memoization', () => {
       useUiStore.setState({ treeSidebarSpaceKey: 'DEV' });
       render(<SidebarTreeView />, { wrapper: createWrapper() });
       expect(screen.getByText('4 pages in DEV')).toBeInTheDocument();
+    });
+  });
+
+  // #960: memoized rows used to call useLocation() internally, so every
+  // location / searchParams change re-rendered every row in the tree — the
+  // memo comparator never got a chance to bail. The /ai signal is now passed
+  // in as a stable `isAiRoute` prop derived once by the parent, so a row only
+  // re-renders when one of its actually-tracked props changes.
+  describe('does not subscribe to location (#960)', () => {
+    function UrlChanger() {
+      const [, setSearchParams] = useSearchParams();
+      return (
+        <button onClick={() => setSearchParams({ pageId: 'x' })}>change-url</button>
+      );
+    }
+
+    it('does not re-render a memoized row when the URL/searchParams change', () => {
+      mockUseNavigate.mockClear();
+      const node = makeNode('page-1', 'Stable Row');
+      const expandedSet = new Set<string>();
+      const toggleExpand = vi.fn();
+
+      render(
+        // The root consumes no location, so only location-subscribing
+        // descendants re-render when the URL changes. UrlChanger is a SIBLING
+        // of the row (never an ancestor), so a re-render of the row can only
+        // come from the row's own hook subscriptions — not from a parent.
+        <MemoryRouter initialEntries={['/pages']}>
+          <SidebarTreeNode
+            node={node}
+            level={0}
+            expandedSet={expandedSet}
+            toggleExpand={toggleExpand}
+            activePageId={undefined}
+            isAiRoute={false}
+          />
+          <UrlChanger />
+        </MemoryRouter>,
+      );
+
+      // The row rendered once on mount → useNavigate called once.
+      expect(mockUseNavigate).toHaveBeenCalledTimes(1);
+
+      fireEvent.click(screen.getByText('change-url'));
+
+      // Before the fix the row consumed useLocation and re-rendered on the URL
+      // change (useNavigate called a 2nd time). After the fix its props are
+      // stable, the memo bails, and the row does not re-render (still 1).
+      expect(mockUseNavigate).toHaveBeenCalledTimes(1);
     });
   });
 
