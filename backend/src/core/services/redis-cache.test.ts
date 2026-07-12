@@ -539,25 +539,31 @@ describe('redis-cache embedding lock', () => {
   });
 
   describe('acquireWorkerLock', () => {
-    it('returns true when lock is acquired (SET NX returns OK)', async () => {
+    it('returns a UUID token when lock is acquired (SET NX stores that token, not "1")', async () => {
       mockRedis.set.mockResolvedValue('OK');
 
-      const acquired = await acquireWorkerLock('quality-worker');
+      const token = await acquireWorkerLock('quality-worker');
 
-      expect(acquired).toBe(true);
+      // Ownership token — a UUID, never the legacy bare '1' value.
+      expect(token).toBeTypeOf('string');
+      expect(token).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+      );
       expect(mockRedis.set).toHaveBeenCalledWith(
         'worker:lock:quality-worker',
-        '1',
+        token,
         { NX: true, EX: 300 },
       );
+      // The stored value must be the token, never the legacy sentinel '1'.
+      expect(mockRedis.set.mock.calls[0][1]).not.toBe('1');
     });
 
-    it('returns false when lock is already held', async () => {
+    it('returns null when lock is already held', async () => {
       mockRedis.set.mockResolvedValue(null);
 
-      const acquired = await acquireWorkerLock('quality-worker');
+      const token = await acquireWorkerLock('quality-worker');
 
-      expect(acquired).toBe(false);
+      expect(token).toBeNull();
     });
 
     it('uses custom TTL when provided', async () => {
@@ -569,44 +575,59 @@ describe('redis-cache embedding lock', () => {
       expect(call[2]).toEqual({ NX: true, EX: 600 });
     });
 
-    it('falls back to true when Redis is not available', async () => {
+    it('falls back to a token when Redis is not available', async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       setRedisClient(null as any);
 
-      const acquired = await acquireWorkerLock('test-worker');
+      const token = await acquireWorkerLock('test-worker');
 
-      expect(acquired).toBe(true);
+      // Truthy fallback so single-node callers still proceed.
+      expect(token).toBeTypeOf('string');
+      expect(token).toBeTruthy();
     });
 
-    it('falls back to true when Redis throws', async () => {
+    it('falls back to a token when Redis throws', async () => {
       mockRedis.set.mockRejectedValue(new Error('Redis down'));
 
-      const acquired = await acquireWorkerLock('test-worker');
+      const token = await acquireWorkerLock('test-worker');
 
-      expect(acquired).toBe(true);
+      expect(token).toBeTypeOf('string');
+      expect(token).toBeTruthy();
     });
   });
 
   describe('releaseWorkerLock', () => {
-    it('deletes the lock key', async () => {
-      mockRedis.del.mockResolvedValue(1);
+    it('releases via an ownership-checked Lua script, not a bare del (plan RED)', async () => {
+      mockRedis.eval.mockResolvedValue(1);
 
-      await releaseWorkerLock('quality-worker');
+      await releaseWorkerLock('quality-worker', 'token-abc');
 
-      expect(mockRedis.del).toHaveBeenCalledWith('worker:lock:quality-worker');
+      // Must NOT unconditionally DEL — that deletes another pod's lock when the
+      // TTL lapsed and a different holder re-acquired.
+      expect(mockRedis.del).not.toHaveBeenCalled();
+      expect(mockRedis.eval).toHaveBeenCalledTimes(1);
+      const [script, opts] = mockRedis.eval.mock.calls[0];
+      expect(script).toEqual(
+        expect.stringContaining('redis.call("get", KEYS[1]) == ARGV[1]'),
+      );
+      expect((script as string).toLowerCase()).toContain('del');
+      expect(opts).toEqual({
+        keys: ['worker:lock:quality-worker'],
+        arguments: ['token-abc'],
+      });
     });
 
     it('is a no-op when Redis is not available', async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       setRedisClient(null as any);
 
-      await expect(releaseWorkerLock('test-worker')).resolves.toBeUndefined();
+      await expect(releaseWorkerLock('test-worker', 'token')).resolves.toBeUndefined();
     });
 
     it('does not throw when Redis throws', async () => {
-      mockRedis.del.mockRejectedValue(new Error('Redis timeout'));
+      mockRedis.eval.mockRejectedValue(new Error('Redis timeout'));
 
-      await expect(releaseWorkerLock('test-worker')).resolves.toBeUndefined();
+      await expect(releaseWorkerLock('test-worker', 'token')).resolves.toBeUndefined();
     });
   });
 });
