@@ -1,5 +1,5 @@
 import { memo, useCallback } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import {
   ChevronRight,
   ChevronDown,
@@ -16,6 +16,8 @@ export interface DndLocalSpaceTreeProps {
   expandedIds: Set<string>;
   toggleExpand: (id: string) => void;
   activePageId: string | undefined;
+  // #960: passed down from the parent so rows don't subscribe to location.
+  isAiRoute: boolean;
   reorderPage: { mutate: (args: { id: string; sortOrder: number }) => void };
 }
 
@@ -25,6 +27,7 @@ interface DndSortableTreeNodeProps {
   expandedSet: Set<string>;
   toggleExpand: (id: string) => void;
   activePageId: string | undefined;
+  isAiRoute: boolean;
   sortableIndex: number;
 }
 
@@ -34,14 +37,13 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
   expandedSet,
   toggleExpand,
   activePageId,
+  isAiRoute,
   sortableIndex,
 }: DndSortableTreeNodeProps) {
   const navigate = useNavigate();
-  const location = useLocation();
   const isExpanded = expandedSet.has(node.page.id);
   const hasChildren = node.children.length > 0;
   const isActive = node.page.id === activePageId;
-  const isAiRoute = location.pathname === '/ai';
 
   const sortable = useSortable({
     id: node.page.id,
@@ -141,6 +143,7 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
               expandedSet={expandedSet}
               toggleExpand={toggleExpand}
               activePageId={activePageId}
+              isAiRoute={isAiRoute}
               sortableIndex={idx}
             />
           ))}
@@ -154,6 +157,7 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
     prev.level === next.level &&
     prev.activePageId === next.activePageId &&
     prev.expandedSet === next.expandedSet &&
+    prev.isAiRoute === next.isAiRoute &&
     prev.sortableIndex === next.sortableIndex
   );
 });
@@ -163,6 +167,7 @@ export default function DndLocalSpaceTree({
   expandedIds,
   toggleExpand,
   activePageId,
+  isAiRoute,
   reorderPage,
 }: DndLocalSpaceTreeProps) {
   const handleDragEnd = useCallback(
@@ -195,6 +200,7 @@ export default function DndLocalSpaceTree({
             expandedSet={expandedIds}
             toggleExpand={toggleExpand}
             activePageId={activePageId}
+            isAiRoute={isAiRoute}
             sortableIndex={idx}
           />
         ))}
