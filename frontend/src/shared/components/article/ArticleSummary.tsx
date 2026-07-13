@@ -58,12 +58,20 @@ export function ArticleSummary({
   const isAdmin = useAuthStore((s) => s.user?.role === 'admin');
 
   // While a summary is pending we promise it "will be generated shortly" —
-  // a promise that can't be kept when the LLM provider is down. /api/health
-  // is public and carries the services payload on both 200 (ok) and 503
-  // (degraded), so parse the body regardless of status.
+  // a promise that can't be kept when the LLM provider is down. #1052:
+  // /api/health returns the `services` payload only to an authenticated admin,
+  // so attach the access token. Both 200 (ok) and 503 (degraded) carry the
+  // payload, so parse the body regardless of status. Non-admins get a coarse
+  // `{ status }` (no `services`), so the offline note simply won't show.
   const { data: health } = useQuery<HealthStatus>({
     queryKey: ['health'],
-    queryFn: () => fetch('/api/health').then((r) => r.json() as Promise<HealthStatus>),
+    queryFn: () => {
+      const { accessToken } = useAuthStore.getState();
+      return fetch('/api/health', {
+        headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+        credentials: 'include',
+      }).then((r) => r.json() as Promise<HealthStatus>);
+    },
     staleTime: 30_000,
     retry: false,
     enabled: summaryStatus === 'pending',
