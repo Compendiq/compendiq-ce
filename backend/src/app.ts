@@ -119,6 +119,10 @@ export async function buildApp() {
   await app.register(cors, {
     origin: corsOrigin,
     credentials: true,
+    // @fastify/cors defaults `methods` to GET,HEAD,POST, which blocks browser
+    // preflight for the PUT/PATCH/DELETE routes the API relies on (#1055).
+    // Advertise the full method set while keeping the exact-origin allowlist.
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   });
 
   // Security headers (CSP handled by nginx in production)
