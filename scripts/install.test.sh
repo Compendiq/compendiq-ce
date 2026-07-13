@@ -161,6 +161,7 @@ test_env_generation() {
   assert_contains ".env contains POSTGRES_PASSWORD" "$env_content" "POSTGRES_PASSWORD="
   assert_contains ".env contains POSTGRES_DB" "$env_content" "POSTGRES_DB=kb_creator"
   assert_contains ".env contains REDIS_PASSWORD" "$env_content" "REDIS_PASSWORD="
+  assert_contains ".env contains MCP_DOCS_TOKEN" "$env_content" "MCP_DOCS_TOKEN="
 
   teardown
 }
@@ -216,6 +217,13 @@ test_compose_generation() {
   assert_contains "Has mcp-docs sidecar" "$compose_content" "ghcr.io/compendiq/compendiq-ce-mcp-docs:1.2.3"
   assert_contains "Has searxng sidecar" "$compose_content" "ghcr.io/compendiq/compendiq-ce-searxng:1.2.3"
   assert_contains "Backend points at mcp-docs" "$compose_content" "MCP_DOCS_URL:"
+  # Container hardening (issue #1050)
+  assert_contains "Drops Linux capabilities" "$compose_content" "cap_drop: [ALL]"
+  assert_contains "Sets no-new-privileges" "$compose_content" "no-new-privileges:true"
+  assert_contains "Sets memory limits" "$compose_content" "mem_limit:"
+  assert_contains "Sets pids limits" "$compose_content" "pids_limit:"
+  assert_contains "Stateless services are read-only" "$compose_content" "read_only: true"
+  assert_contains "Shares MCP_DOCS_TOKEN with sidecar" "$compose_content" "MCP_DOCS_TOKEN:"
 
   teardown
 }

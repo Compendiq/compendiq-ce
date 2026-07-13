@@ -1,8 +1,10 @@
 # 5. Docker Deployment
 
 Physical layout derived from `docker/docker-compose.yml`. The compose file
-defines three networks to keep internal services (`postgres`, `redis`) off
-the public bridge.
+defines three networks that partition the deployment: the internet-facing
+`frontend` shares a network **only** with the `backend`, and the data tier
+(`postgres`, `redis`) sits on an internal-only bridge with no host egress
+(issue #1050).
 
 ## Compose topology
 
@@ -15,7 +17,7 @@ flowchart LR
     end
 
     subgraph be_net["backend-net"]
-        be["<b>backend</b><br/>:3051<br/>image: compendiq-ce-backend<br/>volume: attachments → /app/data"]
+        be["<b>backend</b><br/>:3051<br/>image: compendiq-ce-backend<br/>volume: attachments → /app/data<br/>nets: frontend-net + backend-net + data-net"]
         mcp["<b>mcp-docs</b><br/>:3100<br/>image: compendiq-ce-mcp-docs"]
         searx["<b>searxng</b><br/>:8080<br/>image: compendiq-ce-searxng"]
     end
@@ -26,12 +28,12 @@ flowchart LR
     end
 
     host -- "FRONTEND_PORT → 8081" --> fe
-    fe -- "HTTP (proxy /api)" --> be
-    be -- "HTTP" --> mcp
+    fe -- "HTTP proxy /api<br/>(shared frontend-net)" --> be
+    be -- "HTTP (backend-net)" --> mcp
     mcp -- "HTTP" --> searx
-    be -- "SQL" --> pg
-    be -- "RESP" --> rd
-    mcp -- "RESP" --> rd
+    be -- "SQL (data-net)" --> pg
+    be -- "RESP (data-net)" --> rd
+    mcp -- "RESP (backend-net)" --> rd
 
     classDef ext fill:#fff,stroke:#333
     classDef net fill:#fafafa,stroke:#bbb,stroke-dasharray: 4 4
@@ -44,13 +46,24 @@ flowchart LR
     class pg,rd data
 ```
 
+The `backend` is the only service that spans all three networks; it is drawn
+inside `backend-net` above, but it also joins `frontend-net` (so the frontend
+proxy can reach it) and `data-net` (so it can reach postgres/redis). The
+`frontend` joins `frontend-net` **only**.
+
 ## Network rules
 
 | Network       | internal | Members                         | Purpose |
 |---------------|----------|---------------------------------|---------|
-| `frontend-net`| no       | frontend                        | Host-published entry point (browser → frontend) |
-| `backend-net` | no       | frontend, backend, mcp-docs, searxng, redis | Frontend nginx proxy → backend API; backend sidecars (mcp-docs reaches redis here) |
-| `data-net`    | **yes**  | postgres, redis (+ backend)     | No external exposure; DB/cache only reachable from backend |
+| `frontend-net`| no       | frontend, backend               | Browser → frontend (host-published) and frontend nginx proxy → backend API. The frontend can reach the backend and nothing else. |
+| `backend-net` | no       | backend, mcp-docs, searxng, redis | Backend → sidecars (mcp-docs, and mcp-docs → redis). **No frontend** — the browser-facing container cannot reach the sidecars or cache. |
+| `data-net`    | **yes**  | postgres, redis, backend        | No external exposure; DB/cache reachable only from the backend. |
+
+The `frontend` was removed from `backend-net` (issue #1050): it now shares a
+network only with the `backend`, so it can proxy `/api` but can no longer
+reach `redis`, `searxng`, `mcp-docs`, or `postgres`. Confluence, Ollama and
+external LLM APIs are not part of the Compose deployment at all, so that
+isolation holds trivially.
 
 The `backend` container publishes **no host port** — all API traffic goes
 through the frontend nginx proxy, which applies the CSP / security headers
@@ -63,6 +76,61 @@ not** publish host ports in production. Development overrides
 no baked-in defaults; `redis` runs with `maxmemory-policy noeviction`
 because BullMQ stores queue/job state there and eviction would silently
 drop jobs.
+
+## Container hardening (issue #1050)
+
+Every service runs with least privilege. The exact values live in
+`docker/docker-compose.yml` (and are mirrored by the installer's generated
+compose in `scripts/install.sh`):
+
+| Service   | `cap_drop` | extra `cap_add` | `read_only` | `mem_limit` / `cpus` / `pids_limit` |
+|-----------|------------|-----------------|-------------|-------------------------------------|
+| frontend  | `ALL`      | –               | **yes**     | 128m / 0.5 / 100 |
+| backend   | `ALL`      | –               | **yes**     | 1024m / 2.0 / 512 |
+| mcp-docs  | `ALL`      | –               | **yes**     | 256m / 0.5 / 100 |
+| searxng   | `ALL`      | –               | no          | 256m / 0.5 / 200 |
+| postgres  | `ALL`      | CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID | no | 1024m / 2.0 / 300 |
+| redis     | `ALL`      | CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID | no | 320m / 0.5 / 100 |
+
+- **`cap_drop: [ALL]` + `no-new-privileges:true`** on every service. The
+  stateless Node/nginx services (frontend, backend, mcp-docs) already run as
+  a non-root `USER` and step down to no process, so they need zero
+  capabilities. The official `postgres` and `redis` images, however, start as
+  root and step down to their service user via `gosu` after chowning their
+  data dir — so they re-add exactly the five capabilities that step-down
+  requires. A bare `cap_drop: [ALL]` on those two would fail startup.
+- **`read_only: true`** is applied only to the three stateless services.
+  Each gets an explicit writable `tmpfs`: frontend mounts
+  `/tmp` + `/var/cache/nginx` + `/var/run` (nginx writes its pid and all
+  `*_temp` paths under `/tmp`), backend and mcp-docs mount `/tmp`. The
+  backend's persistent writes go to the `attachments` named volume
+  (`/app/data`), which stays writable under a read-only root. `read_only` is
+  intentionally **deferred** on postgres/redis/searxng because they own
+  complex writable paths (data dirs, sockets, rendered settings).
+- **Resource limits** use the non-swarm `mem_limit` / `cpus` / `pids_limit`
+  keys, **not** `deploy.resources` — the latter is Swarm-only and is silently
+  ignored by `docker compose up`. `redis`'s `mem_limit` (320m) sits above its
+  own `--maxmemory 256mb` so Redis enforces its cap before Docker's OOM
+  killer.
+
+### Image pinning
+
+`docker/docker-compose.yml` carries `build:` sections and therefore tags
+images `:dev` — it is the build-and-run source, not a shipped artifact.
+Production deployments that **pull** rather than build MUST pin an immutable
+reference: a version tag (e.g. `:0.6.2`) or, ideally, a `@sha256:...` digest,
+so the running image can never be silently repointed. The installer warns
+when the effective tag is a mutable `latest`/`dev`.
+
+### MCP sidecar authentication
+
+The `mcp-docs` sidecar guards `/mcp` with a shared secret (`MCP_DOCS_TOKEN`,
+sent in the `x-mcp-docs-token` header) on top of network isolation. Because
+the sidecar runs with `NODE_ENV=production`, it **fails closed**: with no
+token set it returns `401` on every `/mcp` request (the container still boots
+and `/health` stays open for probes). The backend and mcp-docs must share the
+same value; the installer auto-generates it into `.env`. In local dev
+(`NODE_ENV` unset/non-production) an unset token is a pass-through.
 
 ## Volumes
 
