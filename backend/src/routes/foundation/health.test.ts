@@ -296,6 +296,40 @@ describe('Health routes', () => {
       expect(mockCheckHealth).not.toHaveBeenCalled();
     });
 
+    // #1052: the exception/fallback branch is tiered by admin too, so a
+    // dependency check that THROWS (not merely returns false) must never leak
+    // telemetry to anonymous callers. Regression guard for the added catch.
+    it('does NOT leak telemetry on the exception/fallback path (anonymous)', async () => {
+      (mockCheckPg as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('pg boom'));
+
+      const response = await app.inject({ method: 'GET', url: '/api/health' });
+
+      expect(response.statusCode).toBe(503);
+      const body = JSON.parse(response.body);
+      expect(body).toEqual({ status: 'degraded' });
+      expect(body).not.toHaveProperty('services');
+      expect(body).not.toHaveProperty('version');
+      expect(body).not.toHaveProperty('edition');
+      expect(body).not.toHaveProperty('uptime');
+      expect(body).not.toHaveProperty('llmProvider');
+    });
+
+    it('still serves fallback detail to admins on the exception path', async () => {
+      (mockCheckPg as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('pg boom'));
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/health',
+        headers: { authorization: 'Bearer admin-tok' },
+      });
+
+      expect(response.statusCode).toBe(503);
+      const body = JSON.parse(response.body);
+      expect(body.status).toBe('degraded');
+      expect(body.services).toHaveProperty('postgres');
+      expect(body).toHaveProperty('version');
+    });
+
     it('should report llm=false when LLM provider is unreachable (admin)', async () => {
       mockCheckHealth.mockResolvedValue({ connected: false, error: 'timeout' });
 
