@@ -12,6 +12,7 @@ import {
   getLlmConcurrency,
   getLlmMaxQueueDepth,
 } from '../../core/services/admin-settings-service.js';
+import { getRegistrationMode } from '../../core/services/registration-policy-service.js';
 import {
   setLlmConcurrencyClusterWide,
   setLlmMaxQueueDepthClusterWide,
@@ -298,6 +299,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
       rateLimits,
       llmMaxConcurrentStreamsPerUser,
       adminAccessDeniedRetentionDays,
+      registrationMode,
     ] = await Promise.all([
       getEmbeddingDimensions(),
       getAiGuardrails(),
@@ -305,6 +307,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
       getRateLimits(),
       getStreamCap(),
       getAdminAccessDeniedRetentionDays(),
+      getRegistrationMode(),
     ]);
     const result = await query<{ setting_key: string; setting_value: string }>(
       `SELECT setting_key, setting_value FROM admin_settings
@@ -349,6 +352,8 @@ export async function adminRoutes(fastify: FastifyInstance) {
       // admin_settings row is absent.
       llmConcurrency: getLlmConcurrency(),
       llmMaxQueueDepth: getLlmMaxQueueDepth(),
+      // Issue #1051 — deployment-level self-registration policy.
+      registrationMode,
     };
   });
 
@@ -453,6 +458,13 @@ export async function adminRoutes(fastify: FastifyInstance) {
         key: 'admin_access_denied_retention_days',
         value: String(body.adminAccessDeniedRetentionDays),
       });
+    }
+
+    // Issue #1051 — deployment-level self-registration policy. Zod already
+    // constrained the value to 'open' | 'closed', so it flows through the
+    // shared admin_settings UPSERT loop below (and the audit trail).
+    if (body.registrationMode !== undefined) {
+      updates.push({ key: 'registration_mode', value: body.registrationMode });
     }
 
     for (const { key, value } of updates) {
