@@ -14,7 +14,10 @@ import './index.css';
 // Restore pointer-based interactions (Radix menus, drag) for input environments
 // that emit only legacy mouse events and no Pointer Events. Tears itself down the
 // moment any real pointer event is seen, so normal input is entirely unaffected.
-installPointerEventBridge();
+const teardownPointerBridge = installPointerEventBridge();
+// Vite HMR re-runs this module on edit; dispose the previous bridge first so its
+// document listeners and the shared capture-patch ref-count don't accumulate.
+import.meta.hot?.dispose(() => teardownPointerBridge());
 
 const queryClient = createQueryClient();
 

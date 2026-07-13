@@ -108,4 +108,109 @@ describe('installPointerEventBridge', () => {
       Element.prototype.setPointerCapture = original;
     }
   });
+
+  it('reports button -1 on a synthesized move but the real button on a down transition', () => {
+    stop = installPointerEventBridge(container);
+    const moves = collect('pointermove');
+    const downs = collect('pointerdown');
+    // A move is not a button transition: a real UA reports button === -1 there.
+    fireMouse('mousemove', { button: 0, clientX: 4, clientY: 4 });
+    // A press IS a transition: the pressed button must be preserved.
+    fireMouse('mousedown', { button: 0, clientX: 4, clientY: 4 });
+    expect(moves).toHaveLength(1);
+    expect(moves[0].button).toBe(-1);
+    expect(downs).toHaveLength(1);
+    expect(downs[0].button).toBe(0);
+  });
+
+  it('copies movementX/movementY onto the synthesized pointermove', () => {
+    stop = installPointerEventBridge(container);
+    const moves = collect('pointermove');
+    fireMouse('mousemove', { movementX: 7, movementY: -3 });
+    expect(moves).toHaveLength(1);
+    expect(moves[0].movementX).toBe(7);
+    expect(moves[0].movementY).toBe(-3);
+  });
+
+  it('bridges mouseover/mouseout to pointerover/pointerout', () => {
+    stop = installPointerEventBridge(container);
+    const overs = collect('pointerover');
+    const outs = collect('pointerout');
+    fireMouse('mouseover', { clientX: 2, clientY: 2 });
+    fireMouse('mouseout', { clientX: 2, clientY: 2 });
+    expect(overs).toHaveLength(1);
+    expect(overs[0].type).toBe('pointerover');
+    expect(outs).toHaveLength(1);
+    expect(outs[0].type).toBe('pointerout');
+  });
+
+  it('synthesizes exactly one pointercancel from a contextmenu on the target', () => {
+    stop = installPointerEventBridge(container);
+    const cancels = collect('pointercancel');
+    child.dispatchEvent(
+      new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 9, clientY: 3 }),
+    );
+    expect(cancels).toHaveLength(1);
+    expect(cancels[0].type).toBe('pointercancel');
+    expect(cancels[0].button).toBe(-1);
+    expect(cancels[0].clientX).toBe(9);
+  });
+
+  it('synthesizes one pointercancel on document.body when the window loses focus', () => {
+    stop = installPointerEventBridge(container);
+    const cancels: PointerEvent[] = [];
+    const onCancel = (e: Event) => cancels.push(e as PointerEvent);
+    document.body.addEventListener('pointercancel', onCancel);
+    try {
+      // A window blur is not a MouseEvent and its target is not an Element, so the
+      // cancel is dispatched on document.body with no client coordinates.
+      window.dispatchEvent(new Event('blur'));
+      expect(cancels).toHaveLength(1);
+      expect(cancels[0].type).toBe('pointercancel');
+      expect(cancels[0].button).toBe(-1);
+    } finally {
+      document.body.removeEventListener('pointercancel', onCancel);
+    }
+  });
+
+  it('shares one ref-counted capture patch across targets: no double-wrap, native restored only after the last teardown', () => {
+    const original = Element.prototype.setPointerCapture;
+    const throwing = function (this: Element) {
+      throw new DOMException('No active pointer with the given id', 'NotFoundError');
+    } as typeof original;
+    Element.prototype.setPointerCapture = throwing;
+
+    // Two distinct install targets, each with its own child.
+    const targetA = document.createElement('div');
+    const childA = document.createElement('button');
+    targetA.appendChild(childA);
+    const targetB = document.createElement('div');
+    const childB = document.createElement('button');
+    targetB.appendChild(childB);
+    document.body.append(targetA, targetB);
+
+    const teardownA = installPointerEventBridge(targetA);
+    const teardownB = installPointerEventBridge(targetB);
+    try {
+      // With both bridges active the prototype is a tolerant wrapper.
+      expect(() => childA.setPointerCapture(1)).not.toThrow();
+
+      // Tearing down the FIRST bridge must NOT restore the throwing native — the
+      // second bridge still relies on the shared patch.
+      teardownA();
+      expect(() => childB.setPointerCapture(1)).not.toThrow();
+
+      // Only the LAST teardown restores the native, and it is the EXACT function
+      // the bridge replaced — proving it was wrapped once, not once per target.
+      teardownB();
+      expect(Element.prototype.setPointerCapture).toBe(throwing);
+      expect(() => childB.setPointerCapture(1)).toThrow();
+    } finally {
+      teardownA();
+      teardownB();
+      Element.prototype.setPointerCapture = original;
+      targetA.remove();
+      targetB.remove();
+    }
+  });
 });
