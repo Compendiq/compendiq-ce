@@ -157,6 +157,20 @@ describe('UserMenu', () => {
     expect(trigger).toHaveAttribute('data-state', 'open');
   });
 
+  // Keyboard must still open the menu with the controlled open state. Radix opens
+  // on Enter/Space keydown and preventDefaults it, which suppresses the button's
+  // synthesized click in real browsers, so the click-to-open fallback never fires
+  // for keyboard users. (jsdom does not synthesize that click, so this guards the
+  // controlled wiring; the no-double-toggle behavior was verified in a browser.)
+  it('opens the dropdown on Enter keydown (keyboard)', async () => {
+    renderUserMenu();
+    const trigger = screen.getByRole('button');
+    fireEvent.keyDown(trigger, { key: 'Enter' });
+    await vi.waitFor(() => {
+      expect(trigger).toHaveAttribute('data-state', 'open');
+    });
+  });
+
   it('shows Settings item in dropdown', async () => {
     renderUserMenu();
     const trigger = screen.getByRole('button');

@@ -25,6 +25,8 @@ export function UserMenu() {
   // normal input doesn't toggle straight back closed.
   const [open, setOpen] = useState(false);
   const pointerHandledRef = useRef(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
 
   // Radix's outside-dismiss is also pointerdown-based (onPointerDownOutside), so
   // the same pointerdown-less input that needs the click-to-open fallback can't
@@ -32,15 +34,14 @@ export function UserMenu() {
   // Close on a plain outside click too. The listener runs only while open and is
   // attached after the opening click has already propagated, so it never
   // self-closes; clicks on the trigger (toggle) or inside the portalled menu
-  // (item selection) are ignored.
+  // (item selection) are ignored. Refs scope the check to this menu instead of a
+  // global DOM lookup.
   useEffect(() => {
     if (!open) return;
     const onDocumentClick = (event: MouseEvent) => {
       const target = event.target as Node | null;
       if (!target) return;
-      const trigger = document.querySelector('button[aria-haspopup="menu"]');
-      const menu = document.querySelector('[role="menu"]');
-      if (trigger?.contains(target) || menu?.contains(target)) return;
+      if (triggerRef.current?.contains(target) || contentRef.current?.contains(target)) return;
       setOpen(false);
     };
     document.addEventListener('click', onDocumentClick, true);
@@ -51,6 +52,7 @@ export function UserMenu() {
     <DropdownMenu.Root open={open} onOpenChange={setOpen}>
       <DropdownMenu.Trigger asChild>
         <button
+          ref={triggerRef}
           onPointerDown={() => {
             pointerHandledRef.current = true;
           }}
@@ -72,6 +74,7 @@ export function UserMenu() {
 
       <DropdownMenu.Portal>
         <DropdownMenu.Content
+          ref={contentRef}
           align="end"
           sideOffset={8}
           // z-50 sits above the AI sub-header's z-20 sticky strip; without
