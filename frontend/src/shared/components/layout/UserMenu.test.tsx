@@ -97,6 +97,80 @@ describe('UserMenu', () => {
     });
   });
 
+  // Some input environments (software KVMs, remote/streamed desktop sessions,
+  // certain mouse/trackpad drivers) deliver a legacy `click` but never a
+  // `pointerdown`. Radix's trigger opens ONLY on pointerdown, so the menu was
+  // unreachable by mouse for those users even though every plain onClick button
+  // still worked. The trigger must therefore also open on a plain click.
+  it('opens the dropdown on a plain click when no pointerdown precedes it', async () => {
+    renderUserMenu();
+    const trigger = screen.getByRole('button');
+    fireEvent.click(trigger);
+    await vi.waitFor(() => {
+      expect(trigger).toHaveAttribute('data-state', 'open');
+    });
+  });
+
+  // Guard the normal-input path: when both pointerdown and the compatibility
+  // click fire for the same press, the click must NOT toggle the menu closed
+  // again (which a naive onClick-toggle would do).
+  it('stays open when pointerdown is immediately followed by a click (normal input)', async () => {
+    renderUserMenu();
+    const trigger = screen.getByRole('button');
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' });
+    fireEvent.click(trigger);
+    await vi.waitFor(() => {
+      expect(trigger).toHaveAttribute('data-state', 'open');
+    });
+    expect(trigger).toHaveAttribute('data-state', 'open');
+  });
+
+  // With the click-to-open fallback, the menu can be opened by input that never
+  // emits `pointerdown`. Radix's built-in dismiss is ALSO pointerdown-based
+  // (onPointerDownOutside), so those users can't dismiss by clicking away. The
+  // menu must therefore also close on a plain outside click (Escape already
+  // works via keydown).
+  it('closes on a plain outside click when no pointerdown fires', async () => {
+    renderUserMenu();
+    const trigger = screen.getByRole('button');
+    fireEvent.click(trigger);
+    await vi.waitFor(() => {
+      expect(trigger).toHaveAttribute('data-state', 'open');
+    });
+    fireEvent.click(document.body);
+    await vi.waitFor(() => {
+      expect(trigger).toHaveAttribute('data-state', 'closed');
+    });
+  });
+
+  // A click INSIDE the open menu must not be treated as "outside" and dismiss it
+  // prematurely — item selection handles closing on its own.
+  it('does not dismiss when the click lands inside the menu', async () => {
+    renderUserMenu();
+    const trigger = screen.getByRole('button');
+    fireEvent.click(trigger);
+    await vi.waitFor(() => {
+      expect(screen.getByText('Single-key shortcuts')).toBeInTheDocument();
+    });
+    // The single-key toggle calls preventDefault to keep the menu open.
+    fireEvent.click(screen.getByText('Single-key shortcuts'));
+    expect(trigger).toHaveAttribute('data-state', 'open');
+  });
+
+  // Keyboard must still open the menu with the controlled open state. Radix opens
+  // on Enter/Space keydown and preventDefaults it, which suppresses the button's
+  // synthesized click in real browsers, so the click-to-open fallback never fires
+  // for keyboard users. (jsdom does not synthesize that click, so this guards the
+  // controlled wiring; the no-double-toggle behavior was verified in a browser.)
+  it('opens the dropdown on Enter keydown (keyboard)', async () => {
+    renderUserMenu();
+    const trigger = screen.getByRole('button');
+    fireEvent.keyDown(trigger, { key: 'Enter' });
+    await vi.waitFor(() => {
+      expect(trigger).toHaveAttribute('data-state', 'open');
+    });
+  });
+
   it('shows Settings item in dropdown', async () => {
     renderUserMenu();
     const trigger = screen.getByRole('button');
