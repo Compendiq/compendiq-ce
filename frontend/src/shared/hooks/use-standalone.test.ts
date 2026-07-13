@@ -234,13 +234,26 @@ describe('use-standalone hooks', () => {
   // ---- Import/Export ----
 
   describe('useImportMarkdown', () => {
-    it('sends import request', async () => {
-      const mock = mockFetch({ id: 99, title: 'Imported' });
+    it('posts to /pages/import and returns the batch envelope (id from articles[0])', async () => {
+      // The backend registers POST /api/pages/import (not /pages/import/markdown)
+      // and returns { imported, total, articles:[{ id: 'standalone-<uuid>', ... }] }.
+      const mock = mockFetch({
+        imported: 1,
+        total: 1,
+        articles: [{ id: 'standalone-abc', title: 'Hello', success: true }],
+      });
       const { result } = renderHook(() => useImportMarkdown(), { wrapper: createWrapper() });
-      await result.current.mutateAsync({ markdown: '# Hello', title: 'Hello' });
+      const data = await result.current.mutateAsync({ markdown: '# Hello', title: 'Hello' });
       const [url, opts] = mock.mock.calls[0] as [string, RequestInit];
-      expect(url).toContain('/pages/import/markdown');
+      expect(url).toContain('/pages/import');
+      expect(url).not.toContain('/pages/import/markdown');
       expect(opts.method).toBe('POST');
+      // spaceKey is ignored by the backend (standalone always lands in _standalone),
+      // so it must not be sent.
+      const body = JSON.parse(opts.body as string) as Record<string, unknown>;
+      expect(body.spaceKey).toBeUndefined();
+      // The created page id is the synthetic confluence id from articles[0].
+      expect(data.articles[0]!.id).toBe('standalone-abc');
     });
   });
 

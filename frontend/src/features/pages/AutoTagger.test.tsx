@@ -149,6 +149,47 @@ describe('AutoTagger', () => {
     expect(screen.getByText('Apply 1 tag')).toBeInTheDocument();
   });
 
+  it('exposes the suggestion dialog with role="dialog" for assistive tech', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({ suggestedTags: ['architecture'], existingLabels: [] }),
+        { headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    render(
+      <AutoTagger pageId="page-1" currentLabels={[]} model="qwen3.5" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('Auto-tag'));
+
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+  });
+
+  it('closes the suggestion dialog on Escape', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({ suggestedTags: ['architecture'], existingLabels: [] }),
+        { headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    render(
+      <AutoTagger pageId="page-1" currentLabels={[]} model="qwen3.5" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('Auto-tag'));
+
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+
+    await waitFor(() => {
+      expect(screen.queryByText('Suggested Tags')).not.toBeInTheDocument();
+    });
+  });
+
   it('closes dialog on Cancel', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(

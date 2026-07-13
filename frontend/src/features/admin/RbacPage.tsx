@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { m } from 'framer-motion';
+import { toast } from 'sonner';
 import {
   Shield, Users, FolderOpen, Plus, Trash2,
   UserPlus, Loader2, Lock, ShieldCheck, Pencil,
@@ -23,6 +24,7 @@ interface Role {
   isSystem: boolean;
   permissions: string[];
   createdAt: string;
+  description?: string | null;
 }
 
 interface Group {
@@ -95,6 +97,7 @@ function useCreateGroup() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['admin', 'groups'] });
     },
+    onError: (err: Error) => toast.error(err.message),
   });
 }
 
@@ -106,6 +109,7 @@ function useDeleteGroup() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['admin', 'groups'] });
     },
+    onError: (err: Error) => toast.error(err.message),
   });
 }
 
@@ -121,6 +125,7 @@ function useAddGroupMember() {
       queryClient.invalidateQueries({ queryKey: ['admin', 'groups'] });
       queryClient.invalidateQueries({ queryKey: ['admin', 'group-members', variables.groupId] });
     },
+    onError: (err: Error) => toast.error(err.message),
   });
 }
 
@@ -135,6 +140,7 @@ function useRemoveGroupMember() {
       queryClient.invalidateQueries({ queryKey: ['admin', 'groups'] });
       queryClient.invalidateQueries({ queryKey: ['admin', 'group-members', variables.groupId] });
     },
+    onError: (err: Error) => toast.error(err.message),
   });
 }
 
@@ -158,6 +164,7 @@ function useAssignSpaceRole() {
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ['admin', 'space-roles', variables.spaceKey] });
     },
+    onError: (err: Error) => toast.error(err.message),
   });
 }
 
@@ -171,6 +178,7 @@ function useRemoveSpaceRole() {
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ['admin', 'space-roles', variables.spaceKey] });
     },
+    onError: (err: Error) => toast.error(err.message),
   });
 }
 
@@ -203,7 +211,7 @@ function RolesTab() {
   const handleEdit = (role: Role) => {
     setEditRole({
       ...role,
-      description: (role as Role & { description?: string }).description ?? '',
+      description: role.description ?? '',
       updatedAt: (role as Role & { updatedAt?: string }).updatedAt ?? role.createdAt,
     });
     setEditorOpen(true);

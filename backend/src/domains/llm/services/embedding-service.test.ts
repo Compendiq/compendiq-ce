@@ -26,6 +26,9 @@ const mocks = vi.hoisted(() => ({
   toSql: vi.fn().mockReturnValue('[0.1,0.2]'),
   acquireEmbeddingLock: vi.fn().mockResolvedValue('fake-lock-id-for-tests'),
   releaseEmbeddingLock: vi.fn().mockResolvedValue(undefined),
+  // Holder-epoch guard (issue #913) renews-if-mine every 20 pages and returns
+  // the current holder value. Default: still ours (guard does not fire).
+  refreshEmbeddingLock: vi.fn().mockResolvedValue('fake-lock-id-for-tests'),
   isEmbeddingLocked: vi.fn().mockResolvedValue(false),
   listActiveEmbeddingLocks: vi.fn().mockResolvedValue([]),
   forceReleaseEmbeddingLock: vi.fn().mockResolvedValue({ released: true, previousHolderEpoch: null }),
@@ -75,6 +78,7 @@ vi.mock('../../../core/utils/logger.js', () => ({
 vi.mock('../../../core/services/redis-cache.js', () => ({
   acquireEmbeddingLock: (...args: unknown[]) => mocks.acquireEmbeddingLock(...args),
   releaseEmbeddingLock: (...args: unknown[]) => mocks.releaseEmbeddingLock(...args),
+  refreshEmbeddingLock: (...args: unknown[]) => mocks.refreshEmbeddingLock(...args),
   isEmbeddingLocked: (...args: unknown[]) => mocks.isEmbeddingLocked(...args),
   listActiveEmbeddingLocks: (...args: unknown[]) => mocks.listActiveEmbeddingLocks(...args),
   forceReleaseEmbeddingLock: (...args: unknown[]) => mocks.forceReleaseEmbeddingLock(...args),
@@ -133,6 +137,7 @@ import {
   splitByWords,
   getEmbedBreakerNextRetryTime,
   enqueueReembedAll,
+  reEmbedAll,
   runReembedAllJob,
   CHUNK_HARD_LIMIT,
   DIRTY_PAGE_BATCH_SIZE,
@@ -177,6 +182,8 @@ describe('embedding-service', () => {
       if (typeof key === 'string' && key.startsWith('embedding:lock:')) return FAKE_LOCK_ID;
       return null;
     });
+    // Holder-epoch guard renew-if-mine (issue #913): default still-ours.
+    mocks.refreshEmbeddingLock.mockResolvedValue(FAKE_LOCK_ID);
     mocks.enqueueJob.mockResolvedValue('reembed-all');
     // Default: htmlToText returns non-trivial text so embedPage proceeds
     mocks.htmlToText.mockReturnValue('Some substantial page content for embedding that is long enough');
@@ -458,15 +465,20 @@ describe('embedding-service', () => {
     });
 
     it('should delete only affected rows when changedPageIds is provided (incremental)', async () => {
-      // 7 query slots: BEGIN, SET LOCAL, DELETE, similarity INSERT, label INSERT,
+      // 8 query slots: BEGIN, SET LOCAL, DELETE (directed similarity edges),
+      // DELETE (symmetric edges), similarity INSERT, label INSERT,
       // parent_child INSERT (#362), COMMIT. Each must be explicitly mocked so the
       // assertions below pin the bind params for the new edge type instead of
       // relying on the beforeEach catch-all (which would silently absorb a missing
       // slot and let a regression slip through).
+      // #916: the incremental delete is split — directed embedding_similarity
+      // edges are pruned source-side only (page_id_1 = ANY), while symmetric
+      // edge types are deleted on both sides — so there are now TWO DELETE slots.
       mockClient.query
         .mockResolvedValueOnce({ rows: [] })                                                          // BEGIN
         .mockResolvedValueOnce({ rows: [] })                                                          // SET LOCAL statement_timeout
-        .mockResolvedValueOnce({ rows: [], rowCount: 2 })                                             // DELETE WHERE page_id_1 = ANY($1) OR page_id_2 = ANY($1)
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 })                                             // DELETE directed embedding_similarity WHERE page_id_1 = ANY($1)
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 })                                             // DELETE symmetric edges WHERE page_id_1 = ANY($1) OR page_id_2 = ANY($1)
         .mockResolvedValueOnce({ rows: [{ page_id_1: 1, page_id_2: 2, score: 0.9 }], rowCount: 1 })   // similarity INSERT
         .mockResolvedValueOnce({ rows: [], rowCount: 0 })                                             // label INSERT
         .mockResolvedValueOnce({ rows: [], rowCount: 0 })                                             // parent_child INSERT (#362)
@@ -477,30 +489,43 @@ describe('embedding-service', () => {
       expect(totalEdges).toBe(1);
       // Sanity: pin the slot count so a future producer that adds another query
       // can't quietly shift the assertions below to the wrong call index.
-      expect(mockClient.query).toHaveBeenCalledTimes(7);
+      expect(mockClient.query).toHaveBeenCalledTimes(8);
 
-      // DELETE should contain ANY($1)
-      const deleteCall = mockClient.query.mock.calls[2][0] as string;
-      expect(deleteCall).toContain('ANY($1)');
+      // #916: directed similarity edges are pruned SOURCE-SIDE ONLY. This delete
+      // must target relationship_type = 'embedding_similarity' and match only
+      // page_id_1 = ANY($1) — never page_id_2 — so reverse edges Y→X owned by an
+      // unchanged page Y survive.
+      const directedDeleteCall = mockClient.query.mock.calls[2][0] as string;
+      expect(directedDeleteCall).toContain("relationship_type = 'embedding_similarity'");
+      expect(directedDeleteCall).toContain('page_id_1 = ANY($1)');
+      expect(directedDeleteCall).not.toContain('page_id_2');
       expect(mockClient.query.mock.calls[2][1]).toEqual([[1, 3]]);
 
+      // #916: all symmetric edge types are deleted on BOTH sides and must
+      // explicitly exclude the directed embedding_similarity type.
+      const symmetricDeleteCall = mockClient.query.mock.calls[3][0] as string;
+      expect(symmetricDeleteCall).toContain("relationship_type <> 'embedding_similarity'");
+      expect(symmetricDeleteCall).toContain('page_id_1 = ANY($1)');
+      expect(symmetricDeleteCall).toContain('page_id_2 = ANY($1)');
+      expect(mockClient.query.mock.calls[3][1]).toEqual([[1, 3]]);
+
       // similarity query $3 should be changedPageIds
-      const similarityCall = mockClient.query.mock.calls[3];
+      const similarityCall = mockClient.query.mock.calls[4];
       expect(similarityCall[1][2]).toEqual([1, 3]);
 
       // label query $1 should be changedPageIds
-      const labelCall = mockClient.query.mock.calls[4];
+      const labelCall = mockClient.query.mock.calls[5];
       expect(labelCall[1][0]).toEqual([1, 3]);
 
       // parent_child query (#362) $1 should be changedPageIds — pins the
       // incremental contract for the new edge type.
-      const parentChildCall = mockClient.query.mock.calls[5];
+      const parentChildCall = mockClient.query.mock.calls[6];
       expect(parentChildCall[0]).toContain("'parent_child'");
       expect(parentChildCall[1][0]).toEqual([1, 3]);
 
       // COMMIT must be the final call (would silently fall through to the
       // beforeEach catch-all if the slot count above were wrong).
-      expect(mockClient.query.mock.calls[6][0]).toBe('COMMIT');
+      expect(mockClient.query.mock.calls[7][0]).toBe('COMMIT');
     });
   });
 
@@ -540,6 +565,28 @@ describe('embedding-service', () => {
       // The just-acquired per-user lock must be released again so it is not leaked.
       expect(mocks.releaseEmbeddingLock).toHaveBeenCalledWith('sync-user', FAKE_LOCK_ID);
       // No dirty-page scan should have run: only the lock check happened, no
+      // chunk-settings or COUNT queries were issued.
+      expect(mocks.query).not.toHaveBeenCalled();
+    });
+
+    it('short-circuits with alreadyProcessing when another user already holds an embedding lock (#914)', async () => {
+      // Per-user lock is free and no reembed-all is running, but another user
+      // already holds their own embedding lock. Because the dirty-page scan is
+      // GLOBAL (not per-user), proceeding here would re-embed the same pages the
+      // other holder is already working through. Back off instead.
+      mocks.acquireEmbeddingLock.mockResolvedValue(FAKE_LOCK_ID);
+      mocks.isEmbeddingLocked.mockResolvedValue(false);
+      mocks.listActiveEmbeddingLocks.mockResolvedValue([
+        { userId: 'other-user', holderEpoch: 'x', ttlRemainingMs: 60000 },
+        { userId: 'sync-user', holderEpoch: 'y', ttlRemainingMs: 60000 },
+      ]);
+
+      const result = await processDirtyPages('sync-user');
+
+      expect(result).toEqual({ processed: 0, errors: 0, alreadyProcessing: true });
+      // The just-acquired per-user lock must be released again so it is not leaked.
+      expect(mocks.releaseEmbeddingLock).toHaveBeenCalledWith('sync-user', FAKE_LOCK_ID);
+      // No dirty-page scan should have run: only the lock checks happened, no
       // chunk-settings or COUNT queries were issued.
       expect(mocks.query).not.toHaveBeenCalled();
     });
@@ -711,7 +758,7 @@ describe('embedding-service', () => {
       expect(result.alreadyProcessing).toBeUndefined();
     });
 
-    it('should store error message when embedding fails', async () => {
+    it('should store a sanitized, user-safe error message when embedding fails', async () => {
       const embeddingError = new Error('Model bge-m3 not found');
 
       mockChunkSettings();
@@ -746,10 +793,15 @@ describe('embedding-service', () => {
       );
       expect(failedUpdateCall).toBeDefined();
       expect(failedUpdateCall![0]).toContain('embedding_error');
-      expect(failedUpdateCall![1]).toContain('Model bge-m3 not found');
+      // The raw provider text ('Model bge-m3 not found' -> "not found") is mapped
+      // to a safe, category-based message and never persisted verbatim.
+      expect(failedUpdateCall![1][1]).toBe(
+        'The embedding model is not available. Check the model configuration and try again.',
+      );
+      expect(failedUpdateCall![1][1]).not.toContain('Model bge-m3');
     });
 
-    it('should truncate long error messages to 1000 characters', async () => {
+    it('should not persist raw provider text in the embedding error column', async () => {
       const longMessage = 'x'.repeat(2000);
       const longError = new Error(longMessage);
 
@@ -781,10 +833,14 @@ describe('embedding-service', () => {
         (call) => typeof call[0] === 'string' && (call[0] as string).includes("embedding_status = 'failed'"),
       );
       expect(failedUpdateCall).toBeDefined();
-      // The error message in params should be truncated to 1000 chars
+      // The mapper returns a fixed generic fallback for opaque errors; the raw
+      // provider payload (the 'x'.repeat(2000) string) is never persisted.
       // Error message is at [1][1]: params are [confluenceId, errorMessage]
       const storedError = failedUpdateCall![1][1] as string;
-      expect(storedError).toHaveLength(1000);
+      expect(storedError).toBe(
+        'Embedding failed due to a provider error. See server logs for details.',
+      );
+      expect(storedError).not.toContain('xxxx');
     });
 
     it('should clear error when embedding succeeds after previous failure', async () => {
@@ -951,7 +1007,12 @@ describe('embedding-service', () => {
       expect(completeEvent!.errors).toBeDefined();
       expect(completeEvent!.errors!.length).toBe(1);
       expect(completeEvent!.errors![0]).toContain('Failing');
-      expect(completeEvent!.errors![0]).toContain('Network timeout');
+      // The SSE error list carries the sanitized message, not the raw provider
+      // text ('Network timeout' is mapped to the connectivity message).
+      expect(completeEvent!.errors![0]).toContain(
+        'Could not reach the embedding service. Check the provider connection and try again.',
+      );
+      expect(completeEvent!.errors![0]).not.toContain('Network timeout');
     });
 
     it('should wait and retry on CircuitBreakerOpenError instead of marking page as failed', async () => {
@@ -1244,10 +1305,12 @@ describe('embedPage', () => {
     const result = await embedPage('user-1', 101, 'Short Page', 'DEV', '<p>tiny</p>');
 
     expect(result).toBe(0);
-    // Should have called UPDATE to clear embedding_dirty (using pages.id, not confluence_id)
+    // Should have called UPDATE to clear embedding_dirty AND set the terminal
+    // 'not_embedded' status (clearing any error) so short pages don't stay stuck
+    // showing the transient 'embedding' status (using pages.id, not confluence_id).
     expect(mocks.query).toHaveBeenCalledTimes(1);
     expect(mocks.query).toHaveBeenCalledWith(
-      'UPDATE pages SET embedding_dirty = FALSE WHERE id = $1',
+      `UPDATE pages SET embedding_dirty = FALSE, embedding_status = 'not_embedded', embedding_error = NULL WHERE id = $1`,
       [101],
     );
   });
@@ -1259,9 +1322,10 @@ describe('embedPage', () => {
     const result = await embedPage('user-1', 102, 'Empty Page', 'DEV', '<p></p>');
 
     expect(result).toBe(0);
+    // Same terminal-status write as the too-short case for empty text.
     expect(mocks.query).toHaveBeenCalledTimes(1);
     expect(mocks.query).toHaveBeenCalledWith(
-      'UPDATE pages SET embedding_dirty = FALSE WHERE id = $1',
+      `UPDATE pages SET embedding_dirty = FALSE, embedding_status = 'not_embedded', embedding_error = NULL WHERE id = $1`,
       [102],
     );
   });
@@ -1908,7 +1972,9 @@ describe('chunkText', () => {
       mocks.toSql.mockReturnValue('[0.1,0.2]');
       mocks.acquireEmbeddingLock.mockResolvedValue(FAKE_LOCK_ID);
       mocks.releaseEmbeddingLock.mockResolvedValue(undefined);
+      mocks.refreshEmbeddingLock.mockResolvedValue(FAKE_LOCK_ID);
       mocks.isEmbeddingLocked.mockResolvedValue(false);
+      mocks.listActiveEmbeddingLocks.mockResolvedValue([]);
       mocks.invalidateGraphCache.mockResolvedValue(undefined);
       mocks.htmlToText.mockReturnValue('Some substantial page content for embedding that is long enough');
       vi.mocked(getSharedLlmSettings).mockResolvedValue({
@@ -1961,11 +2027,12 @@ describe('chunkText', () => {
       mocks.getPool.mockReturnValue({ connect: async () => mockClient });
       mockClient.query.mockResolvedValue({ rows: [], rowCount: 1 });
 
-      // Holder-epoch guard: every redisGet returns null → the VERY FIRST
-      // guard check (after page 20) detects the mismatch and aborts. We
-      // expect ≤ 20 processed because the inner loop breaks immediately on
-      // page 21 before any more embedPage calls.
-      mocks.redisGet.mockImplementation(async () => null);
+      // Holder-epoch guard (issue #913): the renew-if-mine call returns null
+      // (lock gone / force-released) → the VERY FIRST guard check (after page
+      // 20) detects the mismatch and aborts. We expect ≤ 20 processed because
+      // the inner loop breaks immediately on page 21 before any more embedPage
+      // calls.
+      mocks.refreshEmbeddingLock.mockResolvedValue(null);
 
       const { processed, errors } = await processDirtyPages('alice');
 
@@ -1973,8 +2040,47 @@ describe('chunkText', () => {
       expect(processed).toBeLessThanOrEqual(20);
       expect(errors).toBe(0);
       expect(mocks.releaseEmbeddingLock).toHaveBeenCalledWith('alice', FAKE_LOCK_ID);
-      // Guard check was actually invoked.
-      expect(mocks.redisGet).toHaveBeenCalledWith('embedding:lock:alice');
+      // Guard check was actually invoked with our lockId (renews-if-mine).
+      expect(mocks.refreshEmbeddingLock).toHaveBeenCalledWith('alice', FAKE_LOCK_ID);
+    });
+  });
+
+  describe('reEmbedAll', () => {
+    // Issue #917 — reEmbedAll must NOT wipe the whole embedding index up front.
+    // embedPage atomically replaces each page's embeddings inside its own
+    // transaction, so re-embedding shrinks-then-grows the index page by page
+    // and RAG search never sees an empty window. A blanket
+    // `DELETE FROM page_embeddings` before the multi-hour loop would black out
+    // vector search for the entire run.
+    it('does not issue a blanket DELETE FROM page_embeddings before re-embedding', async () => {
+      // No dirty pages → processDirtyPages returns immediately after the count.
+      mocks.query.mockImplementation(async (sql: string) => {
+        if (sql.includes('admin_settings') && sql.includes('embedding_chunk_size')) {
+          return { rows: [] };
+        }
+        if (sql.includes('SELECT user_id FROM user_settings')) {
+          return { rows: [{ user_id: 'sys-1' }] };
+        }
+        if (sql.includes('COUNT(*)') && sql.includes('embedding_dirty')) {
+          return { rows: [{ count: '0' }] };
+        }
+        return { rows: [], rowCount: 0 };
+      });
+
+      await reEmbedAll();
+
+      // The whole-index DELETE (page-scoped `DELETE ... WHERE page_id` from
+      // embedPage runs on the pooled client, not this pool-level `query`).
+      const blanketDelete = mocks.query.mock.calls.find((call) =>
+        /DELETE\s+FROM\s+page_embeddings\s*$/i.test((call[0] as string).trim()),
+      );
+      expect(blanketDelete).toBeUndefined();
+
+      // It still marks every page dirty so the per-page loop re-embeds them.
+      const dirtyUpdate = mocks.query.mock.calls.find((call) =>
+        /UPDATE\s+pages\s+SET\s+embedding_dirty\s*=\s*TRUE/i.test(call[0] as string),
+      );
+      expect(dirtyUpdate).toBeDefined();
     });
   });
 });

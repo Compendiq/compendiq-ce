@@ -5,13 +5,14 @@ import { generateEmbedding } from './openai-compatible-client.js';
 import { htmlToText } from '../../../core/services/content-converter.js';
 import { logger } from '../../../core/utils/logger.js';
 import { safeIntOr } from '../../../core/utils/safe-int.js';
-import { invalidateGraphCache, acquireEmbeddingLock, releaseEmbeddingLock, isEmbeddingLocked, getRedisClient, listActiveEmbeddingLocks } from '../../../core/services/redis-cache.js';
+import { invalidateGraphCache, acquireEmbeddingLock, releaseEmbeddingLock, refreshEmbeddingLock, isEmbeddingLocked, getRedisClient, listActiveEmbeddingLocks } from '../../../core/services/redis-cache.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { visiblePagesPredicate } from '../../../core/services/page-visibility.js';
 import { CircuitBreakerOpenError, getProviderBreaker } from '../../../core/services/circuit-breaker.js';
 import { getReembedHistoryRetention } from '../../../core/services/admin-settings-service.js';
 import { enqueueJob } from '../../../core/services/queue-service.js';
 import { listRelationshipProducers } from './embedding-relationship-hooks.js';
+import { toUserFacingEmbeddingError } from './embedding-error-message.js';
 import pgvector from 'pgvector';
 
 const CHUNK_SIZE = 500;          // ~500 tokens target
@@ -307,7 +308,7 @@ export async function embedPage(
   if (!plainText || plainText.length < 20) {
     logger.debug({ pageId, pageTitle }, 'Skipping empty/short page for embedding');
     await query(
-      'UPDATE pages SET embedding_dirty = FALSE WHERE id = $1',
+      `UPDATE pages SET embedding_dirty = FALSE, embedding_status = 'not_embedded', embedding_error = NULL WHERE id = $1`,
       [pageId],
     );
     return 0;
@@ -414,8 +415,13 @@ export async function embedPage(
       );
     }
 
+    // Materialize this page's average embedding for indexed kNN (#919). The
+    // subquery sees the rows just inserted above (same transaction) and is a
+    // single-page AVG — cheap — so the relationship computation no longer has
+    // to AVG the whole page_embeddings table on every run.
     await client.query(
-      `UPDATE pages SET embedding_dirty = FALSE, embedding_status = 'embedded', embedded_at = NOW(), embedding_error = NULL
+      `UPDATE pages SET embedding_dirty = FALSE, embedding_status = 'embedded', embedded_at = NOW(), embedding_error = NULL,
+              page_avg_embedding = (SELECT AVG(embedding) FROM page_embeddings WHERE page_id = $1)
        WHERE id = $1`,
       [pageId],
     );
@@ -525,6 +531,27 @@ export async function processDirtyPages(
       logger.info({ userId }, 'Reembed-all in progress — skipping competing dirty-page scan');
       return { processed: 0, errors: 0, alreadyProcessing: true };
     }
+    // Issue #914 — cross-user interlock: the per-user lock only protects a
+    // single user's key, but the dirty-page scan below is GLOBAL (it selects
+    // every `embedding_dirty = TRUE` page, not just this user's). If another
+    // user already holds their own embedding lock, launching a second scan here
+    // would redundantly re-embed the same pages the other holder is already
+    // working through. After acquiring our own lock, back off if any OTHER
+    // holder exists. Mirrors runReembedAllJob's post-acquire recheck: in a
+    // simultaneous-start race both sides back off and retry on the next cycle.
+    if (userId !== REEMBED_ALL_LOCK_USER) {
+      const otherHolders = (await listActiveEmbeddingLocks()).filter(
+        (l) => l.userId !== userId && l.userId !== REEMBED_ALL_LOCK_USER,
+      );
+      if (otherHolders.length > 0) {
+        await releaseEmbeddingLock(userId, lockId);
+        logger.info(
+          { userId, otherHolders: otherHolders.map((l) => l.userId) },
+          'Another user is already embedding — skipping competing global dirty-page scan',
+        );
+        return { processed: 0, errors: 0, alreadyProcessing: true };
+      }
+    }
   }
 
   await setLastEmbeddingRunAt(new Date());
@@ -568,7 +595,6 @@ export async function processDirtyPages(
     // no duplicate/destructive release happens.
     const GUARD_CHECK_EVERY = 20;
     let pagesProcessedSinceGuardCheck = 0;
-    const guardLockKey = `embedding:lock:${userId}`;
 
     for (;;) {
       if (batchAborted) break;
@@ -580,7 +606,10 @@ export async function processDirtyPages(
         const redis = getRedisClient();
         if (redis) {
           try {
-            const stillMine = await redis.get(guardLockKey);
+            // Renew-if-mine: bump the lock TTL while we still own it (issue
+            // #913) so a legitimately long run never expires mid-flight, and
+            // read back the current holder to detect force-release / re-acquire.
+            const stillMine = await refreshEmbeddingLock(userId, lockId);
             if (stillMine !== lockId) {
               logger.warn(
                 { userId, expected: lockId, actual: stillMine },
@@ -636,7 +665,10 @@ export async function processDirtyPages(
           const redis = getRedisClient();
           if (redis) {
             try {
-              const stillMine = await redis.get(guardLockKey);
+              // Renew-if-mine: bump the lock TTL while we still own it (issue
+            // #913) so a legitimately long run never expires mid-flight, and
+            // read back the current holder to detect force-release / re-acquire.
+            const stillMine = await refreshEmbeddingLock(userId, lockId);
               if (stillMine !== lockId) {
                 logger.warn(
                   { userId, expected: lockId, actual: stillMine },
@@ -740,17 +772,18 @@ export async function processDirtyPages(
                 break; // Success, move to next page
               } catch (retryErr) {
                 if (!isCircuitBreakerError(retryErr)) {
-                  // Different error, mark as failed and move on
-                  const errorMessage = retryErr instanceof Error ? retryErr.message : String(retryErr);
+                  // Different error, mark as failed and move on. The raw provider
+                  // text stays in the server log below; the user-facing column and
+                  // SSE progress get a sanitized, category-based message only.
                   logger.error({ err: retryErr, pageId: page.id }, 'Failed to embed page after circuit breaker recovery');
                   await query(
                     `UPDATE pages SET embedding_status = 'failed', embedding_error = $2 WHERE id = $1`,
-                    [page.id, errorMessage.slice(0, 1000)],
+                    [page.id, toUserFacingEmbeddingError(retryErr)],
                   ).catch((updateErr) => logger.error({ err: updateErr }, 'Failed to update embedding_status to failed'));
                   totalErrors++;
                   batchRemainingDirty++;
                   consecutiveFailures++;
-                  errorList.push(`${page.title}: ${errorMessage.slice(0, 200)}`);
+                  errorList.push(`${page.title}: ${toUserFacingEmbeddingError(retryErr)}`);
                   cbSuccess = true; // Mark as handled (failed, but handled)
                   break;
                 }
@@ -771,18 +804,19 @@ export async function processDirtyPages(
             continue; // handled by circuit breaker path
           }
 
-          // Non-circuit-breaker error: mark page as failed
+          // Non-circuit-breaker error: mark page as failed. The raw provider text
+          // stays in the server log above; the user-facing column and SSE progress
+          // get a sanitized, category-based message only.
           logger.error({ err, pageId: page.id }, 'Failed to embed page');
-          const errorMessage = err instanceof Error ? err.message : String(err);
           await query(
             `UPDATE pages SET embedding_status = 'failed', embedding_error = $2 WHERE id = $1`,
-            [page.id, errorMessage.slice(0, 1000)],
+            [page.id, toUserFacingEmbeddingError(err)],
           ).catch((updateErr) => logger.error({ err: updateErr }, 'Failed to update embedding_status to failed'));
           totalErrors++;
           batchRemainingDirty++;
           pagesProcessedSinceGuardCheck++;
           consecutiveFailures++;
-          errorList.push(`${page.title}: ${errorMessage.slice(0, 200)}`);
+          errorList.push(`${page.title}: ${toUserFacingEmbeddingError(err)}`);
 
           // Pause after too many consecutive failures to let the server recover
           if (consecutiveFailures >= CONSECUTIVE_FAILURE_PAUSE_THRESHOLD) {
@@ -859,8 +893,10 @@ export async function processDirtyPages(
   if (totalProcessed > 0) {
     try {
       await computePageRelationships(processedPageIds);
-      // Invalidate cached graph data so the next request reflects new relationships
-      await invalidateGraphCache(userId);
+      // Invalidate cached graph data so the next request reflects new
+      // relationships. page_relationships is shared, so clear every user's
+      // graph cache — not just this run's user (#915).
+      await invalidateGraphCache();
     } catch (err) {
       logger.error({ err, userId }, 'Failed to compute page relationships after embedding');
     }
@@ -904,8 +940,23 @@ export async function computePageRelationships(changedPageIds?: number[]): Promi
 
     // Delete only affected relationships when changedPageIds provided, otherwise full recompute
     if (changedPageIds && changedPageIds.length > 0) {
+      // #916: embedding_similarity edges are DIRECTED — page_id_1 is the source
+      // (a re-embedded page), page_id_2 its KNN neighbour. Only the source-side
+      // edges are re-inserted below (LATERAL join keyed on a.page_id), so a
+      // both-sides delete would drop reverse edges Y→X owned by an unchanged
+      // page Y and never rebuild them. Scope this delete to the source side.
       await client.query(
-        'DELETE FROM page_relationships WHERE page_id_1 = ANY($1) OR page_id_2 = ANY($1)',
+        `DELETE FROM page_relationships
+         WHERE relationship_type = 'embedding_similarity' AND page_id_1 = ANY($1)`,
+        [changedPageIds],
+      );
+      // All other edge types (label_overlap, parent_child, explicit_link) are
+      // symmetric and stored canonically (lower id first), and are fully
+      // recomputed for any pair touching a changed page — so delete both sides.
+      await client.query(
+        `DELETE FROM page_relationships
+         WHERE relationship_type <> 'embedding_similarity'
+           AND (page_id_1 = ANY($1) OR page_id_2 = ANY($1))`,
         [changedPageIds],
       );
     } else {
@@ -913,32 +964,37 @@ export async function computePageRelationships(changedPageIds?: number[]): Promi
     }
 
     // Compute embedding similarity edges using pgvector <=> operator.
-    // We compute average embedding per page, then find top-K nearest neighbors.
-    // When changedPageIds is provided, only use those pages as sources in the LATERAL join.
+    // The per-page average embedding is materialized on pages.page_avg_embedding
+    // (migration 083) and served from an HNSW index, so each source page runs a
+    // bounded top-K index probe instead of the old whole-table AVG + exact
+    // pairwise scan that timed out at scale (#919). When changedPageIds is
+    // provided only those pages are sources, so an incremental sync costs
+    // O(changed) index probes.
     const useIncremental = changedPageIds && changedPageIds.length > 0;
     const similarityResult = await client.query<{ page_id_1: number; page_id_2: number; score: number }>(
-      `WITH page_avg AS (
-         SELECT pe.page_id, AVG(pe.embedding) AS avg_embedding
-         FROM page_embeddings pe
-         JOIN pages p ON pe.page_id = p.id
+      `WITH sources AS (
+         SELECT p.id AS page_id, p.page_avg_embedding AS avg_embedding
+         FROM pages p
          WHERE p.deleted_at IS NULL
-         GROUP BY pe.page_id
+           AND p.page_avg_embedding IS NOT NULL
+           AND ($3::int[] IS NULL OR p.id = ANY($3))
        ),
        neighbors AS (
          SELECT
-           a.page_id AS page_id_1,
-           b.page_id AS page_id_2,
-           (1 - (a.avg_embedding <=> b.avg_embedding)) AS score
-         FROM page_avg a
+           s.page_id AS page_id_1,
+           b.id AS page_id_2,
+           (1 - (s.avg_embedding <=> b.page_avg_embedding)) AS score
+         FROM sources s
          CROSS JOIN LATERAL (
-           SELECT page_id, avg_embedding
-           FROM page_avg b
-           WHERE b.page_id != a.page_id
-           ORDER BY a.avg_embedding <=> b.avg_embedding
+           SELECT p2.id, p2.page_avg_embedding
+           FROM pages p2
+           WHERE p2.deleted_at IS NULL
+             AND p2.page_avg_embedding IS NOT NULL
+             AND p2.id != s.page_id
+           ORDER BY s.avg_embedding <=> p2.page_avg_embedding
            LIMIT $1
          ) b
-         WHERE (1 - (a.avg_embedding <=> b.avg_embedding)) >= $2
-           AND ($3::int[] IS NULL OR a.page_id = ANY($3))
+         WHERE (1 - (s.avg_embedding <=> b.page_avg_embedding)) >= $2
        )
        INSERT INTO page_relationships (page_id_1, page_id_2, relationship_type, score)
        SELECT page_id_1, page_id_2, 'embedding_similarity', score
@@ -1122,9 +1178,15 @@ export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatu
  * Re-embed all pages (admin action).
  */
 export async function reEmbedAll(): Promise<void> {
-  await query('DELETE FROM page_embeddings');
+  // Issue #917 — do NOT wipe the whole index up front. `embedPage` atomically
+  // replaces each page's embeddings inside its own transaction (Phase 2), so
+  // marking every page dirty and re-embedding page by page shrinks-then-grows
+  // the index incrementally and RAG vector search never sees an empty window.
+  // A blanket `DELETE FROM page_embeddings` here would black out search for the
+  // entire multi-hour run. This mirrors `runReembedAllJob`, which also relies
+  // on per-page replacement rather than an up-front delete.
   await query(`UPDATE pages SET embedding_dirty = TRUE, embedding_status = 'not_embedded', embedded_at = NULL, embedding_error = NULL`);
-  logger.info('All embeddings cleared, pages marked dirty for re-embedding');
+  logger.info('All pages marked dirty for incremental re-embedding');
 
   // Use a system user ID for provider selection (pick any active user with settings)
   const usersResult = await query<{ user_id: string }>(
@@ -1168,17 +1230,24 @@ export async function enqueueReembedAll(
     // HNSW on plain vector; falling back to halfvec or seq-scan keeps them usable.
     let columnType: string;
     let indexSql: string | null;
+    // pages.page_avg_embedding (#919) must stay the same type/dimension as
+    // page_embeddings.embedding so embedPage's `AVG(embedding)` assigns cleanly,
+    // and its HNSW index uses the matching opclass.
+    let avgIndexSql: string | null;
     // HNSW tuning parameters match migration 011 and 048 (m=16, ef_construction=200).
     const HNSW_PARAMS = `WITH (m = 16, ef_construction = 200)`;
     if (n <= 2000) {
       columnType = `vector(${n})`;
       indexSql = `CREATE INDEX idx_page_embeddings_hnsw ON page_embeddings USING hnsw (embedding vector_cosine_ops) ${HNSW_PARAMS}`;
+      avgIndexSql = `CREATE INDEX idx_pages_page_avg_embedding_hnsw ON pages USING hnsw (page_avg_embedding vector_cosine_ops) ${HNSW_PARAMS}`;
     } else if (n <= 4000) {
       columnType = `halfvec(${n})`;
       indexSql = `CREATE INDEX idx_page_embeddings_hnsw ON page_embeddings USING hnsw (embedding halfvec_cosine_ops) ${HNSW_PARAMS}`;
+      avgIndexSql = `CREATE INDEX idx_pages_page_avg_embedding_hnsw ON pages USING hnsw (page_avg_embedding halfvec_cosine_ops) ${HNSW_PARAMS}`;
     } else {
       columnType = `vector(${n})`;
       indexSql = null;
+      avgIndexSql = null;
     }
     const client = await getPool().connect();
     try {
@@ -1191,8 +1260,15 @@ export async function enqueueReembedAll(
       // and the opclass only accepts vector, or (b) the new dim is >2000.
       // Dropping the index first disentangles the ALTER from the rebuild.
       await client.query(`DROP INDEX IF EXISTS idx_page_embeddings_hnsw`);
+      await client.query(`DROP INDEX IF EXISTS idx_pages_page_avg_embedding_hnsw`);
       await client.query(
         `ALTER TABLE page_embeddings ALTER COLUMN embedding TYPE ${columnType}`,
+      );
+      // Keep pages.page_avg_embedding in lockstep with the new dimension (#919).
+      // page_embeddings was just truncated and every page is re-embedded below,
+      // so discard the now stale/wrong-dimension averages with USING NULL.
+      await client.query(
+        `ALTER TABLE pages ALTER COLUMN page_avg_embedding TYPE ${columnType} USING NULL`,
       );
       await client.query(
         `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
@@ -1203,6 +1279,7 @@ export async function enqueueReembedAll(
       );
       if (indexSql) {
         await client.query(indexSql);
+        if (avgIndexSql) await client.query(avgIndexSql);
       } else {
         logger.warn(
           { dimensions: n },

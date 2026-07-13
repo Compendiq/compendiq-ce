@@ -95,11 +95,20 @@ ATM-{tier}-{seats}-{expiryYYYYMMDD}-{licenseId}.{ed25519SignatureBase64url}
 
 ```mermaid
 flowchart LR
-    boot(["App mount"]) --> fetch[["GET /api/admin/license"]]
+    boot(["App mount +<br/>every auth change<br/>(login / logout / token refresh)"]) --> fetch[["GET /api/admin/license"]]
     fetch --> decide{edition !== 'community'<br/>AND valid}
     decide -- yes --> ee["isEnterprise = true<br/>→ show OIDC tab,<br/>license form, EE features"]
     decide -- no  --> ce["isEnterprise = false<br/>→ CE UI only"]
+    fetch -- 401 / 403 --> clear["license cleared<br/>(logout / not admin)"]
+    fetch -- network / 5xx --> keep["transient — previously<br/>loaded license preserved"]
 ```
+
+The fetch runs on mount **and whenever the access token changes** (a
+post-mount SPA login must flip EE surfaces on without a reload; logout
+clears the previous session's license/ui from memory). Only a genuine
+auth signal (401/403) clears the license — transient failures (network
+error, 5xx) leave the previously loaded license untouched, and the
+loading skeleton shows on the initial load only.
 
 CE and EE ship the **same frontend image**. There is no IIFE bundle, no
 build-time patch, no separate EE SPA. All gating happens at runtime via
@@ -114,7 +123,7 @@ build-time patch, no separate EE SPA. All gating happens at runtime via
 | `backend/src/core/enterprise/noop.ts` | Inert CE stub |
 | `backend/src/core/enterprise/loader.ts` | Dynamic import + fallback |
 | `backend/src/core/types/compendiq-enterprise.d.ts` | Type declaration for the optional EE package |
-| `backend/src/routes/foundation/admin.ts` | CE fallback `GET /api/admin/license` |
+| `backend/src/app.ts` | CE fallback `GET /api/admin/license` (community-mode inline route) |
 | `frontend/src/shared/enterprise/context.tsx` | `EnterpriseProvider` |
 | `frontend/src/shared/enterprise/use-enterprise.ts` | `useEnterprise()` hook |
 | `frontend/src/features/admin/LicenseStatusCard.tsx` | Admin UI for the license |

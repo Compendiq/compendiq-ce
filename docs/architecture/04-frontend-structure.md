@@ -11,28 +11,23 @@ flowchart TB
 
     subgraph providers["Providers (wrap the app)"]
         direction TB
-        rp["RouterProvider"]
-        qp["QueryProvider (TanStack Query)"]
-        ap["AuthProvider<br/>(session + token refresh)"]
+        qp["QueryClientProvider (TanStack Query)"]
+        rp["BrowserRouter"]
         ep["EnterpriseProvider<br/>GET /api/admin/license → isEnterprise"]
-        tp["ThemeProvider"]
     end
 
     main --> providers
-    providers --> app["App.tsx<br/>(routes, SetupRoute gating)"]
+    providers --> app["App.tsx<br/>(routes, SetupRoute gating;<br/>session + token refresh + theme via<br/>useSessionInit · useTokenRefreshTimer · useThemeEffect)"]
 
     subgraph features["features/ (domain UI)"]
         direction LR
-        fAuth["auth/<br/>LoginPage<br/>OidcCallbackPage (EE route)"]
-        fDash["dashboard/"]
+        fAuth["auth/<br/>OidcCallbackPage (EE route)"]
         fPages["pages/<br/>list · view · new · trash · pinned"]
         fSpaces["spaces/<br/>settings · new"]
         fAI["ai/<br/>AiAssistantPage<br/>(ask / improve / generate / summarize)"]
-        fSearch["search/"]
-        fAnalytics["analytics/"]
         fGraph["graph/"]
-        fSettings["settings/<br/>user + admin"]
-        fAdmin["admin/<br/>LicenseStatusCard<br/>OidcSettingsPage (EE-gated)"]
+        fSettings["settings/<br/>LoginPage · user + admin"]
+        fAdmin["admin/<br/>LicenseStatusCard<br/>OidcSettingsPage (EE-gated)<br/>analytics/ (AnalyticsPage)"]
     end
 
     app --> features
@@ -62,8 +57,8 @@ flowchart TB
     classDef feat fill:#eefbe8,stroke:#4caf50
     classDef sh fill:#fff4e5,stroke:#e5a23c
     classDef st fill:#f5eafd,stroke:#9b59b6
-    class providers,rp,qp,ap,ep,tp prov
-    class features,fAuth,fDash,fPages,fSpaces,fAI,fSearch,fAnalytics,fGraph,fSettings,fAdmin feat
+    class providers,qp,rp,ep prov
+    class features,fAuth,fPages,fSpaces,fAI,fGraph,fSettings,fAdmin feat
     class shared,sEnt,sComp,sHooks,sLib sh
     class stores,zAuth,zTheme,zUI,zAV,zCmd,zKb st
 ```
@@ -97,10 +92,11 @@ the backend side.
   anchored on the brand palette (black `#0A0A0A` + honey `#F9C74F`); see
   ADR-010 v0.4 for the full rationale and the migration away from the
   v0.3-era glassmorphic surfaces.
-- **Neumorphic** surface system (ADR-010 v0.4): eleven `nm-*` `@utility`
+- **Neumorphic** surface system (ADR-010 v0.4): fifteen `nm-*` `@utility`
   classes (`nm-card`, `nm-card-elevated`, `nm-card-interactive`,
   `nm-toolbar`, `nm-sidebar`, `nm-header`, `nm-pill-active`,
-  `nm-button-primary`, `nm-button-ghost`, `nm-icon-button`, `nm-input`)
+  `nm-button-primary`, `nm-button-destructive`, `nm-button-ghost`,
+  `nm-icon-button`, `nm-composer`, `nm-input`, `nm-select`, `nm-select-md`)
   built on theme-tinted shadow recipes plus a mandatory 1px solid border
   for visibility under WCAG 1.4.11 and `forced-colors: active`.
 - **Framer Motion** for entrance animations, wrapped in `LazyMotion`;

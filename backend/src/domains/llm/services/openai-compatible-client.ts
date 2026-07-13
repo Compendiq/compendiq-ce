@@ -154,10 +154,10 @@ export interface StreamChatOptions {
 export async function listModels(cfg: ProviderConfig): Promise<LlmModel[]> {
   return withSpan(
     'llm.list_models',
-    () => enqueue(() =>
+    () => enqueue((signal) =>
       getProviderBreaker(cfg.providerId).execute(async () => {
         const res = await undiciFetch(`${cfg.baseUrl}/models`, {
-          headers: headers(cfg), dispatcher: dispatcherFor(cfg),
+          headers: headers(cfg), dispatcher: dispatcherFor(cfg), signal,
         });
         if (!res.ok) throw new Error(`listModels HTTP ${res.status}`);
         const body = await res.json() as { data?: Array<{ id: string }> };
@@ -186,13 +186,14 @@ export async function chat(
   // disabled (withSpan passes straight through).
   return withSpan(
     'llm.chat',
-    () => enqueue(() =>
+    () => enqueue((signal) =>
       getProviderBreaker(cfg.providerId).execute(async () => {
         const res = await undiciFetch(`${cfg.baseUrl}/chat/completions`, {
           method: 'POST',
           headers: headers(cfg),
           body: JSON.stringify({ model, messages, stream: false, ...thinkingExtras(cfg.baseUrl, model, opts?.thinking) }),
           dispatcher: dispatcherFor(cfg),
+          signal,
         });
         if (!res.ok) throw new Error(`chat HTTP ${res.status}`);
         const body = await res.json() as { choices: Array<{ message: { content: string } }> };
@@ -236,23 +237,33 @@ export async function* streamChat(
   const reader = res.body!.getReader();
   const dec = new TextDecoder();
   let buf = '';
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buf += dec.decode(value, { stream: true });
-    let idx;
-    while ((idx = buf.indexOf('\n\n')) !== -1) {
-      const frame = buf.slice(0, idx).trim();
-      buf = buf.slice(idx + 2);
-      if (!frame.startsWith('data:')) continue;
-      const data = frame.slice(5).trim();
-      if (data === '[DONE]') { yield { content: '', done: true }; return; }
-      try {
-        const parsed = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string } }> };
-        const content = parsed.choices?.[0]?.delta?.content ?? '';
-        if (content) yield { content, done: false };
-      } catch { /* ignore parse errors on malformed frames */ }
+  // The try/finally guarantees teardown on ANY exit — including the early
+  // generator.return() the runtime triggers when a consumer stops iterating
+  // (e.g. streamSSE breaks its loop on client disconnect). reader.cancel()
+  // aborts the undici body and destroys the socket, so an abandoned stream no
+  // longer leaves the upstream backend generating (GPU slot / billed tokens).
+  // On normal completion the stream is already drained, so cancel() is a no-op.
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf('\n\n')) !== -1) {
+        const frame = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 2);
+        if (!frame.startsWith('data:')) continue;
+        const data = frame.slice(5).trim();
+        if (data === '[DONE]') { yield { content: '', done: true }; return; }
+        try {
+          const parsed = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string } }> };
+          const content = parsed.choices?.[0]?.delta?.content ?? '';
+          if (content) yield { content, done: false };
+        } catch { /* ignore parse errors on malformed frames */ }
+      }
     }
+  } finally {
+    await reader.cancel().catch(() => { /* already closed / benign cancel race */ });
   }
   yield { content: '', done: true };
 }
@@ -263,13 +274,14 @@ export async function generateEmbedding(
   const input = Array.isArray(text) ? text : [text];
   return withSpan(
     'llm.embeddings',
-    () => enqueue(() =>
+    () => enqueue((signal) =>
       getProviderBreaker(cfg.providerId).execute(async () => {
         const res = await undiciFetch(`${cfg.baseUrl}/embeddings`, {
           method: 'POST',
           headers: headers(cfg),
           body: JSON.stringify({ model, input }),
           dispatcher: dispatcherFor(cfg),
+          signal,
         });
         if (!res.ok) {
           // Include the response body so callers (embedding-service's
@@ -277,7 +289,17 @@ export async function generateEmbedding(
           // Ollama's "input length exceeds context length". Cap the length so a
           // verbose error page can't bloat logs.
           const detail = await res.text().catch(() => '');
-          throw new Error(`generateEmbedding HTTP ${res.status}: ${detail.slice(0, 300)}`);
+          const err = new Error(
+            `generateEmbedding HTTP ${res.status}: ${detail.slice(0, 300)}`,
+          ) as Error & { bypassCircuitBreaker?: boolean };
+          // #867: a deterministic client-input 4xx (e.g. a context-length 400)
+          // proves the provider is reachable — it is NOT an outage. Mark it so
+          // the per-provider circuit breaker treats it as a healthy signal
+          // instead of a failure; otherwise one oversized page's repeated 400s
+          // open the breaker and abort the whole embedding run. The message is
+          // left unchanged so isContextLengthError still matches the skip path.
+          if (res.status === 400) err.bypassCircuitBreaker = true;
+          throw err;
         }
         const body = await res.json() as { data: Array<{ embedding: number[] }> };
         return body.data.map((d) => d.embedding);

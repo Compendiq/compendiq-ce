@@ -24,15 +24,25 @@ export function ConfluenceStep({ onNext, onBack }: ConfluenceStepProps) {
       await apiFetch('/settings', {
         method: 'PUT',
         body: JSON.stringify({
-          confluenceBaseUrl: confluenceUrl,
+          confluenceUrl,
           confluencePat: pat,
         }),
       });
 
-      // Test connection by fetching spaces
-      await apiFetch('/spaces');
-      setTestSuccess(true);
-      toast.success('Confluence connected successfully');
+      // Actually authenticate against Confluence with the entered credentials.
+      // A local read (GET /spaces) succeeds regardless of the PAT's validity,
+      // so any credentials would "pass" — probe the real endpoint instead (#950).
+      const result = await apiFetch<{ success: boolean; message: string }>(
+        '/settings/test-confluence',
+        { method: 'POST', body: JSON.stringify({ url: confluenceUrl, pat }) },
+      );
+      if (result.success) {
+        setTestSuccess(true);
+        toast.success('Confluence connected successfully');
+      } else {
+        setTestSuccess(false);
+        toast.error(result.message || 'Connection test failed');
+      }
     } catch (err) {
       setTestSuccess(false);
       toast.error(err instanceof Error ? err.message : 'Connection test failed');

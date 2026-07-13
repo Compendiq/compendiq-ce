@@ -33,11 +33,16 @@ vi.mock('../../core/services/content-converter.js', () => ({
   htmlToText: (...args: unknown[]) => mockHtmlToText(...args),
 }));
 
+const mockCacheInvalidate = vi.fn();
+const mockCacheInvalidateAcrossUsers = vi.fn();
+
 vi.mock('../../core/services/redis-cache.js', () => ({
   RedisCache: class MockRedisCache {
     get = vi.fn().mockResolvedValue(null);
     set = vi.fn().mockResolvedValue(undefined);
-    invalidate = vi.fn().mockResolvedValue(undefined);
+    invalidate = (...args: unknown[]) => mockCacheInvalidate(...args);
+    // Publishing a draft to a shared/Confluence page clears every user's cache (#893).
+    invalidateAcrossUsers = (...args: unknown[]) => mockCacheInvalidateAcrossUsers(...args);
   },
 }));
 
@@ -444,7 +449,85 @@ describe('Draft-while-published routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(mockHtmlToConfluence).toHaveBeenCalledWith('<p>draft</p>');
-      expect(mockUpdatePage).toHaveBeenCalledWith('conf-123', 'Confluence Article', '<p>storage</p>', 4);
+      // updatePage() increments internally, so it must receive the *previous*
+      // live version (page.version = 3), not page.version + 1 (4). Passing 4
+      // makes Confluence receive version 5 while it holds 3 → silent 409 (#863).
+      expect(mockUpdatePage).toHaveBeenCalledWith('conf-123', 'Confluence Article', '<p>storage</p>', 3);
+      // Trust the API-returned version (5) over the local bump (4)
+      expect(response.json().version).toBe(5);
+      // The API version is persisted back so local `version` can't drift
+      const persistCall = mockQuery.mock.calls.find(
+        (c) => typeof c[0] === 'string' && c[0].includes('version = $3') && c[0].includes('last_synced'),
+      );
+      expect(persistCall).toBeDefined();
+      expect(persistCall![1]).toEqual([10, '<p>storage</p>', 5]);
+    });
+
+    // #893 review follow-up: publishing a draft writes new live content — the
+    // same mutation class as PUT /pages/:id — so shared/Confluence pages must
+    // clear every user's cached lists/trees, not just the publisher's.
+    describe('cache invalidation (#893)', () => {
+      function mockPublishablePage(overrides: Record<string, unknown> = {}) {
+        mockQuery.mockImplementation((sql: string) => {
+          if (sql.includes('SELECT id, version, title')) {
+            return Promise.resolve({
+              rows: [{
+                id: 10, version: 3, title: 'My Article',
+                body_html: '<p>live</p>', body_text: 'live',
+                body_storage: null, source: 'standalone',
+                created_by_user_id: TEST_USER, visibility: 'private',
+                confluence_id: null, space_key: null,
+                draft_body_html: '<p>draft</p>', draft_body_storage: null,
+                ...overrides,
+              }],
+            });
+          }
+          return Promise.resolve({ rows: [], rowCount: 1 });
+        });
+        mockTxQuery.mockResolvedValue({ rows: [], rowCount: 1 });
+      }
+
+      it('invalidates the pages cache across all users when publishing on a Confluence page', async () => {
+        mockGetClientForUser.mockResolvedValue({ updatePage: vi.fn().mockResolvedValue({}) });
+        mockPublishablePage({
+          source: 'confluence', created_by_user_id: null, visibility: 'shared',
+          confluence_id: 'conf-123', space_key: 'DEV', body_storage: '<p>storage</p>',
+        });
+
+        const response = await app.inject({
+          method: 'POST',
+          url: '/api/pages/10/draft/publish',
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledWith('pages');
+        expect(mockCacheInvalidate).not.toHaveBeenCalledWith(TEST_USER, 'pages');
+      });
+
+      it('invalidates across users when publishing on a shared standalone page', async () => {
+        mockPublishablePage({ visibility: 'shared' });
+
+        const response = await app.inject({
+          method: 'POST',
+          url: '/api/pages/10/draft/publish',
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledWith('pages');
+      });
+
+      it('keeps per-user invalidation when publishing on a private standalone page', async () => {
+        mockPublishablePage();
+
+        const response = await app.inject({
+          method: 'POST',
+          url: '/api/pages/10/draft/publish',
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(mockCacheInvalidateAcrossUsers).not.toHaveBeenCalled();
+        expect(mockCacheInvalidate).toHaveBeenCalledWith(TEST_USER, 'pages');
+      });
     });
   });
 

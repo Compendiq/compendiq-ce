@@ -89,6 +89,70 @@ describe('openai-compatible-client — chat', () => {
   });
 });
 
+// ─── #868: early termination must cancel the upstream body ──────────────────
+// When a consumer stops iterating streamChat() early (e.g. streamSSE breaks its
+// loop on client disconnect), the JS runtime calls generator.return(). Without
+// a try/finally around the read loop, reader.cancel() is never called, so the
+// undici response body / TCP socket stays open and the OpenAI-compatible /
+// Ollama backend keeps generating the full response — holding a GPU slot and
+// billing output tokens. This fake server writes ONE frame and then holds the
+// connection open forever (never [DONE], never res.end()), so the only way it
+// can observe a 'close' event is the client tearing down the socket.
+describe('openai-compatible-client — streamChat cancels upstream on early termination (#868)', () => {
+  let leakSrv: Server;
+  let leakBase: string;
+  let serverSawClose = false;
+  let resolveClose!: () => void;
+
+  beforeAll(async () => {
+    leakSrv = createServer((req, res) => {
+      if (req.url === '/v1/chat/completions') {
+        let body = '';
+        req.on('data', (c) => (body += c));
+        req.on('end', () => {
+          res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+          // One frame, then hold the connection open forever: no [DONE], no end().
+          res.write('data: ' + JSON.stringify({ choices: [{ delta: { content: 'hi' } }] }) + '\n\n');
+          // Never completes on its own, so 'close' can only mean the client aborted.
+          res.on('close', () => { serverSawClose = true; resolveClose(); });
+        });
+        return;
+      }
+      res.writeHead(404); res.end();
+    });
+    await new Promise<void>((r) => leakSrv.listen(0, r));
+    const { port } = leakSrv.address() as AddressInfo;
+    leakBase = `http://127.0.0.1:${port}/v1`;
+  });
+  afterAll(() => new Promise<void>((r) => leakSrv.close(() => r())));
+
+  it('breaking out of the for-await loop tears down the upstream connection', async () => {
+    serverSawClose = false;
+    const closePromise = new Promise<void>((r) => { resolveClose = r; });
+
+    let received = '';
+    for await (const c of streamChat(
+      { ...cfg, baseUrl: leakBase, providerId: 'leak-test' },
+      'm',
+      [{ role: 'user', content: 'hi' }],
+    )) {
+      received += c.content;
+      break; // early termination → generator.return() → finally → reader.cancel()
+    }
+    // Confirm we actually consumed a chunk before bailing (the leak scenario).
+    expect(received).toBe('hi');
+
+    // Give the socket teardown up to 1s to reach the server. Pre-fix the reader
+    // is never cancelled, the connection stays open, and this race times out
+    // (serverSawClose stays false). Post-fix reader.cancel() closes the socket.
+    await Promise.race([
+      closePromise,
+      new Promise<void>((r) => setTimeout(r, 1000)),
+    ]);
+    expect(serverSawClose).toBe(true);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Thinking-mode pure function — branches on (provider strictness, model)
 //
@@ -348,6 +412,29 @@ describe('openai-compatible-client — generateEmbedding surfaces HTTP error bod
     await expect(
       generateEmbedding({ ...cfg, providerId: 'emb-err-821', baseUrl: errBase }, 'bge-m3', ['too long']),
     ).rejects.toThrow(/generateEmbedding HTTP 400.*input length exceeds the context length/s);
+  });
+
+  // ─── #867: deterministic 400s must NOT trip the provider breaker ──────────
+  // A context-length HTTP 400 proves the provider is reachable and healthy — it
+  // is a client-input error, not an outage. Counting it as a breaker failure
+  // means one oversized page can open the breaker after 3 consecutive batches,
+  // which then aborts the whole embedding run (embedding-service.ts) and stalls
+  // every dirty page behind the poison page. The breaker must stay CLOSED so the
+  // oversized-batch-skip path can proceed.
+  it('repeated 400 context-length errors do NOT trip the provider breaker (#867)', async () => {
+    const providerId = 'emb-400-notrip-' + Math.random().toString(36).slice(2);
+    invalidateBreaker(providerId);
+    // Four consecutive 400s: one more than failureThreshold (3). Before the fix
+    // the 4th call is short-circuited by an OPEN breaker (CircuitBreakerOpenError
+    // → "temporarily unavailable"), which never reaches the server and does not
+    // match /HTTP 400/.
+    for (let i = 0; i < 4; i++) {
+      await expect(
+        generateEmbedding({ ...cfg, providerId, baseUrl: errBase }, 'bge-m3', ['too long']),
+      ).rejects.toThrow(/HTTP 400/);
+    }
+    const { getProviderBreaker } = await import('../../../core/services/circuit-breaker.js');
+    expect(getProviderBreaker(providerId).getStatus().state).toBe('CLOSED');
   });
 });
 

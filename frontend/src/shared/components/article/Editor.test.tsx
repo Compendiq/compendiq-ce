@@ -27,7 +27,7 @@ vi.mock('sonner', () => ({
   },
 }));
 
-import { Editor, EditorToolbar } from './Editor';
+import { Editor, EditorToolbar, clearDraft } from './Editor';
 import type { Editor as EditorType } from '@tiptap/react';
 
 // Minimal mock of a TipTap Editor instance for toolbar-level tests
@@ -65,6 +65,41 @@ describe('Editor', () => {
     // The NodeView describe overrides this with mockResolvedValue('blob:…')
     // for tests that DO care.
     mockFetchAuthenticatedBlob.mockResolvedValue(null);
+  });
+
+  it('signals dirty via a boolean onChange, not a serialized HTML string (#954)', async () => {
+    // Perf invariant: the hot per-keystroke onUpdate path must NOT serialize
+    // the whole document (getHTML) and hand it to the parent. onChange fires a
+    // cheap boolean dirty flag instead, so the parent can flip an isDirty flag
+    // without re-rendering on every keystroke and without paying the O(doc)
+    // serialization cost each time.
+    const onChange = vi.fn();
+    let editor: EditorType | null = null;
+    render(
+      <Editor
+        content="<p>seed</p>"
+        editable={true}
+        draftKey="page-954"
+        onChange={onChange}
+        onEditorReady={(e) => { editor = e; }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(editor).not.toBeNull();
+    });
+
+    editor!.commands.insertContent(' x');
+
+    await waitFor(() => {
+      expect(onChange).toHaveBeenCalled();
+    });
+
+    const lastArg = onChange.mock.calls.at(-1)![0];
+    // Pre-fix this was the serialized HTML string (`<p>seed x</p>`). Post-fix
+    // it is a boolean dirty signal.
+    expect(typeof lastArg).toBe('boolean');
+    expect(lastArg).toBe(true);
   });
 
   it('sticky toolbar reads as the top of the article card (#30 overhaul)', async () => {
@@ -165,6 +200,67 @@ describe('Editor', () => {
     expect(img).toHaveAttribute('data-confluence-filename', 'original.png');
     expect(img).toHaveAttribute('data-confluence-owner-page-title', 'Shared Assets');
     expect(img).toHaveAttribute('data-confluence-owner-space-key', 'OPS');
+  });
+
+  describe('Confluence macro round-trip schema (#857)', () => {
+    // The edit-mode ProseMirror schema must register a node for every macro
+    // placeholder the backend emits into body_html. If a wrapper has no
+    // matching parse rule, ProseMirror silently unwraps it — and editor
+    // saves (getHTML → htmlToConfluence → updatePage) then permanently
+    // delete the macro from the Confluence page (#765/#857). This asserts the
+    // wrappers survive a load → serialize round-trip so htmlToConfluence can
+    // rebuild the ac:structured-macro / ri:user elements.
+    it('preserves panel/toc/jira/include/labels/unknown-macro/mention wrappers in editor.getHTML()', async () => {
+      const fixture = [
+        '<div class="panel-info"><p>hi</p></div>',
+        '<div class="confluence-toc" data-maxlevel="3">[Table of Contents]</div>',
+        '<p><span class="confluence-jira-issue" data-key="KEY-1">[JIRA: KEY-1]</span></p>',
+        '<div class="confluence-include-macro" data-macro-name="include" data-page-title="Shared" data-space-key="OPS">[Include: Shared]</div>',
+        '<div class="confluence-labels-macro" data-max="5">[Labels]</div>',
+        '<div class="confluence-macro-unknown" data-macro-name="roadmap" data-macro-params=\'{"key":"v"}\'>[Confluence macro: roadmap]</div>',
+        '<p><span class="confluence-user-mention" data-username="alice">@alice</span></p>',
+      ].join('\n');
+
+      let editor: EditorType | null = null;
+      render(
+        <Editor
+          content={fixture}
+          editable={true}
+          onEditorReady={(e) => { editor = e; }}
+        />,
+      );
+
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+
+      const html = editor!.getHTML();
+
+      // Panel wrapper — reverse pass keys off `.panel-info`.
+      expect(html).toContain('panel-info');
+      // TOC placeholder + round-tripped param.
+      expect(html).toContain('confluence-toc');
+      expect(html).toContain('data-maxlevel="3"');
+      // JIRA inline macro.
+      expect(html).toContain('confluence-jira-issue');
+      expect(html).toContain('data-key="KEY-1"');
+      // Include macro + page/space reference.
+      expect(html).toContain('confluence-include-macro');
+      expect(html).toContain('data-page-title="Shared"');
+      expect(html).toContain('data-space-key="OPS"');
+      // Labels macro.
+      expect(html).toContain('confluence-labels-macro');
+      // Unknown macro — the macro name AND its serialized params (the #865
+      // backend forward pass writes data-macro-params to preserve an unknown
+      // macro's parameters) must both round-trip.
+      expect(html).toContain('confluence-macro-unknown');
+      expect(html).toContain('data-macro-name="roadmap"');
+      expect(html).toContain('data-macro-params');
+      expect(html).toContain('&quot;key&quot;:&quot;v&quot;');
+      // User mention.
+      expect(html).toContain('confluence-user-mention');
+      expect(html).toContain('data-username="alice"');
+    });
   });
 
   describe('clipboard image paste (#17)', () => {
@@ -729,6 +825,73 @@ describe('Editor', () => {
   });
 });
 
+describe('draft auto-save flush on unmount (#877)', () => {
+  // Real timers + async TipTap init (immediatelyRender:false). Fake timers
+  // conflict with the editor's async setup, so we lean on the fact that the
+  // AUTO_SAVE_DELAY (2000ms) never elapses within a synchronous test body —
+  // the debounced write is still pending when we unmount.
+  beforeEach(() => {
+    // Wipe drafts AND the module-level suppressedFlushKeys' observable effect
+    // between tests so unique keys can't bleed across cases.
+    localStorage.clear();
+    mockFetchAuthenticatedBlob.mockResolvedValue(null);
+  });
+
+  it('flushes a pending debounced draft to localStorage when the editor unmounts', async () => {
+    let editor: EditorType | null = null;
+    const { unmount } = render(
+      <Editor
+        content="<p>seed</p>"
+        editable={true}
+        draftKey="page-877-flush"
+        onEditorReady={(e) => { editor = e; }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(editor).not.toBeNull();
+    });
+
+    // A real doc change fires onUpdate -> saveDraft, scheduling the 2000ms
+    // debounce. The write has NOT happened yet (test runs in ms).
+    editor!.commands.insertContent(' typed');
+    expect(localStorage.getItem('draft:page-877-flush')).toBeNull();
+
+    // Navigating away unmounts the Editor within the debounce window. Pre-fix
+    // this cleared the timer without writing, silently losing the edit.
+    unmount();
+
+    const draft = localStorage.getItem('draft:page-877-flush');
+    expect(draft).not.toBeNull();
+    expect(draft).toContain('typed');
+  });
+
+  it('does not resurrect a draft the parent explicitly cleared before unmount', async () => {
+    let editor: EditorType | null = null;
+    const { unmount } = render(
+      <Editor
+        content="<p>seed</p>"
+        editable={true}
+        draftKey="page-877-suppress"
+        onEditorReady={(e) => { editor = e; }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(editor).not.toBeNull();
+    });
+
+    // Schedule a pending debounced save…
+    editor!.commands.insertContent(' typed');
+    // …then the parent saves/cancels, which clears the draft and unmounts.
+    clearDraft('page-877-suppress');
+    unmount();
+
+    // The unmount flush must skip the suppressed key — no resurrection.
+    expect(localStorage.getItem('draft:page-877-suppress')).toBeNull();
+  });
+});
+
 describe('EditorToolbar — header numbering toggle', () => {
   beforeEach(() => {
     localStorage.clear();
@@ -866,5 +1029,25 @@ describe('EditorToolbar — header numbering toggle', () => {
     render(<EditorToolbar editor={editor} />);
     const toolbar = screen.getByRole('toolbar', { name: 'Page editor toolbar' });
     expect(toolbar).toBeInTheDocument();
+  });
+
+  // ---------- #955 toolbar toggle buttons expose pressed state ----------
+
+  it('exposes aria-pressed on active and inactive toggle buttons (#955)', () => {
+    // Screen readers announce a toggle button's on/off state via aria-pressed.
+    // Without it, users can't tell whether Bold (or any formatting toggle) is
+    // currently applied. Build a mock editor whose selection is inside bold
+    // text so Bold reads active and Italic reads inactive.
+    const base = createMockEditor();
+    const editor = {
+      ...base,
+      isActive: (name: string) => name === 'bold',
+    } as unknown as EditorType;
+    render(<EditorToolbar editor={editor} />);
+
+    const boldBtn = screen.getByTitle('Bold (Ctrl+B)');
+    const italicBtn = screen.getByTitle('Italic (Ctrl+I)');
+    expect(boldBtn).toHaveAttribute('aria-pressed', 'true');
+    expect(italicBtn).toHaveAttribute('aria-pressed', 'false');
   });
 });

@@ -1,8 +1,12 @@
 /**
  * OpenTelemetry initialization module.
  *
- * MUST be imported at the very top of index.ts before any other imports,
- * so auto-instrumentation can monkey-patch modules before they are loaded.
+ * The SDK is started from `telemetry-register.ts`, which is loaded via Node's
+ * `--import` preload hook BEFORE the application module graph — that ordering
+ * is what lets auto-instrumentation monkey-patch http/fastify/pg/redis before
+ * those modules are first imported (issue #922). The started SDK and tracer are
+ * stashed on `globalThis` so `getTracer`/`shutdownTelemetry` can reach them
+ * regardless of which entrypoint started the SDK.
  *
  * Controlled by environment variables:
  *   OTEL_ENABLED=true          - Enable OpenTelemetry (default: false)
@@ -12,13 +16,29 @@
 
 import { logger } from './core/utils/logger.js';
 
-let sdkInstance: { shutdown: () => Promise<void> } | null = null;
+const SDK_KEY = '__otelSdk';
+const TRACER_KEY = '__otelTracer';
 
-export async function initTelemetry(): Promise<void> {
+type OtelSdk = { shutdown: () => Promise<void> };
+
+/**
+ * Construct and start the OpenTelemetry NodeSDK.
+ *
+ * Called at top level from the `--import` preload (`telemetry-register.ts`) so
+ * that instrumentations attach before the app graph loads. Idempotent: a second
+ * call (e.g. the best-effort `initTelemetry()` from index.ts on the dev/tsx
+ * path) is a no-op once the SDK is already running.
+ */
+export async function startTelemetry(): Promise<void> {
   const enabled = process.env.OTEL_ENABLED === 'true';
 
   if (!enabled) {
     logger.debug('OpenTelemetry disabled (set OTEL_ENABLED=true to enable)');
+    return;
+  }
+
+  // Idempotent — never start the SDK twice.
+  if ((globalThis as Record<string, unknown>)[SDK_KEY]) {
     return;
   }
 
@@ -52,13 +72,13 @@ export async function initTelemetry(): Promise<void> {
 
     const sdk = new NodeSDK(sdkConfig);
     sdk.start();
-    sdkInstance = sdk;
+    (globalThis as Record<string, unknown>)[SDK_KEY] = sdk;
 
     // Register a custom tracer for application-level spans
     const tracer = otelApi.trace.getTracer(serviceName);
 
     // Make the tracer available globally for custom spans
-    (globalThis as Record<string, unknown>).__otelTracer = tracer;
+    (globalThis as Record<string, unknown>)[TRACER_KEY] = tracer;
 
     logger.info(
       {
@@ -73,11 +93,21 @@ export async function initTelemetry(): Promise<void> {
 }
 
 /**
+ * Best-effort SDK startup for entrypoints not launched via the `--import`
+ * preload (dev `tsx` and tests). In production the preload has already started
+ * the SDK, so this call is a no-op. Kept as `initTelemetry` for backwards
+ * compatibility with index.ts's startup sequence.
+ */
+export async function initTelemetry(): Promise<void> {
+  await startTelemetry();
+}
+
+/**
  * Get the application tracer for creating custom spans.
  * Returns undefined if OTel is not initialized.
  */
 export function getTracer(): import('@opentelemetry/api').Tracer | undefined {
-  return (globalThis as Record<string, unknown>).__otelTracer as
+  return (globalThis as Record<string, unknown>)[TRACER_KEY] as
     | import('@opentelemetry/api').Tracer
     | undefined;
 }
@@ -120,12 +150,17 @@ export async function withSpan<T>(
  * Gracefully shut down the OTel SDK (flushes pending spans).
  */
 export async function shutdownTelemetry(): Promise<void> {
-  if (sdkInstance) {
+  const store = globalThis as Record<string, unknown>;
+  const sdk = store[SDK_KEY] as OtelSdk | undefined;
+  if (sdk) {
     try {
-      await sdkInstance.shutdown();
+      await sdk.shutdown();
       logger.info('OpenTelemetry shut down');
     } catch (err) {
       logger.warn({ err }, 'Error shutting down OpenTelemetry');
+    } finally {
+      delete store[SDK_KEY];
+      delete store[TRACER_KEY];
     }
   }
 }

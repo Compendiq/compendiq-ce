@@ -7,7 +7,7 @@ import {
 } from '../../../test-db-helper.js';
 import { query } from '../../../core/db/postgres.js';
 import pgvector from 'pgvector';
-import { findDuplicates } from './duplicate-detector.js';
+import { findDuplicates, scanAllDuplicates } from './duplicate-detector.js';
 
 // Deterministic 1024-dim vector. All fixture pages share the same vector so
 // every candidate sits at cosine distance 0 from the source — well inside the
@@ -106,6 +106,27 @@ describe.skipIf(!dbAvailable)('duplicate-detector integration — RBAC kNN filte
     expect(titles).not.toContain('Private note');
   });
 
+  it('surfaces a near-duplicate whose page id sorts after the candidate cap (#866)', async () => {
+    // With limit:1 the candidate query over-fetches limit*3 = 3 pages. Seed 3
+    // low-id NON-duplicates (opposite vector → cosine distance ~2, far past the
+    // 0.15 threshold) first, then the real near-duplicate LAST so it holds the
+    // highest id. If candidates are truncated by id instead of by distance, the
+    // near-duplicate is dropped before the distance-threshold filter runs and
+    // findDuplicates wrongly returns [].
+    const vec = fakeVec(7);
+    const opposite = vec.map((x) => -x);
+    await seedPage({ confluenceId: 'src-1', source: 'confluence', spaceKey: 'TEAMA', title: 'Deploy guide', vec });
+    await seedPage({ confluenceId: 'far-1', source: 'confluence', spaceKey: 'TEAMA', title: 'Unrelated one', vec: opposite });
+    await seedPage({ confluenceId: 'far-2', source: 'confluence', spaceKey: 'TEAMA', title: 'Unrelated two', vec: opposite });
+    await seedPage({ confluenceId: 'far-3', source: 'confluence', spaceKey: 'TEAMA', title: 'Unrelated three', vec: opposite });
+    await seedPage({ confluenceId: 'dup-far-id', source: 'confluence', spaceKey: 'TEAMA', title: 'Deploy guide copy', vec });
+
+    const results = await findDuplicates(USER_A, 'src-1', { limit: 1 });
+
+    expect(results.map((r) => r.confluenceId)).toContain('dup-far-id');
+    expect(results).not.toEqual([]);
+  });
+
   it('returns [] when the source page itself is in an inaccessible space (no existence oracle)', async () => {
     const vec = fakeVec(11);
     await seedPage({ confluenceId: 'secret-src', source: 'confluence', spaceKey: 'SECRET', title: 'Secret source', vec });
@@ -196,5 +217,33 @@ describe.skipIf(!dbAvailable)('duplicate-detector integration — RBAC kNN filte
     expect(new Set(ids).size).toBe(ids.length); // distinct
     expect(ids).toContain(sharedId);
     expect(ids).toContain(ownPrivateId);
+  });
+
+  it('scanAllDuplicates: single pass keeps RBAC scope and reports each pair once (#907)', async () => {
+    // Three near-identical TEAMA pages → 3 unordered pairs. One SECRET page with
+    // the same vector must never surface: the self-join CTE restricts both pair
+    // members to the caller-readable set (USER_A can read TEAMA only).
+    const vec = fakeVec(31);
+    const idA = await seedPage({ confluenceId: 'dup-1', source: 'confluence', spaceKey: 'TEAMA', title: 'Deploy guide', vec });
+    const idB = await seedPage({ confluenceId: 'dup-2', source: 'confluence', spaceKey: 'TEAMA', title: 'Deploy guide copy', vec });
+    const idC = await seedPage({ confluenceId: 'dup-3', source: 'confluence', spaceKey: 'TEAMA', title: 'Deploy runbook', vec });
+    const secretId = await seedPage({ confluenceId: 'secret-1', source: 'confluence', spaceKey: 'SECRET', title: 'Secret deploy guide', vec });
+
+    const pairs = await scanAllDuplicates(USER_A);
+
+    // 3 pages → exactly 3 unordered pairs, each reported once (self-join A<B).
+    expect(pairs).toHaveLength(3);
+    const keys = pairs.map((p) => [p.page1.id, p.page2.id].sort((x, y) => x - y).join(':'));
+    expect(new Set(keys).size).toBe(3);
+    const expectedKeys = [[idA, idB], [idA, idC], [idB, idC]]
+      .map((pr) => pr.sort((x, y) => x - y).join(':'))
+      .sort();
+    expect(keys.sort()).toEqual(expectedKeys);
+
+    // The SECRET page is invisible to USER_A and must appear in no pair.
+    const allIds = pairs.flatMap((p) => [p.page1.id, p.page2.id]);
+    expect(allIds).not.toContain(secretId);
+    const allConfIds = pairs.flatMap((p) => [p.page1.confluenceId, p.page2.confluenceId]);
+    expect(allConfIds).not.toContain('secret-1');
   });
 });

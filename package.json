@@ -1,6 +1,6 @@
 {
   "name": "compendiq",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "private": true,
   "description": "Compendiq - AI-powered knowledge base management with Confluence integration and Ollama LLM backend",
   "workspaces": [

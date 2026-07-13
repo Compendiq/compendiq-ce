@@ -339,7 +339,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                       {i < versions.length - 1 && (
                         <>
                           <button
-                            onClick={() => handleCompare(version.versionNumber, versions[i + 1]!.versionNumber)}
+                            onClick={() => handleCompare(versions[i + 1]!.versionNumber, version.versionNumber)}
                             className="rounded p-1 text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
                             title="Compare with previous version"
                           >
@@ -533,6 +533,7 @@ function CompareView({
         </h4>
         <button
           onClick={onClose}
+          aria-label="Close comparison"
           className="rounded p-1 text-muted-foreground hover:bg-foreground/5"
         >
           <X size={12} />

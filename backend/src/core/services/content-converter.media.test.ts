@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { protectMedia, restoreMedia, htmlToMarkdown, markdownToHtml } from './content-converter.js';
+import {
+  protectMedia,
+  restoreMedia,
+  htmlToMarkdown,
+  markdownToHtml,
+  confluenceToHtml,
+  htmlToConfluence,
+} from './content-converter.js';
 
 const DRAWIO = '<div class="confluence-drawio" data-diagram-name="Arch"><img src="/api/attachments/5/Arch.png" alt="d"><a class="drawio-edit-link" data-drawio="true" href="#">Edit</a></div>';
 const IMG = '<img src="/api/attachments/5/photo.png" data-confluence-image-source="attachment" data-confluence-filename="photo.png" alt="Photo">';
@@ -100,6 +107,73 @@ describe('protectMedia / restoreMedia', () => {
     }
     // No leftover token fragments.
     expect(restored).not.toContain('CQ_MEDIA_PLACEHOLDER_');
+  });
+
+  it('opaque-protects an unknown-macro placeholder so AI-Improve cannot flatten it (#865)', () => {
+    // Before #865 the unknown-macro div was NOT in MEDIA_SELECTOR, so the
+    // AI-Improve HTML→Markdown→HTML round-trip flattened the placeholder text
+    // into prose and htmlToConfluence rebuilt nothing. Freezing it whole keeps
+    // it intact across the round-trip.
+    const unknown =
+      '<div class="confluence-macro-unknown" data-macro-name="roadmap">[Confluence macro: roadmap]</div>';
+    const html = `<p>Intro</p>${unknown}<p>End</p>`;
+    const { html: protectedHtml, media } = protectMedia(html);
+    expect(media).toHaveLength(1);
+    expect(protectedHtml).toContain('CQ_MEDIA_PLACEHOLDER_0');
+    expect(protectedHtml).not.toContain('confluence-macro-unknown');
+
+    const restored = restoreMedia(protectedHtml, media);
+    expect(restored).toContain('class="confluence-macro-unknown"');
+    expect(restored).toContain('data-macro-name="roadmap"');
+  });
+
+  it('unknown-macro placeholder survives a full markdown round-trip (#865)', async () => {
+    const unknown =
+      '<div class="confluence-macro-unknown" data-macro-name="roadmap">[Confluence macro: roadmap]</div>';
+    const html = `<p>Intro</p>${unknown}`;
+    const { html: protectedHtml, media } = protectMedia(html);
+    const md = htmlToMarkdown(protectedHtml);
+    const back = restoreMedia(await markdownToHtml(md), media);
+    expect(back).toContain('confluence-macro-unknown');
+    expect(back).toContain('data-macro-name="roadmap"');
+  });
+});
+
+describe('atomic macro placeholders survive the AI-Improve round-trip (#901)', () => {
+  // toc / children / attachments / include / jira / status / user-mention hold
+  // no LLM-editable prose. Before #901 they were NOT in MEDIA_SELECTOR, so the
+  // AI-Improve HTML→Markdown→HTML round-trip flattened them to plain text
+  // ([Table of Contents], [JIRA: PROJ-42], @alice, …) and htmlToConfluence
+  // rebuilt nothing — the macro was permanently lost on write-back.
+  const STORAGE = [
+    '<p>Intro</p>',
+    '<ac:structured-macro ac:name="toc"><ac:parameter ac:name="maxLevel">3</ac:parameter></ac:structured-macro>',
+    '<p>See <ac:structured-macro ac:name="jira"><ac:parameter ac:name="key">PROJ-42</ac:parameter></ac:structured-macro> assigned to ',
+    '<ac:link><ri:user ri:username="alice"/></ac:link>.</p>',
+  ].join('');
+
+  it('round-trips toc, jira and user-mention macros back to storage format', async () => {
+    const html = confluenceToHtml(STORAGE);
+    const { html: prot, media } = protectMedia(html);
+    const md = htmlToMarkdown(prot);
+    const rebuilt = await markdownToHtml(md);
+    const restored = restoreMedia(rebuilt, media);
+    const back = htmlToConfluence(restored);
+
+    expect(back).toContain('ac:name="toc"');
+    expect(back).toContain('PROJ-42');
+    expect(back).toContain('ri:user');
+    expect(back).toContain('ri:username="alice"');
+  });
+
+  it('protectMedia freezes the atomic placeholders as tokens', () => {
+    const html = confluenceToHtml(STORAGE);
+    const { html: prot, media } = protectMedia(html);
+    // toc div + jira span + user-mention span are all frozen.
+    expect(media).toHaveLength(3);
+    expect(prot).not.toContain('confluence-toc');
+    expect(prot).not.toContain('confluence-jira-issue');
+    expect(prot).not.toContain('confluence-user-mention');
   });
 });
 

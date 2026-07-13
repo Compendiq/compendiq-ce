@@ -185,6 +185,7 @@ export function LabelManager() {
                   <button
                     onClick={handleRename}
                     disabled={renameLabel.isPending || !editValue.trim() || editValue === editingLabel}
+                    aria-label="Confirm rename"
                     className="rounded p-1 text-success hover:bg-success/10 disabled:opacity-50"
                     data-testid="rename-confirm-btn"
                   >
@@ -192,6 +193,7 @@ export function LabelManager() {
                   </button>
                   <button
                     onClick={() => setEditingLabel(null)}
+                    aria-label="Cancel rename"
                     className="rounded p-1 text-muted-foreground hover:bg-foreground/5"
                   >
                     <X size={14} />

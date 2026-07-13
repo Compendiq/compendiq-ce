@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useSearchParams } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SidebarTreeView, SidebarTreeNode } from './SidebarTreeView';
 import type { TreeNode, SidebarTreeNodeProps } from './SidebarTreeView';
@@ -24,11 +24,16 @@ vi.mock('./DndLocalSpaceTree', () => ({
 }));
 
 const mockNavigate = vi.fn();
+// #960: count how often a tree row consuming useNavigate renders. Each row
+// calls useNavigate() exactly once per render (before and after the fix), so
+// this spy is a reliable render counter — React's <Profiler> onRender proved
+// unreliable for context-driven re-renders under jsdom.
+const mockUseNavigate = vi.fn(() => mockNavigate);
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');
   return {
     ...actual,
-    useNavigate: () => mockNavigate,
+    useNavigate: () => mockUseNavigate(),
   };
 });
 
@@ -138,6 +143,21 @@ describe('SidebarTreeView', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
     expect(screen.getByText('Getting Started')).toBeInTheDocument();
     expect(screen.getByText('API Reference')).toBeInTheDocument();
+  });
+
+  it('orders sibling roots by sortOrder, not alphabetically (#959)', () => {
+    // "Zebra" is stored before "Alpha" (drag-reorder), so honouring sortOrder
+    // must beat the title tiebreak — otherwise a drop snaps back to A→Z.
+    mockTreeData = {
+      items: [
+        { id: 'p-alpha', spaceKey: 'DEV', title: 'Alpha', pageType: 'page' as const, parentId: null, sortOrder: 2, labels: [], lastModifiedAt: null, embeddingDirty: false },
+        { id: 'p-zebra', spaceKey: 'DEV', title: 'Zebra', pageType: 'page' as const, parentId: null, sortOrder: 1, labels: [], lastModifiedAt: null, embeddingDirty: false },
+      ],
+      total: 2,
+    };
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const titles = screen.getAllByRole('treeitem').map((el) => el.textContent);
+    expect(titles).toEqual(['Zebra', 'Alpha']);
   });
 
   it('children are hidden by default', () => {
@@ -453,6 +473,25 @@ describe('SidebarTreeView', () => {
     expect(screen.getByText('API Reference')).toBeInTheDocument();
   });
 
+  it('keeps the homepage visible when it is the only page in the space (#961)', () => {
+    mockTreeData = {
+      items: [
+        { id: 'root-1', spaceKey: 'DEV', title: 'Getting Started', pageType: 'page' as const, parentId: null, labels: [], lastModifiedAt: '2026-03-01T00:00:00Z', embeddingDirty: false },
+      ],
+      total: 1,
+    };
+    useUiStore.setState({
+      treeSidebarCollapsed: false,
+      treeSidebarSpaceKey: 'DEV',
+    });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    // Hiding the homepage would leave the tree empty, so it stays visible and
+    // navigable instead of rendering a false "empty space" state.
+    expect(screen.getByText('Getting Started')).toBeInTheDocument();
+    expect(screen.queryByText('No pages in this space')).not.toBeInTheDocument();
+    expect(screen.queryByText('This space has no content.')).not.toBeInTheDocument();
+  });
+
   it('has a New Space button in sidebar header', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
     expect(screen.getByLabelText('New Space')).toBeInTheDocument();
@@ -475,6 +514,98 @@ describe('SidebarTreeView', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByLabelText('Collapse sidebar'));
     expect(useUiStore.getState().treeSidebarCollapsed).toBe(true);
+  });
+});
+
+// #880: tree rows were clickable <div>s with focus-visible classes but no
+// tabIndex/role/onKeyDown, so keyboard-only and screen-reader users could not
+// focus or activate any page title — a WCAG 2.1.1 (Keyboard) failure on the
+// app's primary navigation. Each row is now a focusable role="treeitem" that
+// activates navigation on Enter/Space.
+describe('SidebarTreeView keyboard navigation (#880)', () => {
+  beforeEach(() => {
+    mockNavigate.mockClear();
+    mockTreeData = { ...defaultTreeData };
+    useUiStore.setState({
+      treeSidebarCollapsed: false,
+      treeSidebarSpaceKey: undefined,
+    });
+  });
+
+  it('exposes each row as a focusable treeitem (role + tabIndex 0)', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const row = screen.getByText('API Reference').closest('[role="treeitem"]');
+    expect(row).not.toBeNull();
+    expect(row!.getAttribute('tabindex')).toBe('0');
+  });
+
+  it('navigates on Enter', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const row = screen.getByText('API Reference').closest('[role="treeitem"]')!;
+    fireEvent.keyDown(row, { key: 'Enter' });
+    expect(mockNavigate).toHaveBeenCalledWith('/pages/root-2');
+  });
+
+  it('navigates on Space and prevents the default page-scroll', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const row = screen.getByText('API Reference').closest('[role="treeitem"]')!;
+    // fireEvent returns false when the handler called preventDefault().
+    const notPrevented = fireEvent.keyDown(row, { key: ' ' });
+    expect(notPrevented).toBe(false);
+    expect(mockNavigate).toHaveBeenCalledWith('/pages/root-2');
+  });
+
+  it('exposes aria-expanded on an expandable row and omits it on a leaf', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const expandable = screen.getByText('Getting Started').closest('[role="treeitem"]')!;
+    expect(expandable.getAttribute('aria-expanded')).toBe('false');
+    const leaf = screen.getByText('API Reference').closest('[role="treeitem"]')!;
+    expect(leaf.getAttribute('aria-expanded')).toBeNull();
+  });
+
+  it('ignores keydown bubbling up from the nested chevron button (no double-activation)', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const chevron = screen.getAllByLabelText('Expand')[0]!;
+    // Enter dispatched on the chevron bubbles to the row; the target guard must
+    // stop the row handler from also navigating.
+    fireEvent.keyDown(chevron, { key: 'Enter' });
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+});
+
+// #880 (code-review follow-up): the rows carry role="treeitem" but had no
+// ancestor role="tree" and nested-children wrappers had no role="group", so
+// every treeitem was orphaned — an axe-critical aria-required-parent violation
+// that breaks screen-reader tree semantics. The row list is now a role="tree"
+// and each expanded node's children live in a role="group".
+describe('SidebarTreeView ARIA tree semantics (#880)', () => {
+  beforeEach(() => {
+    mockNavigate.mockClear();
+    mockTreeData = { ...defaultTreeData };
+    useUiStore.setState({
+      treeSidebarCollapsed: false,
+      treeSidebarSpaceKey: undefined,
+    });
+  });
+
+  it('exposes the row list as a labelled ARIA tree (valid required-parent for treeitems)', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const tree = screen.getByRole('tree');
+    expect(tree).toBeInTheDocument();
+    expect(tree.getAttribute('aria-label')).toBeTruthy();
+  });
+
+  it('wraps an expanded node\'s children in role="group" so nested treeitems have a valid parent', () => {
+    // OPS has no homepage, so the full tree renders and "Getting Started" keeps
+    // its children (Installation/Configuration) as a nested, expandable branch.
+    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: 'OPS' });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByLabelText('Expand'));
+    expect(screen.getByText('Installation')).toBeInTheDocument();
+    const group = document.querySelector('[role="group"]');
+    expect(group).not.toBeNull();
+    // The nested treeitem lives inside the group.
+    expect(group!.querySelector('[role="treeitem"]')).not.toBeNull();
   });
 });
 
@@ -634,6 +765,7 @@ describe('SidebarTreeNode memoization', () => {
       expandedSet,
       toggleExpand: vi.fn(),
       activePageId: 'page-1',
+      isAiRoute: false,
     };
 
     expect(component.compare(props, { ...props, toggleExpand: vi.fn() })).toBe(true);
@@ -646,8 +778,8 @@ describe('SidebarTreeNode memoization', () => {
     const node = makeNode('page-1', 'Test');
     const expandedSet = new Set<string>();
     const toggleExpand = vi.fn();
-    const prev: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: undefined };
-    const next: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: 'page-1' };
+    const prev: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: undefined, isAiRoute: false };
+    const next: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: 'page-1', isAiRoute: false };
 
     expect(component.compare(prev, next)).toBe(false);
   });
@@ -658,8 +790,21 @@ describe('SidebarTreeNode memoization', () => {
     };
     const node = makeNode('page-1', 'Test');
     const toggleExpand = vi.fn();
-    const prev: SidebarTreeNodeProps = { node, level: 0, expandedSet: new Set<string>(), toggleExpand, activePageId: undefined };
-    const next: SidebarTreeNodeProps = { node, level: 0, expandedSet: new Set<string>(), toggleExpand, activePageId: undefined };
+    const prev: SidebarTreeNodeProps = { node, level: 0, expandedSet: new Set<string>(), toggleExpand, activePageId: undefined, isAiRoute: false };
+    const next: SidebarTreeNodeProps = { node, level: 0, expandedSet: new Set<string>(), toggleExpand, activePageId: undefined, isAiRoute: false };
+
+    expect(component.compare(prev, next)).toBe(false);
+  });
+
+  it('custom comparator returns false (re-render) when isAiRoute changes (#960)', () => {
+    const component = SidebarTreeNode as unknown as {
+      compare: (prev: SidebarTreeNodeProps, next: SidebarTreeNodeProps) => boolean;
+    };
+    const node = makeNode('page-1', 'Test');
+    const expandedSet = new Set<string>();
+    const toggleExpand = vi.fn();
+    const prev: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: undefined, isAiRoute: false };
+    const next: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: undefined, isAiRoute: true };
 
     expect(component.compare(prev, next)).toBe(false);
   });
@@ -672,8 +817,8 @@ describe('SidebarTreeNode memoization', () => {
     const toggleExpand = vi.fn();
     const node1 = makeNode('page-1', 'Test');
     const node2 = makeNode('page-1', 'Test Changed');
-    const prev: SidebarTreeNodeProps = { node: node1, level: 0, expandedSet, toggleExpand, activePageId: undefined };
-    const next: SidebarTreeNodeProps = { node: node2, level: 0, expandedSet, toggleExpand, activePageId: undefined };
+    const prev: SidebarTreeNodeProps = { node: node1, level: 0, expandedSet, toggleExpand, activePageId: undefined, isAiRoute: false };
+    const next: SidebarTreeNodeProps = { node: node2, level: 0, expandedSet, toggleExpand, activePageId: undefined, isAiRoute: false };
 
     expect(component.compare(prev, next)).toBe(false);
   });
@@ -691,6 +836,7 @@ describe('SidebarTreeNode memoization', () => {
           expandedSet={expandedSet}
           toggleExpand={toggleExpand}
           activePageId={undefined}
+          isAiRoute={false}
         />
       </MemoryRouter>,
     );
@@ -753,6 +899,7 @@ describe('SidebarTreeNode memoization', () => {
           expandedSet={expandedSet}
           toggleExpand={toggleExpand}
           activePageId={undefined}
+          isAiRoute={false}
         />
       </MemoryRouter>,
     );
@@ -777,6 +924,7 @@ describe('SidebarTreeNode memoization', () => {
           expandedSet={expandedSet}
           toggleExpand={toggleExpand}
           activePageId={undefined}
+          isAiRoute={false}
         />
       </MemoryRouter>,
     );
@@ -799,6 +947,7 @@ describe('SidebarTreeNode memoization', () => {
           expandedSet={expandedSet}
           toggleExpand={toggleExpand}
           activePageId={undefined}
+          isAiRoute={false}
         />
       </MemoryRouter>,
     );
@@ -821,6 +970,7 @@ describe('SidebarTreeNode memoization', () => {
           expandedSet={expandedSet}
           toggleExpand={toggleExpand}
           activePageId={undefined}
+          isAiRoute={false}
         />
       </MemoryRouter>,
     );
@@ -842,6 +992,7 @@ describe('SidebarTreeNode memoization', () => {
           expandedSet={expandedSet}
           toggleExpand={toggleExpand}
           activePageId={undefined}
+          isAiRoute={false}
         />
       </MemoryRouter>,
     );
@@ -906,6 +1057,55 @@ describe('SidebarTreeNode memoization', () => {
       useUiStore.setState({ treeSidebarSpaceKey: 'DEV' });
       render(<SidebarTreeView />, { wrapper: createWrapper() });
       expect(screen.getByText('4 pages in DEV')).toBeInTheDocument();
+    });
+  });
+
+  // #960: memoized rows used to call useLocation() internally, so every
+  // location / searchParams change re-rendered every row in the tree — the
+  // memo comparator never got a chance to bail. The /ai signal is now passed
+  // in as a stable `isAiRoute` prop derived once by the parent, so a row only
+  // re-renders when one of its actually-tracked props changes.
+  describe('does not subscribe to location (#960)', () => {
+    function UrlChanger() {
+      const [, setSearchParams] = useSearchParams();
+      return (
+        <button onClick={() => setSearchParams({ pageId: 'x' })}>change-url</button>
+      );
+    }
+
+    it('does not re-render a memoized row when the URL/searchParams change', () => {
+      mockUseNavigate.mockClear();
+      const node = makeNode('page-1', 'Stable Row');
+      const expandedSet = new Set<string>();
+      const toggleExpand = vi.fn();
+
+      render(
+        // The root consumes no location, so only location-subscribing
+        // descendants re-render when the URL changes. UrlChanger is a SIBLING
+        // of the row (never an ancestor), so a re-render of the row can only
+        // come from the row's own hook subscriptions — not from a parent.
+        <MemoryRouter initialEntries={['/pages']}>
+          <SidebarTreeNode
+            node={node}
+            level={0}
+            expandedSet={expandedSet}
+            toggleExpand={toggleExpand}
+            activePageId={undefined}
+            isAiRoute={false}
+          />
+          <UrlChanger />
+        </MemoryRouter>,
+      );
+
+      // The row rendered once on mount → useNavigate called once.
+      expect(mockUseNavigate).toHaveBeenCalledTimes(1);
+
+      fireEvent.click(screen.getByText('change-url'));
+
+      // Before the fix the row consumed useLocation and re-rendered on the URL
+      // change (useNavigate called a 2nd time). After the fix its props are
+      // stable, the memo bails, and the row does not re-render (still 1).
+      expect(mockUseNavigate).toHaveBeenCalledTimes(1);
     });
   });
 

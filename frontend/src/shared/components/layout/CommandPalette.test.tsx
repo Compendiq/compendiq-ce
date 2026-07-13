@@ -243,6 +243,91 @@ describe('CommandPalette', () => {
     unmount();
   });
 
+  it('exposes the active option to assistive tech via combobox + aria-activedescendant', async () => {
+    useCommandPaletteStore.getState().open();
+    const { unmount } = render(<CommandPalette />, { wrapper: createWrapper() });
+
+    // The search input must be an ARIA combobox that owns the results listbox.
+    const input = screen.getByRole('combobox');
+    expect(input).toHaveAttribute('aria-controls', 'cmdk-listbox');
+    expect(screen.getByRole('listbox')).toBeInTheDocument();
+
+    // Move the highlight down twice; the input must point at the highlighted option.
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+
+    const activeId = input.getAttribute('aria-activedescendant');
+    expect(activeId).toBeTruthy();
+    const activeOption = document.getElementById(activeId!);
+    expect(activeOption).not.toBeNull();
+    expect(activeOption).toHaveAttribute('role', 'option');
+    expect(activeOption).toHaveAttribute('aria-selected', 'true');
+
+    // Exactly one option is selected, and it is the active descendant.
+    const selected = screen
+      .getAllByRole('option')
+      .filter((o) => o.getAttribute('aria-selected') === 'true');
+    expect(selected).toHaveLength(1);
+    expect(selected[0]).toBe(activeOption);
+    unmount();
+  });
+
+  it('closes on Escape when focus is on a result option, not just the input', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      jsonResponse({ items: [{ id: '1', title: 'Test Page', spaceKey: 'TST' }] }),
+    );
+
+    useCommandPaletteStore.getState().open();
+    const { unmount } = render(<CommandPalette />, { wrapper: createWrapper() });
+
+    const input = screen.getByLabelText('Search');
+    fireEvent.change(input, { target: { value: 'test' } });
+
+    const resultLabel = await screen.findByText('Test Page');
+    const resultButton = resultLabel.closest('button');
+    expect(resultButton).not.toBeNull();
+
+    // Escape while a result option holds focus must still dismiss the palette.
+    fireEvent.keyDown(resultButton!, { key: 'Escape' });
+
+    expect(useCommandPaletteStore.getState().isOpen).toBe(false);
+    unmount();
+  });
+
+  it('restores focus to the previously focused element after closing', async () => {
+    const { unmount } = render(
+      <div>
+        <button data-testid="palette-opener">Open</button>
+        <CommandPalette />
+      </div>,
+      { wrapper: createWrapper() },
+    );
+
+    const opener = screen.getByTestId('palette-opener');
+    opener.focus();
+    expect(document.activeElement).toBe(opener);
+
+    act(() => {
+      useCommandPaletteStore.getState().open();
+    });
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+
+    // Focus moves into the palette while it is open.
+    const input = screen.getByLabelText('Search');
+    input.focus();
+    expect(document.activeElement).toBe(input);
+
+    // Closing must return focus to whatever was focused before it opened.
+    act(() => {
+      useCommandPaletteStore.getState().close();
+    });
+
+    await waitFor(() => {
+      expect(document.activeElement).toBe(opener);
+    });
+    unmount();
+  });
+
   it('shows recent searches from localStorage', async () => {
     localStorage.setItem('kb-recent-searches', JSON.stringify(['previous search']));
 
@@ -329,6 +414,21 @@ describe('CommandPalette', () => {
       // Press Enter to select
       fireEvent.keyDown(input, { key: 'Enter' });
       expect(mockNavigate).toHaveBeenCalledWith('/ai');
+      unmount();
+    });
+
+    it('carries the typed question through as a q param (#957)', () => {
+      useCommandPaletteStore.getState().open();
+      const { unmount } = render(<CommandPalette />, { wrapper: createWrapper() });
+
+      const input = screen.getByLabelText('Search');
+      fireEvent.change(input, { target: { value: '/ai how do I configure sync intervals' } });
+
+      // Press Enter to select — the typed question must not be dropped.
+      fireEvent.keyDown(input, { key: 'Enter' });
+      expect(mockNavigate).toHaveBeenCalledWith(
+        `/ai?q=${encodeURIComponent('how do I configure sync intervals')}`,
+      );
       unmount();
     });
 

@@ -34,6 +34,10 @@ const prCheckWorkflow = readFileSync(
   join(repoRoot, '.github', 'workflows', 'pr-check.yml'),
   'utf8',
 );
+const dockerfileEnterprise = readFileSync(
+  join(repoRoot, 'docker', 'Dockerfile.enterprise'),
+  'utf8',
+);
 
 /**
  * Extract a top-level service block (2-space indented key under `services:`)
@@ -155,6 +159,18 @@ describe('docker/docker-compose.yml security invariants', () => {
     expect(redis).toContain('--maxmemory-policy noeviction');
     expect(composeProd).not.toContain('allkeys-lru');
   });
+
+  it('gives the backend a stop_grace_period long enough for graceful shutdown (issue #931)', () => {
+    // Docker defaults stop_grace_period to 10s and SIGKILLs the container after
+    // it, which aborts the in-process graceful-shutdown timer
+    // (DEFAULT_SHUTDOWN_TIMEOUT_MS = 50s in core/utils/graceful-shutdown.ts).
+    // The grace period must exceed that timeout so the handler force-exits
+    // itself before Docker resorts to SIGKILL. ADR-024 mandates 60s.
+    const backend = extractServiceBlock(composeProd, 'backend');
+    const match = backend.match(/^\s+stop_grace_period:\s*(\d+)s\b/m);
+    expect(match, 'backend service must declare stop_grace_period').not.toBeNull();
+    expect(Number(match![1])).toBeGreaterThanOrEqual(60);
+  });
 });
 
 describe('docker/docker-compose.dev.yml security invariants', () => {
@@ -192,6 +208,17 @@ describe('scripts/install.sh invariants', () => {
     expect(installSh).toContain('MCP_DOCS_URL:');
   });
 
+  it('gives the installed backend a stop_grace_period for graceful shutdown (issue #931)', () => {
+    // The installer-generated compose must match docker/docker-compose.yml so
+    // installed deployments also survive the 50s graceful-shutdown drain
+    // instead of being SIGKILLed at Docker's 10s default.
+    const compose = extractInstallerCompose(installSh);
+    const backend = extractServiceBlock(compose, 'backend');
+    const match = backend.match(/^\s+stop_grace_period:\s*(\d+)s\b/m);
+    expect(match, 'installer backend service must declare stop_grace_period').not.toBeNull();
+    expect(Number(match![1])).toBeGreaterThanOrEqual(60);
+  });
+
   it('attaches mcp-docs and searxng to a non-internal network so they can reach the internet', () => {
     // mcp-docs' fetch_url tool and searxng's metasearch both require outbound
     // internet egress. An `internal: true` Docker network denies egress, so if
@@ -210,6 +237,36 @@ describe('scripts/install.sh invariants', () => {
         `${service} is only on internal-only networks (${nets.join(', ')}); it needs egress`,
       ).toBe(true);
     }
+  });
+
+  it('does not revive the removed LLM_PROVIDER two-slot toggle (issue #970)', () => {
+    // ADR-021 replaced the legacy `LLM_PROVIDER` switch wholesale with the
+    // llm_providers table. Seeding it from the installer resurrects dead config.
+    expect(installSh).not.toMatch(/LLM_PROVIDER:/);
+  });
+
+  it('does not default OPENAI_BASE_URL to a real endpoint (issue #970)', () => {
+    // A non-empty OPENAI_BASE_URL default makes the fresh-install bootstrap OR
+    // condition true, seeding a phantom keyless OpenAI provider even when the
+    // operator only wants Ollama. Only a pure pass-through (empty default) is
+    // acceptable so the row is seeded solely when the user opts in.
+    const compose = extractInstallerCompose(installSh);
+    const backend = extractServiceBlock(compose, 'backend');
+    const usages = interpolationsOf(backend, 'OPENAI_BASE_URL');
+    expect(usages.length).toBeGreaterThan(0);
+    for (const modifier of usages) {
+      // Empty pass-through only: `:-` (or bare) — never a baked-in URL default.
+      expect(modifier).toMatch(/^:?-?$/);
+    }
+    expect(backend).not.toContain('api.openai.com');
+  });
+
+  it('does not seed the deprecated EMBEDDING_MODEL env default (issue #970)', () => {
+    // EMBEDDING_MODEL is a deprecated bootstrap fallback; baking bge-m3 into the
+    // installer keeps env-driven LLM config alive instead of the providers table.
+    const compose = extractInstallerCompose(installSh);
+    const backend = extractServiceBlock(compose, 'backend');
+    expect(backend).not.toMatch(/EMBEDDING_MODEL:/);
   });
 
   it('keeps postgres and redis on an internal network (no host egress for the data tier)', () => {
@@ -266,6 +323,23 @@ describe('.env.example stays authoritative for env vars the backend reads', () =
 describe('.github/workflows/pr-check.yml runs validation for every author', () => {
   it('does not skip typecheck/lint/test/hoist checks for Dependabot PRs', () => {
     expect(prCheckWorkflow).not.toContain('dependabot[bot]');
+  });
+});
+
+describe('docker/Dockerfile.enterprise keeps the GitHub token out of image layers (issue #930)', () => {
+  it('never writes the token into a persisted .npmrc via a build-arg', () => {
+    // A build-arg written to .npmrc in its own RUN bakes the token into that
+    // layer forever — a later `rm -f .npmrc` cannot purge earlier layer history
+    // or the exported build cache. Assert no layer interpolates the token into
+    // .npmrc from an ARG.
+    expect(dockerfileEnterprise).not.toMatch(/_authToken=\$\{GITHUB_TOKEN\}/);
+    expect(dockerfileEnterprise).not.toMatch(/^\s*ARG GITHUB_TOKEN\s*$/m);
+  });
+
+  it('injects the token via a BuildKit secret mount instead', () => {
+    // BuildKit secret mounts (`--mount=type=secret`) expose the value only for
+    // the duration of that RUN and are never committed to a layer or the cache.
+    expect(dockerfileEnterprise).toMatch(/--mount=type=secret,id=github_token/);
   });
 });
 

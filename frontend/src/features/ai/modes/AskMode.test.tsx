@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { AskModeInput, AskExamplePrompts, ASK_EMPTY_TITLE, ASK_EMPTY_SUBTITLE } from './AskMode';
@@ -90,6 +90,59 @@ describe('AskMode', () => {
     render(<AskModeInput />, { wrapper: createWrapper() });
     expect(screen.getByPlaceholderText('Ask a question...')).toBeInTheDocument();
     expect(screen.getByRole('button')).toBeInTheDocument();
+  });
+
+  /** Exposes the current URL search string so tests can assert ?q was consumed. */
+  function LocationProbe() {
+    const location = useLocation();
+    return <div data-testid="location-search">{location.search}</div>;
+  }
+
+  it('prefills the composer from the ?q param carried by the command palette (#957)', async () => {
+    render(
+      <>
+        <AskModeInput />
+        <LocationProbe />
+      </>,
+      { wrapper: createWrapper(['/ai?q=how%20do%20I%20configure%20sync%20intervals']) },
+    );
+    const input = screen.getByPlaceholderText('Ask a question...') as HTMLInputElement;
+    expect(input.value).toBe('how do I configure sync intervals');
+    // The param is consumed: refresh / history back must not re-prefill it.
+    await waitFor(() => {
+      expect(screen.getByTestId('location-search').textContent).not.toContain('q=');
+    });
+  });
+
+  it('applies the ?q param when already mounted on /ai (#957)', async () => {
+    // Simulates the command palette submitting a question while the user is
+    // already on /ai: the route element is NOT remounted, only the search
+    // params change, so a mount-time initializer alone would drop the question.
+    function NavigateWithQuestion() {
+      const navigate = useNavigate();
+      return (
+        <button onClick={() => navigate('/ai?q=what%20changed%20last%20week')}>
+          ask from palette
+        </button>
+      );
+    }
+
+    render(
+      <>
+        <AskModeInput />
+        <NavigateWithQuestion />
+      </>,
+      { wrapper: createWrapper(['/ai']) },
+    );
+
+    const input = screen.getByPlaceholderText('Ask a question...') as HTMLInputElement;
+    expect(input.value).toBe('');
+
+    fireEvent.click(screen.getByText('ask from palette'));
+
+    await waitFor(() => {
+      expect(input.value).toBe('what changed last week');
+    });
   });
 
   it('focuses the input on mount (#350)', async () => {
@@ -257,6 +310,51 @@ describe('AskMode', () => {
     const callBody = streamSSEMock.mock.calls[0][1];
     expect(callBody.conversationId).toBeUndefined();
     expect(callBody).not.toHaveProperty('conversationId', null);
+  });
+
+  describe('icon-only button accessible names (#939)', () => {
+    beforeEach(() => {
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/mcp-docs/status') {
+          return Promise.resolve({ enabled: true });
+        }
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.resolve([{ name: 'llama3' }]);
+        }
+        if (path === '/llm/conversations') {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve([]);
+      });
+    });
+
+    it('exposes an accessible name on the add-URL and close buttons', async () => {
+      render(<AskModeInput />, { wrapper: createWrapper() });
+
+      const attach = await screen.findByTestId('attach-url-button');
+      fireEvent.click(attach);
+
+      expect(screen.getByRole('button', { name: 'Add URL' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Close URL input' })).toBeInTheDocument();
+    });
+
+    it('exposes an accessible name on each URL chip remove button', async () => {
+      render(<AskModeInput />, { wrapper: createWrapper() });
+
+      const attach = await screen.findByTestId('attach-url-button');
+      fireEvent.click(attach);
+
+      const urlInput = screen.getByTestId('external-url-input');
+      fireEvent.change(urlInput, { target: { value: 'https://docs.example.com/guide' } });
+      fireEvent.keyDown(urlInput, { key: 'Enter' });
+
+      expect(
+        await screen.findByRole('button', { name: 'Remove docs.example.com' }),
+      ).toBeInTheDocument();
+    });
   });
 
   it('clears input after submission', async () => {

@@ -23,9 +23,32 @@ vi.mock('../../core/utils/logger.js', () => ({
 }));
 
 const mockQueryFn = vi.fn();
+// #891: the move handler runs its cycle check + UPDATEs on a dedicated pool
+// client inside a transaction under an advisory lock. Route the client's data
+// queries through the same mockQueryFn (single sequential mock per test) and
+// answer transaction-control / advisory-lock statements inline so they don't
+// consume queued mockResolvedValueOnce entries.
+const mockTxClient = {
+  query: (...args: unknown[]) => {
+    const sql = args[0];
+    if (typeof sql === 'string') {
+      const trimmed = sql.trim();
+      if (
+        trimmed === 'BEGIN' ||
+        trimmed === 'COMMIT' ||
+        trimmed === 'ROLLBACK' ||
+        trimmed.includes('pg_advisory_xact_lock')
+      ) {
+        return Promise.resolve({ rows: [] });
+      }
+    }
+    return mockQueryFn(...args);
+  },
+  release: vi.fn(),
+};
 vi.mock('../../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mockQueryFn(...args),
-  getPool: vi.fn().mockReturnValue({}),
+  getPool: vi.fn().mockReturnValue({ connect: () => Promise.resolve(mockTxClient) }),
   runMigrations: vi.fn(),
   closePool: vi.fn(),
 }));
@@ -396,14 +419,16 @@ describe('Local Spaces Routes', () => {
     mockQueryFn.mockResolvedValueOnce({
       rows: [{ id: 10, parent_id: null, space_key: 'PROJ', source: 'standalone', path: '/10' }],
     });
-    // Parent exists check
+    // #891: fresh re-read of the page under the advisory lock
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ parent_id: null, space_key: 'PROJ', path: '/10' }],
+    });
+    // Parent exists check (also supplies the parent path)
     mockQueryFn.mockResolvedValueOnce({
       rows: [{ id: 5, path: '/5' }],
     });
-    // Get parent path
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ path: '/5' }],
-    });
+    // #891 cycle-check: no cycle (empty result)
+    mockQueryFn.mockResolvedValueOnce({ rows: [] });
     // Update page
     mockQueryFn.mockResolvedValueOnce({ rows: [] });
     // Update descendants
@@ -422,6 +447,68 @@ describe('Local Spaces Routes', () => {
     expect(body.depth).toBe(1);
   });
 
+  it('move: rejects making a page its own parent (#891)', async () => {
+    // Existing page
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ id: 5, parent_id: null, space_key: 'PROJ', source: 'standalone', path: '/5' }],
+    });
+    // #891: fresh re-read of the page under the advisory lock
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ parent_id: null, space_key: 'PROJ', path: '/5' }],
+    });
+    // Parent exists check (parent is the page itself)
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ id: 5, path: '/5' }],
+    });
+    // Cycle-check finds the moved page in the ancestor chain
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ found: 1 }] });
+    // Fallback so any further (unexpected) query resolves harmlessly
+    mockQueryFn.mockResolvedValue({ rows: [] });
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/pages/5/move',
+      payload: { parentId: 5 },
+    });
+
+    expect(response.statusCode).toBe(400);
+    // Critical: no UPDATE must run, so no descendant paths are corrupted.
+    const updateCall = mockQueryFn.mock.calls.find(
+      (c) => typeof c[0] === 'string' && (c[0] as string).includes('UPDATE pages'),
+    );
+    expect(updateCall).toBeUndefined();
+  });
+
+  it('move: rejects moving a Confluence page under its own descendant when path is NULL (#891)', async () => {
+    // Existing page (Confluence-synced, materialized path is NULL)
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ id: 5, parent_id: null, space_key: 'PROJ', source: 'confluence', path: null }],
+    });
+    // #891: fresh re-read of the page under the advisory lock
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ parent_id: null, space_key: 'PROJ', path: null }],
+    });
+    // Parent exists check (a descendant of page 5, also NULL path)
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ id: 9, path: null }],
+    });
+    // Cycle-check finds the moved page in the ancestor chain
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ found: 1 }] });
+    mockQueryFn.mockResolvedValue({ rows: [] });
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/pages/5/move',
+      payload: { parentId: 9 },
+    });
+
+    expect(response.statusCode).toBe(400);
+    const updateCall = mockQueryFn.mock.calls.find(
+      (c) => typeof c[0] === 'string' && (c[0] as string).includes('UPDATE pages'),
+    );
+    expect(updateCall).toBeUndefined();
+  });
+
   it('should return 404 when moving non-existent page', async () => {
     mockQueryFn.mockResolvedValueOnce({ rows: [] });
 
@@ -436,19 +523,30 @@ describe('Local Spaces Routes', () => {
 
   // ── PUT /api/pages/:id/reorder ────────────────────────────────────────
 
-  it('should reorder a page', async () => {
+  it('should reorder a page and renumber the whole sibling group (#959)', async () => {
+    // 1) existence check, 2) resolve sibling group, 3) sibling list.
     mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 10 }] });
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ space_key: 'PROJ', parent_num: 5 }] });
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 11 }, { id: 12 }, { id: 10 }] });
+    // Per-row UPDATEs + any other tx query.
+    mockQueryFn.mockResolvedValue({ rows: [] });
 
     const response = await app.inject({
       method: 'PUT',
       url: '/api/pages/10/reorder',
-      payload: { sortOrder: 3 },
+      payload: { sortOrder: 0 },
     });
 
     expect(response.statusCode).toBe(200);
     const body = JSON.parse(response.payload);
-    expect(body.sortOrder).toBe(3);
+    expect(body.sortOrder).toBe(0);
+
+    // The dragged page (10) plus both untouched siblings (11, 12) are each
+    // rewritten to a dense position — not just the dragged row.
+    const updatedIds = mockQueryFn.mock.calls
+      .filter((c) => typeof c[0] === 'string' && (c[0] as string).startsWith('UPDATE pages SET sort_order'))
+      .map((c) => (c[1] as unknown[])[1]);
+    expect(updatedIds).toEqual([10, 11, 12]);
   });
 
   it('should return 404 when reordering non-existent page', async () => {
@@ -530,6 +628,10 @@ describe('Local Spaces Routes', () => {
     });
     mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'confluence' }] });
     mockGetUserAccessibleSpaces.mockResolvedValue(['TEAMB']);
+    // #891: fresh re-read of the page under the advisory lock
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ parent_id: null, space_key: 'PROJ', path: '/10' }],
+    });
     // UPDATE page + descendants
     mockQueryFn.mockResolvedValue({ rows: [] });
 
@@ -548,6 +650,10 @@ describe('Local Spaces Routes', () => {
       rows: [{ id: 10, parent_id: null, space_key: null, source: 'standalone', path: '/10' }],
     });
     mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'local' }] });
+    // #891: fresh re-read of the page under the advisory lock
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ parent_id: null, space_key: null, path: '/10' }],
+    });
     mockQueryFn.mockResolvedValue({ rows: [] });
 
     const response = await app.inject({

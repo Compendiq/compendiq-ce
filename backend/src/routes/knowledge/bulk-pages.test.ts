@@ -7,12 +7,17 @@ import { pagesCrudRoutes } from './pages-crud.js';
 const mockConfluenceToHtml = vi.fn().mockReturnValue('<p>content</p>');
 
 // Mock external dependencies
+// Shared spies so tests can assert which invalidation path a route took (#893).
+const mockCacheInvalidate = vi.fn();
+const mockCacheInvalidateAcrossUsers = vi.fn();
 vi.mock('../../core/services/redis-cache.js', () => {
   return {
     RedisCache: class MockRedisCache {
       get = vi.fn().mockResolvedValue(null);
       set = vi.fn().mockResolvedValue(undefined);
-      invalidate = vi.fn().mockResolvedValue(undefined);
+      invalidate = (...args: unknown[]) => mockCacheInvalidate(...args);
+      // Bulk deletes clear every user's cache (#893).
+      invalidateAcrossUsers = (...args: unknown[]) => mockCacheInvalidateAcrossUsers(...args);
     },
   };
 });
@@ -179,6 +184,13 @@ describe('Bulk Pages Routes (Parallelized)', () => {
       expect(body.succeeded).toBe(2);
       expect(body.failed).toBe(0);
       expect(body.errors).toEqual([]);
+
+      // #893: a bulk delete may remove Confluence/shared pages from every
+      // user's view — both the pages and spaces caches (the latter carries
+      // per-space pageCount) must be cleared across all users.
+      expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledWith('pages');
+      expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledWith('spaces');
+      expect(mockCacheInvalidate).not.toHaveBeenCalled();
     });
 
     it('should return 400 for empty ids', async () => {
@@ -233,7 +245,7 @@ describe('Bulk Pages Routes (Parallelized)', () => {
 
     it('should delete standalone pages without Confluence configured', async () => {
       mockQueryFn.mockResolvedValueOnce({
-        rows: [{ id: 42, confluence_id: null, source: 'standalone', space_key: null }],
+        rows: [{ id: 42, confluence_id: null, source: 'standalone', space_key: null, created_by_user_id: 'test-user-id' }],
         rowCount: 1,
       });
 
@@ -305,7 +317,7 @@ describe('Bulk Pages Routes (Parallelized)', () => {
     it('should delete mixed standalone and Confluence pages in one request', async () => {
       mockQueryFn.mockResolvedValueOnce({
         rows: [
-          { id: 42, confluence_id: null, source: 'standalone', space_key: null },
+          { id: 42, confluence_id: null, source: 'standalone', space_key: null, created_by_user_id: 'test-user-id' },
           { id: 1, confluence_id: 'page-1', source: 'confluence', space_key: 'OPS' },
         ],
         rowCount: 2,
@@ -427,7 +439,7 @@ describe('Bulk Pages Routes (Parallelized)', () => {
       // COUNT → 1; SELECT resolved → 1 row; UPDATE deleted_at + DELETE pinned (parallel)
       mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '1' }], rowCount: 1 });
       mockQueryFn.mockResolvedValueOnce({
-        rows: [{ id: 50, confluence_id: null, space_key: null, source: 'standalone', labels: [] }],
+        rows: [{ id: 50, confluence_id: null, space_key: null, source: 'standalone', labels: [], created_by_user_id: 'test-user-id' }],
         rowCount: 1,
       });
       mockQueryFn.mockResolvedValue({ rows: [], rowCount: 1 });

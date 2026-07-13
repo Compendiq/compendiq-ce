@@ -23,16 +23,35 @@ export function getRedisClient(): RedisClientType | null {
 }
 
 /**
- * Invalidate the graph cache for a specific user.
+ * Invalidate the knowledge-graph cache for every user.
+ *
+ * Graph responses are cached under `kb:<userId>:pages:graph:<view>:<spaceKey>`
+ * (see `routes/knowledge/pages-embeddings.ts`), so a single exact-key delete
+ * never matches a real entry. Because `page_relationships` is shared across
+ * users, recomputing relationships after an embedding run must clear *all*
+ * users' graph caches — hence a SCAN-delete over `kb:*:pages:graph:*` rather
+ * than a per-user key. Uses the same cursor loop as `scanAndDelete` so it is
+ * O(1) per call and never issues a blocking `KEYS`.
+ *
  * Safe to call even if Redis is not initialised (no-op).
  */
-export async function invalidateGraphCache(userId: string): Promise<void> {
+export async function invalidateGraphCache(): Promise<void> {
   if (!_redisClient) return;
   try {
-    await _redisClient.del(key(userId, 'pages', 'graph'));
-    logger.debug({ userId }, 'Invalidated graph cache');
+    let cursor = '0';
+    do {
+      const result = await _redisClient.scan(cursor, {
+        MATCH: 'kb:*:pages:graph:*',
+        COUNT: 100,
+      });
+      cursor = String(result.cursor);
+      if (result.keys.length > 0) {
+        await _redisClient.del(result.keys);
+      }
+    } while (cursor !== '0');
+    logger.debug('Invalidated graph cache for all users');
   } catch (err) {
-    logger.error({ err, userId }, 'Failed to invalidate graph cache');
+    logger.error({ err }, 'Failed to invalidate graph cache');
   }
 }
 
@@ -132,6 +151,46 @@ export async function releaseEmbeddingLock(userId: string, lockId: string): Prom
   } catch (err) {
     logger.error({ err, userId }, 'Failed to release embedding lock');
   }
+}
+
+/**
+ * Refresh Lua — bump the per-user lock's TTL, but only while the caller still
+ * owns it. The GET/PEXPIRE pair runs atomically so a concurrent force-release
+ * or re-acquisition can never be masked by a stale renewal. Returns the current
+ * stored holder value (or nil) so the caller can compare against its own lockId
+ * exactly as a plain GET would — a mismatch still signals "not mine, abort".
+ *
+ *   KEYS[1] = embedding:lock:<userId>
+ *   ARGV[1] = lockId (UUID the caller believes it holds)
+ *   ARGV[2] = TTL in milliseconds (stringified)
+ */
+const REFRESH_LOCK_SCRIPT = `local cur = redis.call("get", KEYS[1]) if cur == ARGV[1] then redis.call("pexpire", KEYS[1], ARGV[2]) end return cur`;
+
+/**
+ * Renew the embedding processing lock's TTL for a long-running holder (issue
+ * #913). The lock is written with a 1-hour safety TTL by `acquireEmbeddingLock`;
+ * a re-embed-all run over a large space can legitimately exceed that, at which
+ * point the key would expire mid-run, the holder-epoch write-guard would read a
+ * missing key and silently abort, and the job would report success with only
+ * partial results. Calling this on the guard cadence keeps the TTL sliding
+ * forward while — and only while — the caller still owns the lock.
+ *
+ * Atomically PEXPIRE-bumps the TTL when the stored value matches `lockId`, and
+ * always returns the current holder value so the caller can still detect a
+ * force-release / re-acquisition (returned value differs from `lockId`) or an
+ * expiry (null). Errors are propagated so the caller's guard try/catch can
+ * decide whether to continue — matching the previous inline `redis.get` shape.
+ */
+export async function refreshEmbeddingLock(
+  userId: string,
+  lockId: string | null,
+): Promise<string | null> {
+  if (!_redisClient) return null;
+  const result = await _redisClient.eval(REFRESH_LOCK_SCRIPT, {
+    keys: [embeddingLockKey(userId)],
+    arguments: [lockId ?? '', String(EMBEDDING_LOCK_TTL_MS)],
+  });
+  return typeof result === 'string' ? result : null;
 }
 
 /**
@@ -315,32 +374,55 @@ export async function forceReleaseEmbeddingLock(
 // preserving single-node behaviour.
 
 /**
- * Attempt to acquire a named worker lock via Redis SET NX EX.
- * Returns true if the lock was acquired, false if another holder has it.
- * Falls back to true when Redis is not available (single-node fallback).
+ * Release Lua — only delete the worker lock if the caller still owns it (the
+ * stored value matches the token handed out at acquisition). Prevents a batch
+ * that outlives its TTL from deleting the lock a *different* pod has since
+ * re-acquired (issue #902). Mirrors RELEASE_LOCK_SCRIPT above.
+ *
+ *   KEYS[1] = worker:lock:<name>
+ *   ARGV[1] = ownership token (UUID)
  */
-export async function acquireWorkerLock(name: string, ttlSeconds = 300): Promise<boolean> {
-  if (!_redisClient) return true; // single-node fallback
+const WORKER_RELEASE_LOCK_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end`;
+
+/**
+ * Attempt to acquire a named worker lock via Redis SET NX EX.
+ * Returns a unique ownership token if the lock was acquired, or null if another
+ * holder has it. The token must be passed to releaseWorkerLock to prove
+ * ownership so a stale holder cannot delete a lock re-acquired by another pod.
+ * Falls back to a generated token when Redis is not available (single-node
+ * fallback — callers still proceed on truthiness).
+ */
+export async function acquireWorkerLock(
+  name: string,
+  ttlSeconds = 300,
+): Promise<string | null> {
+  const token = randomUUID();
+  if (!_redisClient) return token; // single-node fallback
   try {
-    const result = await _redisClient.set(`worker:lock:${name}`, '1', {
+    const result = await _redisClient.set(`worker:lock:${name}`, token, {
       NX: true,
       EX: ttlSeconds,
     });
-    return result !== null;
+    return result !== null ? token : null;
   } catch (err) {
     logger.error({ err, name }, 'Failed to acquire worker lock');
-    return true; // degrade to local execution
+    return token; // degrade to local execution
   }
 }
 
 /**
- * Release a named worker lock.
- * Safe to call when Redis is unavailable (no-op).
+ * Release a named worker lock, but only if the caller still owns it.
+ * Uses a Lua script to compare-and-delete against the ownership token, so a
+ * process whose lock already expired (and was re-acquired elsewhere) cannot
+ * delete the new holder's lock. Safe to call when Redis is unavailable (no-op).
  */
-export async function releaseWorkerLock(name: string): Promise<void> {
+export async function releaseWorkerLock(name: string, token: string): Promise<void> {
   if (!_redisClient) return;
   try {
-    await _redisClient.del(`worker:lock:${name}`);
+    await _redisClient.eval(WORKER_RELEASE_LOCK_SCRIPT, {
+      keys: [`worker:lock:${name}`],
+      arguments: [token],
+    });
   } catch (err) {
     logger.error({ err, name }, 'Failed to release worker lock');
   }

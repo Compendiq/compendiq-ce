@@ -41,6 +41,8 @@ vi.mock('../../core/services/redis-cache.js', async (importOriginal) => ({
     get = vi.fn().mockResolvedValue(null);
     set = vi.fn().mockResolvedValue(undefined);
     invalidate = vi.fn().mockResolvedValue(undefined);
+    // Shared/Confluence mutations clear every user's cache (#893).
+    invalidateAcrossUsers = vi.fn().mockResolvedValue(undefined);
   },
 }));
 
@@ -110,6 +112,31 @@ async function insertPage(confluenceId: string, spaceKey = 'DEV'): Promise<numbe
 
 async function insertPin(pageId: number): Promise<void> {
   await query('INSERT INTO pinned_pages (user_id, page_id) VALUES ($1, $2)', [userId, pageId]);
+}
+
+/** Insert a standalone (non-Confluence) page owned by `ownerId`. */
+async function insertStandalone(
+  title: string,
+  ownerId: string,
+  visibility: 'private' | 'shared',
+): Promise<number> {
+  const res = await query<{ id: number }>(
+    `INSERT INTO pages (source, title, body_text, body_storage, body_html,
+                        created_by_user_id, visibility, version, page_type,
+                        embedding_dirty, embedding_status, last_synced)
+     VALUES ('standalone', $1, 'text', NULL, '<p>x</p>', $2, $3, 1, 'page', TRUE, 'not_embedded', NOW())
+     RETURNING id`,
+    [title, ownerId, visibility],
+  );
+  return res.rows[0]!.id;
+}
+
+async function getRowById(id: number): Promise<{ id: number; deleted_at: Date | null } | null> {
+  const res = await query<{ id: number; deleted_at: Date | null }>(
+    'SELECT id, deleted_at FROM pages WHERE id = $1',
+    [id],
+  );
+  return res.rows[0] ?? null;
 }
 
 async function getRow(confluenceId: string): Promise<{ id: number; deleted_at: Date | null } | null> {
@@ -337,5 +364,57 @@ describe.skipIf(!dbAvailable)('delete atomicity — no local/Confluence divergen
     } finally {
       await unblockPageDeletes();
     }
+  });
+
+  // ── bulk delete ownership (#861) ────────────────────────────────────────────
+
+  it('bulk: a non-owner cannot trash another user\'s shared standalone page (#861)', async () => {
+    // A second user A owns a SHARED standalone page. The request user (B) can
+    // SEE it (shared standalone is visible to everyone) but must not be able to
+    // delete it — mirroring the single-delete owner-only 403.
+    const ownerA = (await query<{ id: string }>(
+      "INSERT INTO users (username, email, password_hash, role) VALUES ('owner_a', 'a@test', 'x', 'user') RETURNING id",
+    )).rows[0]!.id;
+    const pageId = await insertStandalone('A shared page', ownerA, 'shared');
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/bulk/delete',
+      payload: { ids: [String(pageId)] },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.succeeded).toBe(0);
+    expect(body.failed).toBe(1);
+    expect(body.errors).toHaveLength(1);
+    expect(body.errors[0]).toContain('not the owner');
+
+    // The page is untouched — still live.
+    const row = await getRowById(pageId);
+    expect(row).not.toBeNull();
+    expect(row!.deleted_at).toBeNull();
+  });
+
+  it('bulk: an owner can still trash their own shared standalone page (#861)', async () => {
+    // Positive companion: user B owns a SHARED standalone page and bulk-deletes
+    // it — the owner check must not regress the normal path.
+    const pageId = await insertStandalone('B shared page', userId, 'shared');
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/bulk/delete',
+      payload: { ids: [String(pageId)] },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.succeeded).toBe(1);
+    expect(body.failed).toBe(0);
+
+    // Standalone bulk-delete is a soft-delete (move to trash).
+    const row = await getRowById(pageId);
+    expect(row).not.toBeNull();
+    expect(row!.deleted_at).not.toBeNull();
   });
 });

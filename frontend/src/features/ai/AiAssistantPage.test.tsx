@@ -24,9 +24,16 @@ vi.mock('../../shared/lib/sse', () => ({
 
 // Default: no page selected
 let mockPageData: { data: unknown; isLoading?: boolean } = { data: undefined };
-vi.mock('../../shared/hooks/use-pages', () => ({
+// Controllable embedding-status feed for the #938 zero-embeddings notice.
+// importActual keeps the real `isZeroEmbeddings` helper exported — the
+// component imports it from this same module, so the mock must not drop it.
+let mockEmbeddingStatus: { data: unknown } = { data: undefined };
+vi.mock('../../shared/hooks/use-pages', async () => ({
+  ...(await vi.importActual<typeof import('../../shared/hooks/use-pages')>(
+    '../../shared/hooks/use-pages',
+  )),
   usePage: () => mockPageData,
-  useEmbeddingStatus: () => ({ data: undefined }),
+  useEmbeddingStatus: () => mockEmbeddingStatus,
 }));
 
 // Mock sonner toast so we can verify error messages
@@ -82,6 +89,7 @@ describe('AiAssistantPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockPageData = { data: undefined };
+    mockEmbeddingStatus = { data: undefined };
     useAuthStore.getState().setAuth('test-token', {
       id: '1',
       username: 'testuser',
@@ -1319,6 +1327,32 @@ describe('AiAssistantPage', () => {
     });
   });
 
+  describe('zero-embeddings notice (#938)', () => {
+    it('warns that pages are not embedded yet in Q&A mode when embeddedPages is 0', () => {
+      // Pages exist but none are embedded — RAG has no context to draw on, so
+      // the user must be told the real cause instead of a misleading answer.
+      mockEmbeddingStatus = {
+        data: { totalPages: 10, embeddedPages: 0, dirtyPages: 10, totalEmbeddings: 0, isProcessing: false },
+      };
+
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      const notice = screen.getByTestId('ai-no-embeddings-notice');
+      expect(notice).toBeInTheDocument();
+      expect(notice.textContent).toMatch(/not embedded/i);
+    });
+
+    it('does not show the notice when pages are embedded', () => {
+      mockEmbeddingStatus = {
+        data: { totalPages: 10, embeddedPages: 10, dirtyPages: 0, totalEmbeddings: 10, isProcessing: false },
+      };
+
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      expect(screen.queryByTestId('ai-no-embeddings-notice')).not.toBeInTheDocument();
+    });
+  });
+
   describe('performance: stable message IDs (#521)', () => {
     it('uses stable message IDs as keys instead of array indices', async () => {
       apiFetchMock.mockImplementation((path: string) => {
@@ -1479,6 +1513,54 @@ describe('AiAssistantPage', () => {
       expect(screen.getByText('world')).toBeInTheDocument();
       expect(screen.getByText('world').tagName).toBe('STRONG');
       expect(screen.queryByTestId('streaming-cursor')).not.toBeInTheDocument();
+    });
+
+    it('announces a completed answer via a primed polite live region (#937)', async () => {
+      mockModelApis();
+
+      let releaseStream: (() => void) | undefined;
+      const gate = new Promise<void>((resolve) => { releaseStream = resolve; });
+      async function* gatedStream() {
+        yield { content: 'The answer.' };
+        await gate;
+      }
+      streamSSEMock.mockReturnValue(gatedStream());
+
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.queryByText('Loading models...')).not.toBeInTheDocument();
+      });
+
+      // The answer announcer must exist EMPTY and polite before any answer, so
+      // AT watches it for content changes (mirrors the error announcer priming).
+      const announcer = screen.getByTestId('ai-answer-announcer');
+      expect(announcer).toHaveAttribute('aria-live', 'polite');
+      expect(announcer).toHaveTextContent('');
+
+      const input = screen.getByPlaceholderText('Ask a question...');
+      fireEvent.change(input, { target: { value: 'Ask me' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+
+      // While the stream is in flight the announcer stays empty — announcing
+      // mid-stream would interrupt the visible streaming answer.
+      await waitFor(() => {
+        expect(screen.getByTestId('streaming-message')).toBeInTheDocument();
+      });
+      expect(screen.getByTestId('ai-answer-announcer')).toHaveTextContent('');
+
+      // Finish the stream — the completed answer is now announced.
+      await act(async () => {
+        releaseStream?.();
+      });
+
+      await waitFor(() => {
+        expect(screen.queryByTestId('streaming-message')).not.toBeInTheDocument();
+      });
+      const done = screen.getByTestId('ai-answer-announcer');
+      expect(done).toHaveTextContent('Answer ready');
+      // A keyed child node is mounted so AT re-announces on each new answer.
+      expect(done.firstElementChild).not.toBeNull();
     });
 
     it('commits partial content to the message list when the stream is aborted', async () => {

@@ -287,6 +287,27 @@ describe('GenerateMode', () => {
       expect(screen.getByText('5 pages')).toBeInTheDocument();
     });
 
+    it('exposes an accessible name on the PDF remove button (#939)', async () => {
+      mockExtractPdf.mockResolvedValue({
+        text: 'PDF text',
+        totalPages: 1,
+        fileSize: 1024,
+        preview: 'PDF text',
+      });
+
+      render(<GenerateModeInput />, { wrapper: createWrapper() });
+
+      const fileInput = screen.getByTestId('pdf-file-input');
+      const pdfFile = new File(['%PDF-1.4'], 'test.pdf', { type: 'application/pdf' });
+      fireEvent.change(fileInput, { target: { files: [pdfFile] } });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('pdf-preview-card')).toBeInTheDocument();
+      });
+
+      expect(screen.getByRole('button', { name: 'Remove PDF' })).toBeInTheDocument();
+    });
+
     it('removes PDF when remove button is clicked', async () => {
       mockExtractPdf.mockResolvedValue({
         text: 'PDF text',

@@ -26,7 +26,8 @@ erDiagram
     roles ||--o{ group_memberships : "granted via"
     groups ||--o{ group_memberships : "has"
     users ||--o{ group_memberships : "member of"
-    groups ||--o{ space_role_assignments : "assigned in"
+    groups ||--o{ space_role_assignments : "assigned in (principal)"
+    users ||--o{ space_role_assignments : "assigned in (principal)"
     roles ||--o{ space_role_assignments : "used in"
 
     users {
@@ -71,8 +72,11 @@ erDiagram
         text visibility "private | shared"
         uuid created_by_user_id FK
         bool embedding_dirty
+        vector page_avg_embedding "materialized avg of chunk vectors, HNSW-indexed (#919)"
         timestamptz local_modified_at "non-null => local edit since last_synced (#305)"
         uuid local_modified_by FK "who last edited locally (#305)"
+        text_array expected_image_files "cached asset filenames; NULL => recompute (#887)"
+        text_array expected_drawio_files "cached draw.io filenames; NULL => recompute (#887)"
         timestamptz deleted_at
     }
 
@@ -173,6 +177,7 @@ erDiagram
         bigint id PK
         text name
         jsonb permissions
+        text description
     }
 
     groups {
@@ -190,7 +195,8 @@ erDiagram
         bigint id PK
         text space_key
         bigint role_id FK
-        bigint group_id FK
+        text principal_type "user | group"
+        text principal_id
     }
 
     local_attachments {
@@ -265,6 +271,15 @@ erDiagram
   larger models (e.g. `qwen3-embedding:8b` at 4096) fall to the seq-scan tier.
   Query-time `ef_search` is set per request. Source of truth:
   `backend/src/domains/llm/services/embedding-service.ts` (`enqueueReembedAll`).
+- **Materialized page averages (#919).** `pages.page_avg_embedding` stores each
+  page's average chunk vector, written by `embedPage` inside the same
+  transaction as the chunk inserts, with its own HNSW index
+  (`idx_pages_page_avg_embedding_hnsw`, same type/opclass/params as
+  `page_embeddings.embedding`; kept in lockstep by `enqueueReembedAll`). The
+  knowledge-graph relationship builder (`computePageRelationships`) serves
+  top-K nearest-neighbour edges from this index scoped to the changed pages,
+  instead of AVG-ing the whole `page_embeddings` table and doing an index-less
+  pairwise scan on every embedding run.
 - **Encryption at rest.** `user_settings.confluence_pat` is stored as a
   ciphertext blob (AES-256-GCM, key from `PAT_ENCRYPTION_KEY`). Never
   log or expose it to the frontend. The AES key is derived via HKDF-SHA256
@@ -313,3 +328,14 @@ erDiagram
   Confluence version so the next sync doesn't clobber the revert. Retention
   keeps the last `RETENTION_VERSIONS_MAX` (default 50) snapshots per page
   (`data-retention-service.ts`).
+- **Cached asset expectations** (`pages.expected_image_files` /
+  `expected_drawio_files`, migration 081, #887). The sync-overview dashboard
+  needs each page's expected image/draw.io filenames; deriving them from raw
+  XHTML on every request materialised the whole corpus's `body_storage` and
+  double-JSDOM-parsed each body. They are now persisted as `TEXT[]` and reset to
+  NULL by the `pages_expected_assets_invalidate` BEFORE UPDATE trigger whenever
+  `body_storage` changes (covering every writer without touching their call
+  sites). `getSyncOverview` lazily recomputes the NULL rows in bounded batches
+  and persists them, so steady-state reads do zero XHTML parsing. NULL means
+  "recompute"; an empty array means "computed, no assets". This trigger is
+  independent of the migration 060 `local_modified` trigger (disjoint columns).

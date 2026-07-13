@@ -77,6 +77,13 @@ export interface PageFilters {
   page?: number;
   limit?: number;
   sort?: 'title' | 'modified' | 'author' | 'quality' | 'relevance';
+  /**
+   * Gate the keyword list query. Defaults to true. Callers pass `false` to
+   * suppress the fetch when the keyword results are not being displayed — e.g.
+   * PagesPage in semantic/hybrid search mode, where results come from useSearch
+   * and firing this query would just waste a rate-limited request (#874).
+   */
+  enabled?: boolean;
 }
 
 export function usePages(params: PageFilters = {}) {
@@ -84,6 +91,7 @@ export function usePages(params: PageFilters = {}) {
     spaceKey, search, author, labels, freshness,
     embeddingStatus, qualityMin, qualityMax, qualityStatus,
     source, dateFrom, dateTo, page, limit, sort,
+    enabled = true,
   } = params;
 
   const queryKey = useMemo(
@@ -114,11 +122,16 @@ export function usePages(params: PageFilters = {}) {
   return useQuery<PaginatedPages>({
     queryKey,
     queryFn: () => apiFetch(`/pages${qs ? `?${qs}` : ''}`),
+    enabled,
     // Cache list responses for 30s so rapid back/forward between list and
     // detail pages reuses cached data instead of firing a fresh request on
     // every remount — that pattern can otherwise trip the backend's global
     // rate limit and leave the query in an unrecoverable error state.
     staleTime: 30_000,
+    // Keep the previous page's rows on screen while the next key loads so
+    // filter/search/pagination changes don't collapse the list to skeletons
+    // (matches useSearch). Without this every keystroke re-enters isLoading.
+    placeholderData: (prev) => prev,
   });
 }
 
@@ -128,6 +141,9 @@ export interface PageTreeItem {
   title: string;
   pageType: PageType;
   parentId: string | null;
+  // Persisted sibling order (PUT /pages/:id/reorder). Confluence pages default
+  // to 0, so buildTree falls back to title within a group of equal sortOrder.
+  sortOrder: number;
   labels: string[];
   lastModifiedAt: string | null;
   embeddingDirty: boolean;
@@ -284,6 +300,18 @@ export interface EmbeddingStatusData {
   isProcessing: boolean;
 }
 
+/**
+ * Shared zero-embeddings detection (#938), reused by the AI chat and the
+ * semantic-search empty state so both surface the real cause instead of
+ * blaming the query. True only when pages exist but none are embedded — the
+ * exact semantics of GraphPage's `meta.pagesEmbedded === 0` branch. The
+ * `totalPages > 0` guard keeps a brand-new install with nothing synced
+ * (totalPages === 0) out of the "not embedded yet" state.
+ */
+export function isZeroEmbeddings(status: EmbeddingStatusData | undefined): boolean {
+  return !!status && status.totalPages > 0 && status.embeddedPages === 0;
+}
+
 export function useEmbeddingStatus() {
   return useQuery<EmbeddingStatusData>({
     queryKey: ['embeddings', 'status'],
@@ -408,8 +436,12 @@ export function useResyncPage() {
       }),
     onSuccess: (_data, id) => {
       queryClient.invalidateQueries({ queryKey: ['pages', id] });
-      queryClient.invalidateQueries({ queryKey: ['pages'], refetchType: 'none' });
-      queryClient.refetchQueries({ queryKey: ['pages'] });
+      // Mark every 'pages'-prefixed query stale; invalidateQueries defaults to
+      // refetchType 'active', so only currently mounted queries refetch and
+      // inactive (unmounted) entries refetch lazily on next mount. A prior
+      // unfiltered refetchQueries here refetched every inactive entry too,
+      // fanning one click into N network requests (issue #882).
+      queryClient.invalidateQueries({ queryKey: ['pages'] });
     },
   });
 }
@@ -441,8 +473,8 @@ export function useRequalityPage() {
       }),
     onSuccess: (_data, id) => {
       queryClient.invalidateQueries({ queryKey: ['pages', id] });
-      queryClient.invalidateQueries({ queryKey: ['pages'], refetchType: 'none' });
-      queryClient.refetchQueries({ queryKey: ['pages'] });
+      // See useResyncPage: mark stale + refetch only active queries (issue #882).
+      queryClient.invalidateQueries({ queryKey: ['pages'] });
     },
   });
 }

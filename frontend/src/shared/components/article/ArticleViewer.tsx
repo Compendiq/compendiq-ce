@@ -15,6 +15,11 @@ import {
   ConfluenceToc,
   ConfluenceStatus,
   ConfluenceChildren,
+  ConfluenceJiraIssue,
+  ConfluenceUserMention,
+  ConfluenceIncludeMacro,
+  ConfluenceLabelsMacro,
+  ConfluenceAttachments,
   ConfluenceLayout,
   ConfluenceLayoutSection,
   ConfluenceLayoutCell,
@@ -138,6 +143,11 @@ export function ArticleViewer({
       ConfluenceToc,
       ConfluenceStatus,
       ConfluenceChildren,
+      ConfluenceJiraIssue,
+      ConfluenceUserMention,
+      ConfluenceIncludeMacro,
+      ConfluenceLabelsMacro,
+      ConfluenceAttachments,
       ConfluenceLayout,
       ConfluenceLayoutSection,
       ConfluenceLayoutCell,
@@ -325,7 +335,9 @@ export function ArticleViewer({
     }
 
     const raf = requestAnimationFrame(() => {
-      const images = container.querySelectorAll<HTMLImageElement>('img[src^="/api/attachments/"]');
+      const images = container.querySelectorAll<HTMLImageElement>(
+        'img[src^="/api/attachments/"], img[src^="/api/local-attachments/"]',
+      );
       if (images.length === 0) return;
 
       images.forEach(async (img) => {

@@ -180,6 +180,46 @@ function stripHtml(html: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Strip model preamble / trailing meta-chatter from generated summaries (#912)
+// ---------------------------------------------------------------------------
+
+/**
+ * Remove framing text some models wrap around the actual summary — a leading
+ * "Here's a summary…" line and trailing offer/meta lines (e.g. "…please provide
+ * it so I can respond in German."). Deliberately conservative so a genuine
+ * summary is never eaten: the leading strip requires an explicit framing opener
+ * plus the word "summary" plus a following newline, and the trailing strip only
+ * peels a final line that carries an explicit offer/meta phrase.
+ */
+export function stripSummaryPreamble(markdown: string): string {
+  let text = markdown.trim();
+
+  // Leading framing line, e.g. "Here's a concise summary of the article in
+  // Markdown format:" / "Below is a summary:". Requires a following newline so
+  // the real summary (on later lines) is never eaten.
+  text = text.replace(
+    /^\s*(?:sure[,.!]?\s*)?(?:here(?:'s|\s+is|\s+are)|below\s+is|the\s+following\s+is)\b[^\n]*?\bsummary\b[^\n]*?\n+/i,
+    '',
+  );
+
+  // Bare heading-style preamble line: "Summary:" / "**Summary:**".
+  text = text.replace(/^\s*\**\s*summary\s*\**\s*:?\s*\n+/i, '');
+
+  // Trailing meta/offer lines (optionally bold). Match only lines carrying an
+  // explicit offer/meta phrase so real summary sentences beginning with "If"
+  // survive. Loop to peel multiple trailing meta lines.
+  const TRAILING_META =
+    /\n+\s*\**[^\n]*\b(?:please\s+(?:provide|let\s+me\s+know|note)|let\s+me\s+know|feel\s+free|would\s+you\s+like|i\s+can\s+(?:help|provide|assist)|if\s+you(?:'d| would)\s+like|i\s+hope\s+this\s+helps|respond\s+in\s+(?:german|english))\b[^\n]*\**\s*$/i;
+  let prev: string;
+  do {
+    prev = text;
+    text = text.replace(TRAILING_META, '');
+  } while (text !== prev);
+
+  return text.trim();
+}
+
+// ---------------------------------------------------------------------------
 // Core batch processing
 // ---------------------------------------------------------------------------
 
@@ -258,7 +298,10 @@ async function summarizePage(
       },
       { role: 'user', content: sanitized },
     ]);
-    const markdownSummary = await collectStream(generator);
+    const rawSummary = await collectStream(generator);
+    // Strip model framing/meta-chatter before the empty-check, PII scan, and
+    // HTML conversion so both summary_text and summary_html are stored clean (#912).
+    const markdownSummary = stripSummaryPreamble(rawSummary);
 
     if (!markdownSummary.trim()) {
       throw new Error('LLM returned empty summary');
@@ -360,7 +403,12 @@ export async function runSummaryBatch(
 
   if (!assignment || !effectiveModel) {
     const flipped = await query(
-      `UPDATE pages SET summary_status = 'skipped'
+      // Clear summary_error so every no-model config-skip is consistently
+      // identifiable by `summary_error IS NULL` in rescanAllSummaries (#910).
+      // A page re-synced to 'pending' after a prior failure still carries its
+      // stale summary_error; without this reset it would be excluded from
+      // recovery and never re-summarized.
+      `UPDATE pages SET summary_status = 'skipped', summary_error = NULL
        WHERE summary_status = 'pending' AND deleted_at IS NULL`,
     );
     logger.warn(
@@ -374,6 +422,17 @@ export async function runSummaryBatch(
     config: assignment.config,
     model: effectiveModel,
   };
+
+  // Phase 0: Re-queue pages orphaned in 'summarizing' by a crashed prior run (#911).
+  // Every batch runs under the redis + in-memory single-worker lock, so no other
+  // run can legitimately hold a row in 'summarizing' concurrently — any leftover
+  // is necessarily stale and would otherwise never be re-selected by findCandidates.
+  await query(
+    `UPDATE pages
+     SET summary_status = 'pending'
+     WHERE summary_status = 'summarizing'
+       AND deleted_at IS NULL`,
+  );
 
   // Phase 1: Detect content changes via timestamp and mark as pending.
   // Uses last_modified_at > summary_generated_at instead of recomputing
@@ -420,8 +479,8 @@ export function startSummaryWorker(intervalMinutes?: number): void {
 
   workerIntervalHandle = setInterval(async () => {
     if (workerLock) return;
-    const acquired = await acquireWorkerLock('summary-worker', 600);
-    if (!acquired) return;
+    const lockToken = await acquireWorkerLock('summary-worker', 600);
+    if (!lockToken) return;
     workerLock = true;
     isProcessing = true;
 
@@ -435,7 +494,7 @@ export function startSummaryWorker(intervalMinutes?: number): void {
     } finally {
       workerLock = false;
       isProcessing = false;
-      await releaseWorkerLock('summary-worker');
+      await releaseWorkerLock('summary-worker', lockToken);
     }
   }, interval);
 
@@ -451,8 +510,8 @@ export function startSummaryWorker(intervalMinutes?: number): void {
  */
 export async function triggerSummaryBatch(): Promise<void> {
   if (workerLock) return;
-  const acquired = await acquireWorkerLock('summary-worker', 600);
-  if (!acquired) return;
+  const lockToken = await acquireWorkerLock('summary-worker', 600);
+  if (!lockToken) return;
   workerLock = true;
   isProcessing = true;
 
@@ -466,7 +525,7 @@ export async function triggerSummaryBatch(): Promise<void> {
   } finally {
     workerLock = false;
     isProcessing = false;
-    await releaseWorkerLock('summary-worker');
+    await releaseWorkerLock('summary-worker', lockToken);
   }
 }
 
@@ -479,8 +538,12 @@ export function stopSummaryWorker(): void {
 }
 
 /**
- * Reset all summary_content_hash values to trigger full re-summarization.
- * Admin-only operation.
+ * Reset summary state to trigger full re-summarization. Admin-only operation.
+ *
+ * Recovers config-skipped pages (skipped with no summary_error, i.e. the
+ * no-model path at runSummaryBatch) so this is the documented no-model
+ * recovery route (#910). Deliberate skips carrying a non-null summary_error
+ * (content-too-short, PII-blocked) stay skipped and are not reprocessed.
  */
 export async function rescanAllSummaries(): Promise<number> {
   const result = await query(
@@ -488,8 +551,8 @@ export async function rescanAllSummaries(): Promise<number> {
      SET summary_content_hash = NULL,
          summary_status = 'pending',
          summary_retry_count = 0
-     WHERE summary_status != 'skipped'
-       AND deleted_at IS NULL
+     WHERE deleted_at IS NULL
+       AND (summary_status != 'skipped' OR summary_error IS NULL)
      RETURNING confluence_id`,
   );
   return result.rowCount ?? 0;

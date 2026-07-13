@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, createMemoryRouter, RouterProvider } from 'react-router-dom';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { PageViewPage } from './PageViewPage';
@@ -67,25 +67,52 @@ vi.mock('../../shared/components/article/ArticleViewer', async () => {
 // Configurable draft content so tests can exercise the restore-draft dialog.
 let mockDraftContent: string | null = null;
 
-vi.mock('../../shared/components/article/Editor', () => ({
-  Editor: ({
-    content,
-    onChange,
-  }: {
-    content: string;
-    onChange: (value: string) => void;
-  }) => (
-    <textarea
-      aria-label="Article editor"
-      value={content}
-      onChange={(event) => onChange(event.target.value)}
-    />
-  ),
-  EditorToolbar: () => null,
-  TableContextToolbar: () => null,
-  getDraft: () => mockDraftContent,
-  clearDraft: vi.fn(),
-}));
+vi.mock('../../shared/components/article/Editor', async () => {
+  const React = await vi.importActual<typeof import('react')>('react');
+  return {
+    // Mirrors the real Editor's contract (#954): the body is owned by the
+    // editor instance (read via getHTML() on save), NOT pushed to the parent
+    // per keystroke. onChange is a cheap boolean dirty signal. The textarea is
+    // uncontrolled so typed text persists and is reflected by getHTML().
+    Editor: ({
+      content,
+      onChange,
+      onEditorReady,
+    }: {
+      content: string;
+      onChange?: (dirty: boolean) => void;
+      onEditorReady?: (editor: { getHTML: () => string } | null) => void;
+    }) => {
+      const htmlRef = React.useRef(content);
+      React.useEffect(() => {
+        // `state.doc.descendants` lets the save path's draw.io drain walk an
+        // empty doc (no diagrams) without throwing on the fake instance.
+        const instance = {
+          getHTML: () => htmlRef.current,
+          state: { doc: { descendants: () => {} } },
+        };
+        onEditorReady?.(instance as never);
+        return () => onEditorReady?.(null);
+      }, [onEditorReady]);
+      return (
+        <textarea
+          aria-label="Article editor"
+          defaultValue={content}
+          onChange={(event) => {
+            htmlRef.current = event.target.value;
+            onChange?.(true);
+          }}
+        />
+      );
+    },
+    EditorToolbar: () => null,
+    TableContextToolbar: () => null,
+    LayoutContextToolbar: () => null,
+    ColumnContextToolbar: () => null,
+    getDraft: () => mockDraftContent,
+    clearDraft: vi.fn(),
+  };
+});
 
 vi.mock('../../shared/components/feedback/FeatureErrorBoundary', () => ({
   FeatureErrorBoundary: ({ children }: { children: React.ReactNode }) => <>{children}</>,
@@ -334,6 +361,17 @@ describe('PageViewPage', () => {
 
     await waitFor(() => {
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+  });
+
+  it('moves focus to the close button when the lightbox opens', async () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByText('Preview image'));
+
+    const closeButton = await screen.findByLabelText('Close preview');
+    await waitFor(() => {
+      expect(closeButton).toHaveFocus();
     });
   });
 
@@ -825,6 +863,310 @@ describe('PageViewPage', () => {
 
       expect(screen.getByLabelText('Article editor')).toBeInTheDocument();
       expect(screen.queryByText('Restore draft?')).not.toBeInTheDocument();
+    });
+  });
+
+  // #944 — Cancel in the editor must not silently discard unsaved work. When
+  // the working title/body diverges from the persisted page, Cancel opens a
+  // destructive discard confirmation instead of dropping out of edit mode.
+  // A pristine editor (no edits) still exits immediately.
+  describe('cancel discard confirmation', () => {
+    it('prompts before discarding when the editor has unsaved changes', async () => {
+      render(<PageViewPage />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByText('Edit'));
+      fireEvent.change(screen.getByLabelText('Article editor'), {
+        target: { value: '<p>rewritten</p>' },
+      });
+      fireEvent.click(screen.getByText('Cancel'));
+
+      // The discard confirmation appears and the editor stays mounted — the
+      // work is NOT thrown away until the user confirms.
+      expect(await screen.findByText('Discard changes?')).toBeInTheDocument();
+      expect(screen.getByLabelText('Article editor')).toBeInTheDocument();
+
+      // Close the portal dialog before teardown (afterEach wipes document.body).
+      fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+      await waitFor(() => {
+        expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
+      });
+    });
+
+    it('confirming the discard exits edit mode', async () => {
+      render(<PageViewPage />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByText('Edit'));
+      fireEvent.change(screen.getByLabelText('Article editor'), {
+        target: { value: '<p>rewritten</p>' },
+      });
+      fireEvent.click(screen.getByText('Cancel'));
+
+      await screen.findByText('Discard changes?');
+      fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
+
+      await waitFor(() => {
+        expect(screen.queryByLabelText('Article editor')).not.toBeInTheDocument();
+      });
+      expect(screen.getByText('Edit')).toBeInTheDocument();
+    });
+
+    it('keeps editing when the discard dialog is dismissed', async () => {
+      render(<PageViewPage />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByText('Edit'));
+      fireEvent.change(screen.getByLabelText('Article editor'), {
+        target: { value: '<p>rewritten</p>' },
+      });
+      fireEvent.click(screen.getByText('Cancel'));
+
+      await screen.findByText('Discard changes?');
+      fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+
+      await waitFor(() => {
+        expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
+      });
+      // Still editing — the work is preserved.
+      expect(screen.getByLabelText('Article editor')).toBeInTheDocument();
+    });
+
+    it('exits immediately without a prompt when the editor is pristine', async () => {
+      render(<PageViewPage />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByText('Edit'));
+      // No edits made — Cancel should exit straight to view mode.
+      fireEvent.click(screen.getByText('Cancel'));
+
+      await waitFor(() => {
+        expect(screen.queryByLabelText('Article editor')).not.toBeInTheDocument();
+      });
+      expect(screen.queryByText('Discard changes?')).not.toBeInTheDocument();
+      expect(screen.getByText('Edit')).toBeInTheDocument();
+    });
+  });
+
+  // #872 — The /pages/:id route is not keyed, so React Router keeps a single
+  // PageViewPage instance mounted across :id changes. Edit-mode state
+  // (editing/editTitle/editHtml) is component-local and was never reset on
+  // id change, so navigating mid-edit left page A's title+body loaded while
+  // viewing page B — and saving then overwrote page B with page A's content.
+  describe('edit-mode reset on route param change (#872)', () => {
+    it('resets edit state when the :id param changes mid-edit', async () => {
+      // A data router keeps the same PageViewPage instance mounted across
+      // param changes (matching production where App.tsx renders one
+      // un-keyed <Route path="/pages/:id">). router.navigate() drives the
+      // real useParams(), bypassing this file's mocked useNavigate.
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+      const router = createMemoryRouter(
+        [{ path: '/pages/:id', element: <PageViewPage /> }],
+        { initialEntries: ['/pages/page-1'] },
+      );
+
+      currentMockPage = mockPage; // page A: "Engineering Handbook", version 7
+      render(
+        <QueryClientProvider client={queryClient}>
+          <LazyMotion features={domAnimation}>
+            <RouterProvider router={router} />
+          </LazyMotion>
+        </QueryClientProvider>,
+      );
+
+      // Enter edit mode on page A — editor mounts with A's title/body.
+      fireEvent.click(screen.getByText('Edit'));
+      expect(screen.getByLabelText('Article editor')).toBeInTheDocument();
+      expect(screen.getByDisplayValue('Engineering Handbook')).toBeInTheDocument();
+
+      // Navigate to page B while still in edit mode. The instance stays
+      // mounted; only the :id param + page data change.
+      currentMockPage = {
+        ...mockPage,
+        id: 'page-2',
+        title: 'Runbook',
+        bodyHtml: '<p>B</p>',
+        version: 3,
+      };
+      await act(async () => {
+        await router.navigate('/pages/page-2');
+      });
+
+      // Edit mode must have exited — no stale editor holding page A's body.
+      expect(screen.queryByLabelText('Article editor')).not.toBeInTheDocument();
+      expect(screen.getByText('Edit')).toBeInTheDocument();
+
+      // Corruption guard: a Ctrl+S after navigation must not push page A's
+      // title onto page B. Pre-fix, editing stayed true and Save fired
+      // { id: 'page-2', title: 'Engineering Handbook', version: 3 }.
+      const saveShortcut = capturedShortcuts.find((s) => s.key === 'Ctrl+S');
+      expect(saveShortcut).toBeDefined();
+      await act(async () => {
+        saveShortcut!.action();
+      });
+      expect(mockUpdatePage).not.toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'Engineering Handbook' }),
+      );
+    });
+
+    // #872 follow-up — the confirmation dialogs (Discard changes? / Move to
+    // trash?) are rendered outside the `editing` branch, so the edit-state
+    // reset alone left them open across a route change. A dialog left open
+    // then acted against page B's draftKey/id (deleting page B's draft or
+    // trashing page B), e.g. after the user hit Cancel then browser-Back.
+    it('dismisses an open discard-confirmation dialog when the :id param changes', async () => {
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+      const router = createMemoryRouter(
+        [{ path: '/pages/:id', element: <PageViewPage /> }],
+        { initialEntries: ['/pages/page-1'] },
+      );
+
+      currentMockPage = mockPage; // page A
+      render(
+        <QueryClientProvider client={queryClient}>
+          <LazyMotion features={domAnimation}>
+            <RouterProvider router={router} />
+          </LazyMotion>
+        </QueryClientProvider>,
+      );
+
+      // Enter edit mode on page A and dirty it so Cancel opens the discard
+      // confirmation (instead of exiting straight to view mode).
+      fireEvent.click(screen.getByText('Edit'));
+      fireEvent.change(screen.getByLabelText('Article editor'), {
+        target: { value: '<p>rewritten page A</p>' },
+      });
+      fireEvent.click(screen.getByText('Cancel'));
+      expect(await screen.findByText('Discard changes?')).toBeInTheDocument();
+
+      // Navigate to page B while the discard dialog is still open.
+      currentMockPage = {
+        ...mockPage,
+        id: 'page-2',
+        title: 'Runbook',
+        bodyHtml: '<p>B</p>',
+        version: 3,
+      };
+      await act(async () => {
+        await router.navigate('/pages/page-2');
+      });
+
+      // The dialog must be dismissed on navigation — otherwise its Discard
+      // action would run against page B's draftKey (clearing page B's draft).
+      // No dialog means the confirm control is gone, so it cannot act on B.
+      expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
+      expect(screen.queryByText('Discard changes?')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('confirm-dialog-confirm')).not.toBeInTheDocument();
+    });
+
+    it('dismisses an open move-to-trash dialog when the :id param changes', async () => {
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+      const router = createMemoryRouter(
+        [{ path: '/pages/:id', element: <PageViewPage /> }],
+        { initialEntries: ['/pages/page-1'] },
+      );
+
+      currentMockPage = mockPage; // page A
+      render(
+        <QueryClientProvider client={queryClient}>
+          <LazyMotion features={domAnimation}>
+            <RouterProvider router={router} />
+          </LazyMotion>
+        </QueryClientProvider>,
+      );
+
+      const deleteShortcut = capturedShortcuts.find((s) => s.key === 'Alt+Shift+D');
+      expect(deleteShortcut).toBeDefined();
+      act(() => {
+        deleteShortcut!.action();
+      });
+      expect(await screen.findByText('Move page to trash?')).toBeInTheDocument();
+
+      currentMockPage = {
+        ...mockPage,
+        id: 'page-2',
+        title: 'Runbook',
+        bodyHtml: '<p>B</p>',
+        version: 3,
+      };
+      await act(async () => {
+        await router.navigate('/pages/page-2');
+      });
+
+      // Left open, confirming would trash page B (mutateAsync(id) with the
+      // new id). It must be dismissed on navigation instead.
+      expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
+      expect(screen.queryByText('Move page to trash?')).not.toBeInTheDocument();
+      expect(mockDeleteMutateAsync).not.toHaveBeenCalled();
+    });
+  });
+
+  // #943 — In-place refetches of the SAME page (tag add/remove, resync,
+  // requality, drawio save → invalidateQueries(['pages', id])) hand React a
+  // fresh page object with an unchanged id + version. The scroll-reset effect
+  // must key off navigation (id / version), not the page object identity;
+  // otherwise every background invalidation yanks the reader's scroll position
+  // back to the top of the article. A version bump (a genuinely new revision)
+  // still resets, matching navigation semantics.
+  describe('scroll position preservation on in-place refetch (#943)', () => {
+    it('does not reset scroll when the page object changes but id + version are unchanged', async () => {
+      const scrollContainer = document.createElement('div');
+      scrollContainer.setAttribute('data-scroll-container', '');
+      document.body.appendChild(scrollContainer);
+      const scrollSpy = vi.spyOn(scrollContainer, 'scrollTo');
+
+      currentMockPage = mockPage;
+      const { rerender } = render(<PageViewPage />, { wrapper: createWrapper() });
+
+      // Initial mount scrolls to top (navigation reset). Wait for it, then
+      // clear the spy so we only observe the refetch behaviour.
+      await waitFor(() => {
+        expect(scrollSpy).toHaveBeenCalledWith({ top: 0, left: 0, behavior: 'auto' });
+      });
+      scrollSpy.mockClear();
+
+      // Simulate an optimistic write / invalidation: a brand-new page object
+      // with the SAME id and version (e.g. a label was added).
+      currentMockPage = {
+        ...mockPage,
+        labels: [...mockPage.labels, 'newly-added'],
+      };
+      rerender(<PageViewPage />);
+
+      // Give any effects + double-rAF a chance to fire, then assert the scroll
+      // container was NOT reset — the reader keeps their place.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      expect(scrollSpy).not.toHaveBeenCalled();
+
+      scrollContainer.remove();
+    });
+
+    it('still resets scroll when the page version changes (a genuine new revision)', async () => {
+      const scrollContainer = document.createElement('div');
+      scrollContainer.setAttribute('data-scroll-container', '');
+      document.body.appendChild(scrollContainer);
+      const scrollSpy = vi.spyOn(scrollContainer, 'scrollTo');
+
+      currentMockPage = mockPage;
+      const { rerender } = render(<PageViewPage />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(scrollSpy).toHaveBeenCalledWith({ top: 0, left: 0, behavior: 'auto' });
+      });
+      scrollSpy.mockClear();
+
+      currentMockPage = { ...mockPage, version: mockPage.version + 1 };
+      rerender(<PageViewPage />);
+
+      await waitFor(() => {
+        expect(scrollSpy).toHaveBeenCalledWith({ top: 0, left: 0, behavior: 'auto' });
+      });
+
+      scrollContainer.remove();
     });
   });
 

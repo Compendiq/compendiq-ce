@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { m, AnimatePresence } from 'framer-motion';
+import * as Dialog from '@radix-ui/react-dialog';
+import { m } from 'framer-motion';
 import {
   Search, FileText, Plus, Settings, Bot, RefreshCw,
   Clock, ArrowRight, Sparkles,
@@ -52,6 +53,10 @@ export function CommandPalette() {
   const close = useCommandPaletteStore((s) => s.close);
   const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement>(null);
+  // The element focused before the palette opened, so focus can be restored on
+  // close. Radix Dialog only restores to a <Dialog.Trigger>, but this palette
+  // opens programmatically (Cmd+K) with no trigger, so we track it ourselves.
+  const restoreFocusRef = useRef<HTMLElement | null>(null);
 
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -64,17 +69,13 @@ export function CommandPalette() {
   const isAiMode = query.trimStart().toLowerCase().startsWith('/ai');
   const aiQuery = isAiMode ? query.trimStart().slice(3).trim() : '';
 
-  // Load recent searches when opened
+  // Reset transient state when opened (focus is handled by Radix onOpenAutoFocus)
   useEffect(() => {
     if (isOpen) {
       setRecentSearches(getRecentSearches());
       setQuery('');
       setResults([]);
       setSelectedIndex(0);
-      // Focus input on next tick after mount
-      requestAnimationFrame(() => {
-        inputRef.current?.focus();
-      });
     }
   }, [isOpen]);
 
@@ -128,7 +129,9 @@ export function CommandPalette() {
         id: 'ai-ask',
         type: 'ai',
         label: aiQuery ? `Ask AI: ${aiQuery}` : 'Ask AI',
-        path: '/ai',
+        // Carry the typed question through so the AI page can prefill its
+        // composer (#957) instead of dropping it.
+        path: aiQuery ? `/ai?q=${encodeURIComponent(aiQuery)}` : '/ai',
       });
     } else if (query.trim()) {
       results.forEach((r) => {
@@ -184,35 +187,49 @@ export function CommandPalette() {
     }
   }, [allItems.length, close, handleSelect, selectedIndex]);
 
-  if (!isOpen) return null;
+  // aria-activedescendant/option ids share a stable index space with `allItems`
+  // (and with the selectedIndex / handleSelect indices used below).
+  const activeOptionId = allItems.length > 0 ? `cmdk-opt-${selectedIndex}` : undefined;
 
   return (
-    <AnimatePresence>
-      {isOpen && (
-        <>
-          {/* Backdrop */}
+    <Dialog.Root open={isOpen} onOpenChange={(open) => { if (!open) close(); }}>
+      <Dialog.Portal>
+        {/* Backdrop — Radix owns focus trap/restore + Escape; keep click-to-close */}
+        <Dialog.Overlay asChild>
           <m.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
             transition={{ duration: 0.15 }}
             className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm"
             onClick={close}
             data-testid="command-palette-backdrop"
           />
+        </Dialog.Overlay>
 
-          {/* Palette */}
+        {/* Palette — handleKeyDown lives here so arrows/Enter/Escape work
+            regardless of which child (input or an option button) holds focus */}
+        <Dialog.Content
+          asChild
+          aria-describedby={undefined}
+          onOpenAutoFocus={(e) => {
+            e.preventDefault();
+            restoreFocusRef.current = document.activeElement as HTMLElement | null;
+            inputRef.current?.focus();
+          }}
+          onCloseAutoFocus={(e) => {
+            // Radix would focus the (nonexistent) trigger; restore the opener.
+            e.preventDefault();
+            restoreFocusRef.current?.focus();
+          }}
+          onKeyDown={handleKeyDown}
+        >
           <m.div
             initial={{ opacity: 0, scale: 0.95, y: -20 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.95, y: -20 }}
             transition={{ duration: 0.15 }}
-            className="fixed inset-x-0 top-[15%] z-50 mx-auto w-full max-w-xl"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="command-palette-title"
+            className="fixed inset-x-0 top-[15%] z-50 mx-auto w-full max-w-xl outline-none"
           >
-            <span id="command-palette-title" className="sr-only">Command palette</span>
+            <Dialog.Title className="sr-only">Command palette</Dialog.Title>
             <div className={cn(
               'nm-card overflow-hidden shadow-2xl transition-shadow duration-200',
               isAiMode && 'shadow-[0_0_30px_-5px_rgba(168,85,247,0.4)] ring-1 ring-purple-500/30',
@@ -232,13 +249,17 @@ export function CommandPalette() {
                   type="text"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
-                  onKeyDown={handleKeyDown}
                   placeholder={isAiMode ? 'Ask AI anything...' : 'Search pages or type a command...'}
                   className={cn(
                     'flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground',
                     isAiMode && 'text-purple-700 dark:text-purple-100 placeholder:text-purple-300/50',
                   )}
                   aria-label="Search"
+                  role="combobox"
+                  aria-expanded={allItems.length > 0}
+                  aria-controls="cmdk-listbox"
+                  aria-activedescendant={activeOptionId}
+                  autoComplete="off"
                 />
                 <kbd className="rounded border border-border/50 px-1.5 py-0.5 text-[10px] text-muted-foreground">
                   ESC
@@ -246,7 +267,12 @@ export function CommandPalette() {
               </div>
 
               {/* Results */}
-              <div className="max-h-80 overflow-y-auto p-2">
+              <div
+                className="max-h-80 overflow-y-auto p-2"
+                role="listbox"
+                id="cmdk-listbox"
+                aria-label="Results"
+              >
                 {/* AI mode result */}
                 {isAiMode && (
                   <div className="mb-2">
@@ -254,6 +280,9 @@ export function CommandPalette() {
                       AI Assistant
                     </p>
                     <button
+                      id="cmdk-opt-0"
+                      role="option"
+                      aria-selected={selectedIndex === 0}
                       onClick={() => handleSelect(0)}
                       onMouseEnter={() => setSelectedIndex(0)}
                       data-testid="ai-mode-ask-button"
@@ -284,6 +313,9 @@ export function CommandPalette() {
                       return (
                         <button
                           key={result.id}
+                          id={`cmdk-opt-${idx}`}
+                          role="option"
+                          aria-selected={selectedIndex === idx}
                           onClick={() => handleSelect(idx)}
                           onMouseEnter={() => setSelectedIndex(idx)}
                           className={cn(
@@ -327,6 +359,9 @@ export function CommandPalette() {
                       return (
                         <button
                           key={`recent-${i}`}
+                          id={`cmdk-opt-${idx}`}
+                          role="option"
+                          aria-selected={selectedIndex === idx}
                           onClick={() => handleSelect(idx)}
                           onMouseEnter={() => setSelectedIndex(idx)}
                           className={cn(
@@ -359,6 +394,9 @@ export function CommandPalette() {
                       return (
                         <button
                           key={action.id}
+                          id={`cmdk-opt-${baseIdx}`}
+                          role="option"
+                          aria-selected={selectedIndex === baseIdx}
                           onClick={() => handleSelect(baseIdx)}
                           onMouseEnter={() => setSelectedIndex(baseIdx)}
                           className={cn(
@@ -391,8 +429,8 @@ export function CommandPalette() {
               </div>
             </div>
           </m.div>
-        </>
-      )}
-    </AnimatePresence>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 }

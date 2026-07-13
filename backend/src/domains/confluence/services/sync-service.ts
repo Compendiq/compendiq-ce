@@ -113,6 +113,16 @@ const RECONCILE_DEDUPE_TTL = Math.max(
 /** Lua script: only delete the lock if the caller owns it (value matches). */
 const RELEASE_LOCK_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end`;
 
+/** Lua script: only extend the lock TTL if the caller still owns it (value matches). */
+const RENEW_LOCK_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("expire", KEYS[1], ARGV[2]) else return 0 end`;
+
+/**
+ * Heartbeat interval (ms) at which a running sync re-extends its lock TTL.
+ * TTL/3 gives two renewal chances before expiry so a single slow/dropped
+ * heartbeat can't let the lock lapse mid-run (#906).
+ */
+const SYNC_LOCK_RENEW_INTERVAL_MS = Math.floor((SYNC_LOCK_TTL / 3) * 1000);
+
 /**
  * Attempt to acquire the sync worker lock via Redis SET NX EX.
  * Returns a unique lock id if acquired, or null if already held.
@@ -145,7 +155,31 @@ async function releaseSyncLock(lockId: string): Promise<void> {
   }
 }
 
+/**
+ * Re-extend the sync worker lock's TTL, but only while this caller still owns
+ * it (Lua ownership check mirrors {@link releaseSyncLock}). A sync run that
+ * outlasts the fixed {@link SYNC_LOCK_TTL} would otherwise let the lock expire
+ * and a second worker start concurrently — this heartbeat keeps mutual
+ * exclusion in force for the whole run (#906). Best-effort: a Redis hiccup is
+ * logged and the run continues (the TTL is the safety net if renewals stop).
+ */
+async function renewSyncLock(lockId: string): Promise<void> {
+  const redis = getRedisClient();
+  if (!redis) return;
+  try {
+    await redis.eval(RENEW_LOCK_SCRIPT, {
+      keys: [SYNC_LOCK_KEY],
+      arguments: [lockId, String(SYNC_LOCK_TTL)],
+    });
+  } catch (err) {
+    logger.error({ err }, 'Failed to renew sync lock');
+  }
+}
+
 const MAX_ATTACHMENT_FAILURES = REDIS_MAX_ATTACHMENT_FAILURES;
+
+/** Page batch size for the missing-attachment retry pass — bounds peak heap (#888). */
+const MISSING_ATTACHMENT_BATCH_SIZE = 500;
 
 /** Clear all attachment failure counters for a page (delegates to Redis). */
 async function clearPageFailures(pageId: string): Promise<void> {
@@ -272,7 +306,7 @@ export async function syncUser(userId: string): Promise<void> {
     // authoritative and must be removed. Admin-authored rows have
     // `source='local'` and never appear in this sweep.
     if (isFeatureEnabled(ENTERPRISE_FEATURES.RAG_PERMISSION_ENFORCEMENT)) {
-      await sweepStaleConfluenceAces(syncRunStartedAt);
+      await sweepStaleConfluenceAces(syncRunStartedAt, spaces);
     }
 
     // Set status to 'embedding' while processing dirty pages
@@ -335,14 +369,19 @@ async function syncSpace(
 
   logger.info({ userId, spaceKey }, 'Syncing space');
 
-  // Upsert shared space metadata (no user_id)
+  // Upsert shared space metadata (no user_id).
+  // #860: do NOT stamp last_synced here — the incremental-vs-full decision
+  // below reads it, and stamping NOW() every upsert forces every already-synced
+  // space into the incremental branch forever (killing the ≥24h full-sync
+  // backstop). Only the end-of-sync UPDATE (~line 438) advances last_synced,
+  // and only after a successful run.
   if (space) {
     const homepageId = space.homepage?.id ?? null;
     await query(
       `INSERT INTO spaces (space_key, space_name, homepage_id)
        VALUES ($1, $2, $3)
        ON CONFLICT (space_key)
-       DO UPDATE SET space_name = $2, homepage_id = $3, last_synced = NOW()`,
+       DO UPDATE SET space_name = $2, homepage_id = $3`,
       [spaceKey, space.name, homepageId],
     );
   }
@@ -455,6 +494,47 @@ async function syncSpace(
   });
 }
 
+/**
+ * #853: converge the local row for a Confluence page that the per-page fetch
+ * reports as no longer live — trashed (200 `status: 'trashed'`) or gone (404).
+ * Confluence DC's DELETE trashes rather than purges, so a page can be trashed
+ * upstream between the moment a listing captured it as `current` and the moment
+ * `syncPage` fetches it (e.g. a user clicks Delete mid-sync). Letting `syncPage`
+ * fall through to its upsert would clear `deleted_at` and resurrect the just-
+ * deleted article (regression of #766). Instead we soft-delete the local row —
+ * the same terminal state `detectDeletedPages` produces — so every list/tree/
+ * search query (all filter `deleted_at IS NULL`) hides it and `purgeDeletedPages`
+ * converges it. Only a row we have not already soft-deleted is touched, so an
+ * in-flight delete-route intent is left exactly as it is.
+ */
+async function softDeleteVanishedPage(
+  confluenceId: string,
+  spaceKey: string,
+  counts: SyncSpaceCounts,
+  reason: string,
+): Promise<void> {
+  const res = await query(
+    'UPDATE pages SET deleted_at = NOW() WHERE confluence_id = $1 AND deleted_at IS NULL',
+    [confluenceId],
+  );
+  if ((res.rowCount ?? 0) > 0) {
+    counts.pagesDeleted++;
+    // Attachment dirs are keyed by confluence_id; cleanPageAttachments ignores
+    // its first arg (same call shape detectDeletedPages uses).
+    await cleanPageAttachments('', confluenceId);
+    await clearPageFailures(confluenceId);
+    logger.info(
+      { spaceKey, confluenceId, reason },
+      'Sync skipped upsert of a non-current Confluence page and soft-deleted the local row (#853)',
+    );
+  } else {
+    logger.debug(
+      { spaceKey, confluenceId, reason },
+      'Sync skipped upsert of a non-current Confluence page; no live local row to soft-delete (#853)',
+    );
+  }
+}
+
 async function syncPage(
   client: ConfluenceClient,
   userId: string,
@@ -466,8 +546,32 @@ async function syncPage(
   syncRunId: string,
   changeSet: RestrictionChangeSet = { mode: 'full' },
 ): Promise<void> {
-  // Fetch full page content
-  const page = await client.getPage(pageSummary.id);
+  // Fetch full page content. A page can be trashed upstream between the moment
+  // a listing captured it as `current` and this per-page fetch — e.g. a user
+  // clicks Delete in Compendiq while a sync is walking the space (#853,
+  // regression of #766). Confluence DC's DELETE trashes rather than purges;
+  // depending on the DC version the fetch then answers either 200 with
+  // `status: 'trashed'` (some versions still serve trashed content on a direct
+  // GET) or 404 (the default status=current filter no longer matches). In BOTH
+  // cases the page must NOT be re-materialised — the upsert below clears
+  // `deleted_at`, which would resurrect the article the user just deleted. So
+  // soft-delete the local row and skip the upsert. Only a definitive 404 is
+  // swallowed; any other fetch error (401/403/5xx/network) is a genuine failure
+  // and is re-thrown so a transient problem is never mistaken for a deletion.
+  let page: ConfluencePage;
+  try {
+    page = await client.getPage(pageSummary.id);
+  } catch (err) {
+    if (err instanceof ConfluenceError && err.statusCode === 404) {
+      await softDeleteVanishedPage(pageSummary.id, spaceKey, counts, 'gone (404)');
+      return;
+    }
+    throw err;
+  }
+  if (page.status === 'trashed') {
+    await softDeleteVanishedPage(page.id, spaceKey, counts, 'trashed (200)');
+    return;
+  }
   const bodyStorage = page.body?.storage?.value ?? '';
 
   // Convert to HTML
@@ -1093,6 +1197,16 @@ async function syncPageRestrictions(
         },
         'Failed to fetch Confluence restrictions for page — skipping this round; pre-existing ACEs untouched',
       );
+      // Bump this page's existing Confluence ACEs to the current run so the
+      // end-of-run sweep leaves them alone (#859) — matches the documented
+      // contract that they stay authoritative until a later successful sync
+      // rewrites them. Same UPDATE as the incremental-skip fast path above.
+      await query(
+        `UPDATE access_control_entries
+            SET synced_at = $1
+          WHERE resource_type = 'page' AND resource_id = $2 AND source = 'confluence'`,
+        [syncRunStartedAt, pageDbId],
+      );
       return;
     }
     throw err;
@@ -1241,14 +1355,24 @@ async function resolveConfluenceGroup(name: string): Promise<number | null> {
  * exist. Runs once at the end of `syncUser`, outside any per-page
  * transaction, so a partial sync doesn't wipe ACEs for pages we never got
  * to.
+ *
+ * Scoped to `spaceKeys` — the spaces this run actually visited (#859). Without
+ * the scope, one user's end-of-run sweep would age out the ACEs another user's
+ * earlier run wrote for a different space (their `synced_at` predates this run),
+ * silently wiping restrictions across every space but the last one synced.
  */
-async function sweepStaleConfluenceAces(syncRunStartedAt: Date): Promise<void> {
+async function sweepStaleConfluenceAces(
+  syncRunStartedAt: Date,
+  spaceKeys: string[],
+): Promise<void> {
+  if (spaceKeys.length === 0) return;
   const res = await query(
     `DELETE FROM access_control_entries
      WHERE resource_type = 'page'
        AND source = 'confluence'
-       AND (synced_at IS NULL OR synced_at < $1)`,
-    [syncRunStartedAt],
+       AND (synced_at IS NULL OR synced_at < $1)
+       AND resource_id IN (SELECT id FROM pages WHERE space_key = ANY($2))`,
+    [syncRunStartedAt, spaceKeys],
   );
   if (res.rowCount && res.rowCount > 0) {
     logger.info(
@@ -1274,63 +1398,79 @@ async function syncMissingAttachments(
 ): Promise<void> {
   const redis = getRedisClient();
 
-  // Query pages in this space that have XHTML content (body_storage)
-  const pagesResult = await query<{ confluence_id: string; body_storage: string }>(
-    'SELECT confluence_id, body_storage FROM pages WHERE space_key = $1 AND body_storage IS NOT NULL',
-    [spaceKey],
-  );
-
   let retried = 0;
-  for (const row of pagesResult.rows) {
-    const allMissing = await getMissingAttachments(userId, row.confluence_id, row.body_storage, spaceKey);
-    if (allMissing.length === 0) continue;
-
-    // Filter out attachments that have exceeded the failure threshold
-    const retriableChecks = await Promise.all(
-      allMissing.map(async (f) => ({
-        filename: f,
-        count: await getAttachmentFailureCount(redis, row.confluence_id, f),
-      })),
-    );
-    const retriable = retriableChecks
-      .filter((c) => c.count < MAX_ATTACHMENT_FAILURES)
-      .map((c) => c.filename);
-
-    if (retriable.length === 0) continue;
-
-    logger.info(
-      { pageId: row.confluence_id, missing: retriable.length },
-      'Retrying missing attachments for unchanged page',
+  let offset = 0;
+  for (;;) {
+    // Only load pages whose XHTML actually references an attachment. `<ac:image`
+    // covers both `<ri:attachment>` and external `<ri:url>` image forms; `drawio`
+    // covers the drawio structured-macro. This cheap string pre-filter avoids
+    // pulling every body into heap and JSDOM-parsing pages with no attachments
+    // (#888). Batched LIMIT/OFFSET bounds peak memory on large spaces.
+    const pagesResult = await query<{ confluence_id: string; body_storage: string }>(
+      `SELECT confluence_id, body_storage FROM pages
+       WHERE space_key = $1 AND body_storage IS NOT NULL
+         AND (body_storage LIKE '%<ac:image%' OR body_storage LIKE '%drawio%')
+       ORDER BY confluence_id
+       LIMIT $2 OFFSET $3`,
+      [spaceKey, MISSING_ATTACHMENT_BATCH_SIZE, offset],
     );
 
-    try {
-      const { results: attachments } = await client.getPageAttachments(row.confluence_id);
-      await syncDrawioAttachments(client, userId, row.confluence_id, row.body_storage, attachments);
-      await syncImageAttachments(client, userId, row.confluence_id, row.body_storage, attachments, spaceKey);
+    if (pagesResult.rows.length === 0) break;
 
-      // Check which are still missing and update failure counts
-      const stillMissing = new Set(
-        await getMissingAttachments(userId, row.confluence_id, row.body_storage, spaceKey),
+    for (const row of pagesResult.rows) {
+      const allMissing = await getMissingAttachments(userId, row.confluence_id, row.body_storage, spaceKey);
+      if (allMissing.length === 0) continue;
+
+      // Filter out attachments that have exceeded the failure threshold
+      const retriableChecks = await Promise.all(
+        allMissing.map(async (f) => ({
+          filename: f,
+          count: await getAttachmentFailureCount(redis, row.confluence_id, f),
+        })),
+      );
+      const retriable = retriableChecks
+        .filter((c) => c.count < MAX_ATTACHMENT_FAILURES)
+        .map((c) => c.filename);
+
+      if (retriable.length === 0) continue;
+
+      logger.info(
+        { pageId: row.confluence_id, missing: retriable.length },
+        'Retrying missing attachments for unchanged page',
       );
 
-      for (const f of retriable) {
-        if (stillMissing.has(f)) {
-          await recordAttachmentFailure(redis, row.confluence_id, f);
-          const count = await getAttachmentFailureCount(redis, row.confluence_id, f);
-          if (count >= MAX_ATTACHMENT_FAILURES) {
-            logger.warn(
-              { pageId: row.confluence_id, filename: f, failures: count },
-              'Attachment permanently failed — skipping until TTL expiry',
-            );
-          }
-        }
-        // No explicit delete needed: Redis keys expire via TTL
-      }
+      try {
+        const { results: attachments } = await client.getPageAttachments(row.confluence_id);
+        await syncDrawioAttachments(client, userId, row.confluence_id, row.body_storage, attachments);
+        await syncImageAttachments(client, userId, row.confluence_id, row.body_storage, attachments, spaceKey);
 
-      retried++;
-    } catch (err) {
-      logger.error({ err, pageId: row.confluence_id }, 'Failed to retry missing attachments');
+        // Check which are still missing and update failure counts
+        const stillMissing = new Set(
+          await getMissingAttachments(userId, row.confluence_id, row.body_storage, spaceKey),
+        );
+
+        for (const f of retriable) {
+          if (stillMissing.has(f)) {
+            await recordAttachmentFailure(redis, row.confluence_id, f);
+            const count = await getAttachmentFailureCount(redis, row.confluence_id, f);
+            if (count >= MAX_ATTACHMENT_FAILURES) {
+              logger.warn(
+                { pageId: row.confluence_id, filename: f, failures: count },
+                'Attachment permanently failed — skipping until TTL expiry',
+              );
+            }
+          }
+          // No explicit delete needed: Redis keys expire via TTL
+        }
+
+        retried++;
+      } catch (err) {
+        logger.error({ err, pageId: row.confluence_id }, 'Failed to retry missing attachments');
+      }
     }
+
+    if (pagesResult.rows.length < MISSING_ATTACHMENT_BATCH_SIZE) break;
+    offset += MISSING_ATTACHMENT_BATCH_SIZE;
   }
 
   if (retried > 0) {
@@ -1419,9 +1559,13 @@ async function detectDeletedPages(
     );
   }
 
-  // Local non-deleted rows for this space.
+  // Local non-deleted rows for this space. Only rows backed by a Confluence page
+  // are reconcilable — standalone KB articles carry a space_key but a NULL
+  // confluence_id and have no upstream to confirm against. Excluding them here
+  // (mirroring the guard in purgeDeletedPages) keeps a NULL id from becoming a
+  // bogus candidate that fires getPage(null) and aborts the sync (#905).
   const existingResult = await query<{ confluence_id: string }>(
-    'SELECT confluence_id FROM pages WHERE space_key = $1 AND deleted_at IS NULL',
+    'SELECT confluence_id FROM pages WHERE space_key = $1 AND deleted_at IS NULL AND confluence_id IS NOT NULL',
     [spaceKey],
   );
 
@@ -1735,6 +1879,12 @@ export async function runScheduledSync(): Promise<number> {
   const lockId = await acquireSyncLock();
   if (!lockId) return 0;
 
+  // Keep the lock alive for the whole run so long syncs don't let the fixed
+  // TTL expire and admit a second concurrent worker (#906).
+  const heartbeat = setInterval(() => {
+    void renewSyncLock(lockId);
+  }, SYNC_LOCK_RENEW_INTERVAL_MS);
+
   try {
     const users = await query<{ user_id: string }>(
       `SELECT DISTINCT us.user_id FROM user_settings us
@@ -1757,6 +1907,7 @@ export async function runScheduledSync(): Promise<number> {
     logger.error({ err }, 'Background sync worker error');
     return 0;
   } finally {
+    clearInterval(heartbeat);
     await releaseSyncLock(lockId);
   }
 }
@@ -1772,6 +1923,12 @@ export function startSyncWorker(intervalMinutes = 15): void {
   syncIntervalHandle = setInterval(async () => {
     const lockId = await acquireSyncLock();
     if (!lockId) return; // another process holds the lock
+
+    // Keep the lock alive for the whole run so long syncs don't let the fixed
+    // TTL expire and admit a second concurrent worker (#906).
+    const heartbeat = setInterval(() => {
+      void renewSyncLock(lockId);
+    }, SYNC_LOCK_RENEW_INTERVAL_MS);
 
     try {
       // Get all users with configured connections and RBAC space assignments
@@ -1794,6 +1951,7 @@ export function startSyncWorker(intervalMinutes = 15): void {
     } catch (err) {
       logger.error({ err }, 'Background sync worker error');
     } finally {
+      clearInterval(heartbeat);
       await releaseSyncLock(lockId);
     }
   }, intervalMs);
@@ -1873,4 +2031,14 @@ export const __internal = {
   // gone-confirmation) converges it fully without driving an entire
   // syncSpace run.
   purgeDeletedPages,
+  // Exposed for the #853 trashed-upsert integration tests: prove that a page
+  // Confluence reports as trashed (200 `status: 'trashed'`) or gone (404) on
+  // the per-page fetch is NOT re-materialised locally by the upsert path,
+  // without having to drive an entire syncSpace/syncUser walk.
+  syncPage,
+  // Exposed for the #860 incremental-vs-full decision test: prove that after a
+  // completed sync the metadata upsert does not overwrite last_synced, so a
+  // >24h-stale space still takes the full-sync branch (getAllPagesInSpace)
+  // rather than the incremental one (getModifiedPages).
+  syncSpace,
 };

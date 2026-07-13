@@ -434,6 +434,20 @@ describe('content-converter', () => {
       expect(xhtml).toContain('<![CDATA[a < b && c > d]]>');
     });
 
+    it('splits embedded CDATA terminators in code block content (#900)', () => {
+      const xhtml = htmlToConfluence('<pre><code>printf("]]&gt;");</code></pre>');
+      // The literal ]]> must be split across two adjacent CDATA sections so
+      // the wrapping section is not prematurely closed.
+      expect(xhtml).toContain('<![CDATA[printf("]]]]><![CDATA[>");]]>');
+    });
+
+    it('round-trips code blocks containing ]]> (#900)', () => {
+      const html = '<pre><code>printf("]]&gt;");</code></pre>';
+      const xhtml = htmlToConfluence(html);
+      const roundTripped = confluenceToHtml(xhtml);
+      expect(roundTripped).toContain('printf("]]&gt;");');
+    });
+
     it('round-trips code blocks', () => {
       const html = confluenceToHtml(CODE_BLOCK_PAGE);
       const xhtml = htmlToConfluence(html);
@@ -905,13 +919,84 @@ describe('content-converter', () => {
       expect(xhtml).toContain('<ri:user');
     });
 
-    it('unknown macros (not in the top-4 #300 coverage) are still lossy', () => {
-      // The `widget-connector` fixture is not in the top-4 covered in #300,
-      // so it continues to fall through to the unknown-macro wrapper.
+    it('unknown macros now round-trip back to ac:structured-macro (#865)', () => {
+      // The `widget-connector` fixture falls through to the unknown-macro
+      // wrapper on the forward pass, but must be rebuilt into its original
+      // ac:structured-macro on write-back — dropping it here would permanently
+      // delete the macro from the Confluence page (same hazard as #765 labels).
       const html = confluenceToHtml(UNKNOWN_MACRO_PAGE);
-      const xhtml = htmlToConfluence(html);
       expect(html).toContain('confluence-macro-unknown');
-      expect(xhtml).not.toContain('ac:name="widget-connector"');
+
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).toContain('ac:name="widget-connector"');
+      expect(xhtml).toContain('<ac:rich-text-body>');
+      expect(xhtml).toContain('Embedded widget');
+      // The macro's parameters round-trip too (persisted as data-macro-params).
+      expect(xhtml).toContain('ac:name="url"');
+      expect(xhtml).toContain('https://widget.example.com');
+      // The lossy placeholder wrapper must be gone from the storage output.
+      expect(xhtml).not.toContain('confluence-macro-unknown');
+      expect(xhtml).not.toContain('data-macro-name');
+    });
+
+    it('excerpt macro round-trips instead of being destroyed on write-back (#865)', () => {
+      // The exact scenario from #865: a synced page with an excerpt macro,
+      // edited and saved from Compendiq, must NOT lose the excerpt macro.
+      const source =
+        '<ac:structured-macro ac:name="excerpt"><ac:rich-text-body><p>Team charter</p></ac:rich-text-body></ac:structured-macro>';
+      const html = confluenceToHtml(source);
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).toContain('ac:name="excerpt"');
+      expect(xhtml).toContain('<ac:rich-text-body>');
+      expect(xhtml).toContain('Team charter');
+      expect(xhtml).not.toContain('confluence-macro-unknown');
+    });
+
+    it('body-less unknown macro round-trips without leaking the placeholder text (#865)', () => {
+      // A macro with no rich-text-body (e.g. anchor) is rendered as the
+      // `[Confluence macro: name]` placeholder on the forward pass. On
+      // write-back it must become a body-less macro, NOT a macro whose body
+      // contains the literal placeholder string.
+      const source =
+        '<ac:structured-macro ac:name="anchor"><ac:parameter ac:name="name">top</ac:parameter></ac:structured-macro>';
+      const html = confluenceToHtml(source);
+      expect(html).toContain('[Confluence macro: anchor]');
+
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).toContain('ac:name="anchor"');
+      expect(xhtml).toContain('ac:name="name"');
+      expect(xhtml).toContain('top');
+      expect(xhtml).not.toContain('[Confluence macro:');
+      expect(xhtml).not.toContain('confluence-macro-unknown');
+    });
+
+    it('editor-wrapped body-less unknown macro does not push the placeholder text upstream (#865)', () => {
+      // The TipTap editor serializes a body-less unknown macro's placeholder
+      // as a single wrapped block: <p>[Confluence macro: anchor]</p>. The
+      // reverse handler must still treat it as body-less — otherwise the
+      // fabricated `[Confluence macro: anchor]` string gets written back into
+      // Confluence as a real rich-text-body.
+      const editorHtml =
+        '<div class="confluence-macro-unknown" data-macro-name="anchor"><p>[Confluence macro: anchor]</p></div>';
+      const xhtml = htmlToConfluence(editorHtml);
+      expect(xhtml).toContain('ac:name="anchor"');
+      // The fabricated placeholder must never leak upstream into Confluence.
+      expect(xhtml).not.toContain('[Confluence macro:');
+      // Body-less: no rich-text-body wrapping the placeholder.
+      expect(xhtml).not.toContain('<ac:rich-text-body>');
+      expect(xhtml).not.toContain('confluence-macro-unknown');
+    });
+
+    it('editor-wrapped unknown macro with a REAL body still round-trips to a rich-text-body (#865)', () => {
+      // A genuine body (not the fabricated placeholder) must survive as an
+      // ac:rich-text-body — the placeholder heuristic must not swallow it.
+      const editorHtml =
+        '<div class="confluence-macro-unknown" data-macro-name="x"><p>real content</p></div>';
+      const xhtml = htmlToConfluence(editorHtml);
+      expect(xhtml).toContain('ac:name="x"');
+      expect(xhtml).toContain('<ac:rich-text-body>');
+      expect(xhtml).toContain('real content');
+      expect(xhtml).not.toContain('confluence-macro-unknown');
     });
 
     it('TOC macro now round-trips back to ac:structured-macro[name=toc] (#300)', () => {

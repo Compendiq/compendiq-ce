@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Clock, AlertTriangle } from 'lucide-react';
 import { cn } from '../../lib/cn';
+import { apiFetch } from '../../lib/api';
 import { useAuthStore } from '../../../stores/auth-store';
 
 /**
@@ -40,13 +41,15 @@ export function TrialBanner() {
   useEffect(() => {
     if (!isAdmin) return;
     let cancelled = false;
-    fetch('/api/license/info')
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data: LicenseInfoResponse | null) => {
+    // apiFetch attaches the in-memory Bearer token; the /license/info route is
+    // auth-protected, so a raw fetch would 401 and the banner never renders.
+    apiFetch<LicenseInfoResponse>('/license/info')
+      .then((data) => {
         if (!cancelled) setInfo(data);
       })
       .catch(() => {
-        // Network error or CE deployment without EE — banner stays hidden.
+        // ApiError (e.g. 404 in a CE deployment without EE) or network error —
+        // banner stays hidden.
       });
     return () => {
       cancelled = true;

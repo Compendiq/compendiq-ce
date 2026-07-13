@@ -134,7 +134,7 @@ flowchart LR
 | Provider config invalidation | Pub/sub (advisory-only payloads) | `provider:cache:bump`, `provider:deleted` |
 | LLM admin settings (concurrency, queue depth) | Pub/sub + cached getters | `admin:llm:settings` |
 | IP allowlist hot-reload | Pub/sub | `ip_allowlist:changed` |
-| Confluence SSRF allowlist | Dedicated `ssrf-allowlist-bus` | `confluence:allowlist:changed` |
+| Confluence SSRF allowlist | Dedicated `ssrf-allowlist-bus` | `ssrf:allowlist:changed` |
 | Sync conflict / PII / license / per-page-restriction policy | Pub/sub | `sync:conflict:policy:changed`, `pii:policy:changed`, `license:changed` |
 | Recurring jobs (sync tick, retention prune, embedding tick, webhook outbox poll) | BullMQ `upsertJobScheduler` with stable IDs | Redis queue keys |
 | Sync worker leadership | Redis SET-NX lock | `sync:worker:lock` |
@@ -157,8 +157,9 @@ flowchart LR
 
 2. **`stop_grace_period: 60s` on the `backend` service** so SIGTERM has
    time to drain HTTP handlers + finish active BullMQ jobs before
-   SIGKILL. Set in `docker/docker-compose.ee.yml` for EE; CE operators
-   running multi-replica should set it on their compose. See ADR-024 →
+   SIGKILL. Shipped in `docker/docker-compose.yml`, the installer compose
+   (`scripts/install.sh`), and `docker/docker-compose.ee.yml`, so both CE
+   and EE deployments get it out of the box. See ADR-024 →
    Graceful-shutdown order.
 
 3. **Redis must be reachable from every replica** with low latency
@@ -184,10 +185,9 @@ flowchart LR
    external mgmt poller — token-gated, returns richer diagnostics
    (version, edition, dirty pages, last-sync timestamp, error rate).
    The token lives in `admin_settings.health_api_token` (seeded by
-   migration 072). For v0.4 onward, rotate via
-   `POST /api/admin/health-api/rotate` (admin-only) — that route ships
-   in EE#113 sub-PR 1e (CE PR #613); until it merges, rotate manually
-   via `UPDATE admin_settings SET setting_value = ... WHERE setting_key = 'health_api_token'`.
+   migration 072). Admins rotate it via
+   `POST /api/admin/health-api/rotate` (admin-only, returns the new
+   token).
 
 ### Compose example (2 replicas)
 
@@ -196,7 +196,7 @@ flowchart LR
 services:
   backend:
     # `:latest` tracks the latest stable release on `main`; pin to a
-    # versioned tag like `:0.4.0` for reproducible production deploys,
+    # versioned tag like `:0.6.2` for reproducible production deploys,
     # or `:dev` for staging environments that want dev-branch nightlies.
     image: ghcr.io/compendiq/compendiq-ee-backend:latest
     stop_grace_period: 60s   # SIGTERM → drain → SIGKILL

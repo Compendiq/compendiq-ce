@@ -5,6 +5,7 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import { m } from 'framer-motion';
 import { Search, FileText, Plus, RefreshCw, ChevronLeft, ChevronRight, FolderOpen, Filter, X, List, Loader2, Trash2, Lock, Globe, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
+import { PageSourceEnum, type PageSource } from '@compendiq/contracts';
 import { usePages, usePageFilterOptions, usePage, useEmbeddingStatus, type QualityStatus, type SummaryStatus } from '../../shared/hooks/use-pages';
 import { useSpaces, useSync, useSyncStatus } from '../../shared/hooks/use-spaces';
 import { useSettings } from '../../shared/hooks/use-settings';
@@ -20,6 +21,13 @@ import { cn } from '../../shared/lib/cn';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 import { ShortcutHint } from '../../shared/components/ShortcutHint';
 import { SanitizedHtml } from '../../shared/components/SanitizedHtml';
+
+// User-facing labels for the wire values of PageSourceEnum. Shared between the
+// source-filter <option>s and the active-filter pill so they never diverge.
+const SOURCE_LABELS: Record<PageSource, string> = {
+  confluence: 'Confluence',
+  standalone: 'Local',
+};
 
 // ---------------------------------------------------------------------------
 // Memoized page list item: prevents re-render from embedding-status polling
@@ -184,8 +192,20 @@ export function PagesPage() {
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState<'title' | 'modified' | 'author' | 'quality' | 'relevance'>('modified');
-  const [sourceFilter, setSourceFilter] = useState<string>('');
+  const [sourceFilter, setSourceFilter] = useState<PageSource | ''>('');
   const [searchMode, setSearchMode] = useState<'keyword' | 'semantic' | 'hybrid'>('keyword');
+
+  // Debounce the search term before it reaches the keyword /pages query.
+  // Typing stays responsive because `search` still drives the input value,
+  // clear button, sort switch and semantic-mode gate synchronously; only the
+  // network request waits for a 300ms pause (mirrors useSearch). Without this
+  // every keystroke minted a new query key and fired a fresh, rate-limited
+  // GET /pages?search=… (#874).
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(timer);
+  }, [search]);
 
   const { data: settings } = useSettings();
   const { data: spaces } = useSpaces();
@@ -214,22 +234,38 @@ export function PagesPage() {
     }
   }, [qualityFilter]);
 
+  // Semantic/hybrid search — only active when there's a search query AND mode is not 'keyword'
+  const useSemanticSearch = !!(search && searchMode !== 'keyword');
+
+  // Keep the /pages query key atomic: `search` is debounced, so the `sort` that
+  // feeds the key must track the DEBOUNCED term, not the raw one. Otherwise the
+  // first keystroke (which flips `sort` to 'relevance' synchronously while the
+  // debounced term is still empty) mints a key with sort=relevance + no search
+  // and fires an immediate wrong-data GET /pages?sort=relevance before the
+  // debounce elapses. The visible `sort` dropdown and the auto-switch-to-
+  // relevance UX are unchanged — only the query sort waits for the term (#874).
+  const querySort = debouncedSearch.trim()
+    ? sort
+    : (sort === 'relevance' ? 'modified' : sort);
+
   const { data: pagesData, isLoading, isFetching: isFetchingPages, error: pagesError, refetch: refetchPages } = usePages({
     spaceKey: spaceKey || undefined,
-    search: search || undefined,
+    search: debouncedSearch || undefined,
     author: author || undefined,
     labels: labels || undefined,
     freshness: (freshness || undefined) as 'fresh' | 'recent' | 'aging' | 'stale' | undefined,
     embeddingStatus: (embeddingStatus || undefined) as 'pending' | 'done' | undefined,
     ...qualityRange,
-    source: (sourceFilter || undefined) as 'confluence' | 'standalone' | undefined,
+    source: sourceFilter || undefined,
     dateFrom: dateFrom || undefined,
     dateTo: dateTo || undefined,
     page,
-    sort,
+    sort: querySort,
+    // In semantic/hybrid mode the rendered results come from useSearch below,
+    // so the keyword list query would just fire wasted, rate-limited requests
+    // for data that is never shown — gate it off (#874).
+    enabled: !useSemanticSearch,
   });
-  // Semantic/hybrid search — only active when there's a search query AND mode is not 'keyword'
-  const useSemanticSearch = !!(search && searchMode !== 'keyword');
   const searchResults = useSearch({
     query: useSemanticSearch ? search : '',
     mode: searchMode,
@@ -276,14 +312,14 @@ export function PagesPage() {
     if (qualityFilter) filters.push({ key: 'qualityFilter', label: `Quality: ${qualityFilter}` });
     if (dateFrom) filters.push({ key: 'dateFrom', label: `From: ${dateFrom}` });
     if (dateTo) filters.push({ key: 'dateTo', label: `To: ${dateTo}` });
-    if (sourceFilter) filters.push({ key: 'sourceFilter', label: `Source: ${sourceFilter}` });
+    if (sourceFilter) filters.push({ key: 'sourceFilter', label: `Source: ${SOURCE_LABELS[sourceFilter]}` });
     return filters;
   }, [author, labels, freshness, embeddingStatus, qualityFilter, dateFrom, dateTo, sourceFilter]);
 
   const activeFilterCount = activeFilters.length;
 
   const clearFilter = useCallback((key: string) => {
-    const setters: Record<string, (v: string) => void> = {
+    const setters: Record<string, (v: '') => void> = {
       author: setAuthor,
       labels: setLabels,
       freshness: setFreshness,
@@ -428,15 +464,19 @@ export function PagesPage() {
                 setPage(1);
                 if (val.trim()) {
                   setSort('relevance');
-                } else if (sort === 'relevance') {
-                  setSort('modified');
+                } else {
+                  // Field emptied: reset the debounced term synchronously so the
+                  // pending 300ms fetch never fires the stale term, and drop the
+                  // relevance sort back to modified (#874).
+                  setDebouncedSearch('');
+                  if (sort === 'relevance') setSort('modified');
                 }
               }}
               className="nm-input pl-10 pr-10"
             />
             {search && (
               <button
-                onClick={() => { setSearch(''); setPage(1); setSearchMode('keyword'); if (sort === 'relevance') setSort('modified'); searchInputRef.current?.focus(); }}
+                onClick={() => { setSearch(''); setDebouncedSearch(''); setPage(1); setSearchMode('keyword'); if (sort === 'relevance') setSort('modified'); searchInputRef.current?.focus(); }}
                 className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full p-0.5 text-muted-foreground hover:text-foreground"
                 data-testid="search-clear"
                 aria-label="Clear search"
@@ -473,6 +513,7 @@ export function PagesPage() {
             value={spaceKey}
             onChange={(e) => { setSpaceKey(e.target.value); setPage(1); setForcePageList(false); }}
             className="nm-select-md w-40 shrink-0"
+            aria-label="Filter by space"
           >
             <option value="">All Spaces</option>
             {spaces?.map((s) => (
@@ -482,19 +523,22 @@ export function PagesPage() {
 
           <select
             value={sourceFilter}
-            onChange={(e) => { setSourceFilter(e.target.value); setPage(1); }}
+            onChange={(e) => { setSourceFilter(e.target.value as PageSource | ''); setPage(1); }}
             className="nm-select-md w-32 shrink-0"
             data-testid="filter-source"
+            aria-label="Filter by source"
           >
             <option value="">All Sources</option>
-            <option value="confluence">Confluence</option>
-            <option value="local">Local</option>
+            {PageSourceEnum.options.map((source) => (
+              <option key={source} value={source}>{SOURCE_LABELS[source]}</option>
+            ))}
           </select>
 
           <select
             value={sort}
             onChange={(e) => setSort(e.target.value as typeof sort)}
             className="nm-select-md w-40 shrink-0"
+            aria-label="Sort pages"
           >
             <option value="modified">Last Modified</option>
             <option value="title">Title</option>
@@ -533,8 +577,9 @@ export function PagesPage() {
           <div className="grid grid-cols-2 items-end gap-3 border-t border-border/40 pt-3 sm:grid-cols-3 lg:grid-cols-4" data-testid="advanced-filters-panel">
             {/* Author filter */}
             <div className="min-w-40">
-              <label className="mb-1 block text-xs text-muted-foreground">Author</label>
+              <label htmlFor="filter-author-select" className="mb-1 block text-xs text-muted-foreground">Author</label>
               <select
+                id="filter-author-select"
                 value={author}
                 onChange={(e) => { setAuthor(e.target.value); setPage(1); }}
                 className="nm-select-md w-full"
@@ -549,8 +594,9 @@ export function PagesPage() {
 
             {/* Labels filter */}
             <div className="min-w-40">
-              <label className="mb-1 block text-xs text-muted-foreground">Labels</label>
+              <label htmlFor="filter-labels-select" className="mb-1 block text-xs text-muted-foreground">Labels</label>
               <select
+                id="filter-labels-select"
                 value={labels}
                 onChange={(e) => { setLabels(e.target.value); setPage(1); }}
                 className="nm-select-md w-full"
@@ -565,8 +611,9 @@ export function PagesPage() {
 
             {/* Freshness filter */}
             <div className="min-w-32">
-              <label className="mb-1 block text-xs text-muted-foreground">Freshness</label>
+              <label htmlFor="filter-freshness-select" className="mb-1 block text-xs text-muted-foreground">Freshness</label>
               <select
+                id="filter-freshness-select"
                 value={freshness}
                 onChange={(e) => { setFreshness(e.target.value); setPage(1); }}
                 className="nm-select-md w-full"
@@ -582,8 +629,9 @@ export function PagesPage() {
 
             {/* Embedding status filter */}
             <div className="min-w-36">
-              <label className="mb-1 block text-xs text-muted-foreground">Embedding</label>
+              <label htmlFor="filter-embedding-select" className="mb-1 block text-xs text-muted-foreground">Embedding</label>
               <select
+                id="filter-embedding-select"
                 value={embeddingStatus}
                 onChange={(e) => { setEmbeddingStatus(e.target.value); setPage(1); }}
                 className="nm-select-md w-full"
@@ -597,8 +645,9 @@ export function PagesPage() {
 
             {/* Quality score filter */}
             <div className="min-w-36">
-              <label className="mb-1 block text-xs text-muted-foreground">Quality</label>
+              <label htmlFor="filter-quality-select" className="mb-1 block text-xs text-muted-foreground">Quality</label>
               <select
+                id="filter-quality-select"
                 value={qualityFilter}
                 onChange={(e) => { setQualityFilter(e.target.value); setPage(1); }}
                 className="nm-select-md w-full"
@@ -614,8 +663,9 @@ export function PagesPage() {
 
             {/* Date range */}
             <div className="min-w-36">
-              <label className="mb-1 block text-xs text-muted-foreground">Modified From</label>
+              <label htmlFor="filter-date-from-input" className="mb-1 block text-xs text-muted-foreground">Modified From</label>
               <input
+                id="filter-date-from-input"
                 type="date"
                 value={dateFrom}
                 onChange={(e) => { setDateFrom(e.target.value); setPage(1); }}
@@ -624,8 +674,9 @@ export function PagesPage() {
               />
             </div>
             <div className="min-w-36">
-              <label className="mb-1 block text-xs text-muted-foreground">Modified To</label>
+              <label htmlFor="filter-date-to-input" className="mb-1 block text-xs text-muted-foreground">Modified To</label>
               <input
+                id="filter-date-to-input"
                 type="date"
                 value={dateTo}
                 onChange={(e) => { setDateTo(e.target.value); setPage(1); }}
@@ -648,9 +699,21 @@ export function PagesPage() {
           </div>
         )}
 
-        {/* Active filter pills */}
+        {/* Active filter pills.
+            Semantic/hybrid search ignores advanced filters (the backend
+            vector/hybrid paths never receive them), so when semantic search is
+            running we visually mark the pills as inactive rather than pretend
+            they still filter the results (#945). */}
         {activeFilters.length > 0 && (
-          <div className="flex flex-wrap items-center gap-2 border-t border-border/50 pt-3" data-testid="active-filter-pills">
+          <div
+            className={cn(
+              'flex flex-wrap items-center gap-2 border-t border-border/50 pt-3',
+              useSemanticSearch && 'opacity-50',
+            )}
+            data-testid="active-filter-pills"
+            data-inactive={useSemanticSearch ? 'true' : undefined}
+            aria-disabled={useSemanticSearch || undefined}
+          >
             {activeFilters.map((f) => (
               <button
                 key={f.key}
@@ -671,6 +734,19 @@ export function PagesPage() {
               Clear all
             </button>
           </div>
+        )}
+
+        {/* Honest notice: advanced filters are keyword-only. In semantic/hybrid
+            mode the backend ignores them, so tell the user instead of silently
+            dropping them (#945). */}
+        {useSemanticSearch && activeFilterCount > 0 && (
+          <p
+            className="flex items-center gap-1.5 text-xs text-muted-foreground"
+            data-testid="filters-ignored-notice"
+          >
+            <AlertTriangle size={12} className="shrink-0 text-warning" aria-hidden="true" />
+            Advanced filters apply to keyword search only — they don't affect semantic or hybrid results.
+          </p>
         )}
       </div>
 
@@ -735,8 +811,16 @@ export function PagesPage() {
             return displayItems.length === 0 ? (
               <EmptyState
                 icon={FolderOpen}
-                title="No pages found"
-                description="Try a different search term or switch to keyword mode"
+                title={searchResults.hasEmbeddings ? 'No pages found' : 'No matching pages'}
+                description={
+                  searchResults.hasEmbeddings
+                    ? 'Try a different search term or switch to keyword mode'
+                    // Zero embeddings: the banner above already says keyword
+                    // fallback ran, so acknowledge both facts — the query
+                    // matched nothing AND semantic search is unavailable
+                    // (#938; copy reconciled in the #993 review).
+                    : 'Keyword search found no matches. Semantic search is unavailable until pages are embedded — configure an embedding provider in Settings → LLM and run an embedding pass.'
+                }
               />
             ) : (
               <>
@@ -786,16 +870,18 @@ export function PagesPage() {
               <button
                 onClick={() => setPage((p) => Math.max(1, p - 1))}
                 disabled={page <= 1}
+                aria-label="Previous page"
                 className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm p-2 disabled:opacity-30"
               >
                 <ChevronLeft size={18} />
               </button>
-              <span className="text-sm text-muted-foreground">
+              <span className="text-sm text-muted-foreground" aria-live="polite">
                 Page {page} of {searchResults.totalPages}
               </span>
               <button
                 onClick={() => setPage((p) => Math.min(searchResults.totalPages, p + 1))}
                 disabled={page >= searchResults.totalPages}
+                aria-label="Next page"
                 className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm p-2 disabled:opacity-30"
               >
                 <ChevronRight size={18} />
@@ -880,16 +966,18 @@ export function PagesPage() {
               <button
                 onClick={() => setPage((p) => Math.max(1, p - 1))}
                 disabled={page <= 1}
+                aria-label="Previous page"
                 className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm p-2 disabled:opacity-30"
               >
                 <ChevronLeft size={18} />
               </button>
-              <span className="text-sm text-muted-foreground">
+              <span className="text-sm text-muted-foreground" aria-live="polite">
                 Page {page} of {pagesData.totalPages}
               </span>
               <button
                 onClick={() => setPage((p) => Math.min(pagesData.totalPages, p + 1))}
                 disabled={page >= pagesData.totalPages}
+                aria-label="Next page"
                 className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm p-2 disabled:opacity-30"
               >
                 <ChevronRight size={18} />

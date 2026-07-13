@@ -8,11 +8,16 @@ import { cleanPageAttachments } from '../../domains/confluence/services/attachme
 
 // --- Mocks ---
 
+// Shared spies so tests can assert which invalidation path a delete took (#893).
+const mockCacheInvalidate = vi.fn();
+const mockCacheInvalidateAcrossUsers = vi.fn();
 vi.mock('../../core/services/redis-cache.js', () => ({
   RedisCache: class MockRedisCache {
     get = vi.fn().mockResolvedValue(null);
     set = vi.fn().mockResolvedValue(undefined);
-    invalidate = vi.fn().mockResolvedValue(undefined);
+    invalidate = (...args: unknown[]) => mockCacheInvalidate(...args);
+    // Confluence deletes clear every user's cache (#893).
+    invalidateAcrossUsers = (...args: unknown[]) => mockCacheInvalidateAcrossUsers(...args);
   },
 }));
 
@@ -248,6 +253,100 @@ describe('DELETE /api/pages/:id RBAC space access checks', () => {
 
     expect(response.statusCode).toBe(200);
     expect(mockDeletePage).toHaveBeenCalledWith('page-42');
+  });
+
+  // ── #893: cross-user cache invalidation on delete ──────────────────────────
+  // A Confluence or shared standalone page is visible to other users, so its
+  // deletion must clear every user's cached lists/trees — not just the deleter's.
+
+  describe('cache invalidation (#893)', () => {
+    it('invalidates pages AND spaces caches across all users on a Confluence delete', async () => {
+      const mockDeletePage = vi.fn().mockResolvedValue(undefined);
+      mockGetClientForUser.mockResolvedValue({ deletePage: mockDeletePage });
+
+      mockQueryFn.mockImplementation((sql: string) => {
+        if (typeof sql === 'string' && sql.includes('id, source, created_by_user_id')) {
+          return Promise.resolve({
+            rows: [{
+              id: 10,
+              source: 'confluence',
+              created_by_user_id: null,
+              confluence_id: 'page-100',
+              space_key: 'DEV',
+              visibility: 'shared',
+            }],
+          });
+        }
+        return Promise.resolve({ rows: [], rowCount: 0 });
+      });
+
+      const response = await app.inject({
+        method: 'DELETE',
+        url: '/api/pages/page-100',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledWith('pages');
+      // Deleting a Confluence page may drop its space, and the cached spaces
+      // payload carries per-space pageCount — clear it for everyone too.
+      expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledWith('spaces');
+      expect(mockCacheInvalidate).not.toHaveBeenCalled();
+    });
+
+    it('invalidates the pages cache across all users when deleting a shared standalone page', async () => {
+      mockQueryFn.mockImplementation((sql: string) => {
+        if (typeof sql === 'string' && sql.includes('id, source, created_by_user_id')) {
+          return Promise.resolve({
+            rows: [{
+              id: 10,
+              source: 'standalone',
+              created_by_user_id: TEST_USER,
+              confluence_id: null,
+              space_key: null,
+              visibility: 'shared',
+            }],
+          });
+        }
+        return Promise.resolve({ rows: [], rowCount: 0 });
+      });
+
+      const response = await app.inject({
+        method: 'DELETE',
+        url: '/api/pages/10',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledWith('pages');
+      // Standalone pages never drop a Confluence space — the spaces cache stays.
+      expect(mockCacheInvalidateAcrossUsers).not.toHaveBeenCalledWith('spaces');
+    });
+
+    it('keeps per-user invalidation when deleting a private standalone page', async () => {
+      mockQueryFn.mockImplementation((sql: string) => {
+        if (typeof sql === 'string' && sql.includes('id, source, created_by_user_id')) {
+          return Promise.resolve({
+            rows: [{
+              id: 10,
+              source: 'standalone',
+              created_by_user_id: TEST_USER,
+              confluence_id: null,
+              space_key: null,
+              visibility: 'private',
+            }],
+          });
+        }
+        return Promise.resolve({ rows: [], rowCount: 0 });
+      });
+
+      const response = await app.inject({
+        method: 'DELETE',
+        url: '/api/pages/10',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockCacheInvalidateAcrossUsers).not.toHaveBeenCalled();
+      expect(mockCacheInvalidate).toHaveBeenCalledWith(TEST_USER, 'pages');
+    });
   });
 
   // ── #706: tolerate a Confluence page already deleted remotely ──────────────

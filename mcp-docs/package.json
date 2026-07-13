@@ -1,6 +1,6 @@
 {
   "name": "compendiq-mcp-docs",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "private": true,
   "type": "module",
   "scripts": {
@@ -18,6 +18,7 @@
     "pino": "^10.3.1",
     "redis": "^5.11.0",
     "turndown": "^7.2.0",
+    "undici": "^7.25.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {

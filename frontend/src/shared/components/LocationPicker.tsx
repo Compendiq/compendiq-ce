@@ -141,9 +141,7 @@ const PickerTreeNode = memo(function PickerTreeNode({
 
   return (
     <div>
-      <button
-        type="button"
-        onClick={handleSelect}
+      <div
         className={cn(
           'group flex w-full items-center gap-1.5 rounded-md py-1.5 pr-2 text-sm transition-colors',
           isSelected
@@ -153,32 +151,38 @@ const PickerTreeNode = memo(function PickerTreeNode({
         style={{ paddingLeft: `${level * 16 + 8}px` }}
       >
         {hasChildren ? (
-          <span
-            role="button"
-            tabIndex={-1}
+          <button
+            type="button"
             onClick={handleToggle}
-            className="shrink-0 rounded p-0.5 hover:bg-foreground/10"
+            aria-expanded={isExpanded}
             aria-label={isExpanded ? 'Collapse' : 'Expand'}
+            className="shrink-0 rounded p-0.5 hover:bg-foreground/10"
           >
             {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-          </span>
+          </button>
         ) : (
           <span className="w-[20px] shrink-0" />
         )}
-        {hasChildren ? (
-          isExpanded ? (
-            <FolderOpen size={15} className="shrink-0 text-action/80" />
+        <button
+          type="button"
+          onClick={handleSelect}
+          className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+        >
+          {hasChildren ? (
+            isExpanded ? (
+              <FolderOpen size={15} className="shrink-0 text-action/80" />
+            ) : (
+              <Folder size={15} className="shrink-0 text-action/70" />
+            )
           ) : (
-            <Folder size={15} className="shrink-0 text-action/70" />
-          )
-        ) : (
-          <FileText size={15} className="shrink-0 text-muted-foreground/70" />
-        )}
-        <span className="truncate">{node.page.title}</span>
-        {isSelected && (
-          <Check size={14} className="ml-auto shrink-0 text-action" />
-        )}
-      </button>
+            <FileText size={15} className="shrink-0 text-muted-foreground/70" />
+          )}
+          <span className="truncate">{node.page.title}</span>
+          {isSelected && (
+            <Check size={14} className="ml-auto shrink-0 text-action" />
+          )}
+        </button>
+      </div>
 
       {hasChildren && isExpanded && (
         <div>

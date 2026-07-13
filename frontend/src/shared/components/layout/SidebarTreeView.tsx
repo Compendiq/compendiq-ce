@@ -46,9 +46,14 @@ function buildTree(pages: PageTreeItem[], homepageId?: string | null): TreeNode[
     }
   });
 
-  // Sort children alphabetically
+  // #959: order siblings by the persisted sortOrder first (set by drag-reorder
+  // via PUT /pages/:id/reorder), falling back to title. Without this the tree
+  // always re-sorted alphabetically, so a drop snapped straight back.
+  const bySortOrderThenTitle = (a: TreeNode, b: TreeNode) =>
+    a.page.sortOrder - b.page.sortOrder || a.page.title.localeCompare(b.page.title);
+
   function sortChildren(nodes: TreeNode[]) {
-    nodes.sort((a, b) => a.page.title.localeCompare(b.page.title));
+    nodes.sort(bySortOrderThenTitle);
     nodes.forEach((n) => sortChildren(n.children));
   }
   sortChildren(roots);
@@ -63,9 +68,14 @@ function buildTree(pages: PageTreeItem[], homepageId?: string | null): TreeNode[
     if (homepageNode) {
       const promoted = homepageNode.children;
       const withoutHomepage = roots.filter((r) => r.page.id !== homepageId);
-      return [...promoted, ...withoutHomepage].sort((a, b) =>
-        a.page.title.localeCompare(b.page.title),
-      );
+      const withoutHome = [...promoted, ...withoutHomepage];
+      // #961: hiding the homepage must not leave the sidebar empty. When the
+      // space contains only its homepage (no children, no sibling roots),
+      // keep the homepage visible so the tree doesn't render a false
+      // "empty space" state above a "1 page in <SPACE>" footer.
+      if (withoutHome.length > 0) {
+        return withoutHome.sort(bySortOrderThenTitle);
+      }
     }
   }
 
@@ -96,6 +106,11 @@ export interface SidebarTreeNodeProps {
   expandedSet: Set<string>;
   toggleExpand: (id: string) => void;
   activePageId: string | undefined;
+  // #960: derived once by the parent from location.pathname and passed down as
+  // a stable prop. Rows must NOT call useLocation() themselves — that subscribed
+  // every memoized row to every location/searchParams change, defeating the memo
+  // comparator and re-rendering the whole tree on each navigation.
+  isAiRoute: boolean;
 }
 
 export const SidebarTreeNode = memo(function SidebarTreeNode({
@@ -104,13 +119,12 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
   expandedSet,
   toggleExpand,
   activePageId,
+  isAiRoute,
 }: SidebarTreeNodeProps) {
   const navigate = useNavigate();
-  const location = useLocation();
   const isExpanded = expandedSet.has(node.page.id);
   const hasChildren = node.children.length > 0;
   const isActive = node.page.id === activePageId;
-  const isAiRoute = location.pathname === '/ai';
 
   const handleNavigate = useCallback(() => {
     if (hasChildren) toggleExpand(node.page.id);
@@ -136,6 +150,12 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
         // scroll it into view on reload (its ancestors are auto-expanded first).
         data-active={isActive ? 'true' : undefined}
         data-page-id={node.page.id}
+        // #880: make the row a real keyboard-operable widget. role="treeitem"
+        // (not "button") because the chevron is a nested <button> — a button
+        // role here would nest interactive controls. Enter/Space navigate.
+        role="treeitem"
+        tabIndex={0}
+        aria-expanded={hasChildren ? isExpanded : undefined}
         className={cn(
           'group flex items-center gap-1.5 rounded-[10px] h-9 pr-2 text-sm cursor-pointer transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
           isActive
@@ -144,6 +164,15 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
         )}
         style={{ paddingLeft: `${level * 16 + 10}px` }}
         onClick={handleNavigate}
+        onKeyDown={(e) => {
+          // Ignore keydown bubbling up from the nested chevron button so the
+          // row doesn't double-activate when the chevron is focused.
+          if (e.target !== e.currentTarget) return;
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault(); // Space would otherwise scroll the page
+            handleNavigate();
+          }
+        }}
       >
         {hasChildren ? (
           <button
@@ -166,7 +195,9 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
       </div>
 
       {hasChildren && isExpanded && (
-        <div className="relative">
+        // #880: role="group" gives the nested treeitem rows a valid ARIA
+        // required-parent (a treeitem must be owned by a tree or group).
+        <div className="relative" role="group">
           {/* Indent guide line -- click to collapse parent */}
           <button
             type="button"
@@ -184,6 +215,7 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
               expandedSet={expandedSet}
               toggleExpand={toggleExpand}
               activePageId={activePageId}
+              isAiRoute={isAiRoute}
             />
           ))}
         </div>
@@ -195,7 +227,8 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
     prev.node === next.node &&
     prev.level === next.level &&
     prev.activePageId === next.activePageId &&
-    prev.expandedSet === next.expandedSet
+    prev.expandedSet === next.expandedSet &&
+    prev.isAiRoute === next.isAiRoute
   );
 });
 
@@ -270,6 +303,9 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
   const homepageId = selectedSpaceOption?.homepageId;
   const tree = useMemo(() => buildTree(pages, homepageId), [pages, homepageId]);
   const isLocalSpace = selectedSpaceOption?.source === 'local';
+  // #960: derive the /ai signal once here and thread it into every row as a
+  // stable prop so the rows themselves don't subscribe to location.
+  const isAiRoute = location.pathname === '/ai';
 
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
 
@@ -735,11 +771,16 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
               expandedIds={expandedIds}
               toggleExpand={toggleExpand}
               activePageId={activePageId}
+              isAiRoute={isAiRoute}
               reorderPage={reorderPage}
             />
           </Suspense>
         ) : (
-          <div className="space-y-0.5">
+          // #880: role="tree" + label give the role="treeitem" rows a valid
+          // required-parent context and expose real tree semantics to screen
+          // readers. Keyboard reorder + full roving-tabindex/arrow-key nav
+          // remain a tracked follow-up (epic #856).
+          <div className="space-y-0.5" role="tree" aria-label="Pages">
             {tree.map((node) => (
               <SidebarTreeNode
                 key={node.page.id}
@@ -747,6 +788,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
                 expandedSet={expandedIds}
                 toggleExpand={toggleExpand}
                 activePageId={activePageId}
+                isAiRoute={isAiRoute}
               />
             ))}
           </div>

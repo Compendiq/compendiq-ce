@@ -190,8 +190,8 @@ describe('RBAC routes', () => {
     it('should return all roles', async () => {
       (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
         rows: [
-          { id: 1, name: 'system_admin', display_name: 'System Administrator', is_system: true, permissions: ['read', 'admin'], created_at: '2026-01-01T00:00:00Z' },
-          { id: 2, name: 'viewer', display_name: 'Viewer', is_system: true, permissions: ['read'], created_at: '2026-01-01T00:00:00Z' },
+          { id: 1, name: 'system_admin', display_name: 'System Administrator', is_system: true, permissions: ['read', 'admin'], created_at: '2026-01-01T00:00:00Z', description: null },
+          { id: 2, name: 'viewer', display_name: 'Viewer', is_system: true, permissions: ['read'], created_at: '2026-01-01T00:00:00Z', description: null },
         ],
       });
 
@@ -210,7 +210,44 @@ describe('RBAC routes', () => {
         isSystem: true,
         permissions: ['read', 'admin'],
         createdAt: '2026-01-01T00:00:00Z',
+        description: null,
       });
+    });
+
+    // #935: the editor round-trips the description, so GET /api/roles must
+    // surface it. Previously the response mapping dropped the column, so
+    // opening a custom role for editing showed an empty Description and
+    // saving overwrote the stored value with ''.
+    it('should include the description for custom roles', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        rows: [
+          { id: 6, name: 'kb_editor', display_name: 'KB Editor', is_system: false, permissions: ['read', 'edit'], created_at: '2026-01-01T00:00:00Z', description: 'Can edit KB pages' },
+        ],
+      });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/roles',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body[0]).toEqual({
+        id: 6,
+        name: 'kb_editor',
+        displayName: 'KB Editor',
+        isSystem: false,
+        permissions: ['read', 'edit'],
+        createdAt: '2026-01-01T00:00:00Z',
+        description: 'Can edit KB pages',
+      });
+
+      // The SELECT must actually read the description column.
+      const rolesCall = (mockQuery as ReturnType<typeof vi.fn>).mock.calls.find(
+        (call) => typeof call[0] === 'string' && call[0].includes('FROM roles'),
+      );
+      expect(rolesCall).toBeDefined();
+      expect(rolesCall![0]).toContain('description');
     });
   });
 

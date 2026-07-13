@@ -32,6 +32,10 @@ export function useSetupStatus() {
   return {
     setupComplete: data?.setupComplete ?? false,
     steps: data?.steps ?? { admin: false, llm: false, confluence: false },
+    // True when React Query holds a (possibly stale) successful response.
+    // Lets callers distinguish "errored with no data at all" from "background
+    // refetch failed but the cached answer is still routable" (#932).
+    hasData: data !== undefined,
     isLoading,
     error,
     refetch,

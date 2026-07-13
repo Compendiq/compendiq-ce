@@ -470,7 +470,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       visibility: string;
     };
 
-    async function executeSearchQuery(wc: string, vals: unknown[], ob: string, pi: number, obVals: unknown[] = []) {
+    async function executeSearchQuery(wc: string, vals: unknown[], ob: string, obVals: unknown[] = []) {
       // Count query uses only WHERE params (no ORDER BY params)
       const countSql = `SELECT COUNT(*) as count FROM pages cp ${wc}`;
       const countResult = await query<{ count: string }>(countSql, [...vals]);
@@ -483,6 +483,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       }
 
       const offset = (page - 1) * limit;
+      // Derive the LIMIT/OFFSET placeholder index from the actual bound-value
+      // count (WHERE params + ORDER BY params) so it never goes stale when the
+      // relevance ORDER BY param is dropped in the ILIKE fallback (#862).
+      const pi = vals.length + obVals.length + 1;
       const dataSql = `
         SELECT cp.id, cp.confluence_id, cp.space_key, cp.title, cp.version,
                cp.parent_id, cp.labels, cp.author, cp.last_modified_at, cp.last_synced,
@@ -503,7 +507,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     }
 
     // First attempt: FTS query
-    let { total, rows } = await executeSearchQuery(whereClause, values, orderBy, paramIdx, orderByValues);
+    let { total, rows } = await executeSearchQuery(whereClause, values, orderBy, orderByValues);
 
     // ILIKE fallback: when FTS returns 0 results and search term >= 3 chars,
     // retry with a broader ILIKE match on title + body_text.
@@ -521,7 +525,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         ilikeOrderBy = 'cp.last_modified_at DESC NULLS LAST';
         ilikeObVals = [];
       }
-      const fallbackResult = await executeSearchQuery(ilikeWhereClause, ilikeValues, ilikeOrderBy, paramIdx, ilikeObVals);
+      const fallbackResult = await executeSearchQuery(ilikeWhereClause, ilikeValues, ilikeOrderBy, ilikeObVals);
       total = fallbackResult.total;
       rows = fallbackResult.rows;
       usedIlikeFallback = true;
@@ -606,6 +610,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       title: string;
       page_type: string;
       parent_numeric_id: number | null;
+      sort_order: number;
       labels: string[];
       last_modified_at: Date | null;
       embedding_dirty: boolean;
@@ -613,8 +618,12 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       embedded_at: Date | null;
       embedding_error: string | null;
     }>(
+      // #959: order by sort_order first so a persisted drag-reorder (written by
+      // PUT /pages/:id/reorder) survives the tree refetch instead of snapping
+      // back to alphabetical order. Confluence pages default to sort_order 0,
+      // so they still fall back to title order within each sibling group.
       `SELECT cp.id, cp.confluence_id, cp.space_key, cp.title, cp.page_type,
-              parent_page.id as parent_numeric_id,
+              parent_page.id as parent_numeric_id, cp.sort_order,
               cp.labels, cp.last_modified_at,
               cp.embedding_dirty, cp.embedding_status, cp.embedded_at, cp.embedding_error
        FROM pages cp
@@ -623,7 +632,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
          OR CAST(parent_page.id AS TEXT) = cp.parent_id
        ) AND parent_page.deleted_at IS NULL
        ${treeWhereClause}
-       ORDER BY cp.title ASC`,
+       ORDER BY cp.sort_order ASC, cp.title ASC`,
       values,
     );
 
@@ -634,6 +643,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         title: row.title,
         pageType: row.page_type ?? 'page',
         parentId: row.parent_numeric_id ? String(row.parent_numeric_id) : null,
+        sortOrder: row.sort_order,
         labels: row.labels,
         lastModifiedAt: row.last_modified_at,
         embeddingDirty: row.embedding_dirty,
@@ -993,9 +1003,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     const existing = await query<{
       id: number; title: string; source: string;
-      created_by_user_id: string | null; deleted_at: Date | null;
+      created_by_user_id: string | null; deleted_at: Date | null; visibility: string;
     }>(
-      'SELECT id, title, source, created_by_user_id, deleted_at FROM pages WHERE id = $1',
+      'SELECT id, title, source, created_by_user_id, deleted_at, visibility FROM pages WHERE id = $1',
       [id],
     );
     if (existing.rows.length === 0) {
@@ -1015,7 +1025,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     await query('UPDATE pages SET deleted_at = NULL WHERE id = $1', [page.id]);
 
-    await cache.invalidate(userId, 'pages');
+    // A restored shared page reappears in every user's lists/trees (#893) —
+    // mirror the delete path: clear all users' caches. Private stays per-user.
+    if (page.visibility === 'shared') {
+      await cache.invalidateAcrossUsers('pages');
+    } else {
+      await cache.invalidate(userId, 'pages');
+    }
     await logAuditEvent(userId, 'PAGE_RESTORED', 'page', String(id),
       { source: 'standalone', title: page.title }, request);
 
@@ -1057,6 +1073,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     if (isStandalone) {
       // --- Standalone article: no Confluence call, store locally ---
+      const visibility = body.visibility ?? 'shared';
       const isFolder = pageType === 'folder';
       const effectiveBodyHtml = isFolder ? '' : body.bodyHtml;
       const { htmlToText } = await import('../../core/services/content-converter.js');
@@ -1091,7 +1108,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
                  $8, $9, 'not_embedded', NOW())
          RETURNING id, title, version`,
         [body.title, effectiveBodyHtml, bodyText, userId,
-         body.visibility ?? 'shared', spaceKey, body.parentId ?? null,
+         visibility, spaceKey, body.parentId ?? null,
          pageType, !isFolder],
       );
 
@@ -1103,9 +1120,16 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       await query('UPDATE pages SET path = $1, depth = $2 WHERE id = $3',
         [newPath, depth, newPage.id]);
 
-      await cache.invalidate(userId, 'pages');
+      // A new shared page appears in every user's lists/trees (#893) — clear
+      // all users' caches so it isn't missing for them until the TTL expires.
+      // Private pages only concern the creator.
+      if (visibility === 'shared') {
+        await cache.invalidateAcrossUsers('pages');
+      } else {
+        await cache.invalidate(userId, 'pages');
+      }
       await logAuditEvent(userId, 'PAGE_CREATED', 'page', String(newPage.id),
-        { source: 'standalone', title: body.title, visibility: body.visibility ?? 'shared', spaceKey, pageType }, request);
+        { source: 'standalone', title: body.title, visibility, spaceKey, pageType }, request);
 
       emitWebhookEvent({
         eventType: 'page.created',
@@ -1122,6 +1146,16 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     }
 
     // --- Confluence article: existing flow ---
+    // RBAC: verify the caller may operate on the target space before creating
+    // a page upstream. The Confluence PAT can permit more spaces than the
+    // app-level RBAC scope, so mirror the PUT/DELETE guard here (#892).
+    if (body.spaceKey) {
+      const accessibleSpaces = await getUserAccessibleSpaces(userId);
+      if (!accessibleSpaces.includes(body.spaceKey)) {
+        throw fastify.httpErrors.forbidden('Access denied to this space');
+      }
+    }
+
     const client = await getClientForUser(userId);
     if (!client) {
       throw fastify.httpErrors.badRequest('Confluence not configured');
@@ -1162,9 +1196,11 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
        bodyHtml, bodyText, page.version.number, body.parentId ?? null],
     );
 
-    // Invalidate cache
-    await cache.invalidate(userId, 'pages');
-    await cache.invalidate(userId, 'spaces');
+    // A new Confluence page is visible to every user with space access (#893),
+    // and the cached spaces payload carries per-space pageCount which this
+    // create just changed — clear both caches for every user.
+    await cache.invalidateAcrossUsers('pages');
+    await cache.invalidateAcrossUsers('spaces');
 
     await logAuditEvent(userId, 'PAGE_CREATED', 'page', page.id, { spaceKey: body.spaceKey, title: body.title }, request);
 
@@ -1241,7 +1277,14 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       // index for local_modified_by based on whether the visibility
       // column is being written in the same statement.
       const userIdParamIndex = body.visibility ? 7 : 6;
-      await query(
+      // #926: guard the write with the version we just read. The JS pre-check
+      // above only rejects a client that SENDS a stale body.version; it can't
+      // see a write that landed between our SELECT and this UPDATE. Binding
+      // `AND version = <read version>` makes a concurrent writer's row (already
+      // bumped to newVersion) fail to match, so we detect the lost update via
+      // rowCount instead of silently clobbering it (last-write-wins).
+      const versionGuardIndex = body.visibility ? 8 : 7;
+      const updateResult = await query(
         `UPDATE pages SET
            title = $2, body_html = $3, body_text = $4,
            version = $5, last_modified_at = NOW(), embedding_dirty = TRUE,
@@ -1258,16 +1301,22 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
            -- touched the page last.
            local_modified_at = NOW(), local_modified_by = $${userIdParamIndex}
            ${body.visibility ? ', visibility = $6' : ''}
-         WHERE id = $1`,
+         WHERE id = $1 AND version = $${versionGuardIndex}`,
         body.visibility
-          ? [id, body.title, body.bodyHtml, bodyText, newVersion, body.visibility, userId]
-          : [id, body.title, body.bodyHtml, bodyText, newVersion, userId],
+          ? [id, body.title, body.bodyHtml, bodyText, newVersion, body.visibility, userId, existingPage.version]
+          : [id, body.title, body.bodyHtml, bodyText, newVersion, userId, existingPage.version],
       );
 
-      // A visibility change alters what OTHER users can see — their cached
-      // trees/lists would serve stale data for up to the cache TTL (15 min)
-      // if we only invalidated the editor's own cache.
-      if (body.visibility && body.visibility !== existingPage.visibility) {
+      if ((updateResult.rowCount ?? 0) === 0) {
+        throw fastify.httpErrors.conflict('Page has been modified since you loaded it. Please refresh and try again.');
+      }
+
+      // A shared page's list rows (title/snippet) and a visibility flip both
+      // change what OTHER users see (#893) — their cached trees/lists would
+      // serve stale data for up to the cache TTL (15 min) if we only
+      // invalidated the editor's own cache. Private edits stay per-user.
+      const visibilityChanged = body.visibility && body.visibility !== existingPage.visibility;
+      if (visibilityChanged || existingPage.visibility === 'shared') {
         await cache.invalidateAcrossUsers('pages');
       } else {
         await cache.invalidate(userId, 'pages');
@@ -1352,8 +1401,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
        bodyHtml, bodyText, confPage.version.number],
     );
 
-    // Invalidate cache
-    await cache.invalidate(userId, 'pages');
+    // Confluence pages are visible to every user with space access (#893), so
+    // clear every user's cached lists/trees, not just the editor's.
+    await cache.invalidateAcrossUsers('pages');
 
     await logAuditEvent(userId, 'PAGE_UPDATED', 'page', String(id), { title: body.title }, request);
 
@@ -1383,9 +1433,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // Load the page to determine source
     const existing = await query<{
       id: number; source: string; created_by_user_id: string | null;
-      confluence_id: string | null; space_key: string | null;
+      confluence_id: string | null; space_key: string | null; visibility: string;
     }>(
-      `SELECT id, source, created_by_user_id, confluence_id, space_key FROM pages WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'}`,
+      `SELECT id, source, created_by_user_id, confluence_id, space_key, visibility FROM pages WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'}`,
       [isNumericId ? parseInt(id, 10) : id],
     );
     if (existing.rows.length === 0) {
@@ -1409,7 +1459,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         await query('UPDATE pages SET deleted_at = NOW() WHERE id = $1', [existingPage.id]);
       }
 
-      await cache.invalidate(userId, 'pages');
+      // A shared standalone page is visible to every user (#893), so its
+      // removal must clear all users' cached lists/trees. Private stays per-user.
+      if (existingPage.visibility === 'shared') {
+        await cache.invalidateAcrossUsers('pages');
+      } else {
+        await cache.invalidate(userId, 'pages');
+      }
       await logAuditEvent(userId, 'PAGE_DELETED', 'page', String(id),
         { source: 'standalone', permanent: queryParams.permanent === 'true' }, request);
 
@@ -1538,9 +1594,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       }
     }
 
-    // Invalidate cache
-    await cache.invalidate(userId, 'pages');
-    await cache.invalidate(userId, 'spaces');
+    // Confluence pages are visible to every user with space access (#893), and
+    // deleting one may also drop its space — clear every user's cache.
+    await cache.invalidateAcrossUsers('pages');
+    await cache.invalidateAcrossUsers('spaces');
 
     await logAuditEvent(userId, 'PAGE_DELETED', 'page', String(id), { alreadyGoneRemotely: alreadyGone }, request);
 
@@ -1719,12 +1776,29 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     }
 
     // For Confluence articles, push updated content upstream (best-effort)
+    let publishedVersion = page.version + 1;
     if (page.source === 'confluence' && page.confluence_id) {
       try {
         const client = await getClientForUser(userId);
         if (client) {
           const storageBody = htmlToConfluence(page.draft_body_html!);
-          await client.updatePage(page.confluence_id, page.title, storageBody, page.version + 1);
+          // updatePage() increments internally, so pass the *previous* live
+          // version (page.version) — the version Confluence currently holds
+          // pre-publish. The local row is already at page.version + 1 from the
+          // transaction above.
+          const confPage = await client.updatePage(page.confluence_id, page.title, storageBody, page.version);
+          // Trust the API-returned version over our locally-computed bump so
+          // local `version` can't drift and mis-trigger the next sync's
+          // conflict guard (mirrors the restore route). Persist the storage
+          // Confluence accepted and clear local-edit markers — local state now
+          // matches the remote.
+          publishedVersion = confPage.version?.number ?? publishedVersion;
+          await query(
+            `UPDATE pages SET body_storage = $2, version = $3, last_synced = NOW(),
+               local_modified_at = NULL, local_modified_by = NULL
+             WHERE id = $1`,
+            [page.id, storageBody, publishedVersion],
+          );
         }
       } catch (err) {
         // Log but don't fail — local publish succeeded
@@ -1732,9 +1806,16 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       }
     }
 
-    await cache.invalidate(userId, 'pages');
+    // Publishing a draft rewrites the live content — the same mutation class
+    // as PUT /pages/:id (#893): Confluence/shared pages are visible to other
+    // users, so their cached lists/trees must be cleared for everyone.
+    if (page.source === 'confluence' || page.visibility === 'shared') {
+      await cache.invalidateAcrossUsers('pages');
+    } else {
+      await cache.invalidate(userId, 'pages');
+    }
     await logAuditEvent(userId, 'DRAFT_PUBLISHED', 'page', String(page.id),
-      { version: page.version + 1 }, request);
+      { version: publishedVersion }, request);
 
     emitWebhookEvent({
       eventType: 'page.updated',
@@ -1746,7 +1827,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       },
     });
 
-    return { id: page.id, version: page.version + 1, published: true };
+    return { id: page.id, version: publishedVersion, published: true };
   });
 
   // DELETE /api/pages/:id/draft — discard draft
@@ -1821,7 +1902,18 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     let failed = resolved.notFoundIds.length;
 
     // --- Partition by source ---
-    const standalonePages = resolved.rows.filter((r) => r.source === 'standalone')
+    // #861: standalone delete is owner-only, mirroring DELETE /pages/:id.
+    // Shared standalone pages resolve for every viewer (read/edit is allowed),
+    // but only the owner may trash them. Non-owned standalone rows are reported
+    // as failures exactly like the single-delete 403 ('not the owner').
+    for (const r of resolved.rows) {
+      if (r.source === 'standalone' && r.createdByUserId !== userId) {
+        failed++;
+        errors.push(`Page ${r.id}: not the owner`);
+      }
+    }
+    const standalonePages = resolved.rows
+      .filter((r) => r.source === 'standalone' && r.createdByUserId === userId)
       .map((r) => ({ id: r.id, source: 'standalone', confluence_id: r.confluenceId, space_key: r.spaceKey }));
     const confluencePages = resolved.rows.filter((r) => r.source !== 'standalone')
       .map((r) => ({ id: r.id, source: r.source, confluence_id: r.confluenceId, space_key: r.spaceKey }));
@@ -1954,8 +2046,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     }
 
     const succeeded = standaloneSucceeded + confluenceSucceeded;
-    await cache.invalidate(userId, 'pages');
-    await cache.invalidate(userId, 'spaces');
+    // A bulk delete may include Confluence/shared pages visible to every user
+    // (#893), so clear all users' cached lists/trees/spaces unconditionally.
+    await cache.invalidateAcrossUsers('pages');
+    await cache.invalidateAcrossUsers('spaces');
     await logAuditEvent(
       userId,
       'PAGE_DELETED',

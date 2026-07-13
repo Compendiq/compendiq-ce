@@ -885,10 +885,9 @@ function RotateSecretDialog({
         <div className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-amber-100">
           <AlertTriangle size={16} className="mt-0.5 shrink-0 text-amber-400" />
           <p className="text-xs">
-            Both the current and new secret will sign deliveries until you
-            press <strong>Complete rotation</strong>, or 24 hours pass — whichever
-            comes first. Receivers must accept either signature during the
-            overlap window.
+            Both the current and new secret will sign deliveries for 24 hours,
+            then the previous secret is retired automatically. Receivers must
+            accept either signature during the overlap window.
           </p>
         </div>
 
@@ -942,8 +941,8 @@ function RotateSecretDialog({
               <strong data-testid="webhook-rotate-until">
                 {new Date(result.secondaryActiveUntil).toLocaleString()}
               </strong>
-              . Update receivers, then press Complete rotation to clear the
-              secondary slot early.
+              . Update receivers before then — the previous secret stays valid
+              until that time and is cleared automatically.
             </div>
           </div>
         )}

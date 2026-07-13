@@ -28,6 +28,7 @@ sequenceDiagram
         S-->>T: skip (another run in progress)
     else acquired
         R-->>S: OK
+        Note over S,R: Heartbeat every TTL/3 (200s): EXPIRE sync:worker:lock 600<br/>if still owned, so long runs never let the lock lapse (#906)
         S->>DB: SELECT user_settings (decrypt PAT)
         S->>CL: getSpaces(pat)
         CL->>CF: GET /rest/api/space
@@ -95,8 +96,11 @@ sequenceDiagram
 
 ## Concurrency & safety
 
-- **Redis lock (`sync:worker:lock`)** — single active sync per instance;
-  TTL acts as a dead-man's switch.
+- **Redis lock (`sync:worker:lock`)** — single active sync per instance. The
+  600s TTL acts as a dead-man's switch; while a run is in flight an
+  ownership-checked heartbeat re-`EXPIRE`s the key every TTL/3 (200s) so a sync
+  that outlasts one TTL can't lapse and admit a second concurrent worker
+  (#906). The heartbeat is cleared alongside the lock release in `finally`.
 - **Per-user PAT scope** — each sync decrypts the PAT just-in-time, uses it
   for the duration of the run, and never logs it.
 - **SSRF guard** — `confluence-client` uses the shared SSRF guard from
@@ -110,6 +114,16 @@ sequenceDiagram
   `NODE_EXTRA_CA_CERTS` for self-signed internal CAs.
 - **Idempotency** — upsert by `(user_id, confluence_id)`. `version` column
   is written from Confluence's own version counter; no double-writes.
+- **Timezone-safe incremental window (#858)** — `getModifiedPages` builds the
+  `lastmodified >=` lower bound as a **minute-granular CQL datetime literal**
+  (`yyyy/MM/dd HH:mm`, from the UTC wall-clock) widened by a **24h overlap
+  margin**. CQL date/time literals are resolved in the Confluence instance's
+  configured timezone (not UTC, and not exposed to us); the old bare-UTC-date
+  bound silently dropped edits made near a UTC-day boundary on west-of-UTC
+  instances, and the miss was permanent because the bound only advances forward.
+  The 24h margin provably covers the full real-world offset range (−12h…+14h);
+  over-fetching is a no-op because the `version` idempotency guard above skips
+  any re-fetched page whose stored version is already current.
 - **Circuit breaker** — `core/services/circuit-breaker.ts` protects against
   runaway failure against a broken Confluence instance.
 - **Per-page failure isolation (#822)** — the per-page loop in `syncSpace`
@@ -348,6 +362,25 @@ already-synced page in it, since `getUserAccessibleSpaces` derives a non-admin's
 readable spaces solely from those rows. Deselection (an empty set, handled by the
 DELETE path) is always safe and skips the PAT lookup. Cross-user space grants remain
 the exclusive domain of the admin-managed RBAC routes.
+
+## Sync-overview read path (#887)
+
+`GET /api/settings/sync-overview` (`getSyncOverview`) reports, per accessible
+space, how many expected image / draw.io assets are cached on disk. It once
+re-derived each page's expected filenames from raw XHTML on every request — the
+overview query materialised the whole corpus's `body_storage` and then JSDOM-
+parsed each body twice (`extractImageReferences` + `extractDrawioDiagramNames`),
+so an admin on a large instance blocked the event loop for tens of seconds per
+poll. Those filename sets are a pure function of `body_storage` + `space_key`, so
+they are now persisted on `pages.expected_image_files` / `expected_drawio_files`
+(migration 081) and reset to NULL by the `pages_expected_assets_invalidate`
+BEFORE UPDATE trigger whenever `body_storage` changes. The overview query selects
+the cached arrays instead of `body_storage`; a bounded (200/batch) lazy backfill
+recomputes and persists only the still-NULL rows (legacy pages, or pages just
+invalidated by a sync/edit) using the same extractors in that rare path. The
+per-page `fs.access` cache checks stay at read time (attachment downloads change
+cache state independently of page sync). The `SyncOverviewResponse` contract is
+unchanged, so the frontend needs no change.
 
 ## Content pipeline hand-off
 

@@ -193,19 +193,13 @@ Compendiq uses BullMQ (Redis-backed) for reliable background job processing. Six
 **Configuration:**
 - `USE_BULLMQ=true` (default) -- set to `false` to fall back to legacy `setInterval` workers
 - Redis `maxmemory-policy` must be `noeviction` (default in the provided Docker config)
-- Job history is stored in the `job_history` PostgreSQL table for observability
-- Queue metrics are exposed via `GET /api/health` under the `queues` key
+- Job history is stored in the `job_history` PostgreSQL table for observability; BullMQ queue metrics are not exposed via the API
 - `REEMBED_WAIT_LOCKS_MS=600000` (default 10 min): how long the `reembed-all`
   worker waits for in-flight per-user embedding runs to finish before
   aborting the job. Visible in the admin UI via `GET /api/admin/embedding/locks`.
 - `reembed_history_retention` (admin setting, default 150): how many
   completed/failed `reembed-all` job records BullMQ keeps in Redis before
   sweeping the oldest. Range [10, 10000]. Takes effect on the next run.
-
-**Monitoring:** The health endpoint returns per-queue counts (waiting, active, completed, failed):
-```bash
-curl http://localhost:8081/api/health | jq '.queues'
-```
 
 ### LLM Request Queue
 
@@ -217,7 +211,7 @@ LLM requests are managed through a concurrency-controlled queue with backpressur
 | `LLM_MAX_QUEUE_DEPTH` | `50` | Max queued requests before rejecting |
 | `LLM_STREAM_TIMEOUT_MS` | `300000` | Per-request timeout (5 min) |
 
-Queue metrics are exposed via `GET /api/health` under the `llmQueue` key. When the queue is full, new requests receive a `503` error with a message to retry later.
+When the queue is full, new requests receive a `503` error with a message to retry later.
 
 ### Per-User Concurrent SSE-Stream Cap (#268)
 
@@ -231,7 +225,7 @@ A Redis counter (`llm:streams:<userId>`) tracks currently-open SSE streams per u
 
 | Setting | Default | Range | Description |
 |---------|---------|-------|-------------|
-| **Settings → LLM → Runtime limits** (primary) | `3` | `1`–`20` | Admin-configurable. Changes apply within 60 s in every worker; the local worker sees them immediately. |
+| **Settings → AI → AI Models → LLM providers → Runtime limits** (primary) | `3` | `1`–`20` | Admin-configurable. Changes apply within 60 s in every worker; the local worker sees them immediately. |
 | `LLM_MAX_CONCURRENT_STREAMS_PER_USER` | `3` | `1`–`20` | **Deprecated bootstrap fallback** — consulted only when the `admin_settings` row is absent. |
 
 **Release semantics.** The counter decrements on all four exit paths: normal completion, error, upstream timeout, and client disconnect. A 1-hour TTL self-heals leaked counters from crashed processes.
@@ -268,7 +262,7 @@ A token bucket rate limiter protects your Confluence Data Center instance from b
 
 ### Email Notifications (SMTP)
 
-Compendiq can send email notifications for key events. Configure SMTP in **Settings > Email / SMTP**.
+Compendiq can send email notifications for key events. Configure SMTP in **Settings → System → Integrations → Email / SMTP**.
 
 **Configuration (env vars or admin UI):**
 
@@ -297,11 +291,11 @@ Settings configured via the admin UI are persisted in the `admin_settings` datab
 
 ### OIDC / SSO
 
-OIDC provider settings (issuer, client ID/secret, group mappings) are configured entirely via the Admin UI (Settings > OIDC/SSO) and stored in the database.
+OIDC provider settings (issuer, client ID/secret, group mappings) are configured entirely via the Admin UI (Settings → Governance → Access Control → SSO / OIDC) and stored in the database.
 
 **`FRONTEND_URL` must be your public origin behind a reverse proxy.** OIDC login uses a two-hop callback:
 
-1. The IdP redirects the browser back to the **Redirect URI** you configure in Settings > OIDC/SSO — e.g. `https://compendiq.example.com/api/auth/oidc/callback`. This hits the backend.
+1. The IdP redirects the browser back to the **Redirect URI** you configure in Settings → Governance → Access Control → SSO / OIDC — e.g. `https://compendiq.example.com/api/auth/oidc/callback`. This hits the backend.
 2. The backend exchanges the code and then redirects the browser to the SPA callback route (`/auth/oidc/callback?login_code=…`). It builds **that** redirect from the backend's `FRONTEND_URL` env var — **not** from the Redirect URI.
 
 These are two independent URLs. If `FRONTEND_URL` is left at its `http://localhost:8081` / `http://localhost:5273` default while the admin reaches the app through a public host, a correctly-configured Redirect URI still bounces the browser to `localhost` after the IdP round-trip, dead-ending login. Set:
@@ -310,11 +304,11 @@ These are two independent URLs. If `FRONTEND_URL` is left at its `http://localho
 FRONTEND_URL=https://compendiq.example.com
 ```
 
-(matching the origin of your Redirect URI) and restart the backend. `FRONTEND_URL` also accepts a comma-separated list, which doubles as the CORS allowlist — so if you already configured multiple origins, **append** the public origin (`…,https://compendiq.example.com`) rather than overwriting the existing list. The Settings > OIDC/SSO page warns inline when the Redirect URI origin diverges from the origin you loaded the app from, and surfaces the exact `FRONTEND_URL` value to set.
+(matching the origin of your Redirect URI) and restart the backend. `FRONTEND_URL` also accepts a comma-separated list, which doubles as the CORS allowlist — so if you already configured multiple origins, **append** the public origin (`…,https://compendiq.example.com`) rather than overwriting the existing list. The Settings → Governance → Access Control → SSO / OIDC page warns inline when the Redirect URI origin diverges from the origin you loaded the app from, and surfaces the exact `FRONTEND_URL` value to set.
 
 ### IP Allowlist (Enterprise, v0.4+)
 
-The IP allowlist is configured entirely via the Admin UI (Settings > IP allowlist) and persisted in the `admin_settings` table. It is an Enterprise-only feature — Community Edition builds ignore the configuration and register no routes. When enabled, a Fastify `onRequest` hook short-circuits requests from client IPs outside the configured CIDR ranges with a `403 ip_blocked` response, before any auth / business logic runs.
+The IP allowlist is configured entirely via the Admin UI (Settings → Governance → Access Control → IP allowlist) and persisted in the `admin_settings` table. It is an Enterprise-only feature — Community Edition builds ignore the configuration and register no routes. When enabled, a Fastify `onRequest` hook short-circuits requests from client IPs outside the configured CIDR ranges with a `403 ip_blocked` response, before any auth / business logic runs.
 
 **Config fields (admin UI)**
 
@@ -383,20 +377,20 @@ Tier-downgrade (license change to a non-enterprise tier) disables the flag. Exis
 
 Confluence is the system of record for synced pages, but Compendiq supports local edits — the in-app editor, AI improve / generate / apply-improvement write-backs, and draft publishing all stamp `pages.local_modified_at` to mark the row as having unpublished local changes (CE #305). The next inbound sync pulls a Confluence-side change for that same page, and the question becomes: which side wins? The sync conflict policy answers that question per-page.
 
-**Three policies (Settings → Content → Sync conflict policy)**
+**Three policies (Settings → Knowledge → Spaces & Sync → Conflict policy)**
 
 | Policy | Behaviour | When to use |
 |--------|-----------|-------------|
 | `Confluence wins` (default) | Apply the Confluence-side change; discard the local edit. Audit emits `SYNC_OVERWROTE_LOCAL_EDITS` whenever a local edit was actually present so you have a forensic record. No queue. | Compendiq is read-mostly — admins rarely edit pages locally, and Confluence remains the canonical source. The legacy v0.3 behaviour. |
 | `Compendiq wins` | Skip the inbound write; preserve the local edit. Audit emits `SYNC_CONFLICT_DETECTED` with `resolution: 'kept_local'`. The local edit must be pushed back to Confluence manually (the editor's "Publish to Confluence" button) — otherwise the two systems drift further apart on every sync cycle. | Short-window edits where you definitely want the local copy to take precedence (e.g. an AI-improvement run is mid-publish and you don't want a remote overwrite to land on top of it). Use sparingly: drift compounds. |
-| `Manual review` | Stash the inbound Confluence body in `pending_sync_versions`, flip `pages.conflict_pending = TRUE`, and surface the page in **Settings → Content → Sync conflicts** for admin review. The live row stays unchanged until the admin diff-reviews and picks. Audit emits `SYNC_CONFLICT_DETECTED` with `resolution: 'queued_for_review'`. | High-control workflows where every conflict needs explicit review (regulated documentation, contractual content). Trades sync latency for safety. |
+| `Manual review` | Stash the inbound Confluence body in `pending_sync_versions`, flip `pages.conflict_pending = TRUE`, and surface the page in **Settings → Knowledge → Spaces & Sync → Conflicts queue** for admin review. The live row stays unchanged until the admin diff-reviews and picks. Audit emits `SYNC_CONFLICT_DETECTED` with `resolution: 'queued_for_review'`. | High-control workflows where every conflict needs explicit review (regulated documentation, contractual content). Trades sync latency for safety. |
 
 **Important fall-through**: the policy only kicks in when there are *actual* local edits (`local_modified_at > last_synced`). If the page has no local edits, both `compendiq-wins` and `manual-review` transparently fall through to `confluence-wins` — there's nothing to preserve, so the queue isn't padded with non-conflicts and the routine sync rate isn't degraded.
 
 **Resolution flow (manual-review)**
 
 1. Sync detects a conflict; the page lands in the conflicts list.
-2. Admin opens **Settings → Content → Sync conflicts**, clicks **Review** on a row.
+2. Admin opens **Settings → Knowledge → Spaces & Sync → Conflicts queue**, clicks **Review** on a row.
 3. The dialog shows a side-by-side / unified diff of the local body against the queued Confluence body.
 4. Admin picks one of three actions:
    - **Keep local** — drop the queued Confluence version, keep the local row. Audit emits `SYNC_CONFLICT_RESOLVED_LOCAL`.
@@ -427,7 +421,7 @@ The conflict-detection branch in `sync-service.ts::syncPage` runs the inbound-up
 
 ### AI Review Policy (Enterprise, v0.4+)
 
-When the AI review workflow is enabled, AI-generated output is queued in `ai_output_reviews` rather than being written straight to the page draft. A reviewer must explicitly approve, reject, or edit-and-approve each row before the proposed content is applied. Configure the policy at **Settings → AI → AI review policy**.
+When the AI review workflow is enabled, AI-generated output is queued in `ai_output_reviews` rather than being written straight to the page draft. A reviewer must explicitly approve, reject, or edit-and-approve each row before the proposed content is applied. Configure the policy at **Settings → AI → AI Safety → Review policy**.
 
 **Three modes (per-action overridable)**
 
@@ -470,7 +464,7 @@ In CE-only deployments the routes 404 — the overlay isn't loaded, so there's n
 
 ### PII Detection (Enterprise, v0.4+)
 
-When the PII detector is licensed and enabled, every AI inference response is scanned for personally identifiable information before it reaches the end user. Three layers run on every inference: regex (German + generic checksum-validated rules — IBAN, credit card, DE Tax ID, DE Personalausweis, DE RVNR), Transformers.js NER (`Davlan/distilbert-base-multilingual-cased-ner-hrl`, q8 ONNX, CPU-only, multilingual — covers PERSON / LOCATION / ORGANIZATION), and an optional asynchronous LLM-as-judge for ambiguous spans. Configure the policy at **Settings → AI → PII detection**.
+When the PII detector is licensed and enabled, every AI inference response is scanned for personally identifiable information before it reaches the end user. Three layers run on every inference: regex (German + generic checksum-validated rules — IBAN, credit card, DE Tax ID, DE Personalausweis, DE RVNR), Transformers.js NER (`Davlan/distilbert-base-multilingual-cased-ner-hrl`, q8 ONNX, CPU-only, multilingual — covers PERSON / LOCATION / ORGANIZATION), and an optional asynchronous LLM-as-judge for ambiguous spans. Configure the policy at **Settings → AI → AI Safety → PII detection**.
 
 **Per-use-case actions**
 
@@ -513,7 +507,7 @@ In CE-only deployments the `GET`/`PUT /api/admin/pii-policy` routes 404 — the 
 
 ### Compliance Reports (Enterprise, v0.4+)
 
-When the `compliance_reports` feature is licensed and enabled, admins can self-serve evidence packets for SOC 2 Type II and ISO 27001:2022 audits at **Settings → Compliance Reports**. Each report produces a ZIP containing a PDF cover sheet (with a SHA-256 integrity hash of the CSV body) and the CSV evidence body. Generation is recorded in the audit log under `ADMIN_ACTION` with `action: 'generate_compliance_report'` for chain-of-custody.
+When the `compliance_reports` feature is licensed and enabled, admins can self-serve evidence packets for SOC 2 Type II and ISO 27001:2022 audits at **Settings → Governance → Data & Compliance → Reports**. Each report produces a ZIP containing a PDF cover sheet (with a SHA-256 integrity hash of the CSV body) and the CSV evidence body. Generation is recorded in the audit log under `ADMIN_ACTION` with `action: 'generate_compliance_report'` for chain-of-custody.
 
 **Customer model**
 
@@ -533,7 +527,7 @@ The buyer is the customer's IT or security manager — not the auditor. The repo
 
 **Generating a report**
 
-1. Open **Settings → Compliance Reports**. The tab is admin-only and gated on a valid Enterprise license with the `compliance_reports` feature.
+1. Open **Settings → Governance → Data & Compliance → Reports**. The tab is admin-only and gated on a valid Enterprise license with the `compliance_reports` feature.
 2. Pick a from / to window. The default is the last 30 days ending today (00:00 local). Inline validation rejects `from >= to`, `to` more than 24 hours in the future, and `from` more than 10 years in the past — the same bounds the backend orchestrator enforces.
 3. Click **Generate & download**. The browser downloads a ZIP named `compliance-<id>-YYYY-MM-DD.zip`. The success toast surfaces the first 12 characters of the cover sheet's SHA-256 hash for at-a-glance verification.
 
@@ -547,7 +541,7 @@ Report 5 reads from the `llm_audit_log` table but its SQL `SELECT` lists 14 expl
 2. The orchestrator's CSV writer enforces a `FORBIDDEN_CSV_COLUMNS` deny-list that includes `password_hash`, `pat_encrypted`, `oidc_secret`, `webhook_secret`, `signing_key`, `jwt_secret`, `input_text`, `output_text`, `input_messages`. Any column matching the list throws — and the thrown error message never echoes the offending cell value (no log leak).
 3. Every report module declares its column set up front (via the `ReportData.columns` array); the writer asserts that no row introduces a column outside the declared set.
 
-Auditors receive only the SHA-256 `prompt_hash`. To pivot from a hash back to the original call (e.g. during incident investigation), use the same hash on the LLM Audit page (**Settings → LLM Audit**) — that page is gated separately by the `llm_audit_trail` feature and may surface plaintext if `llm_audit_full_text` is on.
+Auditors receive only the SHA-256 `prompt_hash`. To pivot from a hash back to the original call (e.g. during incident investigation), use the same hash on the LLM Audit page (**Settings → AI → AI Safety → Audit log**) — that page is gated separately by the `llm_audit_trail` feature and may surface plaintext if `llm_audit_full_text` is on.
 
 **PDF cover sheet integrity**
 
@@ -579,7 +573,7 @@ Every generation emits `ADMIN_ACTION` with metadata `{ action: 'generate_complia
 
 **CE-only deployments**
 
-In CE-only deployments the `/api/admin/compliance-reports` and `/api/admin/compliance-reports/generate` routes 404 — the EE overlay isn't loaded. The Settings → Compliance Reports tab is hidden by the `requiresFeature: 'compliance_reports'` filter on the tab list; for a defence-in-depth direct URL navigation, the tab itself surfaces an "EE license required" panel.
+In CE-only deployments the `/api/admin/compliance-reports` and `/api/admin/compliance-reports/generate` routes 404 — the EE overlay isn't loaded. The Settings → Governance → Data & Compliance → Reports tab is hidden by the `requiresFeature: 'compliance_reports'` filter on the tab list; for a defence-in-depth direct URL navigation, the tab itself surfaces an "EE license required" panel.
 
 ### Monitoring (OpenTelemetry)
 
@@ -791,7 +785,7 @@ This exports traces to any OTLP-compatible collector (Jaeger, Grafana Tempo, Dat
 
 ### Audit Logging
 
-Compendiq logs user actions and system events. View audit logs in the Admin panel under **Admin > Audit Log**. Logs are stored in PostgreSQL and include:
+Compendiq logs user actions and system events. Query audit logs via the admin API: `GET /api/admin/audit-log` (admin-authenticated, supports pagination/filtering). Logs are stored in PostgreSQL and include:
 
 - User authentication events (login, logout, failed attempts)
 - Page operations (create, update, delete)
@@ -800,15 +794,15 @@ Compendiq logs user actions and system events. View audit logs in the Admin pane
 
 ## Managing Users
 
-Admins manage the full user lifecycle from **Settings → Users**. All mutations are audit-logged under `ADMIN_ACTION` events and rate-limited the same as other admin endpoints. Under the hood each action maps to one of the per-user admin endpoints (`POST|PUT|DELETE /api/admin/users/...`) so EE bulk tooling (#116) can compose the same primitives.
+Admins manage the full user lifecycle from **Settings → Governance → Access Control → Users**. All mutations are audit-logged under `ADMIN_ACTION` events and rate-limited the same as other admin endpoints. Under the hood each action maps to one of the per-user admin endpoints (`POST|PUT|DELETE /api/admin/users/...`) so EE bulk tooling (#116) can compose the same primitives.
 
 ### Creating a user
 
-1. Go to **Settings → Users** and click **Add user**.
+1. Go to **Settings → Governance → Access Control → Users** and click **Add user**.
 2. Fill in username (required), optional email, optional display name, and pick the role (`user` or `admin`).
 3. Choose one of two credential modes:
    - **Explicit password** — type it into the form. The user signs in with that password on first login.
-   - **Send invitation** — leave the password blank and tick *Send invitation email*. The backend generates a random temporary password and tries to email it to the new user via the configured SMTP server (see `SMTP_*` env vars and the Settings → Email admin tab). When SMTP is not configured the API returns the temporary password in the response so the admin can hand it over out-of-band.
+   - **Send invitation** — leave the password blank and tick *Send invitation email*. The backend generates a random temporary password and tries to email it to the new user via the configured SMTP server (see `SMTP_*` env vars and the Settings → System → Integrations → Email / SMTP admin tab). When SMTP is not configured the API returns the temporary password in the response so the admin can hand it over out-of-band.
 4. The new user is created immediately — there is no email-verification step in CE.
 
 ### Editing a user
@@ -841,13 +835,10 @@ From the user's row in the table:
 
 ### Resetting a password
 
-CE does not ship a self-serve "send password reset email" button. To reset a user's password as an admin:
+CE has no admin-side password reset — neither the Users admin UI nor the admin API can change an existing user's password. Users change their own password through the self-service flow on their profile page. If a user has lost their password, the recovery options are:
 
-1. From **Settings → Users**, open the user row and click **Edit → Reset password**.
-2. Pick either *Set temporary password* (displayed once, hand over out of band) or *Send invitation email* (requires SMTP configured). Behind the scenes this is the same flow as **Add user** in invitation mode — the user is expected to log in with the temporary password and then change it from their profile page.
-3. All refresh-tokens for the user are revoked as part of the reset, so existing sessions are terminated.
-
-If you need to reset a password without admin UI access (for example the last admin lost their password), set it directly in PostgreSQL with a known bcrypt hash — see **Troubleshooting → Recovering the last admin password** below.
+- **Set the password directly in PostgreSQL** with a known bcrypt hash — the same procedure used when the last admin loses their password.
+- **Delete and re-create the user** via **Settings → Governance → Access Control → Users** with a new explicit password or *Send invitation email* (mind the hard-delete caveats above — history pointers are nulled and owned content cascades).
 
 ### Self-service limits and the `__system__` user
 
@@ -856,9 +847,9 @@ If you need to reset a password without admin UI access (for example the last ad
 
 ### Bulk user operations (Enterprise, v0.4+)
 
-> Enterprise-only — this section applies only when the licence grants `bulk_user_operations`. The Settings → Users page degrades to the per-user CRUD described above when the feature is unlicensed.
+> Enterprise-only — this section applies only when the licence grants `bulk_user_operations`. The Settings → Governance → Access Control → Users page degrades to the per-user CRUD described above when the feature is unlicensed.
 
-The Settings → Users page surfaces two bulk affordances when the licence grants the feature:
+The Settings → Governance → Access Control → Users page surfaces two bulk affordances when the licence grants the feature:
 
 1. **Bulk import** — header button. Opens a three-step CSV import dialog: pick a `.csv` file → preview parsed rows with field-level errors and duplicate detection → confirm and apply with the chosen mode.
 2. **Multi-select bulk actions** — checkboxes on each row plus a select-all in the header. Once at least one row is checked the **Bulk actions** button appears, opening the action dialog (change role, deactivate with optional reason, reactivate, add to group, remove from group). The current admin's row never carries a checkbox so a single mistaken header click cannot bulk-deactivate the operator.
@@ -954,7 +945,7 @@ Compendiq supports zero-downtime rotation of the PAT encryption key:
 
 3. **Restart the backend.** New encryptions use the highest-version key. Decryption tries all keys, so existing PATs remain readable.
 
-4. **Re-encrypt existing PATs** via the Admin UI (Admin > Key Rotation).
+4. **Re-encrypt existing PATs** by calling the admin API: `curl -X POST -H "Authorization: Bearer <admin-token>" http://localhost:8081/api/admin/rotate-encryption-key`.
 
 5. **Remove the old key** once all PATs have been re-encrypted.
 
@@ -980,7 +971,7 @@ Check that the `POSTGRES_URL` and `REDIS_URL` in your `.env` match the container
 2. Check the `OLLAMA_BASE_URL` in `.env`. Inside Docker, use `http://host.docker.internal:11434`.
 3. If using a proxy, set `LLM_BEARER_TOKEN` and `LLM_AUTH_TYPE=bearer`.
 4. For timeout issues with large articles, increase `LLM_STREAM_TIMEOUT_MS`.
-5. Check circuit breaker status via `GET /api/health` (aggregated) or `GET /api/llm/circuit-breaker-status` (per-provider detail) -- if a provider shows `open`, the circuit breaker has tripped due to repeated failures. It will reset automatically.
+5. Check circuit breaker status via `GET /api/llm/circuit-breaker-status` (authenticated, per-provider detail) -- if a provider shows `open`, the circuit breaker has tripped due to repeated failures. It will reset automatically.
 
 ### TLS certificate errors
 

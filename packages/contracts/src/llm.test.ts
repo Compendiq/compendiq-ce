@@ -4,6 +4,14 @@ import {
   LlmProviderInputSchema,
   UsecaseAssignmentsSchema,
 } from './llm.js';
+import {
+  AskRequestSchema,
+  ImproveRequestSchema,
+  GenerateRequestSchema,
+  SummarizeRequestSchema,
+  GenerateDiagramRequestSchema,
+  AnalyzeQualityRequestSchema,
+} from './schemas/llm.js';
 
 describe('LlmUsecaseSchema', () => {
   it('accepts embedding as a valid use case', () => {
@@ -33,6 +41,38 @@ describe('LlmProviderInputSchema', () => {
     expect(() =>
       LlmProviderInputSchema.parse({ name: 'x', baseUrl: 'ftp://x', authType: 'none', verifySsl: true }),
     ).toThrow();
+  });
+});
+
+// #929: the six streaming LLM routes resolve the model server-side per
+// ADR-021 (resolveUsecase) and ignore any `model` in the request body. The
+// contract must therefore NOT require it — omitting `model` is valid.
+describe('streaming request schemas treat model as optional (#929)', () => {
+  it('AskRequestSchema parses without model', () => {
+    const parsed = AskRequestSchema.parse({ question: 'hi' });
+    expect(parsed.question).toBe('hi');
+    expect(parsed.model).toBeUndefined();
+  });
+  it('ImproveRequestSchema parses without model', () => {
+    expect(() =>
+      ImproveRequestSchema.parse({ content: 'text', type: 'grammar' }),
+    ).not.toThrow();
+  });
+  it('GenerateRequestSchema parses without model', () => {
+    expect(() => GenerateRequestSchema.parse({ prompt: 'draft a runbook' })).not.toThrow();
+  });
+  it('SummarizeRequestSchema parses without model', () => {
+    expect(() => SummarizeRequestSchema.parse({ content: 'text' })).not.toThrow();
+  });
+  it('GenerateDiagramRequestSchema parses without model', () => {
+    expect(() => GenerateDiagramRequestSchema.parse({ content: 'text' })).not.toThrow();
+  });
+  it('AnalyzeQualityRequestSchema parses without model', () => {
+    expect(() => AnalyzeQualityRequestSchema.parse({ content: 'text' })).not.toThrow();
+  });
+  it('still accepts a model when provided (back-compat)', () => {
+    const parsed = AskRequestSchema.parse({ question: 'hi', model: 'llama3' });
+    expect(parsed.model).toBe('llama3');
   });
 });
 

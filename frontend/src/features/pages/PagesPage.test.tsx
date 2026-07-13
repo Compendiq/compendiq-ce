@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { PagesPage } from './PagesPage';
@@ -584,6 +584,91 @@ describe('PagesPage', () => {
     });
   });
 
+  // --- Semantic search empty state (#938, review follow-up on #993) ---
+
+  describe('semantic search empty state (#938)', () => {
+    /** Mock fetch where /search returns zero results for every mode, with the
+     *  given hasEmbeddings flag. All other endpoints return their normal mocks. */
+    function mockFetchWithEmptySearch(hasEmbeddings: boolean) {
+      return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+        const url = typeof input === 'string' ? input : (input as Request).url;
+        if (url.includes('/search?')) {
+          const mode = new URL(url, 'http://localhost').searchParams.get('mode') ?? 'keyword';
+          return new Response(
+            JSON.stringify({ items: [], total: 0, page: 1, limit: 10, totalPages: 0, mode, hasEmbeddings }),
+            { headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+        if (url.includes('/embeddings/status')) {
+          return new Response(JSON.stringify(mockEmbeddingStatusIdle), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/pages/filters')) {
+          return new Response(JSON.stringify(mockFilterOptions), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/spaces')) {
+          return new Response(JSON.stringify(mockSpaces), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/sync/status')) {
+          return new Response(JSON.stringify({ status: 'idle' }), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/pages/pinned')) {
+          return new Response(JSON.stringify({ items: [], total: 0 }), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/settings')) {
+          return new Response(JSON.stringify({}), { headers: { 'Content-Type': 'application/json' } });
+        }
+        return new Response(JSON.stringify(mockPagesResponse), { headers: { 'Content-Type': 'application/json' } });
+      });
+    }
+
+    /** Render, switch to semantic mode, and type a query that matches nothing.
+     *  useSearch debounces 300ms before firing, so assertions must findBy/waitFor. */
+    function renderSemanticSearchWithNoResults(hasEmbeddings: boolean) {
+      vi.restoreAllMocks();
+      const fetchSpy = mockFetchWithEmptySearch(hasEmbeddings);
+      render(<PagesPage />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('search-mode-semantic'));
+      fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+        target: { value: 'nonexistent topic' },
+      });
+      return fetchSpy;
+    }
+
+    it('zero embeddings + zero results: empty state acknowledges the keyword fallback and the missing embeddings', async () => {
+      renderSemanticSearchWithNoResults(false);
+
+      // The fallback banner and the empty state show together, so their copy
+      // must not contradict: the banner already says keyword search ran, so
+      // the empty state must not imply embedding alone would find a match.
+      expect(await screen.findByText('No matching pages', undefined, { timeout: 2000 })).toBeInTheDocument();
+      expect(
+        screen.getByText('Keyword search found no matches. Semantic search is unavailable until pages are embedded — configure an embedding provider in Settings → LLM and run an embedding pass.'),
+      ).toBeInTheDocument();
+      expect(screen.getByTestId('no-embeddings-warning')).toBeInTheDocument();
+    });
+
+    it('embeddings exist + zero results: empty state blames the query, not embeddings', async () => {
+      const fetchSpy = renderSemanticSearchWithNoResults(true);
+
+      // Wait for the debounced search queries to actually fire and settle so
+      // the assertion pins the resolved state, not the optimistic first render.
+      await waitFor(
+        () => {
+          const urls = fetchSpy.mock.calls.map(([input]) =>
+            typeof input === 'string' ? input : (input as Request).url,
+          );
+          expect(urls.some((u) => u.includes('/search?') && u.includes('mode=semantic'))).toBe(true);
+        },
+        { timeout: 2000 },
+      );
+
+      expect(await screen.findByTestId('empty-state-title')).toHaveTextContent('No pages found');
+      expect(screen.getByText('Try a different search term or switch to keyword mode')).toBeInTheDocument();
+      expect(screen.queryByTestId('no-embeddings-warning')).not.toBeInTheDocument();
+      expect(screen.queryByText(/Semantic search is unavailable until pages are embedded/)).not.toBeInTheDocument();
+    });
+  });
+
   // --- Search clear button tests ---
 
   it('does not show search clear button when search is empty', () => {
@@ -665,6 +750,48 @@ describe('PagesPage', () => {
     expect(screen.queryByTestId('active-filter-pills')).not.toBeInTheDocument();
     expect(screen.queryByTestId('filter-pill-freshness')).not.toBeInTheDocument();
     expect(screen.queryByTestId('filter-pill-embeddingStatus')).not.toBeInTheDocument();
+  });
+
+  // --- Advanced filters ignored in semantic/hybrid search (#945) ---
+  //
+  // The backend applies author/date/label/etc. filters only in keyword mode —
+  // semantic (vectorSearch) and hybrid (hybridSearch) ignore them entirely.
+  // The UI must stop pretending they're active: show a notice and visually
+  // mark the active-filter pills as inactive whenever semantic/hybrid search
+  // is running, so users aren't misled into thinking their filters applied.
+  describe('advanced filters honesty in semantic/hybrid search (#945)', () => {
+    it('shows an "ignored" notice and marks pills inactive when a filter is set in semantic mode', async () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      // Activate an advanced filter → pill appears.
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+      fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+      expect(screen.getByTestId('filter-pill-freshness')).toBeInTheDocument();
+
+      // Keyword mode honors the filter: no notice, pills are active.
+      expect(screen.queryByTestId('filters-ignored-notice')).not.toBeInTheDocument();
+      expect(screen.getByTestId('active-filter-pills')).not.toHaveAttribute('data-inactive', 'true');
+
+      // Switch to semantic mode and enter a query — the backend now ignores
+      // the filter, so the UI must say so.
+      fireEvent.click(screen.getByTestId('search-mode-semantic'));
+      fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+        target: { value: 'kubernetes' },
+      });
+
+      const notice = await screen.findByTestId('filters-ignored-notice');
+      expect(notice).toBeInTheDocument();
+      expect(screen.getByTestId('active-filter-pills')).toHaveAttribute('data-inactive', 'true');
+    });
+
+    it('does not show the notice in semantic mode when no advanced filters are active', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('search-mode-semantic'));
+      fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+        target: { value: 'kubernetes' },
+      });
+      expect(screen.queryByTestId('filters-ignored-notice')).not.toBeInTheDocument();
+    });
   });
 
   // --- Visual divider test ---
@@ -795,6 +922,80 @@ describe('PagesPage', () => {
     });
   });
 
+  // --- Source filter wire value (#873) ---
+  //
+  // The "Local" source option must send the contract-valid wire value
+  // 'standalone' (PageSourceEnum = ['confluence', 'standalone']). Sending
+  // 'local' fails Zod validation on GET /api/pages and breaks the list.
+  describe('source filter (#873)', () => {
+    it('renders the Local option with the contract value "standalone", not "local"', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      const select = screen.getByTestId('filter-source') as HTMLSelectElement;
+      const localOption = Array.from(select.options).find((o) => o.textContent === 'Local');
+      expect(localOption).toBeTruthy();
+      // 'local' is not a member of PageSourceEnum and would 400 the pages query.
+      expect(localOption!.value).toBe('standalone');
+    });
+
+    it('fires the pages query with source=standalone when Local is selected', async () => {
+      vi.restoreAllMocks();
+      const fetchSpy = mockFetchWithEmbeddingStatus(mockEmbeddingStatusIdle);
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      const select = screen.getByTestId('filter-source') as HTMLSelectElement;
+      const localOption = Array.from(select.options).find((o) => o.textContent === 'Local');
+      fireEvent.change(select, { target: { value: localOption!.value } });
+
+      await waitFor(() => {
+        const urls = fetchSpy.mock.calls.map(([input]) =>
+          typeof input === 'string' ? input : (input as Request).url,
+        );
+        const pagesUrls = urls.filter((u) => /\/pages\?/.test(u));
+        expect(pagesUrls.some((u) => u.includes('source=standalone'))).toBe(true);
+        expect(pagesUrls.some((u) => u.includes('source=local'))).toBe(false);
+      });
+    });
+
+    it('shows the user-facing label "Local" (not the wire value) in the active-filter pill', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      const select = screen.getByTestId('filter-source') as HTMLSelectElement;
+      fireEvent.change(select, { target: { value: 'standalone' } });
+
+      const pill = screen.getByTestId('filter-pill-sourceFilter');
+      expect(pill).toHaveTextContent('Source: Local');
+      expect(pill).not.toHaveTextContent('standalone');
+    });
+  });
+
+  // --- Accessibility: filter/sort controls have accessible names (#946) ---
+  //
+  // The three top-row selects (space / source / sort) had no accessible name,
+  // and the advanced-panel <label>s were not programmatically associated with
+  // their controls (no htmlFor/id). Screen readers announced these as unnamed
+  // "combobox"/"edit" fields. These tests pin the aria-label + label/for wiring.
+  describe('filter control accessible names (#946)', () => {
+    it('top-row space/source/sort selects expose an accessible name', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      expect(screen.getByRole('combobox', { name: /filter by space/i })).toBeInTheDocument();
+      expect(screen.getByRole('combobox', { name: /filter by source/i })).toBeInTheDocument();
+      expect(screen.getByRole('combobox', { name: /sort pages/i })).toBeInTheDocument();
+    });
+
+    it('advanced-panel labels are programmatically associated with their controls', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+
+      // Role-name / label-text queries only match once htmlFor/id wiring exists.
+      expect(screen.getByRole('combobox', { name: /author/i })).toBeInTheDocument();
+      expect(screen.getByRole('combobox', { name: /labels/i })).toBeInTheDocument();
+      expect(screen.getByRole('combobox', { name: /freshness/i })).toBeInTheDocument();
+      expect(screen.getByRole('combobox', { name: /embedding/i })).toBeInTheDocument();
+      expect(screen.getByRole('combobox', { name: /quality/i })).toBeInTheDocument();
+      expect(screen.getByLabelText(/modified from/i)).toBeInTheDocument();
+      expect(screen.getByLabelText(/modified to/i)).toBeInTheDocument();
+    });
+  });
+
   describe('performance: virtual scrolling + memoized items (#511, #521)', () => {
     it('renders visible page list items with stable keys (by id, not index)', async () => {
       render(<PagesPage />, { wrapper: createWrapper() });
@@ -921,6 +1122,258 @@ describe('PagesPage', () => {
       expect(badge.className).toMatch(/bg-\[#e6effb\]/);
       expect(badge.className).toMatch(/text-\[#1c3e72\]/);
       expect(badge.className).not.toMatch(/sky-500|amber|warning|yellow/);
+    });
+  });
+
+  // --- Search debounce + semantic-mode gating (#874) ---
+  //
+  // The keyword search input used to feed usePages directly, firing an
+  // un-debounced GET /pages?search=… on every keystroke, and it kept firing
+  // that wasted keyword query even in semantic/hybrid mode where the results
+  // come from useSearch. These tests pin the debounce and the enabled gate.
+  describe('search debounce + semantic gating (#874)', () => {
+    /** Fetch mock that serves both /search and /pages, so semantic mode has a
+     *  real /search response while we watch what /pages does. */
+    function mockFetchWithSearchAndPages() {
+      return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+        const url = typeof input === 'string' ? input : (input as Request).url;
+        if (url.includes('/search?')) {
+          const mode = new URL(url, 'http://localhost').searchParams.get('mode') ?? 'keyword';
+          return new Response(
+            JSON.stringify({ items: [], total: 0, page: 1, limit: 10, totalPages: 0, mode, hasEmbeddings: true }),
+            { headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+        if (url.includes('/embeddings/status')) {
+          return new Response(JSON.stringify(mockEmbeddingStatusIdle), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/pages/filters')) {
+          return new Response(JSON.stringify(mockFilterOptions), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/spaces')) {
+          return new Response(JSON.stringify(mockSpaces), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/sync/status')) {
+          return new Response(JSON.stringify({ status: 'idle' }), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/pages/pinned')) {
+          return new Response(JSON.stringify({ items: [], total: 0 }), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/settings')) {
+          return new Response(JSON.stringify({}), { headers: { 'Content-Type': 'application/json' } });
+        }
+        return new Response(JSON.stringify(mockPagesResponse), { headers: { 'Content-Type': 'application/json' } });
+      });
+    }
+
+    /** Extract the exact `search` param value from every GET /pages?… list
+     *  request (ignores /pages/pinned, /pages/filters, /search, etc.). */
+    function pagesSearchValues(fetchSpy: ReturnType<typeof vi.spyOn>): string[] {
+      return fetchSpy.mock.calls
+        .map(([firstArg]) => (typeof firstArg === 'string' ? firstArg : (firstArg as Request).url))
+        .filter((u) => /\/pages\?/.test(u))
+        .map((u) => new URL(u, 'http://localhost').searchParams.get('search'))
+        .filter((v): v is string => v !== null);
+    }
+
+    it('debounces keyword search: only the final term fires a /pages request', async () => {
+      vi.restoreAllMocks();
+      const fetchSpy = mockFetchWithEmbeddingStatus(mockEmbeddingStatusIdle);
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      const input = screen.getByPlaceholderText('Search pages...');
+      // Four rapid keystrokes — the debounce must collapse them to one request.
+      fireEvent.change(input, { target: { value: 'k' } });
+      fireEvent.change(input, { target: { value: 'ku' } });
+      fireEvent.change(input, { target: { value: 'kub' } });
+      fireEvent.change(input, { target: { value: 'kube' } });
+
+      // The debounced term eventually fires exactly one keyword request.
+      await waitFor(
+        () => {
+          expect(pagesSearchValues(fetchSpy)).toContain('kube');
+        },
+        { timeout: 2000 },
+      );
+
+      // The intermediate keystrokes must never have hit the network.
+      const values = pagesSearchValues(fetchSpy);
+      expect(values).not.toContain('k');
+      expect(values).not.toContain('ku');
+      expect(values).not.toContain('kub');
+    });
+
+    it('does not fire a keyword /pages?search= request while in semantic mode', async () => {
+      vi.restoreAllMocks();
+      const fetchSpy = mockFetchWithSearchAndPages();
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByTestId('search-mode-semantic'));
+      fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+        target: { value: 'kubernetes' },
+      });
+
+      // Wait until the debounced semantic search has actually fired.
+      await waitFor(
+        () => {
+          const urls = fetchSpy.mock.calls.map(([firstArg]) =>
+            typeof firstArg === 'string' ? firstArg : (firstArg as Request).url,
+          );
+          expect(urls.some((u) => u.includes('/search?') && u.includes('mode=semantic'))).toBe(true);
+        },
+        { timeout: 2000 },
+      );
+
+      // The wasted keyword query must be gated off entirely.
+      expect(pagesSearchValues(fetchSpy)).toHaveLength(0);
+    });
+
+    // --- Atomic query key: the QUERY sort must track the DEBOUNCED term ---
+    //
+    // `search` is debounced (300ms) into the /pages query key, but `sort` was
+    // flipped synchronously by the search input's onChange (→ 'relevance' on the
+    // first keystroke, → 'modified' on clear). Because both feed the same query
+    // key, the key was non-atomic: the first keystroke minted a key with the new
+    // sort but the OLD (empty) search → an immediate GET /pages?sort=relevance
+    // with no search term, and the clear button minted a key with the new sort
+    // but the STALE debounced term → a wasted stale-term fetch. These tests
+    // instrument EVERY /pages? list request (including sort-only ones the
+    // `pagesSearchValues` helper is blind to).
+    describe('atomic query key: sort tracks the debounced term (#874)', () => {
+      beforeEach(() => {
+        vi.useFakeTimers();
+      });
+
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      /** Every GET /pages?… list request (not /pages/pinned|filters|tree, not
+       *  /search), with its parsed `search` and `sort` params — including
+       *  requests that carry NO search term (search === null). */
+      function pagesListRequests(fetchSpy: ReturnType<typeof vi.spyOn>) {
+        return fetchSpy.mock.calls
+          .map(([firstArg]) => (typeof firstArg === 'string' ? firstArg : (firstArg as Request).url))
+          .filter((u) => /\/pages\?/.test(u))
+          .map((u) => {
+            const params = new URL(u, 'http://localhost').searchParams;
+            return { url: u, search: params.get('search'), sort: params.get('sort') };
+          });
+      }
+
+      it('first keystroke does not fire an immediate sort=relevance request before the 300ms debounce', async () => {
+        vi.restoreAllMocks();
+        const fetchSpy = mockFetchWithEmbeddingStatus(mockEmbeddingStatusIdle);
+        render(<PagesPage />, { wrapper: createWrapper() });
+
+        // Flush the initial browse-list query (sort=modified, no search).
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+        const baseline = pagesListRequests(fetchSpy);
+
+        // One character. onChange flips `sort` to 'relevance' synchronously; the
+        // debounced term is still ''. The query sort must track the DEBOUNCED
+        // term, so the key must not change and no request may fire yet.
+        fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+          target: { value: 'k' },
+        });
+        // Flush microtasks WITHOUT advancing to the 300ms debounce boundary.
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+        const afterKeystroke = pagesListRequests(fetchSpy);
+        // No new request, and specifically no sort=relevance request that
+        // carries no search term (the wrong-data-flash / wasted request).
+        expect(afterKeystroke).toHaveLength(baseline.length);
+        expect(afterKeystroke.some((r) => r.sort === 'relevance' && r.search === null)).toBe(false);
+
+        // Now let the debounce elapse — exactly ONE new request, the debounced
+        // one, carrying the term and the relevance sort together.
+        await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+        const newRequests = pagesListRequests(fetchSpy).slice(baseline.length);
+        expect(newRequests).toHaveLength(1);
+        expect(newRequests[0].search).toBe('k');
+        expect(newRequests[0].sort).toBe('relevance');
+      });
+
+      it('clear button does not fire a request carrying the stale search term', async () => {
+        vi.restoreAllMocks();
+        const fetchSpy = mockFetchWithEmbeddingStatus(mockEmbeddingStatusIdle);
+        render(<PagesPage />, { wrapper: createWrapper() });
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+        // Type a term and let its debounced request actually fire.
+        fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+          target: { value: 'kube' },
+        });
+        await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+        expect(pagesListRequests(fetchSpy).some((r) => r.search === 'kube')).toBe(true);
+
+        const beforeClear = pagesListRequests(fetchSpy).length;
+
+        // Clear the search. The debounced value must be reset synchronously so
+        // no request re-fetches the stale 'kube' term.
+        fireEvent.click(screen.getByTestId('search-clear'));
+        await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+
+        const afterClear = pagesListRequests(fetchSpy).slice(beforeClear);
+        expect(afterClear.some((r) => r.search === 'kube')).toBe(false);
+      });
+    });
+  });
+
+  // --- Pagination chevron accessible names (#947) ---
+  //
+  // The prev/next chevron buttons are icon-only (a bare <ChevronLeft/> or
+  // <ChevronRight/>), so without an aria-label they have no accessible name and
+  // screen-reader / keyboard users cannot tell them apart. There are two
+  // identical pairs — one for the keyword/browse list and one for the
+  // semantic/hybrid results — so both must expose names.
+  describe('pagination accessibility (#947)', () => {
+    const json = (body: unknown) =>
+      new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
+
+    /** Mock fetch so every list/search response reports multiple pages, forcing
+     *  the pagination controls to render in either mode. */
+    function mockFetchWithMultiplePages(totalPages: number) {
+      const items = makeManyPages(3).items;
+      return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+        const url = typeof input === 'string' ? input : (input as Request).url;
+        if (url.includes('/embeddings/status')) return json(mockEmbeddingStatusIdle);
+        if (url.includes('/pages/filters')) return json(mockFilterOptions);
+        if (url.includes('/spaces')) return json(mockSpaces);
+        if (url.includes('/sync/status')) return json({ status: 'idle' });
+        if (url.includes('/pages/pinned')) return json({ items: [], total: 0 });
+        if (url.includes('/settings')) return json({});
+        if (url.includes('/search?')) {
+          const mode = new URL(url, 'http://localhost').searchParams.get('mode') ?? 'keyword';
+          return json({ items, total: items.length, page: 1, limit: 3, totalPages, mode, hasEmbeddings: true });
+        }
+        return json({ items, total: items.length, page: 1, limit: 3, totalPages });
+      });
+    }
+
+    it('keyword-mode pagination chevrons expose Previous/Next accessible names', async () => {
+      vi.restoreAllMocks();
+      mockFetchWithMultiplePages(3);
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      expect(await screen.findByRole('button', { name: /previous page/i })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /next page/i })).toBeInTheDocument();
+    });
+
+    it('semantic-mode pagination chevrons expose Previous/Next accessible names', async () => {
+      vi.restoreAllMocks();
+      mockFetchWithMultiplePages(3);
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByTestId('search-mode-semantic'));
+      fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+        target: { value: 'kubernetes' },
+      });
+
+      expect(
+        await screen.findByRole('button', { name: /previous page/i }, { timeout: 2000 }),
+      ).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /next page/i })).toBeInTheDocument();
     });
   });
 });

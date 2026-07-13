@@ -2,7 +2,8 @@ import { useState, useEffect, type ReactNode } from 'react';
 import type { EnterpriseUI, LicenseInfo } from './types';
 import { EnterpriseContext } from './enterprise-context';
 import { loadEnterpriseUI } from './loader';
-import { apiFetch } from '../lib/api';
+import { apiFetch, ApiError } from '../lib/api';
+import { useAuthStore } from '../../stores/auth-store';
 
 /**
  * Provider that fetches license info and, only on EE backends, loads the
@@ -23,21 +24,43 @@ export function EnterpriseProvider({ children }: { children: ReactNode }) {
   const [ui, setUi] = useState<EnterpriseUI | null>(null);
   const [license, setLicense] = useState<LicenseInfo | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  // Re-fetch whenever the access token changes. A login performed after mount
+  // is a pure SPA transition (LoginPage/OidcCallbackPage do setAuth + navigate,
+  // no reload), so without this dependency an EE admin who logs in from a fresh
+  // tab would stay in the community fallback all session. The same dependency
+  // clears the previous admin's license/ui from memory on logout.
+  const accessToken = useAuthStore((s) => s.accessToken);
 
   useEffect(() => {
     let cancelled = false;
+    // isLoading starts true and is only ever set back to false, so skeletons
+    // show on the initial load only — a token-change refetch (routine refresh)
+    // keeps the current UI up while the license is re-checked, no flicker.
 
     async function init() {
       // License first — CE returns edition:'community', EE returns actual
       // tier. The response tells us whether the backend is EE at all.
       let info: LicenseInfo | null = null;
+      let transientFailure = false;
       try {
         info = await apiFetch<LicenseInfo>('/admin/license');
-      } catch {
-        // Not admin, or endpoint unavailable — license stays null
+      } catch (err) {
+        // Only a genuine auth signal (401 logged out / 403 not admin) clears
+        // the license. Anything else — network error, 5xx — is transient and
+        // must NOT flip an EE admin to community mid-session.
+        const isAuthError =
+          err instanceof ApiError && (err.statusCode === 401 || err.statusCode === 403);
+        transientFailure = !isAuthError;
       }
       if (cancelled) return;
-      if (info) setLicense(info);
+      if (transientFailure) {
+        // Preserve the previously loaded license/ui; just settle loading.
+        setIsLoading(false);
+        return;
+      }
+      // Set unconditionally so a logout (fetch now 401s → info null) drops the
+      // previous session's license instead of leaving it stale in memory.
+      setLicense(info);
 
       // Only an EE backend (which marks itself with canUpdate: true) can
       // serve the overlay bundle, so don't even attempt the load otherwise.
@@ -51,6 +74,9 @@ export function EnterpriseProvider({ children }: { children: ReactNode }) {
         const enterpriseUi = await loadEnterpriseUI();
         if (cancelled) return;
         setUi(enterpriseUi);
+      } else {
+        // Not EE (or logged out) — drop any bundle loaded for a prior session.
+        setUi(null);
       }
 
       setIsLoading(false);
@@ -60,7 +86,7 @@ export function EnterpriseProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [accessToken]);
 
   const hasFeature = (feature: string): boolean => {
     if (!license || !license.valid) return false;

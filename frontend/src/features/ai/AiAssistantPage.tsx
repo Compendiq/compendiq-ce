@@ -21,6 +21,7 @@ import {
   DiagramTypeSelector, DiagramPreview, DiagramModeInput, DIAGRAM_EMPTY_TITLE, diagramEmptySubtitle,
   QualityModeInput, QUALITY_EMPTY_TITLE, qualityEmptySubtitle,
 } from './modes';
+import { isZeroEmbeddings } from '../../shared/hooks/use-pages';
 
 // ---------------------------------------------------------------------------
 // Typing indicator: 3 dots with staggered bounce
@@ -218,6 +219,7 @@ function AiAssistantInner() {
     model, models, setModel, modelsError, refetchModels, isLight,
     includeSubPages, setIncludeSubPages,
     thinkingMode, setThinkingMode,
+    embeddingStatus,
   } = ctx;
 
   const shouldReduceMotion = useReducedMotion();
@@ -418,11 +420,48 @@ function AiAssistantInner() {
         })()}
       </div>
 
+      {/* Primed polite live region for completed answers (#937). The error
+          announcer above only speaks failures; without this, a screen-reader
+          user hears nothing when an answer finishes and the streamed text is
+          silently painted into the bubble. Gated on !isStreaming so we announce
+          the finished answer once, not mid-stream (which would interrupt the
+          visible streaming). Keyed by the completed message id so a fresh node
+          is inserted per answer — that insertion is what AT re-announces. */}
+      <div role="status" aria-live="polite" data-testid="ai-answer-announcer" className="sr-only">
+        {(() => {
+          if (isStreaming) return null;
+          const lastAnswer = [...messages].reverse().find(
+            (msg) => msg.role === 'assistant' && !msg.isError && msg.content,
+          );
+          return lastAnswer ? <span key={lastAnswer.id}>Answer ready</span> : null;
+        })()}
+      </div>
+
       {/* Messages — clean document-like surface, no heavy glass.
           flex-1 so the messages area grows to fill the column, pushing
           the sticky input bar to the bottom of the page. */}
       <div className="flex-1 overflow-hidden rounded-xl border border-border/40 bg-card/40 backdrop-blur-sm">
         <div className="min-h-[360px] space-y-4 p-5">
+          {/* Zero-embeddings notice (#938). Q&A answers via RAG over embedded
+              pages; with none embedded, buildRagContext returns "No relevant
+              context found", so the LLM answers as if the query matched
+              nothing. Surface the real cause here — scoped to ask mode (other
+              modes operate on the current page's text, not RAG) and shown in
+              both the empty and answered states so it never gets hidden behind
+              a misleading answer. */}
+          {mode === 'ask' && isZeroEmbeddings(embeddingStatus) && (
+            <div
+              data-testid="ai-no-embeddings-notice"
+              className="flex items-start gap-3 rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm text-warning"
+            >
+              <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+              <span>
+                Pages not embedded yet — configure an embedding provider in
+                Settings → LLM and run an embedding pass. Until then, Q&amp;A has
+                no knowledge-base context to draw on.
+              </span>
+            </div>
+          )}
           {messages.length === 0 && (
             <div className="flex min-h-[300px] flex-col items-center justify-center text-center">
               {/* Robot wrapped in a honey-tinted aura so the empty state reads

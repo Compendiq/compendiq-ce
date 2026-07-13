@@ -129,14 +129,26 @@ describe('POST /api/llm/generate-diagram', () => {
     expect(response.statusCode).toBeGreaterThanOrEqual(400);
   });
 
-  it('should reject request when model is missing', async () => {
+  it('should accept a request without model and resolve it server-side (#929)', async () => {
+    // #929: `model` is optional in the contract — the route resolves it per
+    // use-case via resolveUsecase() and ignores any body value (ADR-021).
+    async function* mockGenerator() {
+      yield { content: 'graph TD\n  A --> B', done: true };
+    }
+    mockStreamChat.mockReturnValue(mockGenerator());
+
     const response = await app.inject({
       method: 'POST',
       url: '/api/llm/generate-diagram',
       payload: { content: '<p>Some article text</p>' },
     });
 
-    expect(response.statusCode).toBeGreaterThanOrEqual(400);
+    // Not rejected for a missing model — the stream path runs instead.
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toBe('text/event-stream');
+    // The server-resolved model ('m'), not the absent body value, is used.
+    const [, model] = mockStreamChat.mock.calls[0] as [unknown, string];
+    expect(model).toBe('m');
   });
 
   it('should return 400 when content exceeds max length', async () => {
@@ -253,5 +265,46 @@ describe('POST /api/llm/generate-diagram', () => {
     });
 
     expect(mockGetSystemPrompt).toHaveBeenCalledWith('generate_diagram_sequence');
+  });
+});
+
+// =============================================================================
+// RBAC: a principal lacking the `llm:generate` grant must be 403-blocked (#896)
+// =============================================================================
+
+describe('POST /api/llm/generate-diagram - RBAC', () => {
+  let app: ReturnType<typeof Fastify>;
+
+  beforeAll(async () => {
+    app = Fastify({ logger: false });
+    await app.register(sensible);
+
+    app.decorate('authenticate', async () => {});
+    app.decorate('requireAdmin', async () => {});
+    app.decorate('redis', {});
+    app.decorateRequest('userId', '');
+    app.addHook('onRequest', async (request) => {
+      request.userId = 'no-perm-user';
+      // Simulate a custom role holding none of the llm:* grants.
+      request.userCan = async () => false;
+    });
+
+    await app.register(llmDiagramRoutes, { prefix: '/api' });
+    await app.ready();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  it('should return 403 when the principal lacks llm:generate', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/llm/generate-diagram',
+      payload: { content: '<p>x</p>', model: 'llama3' },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(JSON.parse(response.body).message).toContain('Permission "llm:generate" required');
   });
 });

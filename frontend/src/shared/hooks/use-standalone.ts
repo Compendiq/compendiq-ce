@@ -203,9 +203,16 @@ export function useExportPdf() {
 
 export function useImportMarkdown() {
   const queryClient = useQueryClient();
+  // Backend route is POST /api/pages/import (see backend pages-import.ts); it
+  // returns a batch envelope and always files standalone imports under the
+  // '_standalone' space, so spaceKey is not accepted.
   return useMutation({
-    mutationFn: (data: { markdown: string; title: string; spaceKey?: string }) =>
-      apiFetch<{ id: number; title: string }>('/pages/import/markdown', {
+    mutationFn: (data: { markdown: string; title: string }) =>
+      apiFetch<{
+        imported: number;
+        total: number;
+        articles: { id: string; title: string; success: boolean }[];
+      }>('/pages/import', {
         method: 'POST',
         body: JSON.stringify(data),
       }),
@@ -277,8 +284,9 @@ export function useReorderPage() {
         body: JSON.stringify({ sortOrder }),
       }),
     onSuccess: () => {
+      // ['pages'] covers the sidebar tree query (['pages', 'tree', …]). The old
+      // extra ['space-tree'] invalidation matched no query — dead key (#959).
       queryClient.invalidateQueries({ queryKey: ['pages'] });
-      queryClient.invalidateQueries({ queryKey: ['space-tree'] });
     },
   });
 }

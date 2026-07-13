@@ -45,6 +45,28 @@ sequenceDiagram
     BE-->>FE: 200 { accessToken (new) }
 ```
 
+### Client-side token refresh
+
+The SPA keeps the access token in memory (rehydrated from `localStorage` on
+reload) and refreshes it four ways, all funneling through the single-flight
+`refreshAccessTokenOnce()` so concurrent requests trigger exactly one
+`POST /api/auth/refresh`:
+
+- **Scheduled** — `useTokenRefreshTimer` refreshes shortly before expiry.
+- **Proactive (#965)** — `apiFetch` decodes the token's `exp` and, if it is
+  already expired (or within a 5s skew), refreshes **before** sending. This
+  stops a burst of concurrent queries on session resume from each round-tripping
+  to a guaranteed 401 (the "401 storm").
+- **Reactive** — a `401` response still triggers a refresh + retry as the
+  fallback for server-side revocation / clock skew.
+- **Session init (#884)** — `useSessionInit` fires once on app load when the
+  user looks authenticated but has no in-memory token (e.g. `localStorage`
+  migrated from an older key). It must go through the single-flight helper too:
+  in that state every mounted query also 401s and refreshes, so an independent
+  refresh here would race the deduped path — the loser presents an
+  already-rotated (revoked) JTI, tripping token-family reuse detection and
+  logging the user out despite a valid session.
+
 ### Registration quirks
 
 - `POST /api/auth/register` is rate-limited (5/min).
@@ -59,6 +81,15 @@ sequenceDiagram
 `POST /api/auth/logout` deletes the refresh token row, clears the cookie,
 and records `audit_log(action='logout')`. The access token is short-lived
 enough that blacklisting is not needed in CE; EE may add it.
+
+On the client, `useClearCacheOnLogout` (wired in `App.tsx`) wipes the
+in-memory TanStack Query cache on every authenticated→unauthenticated
+transition. The single SPA-scoped QueryClient would otherwise survive a
+logout→relogin in the same tab and serve the next user the previous user's
+cached pages, search results, and `allowed` permission results — query keys
+carry no user identity (#885). A ref guard means a token refresh (`setAuth`
+while still authenticated) does not drop a live session's cache; only a true
+logout does.
 
 ## Per-request revocation check (#737)
 
@@ -166,5 +197,6 @@ posts to a JSON endpoint and only then receives the real JWT.
 | OIDC routes (EE only) | `@compendiq/enterprise` (loaded via `core/enterprise/loader.ts`) |
 | Frontend session init | `frontend/src/shared/hooks/useSessionInit.ts` |
 | Refresh timer | `frontend/src/shared/hooks/useTokenRefreshTimer.ts` |
+| API client (single-flight + proactive/reactive refresh) | `frontend/src/shared/lib/api.ts` |
 | OIDC callback UI | `frontend/src/features/auth/OidcCallbackPage.tsx` |
 | OIDC admin config UI | `frontend/src/features/admin/OidcSettingsPage.tsx` |

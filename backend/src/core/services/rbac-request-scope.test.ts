@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+// JWT_SECRET must be set before the auth plugin's verifyToken/generateAccessToken
+// run (they read it at call time). 32+ chars to satisfy getJwtSecret().
+process.env.JWT_SECRET = 'test-jwt-secret-value-that-is-32-chars-long-abcdef';
+
 // Mock the DB so we can count resolver invocations without a real Postgres.
 // `getUserAccessibleSpaces` issues a single SELECT against
 // `space_role_assignments`; counting that call tells us whether the memoised
@@ -21,9 +25,20 @@ vi.mock('../utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
+// The auth hook's only DB-touching external dep on the happy path is the cached
+// liveness/role check (#737). Mock it to a live non-admin user so the hook never
+// hits the DB itself — every query the test counts then belongs to RBAC space
+// resolution, which is the thing the memo is supposed to deduplicate.
+vi.mock('./user-security-cache.js', () => ({
+  getUserSecurityState: vi.fn().mockResolvedValue({ kind: 'active', role: 'user' }),
+}));
+
+import Fastify from 'fastify';
+import sensible from '@fastify/sensible';
 import { query as mockQuery } from '../db/postgres.js';
 import { runWithRbacScope } from './rbac-request-scope.js';
 import { getUserAccessibleSpacesMemoized } from './rbac-service.js';
+import authPlugin, { generateAccessToken } from '../plugins/auth.js';
 
 describe('rbac-request-scope', () => {
   beforeEach(() => {
@@ -57,6 +72,51 @@ describe('rbac-request-scope', () => {
     // First call inside the scope triggers isSystemAdmin (1 query) + the
     // space-lookup (1 query). Every subsequent call returns the memoised
     // array without touching the DB. Expect exactly 2 total DB hits.
+    expect((mockQuery as ReturnType<typeof vi.fn>).mock.calls.length).toBe(2);
+  });
+
+  it('real auth.ts hook enters the scope so the route handler memoises (#899)', async () => {
+    // Regression guard that exercises the ACTUAL `authenticate` decorator from
+    // auth.ts (not a stand-in) driven through a real Fastify request lifecycle.
+    // The auth hook enters the RBAC scope *synchronously* before its first
+    // `await` (verifyToken / getUserSecurityState); ADR-022's per-request memo
+    // then survives into the route handler that Fastify runs as a separate
+    // awaited continuation. `enterWith` bound AFTER an await binds a resumed
+    // frame the handler never inherits, so if enterRbacScope() were reordered
+    // back below an await inside auth.ts the scope would be dead in the handler
+    // and every retrieval path would re-hit the DB. This test asserts the memo
+    // holds end-to-end, so that reordering would flip the query count 2 -> 4
+    // and fail here — catching the regression inside auth.ts itself, not merely
+    // a local model of it.
+    const app = Fastify();
+    // @fastify/sensible provides fastify.httpErrors, which the auth hook uses.
+    await app.register(sensible);
+    await app.register(authPlugin);
+    // Register the REAL authenticate hook exactly as protected routes do.
+    app.get('/probe', { onRequest: [app.authenticate] }, async (request) => {
+      // A single request consults the readable-space set from multiple paths;
+      // the memo must collapse these to one resolver hit for the whole request.
+      await getUserAccessibleSpacesMemoized(request.userId);
+      await getUserAccessibleSpacesMemoized(request.userId);
+      return { ok: true };
+    });
+    await app.ready();
+
+    // A genuinely valid token — verifyToken (jose) runs for real; nothing about
+    // the auth ordering is stubbed. Only the external liveness check is mocked.
+    const token = await generateAccessToken({ sub: 'u1', username: 'u1', role: 'user' });
+    const res = await app.inject({
+      method: 'GET',
+      url: '/probe',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    await app.close();
+
+    expect(res.statusCode).toBe(200);
+    // First handler call resolves via isSystemAdmin (1 query) + space lookup
+    // (1 query); the second is served from the request scope entered by the real
+    // auth hook. If the hook failed to propagate its scope into the handler the
+    // memo is dead and the DB is hit 4 times.
     expect((mockQuery as ReturnType<typeof vi.fn>).mock.calls.length).toBe(2);
   });
 

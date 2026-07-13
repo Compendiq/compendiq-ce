@@ -154,6 +154,30 @@ describe('TrialBanner', () => {
     expect(banner).not.toHaveTextContent('days');
   });
 
+  it('attaches the Authorization Bearer token to the license request (#956)', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          tier: 'business',
+          type: 'trial',
+          expiresAt: '2026-06-04T23:59:59Z',
+          daysRemaining: 28,
+          isValid: true,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+    render(<TrialBanner />);
+    // The banner only renders once the auth-protected endpoint answers, which
+    // requires the Bearer token to be attached to the request.
+    await screen.findByTestId('trial-banner');
+    const licenseCall = fetchSpy.mock.calls.find(([url]) => url === '/api/license/info');
+    expect(licenseCall).toBeDefined();
+    const [, init] = licenseCall!;
+    const headers = new Headers(init?.headers);
+    expect(headers.get('Authorization')).toBe('Bearer test-token');
+  });
+
   it('renders nothing when fetch rejects (network error)', async () => {
     vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('network'));
     render(<TrialBanner />);

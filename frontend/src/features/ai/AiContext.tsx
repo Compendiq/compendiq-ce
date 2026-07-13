@@ -192,7 +192,7 @@ export function useAiContext(): AiContextValue {
 // ---------------------------------------------------------------------------
 
 export function AiProvider({ children }: { children: ReactNode }) {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const pageId = searchParams.get('pageId');
@@ -269,6 +269,25 @@ export function AiProvider({ children }: { children: ReactNode }) {
       setDiagramCode('');
     }
   }, [pageId]);
+
+  // Prefill the composer from the ?q param so a question typed in the command
+  // palette's AI mode isn't dropped on navigation (#957). Reactive (not a mount
+  // initializer) so it also works when /ai is already mounted and only the
+  // search params change. The param is consumed — removed from the URL with a
+  // replace navigation — so refresh/back doesn't re-prefill an asked question.
+  const urlQuestion = searchParams.get('q');
+  useEffect(() => {
+    if (urlQuestion === null) return;
+    if (urlQuestion) setInput(urlQuestion);
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete('q');
+        return next;
+      },
+      { replace: true },
+    );
+  }, [urlQuestion, setSearchParams]);
 
   // After 2 seconds of thinking, promote from TypingIndicator to ThinkingBlob
   useEffect(() => {

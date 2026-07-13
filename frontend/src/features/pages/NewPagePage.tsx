@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Save, Upload, LayoutTemplate, Globe, Lock } from 'lucide-react';
+import { ArrowLeft, Save, Upload, LayoutTemplate, Globe, Lock, X } from 'lucide-react';
+import * as Dialog from '@radix-ui/react-dialog';
 import { useCreatePage } from '../../shared/hooks/use-pages';
 import { useSpaces } from '../../shared/hooks/use-spaces';
 import { useTemplates, useUseTemplate, useImportMarkdown, useLocalSpaces } from '../../shared/hooks/use-standalone';
@@ -26,6 +27,9 @@ export function NewPagePage() {
   const [title, setTitle] = useState('');
   const [spaceKey, setSpaceKey] = useState('');
   const [parentId, setParentId] = useState<string | undefined>();
+  // Seeds the editor's initial content (empty, or a template applied before
+  // the editor has mounted). The live body is read from the editor instance on
+  // create (#954) — it is not synced per keystroke.
   const [bodyHtml, setBodyHtml] = useState('');
   const [articleType, setArticleType] = useState<ArticleType>('local');
   const [visibility, setVisibility] = useState<Visibility>('private');
@@ -76,10 +80,13 @@ export function NewPagePage() {
       return;
     }
     try {
+      // Read the live HTML off the editor instance (#954). `bodyHtml` is only a
+      // fallback seed (empty, or a template applied before the editor mounted).
+      const bodyToSave = editorInstance?.getHTML() ?? bodyHtml;
       const result = await createMutation.mutateAsync({
         spaceKey: spaceKey,
         title: title.trim(),
-        bodyHtml,
+        bodyHtml: bodyToSave,
         ...(parentId ? { parentId } : {}),
         ...(selectedSpace?.source === 'local' ? { visibility } : {}),
       } as Parameters<typeof createMutation.mutateAsync>[0]);
@@ -101,16 +108,22 @@ export function NewPagePage() {
       const result = await importMarkdownMutation.mutateAsync({
         markdown,
         title: fileTitle,
-        spaceKey: spaceKey || undefined,
       });
-      navigate(`/pages/${result.id}`);
-      toast.success('Markdown imported successfully');
+      // The backend returns a batch envelope; the created page's id is the
+      // synthetic standalone-<uuid> confluence id in articles[0].
+      const newId = result.articles[0]?.id;
+      if (newId) {
+        navigate(`/pages/${newId}`);
+        toast.success('Markdown imported successfully');
+      } else {
+        toast.error('Import did not return a page');
+      }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to import markdown');
     }
     // Reset file input so the same file can be re-selected
     if (fileInputRef.current) fileInputRef.current.value = '';
-  }, [spaceKey, importMarkdownMutation, navigate]);
+  }, [importMarkdownMutation, navigate]);
 
   const isCreateDisabled = createMutation.isPending
     || !title.trim()
@@ -134,7 +147,7 @@ export function NewPagePage() {
           {/* Action bar */}
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <button onClick={() => navigate('/pages')} className="nm-icon-button">
+              <button onClick={() => navigate('/pages')} aria-label="Back to pages" className="nm-icon-button">
                 <ArrowLeft size={18} />
               </button>
               <h1 className="text-xl font-bold">New Page</h1>
@@ -199,6 +212,7 @@ export function NewPagePage() {
             <div className="flex gap-1" data-testid="article-type-toggle">
               <button
                 onClick={() => setArticleType('local')}
+                aria-pressed={articleType === 'local'}
                 className={cn(
                   'flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors',
                   articleType === 'local'
@@ -211,6 +225,7 @@ export function NewPagePage() {
               </button>
               <button
                 onClick={() => setArticleType('confluence')}
+                aria-pressed={articleType === 'confluence'}
                 className={cn(
                   'flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors',
                   articleType === 'confluence'
@@ -252,6 +267,7 @@ export function NewPagePage() {
               <div className="flex gap-1" data-testid="visibility-picker">
                 <button
                   onClick={() => setVisibility('private')}
+                  aria-pressed={visibility === 'private'}
                   className={cn(
                     'flex items-center justify-center gap-1 rounded-lg px-2.5 py-1.5 text-sm transition-colors',
                     visibility === 'private'
@@ -264,6 +280,7 @@ export function NewPagePage() {
                 </button>
                 <button
                   onClick={() => setVisibility('shared')}
+                  aria-pressed={visibility === 'shared'}
                   className={cn(
                     'flex items-center justify-center gap-1 rounded-lg px-2.5 py-1.5 text-sm transition-colors',
                     visibility === 'shared'
@@ -323,8 +340,7 @@ export function NewPagePage() {
           {/* Editor body */}
           <FeatureErrorBoundary featureName="Editor">
             <Editor
-              content=""
-              onChange={setBodyHtml}
+              content={bodyHtml}
               placeholder="Start writing your page..."
               draftKey={NEW_PAGE_DRAFT_KEY}
               naked
@@ -339,14 +355,15 @@ export function NewPagePage() {
       {showTemplateGallery && (
         <TemplateGallery
           onSelect={(html) => {
-            // Push the template into the live TipTap editor — the Editor is
-            // mounted with content="" and never re-reads the prop, so state
-            // alone would stay invisible and be overwritten by the first
-            // keystroke's onUpdate. emitUpdate fires onUpdate, which keeps
-            // bodyHtml and the localStorage draft in sync.
+            // Push the template into the live TipTap editor — the Editor never
+            // re-reads the content prop after mount, so setContent is how the
+            // template becomes visible. emitUpdate fires onUpdate so the
+            // localStorage draft is written; the body is read back from the
+            // editor instance on create (#954).
             editorInstance?.commands.setContent(html, { emitUpdate: true });
-            // Fallback for the brief window before TipTap finishes mounting
-            // (immediatelyRender: false), when editorInstance is still null.
+            // Seed fallback for the brief window before TipTap finishes
+            // mounting (immediatelyRender: false), when editorInstance is still
+            // null: the Editor picks this up as its initial content.
             setBodyHtml(html);
             setShowTemplateGallery(false);
           }}
@@ -371,42 +388,57 @@ function TemplateGallery({ onSelect, onClose }: { onSelect: (html: string) => vo
     }
   };
 
+  // Radix Dialog supplies role=dialog, aria-modal, focus trap + initial focus,
+  // focus restore, Escape-to-close and overlay-click-to-close for free — the
+  // hand-rolled div had none of these (#942). Mounted already-open, so
+  // onOpenChange only ever fires for a close request.
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" data-testid="template-gallery-modal">
-      <div className="nm-card w-full max-w-lg p-6">
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-lg font-semibold">Choose a Template</h2>
-          <button onClick={onClose} className="text-muted-foreground hover:text-foreground">&times;</button>
-        </div>
-        {isLoading ? (
-          <div className="space-y-3">
-            {Array.from({ length: 3 }).map((_, i) => (
-              <div key={i} className="h-12 animate-pulse rounded bg-foreground/5" />
-            ))}
+    <Dialog.Root open onOpenChange={(next) => { if (!next) onClose(); }}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm" />
+        <Dialog.Content
+          className="nm-card fixed left-1/2 top-1/2 z-50 w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 p-6 outline-none"
+          data-testid="template-gallery-modal"
+        >
+          <div className="mb-4 flex items-center justify-between">
+            <Dialog.Title className="text-lg font-semibold">Choose a Template</Dialog.Title>
+            <Dialog.Close
+              aria-label="Close template gallery"
+              className="text-muted-foreground hover:text-foreground"
+            >
+              <X size={18} />
+            </Dialog.Close>
           </div>
-        ) : !templatesData?.length ? (
-          <p className="py-8 text-center text-sm text-muted-foreground">No templates available</p>
-        ) : (
-          <div className="max-h-80 space-y-2 overflow-y-auto">
-            {templatesData.map((tpl) => (
-              <button
-                key={tpl.id}
-                onClick={() => handleUse(tpl.id)}
-                disabled={useTemplateMutation.isPending}
-                className="nm-card-interactive flex w-full items-center justify-between p-3 text-left"
-              >
-                <div>
-                  <p className="font-medium">{tpl.title}</p>
-                  {tpl.category && (
-                    <span className="text-xs text-muted-foreground">{tpl.category}</span>
-                  )}
-                </div>
-                <LayoutTemplate size={16} className="text-muted-foreground" />
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
+          {isLoading ? (
+            <div className="space-y-3">
+              {Array.from({ length: 3 }).map((_, i) => (
+                <div key={i} className="h-12 animate-pulse rounded bg-foreground/5" />
+              ))}
+            </div>
+          ) : !templatesData?.length ? (
+            <p className="py-8 text-center text-sm text-muted-foreground">No templates available</p>
+          ) : (
+            <div className="max-h-80 space-y-2 overflow-y-auto">
+              {templatesData.map((tpl) => (
+                <button
+                  key={tpl.id}
+                  onClick={() => handleUse(tpl.id)}
+                  disabled={useTemplateMutation.isPending}
+                  className="nm-card-interactive flex w-full items-center justify-between p-3 text-left"
+                >
+                  <div>
+                    <p className="font-medium">{tpl.title}</p>
+                    {tpl.category && (
+                      <span className="text-xs text-muted-foreground">{tpl.category}</span>
+                    )}
+                  </div>
+                  <LayoutTemplate size={16} className="text-muted-foreground" />
+                </button>
+              ))}
+            </div>
+          )}
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 }

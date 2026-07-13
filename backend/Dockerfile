@@ -47,7 +47,6 @@ FROM node:24-alpine AS runtime
 
 # Copy runtime utilities from tools stage
 COPY --from=tools /usr/bin/dumb-init /usr/bin/dumb-init
-COPY --from=tools /usr/bin/wget /usr/bin/wget
 # Copy pre-created data directory with correct ownership
 COPY --from=tools --chown=node:node /opt/app/data /app/data
 
@@ -74,4 +73,6 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD ["node", "-e", "fetch('http://127.0.0.1:3051/api/health/ready').then(r=>{if(!r.ok)throw r.status;process.exit(0)}).catch(()=>process.exit(1))"]
 
 ENTRYPOINT ["dumb-init", "--"]
-CMD ["node", "dist/index.js"]
+# `--import` preloads the OTel SDK before the app module graph loads so
+# auto-instrumentation attaches to http/fastify/pg/redis (issue #922).
+CMD ["node", "--import", "./dist/telemetry-register.js", "dist/index.js"]

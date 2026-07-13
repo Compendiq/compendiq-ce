@@ -29,7 +29,7 @@ Your PAT is encrypted at rest with AES-256-GCM and is never sent back to the bro
 
 After configuring your Confluence connection:
 
-1. Go to **Spaces** in the sidebar.
+1. Go to **Settings → Knowledge → Spaces & Sync**.
 2. You will see all available Confluence spaces.
 3. Select the spaces you want to sync to Compendiq.
 4. Click **Sync** to start the initial synchronization.
@@ -54,7 +54,7 @@ The **Pages** view shows all synced pages from your selected Confluence spaces, 
 4. Use the formatting toolbar or keyboard shortcuts for rich text.
 5. Save with `Ctrl+S`.
 
-You can also generate pages from templates (runbook, how-to, architecture, troubleshooting) using the **Templates** feature.
+You can also start a page from a template (e.g. Meeting Notes, Incident Report, How-to Guide, ADR, Runbook) via the **Use Template** button on the New Page screen.
 
 ### Editing a Page
 
@@ -127,12 +127,11 @@ AI can analyze and improve existing articles:
 
 ### Generate an Article
 
-Create new articles from templates and prompts:
+Create new articles from prompts:
 
-1. Go to **Templates**.
-2. Choose a template type (runbook, how-to, architecture, troubleshooting).
-3. Provide a topic and any context.
-4. The AI generates a full article that you can edit and save.
+1. Open the **AI** panel and switch to **Generate** mode.
+2. Enter a topic or prompt (optionally attach a PDF or enable web search for extra context).
+3. The AI generates a full article that you can save as a new page.
 
 ### Summarize
 
@@ -171,7 +170,7 @@ For v0.4, any admin can act on the queue. (Per-space scoping based on editor-on-
 
 ### What the queue looks like
 
-Open **Settings → AI → AI review queue**. Each row shows:
+Open **Settings → AI → AI Safety → Review queue**. Each row shows:
 
 - The action type chip (Improve, Summary, Generate, Auto-tag, Apply improvement).
 - The page id the review targets, plus the page title once you click into the detail.
@@ -199,7 +198,7 @@ If the AI run flagged personally identifiable information, the header shows a **
 
 ### Handling rejected output
 
-A rejection is final for that particular review row, but the author is free to re-run the AI. The reviewer note is the right place to give the author a steer (e.g. "tone is too casual; prefer the existing prose style"). The author sees pending and rejected counts in the **AuthorPendingBanner** at the top of any page-edit view.
+A rejection is final for that particular review row, but the author is free to re-run the AI. The reviewer note is the right place to give the author a steer (e.g. "tone is too casual; prefer the existing prose style").
 
 ### Auto-expiry
 
@@ -229,9 +228,9 @@ Uses vector embeddings to find conceptually similar content. This finds results 
 
 ### Hybrid Search
 
-Combines keyword and semantic search with Reciprocal Rank Fusion (RRF) for the best results. This is the default search mode.
+Combines keyword and semantic search with Reciprocal Rank Fusion (RRF) for the best results. The default mode is keyword; pass `mode=hybrid` to the search API for RRF results.
 
-Access search via the **Search** page in the sidebar or the **Command Palette** (`Ctrl+K`).
+Access search via the search box in the top bar or the **Command Palette** (`Ctrl+K`).
 
 ## Knowledge Graph
 
@@ -311,7 +310,7 @@ Compendiq supports both dark and light themes:
 
 ## Webhook Integrations (Enterprise)
 
-Enterprise administrators can configure outbound webhooks so external systems receive a signed HTTP POST whenever specific events happen in Compendiq (page created / updated / deleted, sync completed, AI quality / summary complete). Configuration lives at **Settings → Webhooks**.
+Enterprise administrators can configure outbound webhooks so external systems receive a signed HTTP POST whenever specific events happen in Compendiq (page created / updated / deleted, sync completed, AI quality / summary complete). Configuration lives at **Settings → Governance → Data & Compliance → Webhooks**.
 
 ### Event catalogue (v0.4)
 
@@ -364,7 +363,7 @@ The receiver MUST:
 
 ### Secret rotation
 
-Under **Settings → Webhooks**, click **Rotate secret** to stage a new primary while keeping the old one as a secondary signer for a grace window. Receivers should accept *either* signature during the window. When all receivers are updated, click **Complete rotation** (or let the window expire) to drop the old secret.
+Under **Settings → Governance → Data & Compliance → Webhooks**, click **Rotate secret** to stage a new primary while keeping the old one as a secondary signer for a grace window. Receivers should accept *either* signature during the window. When all receivers are updated, click **Complete rotation** (or let the window expire) to drop the old secret.
 
 ## Tips
 
