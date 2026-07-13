@@ -47,8 +47,11 @@ sequenceDiagram
 
 ### Client-side token refresh
 
-The SPA keeps the access token in memory (rehydrated from `localStorage` on
-reload) and refreshes it four ways, all funneling through the single-flight
+The SPA keeps the access token **in memory only** — it is never written to
+`localStorage` or `sessionStorage` (CWE-922). On reload / new tab it is
+re-minted from the HttpOnly refresh cookie via `useSessionInit` (see below).
+Only non-sensitive `user` + `isAuthenticated` are persisted. The token is
+refreshed four ways, all funneling through the single-flight
 `refreshAccessTokenOnce()` so concurrent requests trigger exactly one
 `POST /api/auth/refresh`:
 
@@ -60,12 +63,26 @@ reload) and refreshes it four ways, all funneling through the single-flight
 - **Reactive** — a `401` response still triggers a refresh + retry as the
   fallback for server-side revocation / clock skew.
 - **Session init (#884)** — `useSessionInit` fires once on app load when the
-  user looks authenticated but has no in-memory token (e.g. `localStorage`
-  migrated from an older key). It must go through the single-flight helper too:
-  in that state every mounted query also 401s and refreshes, so an independent
-  refresh here would race the deduped path — the loser presents an
+  user looks authenticated but has no in-memory token. Because the token is
+  memory-only, this is the normal state after every reload / new tab (#1054),
+  not just a migrated-key edge case. It must go through the single-flight
+  helper too: in that state every mounted query also 401s and refreshes, so an
+  independent refresh here would race the deduped path — the loser presents an
   already-rotated (revoked) JTI, tripping token-family reuse detection and
   logging the user out despite a valid session.
+
+#### Cross-tab coordination (#1054)
+
+Token adoption and logout are propagated between tabs over an **in-memory,
+same-origin `BroadcastChannel('compendiq-auth')`** — the access token is
+**never** broadcast through Web Storage. When one tab refreshes/logs in, it
+posts the new token to peers; on logout it posts a `logout` message that clears
+in-memory auth (and, via `useClearCacheOnLogout`, the cached user data) in every
+other tab. The `BroadcastChannel` is feature-guarded; where it is unavailable
+the retained `localStorage` `storage` event still coordinates **logout**
+(because `isAuthenticated` persists), and each tab otherwise re-mints its own
+token from the refresh cookie. Received messages are applied under a
+re-entrancy guard so a tab never echoes a change it just received.
 
 ### Registration quirks
 

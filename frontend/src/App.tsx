@@ -148,9 +148,11 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   // destroy their deep link (#932). Fail safe and fall through instead.
   if (!error && !setupComplete) return <Navigate to="/setup" replace />;
 
-  // accessToken is now persisted in localStorage, so new tabs have it
-  // immediately. If the token expired, apiFetch's 401 interceptor or
-  // useSessionInit will refresh it transparently.
+  // Only non-sensitive `user` + `isAuthenticated` persist in localStorage; the
+  // access token is memory-only. On reload / new tab, useSessionInit re-mints a
+  // token from the httpOnly refresh cookie, and apiFetch's 401 interceptor
+  // refreshes an expired one transparently — so an authenticated user is not
+  // bounced to /login just because the in-memory token isn't present yet.
   if (!isAuthenticated) return <Navigate to="/login" replace />;
   return <>{children}</>;
 }
