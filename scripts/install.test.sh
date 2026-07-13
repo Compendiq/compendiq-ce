@@ -182,6 +182,21 @@ test_env_idempotency() {
 
   assert_contains "Existing .env is preserved" "$env_content" "EXISTING=true"
 
+  # #1050 upgrade backfill: an existing .env predating MCP_DOCS_TOKEN must gain
+  # a generated token so the hardened (fail-closed) sidecar stays authenticated.
+  assert_contains "Missing MCP_DOCS_TOKEN is backfilled on upgrade" "$env_content" "MCP_DOCS_TOKEN="
+  local token_count
+  token_count="$(grep -c '^MCP_DOCS_TOKEN=' "${TEST_DIR}/.env")"
+  assert_eq "Backfill adds exactly one MCP_DOCS_TOKEN" "1" "$token_count"
+
+  # Re-running write_env must not append a second token (idempotent backfill).
+  local first_token
+  first_token="$(grep '^MCP_DOCS_TOKEN=' "${TEST_DIR}/.env")"
+  write_env "${TEST_DIR}/.env"
+  token_count="$(grep -c '^MCP_DOCS_TOKEN=' "${TEST_DIR}/.env")"
+  assert_eq "Re-run does not duplicate MCP_DOCS_TOKEN" "1" "$token_count"
+  assert_eq "Backfilled token is left unchanged on re-run" "$first_token" "$(grep '^MCP_DOCS_TOKEN=' "${TEST_DIR}/.env")"
+
   teardown
 }
 

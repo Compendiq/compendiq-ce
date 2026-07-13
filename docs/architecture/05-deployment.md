@@ -129,8 +129,16 @@ sent in the `x-mcp-docs-token` header) on top of network isolation. Because
 the sidecar runs with `NODE_ENV=production`, it **fails closed**: with no
 token set it returns `401` on every `/mcp` request (the container still boots
 and `/health` stays open for probes). The backend and mcp-docs must share the
-same value; the installer auto-generates it into `.env`. In local dev
+same value; the installer auto-generates it into `.env` on first install and
+**backfills it on upgrade** if an older `.env` predates the key. In local dev
 (`NODE_ENV` unset/non-production) an unset token is a pass-through.
+
+> **Upgrade / manual-compose note:** deployments that run `docker/docker-compose.yml`
+> directly with a hand-written `.env` (e.g. copied from `.env.example`, where
+> `MCP_DOCS_TOKEN` ships commented out) must set `MCP_DOCS_TOKEN` to a shared
+> secret before enabling the web-docs feature — otherwise the sidecar returns
+> `401` on every `/mcp` call. The rest of the stack is unaffected (web-docs is
+> opt-in). Installer-based deployments are backfilled automatically.
 
 ## Volumes
 

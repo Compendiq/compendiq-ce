@@ -161,6 +161,26 @@ write_env() {
   # Only generate secrets on first install — preserve existing .env
   if [ -f "$env_file" ]; then
     warn ".env already exists — keeping existing secrets"
+    # Upgrade backfill (#1050): the mcp-docs sidecar now fails closed (401) in
+    # production when MCP_DOCS_TOKEN is unset. .env files written before this
+    # key existed would silently break backend <-> mcp-docs /mcp calls (the
+    # opt-in web-docs feature) on upgrade, since write_compose always deploys
+    # the hardened sidecar. Backfill a generated token when it is absent so the
+    # existing deployment stays authenticated end-to-end. A commented-out entry
+    # (`# MCP_DOCS_TOKEN=`) counts as absent.
+    if ! grep -q '^MCP_DOCS_TOKEN=..*' "$env_file"; then
+      check_openssl
+      local backfill_token
+      backfill_token="$(generate_secret 32)"
+      {
+        printf '\n# --- MCP Documentation Sidecar (added on upgrade) ---\n'
+        printf '# Shared secret authenticating backend <-> mcp-docs /mcp calls.\n'
+        printf '# The sidecar runs with NODE_ENV=production and returns 401 until\n'
+        printf '# this is set. Must match on both the backend and mcp-docs services.\n'
+        printf 'MCP_DOCS_TOKEN=%s\n' "$backfill_token"
+      } >> "$env_file"
+      warn "Added missing MCP_DOCS_TOKEN to existing .env (required by the hardened mcp-docs sidecar)"
+    fi
     return 0
   fi
 
