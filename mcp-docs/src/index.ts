@@ -207,10 +207,14 @@ setInterval(() => {
 }, SESSION_REAP_INTERVAL_MS).unref();
 
 const app = express();
+// Don't advertise the framework/version to callers.
+app.disable('x-powered-by');
 
 // Shared-secret guard on /mcp (all methods) — registered BEFORE express.json so
 // an unauthenticated request's body is never parsed. /health below stays open.
-app.use('/mcp', makeMcpAuth(MCP_DOCS_TOKEN));
+// In production the guard fails closed: no MCP_DOCS_TOKEN → every /mcp request
+// gets 401 (the container still boots and /health stays up).
+app.use('/mcp', makeMcpAuth(MCP_DOCS_TOKEN, process.env.NODE_ENV === 'production'));
 app.use(express.json());
 
 // MCP endpoint

@@ -51,6 +51,15 @@ vi.mock('../../core/services/rate-limit-service.js', () => ({
   getRateLimits: vi.fn().mockResolvedValue({ auth: { max: 100 }, admin: { max: 100 }, global: { max: 1000 } }),
 }));
 
+// #1051 — registration gate. Default: registration allowed (mode 'open') so
+// the pre-existing happy-path register tests keep returning 201.
+const mockGetEffectiveRegistrationPolicy = vi
+  .fn()
+  .mockResolvedValue({ mode: 'open', allowRegistration: true });
+vi.mock('../../core/services/registration-policy-service.js', () => ({
+  getEffectiveRegistrationPolicy: (...a: unknown[]) => mockGetEffectiveRegistrationPolicy(...a),
+}));
+
 import { authRoutes } from './auth.js';
 
 // ---------------------------------------------------------------------------
@@ -122,6 +131,7 @@ describe('Auth routes', () => {
     // Restore default happy-path mocks
     mockGenerateAccessToken.mockResolvedValue('mock-access-token');
     mockGenerateRefreshToken.mockResolvedValue({ token: 'mock-refresh-token', jti: 'mock-jti' });
+    mockGetEffectiveRegistrationPolicy.mockResolvedValue({ mode: 'open', allowRegistration: true });
   });
 
   // ==========================================================================
@@ -259,6 +269,72 @@ describe('Auth routes', () => {
       });
 
       expect(response.statusCode).toBe(400);
+    });
+
+    // #1051 — registration gate.
+    it('should return 403 registration_disabled BEFORE hashing when registration is not allowed', async () => {
+      mockGetEffectiveRegistrationPolicy.mockResolvedValue({ mode: 'closed', allowRegistration: false });
+      mockBcryptHash.mockResolvedValue('hashed-password');
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/auth/register',
+        payload: { username: 'blocked', password: 'securepassword' },
+      });
+
+      expect(response.statusCode).toBe(403);
+      const body = JSON.parse(response.body);
+      // The machine-readable code must survive verbatim (explicit reply.send,
+      // NOT a thrown httpError that safeErrorName would rewrite).
+      expect(body.error).toBe('registration_disabled');
+
+      // Gate ran BEFORE bcrypt.hash — no password hashing on a rejected sign-up.
+      expect(mockBcryptHash).not.toHaveBeenCalled();
+      // And no INSERT (or any DB write) ran.
+      expect(mockQuery).not.toHaveBeenCalled();
+    });
+
+    it('should return 201 when registration is allowed (mode open)', async () => {
+      mockGetEffectiveRegistrationPolicy.mockResolvedValue({ mode: 'open', allowRegistration: true });
+      mockBcryptHash.mockResolvedValue('hashed-password');
+      mockQuery.mockResolvedValueOnce({
+        rows: [{ id: TEST_USER.id, username: TEST_USER.username, role: TEST_USER.role, email: null, display_name: null }],
+      });
+      mockQuery.mockResolvedValueOnce({ rows: [] });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/auth/register',
+        payload: { username: 'testuser', password: 'securepassword' },
+      });
+
+      expect(response.statusCode).toBe(201);
+      expect(mockBcryptHash).toHaveBeenCalledWith('securepassword', 12);
+    });
+  });
+
+  // ==========================================================================
+  // GET /registration-policy
+  // ==========================================================================
+
+  describe('GET /api/auth/registration-policy', () => {
+    it('returns allowRegistration:true from the policy service', async () => {
+      mockGetEffectiveRegistrationPolicy.mockResolvedValue({ mode: 'open', allowRegistration: true });
+
+      const response = await app.inject({ method: 'GET', url: '/api/auth/registration-policy' });
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)).toEqual({ allowRegistration: true });
+    });
+
+    it('returns allowRegistration:false and leaks nothing else', async () => {
+      mockGetEffectiveRegistrationPolicy.mockResolvedValue({ mode: 'closed', allowRegistration: false });
+
+      const response = await app.inject({ method: 'GET', url: '/api/auth/registration-policy' });
+
+      expect(response.statusCode).toBe(200);
+      // Only the gating boolean is exposed — never the raw mode.
+      expect(JSON.parse(response.body)).toEqual({ allowRegistration: false });
     });
   });
 

@@ -23,13 +23,30 @@ function constantTimeEqual(presented: string, expected: string): boolean {
 }
 
 /**
- * Build the Express middleware guarding /mcp. A falsy `token` yields a
- * pass-through middleware (logs a one-time warning).
+ * Build the Express middleware guarding /mcp.
+ *
+ * When `token` is set, every /mcp request must present it in the
+ * `x-mcp-docs-token` header (constant-time compare).
+ *
+ * When `token` is unset the behaviour depends on `isProduction`:
+ *   - production → fail closed: log a one-time error and reject every /mcp
+ *     request with 401. A production sidecar with no token is a
+ *     misconfiguration, not a licence to run unauthenticated.
+ *   - non-production → pass through (logs a one-time warning) so local dev
+ *     keeps working without a token.
  */
-export function makeMcpAuth(token: string | undefined) {
+export function makeMcpAuth(token: string | undefined, isProduction = false) {
   let warned = false;
   return function mcpAuth(req: Request, res: Response, next: NextFunction): void {
     if (!token) {
+      if (isProduction) {
+        if (!warned) {
+          logger.error('MCP_DOCS_TOKEN is required in production — rejecting all /mcp requests with 401 until it is set');
+          warned = true;
+        }
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
       if (!warned) {
         logger.warn('MCP_DOCS_TOKEN not set — /mcp is unauthenticated (relying on network isolation)');
         warned = true;

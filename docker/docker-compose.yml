@@ -1,5 +1,22 @@
 name: compendiq
 
+# =============================================================================
+# Production hardening (issue #1050)
+#
+# This file carries `build:` sections — it is the build-and-run source, so the
+# images are tagged `:dev`. Production deployments that DON'T build (they pull
+# a published image) MUST pin an immutable reference — a version tag such as
+# `:0.6.2` or, ideally, a `@sha256:...` digest — so the running artifact can
+# never be silently repointed. See docs/architecture/05-deployment.md.
+#
+# Every service runs with least privilege: `cap_drop: [ALL]`,
+# `no-new-privileges:true`, and non-swarm resource limits
+# (`mem_limit`/`cpus`/`pids_limit`). The three stateless services
+# (frontend, backend, mcp-docs) additionally run `read_only: true` with an
+# explicit writable `tmpfs`. postgres/redis re-add only the capabilities their
+# entrypoints need to step down from root to their service user via gosu.
+# =============================================================================
+
 services:
   frontend:
     image: ghcr.io/compendiq/compendiq-ce-frontend:dev
@@ -12,7 +29,22 @@ services:
       backend:
         condition: service_healthy
     restart: unless-stopped
-    networks: [frontend-net, backend-net]
+    # Least privilege: nginx (runs as USER nginx) needs no Linux capabilities.
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs:
+      # nginx writes its pid + every *_temp path under /tmp (frontend/nginx.conf);
+      # /var/cache/nginx and /var/run cover the base image's default writable paths.
+      - /tmp
+      - /var/cache/nginx
+      - /var/run
+    mem_limit: 128m
+    cpus: 0.5
+    pids_limit: 100
+    # Isolated to frontend-net only: the browser-facing container can reach the
+    # backend but NOT redis/searxng/mcp-docs/postgres (issue #1050).
+    networks: [frontend-net]
 
   backend:
     image: ghcr.io/compendiq/compendiq-ce-backend:dev
@@ -75,7 +107,21 @@ services:
       timeout: 5s
       retries: 5
       start_period: 15s
-    networks: [backend-net, data-net]
+    # Least privilege: node (runs as USER node) needs no Linux capabilities.
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs:
+      # Root FS is read-only. Persistent writes go to the `attachments` named
+      # volume (/app/data, from ATTACHMENTS_DIR); the CA bundle is bind-mounted
+      # read-only. Only transient scratch needs a writable /tmp.
+      - /tmp
+    mem_limit: 1024m
+    cpus: 2.0
+    pids_limit: 512
+    # frontend-net: reachable by the nginx proxy. backend-net: reach mcp-docs.
+    # data-net: reach postgres/redis.
+    networks: [frontend-net, backend-net, data-net]
 
   postgres:
     image: pgvector/pgvector:pg17
@@ -91,6 +137,17 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    # Least privilege. The official postgres image starts as root, chowns PGDATA
+    # and steps down to the postgres user via gosu, so it needs exactly these
+    # caps back after dropping ALL — a bare cap_drop:[ALL] fails startup.
+    # read_only is intentionally NOT set: postgres owns a complex writable data
+    # dir + runtime sockets. Isolation is via the data volume + internal network.
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 1024m
+    cpus: 2.0
+    pids_limit: 300
     networks: [data-net]
 
   mcp-docs:
@@ -119,6 +176,16 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
+    # Least privilege: node (runs as USER appuser) needs no Linux capabilities.
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs:
+      # Stateless: the doc cache lives in redis, not on disk. Only /tmp scratch.
+      - /tmp
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 100
     networks: [backend-net]
 
   searxng:
@@ -138,6 +205,14 @@ services:
       retries: 5
       start_period: 10s
     restart: unless-stopped
+    # Least privilege: runs as USER searxng (no root step-down) so no caps are
+    # needed. read_only is NOT set — the entrypoint renders settings.yml into
+    # the upstream /etc/searxng volume at boot.
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 200
     networks: [backend-net]
 
   redis:
@@ -153,6 +228,18 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    # Least privilege. The official redis image starts as root, chowns /data and
+    # steps down to the redis user via gosu, so it needs exactly these caps back
+    # after dropping ALL — a bare cap_drop:[ALL] fails startup. read_only is NOT
+    # set: redis owns /data (RDB/AOF) and its runtime socket.
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    security_opt: ["no-new-privileges:true"]
+    # mem_limit is above --maxmemory 256mb so redis stays within its own cap
+    # before Docker's OOM killer intervenes.
+    mem_limit: 320m
+    cpus: 0.5
+    pids_limit: 100
     networks: [data-net, backend-net]
 
 volumes:
