@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { ServiceStatus } from './ServiceStatus';
+import { useAuthStore } from '../../../stores/auth-store';
 
 // Wrap in LazyMotion for framer-motion
 import { LazyMotion, domAnimation } from 'framer-motion';
@@ -16,6 +17,13 @@ function Wrapper({ children }: { children: React.ReactNode }) {
 
 describe('ServiceStatus', () => {
   beforeEach(() => {
+    // #1052: the detail fetch to /api/health carries the admin token so the
+    // backend returns the per-service `services` payload that drives alerts.
+    useAuthStore.setState({
+      user: { id: 'u1', username: 'admin', role: 'admin' },
+      accessToken: 'tok',
+      isAuthenticated: true,
+    });
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ status: 'ok', llmProvider: 'LMStudio', services: { postgres: true, redis: true, llm: true } }), {
         headers: { 'Content-Type': 'application/json' },
@@ -25,6 +33,22 @@ describe('ServiceStatus', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    useAuthStore.setState({ user: null, accessToken: null, isAuthenticated: false });
+  });
+
+  it('sends the access token on the /api/health detail fetch (#1052)', async () => {
+    render(<ServiceStatus />, { wrapper: Wrapper });
+
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        '/api/health',
+        expect.objectContaining({
+          headers: expect.objectContaining({ Authorization: 'Bearer tok' }),
+        }),
+      );
+    });
+    // The reachability probe stays a bare, unauthenticated GET.
+    expect(globalThis.fetch).toHaveBeenCalledWith('/api/health/ready');
   });
 
   it('renders nothing when all services are healthy', async () => {

@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { m, AnimatePresence } from 'framer-motion';
 import { AlertTriangle, X, Wifi, WifiOff, Server } from 'lucide-react';
 import { cn } from '../../lib/cn';
+import { useAuthStore } from '../../../stores/auth-store';
 
 interface HealthStatus {
   status: string;
@@ -47,10 +48,18 @@ export function ServiceStatus() {
         return;
       }
 
-      // Separately fetch full health for LLM status (best-effort, ignore errors)
+      // Separately fetch full health for LLM/redis status (best-effort, ignore
+      // errors). #1052: /api/health returns per-service detail only to an
+      // authenticated admin, so attach the token. Non-admins get a coarse
+      // `{ status }` with no `services`, so no alert is derived — acceptable,
+      // since these alerts are operator-facing.
       const newAlerts: ServiceAlert[] = [];
       try {
-        const fullRes = await fetch('/api/health');
+        const { accessToken } = useAuthStore.getState();
+        const fullRes = await fetch('/api/health', {
+          headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+          credentials: 'include',
+        });
         if (fullRes.ok) {
           const data: HealthStatus = await fullRes.json();
           if (data.services?.llm === false) {
