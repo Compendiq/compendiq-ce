@@ -19,6 +19,8 @@ const validReadPayload = {
   // can never silently drop the cluster-wide LLM queue settings.
   llmConcurrency: 4,
   llmMaxQueueDepth: 50,
+  // Issue #1051 — self-registration policy (required on read).
+  registrationMode: 'closed',
 } as const;
 
 describe('AdminSettingsSchema (read)', () => {
@@ -338,6 +340,46 @@ describe('llmMaxQueueDepth (Compendiq/compendiq-ee#113 Phase B-3)', () => {
 
     it('rejects values above 1000', () => {
       expect(() => UpdateAdminSettingsSchema.parse({ llmMaxQueueDepth: 1001 })).toThrow();
+    });
+  });
+});
+
+// ─── #1051 — registrationMode validation ─────────────────────────────────
+describe('registrationMode (issue #1051)', () => {
+  describe('read schema', () => {
+    it("accepts 'open' and 'closed'", () => {
+      expect(
+        AdminSettingsSchema.parse({ ...validReadPayload, registrationMode: 'open' }).registrationMode,
+      ).toBe('open');
+      expect(
+        AdminSettingsSchema.parse({ ...validReadPayload, registrationMode: 'closed' }).registrationMode,
+      ).toBe('closed');
+    });
+
+    it('rejects an unknown mode (e.g. invite — out of scope)', () => {
+      expect(() =>
+        AdminSettingsSchema.parse({ ...validReadPayload, registrationMode: 'invite' }),
+      ).toThrow();
+    });
+
+    it('requires the field to be present (not optional on read)', () => {
+      const { registrationMode: _m, ...without } = validReadPayload;
+      expect(() => AdminSettingsSchema.parse(without)).toThrow();
+    });
+  });
+
+  describe('update schema', () => {
+    it("accepts 'open' and 'closed'", () => {
+      expect(UpdateAdminSettingsSchema.parse({ registrationMode: 'open' }).registrationMode).toBe('open');
+      expect(UpdateAdminSettingsSchema.parse({ registrationMode: 'closed' }).registrationMode).toBe('closed');
+    });
+
+    it('treats omitted field as undefined (leave unchanged)', () => {
+      expect(UpdateAdminSettingsSchema.parse({}).registrationMode).toBeUndefined();
+    });
+
+    it('rejects an unknown mode', () => {
+      expect(() => UpdateAdminSettingsSchema.parse({ registrationMode: 'invite' })).toThrow();
     });
   });
 });
