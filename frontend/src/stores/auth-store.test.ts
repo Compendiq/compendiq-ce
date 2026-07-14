@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { waitFor } from '@testing-library/react';
 import { useAuthStore } from './auth-store';
 
@@ -320,5 +320,69 @@ describe('auth-store', () => {
     expect(stored.state.accessToken).toBeUndefined();
     expect(stored.state.isAuthenticated).toBe(true);
     expect(stored.state.user.username).toBe('alice');
+  });
+});
+
+// The storage-event LOGIN fallback only activates when BroadcastChannel is
+// unavailable (e.g. Safari < 15.4). We re-import the store with the global
+// removed so its module-level `authChannel` is null and the fallback branch runs.
+describe('auth-store — storage login-sync fallback (BroadcastChannel unavailable)', () => {
+  const originalBC = globalThis.BroadcastChannel;
+
+  afterEach(() => {
+    globalThis.BroadcastChannel = originalBC;
+    vi.resetModules();
+    localStorage.clear();
+  });
+
+  it('propagates cross-tab LOGIN via the storage event (no token) when BroadcastChannel is unavailable', async () => {
+    // @ts-expect-error deliberately unset for the no-BroadcastChannel scenario
+    globalThis.BroadcastChannel = undefined;
+    vi.resetModules();
+    const { useAuthStore: freshStore } = await import('./auth-store');
+
+    // Fresh tab starts logged out.
+    freshStore.setState({ accessToken: null, user: null, isAuthenticated: false });
+
+    const user = { id: '7', username: 'carol', role: 'user' as const };
+    window.dispatchEvent(
+      new StorageEvent('storage', {
+        key: 'compendiq-auth',
+        newValue: JSON.stringify({ state: { user, isAuthenticated: true }, version: 1 }),
+      }),
+    );
+
+    await waitFor(() => expect(freshStore.getState().isAuthenticated).toBe(true));
+    expect(freshStore.getState().user).toEqual(user);
+    // Login sync carries only user + isAuthenticated — the token stays null and
+    // is re-minted from the HttpOnly refresh cookie.
+    expect(freshStore.getState().accessToken).toBeNull();
+  });
+
+  it('does NOT re-adopt when already authenticated (no clobber of the current token)', async () => {
+    // @ts-expect-error deliberately unset for the no-BroadcastChannel scenario
+    globalThis.BroadcastChannel = undefined;
+    vi.resetModules();
+    const { useAuthStore: freshStore } = await import('./auth-store');
+
+    freshStore.setState({
+      accessToken: 'live-token',
+      user: { id: '1', username: 'alice', role: 'user' },
+      isAuthenticated: true,
+    });
+
+    window.dispatchEvent(
+      new StorageEvent('storage', {
+        key: 'compendiq-auth',
+        newValue: JSON.stringify({
+          state: { user: { id: '2', username: 'bob', role: 'user' }, isAuthenticated: true },
+          version: 1,
+        }),
+      }),
+    );
+
+    // Already authenticated → branch is skipped; the live token is untouched.
+    expect(freshStore.getState().accessToken).toBe('live-token');
+    expect(freshStore.getState().user?.username).toBe('alice');
   });
 });

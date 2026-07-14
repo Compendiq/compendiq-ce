@@ -156,10 +156,20 @@ if (typeof window !== 'undefined') {
       if (!synced.isAuthenticated) {
         // Other tab logged out.
         applyRemote(() => useAuthStore.getState().clearAuth());
+      } else if (!authChannel && synced.user && !useAuthStore.getState().isAuthenticated) {
+        // BroadcastChannel unavailable (e.g. Safari < 15.4): propagate cross-tab
+        // LOGIN via the storage event too, so a tab that was logged out reflects
+        // a login in another tab without a manual reload. This carries only
+        // user + isAuthenticated — never the token — so the token stays null and
+        // is re-minted from the HttpOnly refresh cookie by useSessionInit / the
+        // 401 interceptor. When BroadcastChannel IS present, login + token
+        // adoption go through it and this branch is skipped, so it can never
+        // clobber the token the broadcast just adopted.
+        applyRemote(() =>
+          useAuthStore.setState({ user: synced.user, isAuthenticated: true }),
+        );
       }
-      // Token adoption is NOT handled here — the token never touches storage.
-      // A newly-authenticated peer propagates its token over the
-      // BroadcastChannel above (or, absent that, each tab refreshes its own).
+      // The access token never touches storage.
     } catch {
       // Malformed JSON — ignore
     }
