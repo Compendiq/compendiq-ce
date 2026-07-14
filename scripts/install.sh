@@ -286,7 +286,7 @@ services:
       - /tmp
       - /var/cache/nginx
       - /var/run
-    mem_limit: 128m
+    mem_limit: ${FRONTEND_MEM_LIMIT:-128m}
     cpus: 0.5
     pids_limit: 100
     healthcheck:
@@ -347,7 +347,7 @@ services:
     read_only: true
     tmpfs:
       - /tmp
-    mem_limit: 1024m
+    mem_limit: ${BACKEND_MEM_LIMIT:-1024m}
     cpus: 2.0
     pids_limit: 512
     healthcheck:
@@ -382,7 +382,7 @@ services:
     cap_drop: [ALL]
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
     security_opt: ["no-new-privileges:true"]
-    mem_limit: 1024m
+    mem_limit: ${POSTGRES_MEM_LIMIT:-1024m}
     cpus: 2.0
     pids_limit: 300
     networks:
@@ -410,7 +410,7 @@ services:
     cap_drop: [ALL]
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
     security_opt: ["no-new-privileges:true"]
-    mem_limit: 320m
+    mem_limit: ${REDIS_MEM_LIMIT:-320m}
     cpus: 0.5
     pids_limit: 100
     networks:
@@ -451,7 +451,7 @@ services:
     read_only: true
     tmpfs:
       - /tmp
-    mem_limit: 256m
+    mem_limit: ${MCP_DOCS_MEM_LIMIT:-256m}
     cpus: 0.5
     pids_limit: 100
     networks:
@@ -476,7 +476,7 @@ services:
     # needed. read_only omitted — it renders settings into the /etc/searxng volume.
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
-    mem_limit: 256m
+    mem_limit: ${SEARXNG_MEM_LIMIT:-256m}
     cpus: 0.5
     pids_limit: 200
     networks:
