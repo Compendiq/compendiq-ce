@@ -240,6 +240,15 @@ describe('docker/docker-compose.yml container hardening (#1050)', () => {
     expect(extractServiceBlock(composeProd, service)).toMatch(/^\s+mem_limit:\s*\S+/m);
   });
 
+  // The mem_limit must stay env-overridable (`${SERVICE_MEM_LIMIT:-default}`)
+  // so operators can raise it without editing the compose file — a hardcoded
+  // literal could OOM-kill memory-heavy work (large syncs, embeddings).
+  it.each(services)('makes the %s memory limit env-overridable with a default', (service) => {
+    expect(extractServiceBlock(composeProd, service)).toMatch(
+      /^\s+mem_limit:\s*\$\{[A-Z0-9_]+_MEM_LIMIT:-\S+\}/m,
+    );
+  });
+
   it.each(services)('sets a pids limit on %s', (service) => {
     expect(extractServiceBlock(composeProd, service)).toMatch(/^\s+pids_limit:\s*\d+/m);
   });
@@ -398,6 +407,9 @@ describe('scripts/install.sh invariants', () => {
       expect(hasCapDropAll(block), `${service} must cap_drop ALL`).toBe(true);
       expect(block, `${service} must set no-new-privileges`).toContain('no-new-privileges:true');
       expect(block, `${service} must set mem_limit`).toMatch(/^\s+mem_limit:\s*\S+/m);
+      expect(block, `${service} mem_limit must be env-overridable`).toMatch(
+        /^\s+mem_limit:\s*\$\{[A-Z0-9_]+_MEM_LIMIT:-\S+\}/m,
+      );
       expect(block, `${service} must set pids_limit`).toMatch(/^\s+pids_limit:\s*\d+/m);
     },
   );

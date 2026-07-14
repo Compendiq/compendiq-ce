@@ -39,7 +39,7 @@ services:
       - /tmp
       - /var/cache/nginx
       - /var/run
-    mem_limit: 128m
+    mem_limit: ${FRONTEND_MEM_LIMIT:-128m}
     cpus: 0.5
     pids_limit: 100
     # Isolated to frontend-net only: the browser-facing container can reach the
@@ -116,7 +116,7 @@ services:
       # volume (/app/data, from ATTACHMENTS_DIR); the CA bundle is bind-mounted
       # read-only. Only transient scratch needs a writable /tmp.
       - /tmp
-    mem_limit: 1024m
+    mem_limit: ${BACKEND_MEM_LIMIT:-1024m}
     cpus: 2.0
     pids_limit: 512
     # frontend-net: reachable by the nginx proxy. backend-net: reach mcp-docs.
@@ -145,7 +145,7 @@ services:
     cap_drop: [ALL]
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
     security_opt: ["no-new-privileges:true"]
-    mem_limit: 1024m
+    mem_limit: ${POSTGRES_MEM_LIMIT:-1024m}
     cpus: 2.0
     pids_limit: 300
     networks: [data-net]
@@ -183,7 +183,7 @@ services:
     tmpfs:
       # Stateless: the doc cache lives in redis, not on disk. Only /tmp scratch.
       - /tmp
-    mem_limit: 256m
+    mem_limit: ${MCP_DOCS_MEM_LIMIT:-256m}
     cpus: 0.5
     pids_limit: 100
     networks: [backend-net]
@@ -210,7 +210,7 @@ services:
     # the upstream /etc/searxng volume at boot.
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
-    mem_limit: 256m
+    mem_limit: ${SEARXNG_MEM_LIMIT:-256m}
     cpus: 0.5
     pids_limit: 200
     networks: [backend-net]
@@ -237,7 +237,7 @@ services:
     security_opt: ["no-new-privileges:true"]
     # mem_limit is above --maxmemory 256mb so redis stays within its own cap
     # before Docker's OOM killer intervenes.
-    mem_limit: 320m
+    mem_limit: ${REDIS_MEM_LIMIT:-320m}
     cpus: 0.5
     pids_limit: 100
     networks: [data-net, backend-net]

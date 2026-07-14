@@ -111,7 +111,12 @@ compose in `scripts/install.sh`):
   keys, **not** `deploy.resources` — the latter is Swarm-only and is silently
   ignored by `docker compose up`. `redis`'s `mem_limit` (320m) sits above its
   own `--maxmemory 256mb` so Redis enforces its cap before Docker's OOM
-  killer.
+  killer. Each `mem_limit` is **env-overridable** as
+  `${<SERVICE>_MEM_LIMIT:-<default>}` (e.g. `BACKEND_MEM_LIMIT`,
+  `POSTGRES_MEM_LIMIT` — see `.env.example`), so an operator can raise a limit
+  without editing the compose file; the table values are the defaults. Raise
+  `BACKEND_MEM_LIMIT` first if the backend is OOM-killed during large syncs or
+  embedding batches.
 
 ### Image pinning
 
