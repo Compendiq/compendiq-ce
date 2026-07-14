@@ -38,7 +38,7 @@ flowchart TB
     be --> workers
     be -- "SQL (pg pool)" --> pg
     be -- "RESP" --> redis
-    be -- "HTTP" --> mcp
+    be -- "HTTP + shared-secret token<br/>(x-mcp-docs-token, required in prod)" --> mcp
     mcp -- "HTTP" --> searx
 
     be -. "XHTML pages,<br/>attachments" .-> confluence
@@ -54,6 +54,13 @@ flowchart TB
     class fe,be app
     class mcp,searx,workers side
 ```
+
+The `backend → mcp-docs` call is authenticated with a shared-secret token
+(`MCP_DOCS_TOKEN`, sent as the `x-mcp-docs-token` header) layered on top of
+network isolation. The sidecar runs `NODE_ENV=production` and **fails closed**
+— `/mcp` returns `401` until the token is set on both services (`/health`
+stays open). See [`05-deployment.md`](./05-deployment.md) → MCP sidecar
+authentication.
 
 ## Containers at a glance
 

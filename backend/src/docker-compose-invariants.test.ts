@@ -110,6 +110,31 @@ function serviceNetworks(serviceBlock: string): string[] {
   return nets;
 }
 
+/**
+ * The list of networks a service block attaches to, INLINE flow form
+ * (`networks: [a, b, c]`). docker/docker-compose.yml uses this form, which the
+ * block-form `serviceNetworks()` above cannot parse.
+ */
+function serviceNetworksInline(serviceBlock: string): string[] {
+  const match = serviceBlock.match(/^\s+networks:\s*\[([^\]]*)\]\s*$/m);
+  if (!match) return [];
+  return match[1]
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/**
+ * True when a service block drops ALL capabilities, in either inline
+ * (`cap_drop: [ALL]`) or block (`cap_drop:\n  - ALL`) form.
+ */
+function hasCapDropAll(serviceBlock: string): boolean {
+  return (
+    /^\s+cap_drop:\s*\[[^\]]*\bALL\b[^\]]*\]\s*$/m.test(serviceBlock) ||
+    /^\s+cap_drop:\s*$\n(?:\s+-\s+\w+\s*$\n?)*\s+-\s+ALL\b/m.test(serviceBlock)
+  );
+}
+
 describe('docker/docker-compose.yml security invariants', () => {
   it('does not publish the backend on the host (must be reached via the frontend proxy)', () => {
     const backend = extractServiceBlock(composeProd, 'backend');
@@ -171,6 +196,72 @@ describe('docker/docker-compose.yml security invariants', () => {
     expect(match, 'backend service must declare stop_grace_period').not.toBeNull();
     expect(Number(match![1])).toBeGreaterThanOrEqual(60);
   });
+});
+
+describe('docker/docker-compose.yml network isolation (#1050)', () => {
+  // The internet-facing frontend must share a network ONLY with the backend so
+  // it can proxy /api, and can NOT reach redis/searxng/mcp-docs/postgres.
+  it('puts the frontend on frontend-net only (not backend-net)', () => {
+    const frontend = extractServiceBlock(composeProd, 'frontend');
+    const nets = serviceNetworksInline(frontend);
+    expect(nets).toEqual(['frontend-net']);
+    expect(nets).not.toContain('backend-net');
+  });
+
+  it('puts the backend on frontend-net so the frontend can reach it', () => {
+    const backend = extractServiceBlock(composeProd, 'backend');
+    const nets = serviceNetworksInline(backend);
+    expect(nets).toContain('frontend-net');
+    expect(nets).toContain('backend-net');
+    expect(nets).toContain('data-net');
+  });
+
+  it.each(['redis', 'searxng', 'mcp-docs', 'postgres'])(
+    'keeps %s off frontend-net so the browser-facing container cannot reach it',
+    (service) => {
+      const nets = serviceNetworksInline(extractServiceBlock(composeProd, service));
+      expect(nets).not.toContain('frontend-net');
+    },
+  );
+});
+
+describe('docker/docker-compose.yml container hardening (#1050)', () => {
+  const services = ['frontend', 'backend', 'postgres', 'mcp-docs', 'searxng', 'redis'];
+
+  it.each(services)('drops ALL Linux capabilities on %s', (service) => {
+    expect(hasCapDropAll(extractServiceBlock(composeProd, service))).toBe(true);
+  });
+
+  it.each(services)('sets no-new-privileges on %s', (service) => {
+    expect(extractServiceBlock(composeProd, service)).toContain('no-new-privileges:true');
+  });
+
+  it.each(services)('sets a memory limit on %s', (service) => {
+    expect(extractServiceBlock(composeProd, service)).toMatch(/^\s+mem_limit:\s*\S+/m);
+  });
+
+  it.each(services)('sets a pids limit on %s', (service) => {
+    expect(extractServiceBlock(composeProd, service)).toMatch(/^\s+pids_limit:\s*\d+/m);
+  });
+
+  // read_only is safe only on the stateless services; postgres/redis/searxng
+  // own complex writable paths and are intentionally excluded.
+  it.each(['frontend', 'backend', 'mcp-docs'])(
+    'runs %s with a read-only root filesystem',
+    (service) => {
+      expect(extractServiceBlock(composeProd, service)).toMatch(/^\s+read_only:\s*true\b/m);
+    },
+  );
+
+  it.each(['postgres', 'redis'])(
+    're-adds only the gosu step-down capabilities on %s (bare cap_drop:[ALL] would break startup)',
+    (service) => {
+      const block = extractServiceBlock(composeProd, service);
+      expect(block).toMatch(/^\s+cap_add:\s*\[[^\]]*\bSETUID\b[^\]]*\]/m);
+      expect(block).toMatch(/\bSETGID\b/);
+      expect(block).toMatch(/\bCHOWN\b/);
+    },
+  );
 });
 
 describe('docker/docker-compose.dev.yml security invariants', () => {
@@ -281,6 +372,51 @@ describe('scripts/install.sh invariants', () => {
       const onInternal = nets.some((net) => internalFlags[net] === true);
       expect(onInternal, `${service} must be on an internal network`).toBe(true);
     }
+  });
+
+  it('isolates the installed frontend to the frontend network only (#1050)', () => {
+    // The internet-facing frontend must not sit on the backend network, so it
+    // cannot reach redis/searxng/mcp-docs — only the backend (via frontend net).
+    const compose = extractInstallerCompose(installSh);
+    const nets = serviceNetworks(extractServiceBlock(compose, 'frontend'));
+    expect(nets).toEqual(['frontend']);
+  });
+
+  it('puts the installed backend on the frontend network so the proxy can reach it (#1050)', () => {
+    const compose = extractInstallerCompose(installSh);
+    const nets = serviceNetworks(extractServiceBlock(compose, 'backend'));
+    expect(nets).toContain('frontend');
+    expect(nets).toContain('backend');
+    expect(nets).toContain('data');
+  });
+
+  it.each(['frontend', 'backend', 'postgres', 'redis', 'mcp-docs', 'searxng'])(
+    'hardens the installed %s service (cap_drop ALL, no-new-privileges, mem + pids limits) (#1050)',
+    (service) => {
+      const compose = extractInstallerCompose(installSh);
+      const block = extractServiceBlock(compose, service);
+      expect(hasCapDropAll(block), `${service} must cap_drop ALL`).toBe(true);
+      expect(block, `${service} must set no-new-privileges`).toContain('no-new-privileges:true');
+      expect(block, `${service} must set mem_limit`).toMatch(/^\s+mem_limit:\s*\S+/m);
+      expect(block, `${service} must set pids_limit`).toMatch(/^\s+pids_limit:\s*\d+/m);
+    },
+  );
+
+  it.each(['frontend', 'backend', 'mcp-docs'])(
+    'runs the installed stateless %s with a read-only root filesystem (#1050)',
+    (service) => {
+      const compose = extractInstallerCompose(installSh);
+      expect(extractServiceBlock(compose, service)).toMatch(/^\s+read_only:\s*true\b/m);
+    },
+  );
+
+  it('generates a shared MCP_DOCS_TOKEN so /mcp stays authenticated on a default install (#1050)', () => {
+    // The installer must emit MCP_DOCS_TOKEN into .env — the sidecar runs
+    // NODE_ENV=production and fails closed (401) without it.
+    expect(installSh).toContain('MCP_DOCS_TOKEN=');
+    // And both services must read it from the environment.
+    const compose = extractInstallerCompose(installSh);
+    expect(compose).toMatch(/MCP_DOCS_TOKEN:\s*\$\{MCP_DOCS_TOKEN/);
   });
 });
 

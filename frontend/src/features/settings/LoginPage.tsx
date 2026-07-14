@@ -1,7 +1,7 @@
 import { useState, useEffect, type FormEvent } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
-import { OidcConfigSchema, type OidcConfig } from '@compendiq/contracts';
+import { OidcConfigSchema, type OidcConfig, RegistrationPolicySchema } from '@compendiq/contracts';
 import { useAuthStore } from '../../stores/auth-store';
 import { apiFetch } from '../../shared/lib/api';
 
@@ -31,6 +31,9 @@ export function LoginPage() {
   const [confirmError, setConfirmError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [oidcConfig, setOidcConfig] = useState<OidcConfig | null>(null);
+  // #1051 — fail closed: hide the signup toggle until the server confirms
+  // registration is allowed. A fetch/parse failure leaves it hidden.
+  const [allowRegistration, setAllowRegistration] = useState(false);
 
   useEffect(() => {
     const searchError = searchParams.get('error');
@@ -55,8 +58,27 @@ export function LoginPage() {
     fetchOidcConfig();
   }, []);
 
+  useEffect(() => {
+    async function fetchRegistrationPolicy() {
+      try {
+        const policy = RegistrationPolicySchema.parse(await apiFetch('/auth/registration-policy'));
+        setAllowRegistration(policy.allowRegistration);
+      } catch {
+        // Fail closed — a fetch/parse failure keeps the signup toggle hidden.
+      }
+    }
+    fetchRegistrationPolicy();
+  }, []);
+
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
+
+    // #1051 — refuse to submit a registration the server has disabled. The
+    // toggle is normally hidden, but this guards against a stale UI state.
+    if (isRegister && !allowRegistration) {
+      toast.error('Registration is disabled');
+      return;
+    }
 
     // Client-side confirmation check (register mode only) — block the
     // request entirely on mismatch.
@@ -184,19 +206,21 @@ export function LoginPage() {
           </button>
         </form>
 
-        <p className="mt-6 text-center text-sm text-muted-foreground">
-          {isRegister ? 'Already have an account?' : "Don't have an account?"}{' '}
-          <button
-            onClick={() => {
-              setIsRegister(!isRegister);
-              setConfirmPassword('');
-              setConfirmError(null);
-            }}
-            className="text-action hover:underline"
-          >
-            {isRegister ? 'Sign in' : 'Create one'}
-          </button>
-        </p>
+        {allowRegistration && (
+          <p className="mt-6 text-center text-sm text-muted-foreground">
+            {isRegister ? 'Already have an account?' : "Don't have an account?"}{' '}
+            <button
+              onClick={() => {
+                setIsRegister(!isRegister);
+                setConfirmPassword('');
+                setConfirmError(null);
+              }}
+              className="text-action hover:underline"
+            >
+              {isRegister ? 'Sign in' : 'Create one'}
+            </button>
+          </p>
+        )}
       </div>
     </div>
   );

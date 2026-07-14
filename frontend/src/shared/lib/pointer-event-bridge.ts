@@ -24,9 +24,11 @@
  * which @dnd-kit calls unconditionally at drag start. While active, the bridge
  * therefore makes setPointerCapture / releasePointerCapture tolerate that
  * missing-pointer error (drag still works because @dnd-kit listens on
- * document.body and the synthesized events bubble). Both patches are reverted
- * the instant a real pointer latches the bridge off, so normal input is
- * untouched.
+ * document.body and the synthesized events bubble). The prototype patch is
+ * shared and ref-counted across every install target, so it is wrapped exactly
+ * once no matter how many bridges are installed and the true native is restored
+ * only when the last bridge tears down (in production there is one target —
+ * `document` — so latch-off restores it immediately). Normal input is untouched.
  *
  * Idempotent per target; call once at startup.
  */
@@ -35,6 +37,8 @@ const MOUSE_TO_POINTER: Readonly<Record<string, string>> = {
   mousedown: 'pointerdown',
   mousemove: 'pointermove',
   mouseup: 'pointerup',
+  mouseover: 'pointerover',
+  mouseout: 'pointerout',
 };
 
 // Marks events this bridge dispatched so its own pointer listeners do not
@@ -46,6 +50,58 @@ const BRIDGED = '__compendiqBridgedPointerEvent';
 const MISSING_POINTER_ERRORS = new Set(['NotFoundError', 'InvalidStateError']);
 
 const installedTargets = new WeakSet<EventTarget>();
+
+type CaptureFn = (this: Element, pointerId: number) => void;
+
+// Wrap a pointer-capture method so it tolerates the missing-pointer errors our
+// synthesized (untracked) pointer id raises, while re-throwing any genuine
+// failure. Hoisted to module scope so a single shared wrapper is applied to the
+// prototype regardless of how many bridge targets are installed.
+function tolerate(fn: CaptureFn): CaptureFn {
+  return function (this: Element, pointerId: number) {
+    try {
+      return fn.call(this, pointerId);
+    } catch (error) {
+      if (error instanceof DOMException && MISSING_POINTER_ERRORS.has(error.name)) return;
+      throw error;
+    }
+  };
+}
+
+// The prototype capture patch is shared across every install target and applied
+// exactly once, ref-counted so the true native is restored only when the LAST
+// bridge tears down. Installing on N targets must not wrap the native N times:
+// each extra wrap would nest another try/catch, and — worse — a mid-life restore
+// by one target would strip the patch the other still-active targets rely on.
+let capturePatchRefCount = 0;
+let sharedOriginalSetCapture: CaptureFn | undefined;
+let sharedOriginalReleaseCapture: CaptureFn | undefined;
+
+function patchPointerCapture(): void {
+  // Only the first bridge (0 -> 1) reads the real natives and installs wrappers;
+  // every later install just bumps the count.
+  if (capturePatchRefCount++ > 0) return;
+  const proto = typeof Element !== 'undefined' ? Element.prototype : undefined;
+  if (!proto) return;
+  sharedOriginalSetCapture = proto.setPointerCapture;
+  sharedOriginalReleaseCapture = proto.releasePointerCapture;
+  if (sharedOriginalSetCapture) proto.setPointerCapture = tolerate(sharedOriginalSetCapture);
+  if (sharedOriginalReleaseCapture) proto.releasePointerCapture = tolerate(sharedOriginalReleaseCapture);
+}
+
+function unpatchPointerCapture(): void {
+  if (capturePatchRefCount === 0) return;
+  // Only the last bridge (1 -> 0) restores the natives; earlier teardowns just
+  // decrement so the wrapper stays in place for the targets still active.
+  if (--capturePatchRefCount > 0) return;
+  const proto = typeof Element !== 'undefined' ? Element.prototype : undefined;
+  if (proto) {
+    if (sharedOriginalSetCapture) proto.setPointerCapture = sharedOriginalSetCapture;
+    if (sharedOriginalReleaseCapture) proto.releasePointerCapture = sharedOriginalReleaseCapture;
+  }
+  sharedOriginalSetCapture = undefined;
+  sharedOriginalReleaseCapture = undefined;
+}
 
 export function installPointerEventBridge(
   target: Document | Element = typeof document !== 'undefined'
@@ -65,36 +121,24 @@ export function installPointerEventBridge(
 
   let active = true;
 
-  // Make pointer-capture calls tolerant of our synthesized (untracked) pointers.
-  const proto = typeof Element !== 'undefined' ? Element.prototype : undefined;
-  const originalSetCapture = proto?.setPointerCapture;
-  const originalReleaseCapture = proto?.releasePointerCapture;
-  const tolerate = (fn?: (id: number) => void) =>
-    fn
-      ? function (this: Element, pointerId: number) {
-          try {
-            return fn.call(this, pointerId);
-          } catch (error) {
-            if (error instanceof DOMException && MISSING_POINTER_ERRORS.has(error.name)) return;
-            throw error;
-          }
-        }
-      : undefined;
-  if (proto && originalSetCapture) proto.setPointerCapture = tolerate(originalSetCapture)!;
-  if (proto && originalReleaseCapture) proto.releasePointerCapture = tolerate(originalReleaseCapture)!;
-
   const teardown = () => {
     if (!active) return;
     active = false;
     installedTargets.delete(target);
-    if (proto && originalSetCapture) proto.setPointerCapture = originalSetCapture;
-    if (proto && originalReleaseCapture) proto.releasePointerCapture = originalReleaseCapture;
+    unpatchPointerCapture();
     target.removeEventListener('pointerdown', onNativePointer, true);
     target.removeEventListener('pointermove', onNativePointer, true);
     target.removeEventListener('pointerup', onNativePointer, true);
+    target.removeEventListener('pointerover', onNativePointer, true);
+    target.removeEventListener('pointerout', onNativePointer, true);
+    target.removeEventListener('pointercancel', onNativePointer, true);
     target.removeEventListener('mousedown', onMouse, true);
     target.removeEventListener('mousemove', onMouse, true);
     target.removeEventListener('mouseup', onMouse, true);
+    target.removeEventListener('mouseover', onMouse, true);
+    target.removeEventListener('mouseout', onMouse, true);
+    target.removeEventListener('contextmenu', onCancel, true);
+    window.removeEventListener('blur', onCancel, true);
   };
 
   function onNativePointer(event: Event) {
@@ -113,6 +157,11 @@ export function installPointerEventBridge(
     const node = mouse.target;
     if (!(node instanceof Element)) return;
 
+    // `button` is only meaningful on a button transition (down/up); a move or
+    // over/out reports -1 ("no change"), matching a real user agent. Passing the
+    // last-pressed button on a plain move would misreport a phantom press.
+    const isTransition = pointerType === 'pointerdown' || pointerType === 'pointerup';
+
     const pointer = new PointerEvent(pointerType, {
       bubbles: true,
       cancelable: true,
@@ -124,27 +173,69 @@ export function installPointerEventBridge(
       width: 1,
       height: 1,
       pressure: mouse.buttons ? 0.5 : 0,
-      button: mouse.button,
+      button: isTransition ? mouse.button : -1,
       buttons: mouse.buttons,
       clientX: mouse.clientX,
       clientY: mouse.clientY,
       screenX: mouse.screenX,
       screenY: mouse.screenY,
+      movementX: mouse.movementX,
+      movementY: mouse.movementY,
       ctrlKey: mouse.ctrlKey,
       shiftKey: mouse.shiftKey,
       altKey: mouse.altKey,
       metaKey: mouse.metaKey,
     });
+    // offsetX/offsetY, pageX/pageY and `view` are NOT settable through the
+    // PointerEvent/MouseEvent constructor (jsdom rejects `view: window`), so they
+    // stay at their 0/null defaults on the synthesized event by design.
     (pointer as unknown as Record<string, unknown>)[BRIDGED] = true;
     node.dispatchEvent(pointer);
   }
 
+  // Synthesize a pointercancel when the interaction is interrupted the way a real
+  // user agent would fire one: an OS context menu (right-click) or the window
+  // losing focus. Without it, a drag/press started via synthesized events could
+  // be left dangling because its natural cancel signal never arrives.
+  function onCancel(event: Event) {
+    const source = event instanceof MouseEvent ? event : undefined;
+    const cancel = new PointerEvent('pointercancel', {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      pointerId: 1,
+      pointerType: 'mouse',
+      isPrimary: true,
+      width: 1,
+      height: 1,
+      pressure: 0,
+      button: -1,
+      buttons: 0,
+      clientX: source ? source.clientX : 0,
+      clientY: source ? source.clientY : 0,
+    });
+    (cancel as unknown as Record<string, unknown>)[BRIDGED] = true;
+    const node = event.target instanceof Element ? event.target : document.body;
+    node.dispatchEvent(cancel);
+  }
+
+  patchPointerCapture();
+
   target.addEventListener('pointerdown', onNativePointer, true);
   target.addEventListener('pointermove', onNativePointer, true);
   target.addEventListener('pointerup', onNativePointer, true);
+  target.addEventListener('pointerover', onNativePointer, true);
+  target.addEventListener('pointerout', onNativePointer, true);
+  target.addEventListener('pointercancel', onNativePointer, true);
   target.addEventListener('mousedown', onMouse, true);
   target.addEventListener('mousemove', onMouse, true);
   target.addEventListener('mouseup', onMouse, true);
+  target.addEventListener('mouseover', onMouse, true);
+  target.addEventListener('mouseout', onMouse, true);
+  // contextmenu bubbles to the target; window blur only fires on window, so it
+  // must be registered there (and removed there) rather than on `target`.
+  target.addEventListener('contextmenu', onCancel, true);
+  window.addEventListener('blur', onCancel, true);
 
   return teardown;
 }
