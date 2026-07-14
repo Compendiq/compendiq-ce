@@ -161,6 +161,7 @@ test_env_generation() {
   assert_contains ".env contains POSTGRES_PASSWORD" "$env_content" "POSTGRES_PASSWORD="
   assert_contains ".env contains POSTGRES_DB" "$env_content" "POSTGRES_DB=kb_creator"
   assert_contains ".env contains REDIS_PASSWORD" "$env_content" "REDIS_PASSWORD="
+  assert_contains ".env contains MCP_DOCS_TOKEN" "$env_content" "MCP_DOCS_TOKEN="
 
   teardown
 }
@@ -181,6 +182,48 @@ test_env_idempotency() {
 
   assert_contains "Existing .env is preserved" "$env_content" "EXISTING=true"
 
+  # #1050 upgrade backfill: an existing .env predating MCP_DOCS_TOKEN must gain
+  # a generated token so the hardened (fail-closed) sidecar stays authenticated.
+  assert_contains "Missing MCP_DOCS_TOKEN is backfilled on upgrade" "$env_content" "MCP_DOCS_TOKEN="
+  local token_count
+  token_count="$(grep -c '^MCP_DOCS_TOKEN=' "${TEST_DIR}/.env")"
+  assert_eq "Backfill adds exactly one MCP_DOCS_TOKEN" "1" "$token_count"
+
+  # Re-running write_env must not append a second token (idempotent backfill).
+  local first_token
+  first_token="$(grep '^MCP_DOCS_TOKEN=' "${TEST_DIR}/.env")"
+  write_env "${TEST_DIR}/.env"
+  token_count="$(grep -c '^MCP_DOCS_TOKEN=' "${TEST_DIR}/.env")"
+  assert_eq "Re-run does not duplicate MCP_DOCS_TOKEN" "1" "$token_count"
+  assert_eq "Backfilled token is left unchanged on re-run" "$first_token" "$(grep '^MCP_DOCS_TOKEN=' "${TEST_DIR}/.env")"
+
+  teardown
+}
+
+# =============================================================================
+# Test: MCP_DOCS_TOKEN backfill treats commented/empty values as absent
+# (the real upgrade trigger — .env.example ships `# MCP_DOCS_TOKEN=`)
+# =============================================================================
+test_env_mcp_backfill() {
+  printf 'Test: MCP_DOCS_TOKEN backfill (commented / empty value)\n'
+  source_install
+
+  # Case 1: a COMMENTED token line, exactly how .env.example ships it. The
+  # sidecar would see no token → 401; backfill must add a real uncommented value.
+  setup
+  printf '# MCP_DOCS_TOKEN=\nEXISTING=true\n' > "${TEST_DIR}/.env"
+  write_env "${TEST_DIR}/.env"
+  assert_eq "Commented MCP_DOCS_TOKEN is backfilled with a real value" \
+    "1" "$(grep -c '^MCP_DOCS_TOKEN=..*' "${TEST_DIR}/.env")"
+  assert_contains "Commented line is preserved" "$(cat "${TEST_DIR}/.env")" "# MCP_DOCS_TOKEN="
+  teardown
+
+  # Case 2: an EMPTY value (`MCP_DOCS_TOKEN=`) is also treated as absent.
+  setup
+  printf 'MCP_DOCS_TOKEN=\nEXISTING=true\n' > "${TEST_DIR}/.env"
+  write_env "${TEST_DIR}/.env"
+  assert_eq "Empty MCP_DOCS_TOKEN is backfilled with a real value" \
+    "1" "$(grep -c '^MCP_DOCS_TOKEN=..*' "${TEST_DIR}/.env")"
   teardown
 }
 
@@ -216,6 +259,13 @@ test_compose_generation() {
   assert_contains "Has mcp-docs sidecar" "$compose_content" "ghcr.io/compendiq/compendiq-ce-mcp-docs:1.2.3"
   assert_contains "Has searxng sidecar" "$compose_content" "ghcr.io/compendiq/compendiq-ce-searxng:1.2.3"
   assert_contains "Backend points at mcp-docs" "$compose_content" "MCP_DOCS_URL:"
+  # Container hardening (issue #1050)
+  assert_contains "Drops Linux capabilities" "$compose_content" "cap_drop: [ALL]"
+  assert_contains "Sets no-new-privileges" "$compose_content" "no-new-privileges:true"
+  assert_contains "Sets memory limits" "$compose_content" "mem_limit:"
+  assert_contains "Sets pids limits" "$compose_content" "pids_limit:"
+  assert_contains "Stateless services are read-only" "$compose_content" "read_only: true"
+  assert_contains "Shares MCP_DOCS_TOKEN with sidecar" "$compose_content" "MCP_DOCS_TOKEN:"
 
   teardown
 }
@@ -326,6 +376,7 @@ printf '=== Compendiq Installer Tests ===\n\n'
 test_secret_generation
 printf '\n'
 test_env_generation
+test_env_mcp_backfill
 printf '\n'
 test_env_idempotency
 printf '\n'

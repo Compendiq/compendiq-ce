@@ -62,4 +62,40 @@ describe('makeMcpAuth', () => {
     expect(next).toHaveBeenCalledOnce();
     expect(res.statusCode).toBe(0);
   });
+
+  it('passes through in dev (isProduction=false) when no token is configured', () => {
+    const next = vi.fn();
+    const res = makeRes();
+    makeMcpAuth(undefined, false)({ headers: {} } as never, res as never, next as never);
+    expect(next).toHaveBeenCalledOnce();
+    expect(res.statusCode).toBe(0);
+  });
+
+  it('is backward compatible: default isProduction passes through with no token', () => {
+    const next = vi.fn();
+    const res = makeRes();
+    makeMcpAuth(undefined)({ headers: {} } as never, res as never, next as never);
+    expect(next).toHaveBeenCalledOnce();
+    expect(res.statusCode).toBe(0);
+  });
+
+  it('fails closed in production (isProduction=true) when no token is configured', () => {
+    const next = vi.fn();
+    const res = makeRes();
+    makeMcpAuth(undefined, true)({ headers: {} } as never, res as never, next as never);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('still allows a correct token in production (isProduction=true)', () => {
+    const next = vi.fn();
+    const res = makeRes();
+    makeMcpAuth('s3cret', true)(
+      { headers: { [MCP_AUTH_HEADER]: 's3cret' } } as never,
+      res as never,
+      next as never,
+    );
+    expect(next).toHaveBeenCalledOnce();
+    expect(res.statusCode).toBe(0);
+  });
 });

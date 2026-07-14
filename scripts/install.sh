@@ -161,6 +161,26 @@ write_env() {
   # Only generate secrets on first install — preserve existing .env
   if [ -f "$env_file" ]; then
     warn ".env already exists — keeping existing secrets"
+    # Upgrade backfill (#1050): the mcp-docs sidecar now fails closed (401) in
+    # production when MCP_DOCS_TOKEN is unset. .env files written before this
+    # key existed would silently break backend <-> mcp-docs /mcp calls (the
+    # opt-in web-docs feature) on upgrade, since write_compose always deploys
+    # the hardened sidecar. Backfill a generated token when it is absent so the
+    # existing deployment stays authenticated end-to-end. A commented-out entry
+    # (`# MCP_DOCS_TOKEN=`) counts as absent.
+    if ! grep -q '^MCP_DOCS_TOKEN=..*' "$env_file"; then
+      check_openssl
+      local backfill_token
+      backfill_token="$(generate_secret 32)"
+      {
+        printf '\n# --- MCP Documentation Sidecar (added on upgrade) ---\n'
+        printf '# Shared secret authenticating backend <-> mcp-docs /mcp calls.\n'
+        printf '# The sidecar runs with NODE_ENV=production and returns 401 until\n'
+        printf '# this is set. Must match on both the backend and mcp-docs services.\n'
+        printf 'MCP_DOCS_TOKEN=%s\n' "$backfill_token"
+      } >> "$env_file"
+      warn "Added missing MCP_DOCS_TOKEN to existing .env (required by the hardened mcp-docs sidecar)"
+    fi
     return 0
   fi
 
@@ -170,12 +190,14 @@ write_env() {
   local pat_key
   local pg_password
   local redis_password
+  local mcp_docs_token
   local timestamp
 
   jwt_secret="$(generate_secret 48)"
   pat_key="$(generate_secret 48)"
   pg_password="$(generate_secret 24)"
   redis_password="$(generate_secret 24)"
+  mcp_docs_token="$(generate_secret 32)"
   timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
   info "Generating cryptographically secure secrets..."
@@ -197,6 +219,12 @@ POSTGRES_DB=kb_creator
 
 # --- Redis ---
 REDIS_PASSWORD=${redis_password}
+
+# --- MCP Documentation Sidecar ---
+# Shared secret authenticating backend <-> mcp-docs /mcp calls. The sidecar
+# runs with NODE_ENV=production, so /mcp returns 401 until this is set. It MUST
+# match on both the backend and mcp-docs services (both read MCP_DOCS_TOKEN).
+MCP_DOCS_TOKEN=${mcp_docs_token}
 
 # --- LLM Provider (configure after install via Setup Wizard) ---
 # LLM_PROVIDER=ollama
@@ -220,6 +248,15 @@ write_compose() {
   local version="${COMPENDIQ_VERSION:-latest}"
   local port="${COMPENDIQ_PORT:-8080}"
 
+  # Mutable tags (latest/dev) can be silently repointed to a different image.
+  # Warn operators to pin an immutable version tag or digest for reproducible,
+  # tamper-evident production deploys (see docs/architecture/05-deployment.md).
+  case "$version" in
+    latest|dev)
+      warn "Image tag '${version}' is mutable; pin a version tag (e.g. --version 0.6.2) or a @sha256 digest for production."
+      ;;
+  esac
+
   # Always overwrite compose file — it is declarative and versioned
   info "Writing docker-compose.yml (frontend on port ${port})..."
 
@@ -241,6 +278,17 @@ services:
       backend:
         condition: service_healthy
     restart: unless-stopped
+    # Least privilege: nginx (USER nginx) needs no Linux capabilities.
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/cache/nginx
+      - /var/run
+    mem_limit: 128m
+    cpus: 0.5
+    pids_limit: 100
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8081/"]
       interval: 10s
@@ -291,6 +339,17 @@ services:
     stop_grace_period: 60s
     volumes:
       - attachments-data:/app/data
+    # Least privilege: node (USER node) needs no Linux capabilities. Root FS is
+    # read-only; persistent writes go to the attachments volume (/app/data),
+    # transient scratch to the tmpfs /tmp.
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs:
+      - /tmp
+    mem_limit: 1024m
+    cpus: 2.0
+    pids_limit: 512
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3051/api/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 10s
@@ -316,6 +375,16 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    # Least privilege. Official postgres starts as root and steps down to the
+    # postgres user via gosu (needs SET{U,G}ID) after chowning PGDATA (needs
+    # CHOWN/DAC_OVERRIDE/FOWNER), so a bare cap_drop:[ALL] would fail startup.
+    # read_only is intentionally omitted (complex writable data dir + sockets).
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 1024m
+    cpus: 2.0
+    pids_limit: 300
     networks:
       - data
 
@@ -334,6 +403,16 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    # Least privilege. Official redis starts as root and steps down to the redis
+    # user via gosu (needs SET{U,G}ID) after chowning /data (needs CHOWN/
+    # DAC_OVERRIDE/FOWNER), so a bare cap_drop:[ALL] would fail startup.
+    # mem_limit sits above --maxmemory 256mb so redis caps itself first.
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 320m
+    cpus: 0.5
+    pids_limit: 100
     networks:
       # data-net reaches postgres/backend; backend-net lets mcp-docs reach Redis.
       - data
@@ -365,6 +444,16 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
+    # Least privilege: node (USER appuser) needs no Linux capabilities. Stateless
+    # (cache lives in redis), so read_only with a writable /tmp scratch.
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs:
+      - /tmp
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 100
     networks:
       - backend
 
@@ -383,6 +472,13 @@ services:
       retries: 5
       start_period: 10s
     restart: unless-stopped
+    # Least privilege: runs as USER searxng (no root step-down) so no caps are
+    # needed. read_only omitted — it renders settings into the /etc/searxng volume.
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 200
     networks:
       - backend
 
