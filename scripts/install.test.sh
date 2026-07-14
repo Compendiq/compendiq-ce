@@ -201,6 +201,33 @@ test_env_idempotency() {
 }
 
 # =============================================================================
+# Test: MCP_DOCS_TOKEN backfill treats commented/empty values as absent
+# (the real upgrade trigger — .env.example ships `# MCP_DOCS_TOKEN=`)
+# =============================================================================
+test_env_mcp_backfill() {
+  printf 'Test: MCP_DOCS_TOKEN backfill (commented / empty value)\n'
+  source_install
+
+  # Case 1: a COMMENTED token line, exactly how .env.example ships it. The
+  # sidecar would see no token → 401; backfill must add a real uncommented value.
+  setup
+  printf '# MCP_DOCS_TOKEN=\nEXISTING=true\n' > "${TEST_DIR}/.env"
+  write_env "${TEST_DIR}/.env"
+  assert_eq "Commented MCP_DOCS_TOKEN is backfilled with a real value" \
+    "1" "$(grep -c '^MCP_DOCS_TOKEN=..*' "${TEST_DIR}/.env")"
+  assert_contains "Commented line is preserved" "$(cat "${TEST_DIR}/.env")" "# MCP_DOCS_TOKEN="
+  teardown
+
+  # Case 2: an EMPTY value (`MCP_DOCS_TOKEN=`) is also treated as absent.
+  setup
+  printf 'MCP_DOCS_TOKEN=\nEXISTING=true\n' > "${TEST_DIR}/.env"
+  write_env "${TEST_DIR}/.env"
+  assert_eq "Empty MCP_DOCS_TOKEN is backfilled with a real value" \
+    "1" "$(grep -c '^MCP_DOCS_TOKEN=..*' "${TEST_DIR}/.env")"
+  teardown
+}
+
+# =============================================================================
 # Test: docker-compose.yml generation
 # =============================================================================
 test_compose_generation() {
@@ -349,6 +376,7 @@ printf '=== Compendiq Installer Tests ===\n\n'
 test_secret_generation
 printf '\n'
 test_env_generation
+test_env_mcp_backfill
 printf '\n'
 test_env_idempotency
 printf '\n'
