@@ -125,9 +125,27 @@ export async function buildApp() {
     methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   });
 
-  // Security headers (CSP handled by nginx in production)
+  // Security headers. The backend is never published directly on the host
+  // (docker/docker-compose.yml maps no backend port); every client response
+  // is served through the frontend nginx edge. nginx is therefore the single
+  // authoritative source for the browser-facing headers it owns —
+  // X-Frame-Options, X-Content-Type-Options, Referrer-Policy,
+  // Content-Security-Policy and Permissions-Policy
+  // (frontend/nginx-security-headers.conf). We disable those in Helmet so the
+  // two layers don't both emit them: nginx `add_header` APPENDS to upstream
+  // headers rather than replacing them, so leaving them on here produced
+  // duplicate (and, for Referrer-Policy, conflicting) headers on proxied API
+  // responses (#1053). X-XSS-Protection is disabled outright — it is a
+  // deprecated, no-longer-honoured header, removed from nginx too.
+  //
+  // COOP / CORP / HSTS stay on as defense in depth: nginx does not set them,
+  // so there is no overlap and no duplication.
   await app.register(helmet, {
     contentSecurityPolicy: false,
+    xFrameOptions: false,
+    xContentTypeOptions: false,
+    referrerPolicy: false,
+    xXssProtection: false,
     crossOriginResourcePolicy: { policy: 'same-origin' },
     crossOriginOpenerPolicy: { policy: 'same-origin' },
     hsts: process.env.NODE_ENV === 'production',
