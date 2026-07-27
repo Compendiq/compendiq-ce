@@ -476,6 +476,17 @@ describe('content-converter', () => {
       expect(xhtml).toContain('ac:rich-text-body');
     });
 
+    it('converts an editor-authored empty panel to a macro (#1134)', () => {
+      // The panel picker inserts an empty panel, so the reverse pass sees a
+      // shape the Confluence sync never produces: a .panel-* div whose only
+      // child is an empty <p>. It must still become the macro rather than
+      // being dropped as empty — otherwise an author's freshly inserted Info
+      // box vanishes on the first save to Confluence.
+      const xhtml = htmlToConfluence('<div class="panel-info"><p></p></div>');
+      expect(xhtml).toContain('ac:name="info"');
+      expect(xhtml).toContain('ac:rich-text-body');
+    });
+
     it('round-trips expand macros', () => {
       const html = confluenceToHtml(EXPAND_PAGE);
       const xhtml = htmlToConfluence(html);

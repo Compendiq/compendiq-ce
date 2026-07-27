@@ -263,6 +263,96 @@ describe('Editor', () => {
     });
   });
 
+  describe('insert panel command (#1134)', () => {
+    // Panels synced in from Confluence already round-trip, but until #1134
+    // there was no way to author one in Compendiq. These drive the toolbar
+    // picker through a real editor so the assertions are about the document
+    // ProseMirror actually builds, not about a mocked chain call.
+    async function renderEditorWithToolbar() {
+      let editor: EditorType | null = null;
+      render(
+        <Editor content="<p>Test</p>" editable={true} onEditorReady={(e) => { editor = e; }} />,
+      );
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+      return editor!;
+    }
+
+    it.each([
+      ['Info', 'panel-info'],
+      ['Warning', 'panel-warning'],
+      ['Note', 'panel-note'],
+      ['Tip', 'panel-tip'],
+    ])('inserts a %s panel that serializes to .%s', async (label, className) => {
+      const editor = await renderEditorWithToolbar();
+
+      fireEvent.click(screen.getByTitle('Insert Panel'));
+      fireEvent.click(screen.getByTitle(label));
+
+      expect(editor.getHTML()).toContain(`class="${className}"`);
+    });
+
+    it('places the caret inside the new panel so the user can type immediately', async () => {
+      const editor = await renderEditorWithToolbar();
+
+      fireEvent.click(screen.getByTitle('Insert Panel'));
+      fireEvent.click(screen.getByTitle('Info'));
+
+      expect(editor.isActive('panel')).toBe(true);
+    });
+
+    it('places the caret inside the panel when the document is empty', async () => {
+      // insertContent branches on whether the caret sits at offset 0 of a
+      // non-empty block, so the caret landed in a different place depending on
+      // the surrounding content. Both contexts must end up inside the panel.
+      let editor: EditorType | null = null;
+      render(
+        <Editor content="" editable={true} onEditorReady={(e) => { editor = e; }} />,
+      );
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+
+      fireEvent.click(screen.getByTitle('Insert Panel'));
+      fireEvent.click(screen.getByTitle('Info'));
+
+      expect(editor!.isActive('panel')).toBe(true);
+    });
+
+    it('places the caret inside the panel when inserting mid-paragraph', async () => {
+      const editor = await renderEditorWithToolbar();
+      editor.commands.setTextSelection(3);
+
+      fireEvent.click(screen.getByTitle('Insert Panel'));
+      fireEvent.click(screen.getByTitle('Info'));
+
+      expect(editor.isActive('panel')).toBe(true);
+    });
+
+    it('inserts an empty panel rather than placeholder text', async () => {
+      // An Info box the author has to empty out first is worse than one they
+      // can type straight into — unlike the Expand insert, there is no summary
+      // line here that needs a default.
+      const editor = await renderEditorWithToolbar();
+
+      fireEvent.click(screen.getByTitle('Insert Panel'));
+      fireEvent.click(screen.getByTitle('Info'));
+
+      expect(editor.getHTML()).toMatch(/<div[^>]*class="panel-info"[^>]*><p><\/p><\/div>/);
+    });
+
+    it('closes the picker after inserting', async () => {
+      const editor = await renderEditorWithToolbar();
+      expect(editor).not.toBeNull();
+
+      fireEvent.click(screen.getByTitle('Insert Panel'));
+      fireEvent.click(screen.getByTitle('Info'));
+
+      expect(screen.queryByTitle('Warning')).not.toBeInTheDocument();
+    });
+  });
+
   describe('clipboard image paste (#17)', () => {
     it('renders and accepts the pageId prop', async () => {
       const { container } = render(
@@ -1049,5 +1139,42 @@ describe('EditorToolbar — header numbering toggle', () => {
     const italicBtn = screen.getByTitle('Italic (Ctrl+I)');
     expect(boldBtn).toHaveAttribute('aria-pressed', 'true');
     expect(italicBtn).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  // ---------- #1134 insert-panel picker ----------
+
+  it('renders the Insert Panel trigger inside the insert group (#1134)', () => {
+    const editor = createMockEditor();
+    render(<EditorToolbar editor={editor} />);
+
+    const trigger = screen.getByTitle('Insert Panel');
+    expect(screen.getByTestId('toolbar-group-insert')).toContainElement(trigger);
+  });
+
+  it('offers all four Confluence panel types once opened (#1134)', () => {
+    // The backend converter and the .panel-* styles both cover
+    // info/warning/note/tip, so the picker must not strand three of them.
+    const editor = createMockEditor();
+    render(<EditorToolbar editor={editor} />);
+
+    // Closed by default — no picking surface until the user asks for it.
+    expect(screen.queryByTitle('Info')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTitle('Insert Panel'));
+
+    for (const label of ['Info', 'Warning', 'Note', 'Tip']) {
+      expect(screen.getByTitle(label)).toBeInTheDocument();
+    }
+  });
+
+  it('closes the panel picker on an outside click (#1134)', () => {
+    const editor = createMockEditor();
+    render(<EditorToolbar editor={editor} />);
+
+    fireEvent.click(screen.getByTitle('Insert Panel'));
+    expect(screen.getByTitle('Info')).toBeInTheDocument();
+
+    fireEvent.mouseDown(document.body);
+    expect(screen.queryByTitle('Info')).not.toBeInTheDocument();
   });
 });

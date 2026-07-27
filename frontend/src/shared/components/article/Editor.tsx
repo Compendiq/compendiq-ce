@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import * as Popover from '@radix-ui/react-popover';
 import { useEditor, useEditorState, EditorContent } from '@tiptap/react';
+import { TextSelection } from '@tiptap/pm/state';
 import DragHandle from '@tiptap/extension-drag-handle-react';
 import StarterKit from '@tiptap/starter-kit';
 import { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
@@ -22,6 +23,7 @@ import {
   Trash2, Columns3, Rows3, Merge, SplitSquareHorizontal, Square,
   ToggleLeft, PanelTop, Workflow, Underline, Highlighter, Palette,
   Badge, ChevronsUpDown, Hash, Paperclip, ListTree, ImagePlus, TableProperties, Table2,
+  Info, TriangleAlert, StickyNote, Lightbulb,
   GripVertical,
   Terminal,
 } from 'lucide-react';
@@ -382,6 +384,96 @@ function StatusLabelInsert({ editor }: { editor: EditorType }) {
   );
 }
 
+/**
+ * The four Confluence panel macros, in the same order the content converter
+ * and the `.panel-*` stylesheet rules use. `swatch` points at the very token
+ * each panel is rendered with, so the picker can't drift from the box the
+ * author ends up looking at. Every entry pairs its color with an icon and a
+ * text label — the type must stay distinguishable without relying on hue.
+ */
+const PANEL_TYPES = [
+  { value: 'info', label: 'Info', Icon: Info, swatch: 'var(--color-info)' },
+  { value: 'warning', label: 'Warning', Icon: TriangleAlert, swatch: 'var(--color-warning)' },
+  { value: 'note', label: 'Note', Icon: StickyNote, swatch: 'var(--color-primary)' },
+  { value: 'tip', label: 'Tip', Icon: Lightbulb, swatch: 'var(--color-success)' },
+] as const;
+
+type PanelType = (typeof PANEL_TYPES)[number]['value'];
+
+/**
+ * Inserts an empty panel and leaves the caret inside it, so the author types
+ * straight into the box instead of clearing out placeholder copy first.
+ */
+function insertPanel(editor: EditorType, panelType: PanelType) {
+  editor
+    .chain()
+    .focus()
+    .insertContent({ type: 'panel', attrs: { panelType }, content: [{ type: 'paragraph' }] })
+    .command(({ tr, dispatch }) => {
+      if (!dispatch) return true;
+      // insertContent parks the caret *after* the new block whenever content
+      // follows it, which would leave the author typing underneath the box
+      // rather than inside it. Panels can't nest, so the last one starting at
+      // or before the caret is the one just inserted; put the caret in its
+      // paragraph. Same transaction, so a single undo removes the panel.
+      const { from } = tr.selection;
+      let caret: number | null = null;
+      tr.doc.descendants((node, pos) => {
+        if (node.type.name !== 'panel') return true;
+        if (pos <= from) caret = pos + 2;
+        return false;
+      });
+      if (caret !== null) {
+        tr.setSelection(TextSelection.create(tr.doc, caret));
+      }
+      return true;
+    })
+    .run();
+}
+
+function PanelInsert({ editor }: { editor: EditorType }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative">
+      <ToolbarButton onClick={() => setOpen(!open)} active={open} title="Insert Panel">
+        <Info size={16} />
+      </ToolbarButton>
+      {open && (
+        <div className="absolute top-full left-0 z-50 mt-1 rounded-lg border border-border/50 bg-card p-2 shadow-lg min-w-max">
+          <p className="mb-1.5 px-1 text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Panel</p>
+          <div className="grid grid-cols-2 gap-1">
+            {PANEL_TYPES.map(({ value, label, Icon, swatch }) => (
+              <button
+                key={value}
+                title={label}
+                onClick={() => {
+                  insertPanel(editor, value);
+                  setOpen(false);
+                }}
+                className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-foreground/5"
+              >
+                <Icon size={14} style={{ color: swatch }} />
+                <span className="text-[11px] whitespace-nowrap text-muted-foreground">{label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 const PRESET_COLORS = [
   { label: 'Red', value: '#ef4444' },
   { label: 'Orange', value: '#f97316' },
@@ -618,6 +710,7 @@ export function EditorToolbar({ editor, headerNumbering, onToggleHeaderNumbering
         >
           <ChevronsUpDown size={16} />
         </ToolbarButton>
+        <PanelInsert editor={editor} />
         <ToolbarButton
           onClick={() => {
             editor.chain().focus().insertContent({
