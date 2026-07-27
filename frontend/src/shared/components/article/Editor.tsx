@@ -118,7 +118,7 @@ const ConfluenceImage = Image.extend({
     };
   },
 
-  // Browser `<img>` tags cannot send Authorization headers, so the JWT-gated
+  // Browser `img` tags cannot send Authorization headers, so the JWT-gated
   // `/api/attachments/...` endpoint returns 401 for every direct image load —
   // both for pasted uploads and for Confluence-synced attachments. The
   // ArticleViewer (read mode) works around this by rewriting srcs to blob
@@ -1162,7 +1162,7 @@ async function importHttpImage(sourceUrl: string, pageId: string): Promise<strin
 const PASTE_IMPORT_CONCURRENCY = 5;
 
 /**
- * Walk pasted HTML and replace any non-internal `<img>` srcs with our own
+ * Walk pasted HTML and replace any non-internal `img` srcs with our own
  * attachment URLs (#683). Mutates a clone of the input; returns the rewritten
  * HTML plus a summary of imports for the user-facing toast.
  *
@@ -1431,7 +1431,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
         }
 
         // Rich HTML paste (#683). If the clipboard carries `text/html` that
-        // contains `<img>` tags with non-internal srcs (relative paths from
+        // contains `img` tags with non-internal srcs (relative paths from
         // imported Sphinx docs, absolute URLs from a wiki, data: URIs), walk
         // the HTML and rewrite each src to an internal attachment URL we
         // actually serve. We hold off on inserting the original HTML so the

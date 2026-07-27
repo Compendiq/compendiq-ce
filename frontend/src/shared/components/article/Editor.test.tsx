@@ -315,7 +315,7 @@ describe('Editor', () => {
   });
 
   describe('image NodeView — JWT-gated attachment rewrite', () => {
-    // Browsers can't send Authorization headers on <img> requests, so
+    // Browsers can't send Authorization headers on `img` requests, so
     // `/api/attachments/...` always 401's a direct load. The NodeView
     // intercepts these srcs, fetches them with the bearer token, and
     // renders via a blob URL — while leaving `node.attrs.src` (and
@@ -417,7 +417,7 @@ describe('Editor', () => {
         expect(document.querySelector('img')?.getAttribute('src')).toBe('blob:fake');
       });
 
-      // DOM `<img>` is showing the blob URL, but the editor's serialized
+      // DOM `img` is showing the blob URL, but the editor's serialized
       // state must still hold the canonical URL.
       const html = editor!.getHTML();
       const json = editor!.getJSON();
@@ -528,8 +528,8 @@ describe('Editor', () => {
     });
   });
 
-  describe('HTML paste — import non-internal <img> srcs (#683)', () => {
-    // When the user pastes HTML containing `<img>` tags whose srcs are not
+  describe('HTML paste — import non-internal img srcs (#683)', () => {
+    // When the user pastes HTML containing `img` tags whose srcs are not
     // already pointing at our backend, the editor rewrites each src to an
     // internal `/api/attachments/...` URL by routing through the inline
     // upload endpoint (data: URIs) or the new `/import` endpoint (http(s)).
@@ -572,7 +572,7 @@ describe('Editor', () => {
       return pm.dispatchEvent(evt);
     }
 
-    it('rewrites a single http(s) <img> src via /pages/:id/images/import', async () => {
+    it('rewrites a single http(s) img src via /pages/:id/images/import', async () => {
       mockApiFetch.mockResolvedValueOnce({ url: '/api/attachments/42/imported.png' });
 
       render(<Editor content="<p>seed</p>" editable={true} pageId="42" />);
@@ -597,7 +597,7 @@ describe('Editor', () => {
       });
     });
 
-    it('rewrites a data: URI <img> via /pages/:id/images (existing upload endpoint)', async () => {
+    it('rewrites a data: URI img via /pages/:id/images (existing upload endpoint)', async () => {
       mockApiFetch.mockResolvedValueOnce({ url: '/api/attachments/42/imported-data.png' });
 
       render(<Editor content="<p>seed</p>" editable={true} pageId="42" />);
@@ -707,7 +707,7 @@ describe('Editor', () => {
     });
 
     it('reports mixed outcomes via the toast (warning when some imports fail)', async () => {
-      // Two http(s) <img>s: first import succeeds, second fails. The toast
+      // Two http(s) img tags: first import succeeds, second fails. The toast
       // helper should land on `toast.warning` with the X-of-Y message.
       mockApiFetch
         .mockResolvedValueOnce({ url: '/api/attachments/42/ok.png' })
