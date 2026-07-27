@@ -299,7 +299,12 @@ describe('Editor', () => {
       fireEvent.click(screen.getByTitle('Insert Panel'));
       fireEvent.click(screen.getByTitle('Info'));
 
+      // isActive('panel') alone is true for any panel at any depth, so it
+      // wouldn't catch the caret landing in the wrong (e.g. outer) panel.
+      // The new panel's paragraph is always empty, so asserting that pins
+      // down which paragraph the caret actually sits in.
       expect(editor.isActive('panel')).toBe(true);
+      expect(editor.state.selection.$from.parent.textContent).toBe('');
     });
 
     it('places the caret inside the panel when the document is empty', async () => {
@@ -318,6 +323,7 @@ describe('Editor', () => {
       fireEvent.click(screen.getByTitle('Info'));
 
       expect(editor!.isActive('panel')).toBe(true);
+      expect(editor!.state.selection.$from.parent.textContent).toBe('');
     });
 
     it('places the caret inside the panel when inserting mid-paragraph', async () => {
@@ -328,6 +334,44 @@ describe('Editor', () => {
       fireEvent.click(screen.getByTitle('Info'));
 
       expect(editor.isActive('panel')).toBe(true);
+      expect(editor.state.selection.$from.parent.textContent).toBe('');
+    });
+
+    it('places the caret inside the newly inserted panel, not the outer one, when inserting into an existing panel (#1140)', async () => {
+      // Panel.content is 'block+', so panels can nest. The insert command
+      // used to scan the doc for "the last panel node", which stopped
+      // descending at the first (outer) panel it found and so never saw the
+      // nested one — landing the caret, and the author's next keystrokes, in
+      // the *existing* panel instead of the one they just inserted.
+      let editor: EditorType | null = null;
+      render(
+        <Editor
+          content='<div class="panel-info"><p>Existing</p></div>'
+          editable={true}
+          onEditorReady={(e) => { editor = e; }}
+        />,
+      );
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+      // Caret between "Exi" and "sting" inside the existing panel's paragraph.
+      editor!.commands.setTextSelection(5);
+
+      fireEvent.click(screen.getByTitle('Insert Panel'));
+      fireEvent.click(screen.getByTitle('Tip'));
+
+      const { $from } = editor!.state.selection;
+      expect($from.parent.textContent).toBe('');
+
+      let nearestPanel: { attrs: { panelType: string } } | null = null;
+      for (let depth = $from.depth; depth > 0; depth--) {
+        const node = $from.node(depth);
+        if (node.type.name === 'panel') {
+          nearestPanel = node as unknown as { attrs: { panelType: string } };
+          break;
+        }
+      }
+      expect(nearestPanel?.attrs.panelType).toBe('tip');
     });
 
     it('inserts an empty panel rather than placeholder text', async () => {

@@ -413,15 +413,21 @@ function insertPanel(editor: EditorType, panelType: PanelType) {
       if (!dispatch) return true;
       // insertContent parks the caret *after* the new block whenever content
       // follows it, which would leave the author typing underneath the box
-      // rather than inside it. Panels can't nest, so the last one starting at
-      // or before the caret is the one just inserted; put the caret in its
-      // paragraph. Same transaction, so a single undo removes the panel.
+      // rather than inside it. Panels *can* nest (Panel.content is 'block+'),
+      // so stopping descent at the first panel node meant one inserted
+      // inside an existing panel was never visited, landing the caret in the
+      // *outer* panel instead. Visiting every descendant and keeping the
+      // last match finds the innermost one instead: a nested panel starts at
+      // a higher position than its parent, so it's visited (and overwrites
+      // the match) after it. Same transaction, so a single undo removes the
+      // panel.
       const { from } = tr.selection;
       let caret: number | null = null;
       tr.doc.descendants((node, pos) => {
-        if (node.type.name !== 'panel') return true;
-        if (pos <= from) caret = pos + 2;
-        return false;
+        if (node.type.name === 'panel' && pos <= from) {
+          caret = pos + 2;
+        }
+        return true;
       });
       if (caret !== null) {
         tr.setSelection(TextSelection.create(tr.doc, caret));
