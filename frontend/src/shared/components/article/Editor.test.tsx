@@ -353,6 +353,48 @@ describe('Editor', () => {
     });
   });
 
+  describe('panel serialization', () => {
+    // The `panel-*` class already encodes the type, and it is the only thing
+    // the parse rules and htmlToConfluence read. TipTap's default attribute
+    // rendering also emitted `paneltype="…"` onto the div, so every save wrote
+    // a second copy of the type that nothing consumes — into body_html, and
+    // from there into whatever the reverse pass leaves behind.
+    it('keeps a Confluence-synced panel free of the redundant panelType attribute', async () => {
+      let editor: EditorType | null = null;
+      render(
+        <Editor
+          content='<div class="panel-warning"><p>careful</p></div>'
+          editable={true}
+          onEditorReady={(e) => { editor = e; }}
+        />,
+      );
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+
+      const html = editor!.getHTML();
+      expect(html).toContain('class="panel-warning"');
+      expect(html).not.toContain('paneltype');
+    });
+
+    it('keeps an editor-authored panel free of the redundant panelType attribute', async () => {
+      let editor: EditorType | null = null;
+      render(
+        <Editor content="<p>Test</p>" editable={true} onEditorReady={(e) => { editor = e; }} />,
+      );
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+
+      fireEvent.click(screen.getByTitle('Insert Panel'));
+      fireEvent.click(screen.getByTitle('Tip'));
+
+      const html = editor!.getHTML();
+      expect(html).toContain('class="panel-tip"');
+      expect(html).not.toContain('paneltype');
+    });
+  });
+
   describe('clipboard image paste (#17)', () => {
     it('renders and accepts the pageId prop', async () => {
       const { container } = render(

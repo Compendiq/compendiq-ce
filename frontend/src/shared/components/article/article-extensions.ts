@@ -209,6 +209,12 @@ export const Panel = Node.create({
           if (element.classList.contains('panel-tip')) return 'tip';
           return 'info';
         },
+        // The `panel-*` class written by renderHTML below is the type's only
+        // serialized form: parseHTML above reads it back off classList, and
+        // the backend converter keys on it to rebuild the macro. Letting
+        // TipTap render the attribute as well would write a second copy of
+        // the type into every saved page that nothing ever reads.
+        renderHTML: () => ({}),
       },
     };
   },
