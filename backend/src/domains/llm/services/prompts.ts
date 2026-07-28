@@ -65,7 +65,12 @@ const SYSTEM_PROMPTS = {
 
   generate_troubleshooting: `You are a support engineer creating documentation. Generate a troubleshooting guide with: Symptom description, Possible causes, Diagnostic steps, Resolution steps, and Prevention measures for each issue. Return in Markdown format.`,
 
-  generate_from_pdf: `You are a technical documentation writer. You are given the extracted text of a PDF document as source material. Using this source content and the user's instructions, generate a well-structured knowledge base article. Reorganize, clarify, and improve the content as needed. Use clear headings, code examples where appropriate, and follow best practices for technical documentation. Return the article in Markdown format.`,
+  // #1132: renamed from `generate_from_pdf` when Generate widened past PDFs,
+  // and the body stopped claiming the source is a PDF — five of the six formats
+  // it now accepts are not. Renaming the key orphans nothing: it is absent from
+  // `CUSTOM_PROMPT_KEYS`, whose schema is `.strict()`, so no user override for
+  // it can exist in `user_settings.custom_prompts`.
+  generate_from_document: `You are a technical documentation writer. You are given the extracted text of a document the user uploaded as source material. Using this source content and the user's instructions, generate a well-structured knowledge base article. Reorganize, clarify, and improve the content as needed. Use clear headings, code examples where appropriate, and follow best practices for technical documentation. Return the article in Markdown format.`,
 
   summarize: `You are a technical writing assistant. Provide a concise summary of the following article. Focus on the key points, decisions, and actionable items. Return ONLY the summary itself in Markdown format — no preamble, no meta-commentary, and no closing questions or offers. Do not begin with phrases like "Here is a summary". ${LANGUAGE_PRESERVATION_INSTRUCTION}`,
 

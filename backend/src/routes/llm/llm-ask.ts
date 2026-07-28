@@ -63,7 +63,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     // mutated by the MCP-fetched-docs sanitize loop further down so the
     // Report 5 attestation captures injection signals from EITHER input
     // source, not just the question. (Mirrors `llm-generate.ts`'s
-    // accumulator pattern for `pdfText`.)
+    // accumulator pattern for `documentText`.)
     const { sanitized: sanitizedQuestion, warnings } = sanitizeLlmInput(question);
     let promptInjectionDetected = warnings.length > 0;
     let wasSanitized = sanitizedQuestion !== question;

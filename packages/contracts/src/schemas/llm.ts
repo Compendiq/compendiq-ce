@@ -22,8 +22,8 @@ export const ImproveRequestSchema = z.object({
    * and is appended to the **system prompt**, so a real uploaded document would
    * blow the cap on the first attachment and, worse, arrive with the authority
    * of an instruction. Reference material is user *content*: it takes the same
-   * 200K ceiling as `GenerateRequestSchema.pdfText` and is merged into the user
-   * turn, sanitized separately.
+   * 200K ceiling as `GenerateRequestSchema.documentText` and is merged into the
+   * user turn, sanitized separately.
    */
   referenceText: z.string().max(200_000).optional(),
   thinking: z.boolean().optional(),
@@ -37,7 +37,15 @@ export const GenerateRequestSchema = z.object({
   model: z.string().min(1).optional(), // #929: optional — resolved server-side per ADR-021, body value ignored
   spaceKey: z.string().optional(),
   parentId: z.string().optional(),
-  pdfText: z.string().max(200_000).optional(),
+  /**
+   * #1132: text of the document the user attached as source material.
+   *
+   * Was `pdfText` back when Generate accepted only PDFs. It is format-blind
+   * by design — the extractor has already sniffed and decoded the bytes, so
+   * what arrives here is a DOCX's or an ODT's prose exactly as much as a PDF's,
+   * and a PDF-shaped name would have been a lie for five of the six formats.
+   */
+  documentText: z.string().max(200_000).optional(),
   thinking: z.boolean().optional(),
   searchWeb: z.boolean().optional(),
   searchQuery: z.string().max(500).optional(),

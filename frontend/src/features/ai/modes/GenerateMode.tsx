@@ -14,14 +14,6 @@ import { improveMarkdownToHtml } from '../../../shared/components/article/improv
 import { toast } from 'sonner';
 import { cn } from '../../../shared/lib/cn';
 
-/**
- * Generate stays PDF-only for now. The upload zone and the extraction endpoint
- * both handle six formats already; widening *this* surface — its copy, its
- * preview card, its `pdfText` request field — is #1132, deliberately kept out
- * of #1131 so the shared-component extraction lands as a pure move.
- */
-const GENERATE_FORMATS = ['pdf'] as const;
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -331,7 +323,8 @@ export function GenerateSavePanel({
 
 /**
  * Generate mode: free-text prompt to create a new article via LLM streaming.
- * Optionally upload a PDF to use as source material.
+ * Optionally upload a document — PDF, DOCX, MD, TXT, RTF or ODT (#1132) — to
+ * use as source material.
  * After generation completes, shows a save panel to publish to Confluence.
  */
 export function GenerateModeInput() {
@@ -349,26 +342,27 @@ export function GenerateModeInput() {
   });
   const mcpEnabled = mcpSettings?.enabled ?? false;
 
-  // PDF upload state — a single useExtractDocument instance shared with the
-  // upload zone so that `isExtracting` reflects the same extraction the zone
-  // runs (#940). Two separate instances left the spinner/disabled state stuck.
+  // Document upload state — a single useExtractDocument instance shared with
+  // the upload zone so that `isExtracting` reflects the same extraction the
+  // zone runs (#940). Two separate instances left the spinner/disabled state
+  // stuck.
   const { extractDocument, isExtracting } = useExtractDocument();
-  const [pdfData, setPdfData] = useState<ExtractDocumentResult | null>(null);
-  const [pdfFilename, setPdfFilename] = useState<string | null>(null);
+  const [documentData, setDocumentData] = useState<ExtractDocumentResult | null>(null);
+  const [documentFilename, setDocumentFilename] = useState<string | null>(null);
 
-  const handlePdfExtracted = useCallback((result: ExtractDocumentResult, filename: string) => {
-    setPdfData(result);
-    setPdfFilename(filename);
+  const handleDocumentExtracted = useCallback((result: ExtractDocumentResult, filename: string) => {
+    setDocumentData(result);
+    setDocumentFilename(filename);
   }, []);
 
-  const handlePdfRemove = useCallback(() => {
-    setPdfData(null);
-    setPdfFilename(null);
+  const handleDocumentRemove = useCallback(() => {
+    setDocumentData(null);
+    setDocumentFilename(null);
   }, []);
 
   const handleGenerate = useCallback(async () => {
-    // Block generation while a PDF extraction is in flight — otherwise the
-    // prompt would be sent without the pdfText that is still being extracted (#940).
+    // Block generation while an extraction is in flight — otherwise the prompt
+    // would be sent without the documentText still being extracted (#940).
     if (!input.trim() || isStreaming || isExtracting) return;
     if (!model) {
       toast.error('No model available. Check your LLM provider settings.');
@@ -378,8 +372,10 @@ export function GenerateModeInput() {
     const prompt = input.trim();
     setInput('');
 
-    const displayMessage = pdfData
-      ? `Generate from PDF (${pdfFilename}): ${prompt}`
+    // The filename already carries the format, so naming it twice ("Generate
+    // from DOCX (notes.docx)") would only be noise.
+    const displayMessage = documentData
+      ? `Generate from ${documentFilename}: ${prompt}`
       : `Generate: ${prompt}`;
     // Append, not replace (#1126) — matching runStream's seeded turn and Ask.
     // Generate is the one mode that still builds its own user turn by hand, and
@@ -389,8 +385,8 @@ export function GenerateModeInput() {
     setShowSavePanel(false);
 
     const body: Record<string, unknown> = { prompt, model };
-    if (pdfData) {
-      body.pdfText = pdfData.text;
+    if (documentData) {
+      body.documentText = documentData.text;
     }
     if (searchWeb) {
       body.searchWeb = true;
@@ -407,7 +403,7 @@ export function GenerateModeInput() {
         }
       },
     });
-  }, [input, model, isStreaming, isExtracting, pdfData, pdfFilename, searchWeb, thinkingMode, setInput, setMessages, runStream]);
+  }, [input, model, isStreaming, isExtracting, documentData, documentFilename, searchWeb, thinkingMode, setInput, setMessages, runStream]);
 
   const handleSubmit = () => handleGenerate();
 
@@ -434,22 +430,23 @@ export function GenerateModeInput() {
           onSaved={() => {
             setShowSavePanel(false);
             setGeneratedContent('');
-            handlePdfRemove();
+            handleDocumentRemove();
           }}
         />
       )}
 
       <div className="mt-3 space-y-3 border-t border-border/40 pt-3">
+        {/* No `formats` prop: Generate offers everything the extractor supports
+            (#1132), and the zone derives its accept list and every string it
+            renders from that default. */}
         <DocumentUploadZone
-          formats={GENERATE_FORMATS}
           extract={extractDocument}
-          onExtracted={handlePdfExtracted}
-          extracted={pdfData}
-          filename={pdfFilename}
-          onRemove={handlePdfRemove}
+          onExtracted={handleDocumentExtracted}
+          extracted={documentData}
+          filename={documentFilename}
+          onRemove={handleDocumentRemove}
           isExtracting={isExtracting}
           disabled={isStreaming}
-          testIdPrefix="pdf"
         />
 
         {mcpEnabled && (
@@ -472,7 +469,10 @@ export function GenerateModeInput() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={pdfData ? 'Instructions for generating from PDF...' : 'Describe the page to generate...'}
+            // "this document" rather than the format's name: the six labels
+            // live in DocumentUploadZone's FORMAT_META and copying them here
+            // would give the same string two owners.
+            placeholder={documentData ? 'Instructions for generating from this document...' : 'Describe the page to generate...'}
             maxLength={PROMPT_MAX_LENGTH}
             rows={1}
             disabled={isStreaming}

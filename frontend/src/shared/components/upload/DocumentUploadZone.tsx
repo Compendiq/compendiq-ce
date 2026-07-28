@@ -165,9 +165,10 @@ export function DocumentUploadZone({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragOver, setIsDragOver] = useState(false);
 
-  // A single-format surface names that format everywhere it would otherwise say
-  // "document" — which is how Generate keeps saying "PDF" while the same
-  // component, given six formats, says "document".
+  // A single-format surface names that format everywhere it would otherwise
+  // say "document": pass `formats={['pdf']}` and every string reads "PDF". No
+  // surface does today — both take all six since #1132 — but the copy stays
+  // derived rather than hardcoded so narrowing one is a one-line change.
   const only = formats.length === 1 ? formats[0] : undefined;
   const noun = only ? FORMAT_META[only].label : 'document';
 
