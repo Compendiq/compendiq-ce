@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Send, Loader2, Link2, X, Plus, Sparkles } from 'lucide-react';
+import { Send, Loader2, Link2, X, Plus } from 'lucide-react';
 import { useAiContext, nextMessageId } from '../AiContext';
 import { toast } from 'sonner';
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '../../../shared/lib/api';
-import { ASK_EXAMPLE_PROMPTS } from './ask-example-prompts';
+import { buildAskPrompts } from './ask-example-prompts';
+import { usePages, usePageFilterOptions } from '../../../shared/hooks/use-pages';
+import { useSpaces } from '../../../shared/hooks/use-spaces';
 
 interface McpDocsSettings {
   enabled: boolean;
@@ -196,10 +198,31 @@ export function AskModeInput() {
 }
 
 export const ASK_EMPTY_TITLE = 'Ask questions about your knowledge base';
-export const ASK_EMPTY_SUBTITLE = 'Your questions will be answered using RAG over your Confluence pages';
+// "RAG" is implementation vocabulary; it told the reader how the feature is
+// built, not what it will do for them. The rewrite states the behaviour that
+// actually distinguishes this from a plain chat box: answers cite pages.
+export const ASK_EMPTY_SUBTITLE = 'Answers are drawn from your synced pages, with links to the ones they came from';
 
 export function AskExamplePrompts() {
   const { setInput } = useAiContext();
+
+  // Suggestions are built from this instance's real content. The previous
+  // hardcoded list named a tag and a space that do not exist in a fresh
+  // install, so the AI surface opened by inventing facts about the user's
+  // own knowledge base — the exact failure the AI Safety panel forbids.
+  const { data: pageList } = usePages({ sort: 'modified', limit: 5 });
+  const { data: filterOptions } = usePageFilterOptions();
+  const { data: spaces } = useSpaces();
+
+  const prompts = buildAskPrompts({
+    recentPages: (pageList?.items ?? []).map((p) => ({
+      title: p.title,
+      spaceKey: p.spaceKey,
+      labels: p.labels ?? [],
+    })),
+    labels: filterOptions?.labels ?? [],
+    spaceKeys: (spaces ?? []).map((s) => s.key),
+  });
 
   const pick = (prompt: string) => {
     setInput(prompt);
@@ -219,7 +242,7 @@ export function AskExamplePrompts() {
       aria-label="Example prompts"
       className="mt-8 grid w-full max-w-2xl grid-cols-1 gap-2 sm:grid-cols-2 list-none p-0"
     >
-      {ASK_EXAMPLE_PROMPTS.map((prompt) => (
+      {prompts.map((prompt) => (
         <li key={prompt}>
           {/* Lighter card than nm-card-interactive — the heavy neumorphic
               extrusion fights the flat composer that sits 80 px below it
@@ -238,7 +261,9 @@ export function AskExamplePrompts() {
             className="group flex w-full items-start gap-2.5 rounded-lg border border-border/45 bg-foreground/[0.03] px-3 py-2.5 text-left text-sm text-foreground/85 transition-colors hover:border-primary/40 hover:bg-foreground/[0.06] hover:text-foreground focus-visible:border-primary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
             data-testid="ask-example-prompt"
           >
-            <Sparkles size={14} className="mt-0.5 shrink-0 text-primary/80 transition-colors group-hover:text-primary" />
+            {/* No leading icon: the same Sparkles glyph on all four cards
+                differentiated nothing and read as decoration. The prompt text
+                is the content. */}
             <span>{prompt}</span>
           </button>
         </li>

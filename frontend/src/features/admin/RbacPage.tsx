@@ -279,7 +279,7 @@ function RolesTab() {
             <Lock size={14} className="text-action" />
             <h3 className="font-medium">{role.displayName}</h3>
             {role.isSystem && (
-              <span className="rounded bg-[#ececea] px-1.5 py-0.5 text-[10px] font-medium text-[#4a4a48] dark:bg-[#2a2925] dark:text-[#c5bea9]">
+              <span className="rounded bg-[#ececea] px-1.5 py-0.5 text-[11px] font-medium text-[#4a4a48] dark:bg-[#2a2925] dark:text-[#c5bea9]">
                 System
               </span>
             )}

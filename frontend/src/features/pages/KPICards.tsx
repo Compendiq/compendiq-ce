@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { m } from 'framer-motion';
-import { FileText, Layers, Database, Clock } from 'lucide-react';
+import { FileText, Clock, RefreshCw } from 'lucide-react';
 import { formatRelativeTime } from '../../shared/lib/format-relative-time';
 import { AnimatedCounter } from '../../shared/components/effects/AnimatedCounter';
 import { TiltCard } from '../../shared/components/effects/TiltCard';
@@ -15,18 +15,9 @@ interface KPICardsProps {
   };
   spacesCount: number;
   lastSynced?: string;
-}
-
-interface KPICard {
-  icon: typeof FileText;
-  label: string;
-  value: string;
-  /** If set, AnimatedCounter counts up to this number */
-  numericValue?: number;
-  /** Suffix for animated counter (e.g. '%') */
-  suffix?: string;
-  color: string;
-  testId: string;
+  /** Triggers a sync from inside the Last Sync card. Omitted → no CTA. */
+  onSync?: () => void;
+  isSyncing?: boolean;
 }
 
 const stagger = {
@@ -110,98 +101,110 @@ function EmbeddingCoverageRing({ percent, isProcessing }: EmbeddingCoverageRingP
 
 // ---------- KPICards ----------
 
-export function KPICards({ embeddingStatus, spacesCount, lastSynced }: KPICardsProps) {
+/**
+ * Three tiles, one dominant — down from five equal ones.
+ *
+ * The old row spent five equal-weight cards to say very little: "Embedding
+ * Coverage" was `embedded / total * 100` computed from the two tiles sitting
+ * immediately to its left, so a fresh install read "5 / 0 / 0%" — one fact,
+ * three times — before the user reached a single page. Coverage now lives
+ * inside the Embedded tile as "0 of 5 (0%)", where it is a qualifier rather
+ * than a headline; the space count rides along with Total Pages, which is the
+ * number it qualifies. That frees Last Sync to span two columns and carry the
+ * Sync action, so the one tile that implies a next step is also the one the
+ * eye lands on first.
+ */
+export function KPICards({ embeddingStatus, spacesCount, lastSynced, onSync, isSyncing }: KPICardsProps) {
   const totalPages = embeddingStatus?.totalPages ?? 0;
   const embeddedPages = embeddingStatus?.embeddedPages ?? 0;
   const coveragePercent = totalPages > 0
     ? Math.round((embeddedPages / totalPages) * 100)
     : 0;
 
-  const cards: KPICard[] = [
-    {
-      icon: FileText,
-      label: 'Total Pages',
-      value: embeddingStatus ? String(totalPages) : '--',
-      numericValue: embeddingStatus ? totalPages : undefined,
-      color: 'text-success',
-      testId: 'kpi-total-articles',
-    },
-    {
-      icon: Database,
-      label: 'Embedded Pages',
-      value: embeddingStatus ? String(embeddedPages) : '--',
-      numericValue: embeddingStatus ? embeddedPages : undefined,
-      color: 'text-info',
-      testId: 'kpi-embedded-pages',
-    },
-    {
-      icon: Layers,
-      label: 'Spaces Synced',
-      value: String(spacesCount),
-      numericValue: spacesCount,
-      color: 'text-action',
-      testId: 'kpi-spaces-synced',
-    },
-    {
-      icon: Clock,
-      label: 'Last Sync',
-      value: lastSynced ? formatRelativeTime(lastSynced) : 'Never',
-      color: 'text-muted-foreground',
-      testId: 'kpi-last-sync',
-    },
-  ];
-
   return (
     <m.div
       variants={stagger}
       initial="initial"
       animate="animate"
-      className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5"
+      className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4"
       data-testid="kpi-cards"
     >
-      {cards.map(({ icon: Icon, label, value, numericValue, suffix, color, testId }) => (
-        <m.div
-          key={label}
-          variants={fadeUp}
-          className="h-full"
-        >
-          <TiltCard className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm p-4 h-full" maxTilt={10} data-testid={testId}>
-            <div className="flex items-center gap-3">
-              <div className={`rounded-lg bg-foreground/5 p-2 ${color}`}>
-                <Icon size={16} />
-              </div>
-              <div className="min-w-0">
-                <p className="line-clamp-2 text-xs text-muted-foreground" title={label}>{label}</p>
-                <p className="text-base font-semibold">
-                  {numericValue != null ? (
-                    <AnimatedCounter value={numericValue} suffix={suffix} />
-                  ) : (
-                    value
-                  )}
-                </p>
-              </div>
+      {/* Total pages, qualified by the spaces they came from. */}
+      <m.div variants={fadeUp} className="h-full">
+        <TiltCard className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm p-4 h-full" maxTilt={10} data-testid="kpi-total-articles">
+          <div className="flex items-center gap-3">
+            <div className="rounded-lg bg-foreground/5 p-2 text-success">
+              <FileText size={16} />
             </div>
-          </TiltCard>
-        </m.div>
-      ))}
+            <div className="min-w-0">
+              <p className="text-xs text-muted-foreground">Total Pages</p>
+              <p className="text-base font-semibold">
+                {embeddingStatus ? <AnimatedCounter value={totalPages} /> : '--'}
+              </p>
+              <p className="text-xs text-muted-foreground" data-testid="kpi-spaces-synced">
+                across {spacesCount} {spacesCount === 1 ? 'space' : 'spaces'}
+              </p>
+            </div>
+          </div>
+        </TiltCard>
+      </m.div>
 
-      {/* Embedding Coverage Ring - special card with SVG arc */}
-      <m.div
-        variants={fadeUp}
-        className="h-full"
-      >
-        <TiltCard className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm p-4 h-full" maxTilt={10} data-testid="kpi-embedding-coverage">
+      {/* Embedded pages, with coverage folded in as the qualifier it always
+          was. The ring stays as the tile's icon — it reads the ratio faster
+          than the text does. */}
+      <m.div variants={fadeUp} className="h-full">
+        <TiltCard className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm p-4 h-full" maxTilt={10} data-testid="kpi-embedded-pages">
           <div className="flex items-center gap-3">
             <EmbeddingCoverageRing
               percent={embeddingStatus ? coveragePercent : 0}
               isProcessing={embeddingStatus?.isProcessing ?? false}
             />
             <div className="min-w-0">
-              <p className="line-clamp-2 text-xs text-muted-foreground" title="Embedding Coverage">Embedding Coverage</p>
+              <p className="text-xs text-muted-foreground">Embedded</p>
               <p className="text-base font-semibold">
-                {embeddingStatus ? `${coveragePercent}%` : '--'}
+                {embeddingStatus ? <AnimatedCounter value={embeddedPages} /> : '--'}
+              </p>
+              <p className="text-xs text-muted-foreground" data-testid="kpi-embedding-coverage">
+                {embeddingStatus ? `of ${totalPages} (${coveragePercent}%)` : 'of --'}
               </p>
             </div>
+          </div>
+        </TiltCard>
+      </m.div>
+
+      {/* Double-width and action-bearing: the only tile that implies a next
+          step should be the one that gets the visual weight. */}
+      <m.div variants={fadeUp} className="h-full sm:col-span-2">
+        <TiltCard className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm p-4 h-full" maxTilt={6} data-testid="kpi-last-sync">
+          <div className="flex h-full items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="rounded-lg bg-foreground/5 p-2 text-muted-foreground">
+                <Clock size={16} />
+              </div>
+              <div className="min-w-0">
+                <p className="text-xs text-muted-foreground">Last Sync</p>
+                <p className="text-lg font-semibold">
+                  {lastSynced ? formatRelativeTime(lastSynced) : 'Never'}
+                </p>
+                {!lastSynced && (
+                  <p className="text-xs text-muted-foreground">
+                    Nothing has been mirrored from Confluence yet.
+                  </p>
+                )}
+              </div>
+            </div>
+            {onSync && (
+              <button
+                type="button"
+                onClick={onSync}
+                disabled={isSyncing}
+                className="shrink-0 inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-3 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:opacity-50"
+                data-testid="kpi-sync-btn"
+              >
+                <RefreshCw size={15} className={isSyncing ? 'animate-spin' : undefined} />
+                {isSyncing ? 'Syncing...' : 'Sync now'}
+              </button>
+            )}
           </div>
         </TiltCard>
       </m.div>

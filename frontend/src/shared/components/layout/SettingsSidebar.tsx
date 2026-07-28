@@ -110,7 +110,7 @@ export function SettingsSidebar({ onNavigate }: { onNavigate?: () => void } = {}
             >
               <h2
                 id={`settings-group-${group.id}`}
-                className="px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/80"
+                className="px-2 py-1 text-[12px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/80"
               >
                 {group.label}
               </h2>
@@ -146,7 +146,7 @@ export function SettingsSidebar({ onNavigate }: { onNavigate?: () => void } = {}
                             )}
                             <span>{item.label}</span>
                             {item.enterpriseOnly && (
-                              <span className="ml-2 rounded-sm border border-current/30 px-1.5 py-0.5 align-middle text-[10px] font-medium uppercase tracking-wider opacity-70">
+                              <span className="ml-2 rounded-sm border border-current/30 px-1.5 py-0.5 align-middle text-[12px] font-medium uppercase tracking-wider opacity-70">
                                 EE
                               </span>
                             )}

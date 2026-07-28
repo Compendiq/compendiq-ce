@@ -4,7 +4,7 @@ import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { AskModeInput, AskExamplePrompts, ASK_EMPTY_TITLE, ASK_EMPTY_SUBTITLE } from './AskMode';
-import { ASK_EXAMPLE_PROMPTS } from './ask-example-prompts';
+import { ASK_FALLBACK_PROMPTS } from './ask-example-prompts';
 import { AiProvider } from '../AiContext';
 import { useAuthStore } from '../../../stores/auth-store';
 
@@ -21,9 +21,26 @@ vi.mock('../../../shared/lib/sse', () => ({
   streamSSE: (...args: unknown[]) => streamSSEMock(...args),
 }));
 
+// Example prompts are derived from real instance content, so these three
+// queries decide what AskExamplePrompts renders. Overridable per test via
+// `promptSourceData` so a populated instance can be simulated.
+let promptSourceData: {
+  pages?: { title: string; spaceKey: string | null; labels: string[] }[];
+  labels?: string[];
+  spaces?: { key: string }[];
+} = {};
+
 vi.mock('../../../shared/hooks/use-pages', () => ({
   usePage: () => ({ data: undefined }),
   useEmbeddingStatus: () => ({ data: undefined }),
+  usePages: () => ({ data: promptSourceData.pages ? { items: promptSourceData.pages } : undefined }),
+  usePageFilterOptions: () => ({
+    data: promptSourceData.labels ? { authors: [], labels: promptSourceData.labels } : undefined,
+  }),
+}));
+
+vi.mock('../../../shared/hooks/use-spaces', () => ({
+  useSpaces: () => ({ data: promptSourceData.spaces }),
 }));
 
 const toastErrorMock = vi.fn();
@@ -56,6 +73,8 @@ function createWrapper(initialEntries = ['/ai']) {
 describe('AskMode', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Default to an empty instance so prompt-source state can't leak between tests.
+    promptSourceData = {};
     useAuthStore.getState().setAuth('test-token', {
       id: '1',
       username: 'testuser',
@@ -83,7 +102,15 @@ describe('AskMode', () => {
 
   it('exports correct empty state constants', () => {
     expect(ASK_EMPTY_TITLE).toBe('Ask questions about your knowledge base');
-    expect(ASK_EMPTY_SUBTITLE).toBe('Your questions will be answered using RAG over your Confluence pages');
+    expect(ASK_EMPTY_SUBTITLE).toBe(
+      'Answers are drawn from your synced pages, with links to the ones they came from',
+    );
+  });
+
+  it('keeps implementation vocabulary out of the empty-state subtitle', () => {
+    // "RAG" told the reader how the feature is built, not what it does.
+    expect(ASK_EMPTY_SUBTITLE).not.toMatch(/\bRAG\b/);
+    expect(ASK_EMPTY_SUBTITLE).not.toMatch(/embedding|vector/i);
   });
 
   it('renders input field and send button', () => {
@@ -164,14 +191,51 @@ describe('AskMode', () => {
 
     const items = screen.getAllByTestId('ask-example-prompt');
     expect(items).toHaveLength(4);
-    expect(ASK_EXAMPLE_PROMPTS).toHaveLength(4);
+    expect(ASK_FALLBACK_PROMPTS).toHaveLength(4);
 
     const input = screen.getByPlaceholderText('Ask a question...') as HTMLInputElement;
     fireEvent.click(items[0]!);
 
     await waitFor(() => {
-      expect(input.value).toBe(ASK_EXAMPLE_PROMPTS[0]);
+      expect(input.value).toBe(ASK_FALLBACK_PROMPTS[0]);
     });
+  });
+
+  it('derives example prompts from the real content of the instance', async () => {
+    promptSourceData = {
+      pages: [
+        { title: 'On-call rotation and escalation policy', spaceKey: 'OPS', labels: ['runbook'] },
+        { title: 'Postgres connection pool tuning', spaceKey: 'OPS', labels: [] },
+      ],
+      labels: ['runbook'],
+      spaces: [{ key: 'OPS' }],
+    };
+
+    const Composed = () => (
+      <>
+        <AskExamplePrompts />
+        <AskModeInput />
+      </>
+    );
+    render(<Composed />, { wrapper: createWrapper() });
+
+    const texts = screen.getAllByTestId('ask-example-prompt').map((el) => el.textContent);
+    expect(texts).toContain('Summarize "On-call rotation and escalation policy"');
+    expect(texts).toContain('Draft a how-to from pages tagged "runbook"');
+    expect(texts).toContain('What changed in the OPS space in the last 7 days?');
+  });
+
+  it('never names a tag or space the instance does not have', () => {
+    // Regression guard for the pre-critique hardcoded list, which referenced
+    // an "onboarding" tag and an "engineering" space that never existed.
+    promptSourceData = {};
+
+    render(<AskExamplePrompts />, { wrapper: createWrapper() });
+
+    const texts = screen.getAllByTestId('ask-example-prompt').map((el) => el.textContent).join(' ');
+    expect(texts).not.toMatch(/onboarding/i);
+    expect(texts).not.toMatch(/engineering/i);
+    expect(texts).not.toMatch(/tagged "/);
   });
 
   it('disables send button when input is empty', () => {

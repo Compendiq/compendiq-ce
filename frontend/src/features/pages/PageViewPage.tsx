@@ -677,14 +677,14 @@ export function PageViewPage() {
             {/* Source badge */}
             {page.source === 'standalone' ? (
               <span
-                className="inline-flex items-center gap-1 rounded-full bg-[#e7f2e8] px-2 py-0.5 text-[10px] font-medium text-[#1f5a2a] dark:bg-[#1a2a1d] dark:text-[#9ad4a8]"
+                className="inline-flex items-center gap-1 rounded-full bg-[#e7f2e8] px-2 py-0.5 text-[11px] font-medium text-[#1f5a2a] dark:bg-[#1a2a1d] dark:text-[#9ad4a8]"
                 data-testid="badge-local"
               >
                 Local
               </span>
             ) : (
               <span
-                className="inline-flex items-center gap-1 rounded-full bg-blue-500/15 px-2 py-0.5 text-[10px] font-medium text-blue-500"
+                className="inline-flex items-center gap-1 rounded-full bg-blue-500/15 px-2 py-0.5 text-[11px] font-medium text-blue-500"
                 data-testid="badge-confluence"
               >
                 Confluence
@@ -694,7 +694,7 @@ export function PageViewPage() {
             {page.source === 'standalone' && (
               page.visibility === 'shared' ? (
                 <span
-                  className="inline-flex items-center gap-1 rounded-full bg-[#e6effb] px-2 py-0.5 text-[10px] font-medium text-[#1c3e72] dark:bg-[#162236] dark:text-[#a4c2eb]"
+                  className="inline-flex items-center gap-1 rounded-full bg-[#e6effb] px-2 py-0.5 text-[11px] font-medium text-[#1c3e72] dark:bg-[#162236] dark:text-[#a4c2eb]"
                   data-testid="badge-shared"
                 >
                   <Globe size={10} /> Shared
@@ -702,7 +702,7 @@ export function PageViewPage() {
               ) : (
                 // Private = neutral gray. Was amber, but privacy carries no AI semantic.
                 <span
-                  className="inline-flex items-center gap-1 rounded-full bg-[#ececea] px-2 py-0.5 text-[10px] font-medium text-[#4a4a48] dark:bg-[#2a2925] dark:text-[#c5bea9]"
+                  className="inline-flex items-center gap-1 rounded-full bg-[#ececea] px-2 py-0.5 text-[11px] font-medium text-[#4a4a48] dark:bg-[#2a2925] dark:text-[#c5bea9]"
                   data-testid="badge-private"
                 >
                   <Lock size={10} /> Private
@@ -712,7 +712,7 @@ export function PageViewPage() {
             {/* Draft indicator — neutral private-tier palette (drafts read as personal/private state, not AI). */}
             {'hasDraft' in page && Boolean((page as Record<string, unknown>).hasDraft) && (
               <span
-                className="inline-flex items-center gap-1 rounded-full bg-[#ececea] px-2 py-0.5 text-[10px] font-medium text-[#4a4a48] dark:bg-[#2a2925] dark:text-[#c5bea9]"
+                className="inline-flex items-center gap-1 rounded-full bg-[#ececea] px-2 py-0.5 text-[11px] font-medium text-[#4a4a48] dark:bg-[#2a2925] dark:text-[#c5bea9]"
                 data-testid="badge-draft"
               >
                 <AlertCircle size={10} /> Draft

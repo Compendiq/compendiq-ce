@@ -727,7 +727,7 @@ function ArticlePickerLanding({ onPick, onShowFullGraph }: ArticlePickerLandingP
                 >
                   <span className="truncate">{item.title}</span>
                   {item.spaceKey && (
-                    <span className="ml-2 shrink-0 rounded bg-foreground/5 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                    <span className="ml-2 shrink-0 rounded bg-foreground/5 px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
                       {item.spaceKey}
                     </span>
                   )}
@@ -946,7 +946,7 @@ export function GraphFilterSidebar({
                 type="button"
                 onClick={() => toggleLabel(label)}
                 className={cn(
-                  'rounded-full px-2 py-0.5 text-[10px] transition-colors',
+                  'rounded-full px-2 py-0.5 text-[11px] transition-colors',
                   labels.includes(label)
                     ? 'bg-action/20 text-action'
                     : 'bg-foreground/5 text-muted-foreground hover:text-foreground',

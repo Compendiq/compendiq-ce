@@ -112,7 +112,7 @@ export function NotificationBell() {
           {unreadCount > 0 && (
             <span
               className={cn(
-                'absolute -right-0.5 -top-0.5 flex items-center justify-center rounded-full bg-action text-[10px] font-bold text-action-foreground',
+                'absolute -right-0.5 -top-0.5 flex items-center justify-center rounded-full bg-action text-[11px] font-bold text-action-foreground',
                 unreadCount > 9 ? 'h-4.5 min-w-4.5 px-1' : 'h-4 w-4',
               )}
               data-testid="notification-badge"

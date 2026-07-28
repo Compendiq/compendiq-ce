@@ -24,7 +24,7 @@ export function ShortcutHint({ shortcutId, className = '' }: ShortcutHintProps) 
 
   return (
     <kbd
-      className={`ml-1.5 inline-flex items-center rounded border border-border/40 bg-background/50 px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground ${className}`.trim()}
+      className={`ml-1.5 inline-flex items-center rounded border border-border/40 bg-background/50 px-1.5 py-0.5 text-[11px] font-mono text-muted-foreground ${className}`.trim()}
     >
       {formatted}
     </kbd>

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { SettingsResponse, CustomPrompts } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
+import { PanelHeader } from '../PanelHeader';
 
 const PROMPT_TYPES = [
   {
@@ -65,6 +66,11 @@ export function AiPromptsTab({ settings, onSave, isAdmin }: { settings: Settings
 
   return (
     <div className="space-y-6">
+      <PanelHeader
+        title="AI Prompts"
+        subtitle="Override the instructions Compendiq sends to the model for each task. Leave a field empty to use the built-in prompt."
+      />
+
       {/* Active AI Safety rules info banner */}
       {aiSafety && (aiSafety.guardrails.noFabricationEnabled || aiSafety.outputRules.stripReferences) && (
         <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-3 text-sm" data-testid="ai-safety-banner">

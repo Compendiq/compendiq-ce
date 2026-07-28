@@ -31,6 +31,11 @@ const SettingsPanelRoute = lazy(() =>
     default: m.SettingsPanelRoute,
   })),
 );
+const NotFoundPage = lazy(() =>
+  import('./features/pages/NotFoundPage').then((m) => ({
+    default: m.NotFoundPage,
+  })),
+);
 const PagesPage = lazy(() =>
   import('./features/pages/PagesPage').then((m) => ({
     default: m.PagesPage,
@@ -210,10 +215,11 @@ export function App() {
                                 element={<SettingsPanelRoute />}
                               />
                             </Route>
-                            <Route
-                              path="*"
-                              element={<Navigate to="/" replace />}
-                            />
+                            {/* A real 404, not a silent redirect: the old
+                                `<Navigate to="/" replace />` destroyed the URL
+                                so a stale bookmark could be neither seen nor
+                                corrected, and announced nothing to AT. */}
+                            <Route path="*" element={<NotFoundPage />} />
                           </Routes>
                         </Suspense>
                       </ErrorBoundary>

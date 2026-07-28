@@ -101,7 +101,7 @@ export function EmbeddingStatusBadge(props: EmbeddingStatusBadgeProps) {
             e.preventDefault();
             onRetry();
           }}
-          className="ml-0.5 rounded px-1 py-0.5 text-[10px] font-semibold text-status-disconnected hover:bg-status-disconnected/20 hover:text-status-disconnected/80"
+          className="ml-0.5 rounded px-1 py-0.5 text-[11px] font-semibold text-status-disconnected hover:bg-status-disconnected/20 hover:text-status-disconnected/80"
           title="Retry embedding"
           data-testid="embedding-retry-button"
         >

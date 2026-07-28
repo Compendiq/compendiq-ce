@@ -29,7 +29,7 @@ function ShortcutKeysDisplay({ keys }: { keys: string }) {
     <span className="inline-flex items-center gap-0.5">
       {parts.map((part, i) => (
         <span key={i} className="inline-flex items-center gap-0.5">
-          {i > 0 && !mac && <span className="text-muted-foreground/50 text-[10px]">+</span>}
+          {i > 0 && !mac && <span className="text-muted-foreground/50 text-[11px]">+</span>}
           <Kbd>{part}</Kbd>
         </span>
       ))}
@@ -73,7 +73,7 @@ export function KeyboardShortcutsModal() {
             <div className="space-y-5">
               {[...categories.entries()].map(([category, shortcuts]) => (
                 <div key={category}>
-                  <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
+                  <h3 className="mb-2 text-[12px] font-semibold uppercase tracking-widest text-muted-foreground">
                     {getCategoryLabel(category)}
                   </h3>
                   <div className="space-y-1.5">
@@ -92,10 +92,10 @@ export function KeyboardShortcutsModal() {
 
               {/* TipTap formatting shortcuts — display only */}
               <div>
-                <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
+                <h3 className="mb-1 text-[12px] font-semibold uppercase tracking-widest text-muted-foreground">
                   {getCategoryLabel('formatting')}
                 </h3>
-                <p className="mb-2 text-[10px] text-muted-foreground/60">Active when editing a page</p>
+                <p className="mb-2 text-[11px] text-muted-foreground/60">Active when editing a page</p>
                 <div className="space-y-1.5">
                   {TIPTAP_SHORTCUTS.map((shortcut) => (
                     <div
