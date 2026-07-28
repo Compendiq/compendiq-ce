@@ -32,12 +32,34 @@ export const GenerateRequestSchema = z.object({
   searchQuery: z.string().max(500).optional(),
 });
 
-export const ExtractPdfResponseSchema = z.object({
+/**
+ * #1131: the document-extraction endpoint accepts six formats. This list is the
+ * single source of truth — the backend extractor derives its sniffing table
+ * from it and the upload UI derives its `accept` list from it.
+ */
+export const SUPPORTED_DOCUMENT_FORMATS = ['pdf', 'docx', 'md', 'txt', 'rtf', 'odt'] as const;
+
+export const DocumentFormatSchema = z.enum(SUPPORTED_DOCUMENT_FORMATS);
+
+export const ExtractDocumentResponseSchema = z.object({
+  /** Format the server *sniffed* from the bytes — never the client's Content-Type. */
+  format: DocumentFormatSchema,
   text: z.string(),
-  totalPages: z.number(),
   fileSize: z.number(),
   preview: z.string(),
+  /**
+   * PDF-only. Absent for every other format rather than faked as `0`, so a
+   * consumer can tell "not a paged format" from "a zero-page PDF".
+   */
+  totalPages: z.number().optional(),
 });
+
+/**
+ * @deprecated Use {@link ExtractDocumentResponseSchema}. Retained so the
+ * pre-#1131 `useExtractPdf` hook keeps compiling while the UI half of #1131
+ * lands; removed together with the `POST /api/llm/extract-pdf` alias.
+ */
+export const ExtractPdfResponseSchema = ExtractDocumentResponseSchema;
 
 export const SummarizeRequestSchema = z.object({
   content: z.string().min(1),
@@ -137,5 +159,8 @@ export type ApplyImprovementRequest = z.infer<typeof ApplyImprovementRequestSche
 export type Conversation = z.infer<typeof ConversationSchema>;
 export type Improvement = z.infer<typeof ImprovementSchema>;
 export type OllamaModel = z.infer<typeof OllamaModelSchema>;
-export type ExtractPdfResponse = z.infer<typeof ExtractPdfResponseSchema>;
+export type DocumentFormat = z.infer<typeof DocumentFormatSchema>;
+export type ExtractDocumentResponse = z.infer<typeof ExtractDocumentResponseSchema>;
+/** @deprecated Use {@link ExtractDocumentResponse}. */
+export type ExtractPdfResponse = ExtractDocumentResponse;
 export type EmbeddingStatus = z.infer<typeof EmbeddingStatusSchema>;

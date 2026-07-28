@@ -169,7 +169,8 @@ All of these go through the same provider resolver and sanitization layer:
 | `POST /api/llm/generate` | Generate a new article |
 | `POST /api/llm/summarize` | Summarize a page |
 | `POST /api/llm/generate-diagram` | Generate a Mermaid diagram from prose |
-| `POST /api/llm/extract-pdf` | PDF → text extraction (sanitized) |
+| `POST /api/llm/extract-document` | Uploaded document → text extraction, sanitized (pdf · docx · odt · rtf · md · txt — see `11-content-pipeline.md`) |
+| `POST /api/llm/extract-pdf` | Deprecated alias for the above; removed with the #1131 UI PR |
 
 ## Key files
 
