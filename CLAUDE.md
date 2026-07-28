@@ -111,6 +111,13 @@ DB (HTML) ⇄ htmlToMarkdown/markdownToHtml ⇄ {LLM: Markdown, Editor/TipTap: H
 ```
 Custom `turndown` rules per Confluence macro (code blocks, task lists, panels, mentions, page links, draw.io). See `docs/architecture/11-content-pipeline.md`.
 
+**Uploaded documents** (#1131) enter through `core/services/document-extractor.ts`, behind
+`POST /api/llm/extract-document`: pdf (`unpdf`), docx (`mammoth` → `htmlToMarkdown`), odt
+(`content.xml` walk), rtf (control-word strip), md/txt (read directly). The format is decided
+by **magic-byte sniffing**, never the client's `Content-Type` — a mismatch against the claimed
+extension is a 415. Zip containers (docx/odt) are bounded by `ZIP_LIMITS` and, for docx,
+repacked stored before `mammoth` sees them, because mammoth's own inflater is unbounded.
+
 ## Versioning
 
 SemVer, pre-1.0. Single source of truth: **root `package.json` `"version"`**. Backend reads at startup (`core/utils/version.ts` → `APP_VERSION`); frontend injects `__APP_VERSION__` via Vite `define`; mcp-docs reads its own.

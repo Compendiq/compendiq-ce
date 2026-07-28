@@ -22,7 +22,7 @@ vi.mock('unpdf', () => ({
   extractText: (...args: unknown[]) => mockExtractText(...args),
 }));
 
-import { llmPdfRoutes } from './llm-pdf.js';
+import { extractDocumentRoutes } from './extract-document.js';
 
 // Helper to create a simple valid PDF buffer (with %PDF- magic bytes)
 function createPdfBuffer(size = 100): Buffer {
@@ -51,6 +51,8 @@ function createMultipartPayload(
   return { body: Buffer.concat(parts), boundary };
 }
 
+// PDF-specific error paths that need `unpdf` mocked (encryption, corruption).
+// The unmocked multi-format end-to-end suite lives in extract-document.test.ts.
 describe('POST /api/llm/extract-pdf', () => {
   let app: ReturnType<typeof Fastify>;
 
@@ -71,7 +73,7 @@ describe('POST /api/llm/extract-pdf', () => {
       request.userCan = async () => true;
     });
 
-    await app.register(llmPdfRoutes, { prefix: '/api' });
+    await app.register(extractDocumentRoutes, { prefix: '/api' });
     await app.ready();
   });
 

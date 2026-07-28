@@ -75,7 +75,15 @@ export type AuditAction =
   | 'ENCRYPTION_KEY_ROTATED'
   | 'PROMPT_INJECTION_DETECTED'
   | 'SUMMARY_RESCAN'
+  // #1131: the extraction endpoint went multi-format, so the emitted event is
+  // now DOCUMENT_EXTRACTED (metadata.format names the type). PDF_EXTRACTED is
+  // no longer emitted but stays in the union: `audit_log.action` is plain TEXT
+  // with no enum to migrate, and rows written before #1131 still carry the old
+  // string. Renaming in place would have meant rewriting history to keep
+  // action-filtered queries whole; keeping both leaves those rows readable and
+  // typed. Do not re-emit it.
   | 'PDF_EXTRACTED'
+  | 'DOCUMENT_EXTRACTED'
   | 'DRAFT_PUBLISHED'
   | 'LOCAL_SPACE_CREATED'
   | 'LOCAL_SPACE_UPDATED'

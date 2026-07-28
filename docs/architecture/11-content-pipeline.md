@@ -12,6 +12,7 @@ representations that flow through the rest of the system.
 | **HTML (clean)** | `pages.body_html` | TipTap editor, viewer UI, diff UI |
 | **Plain text** | `pages.body_text` | Embedding input, FTS (`tsvector`) |
 | **Markdown** | not stored — derived per call | LLM prompts (Ollama / OpenAI) |
+| **Uploaded document** | not stored — discarded after extraction | LLM reference material (AI Improve / AI Generate upload) |
 
 ## Flow
 
@@ -22,17 +23,21 @@ flowchart LR
     LLM[("LLM<br/>Markdown prompts")]
     ED["Editor (TipTap v3)<br/>HTML"]
 
+    UP["Upload<br/>pdf · docx · odt · rtf · md · txt"]
+
     CF -- "confluenceToHtml()" --> DB
     DB -- "htmlToConfluence()" --> CF
     DB -- "htmlToMarkdown()" --> LLM
     LLM -- "markdownToHtml()" --> DB
     DB <--> ED
+    UP -- "extractDocumentText()" --> LLM
 
     classDef ext fill:#fff,stroke:#333
     classDef data fill:#eef6ff,stroke:#4a90e2
     classDef ai fill:#fff4e5,stroke:#e5a23c
     classDef ui fill:#eefbe8,stroke:#4caf50
     class CF ext
+    class UP ext
     class DB data
     class LLM ai
     class ED ui
@@ -105,6 +110,37 @@ Custom turndown rules handle Confluence-specific macros:
   (`Editor.tsx`) and the read-only schema (`ArticleViewer.tsx`) both draw
   these nodes from `article-extensions.ts` — any new converter placeholder
   must be registered in **both** editor extension lists.
+
+## Uploaded documents → text (#1131 / #1132)
+
+`POST /api/llm/extract-document` turns an uploaded file into LLM reference
+material. It is the one entry point behind both the AI-Improve and AI-Generate
+upload zones; the per-format rules live in
+`backend/src/core/services/document-extractor.ts`.
+
+| Type | Extraction | Content check (the client's `Content-Type` is never trusted) |
+|------|------------|--------------------------------------------------------------|
+| `pdf`  | `unpdf` → plain text + page count | leading `%PDF-` |
+| `docx` | `mammoth` → HTML → `htmlToMarkdown()` | `PK\x03\x04` **and** a `word/document.xml` entry |
+| `odt`  | `content.xml` → ODF `text:*` walk → Markdown-ish text | `PK\x03\x04` **and** a `mimetype` entry equal to `application/vnd.oasis.opendocument.text` |
+| `rtf`  | control-word strip → plain text | leading `{\rtf` |
+| `md` / `txt` | read directly | UTF-8 decodes losslessly **and** carries no NUL byte |
+
+The filename extension states only what the caller *claims*; the sniffed format
+decides, and a disagreement is a **415** (`md` and `txt` are interchangeable
+because their bytes are identical). Extracted text is discarded after the
+response — nothing is persisted. Every format then passes through
+`sanitizeLlmInput()`, emitting `PROMPT_INJECTION_DETECTED` on a hit, and every
+successful extraction emits `DOCUMENT_EXTRACTED`.
+
+**Zip-container bounds.** Accepting `docx` and `odt` means accepting zip
+archives, so `ZIP_LIMITS` caps them before anything is inflated: ≤ 512 entries,
+≤ 20 MB per entry, ≤ 40 MB in total, and ≤ 200x expansion (the ratio is only
+enforced above 1 MB, where it is meaningful). Those caps read sizes the archive
+declares about itself, so `docx` extraction additionally repacks the entries
+fflate already decompressed into a **stored** archive before handing them to
+`mammoth` — mammoth's own inflater is unbounded and outside our reach, and the
+repack leaves it nothing to inflate.
 
 ## Why store three forms?
 
