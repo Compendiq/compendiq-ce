@@ -13,6 +13,7 @@ import { LazyMotion, domAnimation } from 'framer-motion';
 import { AiProvider } from '../AiContext';
 import { AiDock } from './AiDock';
 import { useAiDockStore } from '../../../stores/ai-dock-store';
+import { useUiStore } from '../../../stores/ui-store';
 
 Element.prototype.scrollIntoView = vi.fn();
 
@@ -90,7 +91,8 @@ describe('AiDock (#1126)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     modelsFail = false;
-    useAiDockStore.setState({ open: false, seed: null });
+    useAiDockStore.setState({ open: false, seed: null, seedPageId: null });
+    useUiStore.setState({ aiDockWidth: 420 });
     window.innerWidth = 1400;
     apiFetchMock.mockImplementation((path: string) => {
       if (path === '/pages/page-1') return Promise.resolve(PAGE);
@@ -106,7 +108,7 @@ describe('AiDock (#1126)', () => {
   });
 
   afterEach(() => {
-    useAiDockStore.setState({ open: false, seed: null });
+    useAiDockStore.setState({ open: false, seed: null, seedPageId: null });
   });
 
   it('renders nothing until it is opened', () => {
@@ -124,7 +126,7 @@ describe('AiDock (#1126)', () => {
     expect(document.activeElement).toBe(composer());
   });
 
-  it('returns focus to whatever opened it when Escape closes it', async () => {
+  it('returns focus to a surviving trigger when Escape closes it', async () => {
     renderDock();
     const trigger = screen.getByTestId('dock-trigger');
     act(() => trigger.focus());
@@ -134,10 +136,118 @@ describe('AiDock (#1126)', () => {
 
     fireEvent.keyDown(composer(), { key: 'Escape' });
 
+    // The panel leaves through AnimatePresence, so the restore runs with its
+    // unmount a frame later — settle rather than racing the exit.
     await waitFor(() => {
       expect(screen.queryByTestId('ai-dock')).not.toBeInTheDocument();
+      expect(document.activeElement).toBe(trigger);
     });
-    expect(document.activeElement).toBe(trigger);
+  });
+
+  // Two of the three real triggers are DESTROYED by opening the dock: the
+  // expanded pane's "AI Improve" row unmounts when the pane is forced to its
+  // rail, and below 1100px the whole pane unmounts. Restoring
+  // `document.activeElement` naively hands focus to <body> in both cases.
+  describe('focus restore when opening destroyed the trigger', () => {
+    function renderWithTrigger(ui: React.ReactNode) {
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      return render(
+        <QueryClientProvider client={queryClient}>
+          <LazyMotion features={domAnimation}>
+            <MemoryRouter initialEntries={['/pages/page-1']}>
+              <AiProvider>
+                <main>{ui}</main>
+                <AiDock />
+              </AiProvider>
+            </MemoryRouter>
+          </LazyMotion>
+        </QueryClientProvider>,
+      );
+    }
+
+    /**
+     * A trigger that is torn down and rebuilt across the open, the way the
+     * article pane's is: opening forces the pane to its rail (or unmounts it
+     * entirely below 1100px), and closing renders it again. The identity of the
+     * node the user pressed does not survive, so the dock cannot restore it.
+     *
+     * The branches are wrapped differently so React cannot reconcile the two
+     * <button>s into one reused host node, as it does for an unwrapped pair.
+     */
+    function RebuiltTrigger({ hasPane }: { hasPane: boolean }) {
+      const open = useAiDockStore((s) => s.open);
+      const openDock = useAiDockStore((s) => s.openDock);
+      if (open) return hasPane ? <div><button data-ai-improve-trigger>rail improve</button></div> : null;
+      return <button data-ai-improve-trigger onClick={() => openDock()}>AI Improve</button>;
+    }
+
+    it('hands focus to the improve trigger the article pane renders after closing', async () => {
+      renderWithTrigger(<RebuiltTrigger hasPane />);
+
+      const trigger = screen.getByText('AI Improve');
+      act(() => trigger.focus());
+      fireEvent.click(trigger);
+      await waitFor(() => expect(screen.getByTestId('ai-dock-input')).toBeInTheDocument());
+      // The node the user pressed is gone — this is what makes a naive
+      // "restore document.activeElement" hand focus to <body>.
+      expect(trigger.isConnected).toBe(false);
+
+      fireEvent.keyDown(screen.getByTestId('ai-dock-input'), { key: 'Escape' });
+
+      await waitFor(() => {
+        expect(screen.queryByTestId('ai-dock')).not.toBeInTheDocument();
+        expect(document.activeElement).toBe(document.querySelector('[data-ai-improve-trigger]'));
+      });
+      expect(document.activeElement).not.toBe(document.body);
+    });
+
+    it('falls back to the article itself when no trigger is on screen at all', async () => {
+      // Landing on <body> would strand the keyboard at the top of the document.
+      renderWithTrigger(<RebuiltTrigger hasPane={false} />);
+
+      const trigger = screen.getByText('AI Improve');
+      act(() => trigger.focus());
+      fireEvent.click(trigger);
+      await waitFor(() => expect(screen.getByTestId('ai-dock-input')).toBeInTheDocument());
+      // Keep the trigger unmounted across the close so nothing can be found.
+      act(() => useAiDockStore.setState({ open: true }));
+
+      fireEvent.keyDown(screen.getByTestId('ai-dock-input'), { key: 'Escape' });
+
+      await waitFor(() => {
+        expect(screen.queryByTestId('ai-dock')).not.toBeInTheDocument();
+        expect(document.activeElement).not.toBe(document.body);
+      });
+    });
+  });
+
+  // The dock waits for `page` before running a seeded action, and that wait is
+  // unbounded — a slow or failed page query leaves time to navigate away.
+  it('drops a seed whose page is no longer the one in view', async () => {
+    renderDock();
+
+    act(() => {
+      // Opened for page-2 while the app is showing page-1.
+      useAiDockStore.getState().openDock('improve', 'page-2');
+    });
+    await waitFor(() => expect(screen.getByTestId('ai-dock-chip-improve')).not.toBeDisabled());
+
+    // No unrequested inference, and nothing written into page-1's thread.
+    expect(streamSSEMock).not.toHaveBeenCalled();
+    expect(screen.getByTestId('ai-dock-empty')).toBeInTheDocument();
+    expect(useAiDockStore.getState().seed).toBeNull();
+  });
+
+  it('still runs a seed for the page it was requested on', async () => {
+    renderDock();
+
+    act(() => {
+      useAiDockStore.getState().openDock('improve', 'page-1');
+    });
+
+    await waitFor(() => {
+      expect(streamSSEMock).toHaveBeenCalledWith('/llm/improve', expect.anything(), expect.anything());
+    });
   });
 
   it('greets an empty thread with the chips and composer, not placeholder bubbles', async () => {
@@ -239,6 +349,49 @@ describe('AiDock (#1126)', () => {
 
     expect(await screen.findByText('Models unavailable — retry')).toBeInTheDocument();
     expect(screen.queryByTestId('ai-dock-chip-improve')).not.toBeInTheDocument();
+  });
+
+  describe('width', () => {
+    it('exposes a resize handle that widens as it is dragged left', async () => {
+      useUiStore.setState({ aiDockWidth: 420 });
+      renderDock();
+      await openAndSettle();
+
+      const handle = screen.getByRole('separator', { name: 'Resize AI assistant' });
+      expect(handle).toHaveAttribute('aria-orientation', 'vertical');
+
+      // The panel grows leftward, so a leftward drag must widen it — the same
+      // inversion ArticleRightPane and SidebarTreeView use.
+      fireEvent.mouseDown(handle, { clientX: 1000 });
+      fireEvent.mouseMove(document, { clientX: 940 });
+      fireEvent.mouseUp(document);
+
+      expect(useUiStore.getState().aiDockWidth).toBe(480);
+    });
+
+    it('clamps the stored width so neither pane can be crushed', () => {
+      useUiStore.getState().setAiDockWidth(10_000);
+      expect(useUiStore.getState().aiDockWidth).toBe(640);
+      useUiStore.getState().setAiDockWidth(0);
+      // Below this the diff card's Apply/Skip footer stops fitting on one line.
+      expect(useUiStore.getState().aiDockWidth).toBe(340);
+    });
+
+    it('caps its width and drops the resize handle below the wide breakpoint', async () => {
+      // A 640px dock on a 1040px viewport would leave the article a measure it
+      // cannot be read at, and there is no room to fiddle with a drag handle.
+      window.innerWidth = 900;
+      useUiStore.setState({ aiDockWidth: 640 });
+      renderDock();
+      await openAndSettle();
+
+      expect(screen.queryByRole('separator', { name: 'Resize AI assistant' })).not.toBeInTheDocument();
+      // The panel animates open from 0, so this settles rather than asserting
+      // the first painted frame.
+      await waitFor(() => {
+        expect(screen.getByTestId('ai-dock')).toHaveStyle({ width: '380px' });
+      });
+    });
   });
 
   it('shows a violet streaming indicator and disables the composer mid-stream', async () => {

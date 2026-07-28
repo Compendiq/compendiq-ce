@@ -563,7 +563,7 @@ export function PageViewPage() {
       // /ai and leaving it. One of three call sites that used the same URL — the
       // other two are in ArticleRightPane's rail and expanded pane.
       action: () => {
-        if (id) openDock('improve');
+        if (id) openDock('improve', id);
       },
     },
   ], [editing, handleSave, handleCancelEditing, handleStartEditing, handlePinToggle, handleDeletePage, id, openDock]);

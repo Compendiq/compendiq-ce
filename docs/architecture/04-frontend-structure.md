@@ -47,7 +47,7 @@ flowchart TB
         zAuth["auth"]
         zTheme["theme"]
         zUI["ui (persisted)"]
-        zAV["article-view<br/>mirrors + editor capabilities"]
+        zAV["article-view<br/>read-only mirrors"]
         zDock["ai-dock (ephemeral)"]
         zCmd["command-palette"]
         zKb["keyboard-shortcuts"]
@@ -84,8 +84,9 @@ flowchart LR
   persisted `articleSidebarCollapsed`. `.` closes the dock while it is open,
   so the key is never dead.
 - Below `min-width: 1100px` (`useIsDockWideLayout`) the rail is not rendered
-  and the dock is capped narrower — the only JS media query in the app;
-  everything else is a Tailwind class.
+  and the dock is capped narrower. This is the only JS *width* query in the app
+  — `use-can-hover` and three one-shot checks read `matchMedia` for pointer and
+  motion capability, but every responsive *layout* decision is a Tailwind class.
 - `Apply` on a proposed change goes through **`POST /llm/improvements/apply`**,
   not a client-side write into the editor. That route runs `protectMedia` /
   `restoreMedia` (#723) and the column-layout realignment that returns **422**

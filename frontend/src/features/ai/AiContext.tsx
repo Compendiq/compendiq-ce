@@ -456,18 +456,21 @@ export function AiProvider({ children }: { children: ReactNode }) {
   }, [threadKey]);
 
   // The provider now outlives the /ai route, so `mode` can no longer be seeded
-  // once from the URL at mount. Re-apply an explicit `?mode=` whenever the
-  // URL's mode/page inputs change — that is what navigations like
-  // /ai?mode=improve&pageId=… (the article rail's "AI Improve" button) relied
-  // on when entering the route still remounted the provider. Only an explicit
-  // mode is applied: inferring one from the page would flip the mode under a
-  // user who is merely browsing articles.
+  // once from the URL at mount. Re-apply the URL's mode whenever its mode/page
+  // inputs change — that is what navigations like /ai?mode=improve&pageId=…
+  // relied on when entering the route still remounted the provider.
+  //
+  // A navigation carrying NO explicit mode resets to Ask rather than leaving
+  // the previous one in place (#1126). `/ai` offers Ask and Generate only now,
+  // so a sticky `improve` — arrived at by deep link, then carried to a plain
+  // `/ai` — would render a document screen with no tab selected and no route
+  // back except the URL bar. Absent an explicit mode, the mode is Ask.
   const urlModeSignature = `${rawMode ?? ''}|${pageId ?? ''}`;
   const appliedModeSignatureRef = useRef(urlModeSignature);
   useEffect(() => {
     if (appliedModeSignatureRef.current === urlModeSignature) return;
     appliedModeSignatureRef.current = urlModeSignature;
-    if (urlMode) setMode(urlMode);
+    setMode(urlMode ?? 'ask');
   }, [urlModeSignature, urlMode]);
 
   // Prefill the composer from the ?q param so a question typed in the command

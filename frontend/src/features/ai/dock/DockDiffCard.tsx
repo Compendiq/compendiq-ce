@@ -124,10 +124,15 @@ export function DockDiffCard({ onRerun }: { onRerun: (id: DockChipId) => void })
 
   // The page's markdown carried [[[…]]] layout boundary tokens but the AI output
   // lost every one of them, so the backend's layout guard will most likely
-  // reject this (422). Surface it BEFORE the user commits to applying. The
-  // backend's final-event verdict is authoritative (it runs the real
-  // recoverability scan, which also recognizes mangled token spellings); the
-  // `[[[` heuristic only covers streams that ended without a final event.
+  // reject this (422). Surface it BEFORE the user commits to applying.
+  //
+  // The backend's verdict is authoritative — it runs the real recoverability
+  // scan, which also recognizes mangled-but-recoverable token spellings that
+  // the `[[[` test cannot. That fallback is reached only when a final event
+  // arrives carrying `originalMarkdown` but no `layoutTokensLost`: a backend
+  // older than #781, which emits the flag on both its cached and streaming
+  // paths. It is NOT reached by an aborted stream — that never calls
+  // onComplete, so `showDiffView` stays false and this card never renders.
   const layoutTokensLost =
     backendLayoutTokensLost ??
     (/\[\[\[/.test(originalMarkdown) && !/\[\[\[/.test(improvedContent));

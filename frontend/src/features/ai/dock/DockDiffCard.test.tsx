@@ -102,7 +102,7 @@ async function produceDiff() {
 describe('DockDiffCard (#1126)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    useAiDockStore.setState({ open: false, seed: null });
+    useAiDockStore.setState({ open: false, seed: null, seedPageId: null });
     useArticleViewStore.setState({ editing: false });
     window.innerWidth = 1400;
     apiFetchMock.mockImplementation(baseRoutes);
@@ -113,7 +113,7 @@ describe('DockDiffCard (#1126)', () => {
   });
 
   afterEach(() => {
-    useAiDockStore.setState({ open: false, seed: null });
+    useAiDockStore.setState({ open: false, seed: null, seedPageId: null });
     useArticleViewStore.setState({ editing: false });
   });
 

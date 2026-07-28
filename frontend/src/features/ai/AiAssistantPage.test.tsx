@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { AiAssistantPage } from './AiAssistantPage';
@@ -49,6 +49,12 @@ vi.mock('sonner', () => ({
 
 // AiProvider is mounted by the wrapper, not by the page: it lives in AppLayout
 // now (#1126) so a conversation outlives the /ai route.
+/** Renders the current URL so a test can observe navigations the page performs. */
+function AiLocationProbe() {
+  const location = useLocation();
+  return <span data-testid="ai-location">{location.pathname + location.search}</span>;
+}
+
 function createWrapper(initialEntries = ['/ai']) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -58,7 +64,12 @@ function createWrapper(initialEntries = ['/ai']) {
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={initialEntries}>
           <LazyMotion features={domAnimation}>
-            <AiProvider>{children}</AiProvider>
+            <AiProvider>
+              {/* After the page, so `container.firstElementChild` is still the
+                  page itself for the tests that assert on its root classes. */}
+              {children}
+              <AiLocationProbe />
+            </AiProvider>
           </LazyMotion>
         </MemoryRouter>
       </QueryClientProvider>
@@ -358,6 +369,31 @@ describe('AiAssistantPage', () => {
 
       expect(screen.getByText(/Navigate to a page/)).toBeInTheDocument();
       expect(screen.queryByRole('tab', { selected: true })).toBeNull();
+    });
+
+    // WCAG 2.1.1. A roving-tabindex tablist whose selected tab is absent gives
+    // every tab tabIndex={-1}, leaving no keyboard entry point at all: someone
+    // following an old bookmark could not reach Q&A or Generate without editing
+    // the URL. Mouse users click and recover; keyboard users were stranded.
+    it('keeps a keyboard tab stop when the active mode has no tab', () => {
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve']) });
+
+      const tabs = screen.getAllByRole('tab');
+      expect(tabs[0]).toHaveAttribute('tabindex', '0');
+    });
+
+    it('recovers to a real tab when arrowing from a mode that has none', () => {
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve']) });
+
+      fireEvent.keyDown(screen.getByTestId('ai-mode-tablist'), { key: 'ArrowRight' });
+
+      expect(screen.getByRole('tab', { selected: true })).toHaveTextContent('Q&A');
+    });
+
+    it('explains where the mode went instead of leaving the tablist looking broken', () => {
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve']) });
+
+      expect(screen.getByTestId('ai-legacy-mode-notice')).toBeInTheDocument();
     });
 
     it('enables improve button when page is loaded and model is available', async () => {
@@ -1247,21 +1283,32 @@ describe('AiAssistantPage', () => {
   });
 
   describe('AI context page change (#417)', () => {
-    // #1126: the static page-context chip is deleted. It was a non-interactive
-    // <span> naming a page you could not click, clear, or swap — the literal
-    // "context is invisible and unswitchable" defect. Context still resolves
-    // from ?pageId=; it is simply no longer restated as a dead chip.
-    it('no longer renders the static page-context chip, but still resolves the context', () => {
+    // #1126: the page-context chip was a non-interactive <span> naming a page
+    // you could not click, clear, or swap — the literal "context is invisible
+    // and unswitchable" defect. Deleting it outright was wrong: SidebarTreeView
+    // still navigates `/ai?pageId=…` and Ask still sends that id, so answers
+    // stayed scoped to a page the UI no longer mentioned. It is a real control
+    // now — it names the scope and clears it.
+    it('names the page the answers are scoped to, and lets it be cleared', () => {
       mockPageData = {
         data: { id: 'p1', title: 'My Article', bodyHtml: '<p>Content</p>', bodyText: 'Content' },
       };
 
       render(<AiAssistantPage />, {
-        wrapper: createWrapper(['/ai?mode=improve&pageId=p1']),
+        wrapper: createWrapper(['/ai?pageId=p1']),
       });
 
-      expect(screen.queryByTitle('AI context is scoped to "My Article"')).not.toBeInTheDocument();
-      expect(screen.getByText('Ready to improve: My Article')).toBeInTheDocument();
+      const chip = screen.getByTestId('ai-context-chip');
+      expect(chip.tagName).toBe('BUTTON');
+      expect(chip).toHaveTextContent('My Article');
+
+      fireEvent.click(chip);
+
+      // `usePage` is mocked here and ignores the id, so the chip itself cannot
+      // disappear; what the click has to do is drop the scoping param that
+      // AskMode sends to /llm/ask.
+      expect(screen.getByTestId('ai-location')).toHaveTextContent('/ai');
+      expect(screen.getByTestId('ai-location')).not.toHaveTextContent('pageId');
     });
 
     it('starts fresh conversation when mounted with different pageId', () => {

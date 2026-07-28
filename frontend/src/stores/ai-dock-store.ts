@@ -19,7 +19,18 @@ interface AiDockState {
   open: boolean;
   /** Consumed once by the dock on open, then cleared. */
   seed: DockSeed | null;
-  openDock: (seed?: DockSeed) => void;
+  /**
+   * The page the seed was requested for.
+   *
+   * The dock waits for `page` to resolve before running a seeded action, and
+   * that wait is unbounded — a slow or failed page query (a trashed page, a bad
+   * link) gives the user time to navigate somewhere else with the dock still
+   * open. Without this, the seed would fire against whatever document loaded
+   * next: an inference nobody asked for, a user turn written into the wrong
+   * thread, and a diff card proposing to rewrite a page they never selected.
+   */
+  seedPageId: string | null;
+  openDock: (seed?: DockSeed, seedPageId?: string | null) => void;
   closeDock: () => void;
   consumeSeed: () => void;
 }
@@ -27,7 +38,12 @@ interface AiDockState {
 export const useAiDockStore = create<AiDockState>()((set) => ({
   open: false,
   seed: null,
-  openDock: (seed) => set({ open: true, seed: seed ?? null }),
-  closeDock: () => set({ open: false, seed: null }),
-  consumeSeed: () => set({ seed: null }),
+  seedPageId: null,
+  openDock: (seed, seedPageId) => set({
+    open: true,
+    seed: seed ?? null,
+    seedPageId: seed ? seedPageId ?? null : null,
+  }),
+  closeDock: () => set({ open: false, seed: null, seedPageId: null }),
+  consumeSeed: () => set({ seed: null, seedPageId: null }),
 }));

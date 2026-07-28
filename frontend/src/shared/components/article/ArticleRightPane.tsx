@@ -643,11 +643,16 @@ export function ArticleRightPane() {
               >
                 <button
                   // #1126: opens the assistant beside the document instead of
-                  // navigating to /ai and losing sight of the page.
-                  onClick={() => openDock('improve')}
+                  // navigating to /ai and losing sight of the page. This is also
+                  // where the dock's focus restore lands when the trigger the
+                  // user pressed was destroyed by opening the dock — this one
+                  // survives every post-open state at >= 1100px.
+                  onClick={() => openDock('improve', id)}
                   className={railIconBtn}
                   aria-label="AI Improve"
                   title={`AI Improve (${formatKeysForPlatform(getShortcutHint('ai-improve') ?? '', detectMac())})`}
+                  data-testid="article-improve-rail-btn"
+                  data-ai-improve-trigger
                 >
                   <Wand2 size={16} />
                 </button>
@@ -771,9 +776,16 @@ export function ArticleRightPane() {
             animate={{ opacity: 1, x: 0 }}
             exit={reduceEffects ? { opacity: 0 } : { opacity: 0, x: 8 }}
             transition={reduceEffects ? { duration: 0 } : { type: 'spring', stiffness: 500, damping: 34 }}
-            className="nm-card-elevated absolute right-full top-1 z-30 mr-1 flex max-h-[70vh] w-64 flex-col overflow-hidden"
+            // The 4px gap is PADDING on this positioned box, not a margin
+            // outside it. `mouseleave` fires on DOM ancestry, but a margin
+            // would leave real geometry between the rail and the panel that
+            // belongs to <main>: a pointer crossing it would close the panel
+            // before reaching it, defeating WCAG 1.4.13's "hoverable". Padding
+            // keeps the hit region continuous while looking identical.
+            className="absolute right-full top-1 z-30 flex max-h-[70vh] pr-1"
             data-testid="article-outline-flyout"
           >
+            <div className="nm-card-elevated flex min-h-0 w-64 flex-col overflow-hidden">
             <div className="shrink-0 px-3 pb-2 pt-2.5">
               <div className="flex items-center justify-between">
                 <span className="flex items-center gap-2 text-xs font-semibold text-muted-foreground/60">
@@ -799,6 +811,7 @@ export function ArticleRightPane() {
                   onToggleCollapsed={handleToggleCollapsed}
                 />
               ))}
+            </div>
             </div>
           </m.div>
         )}
@@ -862,9 +875,10 @@ export function ArticleRightPane() {
             // #1126: opens the assistant beside the document. Opening it also
             // forces this pane into its rail, so this button is the last thing
             // the user sees of the expanded pane before it collapses.
-            onClick={() => openDock('improve')}
+            onClick={() => openDock('improve', id)}
             className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
             title={`AI Improve (${formatKeysForPlatform(getShortcutHint('ai-improve') ?? '', detectMac())})`}
+            data-ai-improve-trigger
           >
             <Wand2 size={15} className="shrink-0 opacity-70" />
             <span className="truncate">AI Improve</span>

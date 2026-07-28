@@ -120,26 +120,56 @@ export function AiDock() {
 
 function AiDockPanel({ onClose }: { onClose: () => void }) {
   const {
-    page, messages, messagesEndRef, isStreaming, isThinking, thinkingElapsed,
+    page, pageId, messages, messagesEndRef, isStreaming, isThinking, thinkingElapsed,
     streamingContent, input, setInput, modelsError, refetchModels, model,
   } = useAiContext();
   const { ask, runChip } = useDockActions();
 
   const seed = useAiDockStore((s) => s.seed);
+  const seedPageId = useAiDockStore((s) => s.seedPageId);
   const consumeSeed = useAiDockStore((s) => s.consumeSeed);
 
   const composerRef = useAutoGrowTextarea(input);
 
   // Opening the dock moves focus to the composer; closing it returns focus to
-  // whatever opened it (the rail's Wand2 button, the pane's "AI Improve" row,
-  // or wherever Alt+I was pressed). This is the minimal focus contract from
-  // ImageLightbox (PageViewPage.tsx) rather than AppLayout's mobile-sidebar
-  // trap: the dock is a docked panel, not a modal, so Tab must be able to leave
-  // it and reach the article. Trapping Tab here would be the wrong borrowing.
+  // whatever opened it. This is the minimal focus contract from ImageLightbox
+  // (PageViewPage.tsx) rather than AppLayout's mobile-sidebar trap: the dock is
+  // a docked panel, not a modal, so Tab must be able to leave it and reach the
+  // article. Trapping Tab here would be the wrong borrowing.
+  //
+  // Restoring is not simply "focus whatever was focused before", because
+  // opening the dock destroys two of its three triggers in the same commit: the
+  // expanded pane's "AI Improve" row unmounts when the pane is forced to its
+  // rail, and below 1100px the entire pane unmounts. For those, by the time
+  // this effect's cleanup runs the opener is already detached and focus has
+  // fallen to <body> — so restoring it would strand the keyboard at the top of
+  // the document. Fall back to the equivalent control that does survive, and
+  // only then to the article itself.
   useEffect(() => {
-    const previouslyFocused = document.activeElement as HTMLElement | null;
+    const opener = document.activeElement as HTMLElement | null;
     composerRef.current?.focus();
-    return () => previouslyFocused?.focus?.();
+    return () => {
+      if (opener && opener !== document.body && opener.isConnected) {
+        opener.focus();
+        return;
+      }
+      // Whichever form of the article pane is on screen once the dock has gone
+      // — expanded row or 40px rail — carries this marker. Closing the dock
+      // re-renders the pane in the same commit, so which one it is depends on
+      // the user's own collapse preference and the viewport; the marker is on
+      // both so the hand-off does not have to care.
+      const improveTrigger = document.querySelector<HTMLElement>('[data-ai-improve-trigger]');
+      if (improveTrigger) {
+        improveTrigger.focus();
+        return;
+      }
+      const main = document.querySelector<HTMLElement>('main');
+      if (!main) return;
+      // <main> is not focusable by default; making it programmatically
+      // focusable is the skip-link idiom for exactly this kind of hand-off.
+      main.tabIndex = -1;
+      main.focus();
+    };
   }, [composerRef]);
 
   // `runChip` changes identity whenever any of its many context inputs change.
@@ -153,11 +183,21 @@ function AiDockPanel({ onClose }: { onClose: () => void }) {
   // Run the seeded action once a model is resolved. Firing on mount would hit
   // `runChip`'s "No model available" guard, because the models query starts in
   // the same tick the dock opens.
+  //
+  // The wait is unbounded, so the document can change underneath it — a slow or
+  // failed page query leaves the user free to navigate away with the dock still
+  // open. A seed that no longer matches the page in view is dropped rather than
+  // fired at whatever loaded next.
   useEffect(() => {
-    if (!seed || !model || !page) return;
+    if (!seed) return;
+    if (seedPageId !== null && seedPageId !== pageId) {
+      consumeSeed();
+      return;
+    }
+    if (!model || !page) return;
     consumeSeed();
     void runChipRef.current(seed);
-  }, [seed, model, page, consumeSeed]);
+  }, [seed, seedPageId, pageId, model, page, consumeSeed]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Enter submits, Shift+Enter inserts a newline — the contract #1120
@@ -189,7 +229,7 @@ function AiDockPanel({ onClose }: { onClose: () => void }) {
         </span>
         <button
           onClick={onClose}
-          className="shrink-0 rounded-lg p-1 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
+          className="shrink-0 rounded-lg p-1 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
           aria-label="Close AI assistant"
           title="Close assistant (Esc)"
           data-testid="ai-dock-close"
