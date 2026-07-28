@@ -53,7 +53,7 @@ function createMultipartPayload(
 
 // PDF-specific error paths that need `unpdf` mocked (encryption, corruption).
 // The unmocked multi-format end-to-end suite lives in extract-document.test.ts.
-describe('POST /api/llm/extract-pdf', () => {
+describe('POST /api/llm/extract-document - PDF error paths', () => {
   let app: ReturnType<typeof Fastify>;
 
   beforeAll(async () => {
@@ -104,7 +104,7 @@ describe('POST /api/llm/extract-pdf', () => {
 
     const response = await app.inject({
       method: 'POST',
-      url: '/api/llm/extract-pdf',
+      url: '/api/llm/extract-document',
       payload: body,
       headers: {
         'content-type': `multipart/form-data; boundary=${boundary}`,
@@ -125,7 +125,7 @@ describe('POST /api/llm/extract-pdf', () => {
 
     const response = await app.inject({
       method: 'POST',
-      url: '/api/llm/extract-pdf',
+      url: '/api/llm/extract-document',
       payload: body,
       headers: {
         'content-type': `multipart/form-data; boundary=${boundary}`,
@@ -143,7 +143,7 @@ describe('POST /api/llm/extract-pdf', () => {
 
     const response = await app.inject({
       method: 'POST',
-      url: '/api/llm/extract-pdf',
+      url: '/api/llm/extract-document',
       payload: body,
       headers: {
         'content-type': `multipart/form-data; boundary=${boundary}`,
@@ -163,7 +163,7 @@ describe('POST /api/llm/extract-pdf', () => {
 
     const response = await app.inject({
       method: 'POST',
-      url: '/api/llm/extract-pdf',
+      url: '/api/llm/extract-document',
       payload: body,
       headers: {
         'content-type': `multipart/form-data; boundary=${boundary}`,
@@ -184,7 +184,7 @@ describe('POST /api/llm/extract-pdf', () => {
 
     const response = await app.inject({
       method: 'POST',
-      url: '/api/llm/extract-pdf',
+      url: '/api/llm/extract-document',
       payload: body,
       headers: {
         'content-type': `multipart/form-data; boundary=${boundary}`,
@@ -207,7 +207,7 @@ describe('POST /api/llm/extract-pdf', () => {
 
     const response = await app.inject({
       method: 'POST',
-      url: '/api/llm/extract-pdf',
+      url: '/api/llm/extract-document',
       payload: body,
       headers: {
         'content-type': `multipart/form-data; boundary=${boundary}`,
@@ -237,7 +237,7 @@ describe('POST /api/llm/extract-pdf', () => {
 
     const response = await app.inject({
       method: 'POST',
-      url: '/api/llm/extract-pdf',
+      url: '/api/llm/extract-document',
       payload: body,
       headers: {
         'content-type': `multipart/form-data; boundary=${boundary}`,
@@ -256,7 +256,7 @@ describe('POST /api/llm/extract-pdf', () => {
 
     const response = await app.inject({
       method: 'POST',
-      url: '/api/llm/extract-pdf',
+      url: '/api/llm/extract-document',
       payload: emptyBody,
       headers: {
         'content-type': `multipart/form-data; boundary=${boundary}`,
@@ -274,7 +274,7 @@ describe('POST /api/llm/extract-pdf', () => {
 
     const response = await app.inject({
       method: 'POST',
-      url: '/api/llm/extract-pdf',
+      url: '/api/llm/extract-document',
       payload: body,
       headers: {
         'content-type': `multipart/form-data; boundary=${boundary}`,

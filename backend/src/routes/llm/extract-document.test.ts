@@ -88,13 +88,15 @@ describe('extract-document routes - auth required', () => {
     await app.close();
   });
 
-  it.each(['/api/llm/extract-document', '/api/llm/extract-pdf'])(
-    'returns 401 for POST %s without auth',
-    async (url) => {
-      const response = await post(app, url, 'notes.txt', Buffer.from('hello', 'utf8'));
-      expect(response.statusCode).toBe(401);
-    },
-  );
+  it('returns 401 for POST /api/llm/extract-document without auth', async () => {
+    const response = await post(
+      app,
+      '/api/llm/extract-document',
+      'notes.txt',
+      Buffer.from('hello', 'utf8'),
+    );
+    expect(response.statusCode).toBe(401);
+  });
 });
 
 // =============================================================================
@@ -440,10 +442,10 @@ describe('POST /api/llm/extract-document - sanitisation and audit', () => {
 });
 
 // =============================================================================
-// Deprecated /llm/extract-pdf alias — kept until the UI half of #1131 lands
+// The retired /llm/extract-pdf alias
 // =============================================================================
 
-describe('POST /api/llm/extract-pdf - deprecated alias', () => {
+describe('POST /api/llm/extract-pdf - retired alias', () => {
   let app: ReturnType<typeof Fastify>;
 
   beforeAll(async () => {
@@ -454,29 +456,13 @@ describe('POST /api/llm/extract-pdf - deprecated alias', () => {
     await app.close();
   });
 
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it('still serves the shipped PDF flow unchanged', async () => {
-    const pdf = await buildPdf(['Legacy path still works.']);
+  // The alias existed for exactly one wave, so the shipped PDF-only hook kept
+  // working until the UI half of #1131 repointed it. Nothing may reintroduce
+  // it: a second path onto this handler is a second thing to keep auditing.
+  it('is no longer registered', async () => {
+    const pdf = await buildPdf(['Legacy path is gone.']);
     const response = await post(app, '/api/llm/extract-pdf', 'report.pdf', pdf, 'application/pdf');
 
-    expect(response.statusCode).toBe(200);
-    const result = response.json();
-    expect(result.totalPages).toBe(1);
-    expect(result.text).toContain('Legacy path still works.');
-  });
-
-  it('shares the generalized handler, so it accepts a docx too', async () => {
-    const response = await post(
-      app,
-      '/api/llm/extract-pdf',
-      'q3.docx',
-      buildDocx([{ text: 'Reference text.' }]),
-    );
-
-    expect(response.statusCode).toBe(200);
-    expect(response.json().format).toBe('docx');
+    expect(response.statusCode).toBe(404);
   });
 });

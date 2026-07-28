@@ -8,6 +8,8 @@ import { DiagramPreview } from '../modes';
 import { AIThinkingBlob } from '../../../shared/components/feedback/AIThinkingBlob';
 import { TypingIndicator } from '../../../shared/components/feedback/TypingIndicator';
 import { useAutoGrowTextarea } from '../../../shared/hooks/use-auto-grow-textarea';
+import { useExtractDocument, type ExtractDocumentResult } from '../../../shared/hooks/use-extract-document';
+import { DocumentUploadZone } from '../../../shared/components/upload/DocumentUploadZone';
 import { useIsDockWideLayout } from '../../../shared/hooks/use-media-query';
 import { PROMPT_MAX_LENGTH } from '../modes/prompt-limits';
 import { useAiDockStore } from '../../../stores/ai-dock-store';
@@ -123,7 +125,30 @@ function AiDockPanel({ onClose }: { onClose: () => void }) {
     page, pageId, messages, messagesEndRef, isStreaming, isThinking, thinkingElapsed,
     streamingContent, input, setInput, modelsError, refetchModels, model,
   } = useAiContext();
-  const { ask, runChip } = useDockActions();
+
+  // Reference document attached in the composer (#1131). Dock-local rather than
+  // AiContext state: it is material for the *next* action, not part of the
+  // conversation, and nothing outside this panel reads it.
+  const { extractDocument, isExtracting } = useExtractDocument();
+  const [reference, setReference] = useState<
+    { result: ExtractDocumentResult; filename: string } | null
+  >(null);
+  const composerBoxRef = useRef<HTMLDivElement>(null);
+
+  const { ask, runChip } = useDockActions({ referenceText: reference?.result.text });
+
+  // A document attached while reading one page is not background for the next
+  // one. Threads are retained per page; an attachment silently following the
+  // user to a different document is exactly the kind of surprise #1126 set out
+  // to remove, so it is dropped at the boundary instead.
+  useEffect(() => {
+    setReference(null);
+  }, [pageId]);
+
+  const handleExtracted = useCallback((result: ExtractDocumentResult, filename: string) => {
+    setReference({ result, filename });
+  }, []);
+  const handleRemoveReference = useCallback(() => setReference(null), []);
 
   const seed = useAiDockStore((s) => s.seed);
   const seedPageId = useAiDockStore((s) => s.seedPageId);
@@ -312,7 +337,10 @@ function AiDockPanel({ onClose }: { onClose: () => void }) {
                 key={id}
                 type="button"
                 onClick={() => void runChip(id)}
-                disabled={isStreaming || !page || !model}
+                // Improve alone waits out an in-flight extraction: firing it
+                // now would send the request without the reference text that is
+                // still being extracted (#940's lesson, in the other surface).
+                disabled={isStreaming || !page || !model || (id === 'improve' && isExtracting)}
                 title={hint}
                 className="flex h-7 items-center gap-1.5 rounded-md border border-border-interactive px-2.5 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:opacity-50"
                 data-testid={`ai-dock-chip-${id}`}
@@ -323,7 +351,25 @@ function AiDockPanel({ onClose }: { onClose: () => void }) {
           )}
         </div>
 
-        <div className="nm-composer">
+        {/* flex-wrap so the upload component's full-width rows — the attached
+            document, the drop hint — stack above the prompt inside the same
+            box. An attachment belongs to what you are about to send, so it
+            lives in the thing you send from, not in a band above it. */}
+        <div className="nm-composer flex-wrap" ref={composerBoxRef}>
+          <DocumentUploadZone
+            variant="composer"
+            extract={extractDocument}
+            isExtracting={isExtracting}
+            onExtracted={handleExtracted}
+            extracted={reference?.result ?? null}
+            filename={reference?.filename ?? null}
+            onRemove={handleRemoveReference}
+            disabled={isStreaming}
+            triggerLabel="Attach a document as reference for Improve"
+            usageHint="reference for Improve"
+            dropTargetRef={composerBoxRef}
+            testIdPrefix="ai-dock-doc"
+          />
           <textarea
             ref={composerRef}
             value={input}

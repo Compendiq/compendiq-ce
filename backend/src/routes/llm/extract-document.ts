@@ -13,16 +13,12 @@ import {
 /** Maximum file size: 20 MB */
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
 
-/** Canonical path (#1131). */
-const EXTRACT_DOCUMENT_PATH = '/llm/extract-document';
-
 /**
- * @deprecated PDF-only alias kept alive only so the shipped `useExtractPdf`
- * hook keeps working while the UI half of #1131 is still in flight. It shares
- * the handler below, so it accepts every format too. The follow-up UI PR points
- * the hook at {@link EXTRACT_DOCUMENT_PATH} and deletes this registration.
+ * The one path (#1131). A PDF-only `/llm/extract-pdf` alias existed for exactly
+ * one wave, so the shipped `useExtractPdf` hook kept working until the UI half
+ * of #1131 repointed it; it is gone with that hook.
  */
-const EXTRACT_PDF_LEGACY_PATH = '/llm/extract-pdf';
+const EXTRACT_DOCUMENT_PATH = '/llm/extract-document';
 
 /**
  * Extracts text from an uploaded document for use as LLM reference material.
@@ -116,15 +112,12 @@ export async function extractDocumentRoutes(fastify: FastifyInstance) {
     }));
   };
 
-  const routeOptions = {
+  fastify.post(EXTRACT_DOCUMENT_PATH, {
     config: {
       rateLimit: {
         max: async () => (await getRateLimits()).llmEmbedding.max,
         timeWindow: '1 minute',
       },
     },
-  };
-
-  fastify.post(EXTRACT_DOCUMENT_PATH, routeOptions, handler);
-  fastify.post(EXTRACT_PDF_LEGACY_PATH, routeOptions, handler);
+  }, handler);
 }

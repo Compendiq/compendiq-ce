@@ -142,6 +142,26 @@ fflate already decompressed into a **stored** archive before handing them to
 `mammoth` — mammoth's own inflater is unbounded and outside our reach, and the
 repack leaves it nothing to inflate.
 
+**Where the text goes.** The response is never persisted; the frontend holds it
+and sends it back on the *next* LLM call, as a dedicated bounded field of that
+call's request:
+
+| Surface | Field | Cap | Merged into |
+|---------|-------|-----|-------------|
+| Docked assistant → Improve chip | `ImproveRequest.referenceText` (#1131) | 200K by schema, 80K to the model | the **user** turn, under an `## Attached reference document` heading |
+| `/ai` → Generate | `GenerateRequest.pdfText` | 200K by schema, 80K to the model | the **user** turn, under `## Source Document` |
+
+Each is sanitized on its own and audited under its own field name. Neither goes
+near `ImproveRequest.instruction`: that field is capped at 10K and is appended
+to the *system* prompt, so a real document would overflow it and arrive
+carrying a directive's authority.
+
+One frontend component serves both —
+`frontend/src/shared/components/upload/DocumentUploadZone.tsx` over
+`useExtractDocument()`. Its `formats` prop decides which formats a surface
+offers and derives every string it renders, which is how `/ai` Generate still
+says "Only PDF files are accepted" while the dock offers all six.
+
 ## Why store three forms?
 
 - **`body_storage` (XHTML)** — lossless round-trip with Confluence; any

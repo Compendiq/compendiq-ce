@@ -1,19 +1,27 @@
 import { useState, useCallback } from 'react';
 import { useAuthStore } from '../../stores/auth-store';
 import { refreshAccessTokenOnce } from '../lib/api';
-import type { ExtractPdfResponse } from '@compendiq/contracts';
+import type { ExtractDocumentResponse } from '@compendiq/contracts';
 
-export type ExtractPdfResult = ExtractPdfResponse;
+export type ExtractDocumentResult = ExtractDocumentResponse;
 
 /**
- * Hook for extracting text from a PDF file via the backend.
- * Uses raw fetch with FormData (bypasses apiFetch which sets Content-Type: application/json).
+ * Upload a document and get its text back (#1131).
+ *
+ * One call for all six supported formats — the server sniffs the format from
+ * the bytes, so there is nothing here to branch on. Raw `fetch` with FormData
+ * rather than `apiFetch`, which forces `Content-Type: application/json` and
+ * would strip the multipart boundary.
+ *
+ * Hold **one instance per upload surface** and pass both `extractDocument` and
+ * `isExtracting` down: two instances give you two `isExtracting` flags, and the
+ * one the spinner reads is not the one the upload flips (#940).
  */
-export function useExtractPdf() {
+export function useExtractDocument() {
   const [isExtracting, setIsExtracting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const extractPdf = useCallback(async (file: File): Promise<ExtractPdfResult> => {
+  const extractDocument = useCallback(async (file: File): Promise<ExtractDocumentResult> => {
     setIsExtracting(true);
     setError(null);
 
@@ -26,7 +34,7 @@ export function useExtractPdf() {
         if (token) {
           headers['Authorization'] = `Bearer ${token}`;
         }
-        return fetch('/api/llm/extract-pdf', {
+        return fetch('/api/llm/extract-document', {
           method: 'POST',
           headers,
           credentials: 'include',
@@ -50,12 +58,12 @@ export function useExtractPdf() {
 
       if (!res.ok) {
         const body = await res.json().catch(() => ({ message: res.statusText }));
-        throw new Error(body.message ?? `PDF extraction failed: ${res.status}`);
+        throw new Error(body.message ?? `Document extraction failed: ${res.status}`);
       }
 
-      return await res.json() as ExtractPdfResult;
+      return await res.json() as ExtractDocumentResult;
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'PDF extraction failed';
+      const message = err instanceof Error ? err.message : 'Document extraction failed';
       setError(message);
       throw err;
     } finally {
@@ -63,5 +71,5 @@ export function useExtractPdf() {
     }
   }, []);
 
-  return { extractPdf, isExtracting, error };
+  return { extractDocument, isExtracting, error };
 }
