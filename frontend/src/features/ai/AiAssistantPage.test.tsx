@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { AiAssistantPage } from './AiAssistantPage';
@@ -49,6 +49,12 @@ vi.mock('sonner', () => ({
 
 // AiProvider is mounted by the wrapper, not by the page: it lives in AppLayout
 // now (#1126) so a conversation outlives the /ai route.
+/** Renders the current URL so a test can observe navigations the page performs. */
+function AiLocationProbe() {
+  const location = useLocation();
+  return <span data-testid="ai-location">{location.pathname + location.search}</span>;
+}
+
 function createWrapper(initialEntries = ['/ai']) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -58,7 +64,12 @@ function createWrapper(initialEntries = ['/ai']) {
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={initialEntries}>
           <LazyMotion features={domAnimation}>
-            <AiProvider>{children}</AiProvider>
+            <AiProvider>
+              {/* After the page, so `container.firstElementChild` is still the
+                  page itself for the tests that assert on its root classes. */}
+              {children}
+              <AiLocationProbe />
+            </AiProvider>
           </LazyMotion>
         </MemoryRouter>
       </QueryClientProvider>
@@ -121,13 +132,14 @@ describe('AiAssistantPage', () => {
     useAuthStore.getState().clearAuth();
   });
 
-  it('renders the AI assistant page with mode buttons', () => {
+  // #1126: /ai is the no-document home for Ask and Generate. Improve,
+  // Summarize, Diagram and Quality act on an open document and moved to the
+  // dock as chips — offering them here too would be two surfaces for one job
+  // on a route that cannot show you the document they operate on.
+  it('offers Q&A and Generate, and no document-mode tabs', () => {
     render(<AiAssistantPage />, { wrapper: createWrapper() });
-    expect(screen.getByText('Q&A')).toBeInTheDocument();
-    expect(screen.getByText('Improve')).toBeInTheDocument();
-    expect(screen.getByText('Generate')).toBeInTheDocument();
-    expect(screen.getByText('Summarize')).toBeInTheDocument();
-    expect(screen.getByText('Diagram')).toBeInTheDocument();
+    const tabs = screen.getAllByRole('tab').map((t) => t.textContent?.trim());
+    expect(tabs).toEqual(['Q&A', 'Generate']);
   });
 
   it('uses flex-1 column layout so the input bar anchors to the bottom of the viewport', () => {
@@ -251,20 +263,17 @@ describe('AiAssistantPage', () => {
   });
 
   describe('improve mode', () => {
+    // #1126: Improve is no longer a tab on /ai — it is a chip in the dock. The
+    // screen still renders for `?mode=improve` deep links, which is how these
+    // reach it now instead of clicking a tab that no longer exists.
     it('shows "Navigate to a page" message when no page is selected', () => {
-      render(<AiAssistantPage />, { wrapper: createWrapper() });
-
-      // Switch to improve mode
-      fireEvent.click(screen.getByText('Improve'));
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve']) });
 
       expect(screen.getByText(/Navigate to a page/)).toBeInTheDocument();
     });
 
     it('disables improve button when no page is selected', () => {
-      render(<AiAssistantPage />, { wrapper: createWrapper() });
-
-      // Switch to improve mode
-      fireEvent.click(screen.getByText('Improve'));
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve']) });
 
       // The action button should be disabled (no page and no model)
       const buttons = screen.getAllByRole('button');
@@ -277,7 +286,7 @@ describe('AiAssistantPage', () => {
         data: { id: 'p1', title: 'Test Page', bodyHtml: '<p>Hello</p>', bodyText: 'Hello' },
       };
 
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?pageId=p1']) });
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
 
       // Mode should be 'improve' since pageId is provided
       // Button should show "Loading models..." and be disabled
@@ -292,7 +301,7 @@ describe('AiAssistantPage', () => {
         data: { id: 'p1', title: 'Test Page', bodyHtml: '<p>Hello</p>', bodyText: 'Hello' },
       };
 
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?pageId=p1']) });
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
 
       // The button is disabled when !model, so we test the handler directly
       // by forcing a click via the button (which is disabled, so we simulate the handler)
@@ -320,7 +329,7 @@ describe('AiAssistantPage', () => {
         return Promise.resolve([]);
       });
 
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?pageId=p1']) });
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
 
       await waitFor(() => {
         expect(screen.getByText('Ready to improve: My Article')).toBeInTheDocument();
@@ -343,7 +352,7 @@ describe('AiAssistantPage', () => {
         return Promise.resolve([]);
       });
 
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?pageId=p1']) });
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
 
       // Button should show "Loading page..." and be disabled
       const buttons = screen.getAllByRole('button');
@@ -352,12 +361,39 @@ describe('AiAssistantPage', () => {
       expect(loadingBtn).toBeDisabled();
     });
 
-    it('reads mode from URL query param', () => {
+    // #1126: `?mode=improve` no longer selects a tab — there isn't one — but it
+    // must still reach the Improve screen, which is what keeps pre-existing
+    // deep links and bookmarks working.
+    it('reads mode from the URL query param even without a tab for it', () => {
       render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve']) });
 
-      // The improve mode tab should be active
-      const improveTab = screen.getByText('Improve');
-      expect(improveTab.closest('button')?.className).toContain('text-primary');
+      expect(screen.getByText(/Navigate to a page/)).toBeInTheDocument();
+      expect(screen.queryByRole('tab', { selected: true })).toBeNull();
+    });
+
+    // WCAG 2.1.1. A roving-tabindex tablist whose selected tab is absent gives
+    // every tab tabIndex={-1}, leaving no keyboard entry point at all: someone
+    // following an old bookmark could not reach Q&A or Generate without editing
+    // the URL. Mouse users click and recover; keyboard users were stranded.
+    it('keeps a keyboard tab stop when the active mode has no tab', () => {
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve']) });
+
+      const tabs = screen.getAllByRole('tab');
+      expect(tabs[0]).toHaveAttribute('tabindex', '0');
+    });
+
+    it('recovers to a real tab when arrowing from a mode that has none', () => {
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve']) });
+
+      fireEvent.keyDown(screen.getByTestId('ai-mode-tablist'), { key: 'ArrowRight' });
+
+      expect(screen.getByRole('tab', { selected: true })).toHaveTextContent('Q&A');
+    });
+
+    it('explains where the mode went instead of leaving the tablist looking broken', () => {
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve']) });
+
+      expect(screen.getByTestId('ai-legacy-mode-notice')).toBeInTheDocument();
     });
 
     it('enables improve button when page is loaded and model is available', async () => {
@@ -378,7 +414,7 @@ describe('AiAssistantPage', () => {
         return Promise.resolve([]);
       });
 
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?pageId=p1']) });
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
 
       await waitFor(() => {
         const buttons = screen.getAllByRole('button');
@@ -412,7 +448,7 @@ describe('AiAssistantPage', () => {
       }
       streamSSEMock.mockReturnValue(fakeStream());
 
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?pageId=p1']) });
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
 
       // Wait for models to load and button to be enabled
       await waitFor(() => {
@@ -469,7 +505,7 @@ describe('AiAssistantPage', () => {
       }
       streamSSEMock.mockReturnValue(fakeErrorStream());
 
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?pageId=p1']) });
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
 
       await waitFor(() => {
         const buttons = screen.getAllByRole('button');
@@ -513,7 +549,7 @@ describe('AiAssistantPage', () => {
       }
       streamSSEMock.mockReturnValue(fakeImproveStream());
 
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?pageId=p1']) });
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
 
       // Wait for models to load and button to be enabled
       await waitFor(() => {
@@ -581,7 +617,7 @@ describe('AiAssistantPage', () => {
       }
       streamSSEMock.mockReturnValue(fakeImproveStream());
 
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?pageId=p1']) });
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
 
       await waitFor(() => {
         const btns = screen.getAllByRole('button');
@@ -983,10 +1019,8 @@ describe('AiAssistantPage', () => {
       }
       streamSSEMock.mockReturnValue(fakeDiagramStream());
 
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?pageId=p1']) });
-
-      // Switch to diagram mode
-      fireEvent.click(screen.getByText('Diagram'));
+      // #1126: Diagram is a dock chip now, so the screen is reached by URL.
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=diagram&pageId=p1']) });
 
       // Wait for models to load
       await waitFor(() => {
@@ -1022,10 +1056,8 @@ describe('AiAssistantPage', () => {
         return Promise.resolve([]);
       });
 
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai']) });
-
-      // Switch to diagram mode
-      fireEvent.click(screen.getByText('Diagram'));
+      // #1126: Diagram is a dock chip now, so the screen is reached by URL.
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=diagram']) });
 
       // The button should not appear (no page context)
       expect(screen.queryByText('Use in page')).not.toBeInTheDocument();
@@ -1057,10 +1089,8 @@ describe('AiAssistantPage', () => {
       }
       streamSSEMock.mockReturnValue(fakeDiagramStream());
 
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?pageId=p1']) });
-
-      // Switch to diagram mode
-      fireEvent.click(screen.getByText('Diagram'));
+      // #1126: Diagram is a dock chip now, so the screen is reached by URL.
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=diagram&pageId=p1']) });
 
       // Wait for models to load
       await waitFor(() => {
@@ -1114,9 +1144,11 @@ describe('AiAssistantPage', () => {
         data: { id: 'p1', title: 'Test Page', bodyHtml: '<p>Content</p>', bodyText: 'Content', hasChildren: false },
       };
 
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?pageId=p1']) });
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
 
-      expect(screen.getByText('Test Page')).toBeInTheDocument();
+      // The page-context chip that used to render the bare title is gone
+      // (#1126); the mode's own empty state still names the resolved page.
+      expect(screen.getByText('Ready to improve: Test Page')).toBeInTheDocument();
       expect(screen.queryByText('+ Sub-pages')).not.toBeInTheDocument();
     });
 
@@ -1125,7 +1157,7 @@ describe('AiAssistantPage', () => {
         data: { id: 'p1', title: 'Parent Page', bodyHtml: '<p>Content</p>', bodyText: 'Content', hasChildren: true },
       };
 
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?pageId=p1']) });
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
 
       expect(screen.getByText('+ Sub-pages')).toBeInTheDocument();
     });
@@ -1135,7 +1167,7 @@ describe('AiAssistantPage', () => {
         data: { id: 'p1', title: 'Parent Page', bodyHtml: '<p>Content</p>', bodyText: 'Content', hasChildren: true },
       };
 
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?pageId=p1']) });
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
 
       const checkbox = screen.getByRole('checkbox', { name: 'Include sub-pages' });
       expect(checkbox).not.toBeChecked();
@@ -1170,7 +1202,7 @@ describe('AiAssistantPage', () => {
       }
       streamSSEMock.mockReturnValue(fakeStream());
 
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?pageId=p1']) });
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
 
       // Enable sub-pages toggle
       const checkbox = screen.getByRole('checkbox', { name: 'Include sub-pages' });
@@ -1223,7 +1255,7 @@ describe('AiAssistantPage', () => {
       }
       streamSSEMock.mockReturnValue(fakeStream());
 
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?pageId=p1']) });
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve&pageId=p1']) });
 
       // Do NOT enable sub-pages toggle
 
@@ -1251,7 +1283,13 @@ describe('AiAssistantPage', () => {
   });
 
   describe('AI context page change (#417)', () => {
-    it('shows page context badge when navigated from sidebar', () => {
+    // #1126: the page-context chip was a non-interactive <span> naming a page
+    // you could not click, clear, or swap — the literal "context is invisible
+    // and unswitchable" defect. Deleting it outright was wrong: SidebarTreeView
+    // still navigates `/ai?pageId=…` and Ask still sends that id, so answers
+    // stayed scoped to a page the UI no longer mentioned. It is a real control
+    // now — it names the scope and clears it.
+    it('names the page the answers are scoped to, and lets it be cleared', () => {
       mockPageData = {
         data: { id: 'p1', title: 'My Article', bodyHtml: '<p>Content</p>', bodyText: 'Content' },
       };
@@ -1260,8 +1298,17 @@ describe('AiAssistantPage', () => {
         wrapper: createWrapper(['/ai?pageId=p1']),
       });
 
-      // The page title should be shown in the mode bar as context
-      expect(screen.getByText('My Article')).toBeInTheDocument();
+      const chip = screen.getByTestId('ai-context-chip');
+      expect(chip.tagName).toBe('BUTTON');
+      expect(chip).toHaveTextContent('My Article');
+
+      fireEvent.click(chip);
+
+      // `usePage` is mocked here and ignores the id, so the chip itself cannot
+      // disappear; what the click has to do is drop the scoping param that
+      // AskMode sends to /llm/ask.
+      expect(screen.getByTestId('ai-location')).toHaveTextContent('/ai');
+      expect(screen.getByTestId('ai-location')).not.toHaveTextContent('pageId');
     });
 
     it('starts fresh conversation when mounted with different pageId', () => {
@@ -1271,10 +1318,10 @@ describe('AiAssistantPage', () => {
       };
 
       const { unmount } = render(<AiAssistantPage />, {
-        wrapper: createWrapper(['/ai?pageId=p1']),
+        wrapper: createWrapper(['/ai?mode=improve&pageId=p1']),
       });
 
-      expect(screen.getByText('First Article')).toBeInTheDocument();
+      expect(screen.getByText('Ready to improve: First Article')).toBeInTheDocument();
       unmount();
 
       // Re-mount with p2 — should show fresh state with new page context
@@ -1283,12 +1330,13 @@ describe('AiAssistantPage', () => {
       };
 
       render(<AiAssistantPage />, {
-        wrapper: createWrapper(['/ai?pageId=p2']),
+        wrapper: createWrapper(['/ai?mode=improve&pageId=p2']),
       });
 
-      // New page title shown, no stale state from p1
-      expect(screen.getByText('Second Article')).toBeInTheDocument();
-      expect(screen.queryByText('First Article')).not.toBeInTheDocument();
+      // New page resolved, no stale state from p1. Asserted through the mode's
+      // empty state rather than the deleted context chip (#1126).
+      expect(screen.getByText('Ready to improve: Second Article')).toBeInTheDocument();
+      expect(screen.queryByText('Ready to improve: First Article')).not.toBeInTheDocument();
     });
 
     it('reads the thread from the hoisted provider rather than one of its own (#1126)', () => {
@@ -1321,7 +1369,11 @@ describe('AiAssistantPage', () => {
       expect(screen.getByText('seeded outside the page')).toBeInTheDocument();
     });
 
-    it('defaults to improve mode when pageId is present', () => {
+    // #1126: this used to default to Improve. With Improve gone from the
+    // tablist that would strand the user in a mode they can leave but never
+    // return to. A page context is still an input to Ask, so Ask is the
+    // default; only an explicit ?mode= reaches a document screen.
+    it('defaults to Q&A when a pageId is present but no mode is given', () => {
       mockPageData = {
         data: { id: 'p1', title: 'My Article', bodyHtml: '<p>Content</p>', bodyText: 'Content' },
       };
@@ -1330,17 +1382,15 @@ describe('AiAssistantPage', () => {
         wrapper: createWrapper(['/ai?pageId=p1']),
       });
 
-      // Improve mode tab should be active (has font-medium class)
-      const improveTab = screen.getByText('Improve');
-      expect(improveTab.closest('button')?.className).toContain('text-primary');
+      expect(screen.getByRole('tab', { selected: true })).toHaveTextContent('Q&A');
+      expect(screen.getByText('Ask questions about your knowledge base')).toBeInTheDocument();
     });
   });
 
   describe('empty state messages', () => {
     it('shows only the correct empty state for improve mode without spurious messages', () => {
-      render(<AiAssistantPage />, { wrapper: createWrapper() });
-
-      fireEvent.click(screen.getByText('Improve'));
+      // #1126: reached by URL now that Improve is a dock chip, not a tab.
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve']) });
 
       // Should show improve-specific message
       expect(screen.getByText('Select a page and improvement type')).toBeInTheDocument();
@@ -1380,9 +1430,10 @@ describe('AiAssistantPage', () => {
       Element.prototype.scrollIntoView = originalScrollIntoView;
     });
 
-    // At 390px the mode row cut off after "Summar…", leaving Diagram and
-    // Quality unreachable with no scroll cue — two of six modes did not exist
-    // on a phone.
+    // At 390px the six-mode row cut off after "Summar…", leaving Diagram and
+    // Quality unreachable with no scroll cue. The row is two tabs since #1126
+    // and no longer overflows, but the scroll affordance stays: it is what
+    // stops a future tab from being silently unreachable again.
     it('lets the mode row scroll horizontally instead of clipping', () => {
       render(<AiAssistantPage />, { wrapper: createWrapper() });
 
@@ -1392,11 +1443,11 @@ describe('AiAssistantPage', () => {
       expect(tablist.className).not.toContain('overflow-hidden');
     });
 
-    it('keeps every mode present in the tablist', () => {
+    it('keeps every offered mode present in the tablist', () => {
       render(<AiAssistantPage />, { wrapper: createWrapper() });
 
       const tabs = screen.getAllByRole('tab');
-      expect(tabs).toHaveLength(6);
+      expect(tabs).toHaveLength(2);
       for (const tab of tabs) {
         // shrink-0 stops the flex row squashing tabs into unreadable slivers
         // instead of scrolling.

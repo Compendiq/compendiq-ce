@@ -24,7 +24,7 @@ flowchart TB
         fAuth["auth/<br/>OidcCallbackPage (EE route)"]
         fPages["pages/<br/>list · view · new · trash · pinned<br/>bulk actions · 404 catch-all"]
         fSpaces["spaces/<br/>settings · new"]
-        fAI["ai/<br/>AiAssistantPage<br/>(ask / improve / generate / summarize)"]
+        fAI["ai/<br/>AiAssistantPage (/ai — no-document home)<br/>dock/ AiDock · DockDiffCard (#1126)<br/>docked beside /pages/:id"]
         fGraph["graph/"]
         fSettings["settings/<br/>LoginPage · user + admin"]
         fAdmin["admin/<br/>LicenseStatusCard<br/>OidcSettingsPage (EE-gated)<br/>analytics/ (AnalyticsPage)"]
@@ -46,8 +46,9 @@ flowchart TB
     subgraph stores["stores/ (Zustand)"]
         zAuth["auth"]
         zTheme["theme"]
-        zUI["ui"]
-        zAV["article-view"]
+        zUI["ui (persisted)"]
+        zAV["article-view<br/>read-only mirrors"]
+        zDock["ai-dock (ephemeral)"]
         zCmd["command-palette"]
         zKb["keyboard-shortcuts"]
     end
@@ -61,8 +62,46 @@ flowchart TB
     class providers,qp,rp,ep,shell prov
     class features,fAuth,fPages,fSpaces,fAI,fGraph,fSettings,fAdmin feat
     class shared,sEnt,sComp,sHooks,sLib sh
-    class stores,zAuth,zTheme,zUI,zAV,zCmd,zKb st
+    class stores,zAuth,zTheme,zUI,zAV,zDock,zCmd,zKb st
 ```
+
+## Article route panels (#1126)
+
+On `/pages/:id` the shell renders three siblings in one flex row, so each
+panel scrolls independently and the editor column shrinks around them rather
+than having anything float above it.
+
+```mermaid
+flowchart LR
+    main["main<br/>[data-scroll-container]<br/>PageViewPage · TipTap"]
+    rail["ArticleRightPane<br/>280px pane ⇄ 40px rail<br/>outline flyout on hover/focus"]
+    dock["AiDock<br/>~420px, resizable<br/>chips + composer + inline diff"]
+
+    main --- rail --- dock
+```
+
+- Opening the dock **ORs** the pane into its rail; it never writes the user's
+  persisted `articleSidebarCollapsed`. `.` closes the dock while it is open,
+  so the key is never dead.
+- Below `min-width: 1100px` (`useIsDockWideLayout`) the rail is not rendered
+  and the dock is capped narrower. This is the only JS *width* query in the app
+  — `use-can-hover` and three one-shot checks read `matchMedia` for pointer and
+  motion capability, but every responsive *layout* decision is a Tailwind class.
+- `Apply` on a proposed change goes through **`POST /llm/improvements/apply`**,
+  not a client-side write into the editor. That route runs `protectMedia` /
+  `restoreMedia` (#723) and the column-layout realignment that returns **422**
+  when the layout is unrecoverable (#781). Those guards live in
+  `backend/src/core/services/content-converter.ts` and have no frontend
+  counterpart, so a client-side Markdown→HTML round-trip would silently strip
+  Confluence macros and media — see
+  [`11-content-pipeline.md`](./11-content-pipeline.md). What the dock changes
+  is *where the decision happens* — inline in the thread, beside the document —
+  not how it is applied. Consequently Apply is unavailable while the editor is
+  open: it rewrites the saved page, which an open editor would overwrite on its
+  next save. `article-view` therefore stays a set of read-only mirrors.
+- `/ai` keeps only the Ask and Generate tabs. The four document actions are
+  dock chips; their mode screens still render for `?mode=…` deep links (which
+  `SidebarTreeView` and old bookmarks still produce), but nothing offers them.
 
 ## Enterprise gating
 

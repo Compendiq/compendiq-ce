@@ -529,7 +529,10 @@ export function GenerateModeInput() {
     const displayMessage = pdfData
       ? `Generate from PDF (${pdfFilename}): ${prompt}`
       : `Generate: ${prompt}`;
-    setMessages([{ id: nextMessageId(), role: 'user', content: displayMessage }]);
+    // Append, not replace (#1126) — matching runStream's seeded turn and Ask.
+    // Generate is the one mode that still builds its own user turn by hand, and
+    // it was the last remaining way for a submit to discard the thread it lands in.
+    setMessages((prev) => [...prev, { id: nextMessageId(), role: 'user', content: displayMessage }]);
     setGeneratedContent('');
     setShowSavePanel(false);
 

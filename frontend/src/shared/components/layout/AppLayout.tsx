@@ -16,6 +16,8 @@ import { SidebarTreeView } from './SidebarTreeView';
 import { SettingsSidebar } from './SettingsSidebar';
 import { ArticleRightPane } from '../article/ArticleRightPane';
 import { AiProvider } from '../../../features/ai/AiContext';
+import { AiDock } from '../../../features/ai/dock/AiDock';
+import { useAiDockStore } from '../../../stores/ai-dock-store';
 import { ShortcutHint } from '../ShortcutHint';
 import { Logo } from '../Logo';
 import { ThemeToggle } from './ThemeToggle';
@@ -46,11 +48,24 @@ export function AppLayout({ children }: { children: ReactNode }) {
 
   const closeMobileSidebar = useCallback(() => setMobileSidebarOpen(false), []);
 
+  // `.` means "give me the right side of the screen back". While the docked
+  // assistant is open it holds that side and forces the article pane into its
+  // rail, so toggling the pane's own preference would do nothing visible — the
+  // key would read as broken. Closing the dock is the same intent, and it
+  // restores whatever collapse state the user had chosen (#1126).
+  const toggleRightSide = useCallback(() => {
+    if (isArticleRoute && useAiDockStore.getState().open) {
+      useAiDockStore.getState().closeDock();
+      return;
+    }
+    toggleArticleSidebar();
+  }, [isArticleRoute, toggleArticleSidebar]);
+
   // Toggle both panels at once (zen mode)
   const toggleBothPanels = useCallback(() => {
     toggleTreeSidebar();
-    toggleArticleSidebar();
-  }, [toggleTreeSidebar, toggleArticleSidebar]);
+    toggleRightSide();
+  }, [toggleTreeSidebar, toggleRightSide]);
 
   // Navigate to new page
   const navigateToNewPage = useCallback(() => {
@@ -78,7 +93,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
       keys: ['.'],
       description: 'Toggle right panel (page outline)',
       category: 'panels',
-      action: toggleArticleSidebar,
+      action: toggleRightSide,
     },
     {
       key: '\\',
@@ -159,7 +174,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
       category: 'navigation',
       action: goToTrash,
     },
-  ], [openCommandPalette, toggleShortcutsModal, toggleTreeSidebar, toggleArticleSidebar, toggleBothPanels, navigateToNewPage, goToPages, goToGraph, goToAi, goToSettings, goToTrash]);
+  ], [openCommandPalette, toggleShortcutsModal, toggleTreeSidebar, toggleRightSide, toggleBothPanels, navigateToNewPage, goToPages, goToGraph, goToAi, goToSettings, goToTrash]);
 
   useKeyboardShortcuts(
     shortcutsModalOpen ? [] : shortcuts,
@@ -377,7 +392,13 @@ export function AppLayout({ children }: { children: ReactNode }) {
             </div>
           </main>
 
+          {/* Rail then dock, in that order: the assistant is the outermost
+              column. Both are siblings of <main> in the same flex row, so the
+              editor column flex-shrinks around them and each panel scrolls
+              independently — the dock is part of the layout, not an overlay
+              floating above it (#1126). */}
           {isArticleRoute && <ArticleRightPane />}
+          {isArticleRoute && <AiDock />}
         </div>
       </div>
 

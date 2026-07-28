@@ -8,6 +8,7 @@ import { AppLayout } from './AppLayout';
 import { useAiContext } from '../../../features/ai/AiContext';
 import { useCommandPaletteStore } from '../../../stores/command-palette-store';
 import { useUiStore } from '../../../stores/ui-store';
+import { useAiDockStore } from '../../../stores/ai-dock-store';
 import * as keyboardShortcutsModule from '../../hooks/use-keyboard-shortcuts';
 
 // Mock SidebarTreeView to isolate AppLayout tests. It renders a couple of
@@ -65,6 +66,8 @@ describe('AppLayout', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     useCommandPaletteStore.setState({ isOpen: false });
+    useAiDockStore.setState({ open: false, seed: null });
+    useUiStore.setState({ articleSidebarCollapsed: false });
     // jsdom does not implement Element.scrollTo — stub it so the scroll-reset
     // useEffect in AppLayout does not throw
     Element.prototype.scrollTo = vi.fn();
@@ -445,6 +448,50 @@ describe('AppLayout', () => {
     // Neither button has tabIndex=-1 which would remove keyboard focus
     expect(desktopBtn).not.toHaveAttribute('tabindex', '-1');
     expect(mobileBtn).not.toHaveAttribute('tabindex', '-1');
+  });
+
+  // #1126: the dock holds the right side of an article route and forces the
+  // article pane into its rail, so `.` toggling the pane's own preference would
+  // change nothing on screen. It closes the dock instead — same intent, and the
+  // user's saved collapse preference is never rewritten by the dock.
+  describe('the `.` shortcut with the AI dock open', () => {
+    function captureShortcuts(path: string) {
+      let captured: keyboardShortcutsModule.ShortcutDefinition[] = [];
+      const spy = vi.spyOn(keyboardShortcutsModule, 'useKeyboardShortcuts').mockImplementation((shortcuts) => {
+        captured = shortcuts;
+      });
+      render(<AppLayout><div>content</div></AppLayout>, { wrapper: createWrapper(path) });
+      spy.mockRestore();
+      return () => captured.find((s) => s.key === '.')!;
+    }
+
+    it('closes the dock rather than leaving the key dead', () => {
+      useAiDockStore.setState({ open: true, seed: null });
+      const dotShortcut = captureShortcuts('/pages/page-1');
+
+      act(() => dotShortcut().action());
+
+      expect(useAiDockStore.getState().open).toBe(false);
+      expect(useUiStore.getState().articleSidebarCollapsed).toBe(false);
+    });
+
+    it('still toggles the article pane when the dock is closed', () => {
+      const dotShortcut = captureShortcuts('/pages/page-1');
+
+      act(() => dotShortcut().action());
+
+      expect(useUiStore.getState().articleSidebarCollapsed).toBe(true);
+    });
+
+    it('leaves the pane toggle alone off article routes', () => {
+      useAiDockStore.setState({ open: true, seed: null });
+      const dotShortcut = captureShortcuts('/');
+
+      act(() => dotShortcut().action());
+
+      expect(useAiDockStore.getState().open).toBe(true);
+      expect(useUiStore.getState().articleSidebarCollapsed).toBe(true);
+    });
   });
 
   it('does not register an Escape shortcut (Radix Dialog handles Escape natively)', () => {

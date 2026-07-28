@@ -141,6 +141,9 @@ interface AiContextValue {
    */
   layoutTokensLost: boolean | undefined;
   setLayoutTokensLost: (v: boolean | undefined) => void;
+  /** `page.version` the pending improvement was produced from — see `AiThread`. */
+  diffBaseVersion: number | null;
+  setDiffBaseVersion: (v: number | null) => void;
 
   // Diagram mode state
   diagramType: string;
@@ -220,6 +223,13 @@ interface AiThread {
   originalMarkdown: string;
   layoutTokensLost: boolean | undefined;
   diagramCode: string;
+  /**
+   * `page.version` at the moment the pending improvement was produced (#1126).
+   * The dock compares it against the live version to detect that the document
+   * moved under an un-applied diff, which is the difference between offering a
+   * re-run and silently overwriting someone else's edit.
+   */
+  diffBaseVersion: number | null;
 }
 
 const EMPTY_THREAD: AiThread = {
@@ -231,6 +241,7 @@ const EMPTY_THREAD: AiThread = {
   originalMarkdown: '',
   layoutTokensLost: undefined,
   diagramCode: '',
+  diffBaseVersion: null,
 };
 
 /**
@@ -323,14 +334,21 @@ export function AiProvider({ children }: { children: ReactNode }) {
 
   const rawMode = searchParams.get('mode');
   const urlMode = VALID_MODES.includes(rawMode as Mode) ? (rawMode as Mode) : null;
-  const [mode, setMode] = useState<Mode>(urlMode ?? (pageId ? 'improve' : 'ask'));
+  // `/ai` offers Ask and Generate only, now that the four document actions are
+  // chips in the dock (#1126). The old default — `pageId ? 'improve' : 'ask'` —
+  // would land `/ai?pageId=…` (which SidebarTreeView still produces) on Improve:
+  // a mode with no tab, which the user could leave but never return to. A page
+  // context is still an *input* to Ask, so Ask is the honest default here; only
+  // an explicit `?mode=` reaches a document mode, which is what keeps existing
+  // deep links rendering.
+  const [mode, setMode] = useState<Mode>(urlMode ?? 'ask');
   // Conversations keyed by page and retained (#1126). Changing pages swaps
   // which thread is on screen; it never destroys one.
   const threadKey = threadKeyFor(pageId);
   const [threads, setThreads] = useState<Map<string, AiThread>>(() => new Map());
   const {
     messages, conversationId, input, showDiffView,
-    improvedContent, originalMarkdown, layoutTokensLost, diagramCode,
+    improvedContent, originalMarkdown, layoutTokensLost, diagramCode, diffBaseVersion,
   } = threads.get(threadKey) ?? EMPTY_THREAD;
   const [isStreaming, setIsStreaming] = useState(false);
   const [isThinking, setIsThinking] = useState(false);
@@ -392,6 +410,10 @@ export function AiProvider({ children }: { children: ReactNode }) {
     (v: string) => updateThread(threadKey, () => ({ diagramCode: v })),
     [threadKey, updateThread],
   );
+  const setDiffBaseVersion = useCallback(
+    (v: number | null) => updateThread(threadKey, () => ({ diffBaseVersion: v })),
+    [threadKey, updateThread],
+  );
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -434,18 +456,21 @@ export function AiProvider({ children }: { children: ReactNode }) {
   }, [threadKey]);
 
   // The provider now outlives the /ai route, so `mode` can no longer be seeded
-  // once from the URL at mount. Re-apply an explicit `?mode=` whenever the
-  // URL's mode/page inputs change — that is what navigations like
-  // /ai?mode=improve&pageId=… (the article rail's "AI Improve" button) relied
-  // on when entering the route still remounted the provider. Only an explicit
-  // mode is applied: inferring one from the page would flip the mode under a
-  // user who is merely browsing articles.
+  // once from the URL at mount. Re-apply the URL's mode whenever its mode/page
+  // inputs change — that is what navigations like /ai?mode=improve&pageId=…
+  // relied on when entering the route still remounted the provider.
+  //
+  // A navigation carrying NO explicit mode resets to Ask rather than leaving
+  // the previous one in place (#1126). `/ai` offers Ask and Generate only now,
+  // so a sticky `improve` — arrived at by deep link, then carried to a plain
+  // `/ai` — would render a document screen with no tab selected and no route
+  // back except the URL bar. Absent an explicit mode, the mode is Ask.
   const urlModeSignature = `${rawMode ?? ''}|${pageId ?? ''}`;
   const appliedModeSignatureRef = useRef(urlModeSignature);
   useEffect(() => {
     if (appliedModeSignatureRef.current === urlModeSignature) return;
     appliedModeSignatureRef.current = urlModeSignature;
-    if (urlMode) setMode(urlMode);
+    setMode(urlMode ?? 'ask');
   }, [urlModeSignature, urlMode]);
 
   // Prefill the composer from the ?q param so a question typed in the command
@@ -646,8 +671,14 @@ export function AiProvider({ children }: { children: ReactNode }) {
     const controller = new AbortController();
     abortRef.current = controller;
 
+    // Append, never replace (#1126). This used to be `setMessages([...])`, which
+    // meant every mode that seeds its own turn — Improve, Summarize, Diagram,
+    // Quality — silently wiped the thread it was added to. That was survivable
+    // while each of those was a *mode* you switched into (the switch felt like a
+    // reset anyway); it is not survivable now that all four are chips seeding one
+    // continuous conversation in the dock. Ask already appended (AskMode:83).
     if (opts?.userMessage) {
-      setMessages([{ id: nextMessageId(), role: 'user', content: opts.userMessage }]);
+      setMessages((prev) => [...prev, { id: nextMessageId(), role: 'user', content: opts.userMessage! }]);
     }
 
     opts?.onBeforeStream?.();
@@ -829,6 +860,8 @@ export function AiProvider({ children }: { children: ReactNode }) {
     setOriginalMarkdown,
     layoutTokensLost,
     setLayoutTokensLost,
+    diffBaseVersion,
+    setDiffBaseVersion,
     diagramType,
     setDiagramType,
     diagramCode,

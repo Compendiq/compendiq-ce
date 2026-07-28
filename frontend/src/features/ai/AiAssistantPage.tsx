@@ -1,14 +1,16 @@
 import { memo } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { m, useReducedMotion } from 'framer-motion';
 import {
   Bot, User, Loader2, MessageSquare, Brain, AlertTriangle,
-  Wand2, ListCollapse, Sparkles, GitBranch, FileText, ShieldCheck, Network,
+  Sparkles, Network, FileText, X,
 } from 'lucide-react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { cn } from '../../shared/lib/cn';
 import { ConfidenceBadge } from '../../shared/components/badges/ConfidenceBadge';
 import { AIThinkingBlob } from '../../shared/components/feedback/AIThinkingBlob';
+import { TypingIndicator } from '../../shared/components/feedback/TypingIndicator';
 import { SourceCitations } from './SourceCitations';
 import { CitationChips } from './CitationChips';
 import { StreamingMessage } from './StreamingMessage';
@@ -22,27 +24,7 @@ import {
   QualityModeInput, QUALITY_EMPTY_TITLE, qualityEmptySubtitle,
 } from './modes';
 import { isZeroEmbeddings } from '../../shared/hooks/use-pages';
-
-// ---------------------------------------------------------------------------
-// Typing indicator: 3 dots with staggered bounce
-// ---------------------------------------------------------------------------
-
-function TypingIndicator() {
-  return (
-    <div className="flex items-center gap-1" data-testid="typing-indicator" aria-label="AI is typing">
-      {[0, 1, 2].map((i) => (
-        <span
-          key={i}
-          className="h-1.5 w-1.5 rounded-full bg-primary/60"
-          style={{
-            animation: 'typing-bounce 1.2s ease-in-out infinite',
-            animationDelay: `${i * 0.15}s`,
-          }}
-        />
-      ))}
-    </div>
-  );
-}
+import { ShortcutHint } from '../../shared/components/ShortcutHint';
 
 // ---------------------------------------------------------------------------
 // Memoized message bubble: skips re-render for completed (non-streaming) messages
@@ -171,13 +153,24 @@ const MessageBubble = memo(function MessageBubble({
 // Mode button definitions
 // ---------------------------------------------------------------------------
 
+/**
+ * The tabs `/ai` offers (#1126).
+ *
+ * Improve, Summarize, Diagram and Quality are gone from this list: they act on
+ * an open document, and the dock is where a document is open. Leaving them here
+ * would advertise six modes on a route that cannot show you the page they
+ * operate on, beside a dock offering four chips for the same jobs — two
+ * surfaces for one task, with no signal which is canonical.
+ *
+ * Their screens below are NOT removed. `/ai?mode=improve&pageId=…` still
+ * renders Improve in full, so bookmarks and any link produced before this
+ * change keep working — including SidebarTreeView's `isAiRoute` re-navigation.
+ * Retiring those screens is a separate change, once nothing is observed
+ * reaching them.
+ */
 const MODE_BUTTONS: Array<{ key: Mode; icon: typeof MessageSquare; label: string }> = [
   { key: 'ask', icon: MessageSquare, label: 'Q&A' },
-  { key: 'improve', icon: Wand2, label: 'Improve' },
   { key: 'generate', icon: Sparkles, label: 'Generate' },
-  { key: 'summarize', icon: ListCollapse, label: 'Summarize' },
-  { key: 'diagram', icon: GitBranch, label: 'Diagram' },
-  { key: 'quality', icon: ShieldCheck, label: 'Quality' },
 ];
 
 // ---------------------------------------------------------------------------
@@ -227,6 +220,10 @@ export function AiAssistantPage() {
   } = ctx;
 
   const shouldReduceMotion = useReducedMotion();
+  const [searchParams, setSearchParams] = useSearchParams();
+  // False when a `?mode=` deep link put us on one of the four document screens
+  // that no longer have a tab here (#1126).
+  const modeHasTab = MODE_BUTTONS.some((b) => b.key === mode);
 
   return (
     <m.div
@@ -301,13 +298,20 @@ export function AiAssistantPage() {
             }
           }}
         >
-          {MODE_BUTTONS.map(({ key, icon: Icon, label }) => (
+          {MODE_BUTTONS.map(({ key, icon: Icon, label }, i) => (
             <button
               key={key}
               role="tab"
               data-mode-tab={key}
               aria-selected={mode === key}
-              tabIndex={mode === key ? 0 : -1}
+              // A `?mode=` deep link can put `mode` on a document screen that
+              // has no tab here. Without this fallback every tab would be
+              // tabIndex={-1} and the roving-tabindex tablist would have no
+              // keyboard entry point at all (WCAG 2.1.1) — someone following an
+              // old bookmark could not reach Q&A or Generate without editing
+              // the URL. Arrow keys recover too: indexOf(mode) is -1, so either
+              // arrow lands on the first tab.
+              tabIndex={mode === key || (!modeHasTab && i === 0) ? 0 : -1}
               onClick={() => setMode(key)}
               className={cn(
                 'flex h-7 shrink-0 snap-start items-center gap-1.5 rounded-md px-2.5 text-sm transition-colors',
@@ -364,14 +368,29 @@ export function AiAssistantPage() {
             </select>
           )}
 
+          {/* Context chip (#1126). The original was a static <span> naming a
+              page you could not click, clear, or change — the literal "context
+              is invisible and unswitchable" defect. Deleting it outright was
+              wrong: SidebarTreeView still navigates `/ai?pageId=…` and Ask
+              still sends that id, so answers stayed scoped to a page the UI no
+              longer mentioned. It is back as a real control — it names the
+              scope and clears it. */}
           {page && (
-            <span
-              className="flex h-7 items-center gap-1.5 rounded-md border border-border/40 bg-foreground/[0.03] px-2.5 text-xs text-muted-foreground"
-              title={`AI context is scoped to "${page.title}"`}
+            <button
+              type="button"
+              onClick={() => {
+                const next = new URLSearchParams(searchParams);
+                next.delete('pageId');
+                setSearchParams(next, { replace: true });
+              }}
+              className="flex h-7 items-center gap-1.5 rounded-md border border-border-interactive bg-foreground/[0.03] px-2.5 text-xs text-muted-foreground transition-colors hover:bg-foreground/[0.07] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+              title={`Answers are scoped to "${page.title}" — click to clear`}
+              data-testid="ai-context-chip"
             >
-              <FileText size={12} />
+              <FileText size={12} aria-hidden />
               <span className="max-w-[180px] truncate">{page.title}</span>
-            </span>
+              <X size={12} aria-hidden />
+            </button>
           )}
 
           {page && pageHasChildren && (
@@ -425,6 +444,18 @@ export function AiAssistantPage() {
           </label>
         </div>
       </div>
+
+      {/* Arrived on a document screen from an old `?mode=` link. Say so, rather
+          than leaving a tablist with nothing selected looking broken (#1126). */}
+      {!modeHasTab && (
+        <p
+          className="rounded-xl border border-border/40 bg-card/50 px-3 py-2 text-xs text-muted-foreground backdrop-blur-sm"
+          data-testid="ai-legacy-mode-notice"
+        >
+          This view moved into the assistant that opens beside an article. Open the page and press{' '}
+          <ShortcutHint shortcutId="ai-improve" /> — or pick Q&amp;A or Generate above.
+        </p>
+      )}
 
       {/* Mode-specific type selectors — included in the sticky header so
           they stay alongside the tabs while scrolling. */}

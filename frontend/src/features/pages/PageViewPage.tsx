@@ -19,6 +19,7 @@ import { useAuthenticatedSrc } from '../../shared/hooks/use-authenticated-src';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { useKeyboardShortcuts, type ShortcutDefinition } from '../../shared/hooks/use-keyboard-shortcuts';
 import { useArticleViewStore } from '../../stores/article-view-store';
+import { useAiDockStore } from '../../stores/ai-dock-store';
 import { useAuthStore } from '../../stores/auth-store';
 import { cn } from '../../shared/lib/cn';
 import { FeatureErrorBoundary } from '../../shared/components/feedback/FeatureErrorBoundary';
@@ -157,6 +158,7 @@ export function PageViewPage() {
 
   const setStoreHeadings = useArticleViewStore((s) => s.setHeadings);
   const setStoreEditing = useArticleViewStore((s) => s.setEditing);
+  const openDock = useAiDockStore((s) => s.openDock);
 
   const [editing, setEditing] = useState(false);
   const [editorInstance, setEditorInstance] = useState<EditorType | null>(null);
@@ -557,11 +559,14 @@ export function PageViewPage() {
       alt: true,
       description: 'AI Improve',
       category: 'actions',
+      // #1126: opens the assistant beside the document instead of navigating to
+      // /ai and leaving it. One of three call sites that used the same URL — the
+      // other two are in ArticleRightPane's rail and expanded pane.
       action: () => {
-        if (id) navigate(`/ai?mode=improve&pageId=${encodeURIComponent(id)}`);
+        if (id) openDock('improve', id);
       },
     },
-  ], [editing, handleSave, handleCancelEditing, handleStartEditing, handlePinToggle, handleDeletePage, id, navigate]);
+  ], [editing, handleSave, handleCancelEditing, handleStartEditing, handlePinToggle, handleDeletePage, id, openDock]);
 
   useKeyboardShortcuts(pageShortcuts);
 

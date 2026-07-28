@@ -92,12 +92,34 @@ if (typeof Range !== 'undefined' && !Range.prototype.getBoundingClientRect) {
 }
 
 // Mock matchMedia for jsdom (used by useCanHover, prefers-reduced-motion checks, and media query listeners)
-// Default: hover-capable device, no reduced motion
+// Default: hover-capable device, no reduced motion.
+//
+// Width queries are answered from `window.innerWidth` (jsdom defaults to 1024)
+// rather than the blanket `false` this used to return for everything except
+// `(hover: hover)`. `useMediaQuery` (#1126) is the first JS consumer of a width
+// query in this codebase, and an always-false answer would have made every
+// suite silently render its narrow branch — a mock that lies in one direction
+// only is worse than no mock. A suite that needs a different width sets
+// `window.innerWidth` before rendering.
+function matchesQuery(query: string): boolean {
+  if (query === '(hover: hover)') return true;
+  const min = /\(min-width:\s*(\d+(?:\.\d+)?)px\)/.exec(query);
+  if (min) return window.innerWidth >= Number(min[1]);
+  const max = /\(max-width:\s*(\d+(?:\.\d+)?)px\)/.exec(query);
+  if (max) return window.innerWidth <= Number(max[1]);
+  return false;
+}
+
 if (!window.matchMedia) {
   Object.defineProperty(window, 'matchMedia', {
     writable: true,
     value: (query: string) => ({
-      matches: query === '(hover: hover)',
+      // A getter, not a snapshot: a test that changes `window.innerWidth` after
+      // taking the MediaQueryList (which `useMediaQuery` holds for the lifetime
+      // of the effect) still reads the new width.
+      get matches() {
+        return matchesQuery(query);
+      },
       media: query,
       onchange: null,
       addEventListener: () => {},

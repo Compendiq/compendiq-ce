@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ArticleRightPane } from './ArticleRightPane';
 import { useArticleViewStore } from '../../../stores/article-view-store';
 import { useUiStore } from '../../../stores/ui-store';
+import { useAiDockStore } from '../../../stores/ai-dock-store';
 
 const mockNavigate = vi.fn();
 const mockDeletePage = vi.fn();
@@ -146,6 +147,12 @@ describe('ArticleRightPane', () => {
     localStorage.clear();
     useUiStore.setState({ articleSidebarCollapsed: false, articleSidebarWidth: 280 });
     useArticleViewStore.setState({ headings: [], editing: false });
+    // The dock forces this pane into its rail while open (#1126), so a test
+    // that opens it would otherwise change what every later test renders.
+    useAiDockStore.setState({ open: false, seed: null });
+    // jsdom's default. `useIsDockWideLayout` reads it via matchMedia, and the
+    // pane steps aside entirely below 1100px while the dock is open.
+    window.innerWidth = 1024;
   });
 
   afterEach(() => {
@@ -228,12 +235,39 @@ describe('ArticleRightPane', () => {
     expect(screen.queryByText('Version history')).not.toBeInTheDocument();
   });
 
-  it('navigates to AI Improve when the button is clicked', () => {
+  // #1126: "AI Improve" used to navigate to /ai?mode=improve&pageId=…, which
+  // took the document off screen to operate on it. It now opens the assistant
+  // beside the document with the Improve prompt seeded.
+  it('opens the docked assistant with Improve seeded instead of navigating away', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
     fireEvent.click(screen.getByText('AI Improve'));
 
-    expect(mockNavigate).toHaveBeenCalledWith('/ai?mode=improve&pageId=page-1');
+    expect(useAiDockStore.getState().open).toBe(true);
+    expect(useAiDockStore.getState().seed).toBe('improve');
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  it('collapses itself to the rail while the dock is open, without touching the saved preference', () => {
+    window.innerWidth = 1400;
+    useAiDockStore.setState({ open: true, seed: null });
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    expect(screen.getByTestId('article-right-pane-rail')).toBeInTheDocument();
+    expect(screen.queryByTestId('article-right-pane')).not.toBeInTheDocument();
+    // The user's own collapse preference is untouched, so closing the dock
+    // restores whatever they had chosen and `.` keeps its meaning.
+    expect(useUiStore.getState().articleSidebarCollapsed).toBe(false);
+  });
+
+  it('steps aside entirely below the wide breakpoint while the dock is open', () => {
+    window.innerWidth = 900;
+    useAiDockStore.setState({ open: true, seed: null });
+
+    const { container } = render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    expect(container).toBeEmptyDOMElement();
   });
 
   it('renders Re-sync and Re-embed buttons for Confluence-sourced articles', () => {
@@ -343,6 +377,98 @@ describe('ArticleRightPane', () => {
 
     toastErrorSpy.mockRestore();
     toastInfoSpy.mockRestore();
+  });
+
+  // #1126: collapsing this pane drops the outline entirely — the rail only ever
+  // carried actions. The flyout is what keeps the outline reachable at 40px,
+  // which matters now that opening the dock forces the rail.
+  describe('rail outline flyout', () => {
+    const headings = [
+      { id: 'intro', text: 'Introduction', level: 1 },
+      { id: 'usage', text: 'Usage', level: 2 },
+    ];
+
+    function renderRail() {
+      useUiStore.setState({ articleSidebarCollapsed: true });
+      useArticleViewStore.setState({ headings });
+      return render(<ArticleRightPane />, { wrapper: createWrapper() });
+    }
+
+    it('offers no outline trigger when the article has no headings', () => {
+      useUiStore.setState({ articleSidebarCollapsed: true });
+      render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+      expect(screen.queryByTestId('article-outline-rail-btn')).not.toBeInTheDocument();
+    });
+
+    it('reveals the outline on hover', () => {
+      renderRail();
+      expect(screen.queryByTestId('article-outline-flyout')).not.toBeInTheDocument();
+
+      fireEvent.mouseEnter(screen.getByTestId('article-outline-rail-btn'));
+
+      expect(screen.getByTestId('article-outline-flyout')).toBeInTheDocument();
+      expect(screen.getByText('Introduction')).toBeInTheDocument();
+      expect(screen.getByText('2 sections')).toBeInTheDocument();
+    });
+
+    // WCAG 2.4.7: a hover-only reveal puts the outline out of reach of the
+    // keyboard entirely, so focus has to open it too.
+    it('reveals the outline on keyboard focus, not only on hover', () => {
+      renderRail();
+
+      fireEvent.focus(screen.getByTestId('article-outline-rail-btn'));
+
+      expect(screen.getByTestId('article-outline-flyout')).toBeInTheDocument();
+    });
+
+    // WCAG 1.4.13: content on hover or focus must be dismissible.
+    it('dismisses on Escape and returns focus to the trigger', async () => {
+      renderRail();
+      const trigger = screen.getByTestId('article-outline-rail-btn');
+      fireEvent.focus(trigger);
+      expect(screen.getByTestId('article-outline-flyout')).toBeInTheDocument();
+
+      fireEvent.keyDown(trigger, { key: 'Escape' });
+
+      expect(trigger).toHaveAttribute('aria-expanded', 'false');
+      expect(document.activeElement).toBe(trigger);
+      // The panel leaves through AnimatePresence, so it unmounts a frame later.
+      await waitFor(() => {
+        expect(screen.queryByTestId('article-outline-flyout')).not.toBeInTheDocument();
+      });
+    });
+
+    it('exposes the trigger as an expandable control naming what it opens', () => {
+      renderRail();
+      const trigger = screen.getByTestId('article-outline-rail-btn');
+
+      expect(trigger).toHaveAttribute('aria-label', 'Article outline');
+      expect(trigger).toHaveAttribute('aria-expanded', 'false');
+      expect(trigger).toHaveAttribute('aria-controls', 'article-outline-flyout');
+
+      fireEvent.click(trigger);
+      expect(trigger).toHaveAttribute('aria-expanded', 'true');
+      expect(screen.getByTestId('article-outline-flyout')).toHaveAttribute('id', 'article-outline-flyout');
+    });
+
+    it('navigates to a heading from inside the flyout', () => {
+      const scrollTo = vi.fn();
+      const scrollRoot = document.createElement('div');
+      scrollRoot.setAttribute('data-scroll-container', '');
+      scrollRoot.scrollTo = scrollTo;
+      document.body.appendChild(scrollRoot);
+      const target = document.createElement('h2');
+      target.id = 'usage';
+      scrollRoot.appendChild(target);
+
+      renderRail();
+      fireEvent.mouseEnter(screen.getByTestId('article-outline-rail-btn'));
+      fireEvent.click(screen.getByText('Usage'));
+
+      expect(scrollTo).toHaveBeenCalled();
+      scrollRoot.remove();
+    });
   });
 
   it('renders outline headings from the article-view-store', () => {

@@ -30,6 +30,8 @@ import { isMac as detectMac } from '../../lib/platform';
 import { toast } from 'sonner';
 import { useUiStore } from '../../../stores/ui-store';
 import { useArticleViewStore } from '../../../stores/article-view-store';
+import { useAiDockStore } from '../../../stores/ai-dock-store';
+import { useIsDockWideLayout } from '../../hooks/use-media-query';
 import {
   useDeletePage,
   usePage,
@@ -203,11 +205,22 @@ export function ArticleRightPane() {
     return match?.[1];
   }, [location.pathname]);
 
-  const collapsed = useUiStore((s) => s.articleSidebarCollapsed);
+  const userCollapsed = useUiStore((s) => s.articleSidebarCollapsed);
   const toggleSidebar = useUiStore((s) => s.toggleArticleSidebar);
   const width = useUiStore((s) => s.articleSidebarWidth);
   const setWidth = useUiStore((s) => s.setArticleSidebarWidth);
   const reduceEffects = useReducedMotion();
+
+  // The docked assistant (#1126) needs this pane in its 40px rail so the three
+  // columns fit. It is ORed in rather than written into the store: forcing the
+  // pane by calling setArticleSidebarCollapsed(true) would overwrite the user's
+  // persisted preference (zustand `persist`, key `compendiq-ui`), so closing the
+  // dock would leave their outline collapsed for good and the `.` shortcut would
+  // have quietly changed meaning.
+  const dockOpen = useAiDockStore((s) => s.open);
+  const openDock = useAiDockStore((s) => s.openDock);
+  const dockLayoutIsWide = useIsDockWideLayout();
+  const collapsed = userCollapsed || dockOpen;
 
   const headings = useArticleViewStore((s) => s.headings);
   const editing = useArticleViewStore((s) => s.editing);
@@ -263,8 +276,17 @@ export function ArticleRightPane() {
   const [readingProgress, setReadingProgress] = useState(0);
   const [isResizing, setIsResizing] = useState(false);
   const [confirmTrashOpen, setConfirmTrashOpen] = useState(false);
+  // Collapsing this pane drops the outline entirely — the rail carries actions
+  // only. The flyout is what keeps the outline reachable at 40px (#1126).
+  const [outlineFlyoutOpen, setOutlineFlyoutOpen] = useState(false);
   const observerRef = useRef<IntersectionObserver | null>(null);
   const sidebarRef = useRef<HTMLElement>(null);
+  const outlineTriggerRef = useRef<HTMLButtonElement>(null);
+  // Escape dismisses the flyout and returns focus to its trigger — which would
+  // land on the trigger's focus-to-open handler and reopen what was just
+  // dismissed. Set across that one handoff and cleared as soon as focus or the
+  // pointer moves on.
+  const suppressFlyoutReopenRef = useRef(false);
 
   const tree = useMemo(() => buildOutlineTree(headings), [headings]);
 
@@ -502,6 +524,11 @@ export function ArticleRightPane() {
 
   if (!id) return null;
 
+  // Below the wide breakpoint a 40px rail plus a ~420px dock starves the
+  // article, so the rail steps aside entirely and the assistant owns the right
+  // side of the pane (#1126). Above it, both fit and both stay.
+  if (dockOpen && !dockLayoutIsWide) return null;
+
   // Shared between the collapsed-rail and expanded returns — Radix portals
   // the dialog to <body>, so its position in the tree only matters for state.
   const confirmTrashDialog = (
@@ -519,9 +546,34 @@ export function ArticleRightPane() {
   // Collapsed rail — glass pill style
   if (collapsed) {
     const railIconBtn =
-      'rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors disabled:opacity-50';
+      'rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:opacity-50';
     return (
       <>
+      {/* Positioning context for the outline flyout. `mouseleave` fires on DOM
+          ancestry, not geometry, so the absolutely-positioned flyout counts as
+          inside this wrapper and the pointer can travel into it without the
+          panel closing underneath — WCAG 1.4.13's "hoverable" requirement. */}
+      <div
+        className="relative flex shrink-0"
+        onMouseLeave={() => {
+          suppressFlyoutReopenRef.current = false;
+          setOutlineFlyoutOpen(false);
+        }}
+        onBlur={(e) => {
+          if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+          suppressFlyoutReopenRef.current = false;
+          setOutlineFlyoutOpen(false);
+        }}
+        onKeyDown={(e) => {
+          if (e.key !== 'Escape' || !outlineFlyoutOpen) return;
+          // Dismissible (WCAG 1.4.13). Stopped here so the same Escape does not
+          // also reach the document listener and exit the article's edit mode.
+          e.stopPropagation();
+          suppressFlyoutReopenRef.current = true;
+          setOutlineFlyoutOpen(false);
+          outlineTriggerRef.current?.focus();
+        }}
+      >
       <AnimatePresence mode="wait">
         <m.div
           key="collapsed-rail"
@@ -544,6 +596,41 @@ export function ArticleRightPane() {
             <ShortcutHint shortcutId="toggle-right-panel" />
           </div>
 
+          {/* Outline flyout trigger. Hover OR focus opens it — a hover-only
+              reveal would put the outline out of reach of the keyboard
+              entirely (WCAG 2.4.7), and click toggles it for touch. */}
+          {headings.length > 0 && (
+            <>
+              <div className="my-1 h-px w-6 bg-[var(--glass-sidebar-divider)]" />
+              <button
+                ref={outlineTriggerRef}
+                onMouseEnter={() => {
+                  suppressFlyoutReopenRef.current = false;
+                  setOutlineFlyoutOpen(true);
+                }}
+                onFocus={() => {
+                  if (suppressFlyoutReopenRef.current) return;
+                  setOutlineFlyoutOpen(true);
+                }}
+                onBlur={() => {
+                  suppressFlyoutReopenRef.current = false;
+                }}
+                onClick={() => {
+                  suppressFlyoutReopenRef.current = false;
+                  setOutlineFlyoutOpen((v) => !v);
+                }}
+                className={cn(railIconBtn, outlineFlyoutOpen && 'nm-pill-active text-action')}
+                aria-label="Article outline"
+                aria-expanded={outlineFlyoutOpen}
+                aria-controls="article-outline-flyout"
+                title={`Article outline — ${headings.length} section${headings.length === 1 ? '' : 's'}`}
+                data-testid="article-outline-rail-btn"
+              >
+                <ListTree size={16} />
+              </button>
+            </>
+          )}
+
           {!editing && page && (
             <>
               <div className="my-1 h-px w-6 bg-[var(--glass-sidebar-divider)]" />
@@ -555,10 +642,17 @@ export function ArticleRightPane() {
                 data-testid="article-actions-rail"
               >
                 <button
-                  onClick={() => navigate(`/ai?mode=improve&pageId=${encodeURIComponent(id)}`)}
+                  // #1126: opens the assistant beside the document instead of
+                  // navigating to /ai and losing sight of the page. This is also
+                  // where the dock's focus restore lands when the trigger the
+                  // user pressed was destroyed by opening the dock — this one
+                  // survives every post-open state at >= 1100px.
+                  onClick={() => openDock('improve', id)}
                   className={railIconBtn}
                   aria-label="AI Improve"
                   title={`AI Improve (${formatKeysForPlatform(getShortcutHint('ai-improve') ?? '', detectMac())})`}
+                  data-testid="article-improve-rail-btn"
+                  data-ai-improve-trigger
                 >
                   <Wand2 size={16} />
                 </button>
@@ -668,6 +762,61 @@ export function ArticleRightPane() {
           )}
         </m.div>
       </AnimatePresence>
+
+      {/* Outline flyout — opens leftward, over the article. `nm-card-elevated`
+          is the sanctioned floating-panel surface and is already listed in the
+          `forced-colors: active` block, so the panel keeps a real edge in high
+          contrast where its shadow is dropped. */}
+      <AnimatePresence>
+        {outlineFlyoutOpen && headings.length > 0 && (
+          <m.div
+            id="article-outline-flyout"
+            key="outline-flyout"
+            initial={reduceEffects ? false : { opacity: 0, x: 8 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={reduceEffects ? { opacity: 0 } : { opacity: 0, x: 8 }}
+            transition={reduceEffects ? { duration: 0 } : { type: 'spring', stiffness: 500, damping: 34 }}
+            // The 4px gap is PADDING on this positioned box, not a margin
+            // outside it. `mouseleave` fires on DOM ancestry, but a margin
+            // would leave real geometry between the rail and the panel that
+            // belongs to <main>: a pointer crossing it would close the panel
+            // before reaching it, defeating WCAG 1.4.13's "hoverable". Padding
+            // keeps the hit region continuous while looking identical.
+            className="absolute right-full top-1 z-30 flex max-h-[70vh] pr-1"
+            data-testid="article-outline-flyout"
+          >
+            <div className="nm-card-elevated flex min-h-0 w-64 flex-col overflow-hidden">
+            <div className="shrink-0 px-3 pb-2 pt-2.5">
+              <div className="flex items-center justify-between">
+                <span className="flex items-center gap-2 text-xs font-semibold text-muted-foreground/60">
+                  <ListTree size={13} />
+                  Outline
+                </span>
+                <span className="text-[11px] tabular-nums text-muted-foreground/50">
+                  {headings.length} section{headings.length === 1 ? '' : 's'}
+                </span>
+              </div>
+              <div className="mt-2 h-1 overflow-hidden rounded-full bg-foreground/8">
+                <div className="h-full rounded-full bg-action" style={{ width: `${readingProgress}%` }} />
+              </div>
+            </div>
+            <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto p-1.5" role="tree" aria-label="Article outline">
+              {tree.map((node) => (
+                <OutlineNodeItem
+                  key={node.heading.id}
+                  node={node}
+                  activeId={activeId}
+                  collapsedIds={collapsedIds}
+                  onNavigate={handleNavigate}
+                  onToggleCollapsed={handleToggleCollapsed}
+                />
+              ))}
+            </div>
+            </div>
+          </m.div>
+        )}
+      </AnimatePresence>
+      </div>
       {confirmTrashDialog}
       </>
     );
@@ -723,9 +872,13 @@ export function ArticleRightPane() {
       {!editing && page && (
         <div className="p-2 space-y-0.5" data-testid="article-actions">
           <button
-            onClick={() => navigate(`/ai?mode=improve&pageId=${encodeURIComponent(id)}`)}
+            // #1126: opens the assistant beside the document. Opening it also
+            // forces this pane into its rail, so this button is the last thing
+            // the user sees of the expanded pane before it collapses.
+            onClick={() => openDock('improve', id)}
             className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
             title={`AI Improve (${formatKeysForPlatform(getShortcutHint('ai-improve') ?? '', detectMac())})`}
+            data-ai-improve-trigger
           >
             <Wand2 size={15} className="shrink-0 opacity-70" />
             <span className="truncate">AI Improve</span>
