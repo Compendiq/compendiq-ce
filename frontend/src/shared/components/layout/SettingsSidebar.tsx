@@ -135,7 +135,7 @@ export function SettingsSidebar({ onNavigate }: { onNavigate?: () => void } = {}
                       >
                         {({ isActive }) => (
                           <>
-                            {/* Active-row indicator: 2px honey rule on the
+                            {/* Active-row indicator: 2px steel rule on the
                                 leading edge — quietly reclaims brand colour
                                 in the rail without shouting. */}
                             {isActive && (

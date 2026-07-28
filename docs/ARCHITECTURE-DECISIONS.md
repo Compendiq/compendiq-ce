@@ -621,7 +621,9 @@ What changes is the palette, the accent semantics, and the type system:
 - **Accent semantics inverted from v0.4.** Steel (`#6EA8FF` / `#2F6BD8`) is now
   the single brand **and** interaction accent — primary CTAs, links, active
   states, `--color-ring`. Honey's "AI is involved here" role moves to **violet**
-  (`--color-status-ai`, `#C084FC` / `#6D28D9`). **Amber is reserved for
+  (`--color-status-ai`, `#C084FC` / `#6D28D9`) — which is a rule about
+  *ornament*, not about controls: an AI-labelled affordance you can operate
+  still takes steel, because steel is what "operable" means. **Amber is reserved for
   warning/attention only**, which is what makes the ~36 files of literal
   `amber-*`/`yellow-*` warning callouts semantically correct rather than stray
   brand colour — they were deliberately left as-is.
@@ -635,10 +637,23 @@ What changes is the palette, the accent semantics, and the type system:
   hairline stays `--color-border`; operable surfaces take
   `--color-border-interactive`, measured ≥3:1 on every surface.
 - **New: gradient-lit chassis.** `--surface-backdrop` (radial) on the app shell
-  and `--surface-card` (linear) on content panes; chrome stays flat. Text
-  contrast is measured against the *lightest* gradient stop.
-- **Typography.** Newsreader/IBM Plex Sans → **Space Grotesk** (display,
-  headings) + **Inter** (body); JetBrains Mono unchanged.
+  and `--surface-card` (linear) on content panes; `nm-card-elevated` takes its
+  own `--surface-card-elevated` one step up, so elevation survives in the
+  surface and not only in the shadow. Chrome stays flat. Text contrast is
+  measured against the *lightest* stop of **both** pane gradients.
+- **Consequence: card surfaces are background *images*.** A Tailwind `bg-*`
+  utility sets background-*color*, which is painted underneath an opaque
+  gradient and does nothing. Card-surfaced controls tint via the new
+  `nm-card-hover` utility, which composes the tint as an additional image
+  layer. `neumorphic-themes.test.ts` walks the `.tsx` sources and fails on any
+  card utility paired with `hover:bg-*` — the failure mode is silent, so it
+  needs a guard rather than a convention.
+- **All three faces are variable builds.** `font-synthesis: style` forbids the
+  browser from faking a weight, and Tailwind's preflight resets headings to
+  `font-weight: inherit` — so a static cut set would snap a bare `<h1>` (400)
+  and a prose `h1` (800) onto whichever weights happened to be imported.
+- **Typography.** Newsreader/IBM Plex Sans → **Space Grotesk Variable**
+  (display, headings) + **Inter Variable** (body); JetBrains Mono unchanged.
 - **Regression guard strengthened.** `frontend/src/neumorphic-themes.test.ts`
   now parses tokens out of `index.css` and **computes** WCAG ratios instead of
   pinning hex literals, so a bad retune fails with the measured ratio. This

@@ -10,11 +10,13 @@
             character; the body face's only job is to disappear.
    Mono:    JetBrains Mono (variable) — code blocks AND every data figure, so a
             column of counts, percentages and IDs lines up to the digit.
-   Only the weights actually used are imported — Space Grotesk ships static
-   cuts, so pulling `index.css` would load all five. */
-@import "@fontsource/space-grotesk/500.css";
-@import "@fontsource/space-grotesk/600.css";
-@import "@fontsource/space-grotesk/700.css";
+   All three are variable (wght axis), which matters for the display face:
+   Tailwind's preflight resets headings to `font-weight: inherit`, so a bare
+   <h1> asks for 400 and prose h1 asks for 800. Static cuts would snap those
+   to the nearest shipped weight — and `font-synthesis: style` (below) blocks
+   the browser from faking the difference. Space Grotesk Variable covers
+   300–700 continuously in one file. */
+@import "@fontsource-variable/space-grotesk/wght.css";
 @import "@fontsource-variable/inter/wght.css";
 @import "@fontsource-variable/jetbrains-mono/index.css";
 
@@ -72,9 +74,10 @@ body {
   /* #767: the variable fonts above load async (@fontsource, font-display:
      swap). During the swap window the browser renders system fallbacks and
      may synthesize faux-bold glyphs, making random sidebar/tree text flash
-     heavier between loads. `style` allows only italic synthesis (we ship no
-     italic cut of IBM Plex Sans, so the `italic` utility and the editor's
-     Italic mark rely on oblique synthesis) while disabling weight and
+     heavier between loads. `style` allows only italic synthesis (neither
+     Inter Variable's wght axis nor Space Grotesk Variable ships an italic
+     cut, so the `italic` utility and the editor's Italic mark rely on
+     oblique synthesis) while disabling weight and
      small-caps synthesis. Shorthand over `font-synthesis-weight: none` for
      wider browser support (Safari 9+/Firefox 34+ vs 16.4+/111+). */
   font-synthesis: style;
@@ -184,13 +187,16 @@ h1, h2, h3, h4, h5, h6,
                          survives. (The retired honey palette used one 1.60:1
                          border for both jobs and did not meet 1.4.11.) */
   --color-border: #232b40;
-  --color-border-strong: #314063;
   --color-border-interactive: #617099;
   --color-ring: #6ea8ff;
   --color-success: #3dd68c;
   /* Amber is NOT the brand here — it is reserved for warning and attention,
      which is what makes it readable as a signal when it appears. */
   --color-warning: #ffc53d;
+  /* Deliberately the same value as --color-primary: steel is the system's one
+     blue, so "informational" and "interactive" share a hue. Keep info for
+     passive notices only — an info-coloured element that is NOT clickable is
+     fine, but never use it to mark something that is. */
   --color-info: #6ea8ff;
 
   /* Status colors. Steel carries "embedding" (it is the system's one blue);
@@ -205,7 +211,7 @@ h1, h2, h3, h4, h5, h6,
 
   /* Brand typography — self-hosted via @fontsource (privacy-safe).
      Tailwind 4 exposes these as font-display / font-sans / font-mono. */
-  --font-display: 'Space Grotesk', 'Inter Variable', system-ui, sans-serif;
+  --font-display: 'Space Grotesk Variable', 'Inter Variable', system-ui, sans-serif;
   --font-sans: 'Inter Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, 'SF Mono', Consolas, monospace;
 
@@ -241,9 +247,18 @@ h1, h2, h3, h4, h5, h6,
      flat. The card gradient is a shallow top-to-bottom fall inside each pane.
      Worst case for text on a card is the LIGHTEST stop, #171e31: body copy
      measures 14.01:1 and muted 5.39:1 there, so both clear AA at the top of
-     the pane as well as the bottom. Retune a stop → re-measure those two. */
+     the pane as well as the bottom. Retune a stop → re-measure those two.
+
+     --surface-card-elevated is the same construction one step up, straddling
+     --color-card-elevated exactly as --surface-card straddles --color-card.
+     It exists because `nm-card-elevated` paints a gradient too: without its
+     own token it would resolve --surface-card and render identically to
+     `nm-card`, and the elevation would live only in the shadow. Its lightest
+     stop #1c243b is the worst surface in the dark theme — body copy 13.00:1,
+     muted 5.00:1, --color-border-interactive 3.14:1. */
   --surface-backdrop: radial-gradient(1200px 500px at 50% -220px, #141b31 0%, #0e1220 60%);
   --surface-card: linear-gradient(180deg, #171e31, #131928);
+  --surface-card-elevated: linear-gradient(180deg, #1c243b, #181f32);
 
   --radius-xl: 1.25rem;
   --radius-lg: 0.75rem;
@@ -324,9 +339,15 @@ h1, h2, h3, h4, h5, h6,
      radial hung above the viewport — but inverted in direction: it lifts
      toward white at the top rather than toward a lighter navy, so the page
      reads as lit from above in both themes. Deliberately shallow; a strong
-     gradient on a light surface reads as a rendering artifact, not as light. */
+     gradient on a light surface reads as a rendering artifact, not as light.
+
+     Elevation inverts on light: the card pane already tops out at pure white,
+     so an elevated pane cannot get brighter — it gets *flatter*. Holding
+     nearer to white through the whole pane is what reads as "closer to the
+     viewer" here, the same way the deeper gradient reads as recessed. */
   --surface-backdrop: radial-gradient(1200px 500px at 50% -220px, #ffffff 0%, #f4f6fa 60%);
   --surface-card: linear-gradient(180deg, #ffffff, #fafbfe);
+  --surface-card-elevated: linear-gradient(180deg, #ffffff, #fdfdff);
 
   /* Dropdown chevron — cool slate stroke (#5a6478, URL-escaped to %235a6478),
      matching the light theme's --color-muted-foreground. The :root default is
@@ -377,7 +398,6 @@ h1, h2, h3, h4, h5, h6,
      interactive edge that clears 1.4.11's 3:1 (3.48:1 on bg / 3.77:1 on the
      white pane) for anything operable. */
   --color-border: #dce2ee;
-  --color-border-strong: #c2cce0;
   --color-border-interactive: #76849f;
   --color-ring: #2f6bd8;
   --color-success: #176b45;
@@ -527,6 +547,14 @@ h1, h2, h3, h4, h5, h6,
    Content panes paint `--surface-card` (a shallow vertical gradient) while
    chrome — sidebar, header, toolbar — stays a flat `--color-card`. That is
    what separates "a thing holding content" from "the frame around it".
+   `nm-card-elevated` takes `--surface-card-elevated` rather than reusing the
+   card gradient, so elevation survives in the surface and not only in shadow.
+
+   IMPORTANT — these gradients are background *images*. A Tailwind `bg-*`
+   utility only sets background-color, which paints UNDERNEATH an opaque
+   gradient and is therefore invisible. Never reach for `hover:bg-*` on a
+   card-surfaced element: use `nm-card-hover` (below), which composes its tint
+   as an additional image layer.
    =========================== */
 
 @utility nm-card {
@@ -541,10 +569,33 @@ h1, h2, h3, h4, h5, h6,
 @utility nm-card-elevated {
   border-radius: var(--radius-xl);
   border: 1px solid var(--color-border);
-  background: var(--surface-card, var(--color-card-elevated, var(--color-card)));
+  background: var(--surface-card-elevated, var(--color-card-elevated, var(--color-card)));
   box-shadow:
     10px 10px 22px var(--nm-shadow-out),
     -6px -6px 16px var(--nm-highlight);
+}
+
+/* Hover tint for a card-surfaced control (a small button wearing `nm-card`).
+   Stacks a flat translucent layer ABOVE the card gradient — the one way to
+   tint a surface whose background is an image. This replaced `hover:bg-*` on
+   those buttons, which silently stopped doing anything the moment `nm-card`
+   moved from a flat colour to a gradient.
+
+   It restates the card gradient as the lower layer, so it must NOT be combined
+   with a utility that repaints the surface with something else (`nm-pill-active`
+   above all) — on hover the card gradient would come back and cover it. Those
+   are alternatives, not layers: pick one per state. */
+@utility nm-card-hover {
+  transition: background-image 0.2s ease-out;
+
+  &:hover {
+    background-image:
+      linear-gradient(
+        oklch(from var(--color-foreground) l c h / 0.06),
+        oklch(from var(--color-foreground) l c h / 0.06)
+      ),
+      var(--surface-card, none);
+  }
 }
 
 @utility nm-card-interactive {

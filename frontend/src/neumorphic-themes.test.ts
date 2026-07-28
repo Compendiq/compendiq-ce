@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'fs';
+import { readdirSync, readFileSync } from 'fs';
 import { resolve } from 'path';
 import { extractBlock } from './test-utils';
 import {
@@ -29,6 +29,13 @@ const css = readFileSync(cssPath, 'utf-8');
 const darkBlock = extractBlock(css, '@theme {');
 const lightBlock = extractBlock(css, '[data-theme="frost-steel"] {');
 const lightSharedBlock = extractBlock(css, '[data-theme-type="light"] {');
+
+/** Read the first colour stop of a `--token: linear-gradient(…)` declaration. */
+function gradientTop(block: string, name: string): string {
+  const m = new RegExp(`${name}:\\s*linear-gradient\\([^)]*?(#[0-9a-fA-F]{6})`).exec(block);
+  if (!m) throw new Error(`gradient not found (or has no hex stop): ${name}`);
+  return m[1].toLowerCase();
+}
 
 /** Read a `--token: #rrggbb;` declaration out of a CSS block. */
 function token(block: string, name: string): string {
@@ -144,22 +151,25 @@ describe('Measured contrast — Slate Steel (dark)', () => {
   const elevated = token(darkBlock, '--color-card-elevated');
   const codeBg = token(darkBlock, '--color-code-bg');
 
-  // The card gradient's LIGHTEST stop is the worst case for text on a card:
-  // anything legible there is legible at the darker bottom of the pane too.
-  const cardGradientTop = /--surface-card:\s*linear-gradient\([^)]*?(#[0-9a-fA-F]{6})/.exec(
-    darkBlock,
-  )![1].toLowerCase();
+  // A pane gradient's LIGHTEST stop is the worst case for text on that pane:
+  // anything legible there is legible at the darker bottom too. Both pane
+  // gradients are checked — `nm-card-elevated` paints its own, one step up,
+  // so it is a strictly worse surface than the card gradient.
+  const cardGradientTop = gradientTop(darkBlock, '--surface-card');
+  const elevatedGradientTop = gradientTop(darkBlock, '--surface-card-elevated');
+
+  const surfaces = { bg, card, elevated, cardGradientTop, elevatedGradientTop };
 
   it('body text clears AA on every surface it lands on', () => {
     const fg = token(darkBlock, '--color-foreground');
-    for (const [name, surface] of Object.entries({ bg, card, elevated, cardGradientTop })) {
+    for (const [name, surface] of Object.entries(surfaces)) {
       expectContrast(`foreground on ${name}`, fg, surface, 4.5);
     }
   });
 
   it('muted text clears AA on every surface it lands on', () => {
     const muted = token(darkBlock, '--color-muted-foreground');
-    for (const [name, surface] of Object.entries({ bg, card, elevated, cardGradientTop })) {
+    for (const [name, surface] of Object.entries(surfaces)) {
       expectContrast(`muted-foreground on ${name}`, muted, surface, 4.5);
     }
   });
@@ -222,7 +232,7 @@ describe('Measured contrast — Slate Steel (dark)', () => {
   // this border is what survives, so it is the one that has to measure up.
   it('the interactive border clears the 3:1 non-text floor on every surface', () => {
     const border = token(darkBlock, '--color-border-interactive');
-    for (const [name, surface] of Object.entries({ bg, card, elevated, cardGradientTop })) {
+    for (const [name, surface] of Object.entries(surfaces)) {
       expectContrast(`border-interactive on ${name}`, border, surface, 3);
     }
   });
@@ -318,7 +328,6 @@ describe('Both themes declare a complete, symmetric token set', () => {
     '--color-destructive',
     '--color-destructive-foreground',
     '--color-border',
-    '--color-border-strong',
     '--color-border-interactive',
     '--color-ring',
     '--color-success',
@@ -359,6 +368,18 @@ describe('Both themes declare a complete, symmetric token set', () => {
     for (const block of [darkBlock, lightSharedBlock]) {
       expect(block).toMatch(/--surface-backdrop:\s*radial-gradient\(/);
       expect(block).toMatch(/--surface-card:\s*linear-gradient\(/);
+      expect(block).toMatch(/--surface-card-elevated:\s*linear-gradient\(/);
+    }
+  });
+
+  // Without its own gradient, `nm-card-elevated` resolves --surface-card and
+  // renders identically to `nm-card` — the elevation collapses into the shadow
+  // and --color-card-elevated becomes unreachable through that utility.
+  it('the elevated pane gradient is distinct from the card gradient', () => {
+    for (const block of [darkBlock, lightSharedBlock]) {
+      const card = /--surface-card:\s*([^;]+);/.exec(block)![1].trim();
+      const elevated = /--surface-card-elevated:\s*([^;]+);/.exec(block)![1].trim();
+      expect(elevated).not.toBe(card);
     }
   });
 
@@ -413,6 +434,7 @@ describe('Neumorphic @utility set', () => {
     'nm-button-destructive',
     'nm-icon-button',
     'nm-input',
+    'nm-card-hover',
   ] as const;
 
   const interactive = [
@@ -461,6 +483,22 @@ describe('Neumorphic @utility set', () => {
     }
   });
 
+  it('nm-card-elevated paints the elevated gradient, not the card one', () => {
+    const block = extractBlock(css, '@utility nm-card-elevated {');
+    expect(block).toMatch(/background:\s*var\(--surface-card-elevated/);
+  });
+
+  // The card surfaces are background IMAGES, so a `hover:bg-*` utility — which
+  // only sets background-color — is painted underneath and does nothing at all.
+  // nm-card-hover is the supported way to tint one; it composes an extra image
+  // layer on top. This guards the silent-no-op, not the styling choice.
+  it('nm-card-hover tints via background-image, not background-color', () => {
+    const block = extractBlock(css, '@utility nm-card-hover {');
+    expect(block).toMatch(/&:hover/);
+    expect(block).toMatch(/background-image:/);
+    expect(block).not.toMatch(/background-color:/);
+  });
+
   it('every interactive utility has a :focus-visible rule', () => {
     for (const name of [...interactive, 'nm-button-primary', 'nm-button-destructive']) {
       const block = extractBlock(css, `@utility ${name} {`);
@@ -488,9 +526,24 @@ describe('Neumorphic @utility set', () => {
 
 describe('Typography is the Space Grotesk / Inter / JetBrains Mono system', () => {
   it('display, sans and mono stacks are declared', () => {
-    expect(darkBlock).toMatch(/--font-display:\s*'Space Grotesk'/);
+    expect(darkBlock).toMatch(/--font-display:\s*'Space Grotesk Variable'/);
     expect(darkBlock).toMatch(/--font-sans:\s*'Inter Variable'/);
     expect(darkBlock).toMatch(/--font-mono:\s*'JetBrains Mono Variable'/);
+  });
+
+  // `font-synthesis: style` (see font-rendering.test.ts) forbids the browser
+  // from faking a weight it was not given. Tailwind's preflight resets headings
+  // to `font-weight: inherit`, so a bare <h1> asks for 400 and prose h1 for 800
+  // — with static cuts those silently snap to whichever weights were imported.
+  // Every face must therefore be variable.
+  it('imports only variable faces, so no weight can silently snap', () => {
+    const imports = [...css.matchAll(/@import\s+"(@fontsource[^"]+)"/g)].map((m) => m[1]);
+    expect(imports.length).toBeGreaterThan(0);
+    for (const spec of imports) {
+      expect(spec, `${spec} is a static cut — use the @fontsource-variable package`).toMatch(
+        /^@fontsource-variable\//,
+      );
+    }
   });
 
   it('headings resolve the display face, not the body face', () => {
@@ -502,5 +555,72 @@ describe('Typography is the Space Grotesk / Inter / JetBrains Mono system', () =
   it('the retired Newsreader / IBM Plex faces are no longer imported', () => {
     expect(css).not.toMatch(/newsreader/i);
     expect(css).not.toMatch(/ibm-plex-sans/i);
+  });
+});
+
+describe('No component tints a card surface with a background-color utility', () => {
+  /**
+   * The bug this guards: `nm-card` used to be a flat `background: var(--color-card)`,
+   * so a Tailwind `hover:bg-*` utility on the same element overrode it and the
+   * hover worked. The moment the card surface became a gradient — a background
+   * *image* — those utilities began painting underneath it and silently stopped
+   * doing anything. Nothing failed; the hover just quietly disappeared.
+   *
+   * Card-surfaced elements must use `nm-card-hover` (which composes its tint as
+   * an image layer) instead. This walks the real source rather than trusting a
+   * reviewer to spot the combination.
+   */
+  const CARD_UTILITIES = ['nm-card', 'nm-card-elevated', 'nm-card-interactive'];
+
+  function collectSourceFiles(dir: string, acc: string[] = []): string[] {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = resolve(dir, entry.name);
+      if (entry.isDirectory()) collectSourceFiles(full, acc);
+      else if (/\.tsx$/.test(entry.name) && !/\.test\.tsx$/.test(entry.name)) acc.push(full);
+    }
+    return acc;
+  }
+
+  it('no .tsx combines a card utility with hover:bg-* / group-hover:bg-*', () => {
+    const offenders: string[] = [];
+
+    for (const file of collectSourceFiles(__dirname)) {
+      const source = readFileSync(file, 'utf-8');
+      // Look at each className-ish string literal in isolation, so a card
+      // utility in one attribute and a hover tint in another do not false-positive.
+      for (const [literal] of source.matchAll(/(['"`])[^'"`\n]*\1/g)) {
+        const usesCard = CARD_UTILITIES.some((u) =>
+          new RegExp(`(^|[\\s'"\`])${u}([\\s'"\`]|$)`).test(literal),
+        );
+        if (usesCard && /(^|\s)(group-)?hover:bg-/.test(literal)) {
+          offenders.push(`${file.replace(__dirname, 'src')}: ${literal}`);
+        }
+      }
+    }
+
+    expect(
+      offenders,
+      `card-surfaced elements cannot be tinted with a background-color utility — ` +
+        `use nm-card-hover instead:\n${offenders.join('\n')}`,
+    ).toEqual([]);
+  });
+
+  // nm-card-hover restates the card gradient as its lower layer, so pairing it
+  // with a utility that repaints the surface puts the card gradient back over
+  // that surface on hover. They are alternatives per state, not layers — which
+  // is why CommentsSidebar picks between them with a ternary.
+  it('no class string applies nm-card-hover and nm-pill-active together', () => {
+    const offenders: string[] = [];
+
+    for (const file of collectSourceFiles(__dirname)) {
+      const source = readFileSync(file, 'utf-8');
+      for (const [literal] of source.matchAll(/(['"`])[^'"`\n]*\1/g)) {
+        if (literal.includes('nm-card-hover') && literal.includes('nm-pill-active')) {
+          offenders.push(`${file.replace(__dirname, 'src')}: ${literal}`);
+        }
+      }
+    }
+
+    expect(offenders, offenders.join('\n')).toEqual([]);
   });
 });

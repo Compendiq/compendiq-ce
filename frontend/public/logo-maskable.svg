@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
-  <!-- Compendiq maskable icon — C + amber magnifier handle, scaled to fit the
+  <!-- Compendiq maskable icon — C + steel magnifier handle, scaled to fit the
        PWA safe zone (inner 80% circle). Full-bleed dark fill so platform
        masking (Android adaptive icons) crops cleanly. -->
   <rect width="512" height="512" fill="#151b2c"/>

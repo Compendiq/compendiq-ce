@@ -9,8 +9,9 @@ interface LogoProps {
  * Two color regions:
  * - Wordmark "Compendiq" text + Q outline → `currentColor` (inherits from
  *   the host's text color so it stays readable in BOTH themes).
- * - The two magnifier strokes → hard-coded steel #6ea8ff. They are the brand
- *   AI signal and must not invert with theme.
+ * - The two magnifier strokes → hard-coded steel #6ea8ff. This is the brand
+ *   accent and must not invert with theme. (Steel here, not the AI violet:
+ *   the mark identifies the product, it does not label an AI affordance.)
  *
  * Retinted from the retired honey palette (tile #1a1a1a, glyph #fff8e9,
  * strokes #f9c74f) to the steel system: the tile now sits at --color-card so
@@ -20,8 +21,12 @@ interface LogoProps {
  * mirrored in public/compendiq-lockup-horizontal.svg and the favicons, which
  * render with no CSS custom properties available.
  *
- * Geometry copied verbatim from public/compendiq-lockup-horizontal.svg
- * (kept on disk for favicon / OG image / non-React consumers).
+ * Geometry copied verbatim from public/compendiq-lockup-horizontal.svg. That
+ * file has no runtime consumer — favicon.svg, logo.svg and logo-maskable.svg
+ * each carry their own copy of the icon block, and og:image points at
+ * favicon-512.png — but it is the only place the *wordmark* geometry exists
+ * outside this component, so it stays on disk as the design source of truth.
+ * Retint it whenever these literals change.
  */
 export function Logo({ className, title = 'Compendiq' }: LogoProps) {
   return (
