@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-07-28
+
+> Patch: unblocks Enterprise Edition builds. No CE-visible behaviour change.
+
+### Fixed
+
+- Migration `085_roles_description.sql` is now `ADD COLUMN IF NOT EXISTS`. The EE overlay merges its own migrations into this sequence and EE `063_named_permissions.sql` already adds `roles.description` idempotently; `063` sorts first, so in an EE build the bare `ADD COLUMN` aborted startup with Postgres `42701` and the backend never came up. CE-only installs were never affected, which is why this stayed latent through v0.6.3 and v0.7.0 (#1148).
+
+## [0.7.0] - 2026-07-28
+
+> Minor: new theme system, editor and security work. 42 commits since v0.6.3.
+>
+> **EE operators:** do not deploy this release under the Enterprise overlay — it contains the migration bug fixed in 0.7.1. Use 0.7.1 or later.
+
+### Added
+
+- **Slate Steel / Frost Steel palette** replaces the retired black-and-honey theme system (ADR-010 v0.5). Steel is the single brand and interaction accent, amber is reserved for warning/attention, violet marks AI. Both retired theme IDs (`graphite-honey`, `honey-linen`) migrate on read — in the store *and* in the pre-React FOUC script — so a light-theme user is not flashed dark on upgrade. New `--color-border-interactive` splits the operable-control edge from the quiet separator hairline, which is what actually satisfies WCAG 1.4.11 (the previous single border measured 1.60:1 dark / 1.28:1 light). Typography moves to Space Grotesk + Inter (#1145).
+- Insert Panel command for the four Confluence panel macros (#1137).
+- Per-service `mem_limit` is env-overridable in compose (#1097).
+- Global pointer-event bridge for environments that emit `click` without `pointerdown`, which broke Radix components (#1088).
+
+### Security
+
+- Detailed `/api/health` telemetry — `edition`, `version`, `commit`, `ceCommit`, `builtAt`, plus service and provider detail — is now returned only to an authenticated admin. Anonymous and non-admin callers get a coarse `{ status }` body so container health checks keep working. **Breaking for anything scraping the version pair unauthenticated** (#1092).
+- Post-setup self-registration is opt-in rather than on by default (#1091).
+- Production Compose isolation hardened and MCP sidecar auth made mandatory (#1095).
+- Access token is no longer persisted to storage (#1094); nginx edge security headers deduplicated (#1093).
+
+### Fixed
+
+- Editor: newly-inserted panel located by depth rather than document order (#1141); CORS preflight advertises the full method set (#1090); cross-tab login sync restored in the `BroadcastChannel`-less fallback (#1098); derived, fabricated and unreadable UI removed from the app surfaces (#1142).
+
+### Changed
+
+- Theme regression guard rewritten: `neumorphic-themes.test.ts` parses tokens out of `index.css` and **computes** WCAG ratios instead of pinning hex literals, so a bad retune fails with the measured ratio rather than merely "this changed".
+
+## [0.6.3] - 2026-07-13
+
+> Patch: the 2026-07-10 audit-fix sweep. 147 commits, landed one PR per finding.
+
+### Security
+
+- RBAC and access-control gaps closed across page create/move/pin, feedback reads, search suggestions, and the LLM quality/diagram streams (#890, #891, #892, #894, #895, #896).
+- Cross-user cache invalidation extended to create, draft publish and restore (#893); embedding provider errors sanitized before reaching users (#964); MCP-docs `fetch_url` pinned to vetted IPs against DNS-rebinding SSRF (#969); MCP-docs production image hardened (#966).
+
+### Fixed
+
+- Worker and job correctness: ownership-checked lock release (#902), sync/embedding lock TTL heartbeats for long runs (#906, #913), recovery of pages stranded in `analyzing`/`summarizing` after a crash (#909, #911), and no full-index wipe at the start of `reEmbedAll` (#917).
+- Sync and content: `_links.next` followed in pagination loops (#903), NULL-id rows excluded from deletion candidates (#905), embedded CDATA terminators split in code blocks (#900), atomic macros protected from AI-Improve flatten (#901), model preamble stripped from AI summaries (#912).
+- Accessibility: real focus trap, focus restore and combobox semantics for the command palette (#958), `aria-pressed` on editor toolbar toggles (#955), accessible names for icon-only buttons, filter/sort selects and pagination chevrons (#939, #946, #947), keyboard highlight on UserMenu items (#962).
+- Performance: editor no longer serializes the whole document on every keystroke (#954); duplicate scan collapsed to a single pass (#907); explicit-link full scan keyset-paginated (#908); fuzzy-title trgm predicate made sargable (#928).
+
 ## [0.6.2] - 2026-07-05
 
 > Patch release: a deep review-fix sweep (epic #832) across authorization, prompt-injection surfaces, and backend/frontend correctness, followed by a dead-code purge (~3,000 net lines removed).
