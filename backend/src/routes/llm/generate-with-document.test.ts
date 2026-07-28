@@ -111,7 +111,19 @@ vi.mock('../../domains/confluence/services/subpage-context.js', () => ({
 
 import { llmGenerateRoutes } from './llm-generate.js';
 
-describe('POST /api/llm/generate with pdfText', () => {
+/**
+ * `documentText` is format-blind by design (#1132). By the time a request
+ * reaches this route the extractor has already sniffed the bytes and decoded
+ * them to prose, so the route cannot — and must not — tell a PDF from an ODT.
+ *
+ * Per-format coverage therefore lives where the format is still observable:
+ * `extract-document.test.ts` (sniffing, mislabelled-file rejection, per-format
+ * audit) and the Generate-mode component tests (accept list, copy, preview
+ * card). What is worth asserting *here* is the other half of that claim — that
+ * all six formats' text really does take one identical path — which the
+ * parametrized case below does, rather than six copies of the same assertion.
+ */
+describe('POST /api/llm/generate with documentText', () => {
   let app: ReturnType<typeof Fastify>;
 
   beforeAll(async () => {
@@ -150,7 +162,7 @@ describe('POST /api/llm/generate with pdfText', () => {
     });
   });
 
-  it('should use generate_from_pdf system prompt when pdfText is provided', async () => {
+  it('should use generate_from_document system prompt when documentText is provided', async () => {
     async function* mockGenerator() {
       yield { content: '# Article\n\nGenerated content.', done: true };
     }
@@ -162,16 +174,16 @@ describe('POST /api/llm/generate with pdfText', () => {
       payload: {
         prompt: 'Create a runbook from this document',
         model: 'llama3',
-        pdfText: 'Extracted PDF text content here',
+        documentText: 'Extracted document text content here',
       },
     });
 
     expect(response.statusCode).toBe(200);
     expect(response.headers['content-type']).toBe('text/event-stream');
-    expect(mockGetSystemPrompt).toHaveBeenCalledWith('generate_from_pdf');
+    expect(mockGetSystemPrompt).toHaveBeenCalledWith('generate_from_document');
   });
 
-  it('should include PDF text in user message with proper formatting', async () => {
+  it('should include document text in user message with proper formatting', async () => {
     async function* mockGenerator() {
       yield { content: '# Result', done: true };
     }
@@ -183,7 +195,7 @@ describe('POST /api/llm/generate with pdfText', () => {
       payload: {
         prompt: 'Summarize this',
         model: 'llama3',
-        pdfText: 'PDF document content',
+        documentText: 'Extracted document prose',
       },
     });
 
@@ -193,12 +205,12 @@ describe('POST /api/llm/generate with pdfText', () => {
     const userMessage = messages.find((m: { role: string }) => m.role === 'user');
 
     expect(userMessage.content).toContain('## Source Document');
-    expect(userMessage.content).toContain('PDF document content');
+    expect(userMessage.content).toContain('Extracted document prose');
     expect(userMessage.content).toContain('## Instructions');
     expect(userMessage.content).toContain('Summarize this');
   });
 
-  it('should sanitize pdfText before sending to LLM', async () => {
+  it('should sanitize documentText before sending to LLM', async () => {
     async function* mockGenerator() {
       yield { content: 'Result', done: true };
     }
@@ -210,16 +222,16 @@ describe('POST /api/llm/generate with pdfText', () => {
       payload: {
         prompt: 'Create article',
         model: 'llama3',
-        pdfText: 'Some PDF text',
+        documentText: 'Some document text',
       },
     });
 
-    // sanitizeLlmInput should be called for both prompt and pdfText
+    // sanitizeLlmInput should be called for both prompt and documentText
     expect(mockSanitizeLlmInput).toHaveBeenCalledWith('Create article');
-    expect(mockSanitizeLlmInput).toHaveBeenCalledWith('Some PDF text');
+    expect(mockSanitizeLlmInput).toHaveBeenCalledWith('Some document text');
   });
 
-  it('should use template-specific prompt even with pdfText', async () => {
+  it('should use template-specific prompt even with documentText', async () => {
     async function* mockGenerator() {
       yield { content: '# Runbook', done: true };
     }
@@ -232,14 +244,14 @@ describe('POST /api/llm/generate with pdfText', () => {
         prompt: 'Create runbook',
         model: 'llama3',
         template: 'runbook',
-        pdfText: 'Some PDF text',
+        documentText: 'Some document text',
       },
     });
 
     expect(mockGetSystemPrompt).toHaveBeenCalledWith('generate_runbook');
   });
 
-  it('should use default generate prompt when no pdfText and no template', async () => {
+  it('should use default generate prompt when no documentText and no template', async () => {
     async function* mockGenerator() {
       yield { content: '# Article', done: true };
     }
@@ -293,14 +305,14 @@ describe('POST /api/llm/generate with pdfText', () => {
     );
   });
 
-  it('should log audit event when pdfText contains injection patterns', async () => {
+  it('should log audit event when documentText contains injection patterns', async () => {
     async function* mockGenerator() {
       yield { content: 'Result', done: true };
     }
     mockStreamChat.mockReturnValue(mockGenerator());
 
     mockSanitizeLlmInput.mockImplementation((input: string) => {
-      if (input === 'Malicious PDF content') {
+      if (input === 'Malicious document content') {
         return { sanitized: 'Cleaned content', warnings: ['Injection detected'] };
       }
       return { sanitized: input, warnings: [] };
@@ -314,7 +326,7 @@ describe('POST /api/llm/generate with pdfText', () => {
       payload: {
         prompt: 'Create article',
         model: 'llama3',
-        pdfText: 'Malicious PDF content',
+        documentText: 'Malicious document content',
       },
     });
 
@@ -323,7 +335,7 @@ describe('POST /api/llm/generate with pdfText', () => {
       'PROMPT_INJECTION_DETECTED',
       'llm',
       undefined,
-      expect.objectContaining({ field: 'pdfText' }),
+      expect.objectContaining({ field: 'documentText' }),
       expect.anything(),
     );
   });
@@ -417,18 +429,18 @@ describe('POST /api/llm/generate with pdfText', () => {
     );
   });
 
-  it('should truncate pdfText when it exceeds MAX_PDF_TEXT_FOR_LLM', async () => {
+  it('should truncate documentText when it exceeds MAX_DOCUMENT_TEXT_FOR_LLM', async () => {
     async function* mockGenerator() {
       yield { content: '# Result', done: true };
     }
     mockStreamChat.mockReturnValue(mockGenerator());
 
-    const longPdf = 'A'.repeat(90_000);
+    const longDocument = 'A'.repeat(90_000);
 
     await app.inject({
       method: 'POST',
       url: '/api/llm/generate',
-      payload: { prompt: 'Summarize this', model: 'llama3', pdfText: longPdf },
+      payload: { prompt: 'Summarize this', model: 'llama3', documentText: longDocument },
     });
 
     const callArgs = mockStreamChat.mock.calls[0];
@@ -436,6 +448,46 @@ describe('POST /api/llm/generate with pdfText', () => {
     const userMessage = messages.find((m: { role: string }) => m.role === 'user');
 
     expect(userMessage.content).toContain('[Document truncated');
-    expect(userMessage.content.length).toBeLessThan(longPdf.length);
+    expect(userMessage.content.length).toBeLessThan(longDocument.length);
   });
+
+  // One extraction per supported format, standing in for the text the extractor
+  // hands back. The point is that none of them takes a different branch: same
+  // system prompt, same `## Source Document` framing, same sanitizer call. A
+  // format-specific branch reappearing here would fail on whichever format it
+  // singled out.
+  const PER_FORMAT_TEXT = [
+    ['pdf', 'Page 1 of the quarterly report.'],
+    ['docx', '# Heading\n\nProse converted out of a Word document.'],
+    ['md', '## Notes\n\nAlready markdown when it arrived.'],
+    ['txt', 'Plain text, no markup at all.'],
+    ['rtf', 'Rich text with its control words stripped.'],
+    ['odt', 'OpenDocument prose from the zip container.'],
+  ] as const;
+
+  it.each(PER_FORMAT_TEXT)(
+    'treats %s-derived text exactly like every other format (#1132)',
+    async (_format, documentText) => {
+      async function* mockGenerator() {
+        yield { content: '# Article', done: true };
+      }
+      mockStreamChat.mockReturnValue(mockGenerator());
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/llm/generate',
+        payload: { prompt: 'Turn this into a runbook', model: 'llama3', documentText },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockGetSystemPrompt).toHaveBeenCalledWith('generate_from_document');
+      expect(mockSanitizeLlmInput).toHaveBeenCalledWith(documentText);
+
+      const messages = mockStreamChat.mock.calls[0][2];
+      const userMessage = messages.find((m: { role: string }) => m.role === 'user');
+      expect(userMessage.content).toBe(
+        `## Source Document\n${documentText}\n\n## Instructions\nTurn this into a runbook`,
+      );
+    },
+  );
 });

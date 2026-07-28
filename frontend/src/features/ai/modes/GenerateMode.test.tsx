@@ -4,7 +4,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { GenerateModeInput, GenerateSavePanel, GENERATE_EMPTY_TITLE, GENERATE_EMPTY_SUBTITLE } from './GenerateMode';
-import { AiProvider } from '../AiContext';
+import { AiProvider, useAiContext } from '../AiContext';
 import { useAuthStore } from '../../../stores/auth-store';
 
 Element.prototype.scrollIntoView = vi.fn();
@@ -20,11 +20,11 @@ vi.mock('../../../shared/lib/sse', () => ({
   streamSSE: (...args: unknown[]) => streamSSEMock(...args),
 }));
 
-const mockExtractPdf = vi.fn();
+const mockExtractDocument = vi.fn();
 const mockIsExtracting = { value: false };
 vi.mock('../../../shared/hooks/use-extract-document', () => ({
   useExtractDocument: () => ({
-    extractDocument: (...args: unknown[]) => mockExtractPdf(...args),
+    extractDocument: (...args: unknown[]) => mockExtractDocument(...args),
     isExtracting: mockIsExtracting.value,
     error: null,
   }),
@@ -76,6 +76,16 @@ function createWrapper(initialEntries = ['/ai?mode=generate']) {
       </QueryClientProvider>
     );
   };
+}
+
+/**
+ * Renders the thread the composer writes into. `GenerateModeInput` is only the
+ * input bar, so the user turn it appends is otherwise invisible to the DOM.
+ * Contributes no buttons, so `getSendButton()` is unaffected.
+ */
+function MessageProbe() {
+  const { messages } = useAiContext();
+  return <div data-testid="message-probe">{messages.map((m) => m.content).join(' | ')}</div>;
 }
 
 /** Get the Send button (the one inside the input bar, not the upload zone) */
@@ -132,11 +142,11 @@ describe('GenerateMode', () => {
   });
 
   describe('GenerateModeInput', () => {
-    it('renders the prompt input, send button, and PDF upload zone', () => {
+    it('renders the prompt input, send button, and document upload zone', () => {
       render(<GenerateModeInput />, { wrapper: createWrapper() });
 
       expect(screen.getByPlaceholderText('Describe the page to generate...')).toBeInTheDocument();
-      expect(screen.getByTestId('pdf-upload-zone')).toBeInTheDocument();
+      expect(screen.getByTestId('document-upload-zone')).toBeInTheDocument();
       expect(getSendButton()).toBeInTheDocument();
     });
 
@@ -319,132 +329,246 @@ describe('GenerateMode', () => {
     });
   });
 
-  describe('PDF Upload', () => {
-    it('renders the PDF upload zone', () => {
+  describe('Document upload (#1132)', () => {
+    // One row per supported format: the file the user picks, and the `format`
+    // the server reports after sniffing its bytes. Mislabelled files are the
+    // server's problem and are covered in `extract-document.test.ts`.
+    const FORMATS = [
+      { format: 'pdf', filename: 'report.pdf', mime: 'application/pdf', label: 'PDF' },
+      {
+        format: 'docx',
+        filename: 'spec.docx',
+        mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        label: 'DOCX',
+      },
+      { format: 'md', filename: 'notes.md', mime: 'text/markdown', label: 'MD' },
+      { format: 'txt', filename: 'raw.txt', mime: 'text/plain', label: 'TXT' },
+      { format: 'rtf', filename: 'memo.rtf', mime: 'application/rtf', label: 'RTF' },
+      { format: 'odt', filename: 'draft.odt', mime: 'application/vnd.oasis.opendocument.text', label: 'ODT' },
+    ] as const;
+
+    function upload({ filename, mime }: { filename: string; mime: string }) {
+      const fileInput = screen.getByTestId('document-file-input');
+      fireEvent.change(fileInput, {
+        target: { files: [new File(['dummy bytes'], filename, { type: mime })] },
+      });
+    }
+
+    it('renders the upload zone with format-neutral copy', () => {
       render(<GenerateModeInput />, { wrapper: createWrapper() });
-      expect(screen.getByTestId('pdf-upload-zone')).toBeInTheDocument();
-      expect(screen.getByText(/Drop a PDF here or click to browse/)).toBeInTheDocument();
+      expect(screen.getByTestId('document-upload-zone')).toBeInTheDocument();
+      expect(screen.getByText(/Drop a document here or click to browse/)).toBeInTheDocument();
     });
 
-    it('shows preview card after PDF extraction', async () => {
-      mockExtractPdf.mockResolvedValue({
+    it('offers all six formats in the accept attribute', () => {
+      render(<GenerateModeInput />, { wrapper: createWrapper() });
+
+      const accept = screen.getByTestId('document-file-input').getAttribute('accept') ?? '';
+      for (const ext of ['.pdf', '.docx', '.md', '.txt', '.rtf', '.odt']) {
+        expect(accept).toContain(ext);
+      }
+      // The MIME types ride along so both file-picker styles behave.
+      expect(accept).toContain('application/pdf');
+      expect(accept).toContain('application/vnd.oasis.opendocument.text');
+    });
+
+    it.each(FORMATS)('accepts a $format and previews it', async ({ format, filename, mime }) => {
+      mockExtractDocument.mockResolvedValue({
+        format,
+        text: `Extracted ${format} content for testing`,
+        fileSize: 1024 * 512,
+        preview: `Extracted ${format} content for testing`,
+        // PDF is the only paged format, so it is the only one the server sends
+        // a page count for.
+        ...(format === 'pdf' ? { totalPages: 5 } : {}),
+      });
+
+      render(<GenerateModeInput />, { wrapper: createWrapper() });
+      upload({ filename, mime });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('document-preview-card')).toBeInTheDocument();
+      });
+      expect(screen.getByText(filename)).toBeInTheDocument();
+      expect(screen.getByText('512.0 KB')).toBeInTheDocument();
+    });
+
+    it('shows a page count for a PDF', async () => {
+      mockExtractDocument.mockResolvedValue({
+        format: 'pdf',
         text: 'Extracted PDF content for testing',
         totalPages: 5,
-        fileSize: 1024 * 1024 * 2.4, // 2.4 MB
+        fileSize: 1024 * 1024 * 2.4,
         preview: 'Extracted PDF content for testing',
       });
 
       render(<GenerateModeInput />, { wrapper: createWrapper() });
+      upload({ filename: 'report.pdf', mime: 'application/pdf' });
 
-      // Simulate file selection via the hidden input
-      const fileInput = screen.getByTestId('pdf-file-input');
-      const pdfFile = new File(['%PDF-1.4 dummy content'], 'report.pdf', { type: 'application/pdf' });
-      fireEvent.change(fileInput, { target: { files: [pdfFile] } });
-
-      // Wait for the preview card to appear
       await waitFor(() => {
-        expect(screen.getByTestId('pdf-preview-card')).toBeInTheDocument();
+        expect(screen.getByTestId('document-preview-card')).toBeInTheDocument();
       });
-
-      expect(screen.getByText('report.pdf')).toBeInTheDocument();
       expect(screen.getByText('5 pages')).toBeInTheDocument();
+      expect(screen.getByText('2.4 MB')).toBeInTheDocument();
     });
 
-    it('exposes an accessible name on the PDF remove button (#939)', async () => {
-      mockExtractPdf.mockResolvedValue({
-        text: 'PDF text',
-        totalPages: 1,
+    // Acceptance criterion 4: `totalPages` is PDF-only. For the other five the
+    // server omits it entirely, and the card must name the format instead of
+    // claiming a page count it does not have. "0 pages" here would be a lie.
+    it.each(FORMATS.filter((f) => f.format !== 'pdf'))(
+      'names the format instead of rendering a page count for a $format',
+      async ({ format, filename, mime, label }) => {
+        mockExtractDocument.mockResolvedValue({
+          format,
+          text: `Extracted ${format} content`,
+          fileSize: 4096,
+          preview: `Extracted ${format} content`,
+        });
+
+        render(<GenerateModeInput />, { wrapper: createWrapper() });
+        upload({ filename, mime });
+
+        const card = await screen.findByTestId('document-preview-card');
+        expect(within(card).getByText(label)).toBeInTheDocument();
+        // No count of any size — "0 pages" being the one this criterion names.
+        expect(card).not.toHaveTextContent(/\d+\s+pages?\b/);
+      },
+    );
+
+    it('exposes a format-neutral accessible name on the remove button (#939)', async () => {
+      mockExtractDocument.mockResolvedValue({
+        format: 'odt',
+        text: 'Document text',
         fileSize: 1024,
-        preview: 'PDF text',
+        preview: 'Document text',
       });
 
       render(<GenerateModeInput />, { wrapper: createWrapper() });
-
-      const fileInput = screen.getByTestId('pdf-file-input');
-      const pdfFile = new File(['%PDF-1.4'], 'test.pdf', { type: 'application/pdf' });
-      fireEvent.change(fileInput, { target: { files: [pdfFile] } });
+      upload({ filename: 'draft.odt', mime: 'application/vnd.oasis.opendocument.text' });
 
       await waitFor(() => {
-        expect(screen.getByTestId('pdf-preview-card')).toBeInTheDocument();
+        expect(screen.getByTestId('document-preview-card')).toBeInTheDocument();
       });
 
-      expect(screen.getByRole('button', { name: 'Remove PDF' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Remove document' })).toBeInTheDocument();
     });
 
-    it('removes PDF when remove button is clicked', async () => {
-      mockExtractPdf.mockResolvedValue({
-        text: 'PDF text',
-        totalPages: 1,
+    it('removes the document when the remove button is clicked', async () => {
+      mockExtractDocument.mockResolvedValue({
+        format: 'md',
+        text: 'Document text',
         fileSize: 1024,
-        preview: 'PDF text',
+        preview: 'Document text',
       });
 
       render(<GenerateModeInput />, { wrapper: createWrapper() });
-
-      const fileInput = screen.getByTestId('pdf-file-input');
-      const pdfFile = new File(['%PDF-1.4'], 'test.pdf', { type: 'application/pdf' });
-      fireEvent.change(fileInput, { target: { files: [pdfFile] } });
+      upload({ filename: 'notes.md', mime: 'text/markdown' });
 
       await waitFor(() => {
-        expect(screen.getByTestId('pdf-preview-card')).toBeInTheDocument();
+        expect(screen.getByTestId('document-preview-card')).toBeInTheDocument();
       });
 
-      // Click remove
-      fireEvent.click(screen.getByTestId('pdf-remove-button'));
+      fireEvent.click(screen.getByTestId('document-remove-button'));
 
       // Preview should disappear, upload zone should return
-      expect(screen.queryByTestId('pdf-preview-card')).not.toBeInTheDocument();
-      expect(screen.getByTestId('pdf-upload-zone')).toBeInTheDocument();
+      expect(screen.queryByTestId('document-preview-card')).not.toBeInTheDocument();
+      expect(screen.getByTestId('document-upload-zone')).toBeInTheDocument();
     });
 
-    it('sends pdfText with generate request when PDF is uploaded', async () => {
-      mockExtractPdf.mockResolvedValue({
-        text: 'Extracted PDF text content',
-        totalPages: 3,
+    it.each(FORMATS)(
+      'sends documentText with the generate request for a $format',
+      async ({ format, filename, mime }) => {
+        mockExtractDocument.mockResolvedValue({
+          format,
+          text: `Extracted ${format} text content`,
+          fileSize: 5000,
+          preview: `Extracted ${format} text content`,
+          ...(format === 'pdf' ? { totalPages: 3 } : {}),
+        });
+
+        async function* fakeStream() {
+          yield { content: '# Generated Article\n\nContent based on the document.' };
+        }
+        streamSSEMock.mockReturnValue(fakeStream());
+
+        render(<GenerateModeInput />, { wrapper: createWrapper() });
+        upload({ filename, mime });
+
+        await waitFor(() => {
+          expect(screen.getByTestId('document-preview-card')).toBeInTheDocument();
+        });
+
+        const input = screen.getByPlaceholderText('Instructions for generating from this document...');
+        fireEvent.change(input, { target: { value: 'Create a runbook' } });
+
+        await waitFor(() => {
+          expect(getSendButton()).not.toBeDisabled();
+        });
+
+        fireEvent.click(getSendButton());
+
+        await waitFor(() => {
+          expect(streamSSEMock).toHaveBeenCalledWith(
+            '/llm/generate',
+            expect.objectContaining({
+              prompt: 'Create a runbook',
+              model: 'llama3',
+              documentText: `Extracted ${format} text content`,
+            }),
+            expect.any(Object),
+          );
+        });
+      },
+    );
+
+    it('names the attached file, not its format, in the user turn', async () => {
+      mockExtractDocument.mockResolvedValue({
+        format: 'docx',
+        text: 'Extracted docx text',
         fileSize: 5000,
-        preview: 'Extracted PDF text content',
+        preview: 'Extracted docx text',
       });
 
       async function* fakeStream() {
-        yield { content: '# Generated Article\n\nContent based on PDF.' };
+        yield { content: '# Generated Article' };
       }
       streamSSEMock.mockReturnValue(fakeStream());
 
-      render(<GenerateModeInput />, { wrapper: createWrapper() });
-
-      // Upload PDF
-      const fileInput = screen.getByTestId('pdf-file-input');
-      const pdfFile = new File(['%PDF-1.4'], 'doc.pdf', { type: 'application/pdf' });
-      fireEvent.change(fileInput, { target: { files: [pdfFile] } });
-
-      await waitFor(() => {
-        expect(screen.getByTestId('pdf-preview-card')).toBeInTheDocument();
+      // The composer does not render the thread, so read the turn it appended
+      // straight off the context rather than hunting for it in the DOM.
+      render(
+        <>
+          <GenerateModeInput />
+          <MessageProbe />
+        </>,
+        { wrapper: createWrapper() },
+      );
+      upload({
+        filename: 'spec.docx',
+        mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       });
 
-      // Enter instructions
-      const input = screen.getByPlaceholderText('Instructions for generating from PDF...');
-      fireEvent.change(input, { target: { value: 'Create a runbook' } });
+      await waitFor(() => {
+        expect(screen.getByTestId('document-preview-card')).toBeInTheDocument();
+      });
 
+      const input = screen.getByPlaceholderText('Instructions for generating from this document...');
+      fireEvent.change(input, { target: { value: 'Create a runbook' } });
       await waitFor(() => {
         expect(getSendButton()).not.toBeDisabled();
       });
-
       fireEvent.click(getSendButton());
 
+      // The old copy said "Generate from PDF (spec.docx)", which was wrong for
+      // five of six formats and redundant for the sixth.
       await waitFor(() => {
-        expect(streamSSEMock).toHaveBeenCalledWith(
-          '/llm/generate',
-          expect.objectContaining({
-            prompt: 'Create a runbook',
-            model: 'llama3',
-            pdfText: 'Extracted PDF text content',
-          }),
-          expect.any(Object),
+        expect(screen.getByTestId('message-probe')).toHaveTextContent(
+          'Generate from spec.docx: Create a runbook',
         );
       });
     });
 
-    it('works normally without PDF (existing behavior preserved)', async () => {
+    it('works normally without a document (existing behavior preserved)', async () => {
       async function* fakeStream() {
         yield { content: '# Article' };
       }
@@ -470,50 +594,46 @@ describe('GenerateMode', () => {
           }),
           expect.any(Object),
         );
-        // Should NOT include pdfText when no PDF uploaded
+        // Should NOT include documentText when nothing was uploaded
         const callArgs = streamSSEMock.mock.calls[0];
-        expect(callArgs[1].pdfText).toBeUndefined();
+        expect(callArgs[1].documentText).toBeUndefined();
       });
     });
 
-    it('shows error toast when PDF extraction fails', async () => {
-      mockExtractPdf.mockRejectedValue(new Error('File exceeds 20 MB limit'));
+    it('shows error toast when extraction fails', async () => {
+      mockExtractDocument.mockRejectedValue(new Error('File exceeds 20 MB limit'));
 
       render(<GenerateModeInput />, { wrapper: createWrapper() });
-
-      const fileInput = screen.getByTestId('pdf-file-input');
-      const pdfFile = new File(['%PDF-1.4'], 'huge.pdf', { type: 'application/pdf' });
-      fireEvent.change(fileInput, { target: { files: [pdfFile] } });
+      upload({ filename: 'huge.odt', mime: 'application/vnd.oasis.opendocument.text' });
 
       await waitFor(() => {
         expect(toastErrorMock).toHaveBeenCalledWith('File exceeds 20 MB limit');
       });
 
       // Upload zone should still be visible (no preview card)
-      expect(screen.queryByTestId('pdf-preview-card')).not.toBeInTheDocument();
-      expect(screen.getByTestId('pdf-upload-zone')).toBeInTheDocument();
+      expect(screen.queryByTestId('document-preview-card')).not.toBeInTheDocument();
+      expect(screen.getByTestId('document-upload-zone')).toBeInTheDocument();
     });
 
-    it('rejects non-PDF files client-side', async () => {
+    it('rejects an unsupported file type client-side and names all six', async () => {
       render(<GenerateModeInput />, { wrapper: createWrapper() });
-
-      const fileInput = screen.getByTestId('pdf-file-input');
-      const textFile = new File(['hello'], 'notes.txt', { type: 'text/plain' });
-      fireEvent.change(fileInput, { target: { files: [textFile] } });
+      upload({ filename: 'diagram.png', mime: 'image/png' });
 
       await waitFor(() => {
-        expect(toastErrorMock).toHaveBeenCalledWith('Only PDF files are accepted');
+        expect(toastErrorMock).toHaveBeenCalledWith(
+          'Only PDF, DOCX, MD, TXT, RTF and ODT files are accepted',
+        );
       });
 
-      expect(mockExtractPdf).not.toHaveBeenCalled();
+      expect(mockExtractDocument).not.toHaveBeenCalled();
     });
 
-    it('changes placeholder text when PDF is uploaded', async () => {
-      mockExtractPdf.mockResolvedValue({
-        text: 'PDF text',
-        totalPages: 1,
+    it('changes placeholder text when a document is uploaded', async () => {
+      mockExtractDocument.mockResolvedValue({
+        format: 'rtf',
+        text: 'Document text',
         fileSize: 1024,
-        preview: 'PDF text',
+        preview: 'Document text',
       });
 
       render(<GenerateModeInput />, { wrapper: createWrapper() });
@@ -521,16 +641,16 @@ describe('GenerateMode', () => {
       // Before upload: standard placeholder
       expect(screen.getByPlaceholderText('Describe the page to generate...')).toBeInTheDocument();
 
-      const fileInput = screen.getByTestId('pdf-file-input');
-      const pdfFile = new File(['%PDF-1.4'], 'doc.pdf', { type: 'application/pdf' });
-      fireEvent.change(fileInput, { target: { files: [pdfFile] } });
+      upload({ filename: 'memo.rtf', mime: 'application/rtf' });
 
       await waitFor(() => {
-        expect(screen.getByTestId('pdf-preview-card')).toBeInTheDocument();
+        expect(screen.getByTestId('document-preview-card')).toBeInTheDocument();
       });
 
-      // After upload: PDF-specific placeholder
-      expect(screen.getByPlaceholderText('Instructions for generating from PDF...')).toBeInTheDocument();
+      // After upload: instructions-for-this-document placeholder
+      expect(
+        screen.getByPlaceholderText('Instructions for generating from this document...'),
+      ).toBeInTheDocument();
     });
   });
 

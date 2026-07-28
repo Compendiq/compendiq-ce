@@ -166,7 +166,7 @@ All of these go through the same provider resolver and sanitization layer:
 |-------|---------|
 | `POST /api/llm/ask` | RAG Q&A (this diagram) |
 | `POST /api/llm/improve` | Improve an existing article; optional `referenceText` carries an attached document (#1131) |
-| `POST /api/llm/generate` | Generate a new article; optional `pdfText` carries an attached document |
+| `POST /api/llm/generate` | Generate a new article; optional `documentText` carries an attached document (`pdfText` until #1132) |
 | `POST /api/llm/summarize` | Summarize a page |
 | `POST /api/llm/generate-diagram` | Generate a Mermaid diagram from prose |
 | `POST /api/llm/extract-document` | Uploaded document → text extraction, sanitized (pdf · docx · odt · rtf · md · txt — see `11-content-pipeline.md`). The only path — the `POST /api/llm/extract-pdf` alias was retired with the #1131 UI PR |

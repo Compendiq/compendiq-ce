@@ -149,18 +149,28 @@ call's request:
 | Surface | Field | Cap | Merged into |
 |---------|-------|-----|-------------|
 | Docked assistant → Improve chip | `ImproveRequest.referenceText` (#1131) | 200K by schema, 80K to the model | the **user** turn, under an `## Attached reference document` heading |
-| `/ai` → Generate | `GenerateRequest.pdfText` | 200K by schema, 80K to the model | the **user** turn, under `## Source Document` |
+| `/ai` → Generate | `GenerateRequest.documentText` (#1132, `pdfText` before it) | 200K by schema, 80K to the model | the **user** turn, under `## Source Document` |
 
 Each is sanitized on its own and audited under its own field name. Neither goes
 near `ImproveRequest.instruction`: that field is capped at 10K and is appended
 to the *system* prompt, so a real document would overflow it and arrive
 carrying a directive's authority.
 
+Both fields are **format-blind**: extraction has already sniffed the bytes and
+decoded them to prose, so `/llm/generate` and `/llm/improve` cannot tell a PDF
+from an ODT and neither branches on format. Generate's document-source system
+prompt is `generate_from_document` (`generate_from_pdf` before #1132; safe to
+rename because it is absent from `CUSTOM_PROMPT_KEYS`, so no user override for
+it can exist).
+
 One frontend component serves both —
 `frontend/src/shared/components/upload/DocumentUploadZone.tsx` over
 `useExtractDocument()`. Its `formats` prop decides which formats a surface
-offers and derives every string it renders, which is how `/ai` Generate still
-says "Only PDF files are accepted" while the dock offers all six.
+offers and derives every string it renders. Both surfaces now take the default,
+all six, so both say "Only PDF, DOCX, MD, TXT, RTF and ODT files are accepted";
+pass a one-format list and the same component says "Only PDF files are
+accepted" instead. `totalPages` is PDF-only, so the preview card prints the
+format's name for the other five rather than a page count they do not have.
 
 ## Why store three forms?
 

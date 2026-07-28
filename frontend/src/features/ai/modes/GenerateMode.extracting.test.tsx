@@ -72,7 +72,7 @@ function createWrapper() {
   };
 }
 
-describe('GenerateMode PDF extraction busy state (#940)', () => {
+describe('GenerateMode document extraction busy state (#940, #1132)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     useAuthStore.getState().setAuth('test-token', { id: '1', username: 'testuser', role: 'user' });
@@ -98,11 +98,11 @@ describe('GenerateMode PDF extraction busy state (#940)', () => {
   it('shows the "Extracting text..." spinner and disables the upload zone while extraction is in progress', async () => {
     render(<GenerateModeInput />, { wrapper: createWrapper() });
 
-    const uploadZone = screen.getByTestId('pdf-upload-zone');
+    const uploadZone = screen.getByTestId('document-upload-zone');
     expect(uploadZone).not.toBeDisabled();
 
     // Kick off an extraction that stays pending.
-    const fileInput = screen.getByTestId('pdf-file-input');
+    const fileInput = screen.getByTestId('document-file-input');
     const pdfFile = new File(['%PDF-1.4 dummy content'], 'report.pdf', { type: 'application/pdf' });
     fireEvent.change(fileInput, { target: { files: [pdfFile] } });
 
@@ -112,7 +112,7 @@ describe('GenerateMode PDF extraction busy state (#940)', () => {
     await waitFor(() => {
       expect(screen.getByText('Extracting text...')).toBeInTheDocument();
     });
-    expect(screen.getByTestId('pdf-upload-zone')).toBeDisabled();
+    expect(screen.getByTestId('document-upload-zone')).toBeDisabled();
   });
 
   it('disables the Generate (send) button while extraction is in progress', async () => {
@@ -121,18 +121,22 @@ describe('GenerateMode PDF extraction busy state (#940)', () => {
     // Type a prompt and wait until the send button is enabled (model loaded),
     // so the later assertion can only fail on the extraction state.
     const promptInput = screen.getByPlaceholderText('Describe the page to generate...');
-    fireEvent.change(promptInput, { target: { value: 'Summarize the attached PDF' } });
+    fireEvent.change(promptInput, { target: { value: 'Summarize the attached document' } });
     const sendButton = screen.getByRole('button', { name: 'Send message' });
     await waitFor(() => {
       expect(sendButton).not.toBeDisabled();
     });
 
-    // Kick off an extraction that stays pending.
-    const fileInput = screen.getByTestId('pdf-file-input');
-    const pdfFile = new File(['%PDF-1.4 dummy content'], 'report.pdf', { type: 'application/pdf' });
-    fireEvent.change(fileInput, { target: { files: [pdfFile] } });
+    // Kick off an extraction that stays pending. A DOCX rather than a PDF, so
+    // the busy gate is shown to be about extraction, not about one format
+    // (#1132).
+    const fileInput = screen.getByTestId('document-file-input');
+    const docxFile = new File(['PK\x03\x04 dummy content'], 'report.docx', {
+      type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    });
+    fireEvent.change(fileInput, { target: { files: [docxFile] } });
 
-    // Clicking Generate mid-extraction would send the prompt without pdfText,
+    // Clicking Generate mid-extraction would send the prompt without documentText,
     // so the button must be disabled until extraction settles (#940).
     await waitFor(() => {
       expect(sendButton).toBeDisabled();

@@ -122,7 +122,7 @@ import { sanitizeLlmInput } from '../../core/utils/sanitize-llm-input.js';
  * reference material is *content*, not an instruction. `instruction` is capped
  * at 10K and appended to the system prompt, where a full document would both
  * overflow the cap and speak with a directive's authority. `referenceText`
- * takes the 200K `pdfText` ceiling, is sanitized on its own, is truncated for
+ * takes the 200K `documentText` ceiling, is sanitized on its own, is truncated for
  * the context window, and lands in the user turn.
  */
 

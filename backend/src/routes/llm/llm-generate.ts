@@ -17,7 +17,7 @@ import {
   buildOutputPostProcessor,
   LLM_STREAM_RATE_LIMIT,
   MAX_INPUT_LENGTH,
-  MAX_PDF_TEXT_FOR_LLM,
+  MAX_DOCUMENT_TEXT_FOR_LLM,
 } from './_helpers.js';
 import { requireGlobalPermission } from '../../core/utils/rbac-guards.js';
 import { acquireStreamSlot } from '../../core/services/sse-stream-limiter.js';
@@ -41,7 +41,7 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
     try {
     const auditStart = Date.now();
     const body = GenerateRequestSchema.parse(request.body);
-    const { prompt, model, template, pdfText } = body;
+    const { prompt, model, template, documentText } = body;
     const userId = request.userId;
 
     if (prompt.length > MAX_INPUT_LENGTH) {
@@ -56,33 +56,36 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
       await logAuditEvent(userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/generate' }, request);
     }
 
-    // When PDF text is provided, sanitize it and use the generate_from_pdf prompt
+    // When document text is provided, sanitize it and use the
+    // generate_from_document prompt. Nothing below branches on the source
+    // format: the extractor has already turned all six into plain prose (#1132).
     let userContent = sanitized;
     let systemPrompt: string;
 
-    if (pdfText) {
-      const { sanitized: sanitizedPdf, warnings: pdfWarnings } = sanitizeLlmInput(pdfText);
-      promptInjectionDetected = promptInjectionDetected || pdfWarnings.length > 0;
-      wasSanitized = wasSanitized || sanitizedPdf !== pdfText;
-      if (pdfWarnings.length > 0) {
+    if (documentText) {
+      const { sanitized: sanitizedDocument, warnings: documentWarnings } = sanitizeLlmInput(documentText);
+      promptInjectionDetected = promptInjectionDetected || documentWarnings.length > 0;
+      wasSanitized = wasSanitized || sanitizedDocument !== documentText;
+      if (documentWarnings.length > 0) {
         await logAuditEvent(userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, {
-          warnings: pdfWarnings, route: '/llm/generate', field: 'pdfText',
+          warnings: documentWarnings, route: '/llm/generate', field: 'documentText',
         }, request);
       }
 
       // Truncate to fit within model context windows
-      let pdfForLlm = sanitizedPdf;
-      if (sanitizedPdf.length > MAX_PDF_TEXT_FOR_LLM) {
-        pdfForLlm = sanitizedPdf.slice(0, MAX_PDF_TEXT_FOR_LLM) +
+      let documentForLlm = sanitizedDocument;
+      if (sanitizedDocument.length > MAX_DOCUMENT_TEXT_FOR_LLM) {
+        documentForLlm = sanitizedDocument.slice(0, MAX_DOCUMENT_TEXT_FOR_LLM) +
           '\n\n[Document truncated — only the first ~80,000 characters were included due to context window limits.]';
-        logger.info({ original: sanitizedPdf.length, truncated: MAX_PDF_TEXT_FOR_LLM }, 'PDF text truncated for LLM context window');
+        logger.info({ original: sanitizedDocument.length, truncated: MAX_DOCUMENT_TEXT_FOR_LLM }, 'Document text truncated for LLM context window');
       }
 
-      // Use template-specific prompt or generate_from_pdf (via resolveSystemPrompt for guardrails)
-      const promptKey = template ? `generate_${template}` : 'generate_from_pdf';
+      // Use template-specific prompt or generate_from_document (via
+      // resolveSystemPrompt for guardrails)
+      const promptKey = template ? `generate_${template}` : 'generate_from_document';
       systemPrompt = await resolveSystemPrompt(userId, promptKey as SystemPromptKey);
 
-      userContent = `## Source Document\n${pdfForLlm}\n\n## Instructions\n${sanitized}`;
+      userContent = `## Source Document\n${documentForLlm}\n\n## Instructions\n${sanitized}`;
     } else {
       const promptKey = template ? `generate_${template}` : 'generate';
       systemPrompt = await resolveSystemPrompt(userId, promptKey as SystemPromptKey);
@@ -105,7 +108,7 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
         }, request);
         // Roll web-search detections into the per-call attestation flags so
         // llm_audit_log (Report 5) stays consistent with audit_log — same
-        // idiom as the pdfText accumulator above. Detections always imply
+        // idiom as the documentText accumulator above. Detections always imply
         // [FILTERED] rewrites, so `sanitized` flips too.
         promptInjectionDetected = true;
         wasSanitized = true;

@@ -30,13 +30,10 @@ export const MAX_INPUT_LENGTH = 100_000;
 /**
  * Ceiling on any single uploaded-document body folded into a prompt (~20K
  * tokens, safe for most model context windows). Applies to Generate's
- * `pdfText` and Improve's `referenceText` alike — both are "a document the user
- * attached", and neither may crowd out the page being worked on.
+ * `documentText` and Improve's `referenceText` alike — both are "a document the
+ * user attached", and neither may crowd out the page being worked on.
  */
 export const MAX_DOCUMENT_TEXT_FOR_LLM = 80_000;
-
-/** @deprecated PDF-era name for {@link MAX_DOCUMENT_TEXT_FOR_LLM}. */
-export const MAX_PDF_TEXT_FOR_LLM = MAX_DOCUMENT_TEXT_FOR_LLM;
 
 /**
  * Assemble page context for LLM consumption, optionally including sub-pages.

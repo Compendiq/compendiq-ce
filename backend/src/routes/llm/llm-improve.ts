@@ -85,7 +85,7 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
     }
 
     // Attached reference document (#1131). Handled exactly like
-    // llm-generate.ts's `pdfText` and deliberately NOT like `instruction`:
+    // llm-generate.ts's `documentText` and deliberately NOT like `instruction`:
     // sanitized on its own, truncated to the shared document ceiling, and
     // merged into the *user* turn below. A document the user dropped in is
     // material to work from, not a directive with system-prompt authority.
