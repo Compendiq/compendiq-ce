@@ -124,6 +124,10 @@ sequenceDiagram
   The 24h margin provably covers the full real-world offset range (−12h…+14h);
   over-fetching is a no-op because the `version` idempotency guard above skips
   any re-fetched page whose stored version is already current.
+- **Relocate exclusion (#1123)** — `POST /api/pages/:id/relocate` refuses with
+  `409` while `sync:worker:lock` is held. It mutates `source` / `confluence_id`,
+  which the upsert and deletion reconciliation both key off; see
+  [Page relocate across the boundary](#page-relocate-across-the-boundary-1123).
 - **Circuit breaker** — `core/services/circuit-breaker.ts` protects against
   runaway failure against a broken Confluence instance.
 - **Per-page failure isolation (#822)** — the per-page loop in `syncSpace`
@@ -269,6 +273,98 @@ The `edited_at` column holds the real Confluence edit timestamp; the existing
 shows `edited_at` directly when present, and falls back to "Synced <syncedAt>"
 to make clear the displayed time is a sync time, not the author's edit time (#724).
 
+## Page relocate across the boundary (#1123)
+
+`POST /api/pages/:id/relocate` moves a single article between a local space and
+Confluence. It is **not** the same as `PUT /api/pages/:id/move`, which only
+re-parents inside the local tree and never contacts Confluence.
+
+Relocate is the only code path that mutates `pages.source` after insert. It
+flips the **same row** — `page_embeddings`, `page_versions` and
+`llm_improvements` are already on a universal integer `page_id` FK (migration
+030), so a move must never be implemented as delete-and-recreate.
+
+### Ordering — why each direction commits when it does
+
+The hazard in both directions is `detectDeletedPages`, whose candidate query is
+`WHERE space_key = $1 AND deleted_at IS NULL AND confluence_id IS NOT NULL`. A
+row whose `confluence_id` points at a page that is not live gets **soft-deleted
+by the next sync** — i.e. the user's article disappears.
+
+- **local → Confluence: create upstream first, commit `confluence_id` last.**
+  In the window between the two, the row still has `confluence_id IS NULL`, so
+  reconciliation cannot see it at all. Committing an id the upstream create
+  never produced is structurally impossible. If anything after the create fails
+  — attachment upload, the transaction, an identifier collision — the
+  just-created Confluence page is deleted again and **nothing local changed**.
+- **Confluence → local: commit the local flip first, delete upstream after.**
+  Once `confluence_id` is `NULL` the article is permanently outside
+  reconciliation's reach. The inverse order would leave a window in which a
+  committed row points at a trashed page, which reconciliation resolves by
+  soft-deleting the article. If the upstream `DELETE` then fails, the outcome
+  is confirmed with `getPage()` using the exact test reconciliation applies
+  (404, or `status: 'trashed'` — DC trashes rather than purges). Only when the
+  page is provably still **live** does a compensating transaction restore the
+  pre-move state, so neither side changed.
+
+Deleting the Confluence page is deliberate (product decision on #1123): a
+detach-only move would leave the page live upstream and the next `syncSpace`
+would re-import it as a second, duplicate `source='confluence'` row.
+
+### `parent_id` rewrite
+
+`parent_id` is a `TEXT` column whose meaning depends on the parent's `source`:
+a child of a Confluence page stores the parent's `confluence_id`, a child of a
+standalone page stores the parent's integer `id` as text. The tree CTE resolves
+both arms with `p.parent_id = COALESCE(t.confluence_id, t.id::text)`.
+
+A relocate changes which value is authoritative for the moved page, so **every
+direct child's `parent_id` is rewritten in the same transaction**. Without it
+the children silently detach — the dual-arm readers stop resolving them, and
+the several single-arm readers drop them without an error. Edges *inside* the
+subtree are between rows whose identity did not change and are left alone.
+Children keep their own `source`, space and path; only the link is rewritten.
+
+Because Confluence DC page ids are numeric strings, the new key can collide
+with some other page's numeric `id` (or vice versa). The move refuses with
+`409` rather than re-pointing a different page's children.
+
+### Concurrency
+
+- Relocate takes `PAGE_MOVE_ADVISORY_LOCK_ID` (`core/db/advisory-locks.ts`),
+  the **same** transaction-scoped advisory lock as `PUT /pages/:id/move`, plus
+  `SELECT … FOR UPDATE` on the row. The two must serialize: `/move` writes a
+  `parent_id` in the flavour the parent has *now*, and relocate changes exactly
+  that flavour.
+- **Relocate is blocked by an in-flight sync; sync is never blocked by
+  relocate.** The route refuses with `409` while `sync:worker:lock` is held
+  (`isSyncRunning()`). The sync upsert and deletion reconciliation both key off
+  `confluence_id` and run on unlocked pooled connections, so there is no lock a
+  route could join; refusing for the duration of a run is cheap, whereas making
+  the whole sync pipeline lockable is not.
+
+  This is a **best-effort guard, not mutual exclusion.** The probe runs once at
+  the start of the request, so a sync that begins mid-relocate is not excluded,
+  and it fails **open** when Redis is unavailable (the sync worker itself
+  proceeds unlocked in that case, so refusing every relocate would be strictly
+  worse). What actually protects the data is the commit ordering above: the
+  worst outcome of a lost race is one junk row — a Confluence page re-imported
+  as a second row — which is recoverable and self-healing, never a lost article.
+
+### Gates
+
+Three, all of which must pass: the dedicated global permission `pages:relocate`
+(seeded by migration 086 onto `editor` and `space_admin` — CE has no admin UI
+for granting permissions, so the seed is the only path), the same per-space
+write check `POST /api/pages` applies on the Confluence side of the move, and
+`userCanAccessPage` for the page itself. The permission is an *additional*
+gate, never a bypass of space authorization.
+
+The destructive confirmations are verified server-side against live state, not
+taken on trust: a move to Confluence must echo the exact `page_versions` count
+it is discarding, and a move to local must name the `confluence_id` and
+`space_key` being deleted upstream. Both mismatch with `409`.
+
 ## Space unsync / removal (#721)
 
 An admin can permanently remove a synced Confluence space from the local store via
@@ -397,5 +493,8 @@ LLM. See [`11-content-pipeline.md`](./11-content-pipeline.md).
 - `backend/src/domains/llm/services/embedding-service.ts`
 - `backend/src/routes/confluence/sync.ts`
 - `backend/src/routes/confluence/spaces.ts` — `DELETE /api/spaces/:key` (unsync)
+- `backend/src/routes/knowledge/pages-relocate.ts` — `POST /api/pages/:id/relocate` + preview
+- `backend/src/domains/knowledge/services/page-relocate-service.ts` — the move transaction and ordering
+- `backend/src/core/db/advisory-locks.ts` — `PAGE_MOVE_ADVISORY_LOCK_ID`, shared with `PUT /pages/:id/move`
 - `backend/src/core/services/rbac-service.ts` — `getSelectedSyncSpaces` (explicit editor assignments)
 - `frontend/src/features/settings/SpacesTab.tsx` — Remove action + empty-save guard

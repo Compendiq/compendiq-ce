@@ -89,6 +89,9 @@ export type AuditAction =
   | 'LOCAL_SPACE_UPDATED'
   | 'LOCAL_SPACE_DELETED'
   | 'PAGE_MOVED'
+  // #1123: distinct from PAGE_MOVED (tree re-parent) — this one crosses the
+  // Confluence boundary and creates or deletes a page upstream.
+  | 'PAGE_RELOCATED'
   | 'PAGE_REORDERED'
   | 'QUALITY_RUN_NOW'
   | 'SUMMARY_RUN_NOW'

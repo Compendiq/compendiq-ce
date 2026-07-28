@@ -44,6 +44,7 @@ import { llmEmbeddingProbeRoutes } from './routes/llm/llm-embedding-probe.js';
 import { extractDocumentRoutes } from './routes/llm/extract-document.js';
 // Knowledge routes
 import { pagesCrudRoutes } from './routes/knowledge/pages-crud.js';
+import { pagesRelocateRoutes } from './routes/knowledge/pages-relocate.js';
 import { pagesPresenceRoutes } from './routes/knowledge/pages-presence.js';
 import { pagesBulkProgressRoutes } from './routes/knowledge/pages-bulk-progress.js';
 import { pagesVersionRoutes } from './routes/knowledge/pages-versions.js';
@@ -469,6 +470,7 @@ export async function buildApp() {
 
   // Knowledge routes
   await app.register(pagesCrudRoutes, { prefix: '/api' });
+  await app.register(pagesRelocateRoutes, { prefix: '/api' });
   await app.register(pagesPresenceRoutes, { prefix: '/api' });
   await app.register(pagesBulkProgressRoutes, { prefix: '/api' });
   await app.register(pagesVersionRoutes, { prefix: '/api' });
