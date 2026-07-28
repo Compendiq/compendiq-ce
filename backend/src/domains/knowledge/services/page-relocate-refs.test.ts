@@ -9,11 +9,16 @@
  */
 import { describe, it, expect } from 'vitest';
 import { rewriteAttachmentRefs, parentKeyFor } from './page-relocate-service.js';
-import { htmlToConfluence } from '../../../core/services/content-converter.js';
+import { htmlToConfluence, confluenceToHtml } from '../../../core/services/content-converter.js';
+
+/** Storage for an image borrowed from another page — ordinary Confluence markup. */
+const CROSS_PAGE_STORAGE =
+  '<p><ac:image><ri:attachment ri:filename="chart.png">' +
+  '<ri:page ri:content-title="Other Page" ri:space-key="OTHER" /></ri:attachment></ac:image></p>';
 
 describe('rewriteAttachmentRefs (#1123)', () => {
   it('re-keys images from the Confluence cache', () => {
-    const { html, filenames } = rewriteAttachmentRefs(
+    const { html, refs } = rewriteAttachmentRefs(
       '<p><img src="/api/attachments/42/chart.png" /></p>',
       ['/api/attachments/42/'],
       '/api/attachments/900001/',
@@ -22,7 +27,78 @@ describe('rewriteAttachmentRefs (#1123)', () => {
 
     expect(html).toContain('src="/api/attachments/900001/chart.png"');
     expect(html).not.toContain('/api/attachments/42/');
-    expect(filenames).toEqual(['chart.png']);
+    expect(refs).toEqual([{ local: 'chart.png', target: 'chart.png' }]);
+  });
+
+  // ── Review finding B1: cross-page references ──────────────────────────────
+  //
+  // `getLocalFilenameForImageSource` mints a synthetic `stem.xref-<hash>.ext`
+  // whenever an `ri:attachment` names an owner page, so the cache key and the
+  // real attachment name diverge. Every other test here uses names where the
+  // two coincide — which is exactly why the clobber was invisible.
+
+  it('preserves the true attachment filename when the URL carries a synthetic xref name', () => {
+    const html = confluenceToHtml(CROSS_PAGE_STORAGE, '700005', 'CONF');
+    // Precondition: the two names really do differ for this input.
+    expect(html).toContain('/api/attachments/700005/chart.xref-7726434ef328.png');
+    expect(html).toContain('data-confluence-filename="chart.png"');
+
+    const { html: moved, refs } = rewriteAttachmentRefs(
+      html,
+      ['/api/attachments/700005/'],
+      '/api/attachments/900001/',
+      true,
+    );
+
+    // Bytes are cached under the synthetic name but must be PUBLISHED under the
+    // real one, and the new URL must follow the published name.
+    expect(refs).toEqual([{ local: 'chart.xref-7726434ef328.png', target: 'chart.png' }]);
+    expect(moved).toContain('data-confluence-filename="chart.png"');
+    expect(moved).toContain('src="/api/attachments/900001/chart.png"');
+  });
+
+  it('strips the owner-page markers so the reference resolves against the new page', () => {
+    const html = confluenceToHtml(CROSS_PAGE_STORAGE, '700005', 'CONF');
+
+    const { html: moved } = rewriteAttachmentRefs(
+      html,
+      ['/api/attachments/700005/'],
+      '/api/attachments/900001/',
+      true,
+    );
+
+    expect(moved).not.toContain('data-confluence-owner-page-title');
+    expect(moved).not.toContain('data-confluence-owner-space-key');
+
+    // The regenerated storage must name the real file and must NOT steer the
+    // reference at the page the image was borrowed from — relocate uploaded the
+    // bytes to the new page, not to "Other Page".
+    const republished = htmlToConfluence(moved);
+    expect(republished).toContain('ri:filename="chart.png"');
+    expect(republished).not.toContain('xref-');
+    expect(republished).not.toContain('ri:page');
+    expect(republished).not.toContain('Other Page');
+  });
+
+  it('survives the full Confluence → local → Confluence round trip', () => {
+    // The guaranteed path, and the state this feature itself creates.
+    const html = confluenceToHtml(CROSS_PAGE_STORAGE, '700005', 'CONF');
+
+    const { html: local } = rewriteAttachmentRefs(
+      html, ['/api/attachments/700005/'], '/api/local-attachments/42/', false,
+    );
+    // Going local re-keys the directory only — the filename is untouched.
+    expect(local).toContain('src="/api/local-attachments/42/chart.xref-7726434ef328.png"');
+    expect(local).toContain('data-confluence-filename="chart.png"');
+
+    const { html: back, refs } = rewriteAttachmentRefs(
+      local, ['/api/local-attachments/42/'], '/api/attachments/900001/', true,
+    );
+
+    expect(refs).toEqual([{ local: 'chart.xref-7726434ef328.png', target: 'chart.png' }]);
+    const republished = htmlToConfluence(back);
+    expect(republished).toContain('ri:filename="chart.png"');
+    expect(republished).not.toContain('xref-');
   });
 
   it('re-keys images from the local store, which the two stores otherwise strand', () => {
@@ -41,14 +117,14 @@ describe('rewriteAttachmentRefs (#1123)', () => {
   });
 
   it('produces ri:attachment references for images from both stores at once', () => {
-    const { html, filenames } = rewriteAttachmentRefs(
+    const { html, refs } = rewriteAttachmentRefs(
       '<p><img src="/api/attachments/42/a.png" /><img src="/api/local-attachments/42/b.png" /></p>',
       ['/api/attachments/42/', '/api/local-attachments/42/'],
       '/api/attachments/900001/',
       true,
     );
 
-    expect(filenames.sort()).toEqual(['a.png', 'b.png']);
+    expect(refs.map((r) => r.target).sort()).toEqual(['a.png', 'b.png']);
     const storage = htmlToConfluence(html);
     expect(storage).toContain('ri:filename="a.png"');
     expect(storage).toContain('ri:filename="b.png"');
@@ -72,14 +148,14 @@ describe('rewriteAttachmentRefs (#1123)', () => {
   });
 
   it('round-trips URL-encoded filenames', () => {
-    const { html, filenames } = rewriteAttachmentRefs(
+    const { html, refs } = rewriteAttachmentRefs(
       '<p><img src="/api/attachments/42/my%20diagram%20(v2).png" /></p>',
       ['/api/attachments/42/'],
       '/api/local-attachments/42/',
       false,
     );
 
-    expect(filenames).toEqual(['my diagram (v2).png']);
+    expect(refs).toEqual([{ local: 'my diagram (v2).png', target: 'my diagram (v2).png' }]);
     expect(html).toContain('/api/local-attachments/42/my%20diagram%20(v2).png');
   });
 
@@ -97,7 +173,7 @@ describe('rewriteAttachmentRefs (#1123)', () => {
   it('leaves an unrelated page\'s attachments alone', () => {
     const input = '<p><img src="/api/attachments/99/other.png" /></p>';
 
-    const { html, filenames } = rewriteAttachmentRefs(
+    const { html, refs } = rewriteAttachmentRefs(
       input,
       ['/api/attachments/42/'],
       '/api/attachments/900001/',
@@ -105,7 +181,7 @@ describe('rewriteAttachmentRefs (#1123)', () => {
     );
 
     expect(html).toBe(input);
-    expect(filenames).toEqual([]);
+    expect(refs).toEqual([]);
   });
 
   it('ignores nested paths that would escape the attachment key', () => {
@@ -124,11 +200,11 @@ describe('rewriteAttachmentRefs (#1123)', () => {
   it('is a no-op on empty or reference-free HTML', () => {
     expect(rewriteAttachmentRefs('', ['/api/attachments/42/'], '/x/', true)).toEqual({
       html: '',
-      filenames: [],
+      refs: [],
     });
     expect(rewriteAttachmentRefs('<p>text</p>', ['/api/attachments/42/'], '/x/', true)).toEqual({
       html: '<p>text</p>',
-      filenames: [],
+      refs: [],
     });
   });
 });

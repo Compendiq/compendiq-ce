@@ -341,10 +341,15 @@ with some other page's numeric `id` (or vice versa). The move refuses with
   (`isSyncRunning()`). The sync upsert and deletion reconciliation both key off
   `confluence_id` and run on unlocked pooled connections, so there is no lock a
   route could join; refusing for the duration of a run is cheap, whereas making
-  the whole sync pipeline lockable is not. The probe fails **open** when Redis
-  is unavailable — the sync worker itself proceeds without the lock in that
-  case, so blocking every relocate would be strictly worse than relying on the
-  ordering guarantees above.
+  the whole sync pipeline lockable is not.
+
+  This is a **best-effort guard, not mutual exclusion.** The probe runs once at
+  the start of the request, so a sync that begins mid-relocate is not excluded,
+  and it fails **open** when Redis is unavailable (the sync worker itself
+  proceeds unlocked in that case, so refusing every relocate would be strictly
+  worse). What actually protects the data is the commit ordering above: the
+  worst outcome of a lost race is one junk row — a Confluence page re-imported
+  as a second row — which is recoverable and self-healing, never a lost article.
 
 ### Gates
 

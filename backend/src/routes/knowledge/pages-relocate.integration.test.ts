@@ -854,5 +854,214 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
       expect(accessChange.loses).toContainEqual({ kind: 'user', label: 'reader_carol' });
       expect(accessChange.gains).toEqual([]);
     });
+
+    // ── Review finding B2 ───────────────────────────────────────────────────
+    it('403s a preview for a space the caller cannot access, rather than listing its members', async () => {
+      await createSpace('SECRET', 'confluence');
+      const insider = await createUser('secret_insider', 'user');
+      await grantRole(insider, 'SECRET', 'secret_reader', ['read']);
+
+      const id = await createPage({ title: 'Mine', source: 'standalone', spaceKey: 'LOCAL', ownerId: userId });
+      // A user with an assignment on CONF only — the page itself is theirs.
+      userId = await createUser('nosy', 'user');
+      userRole = 'user';
+      await grantRole(userId, 'CONF', 'relocator', ['read', 'pages:relocate']);
+
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/pages/${id}/relocate/preview?spaceKey=SECRET`,
+      });
+
+      // Without the gate this returned 200 with `secret_insider` in `gains`,
+      // making the preview a membership-roster oracle for every space.
+      expect(res.statusCode).toBe(403);
+      expect(res.payload).not.toContain('secret_insider');
+      void insider;
+    });
+
+    // ── Review finding R6 ───────────────────────────────────────────────────
+    it('states that the children detach from the origin tree, not just how many there are', async () => {
+      const id = await createPage({ title: 'Parent', source: 'standalone', spaceKey: 'LOCAL', ownerId: userId });
+      await createPage({
+        title: 'Kid', source: 'standalone', spaceKey: 'LOCAL', parentRef: String(id), ownerId: userId,
+      });
+
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/pages/${id}/relocate/preview?spaceKey=CONF`,
+      });
+
+      expect(res.json().subtreeEffect).toEqual({
+        childrenRemainInSpaceKey: 'LOCAL',
+        pageMovesToSpaceKey: 'CONF',
+        childrenDetachFromOriginTree: true,
+      });
+    });
+
+    it('reports no subtree effect for a childless page', async () => {
+      const id = await createPage({ title: 'Lonely', source: 'standalone', spaceKey: 'LOCAL', ownerId: userId });
+
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/pages/${id}/relocate/preview?spaceKey=CONF`,
+      });
+
+      expect(res.json().subtreeEffect).toBeNull();
+    });
+  });
+
+  // ── Regressions from the independent review ───────────────────────────────
+
+  describe('review regressions', () => {
+    it('publishes the TRUE attachment filename, not the synthetic cache key (B1)', async () => {
+      // The state a Confluence → local move creates: the cache key is the
+      // synthetic xref name while `data-confluence-filename` holds the real one.
+      const synthetic = 'chart.xref-7726434ef328.png';
+      const id = await createPage({
+        title: 'Borrowed image', source: 'standalone', spaceKey: 'LOCAL', ownerId: userId,
+        bodyHtml:
+          `<p><img src="/api/local-attachments/PLACEHOLDER/${synthetic}" ` +
+          `data-confluence-image-source="attachment" data-confluence-filename="chart.png" ` +
+          `data-confluence-owner-page-title="Other Page" data-confluence-owner-space-key="OTHER"></p>`,
+      });
+      await query('UPDATE pages SET body_html = REPLACE(body_html, $2, $3) WHERE id = $1', [
+        id, 'PLACEHOLDER', String(id),
+      ]);
+      await writeStoreB(id, synthetic, 'chart-bytes', userId);
+      h.client.createPage.mockImplementation(async (_s: string, _t: string, storage: string) =>
+        createdPage('900030', storage),
+      );
+
+      const res = await toConfluence(id);
+      expect(res.statusCode).toBe(200);
+
+      // Uploaded under the real name — uploading the xref name would put a junk
+      // file on the page and leave the reference dangling.
+      expect(h.client.updateAttachment).toHaveBeenCalledTimes(1);
+      expect(h.client.updateAttachment.mock.calls[0]![1]).toBe('chart.png');
+      // Cached under the same name, so the regenerated body_html resolves.
+      expect(await storeAFiles('900030')).toEqual(['chart.png']);
+
+      const row = await getRow(id);
+      expect(row.body_storage).toContain('ri:filename="chart.png"');
+      expect(row.body_storage).not.toContain('xref-');
+      // The owner element would steer the reference at the page the image was
+      // borrowed from, where relocate never uploaded anything.
+      expect(row.body_storage).not.toContain('ri:page');
+      expect(row.body_html).toContain('/api/attachments/900030/chart.png');
+    });
+
+    it('repoints soft-deleted children so restoring one from trash does not orphan it (R1)', async () => {
+      const parent = await createPage({
+        title: 'Parent', source: 'confluence', confluenceId: '700200', spaceKey: 'CONF',
+      });
+      const live = await createPage({
+        title: 'Live', source: 'confluence', confluenceId: '700201', spaceKey: 'CONF', parentRef: '700200',
+      });
+      const trashed = await createPage({
+        title: 'Trashed', source: 'confluence', confluenceId: '700202', spaceKey: 'CONF', parentRef: '700200',
+      });
+      await query('UPDATE pages SET deleted_at = NOW() WHERE id = $1', [trashed]);
+
+      const res = await toLocal(parent, '700200');
+      expect(res.statusCode).toBe(200);
+
+      expect((await getRow(live)).parent_id).toBe(String(parent));
+      // Skipping this row left it holding a confluence_id no page owns — the
+      // link would be unrecoverable the moment it came back from the trash.
+      expect((await getRow(trashed)).parent_id).toBe(String(parent));
+
+      await query('UPDATE pages SET deleted_at = NULL WHERE id = $1', [trashed]);
+      expect(await childrenViaTreeJoin(parent)).toEqual([live, trashed].sort((a, b) => a - b));
+    });
+
+    it('refuses when a soft-deleted row already owns the identifier (R2)', async () => {
+      // pages_confluence_id_unique is partial on `confluence_id IS NOT NULL`
+      // and does NOT exclude soft-deleted rows, so this would otherwise fail as
+      // a constraint violation surfacing as a 500.
+      const trashed = await createPage({
+        title: 'Trashed', source: 'confluence', confluenceId: '900040', spaceKey: 'CONF',
+      });
+      await query('UPDATE pages SET deleted_at = NOW() WHERE id = $1', [trashed]);
+
+      const id = await createPage({ title: 'A', source: 'standalone', spaceKey: 'LOCAL', ownerId: userId });
+      h.client.createPage.mockResolvedValue(createdPage('900040'));
+
+      const res = await toConfluence(id);
+
+      expect(res.statusCode).toBe(409);
+      expect(res.json().error).toContain('ambiguous');
+      expect(h.client.deletePage).toHaveBeenCalledWith('900040');
+      expect((await getRow(id)).source).toBe('standalone');
+    });
+
+    it('clears mirrored Confluence restrictions on a move to local (R4)', async () => {
+      const id = await createPage({
+        title: 'Restricted', source: 'confluence', confluenceId: '700210', spaceKey: 'CONF',
+      });
+      await query('UPDATE pages SET inherit_perms = FALSE WHERE id = $1', [id]);
+      await query(
+        `INSERT INTO access_control_entries (resource_type, resource_id, principal_type, principal_id, permission)
+         VALUES ('page', $1, 'user', $2, 'edit')`,
+        [id, userId],
+      );
+
+      const res = await toLocal(id, '700210');
+      expect(res.statusCode).toBe(200);
+
+      // userHasPermission consults ACEs for ANY page with a space_key, and this
+      // row keeps one — stale entries would still gate edit rights.
+      const aces = await query('SELECT 1 FROM access_control_entries WHERE resource_id = $1', [id]);
+      expect(aces.rowCount).toBe(0);
+      const row = await query<{ inherit_perms: boolean }>(
+        'SELECT inherit_perms FROM pages WHERE id = $1', [id],
+      );
+      expect(row.rows[0]!.inherit_perms).toBe(true);
+    });
+
+    it('restores every column and ACE it touched when the move is compensated (R3, R4)', async () => {
+      const id = await createPage({
+        title: 'Restricted', source: 'confluence', confluenceId: '700220', spaceKey: 'CONF',
+      });
+      await query(
+        `UPDATE pages SET inherit_perms = FALSE, embedding_dirty = FALSE,
+                          embedding_status = 'embedded', last_synced = NOW()
+          WHERE id = $1`,
+        [id],
+      );
+      await query(
+        `INSERT INTO access_control_entries (resource_type, resource_id, principal_type, principal_id, permission)
+         VALUES ('page', $1, 'user', $2, 'edit')`,
+        [id, userId],
+      );
+      h.client.deletePage.mockRejectedValue(new ConfluenceError('server error', 500));
+      h.client.getPage.mockResolvedValue({ id: '700220', status: 'current' });
+
+      const res = await toLocal(id, '700220');
+      expect(res.statusCode).toBe(500);
+
+      const row = await query<{
+        inherit_perms: boolean;
+        local_modified_at: Date | null;
+        local_modified_by: string | null;
+        embedding_dirty: boolean;
+        embedding_status: string | null;
+      }>(
+        `SELECT inherit_perms, local_modified_at, local_modified_by,
+                embedding_dirty, embedding_status FROM pages WHERE id = $1`,
+        [id],
+      );
+      // sync-service treats local_modified_at > last_synced as an unsynced
+      // local edit — leaving the move's NOW() behind makes a fully reverted
+      // page report a conflict against content identical to upstream.
+      expect(row.rows[0]!.local_modified_at).toBeNull();
+      expect(row.rows[0]!.local_modified_by).toBeNull();
+      expect(row.rows[0]!.inherit_perms).toBe(false);
+      expect(row.rows[0]!.embedding_dirty).toBe(false);
+      expect(row.rows[0]!.embedding_status).toBe('embedded');
+
+      const aces = await query('SELECT 1 FROM access_control_entries WHERE resource_id = $1', [id]);
+      expect(aces.rowCount).toBe(1);
+    });
   });
 });

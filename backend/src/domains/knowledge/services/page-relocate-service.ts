@@ -79,7 +79,15 @@ export class RelocateError extends Error {
   }
 }
 
-/** The page columns a relocate reads and restores. */
+/**
+ * The page columns a relocate reads and restores.
+ *
+ * Every column the move writes must appear here, because the compensating
+ * transaction restores exactly this set. A column written but not captured
+ * survives a rollback with the moved value — which is how a compensated
+ * relocate could leave `local_modified_at > last_synced` and make sync report
+ * a phantom conflict against content identical to upstream.
+ */
 export interface RelocatablePage {
   id: number;
   title: string;
@@ -91,16 +99,33 @@ export interface RelocatablePage {
   body_html: string | null;
   body_storage: string | null;
   version: number;
+  inherit_perms: boolean;
+  local_modified_at: Date | null;
+  local_modified_by: string | null;
+  embedding_dirty: boolean;
+  embedding_status: string | null;
+  embedded_at: Date | null;
 }
 
 export const RELOCATABLE_COLUMNS =
-  'id, title, source, space_key, confluence_id, visibility, created_by_user_id, body_html, body_storage, version';
+  'id, title, source, space_key, confluence_id, visibility, created_by_user_id, ' +
+  'body_html, body_storage, version, inherit_perms, local_modified_at, ' +
+  'local_modified_by, embedding_dirty, embedding_status, embedded_at';
+
+/** A mirrored Confluence page restriction, as stored in `access_control_entries`. */
+interface PageAce {
+  principal_type: string;
+  principal_id: string;
+  permission: string;
+}
 
 /** Everything the compensating restore needs; captured before any mutation. */
 interface PreMoveSnapshot extends RelocatablePage {
   /** Direct children that stored the pre-move identifier. */
   childIds: number[];
   oldKey: string;
+  /** Page-level ACEs the move deletes; restored verbatim on compensation. */
+  aces: PageAce[];
 }
 
 /**
@@ -129,12 +154,19 @@ async function assertIdentifierUnambiguous(
   key: string,
   pageId: number,
   label: string,
+  txClient?: PoolClient,
 ): Promise<void> {
-  const clash = await query<{ id: number; title: string }>(
-    `SELECT id, title FROM pages
-      WHERE deleted_at IS NULL AND id <> $2 AND (confluence_id = $1 OR id::text = $1)`,
-    [key, pageId],
-  );
+  // Soft-deleted rows are deliberately IN scope. `pages_confluence_id_unique`
+  // (migration 029) is partial on `confluence_id IS NOT NULL` and does not
+  // exclude `deleted_at`, so a trashed row still owns its `confluence_id`:
+  // filtering it out here turned a designed 409 into a constraint violation
+  // surfacing as a 500. A trashed row can also be restored, at which point it
+  // would compete for the same children.
+  const sql = `SELECT id, title FROM pages
+      WHERE id <> $2 AND (confluence_id = $1 OR id::text = $1)`;
+  const clash = txClient
+    ? await txClient.query<{ id: number; title: string }>(sql, [key, pageId])
+    : await query<{ id: number; title: string }>(sql, [key, pageId]);
   const first = clash.rows[0];
   if (first) {
     throw new RelocateError(
@@ -147,8 +179,27 @@ async function assertIdentifierUnambiguous(
 }
 
 /**
+ * One rewritten reference. The two names are **not** interchangeable.
+ *
+ * `local` is the on-disk cache key — the last path segment of the URL, which
+ * for a cross-page reference is a *synthetic* `stem.xref-<hash>.ext` minted by
+ * `getLocalFilenameForImageSource` so two pages' same-named attachments cannot
+ * collide in one cache directory.
+ *
+ * `target` is the real Confluence attachment filename, carried in
+ * `data-confluence-filename`. That is the name `htmlToConfluence` must emit as
+ * `ri:filename`, and therefore the name the bytes have to be uploaded under.
+ */
+export interface RewrittenRef {
+  /** Filename in the source store — may be a synthetic `xref` name. */
+  local: string;
+  /** Real Confluence attachment filename to publish and key the new URL by. */
+  target: string;
+}
+
+/**
  * Rewrite attachment URLs in editor HTML from one or more source prefixes to a
- * single destination prefix, returning the new HTML and the filenames touched.
+ * single destination prefix, returning the new HTML and the references touched.
  *
  * Both attachment stores appear in `body_html`:
  * `/api/attachments/<key>/<file>` (the Confluence cache — also where pasted
@@ -156,25 +207,38 @@ async function assertIdentifierUnambiguous(
  * (the local store). A relocate changes the key, so every reference must
  * follow.
  *
- * When `markAsConfluenceAttachment` is set, each rewritten `<img>` also gets
- * `data-confluence-filename` / `data-confluence-image-source`. That is what
- * `htmlToConfluence` reads to emit a correct `ri:attachment`; without it the
- * converter falls back to the last path segment of the src, and images from
- * the local store are not matched by its `img[src^="/api/attachments/"]`
- * selector at all — they would survive into storage format as raw `<img>`.
+ * `markAsConfluenceAttachment` switches on the publish-side transform, and that
+ * is where the two filenames diverge (review finding B1):
+ *
+ *  - `data-confluence-filename` is **preserved** when already present. It holds
+ *    the true attachment name, while the URL's last segment may be the
+ *    synthetic `xref` name; overwriting the attribute with that made
+ *    `htmlToConfluence` emit `ri:filename="chart.xref-….png"`, a file that
+ *    exists nowhere in Confluence. It is only *filled in* when absent — a
+ *    pasted image, where the URL segment IS the real name.
+ *  - `data-confluence-owner-page-title` / `-space-key` are **stripped**. They
+ *    make the converter emit a nested `<ri:page>` owner, steering the reference
+ *    at the page the image was originally borrowed from — but relocate uploads
+ *    the bytes to the *new* page, so the reference must resolve there.
+ *  - The rewritten URL is keyed by `target`, matching where the bytes are
+ *    staged, so it survives `confluenceToHtml` regenerating the body after the
+ *    upstream create.
+ *
+ * Without the mark, filenames pass through untouched (`target === local`): a
+ * move to a local space re-keys the directory, never the file.
  */
 export function rewriteAttachmentRefs(
   html: string,
   fromPrefixes: string[],
   toPrefix: string,
   markAsConfluenceAttachment: boolean,
-): { html: string; filenames: string[] } {
-  if (!html) return { html, filenames: [] };
-  if (!fromPrefixes.some((p) => html.includes(p))) return { html, filenames: [] };
+): { html: string; refs: RewrittenRef[] } {
+  if (!html) return { html, refs: [] };
+  if (!fromPrefixes.some((p) => html.includes(p))) return { html, refs: [] };
 
   const dom = new JSDOM(`<body>${html}</body>`, { contentType: 'text/html' });
   const doc = dom.window.document;
-  const filenames = new Set<string>();
+  const refs = new Map<string, RewrittenRef>();
   let changed = false;
 
   const rewriteOne = (el: Element, attr: string): void => {
@@ -183,35 +247,45 @@ export function rewriteAttachmentRefs(
     if (matched === undefined) return;
     const encodedName = value.slice(matched.length);
     if (!encodedName || encodedName.includes('/')) return;
-    let filename: string;
+    let local: string;
     try {
-      filename = decodeURIComponent(encodedName);
+      local = decodeURIComponent(encodedName);
     } catch {
-      filename = encodedName;
+      local = encodedName;
     }
-    filenames.add(filename);
-    el.setAttribute(attr, `${toPrefix}${encodeURIComponent(filename)}`);
-    if (markAsConfluenceAttachment && el.tagName.toLowerCase() === 'img') {
-      // An external-URL image round-trips as ri:url, not ri:attachment —
-      // leave its markers alone or htmlToConfluence emits the wrong element.
-      if (el.getAttribute('data-confluence-image-source') !== 'external-url') {
-        el.setAttribute('data-confluence-filename', filename);
-        el.setAttribute('data-confluence-image-source', 'attachment');
-      }
+
+    // An external-URL image round-trips as ri:url, not ri:attachment — leave
+    // its markers alone or htmlToConfluence emits the wrong element entirely.
+    const isExternal = el.getAttribute('data-confluence-image-source') === 'external-url';
+    const publish = markAsConfluenceAttachment && el.tagName.toLowerCase() === 'img' && !isExternal;
+    const target = publish ? (el.getAttribute('data-confluence-filename') || local) : local;
+
+    if (publish) {
+      el.setAttribute('data-confluence-filename', target);
+      el.setAttribute('data-confluence-image-source', 'attachment');
+      el.removeAttribute('data-confluence-owner-page-title');
+      el.removeAttribute('data-confluence-owner-space-key');
     }
+
+    refs.set(local, { local, target });
+    el.setAttribute(attr, `${toPrefix}${encodeURIComponent(target)}`);
     changed = true;
   };
 
   for (const img of doc.querySelectorAll('img[src]')) rewriteOne(img, 'src');
   for (const anchor of doc.querySelectorAll('a[href]')) rewriteOne(anchor, 'href');
 
-  return { html: changed ? doc.body.innerHTML : html, filenames: [...filenames] };
+  return { html: changed ? doc.body.innerHTML : html, refs: [...refs.values()] };
 }
 
-/** Direct children of a page under a given identifier flavour. */
+/**
+ * Direct children of a page under a given identifier flavour, INCLUDING
+ * soft-deleted ones — the repoint statements rewrite those too, so the
+ * compensating restore has to be able to put them back.
+ */
 async function loadChildIds(key: string, pageId: number): Promise<number[]> {
   const res = await query<{ id: number }>(
-    'SELECT id FROM pages WHERE parent_id = $1 AND deleted_at IS NULL AND id <> $2 ORDER BY id',
+    'SELECT id FROM pages WHERE parent_id = $1 AND id <> $2 ORDER BY id',
     [key, pageId],
   );
   return res.rows.map((r) => r.id);
@@ -323,29 +397,48 @@ async function relocateToConfluence(opts: {
     );
   }
 
-  // Read every attachment's bytes BEFORE the upstream create, so a missing
-  // file is noticed while nothing has happened yet.
-  const payloads: Array<{ filename: string; data: Buffer }> = [];
-  for (const filename of await collectAttachmentFilenames(page)) {
-    const data = await readAttachmentBytes(page, filename);
-    if (data === null) {
-      warnings.push(`Attachment "${filename}" is referenced but missing on disk; it was not published.`);
-      continue;
-    }
-    payloads.push({ filename, data });
-  }
-
   // Normalise every attachment reference onto the Confluence-cache form and
   // tag it, so `htmlToConfluence` emits a correct `ri:attachment` for images
   // from BOTH stores. Storage format references attachments by filename only,
   // so this body is already key-independent and can be sent upstream as-is.
-  const { html: normalisedHtml } = rewriteAttachmentRefs(
+  //
+  // This also yields the local→true filename map: a cross-page reference is
+  // cached under a synthetic `xref` name but must be *published* under its real
+  // one, or the reference we emit names a file Confluence does not have.
+  const { html: normalisedHtml, refs } = rewriteAttachmentRefs(
     page.body_html ?? '',
     [`/api/attachments/${encodeURIComponent(oldKey)}/`, `/api/local-attachments/${page.id}/`],
     `/api/attachments/${encodeURIComponent(oldKey)}/`,
     true,
   );
   const storageBody = htmlToConfluence(normalisedHtml);
+  const targetByLocal = new Map(refs.map((r) => [r.local, r.target]));
+
+  // Read every attachment's bytes BEFORE the upstream create, so a missing
+  // file is noticed while nothing has happened yet. `local` keys the source
+  // store; `target` is the name published to Confluence and used for the new
+  // cache key, so `confluenceToHtml` regenerates URLs that resolve.
+  const payloads: Array<{ local: string; target: string; data: Buffer }> = [];
+  const claimedTargets = new Map<string, string>();
+  for (const local of await collectAttachmentFilenames(page)) {
+    const data = await readAttachmentBytes(page, local);
+    if (data === null) {
+      warnings.push(`Attachment "${local}" is referenced but missing on disk; it was not published.`);
+      continue;
+    }
+    const target = targetByLocal.get(local) ?? local;
+    // Two cross-page references can share a real filename while their cached
+    // copies differ. Flattening them onto one page can only keep one, so say
+    // so rather than silently overwriting.
+    const previous = claimedTargets.get(target);
+    if (previous !== undefined && previous !== local) {
+      warnings.push(
+        `Attachments "${previous}" and "${local}" both publish as "${target}"; only one copy survives on the Confluence page.`,
+      );
+    }
+    claimedTargets.set(target, local);
+    payloads.push({ local, target, data });
+  }
   const parentConfluenceId = await resolveConfluenceParent(page.id);
 
   // 1. Create the page upstream. Nothing local points at it yet, so a failure
@@ -364,14 +457,15 @@ async function relocateToConfluence(opts: {
     // 2. Upload the bytes. A failure aborts the move: an article whose
     //    `ri:attachment` references point at files that were never uploaded
     //    renders with broken images on both sides.
-    for (const { filename, data } of payloads) {
-      await client.updateAttachment(newConfluenceId, filename, data, getMimeType(filename));
+    for (const { target, data } of payloads) {
+      await client.updateAttachment(newConfluenceId, target, data, getMimeType(target));
     }
 
-    // 3. Stage the cache under the new key (copy — the old key stays intact
-    //    until after COMMIT).
-    for (const { filename, data } of payloads) {
-      await writeAttachmentCacheAt(newConfluenceId, filename, data);
+    // 3. Stage the cache under the new key, named by `target` so it matches the
+    //    URLs `confluenceToHtml` regenerates below (copy — the old key stays
+    //    intact until after COMMIT).
+    for (const { target, data } of payloads) {
+      await writeAttachmentCacheAt(newConfluenceId, target, data);
     }
 
     // Re-derive the local body from the storage Confluence accepted, exactly
@@ -389,6 +483,12 @@ async function relocateToConfluence(opts: {
       if (fresh.source !== 'standalone' || fresh.confluence_id !== null) {
         throw new RelocateError(409, 'Page was relocated by someone else while this move was in flight');
       }
+      // Re-check under the lock: the pre-flight check ran on a pooled
+      // connection before BEGIN, so a row claiming either identifier could
+      // have appeared since. Now it is a clean 409 instead of a unique-index
+      // violation surfacing as a 500.
+      await assertIdentifierUnambiguous(oldKey, page.id, 'current', txClient);
+      await assertIdentifierUnambiguous(newConfluenceId, page.id, 'new Confluence', txClient);
 
       await txClient.query(
         `UPDATE pages SET
@@ -412,9 +512,12 @@ async function relocateToConfluence(opts: {
       );
 
       // Every direct child stored the numeric id; they must now store the
-      // confluence_id or the tree CTE stops resolving them.
+      // confluence_id or the tree CTE stops resolving them. Soft-deleted
+      // children are included on purpose: skipping them leaves a trashed page
+      // holding an identifier no row owns any more, so restoring it from trash
+      // would orphan it permanently.
       const repointed = await txClient.query(
-        'UPDATE pages SET parent_id = $2 WHERE parent_id = $1 AND deleted_at IS NULL AND id <> $3',
+        'UPDATE pages SET parent_id = $2 WHERE parent_id = $1 AND id <> $3',
         [oldKey, newConfluenceId, page.id],
       );
 
@@ -515,10 +618,16 @@ async function relocateToLocal(opts: {
   // attachments as `<ri:attachment ri:filename="…">`, which carries no page
   // key. It is kept verbatim so macro fidelity survives a later move back.
 
+  const aces = await query<PageAce>(
+    `SELECT principal_type, principal_id, permission FROM access_control_entries
+      WHERE resource_type = 'page' AND resource_id = $1`,
+    [page.id],
+  );
   const snapshot: PreMoveSnapshot = {
     ...page,
     childIds: await loadChildIds(oldConfluenceId, page.id),
     oldKey: oldConfluenceId,
+    aces: aces.rows,
   };
 
   let childrenRepointed = 0;
@@ -529,6 +638,8 @@ async function relocateToLocal(opts: {
     if (fresh.source !== 'confluence' || fresh.confluence_id !== oldConfluenceId) {
       throw new RelocateError(409, 'Page changed while this move was in flight');
     }
+    // Re-check under the lock — see the same call in relocateToConfluence.
+    await assertIdentifierUnambiguous(newKey, page.id, 'new local', txClient);
 
     await txClient.query(
       `UPDATE pages SET
@@ -541,6 +652,12 @@ async function relocateToLocal(opts: {
          -- is invisible to everyone — including the person who moved it.
          created_by_user_id = $4,
          body_html = $5,
+         -- Confluence page restrictions were mirrored into ACEs with
+         -- inherit_perms = FALSE. Those principals no longer mean anything, but
+         -- userHasPermission() consults them for ANY page with a space_key —
+         -- and this row keeps one. Returning to inheritance is what makes the
+         -- standalone visibility model the only one in force (decision 4).
+         inherit_perms = TRUE,
          embedding_dirty = TRUE,
          embedding_status = 'not_embedded',
          embedded_at = NULL,
@@ -550,8 +667,17 @@ async function relocateToLocal(opts: {
       [page.id, spaceKey, visibility, userId, rewrittenHtml],
     );
 
+    // Drop the mirrored Confluence restrictions themselves, so a later
+    // inherit_perms flip cannot resurrect them.
+    await txClient.query(
+      "DELETE FROM access_control_entries WHERE resource_type = 'page' AND resource_id = $1",
+      [page.id],
+    );
+
+    // Soft-deleted children are included on purpose — see the same statement
+    // in relocateToConfluence.
     const repointed = await txClient.query(
-      'UPDATE pages SET parent_id = $2 WHERE parent_id = $1 AND deleted_at IS NULL AND id <> $3',
+      'UPDATE pages SET parent_id = $2 WHERE parent_id = $1 AND id <> $3',
       [oldConfluenceId, newKey, page.id],
     );
     childrenRepointed = repointed.rowCount ?? 0;
@@ -656,10 +782,22 @@ async function restorePreMoveState(
   try {
     await txClient.query('BEGIN');
     await txClient.query('SELECT pg_advisory_xact_lock($1)', [PAGE_MOVE_ADVISORY_LOCK_ID]);
+    // Restores every column relocateToLocal writes, not just the identity
+    // ones. `local_modified_at` in particular: sync-service treats
+    // `local_modified_at > last_synced` as an unsynced local edit, so leaving
+    // the move's NOW() behind would make a fully reverted page report a
+    // conflict against content identical to upstream.
+    //
+    // The `set_pages_local_modified` trigger (migration 060) does not fire on
+    // this UPDATE: rule A needs `local_modified_by` set with
+    // `local_modified_at` NULL, and rule B needs the new and old timestamps to
+    // be equal — restoring a pre-move value satisfies neither.
     await txClient.query(
       `UPDATE pages SET
          source = $2, confluence_id = $3, space_key = $4, visibility = $5,
-         created_by_user_id = $6, body_html = $7, body_storage = $8
+         created_by_user_id = $6, body_html = $7, body_storage = $8,
+         inherit_perms = $9, local_modified_at = $10, local_modified_by = $11,
+         embedding_dirty = $12, embedding_status = $13, embedded_at = $14
        WHERE id = $1`,
       [
         snapshot.id,
@@ -670,8 +808,27 @@ async function restorePreMoveState(
         snapshot.created_by_user_id,
         snapshot.body_html,
         snapshot.body_storage,
+        snapshot.inherit_perms,
+        snapshot.local_modified_at,
+        snapshot.local_modified_by,
+        snapshot.embedding_dirty,
+        snapshot.embedding_status,
+        snapshot.embedded_at,
       ],
     );
+
+    // Put the mirrored Confluence restrictions back. Without this the page
+    // returns to `source='confluence'` wide open until the next restrictions
+    // sync re-mirrors them.
+    for (const ace of snapshot.aces) {
+      await txClient.query(
+        `INSERT INTO access_control_entries
+           (resource_type, resource_id, principal_type, principal_id, permission)
+         VALUES ('page', $1, $2, $3, $4)
+         ON CONFLICT (resource_type, resource_id, principal_type, principal_id, permission) DO NOTHING`,
+        [snapshot.id, ace.principal_type, ace.principal_id, ace.permission],
+      );
+    }
     if (snapshot.childIds.length > 0) {
       await txClient.query('UPDATE pages SET parent_id = $1 WHERE id = ANY($2::int[])', [
         snapshot.oldKey,

@@ -263,8 +263,29 @@ export const RelocatePreviewSchema = z.object({
   confluenceId: z.string().nullable(),
   /** The only direction this page can move in, derived from its current source. */
   target: RelocateTargetEnum,
-  /** Direct children whose `parent_id` the move rewrites. They are not moved. */
+  /**
+   * Direct children whose `parent_id` the move rewrites so the parent link
+   * survives. The children themselves are **not** moved.
+   */
   childCount: z.number().int().nonnegative(),
+  /**
+   * What the move does to the subtree, when `childCount > 0` (null otherwise).
+   *
+   * Children keep their own `source`, `space_key` and `path` while their
+   * `parent_id` now points across the boundary — so they stay in the origin
+   * space's tree with their parent no longer in it. A bare count cannot convey
+   * that, and the confirmation dialog has no other way to learn it.
+   */
+  subtreeEffect: z
+    .object({
+      /** Space the children remain in after the move. */
+      childrenRemainInSpaceKey: z.string().nullable(),
+      /** Space the page itself ends up in. */
+      pageMovesToSpaceKey: z.string().nullable(),
+      /** True when those differ, i.e. the children visibly detach in the origin tree. */
+      childrenDetachFromOriginTree: z.boolean(),
+    })
+    .nullable(),
   /** Attachments migrated between the two attachment stores. */
   attachmentCount: z.number().int().nonnegative(),
   /** Exact count to echo back in `acknowledgeDiscardedVersions`. 0 for a move to local. */

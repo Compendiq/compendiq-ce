@@ -200,12 +200,32 @@ export async function pagesRelocateRoutes(fastify: FastifyInstance) {
       const userId = request.userId;
       const page = await loadPage(fastify, id, userId);
 
+      // Gate 2 applies here too. `spaceKey` is caller-supplied and feeds
+      // `spacePrincipals`, which enumerates a space's role assignments — so
+      // without this check the preview is a membership-roster oracle for every
+      // Confluence space, reachable by iterating the query parameter against
+      // any page the caller can already see. The `target === 'local'` branch
+      // below reads only the page's OWN space, which `userCanAccessPage`
+      // already covers.
+      if (q.spaceKey) {
+        const accessible = await getUserAccessibleSpaces(userId);
+        if (!accessible.includes(q.spaceKey)) {
+          throw fastify.httpErrors.forbidden('Access denied to this space');
+        }
+      }
+
       const target = page.source === 'standalone' ? ('confluence' as const) : ('local' as const);
       const childKey = parentKeyFor(page.source, page.id, page.confluence_id);
       const children = await query<{ count: string }>(
         'SELECT COUNT(*) AS count FROM pages WHERE parent_id = $1 AND deleted_at IS NULL AND id <> $2',
         [childKey, page.id],
       );
+
+      const childCount = parseInt(children.rows[0]?.count ?? '0', 10);
+      // Where the page lands: the space the caller has picked so far. Null
+      // until they choose, and legitimately null for a space-less standalone
+      // article.
+      const destinationSpaceKey = q.spaceKey ?? null;
 
       return {
         pageId: page.id,
@@ -214,7 +234,15 @@ export async function pagesRelocateRoutes(fastify: FastifyInstance) {
         spaceKey: page.space_key,
         confluenceId: page.confluence_id,
         target,
-        childCount: parseInt(children.rows[0]?.count ?? '0', 10),
+        childCount,
+        subtreeEffect:
+          childCount > 0
+            ? {
+                childrenRemainInSpaceKey: page.space_key,
+                pageMovesToSpaceKey: destinationSpaceKey,
+                childrenDetachFromOriginTree: destinationSpaceKey !== page.space_key,
+              }
+            : null,
         attachmentCount: (await collectAttachmentFilenames(page)).length,
         localVersionCount: target === 'confluence' ? await countLocalVersions(page.id) : 0,
         accessChange: await resolveAccessChange(
