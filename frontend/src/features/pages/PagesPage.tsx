@@ -16,6 +16,7 @@ import { QualityScoreBadge } from '../../shared/components/badges/QualityScoreBa
 import { SummaryStatusBadge } from '../../shared/components/badges/SummaryStatusBadge';
 import { KPICards } from './KPICards';
 import { BulkActionBar } from './BulkActionBar';
+import { bulkWireId } from '../../shared/hooks/use-bulk-page-actions';
 import { PinnedArticlesSection } from './PinnedArticlesSection';
 import { cn } from '../../shared/lib/cn';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
@@ -430,8 +431,14 @@ export function PagesPage() {
 
   // Drop ids that fell out of the result set, so the action bar never reports
   // a count that includes rows the user can no longer see.
+  //
+  // Mapped through `bulkWireId`: selection is keyed by row id (the PK, which is
+  // what the checkboxes and the memo comparator use), but the bulk routes
+  // address synced pages by `confluence_id`. Sending the PK still resolved the
+  // row, so the action ran — the server just couldn't match the id back and
+  // counted every synced page as not-found.
   const visibleSelectedIds = useMemo(
-    () => pageItems.filter((p) => selectedIds.has(p.id)).map((p) => p.id),
+    () => pageItems.filter((p) => selectedIds.has(p.id)).map(bulkWireId),
     [pageItems, selectedIds],
   );
   const selectedConfluenceCount = useMemo(

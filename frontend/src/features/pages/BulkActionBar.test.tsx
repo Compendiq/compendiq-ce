@@ -25,7 +25,8 @@ function createWrapper() {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  apiFetchMock.mockResolvedValue({ succeeded: 3 });
+  // The shape every /pages/bulk/* handler actually returns.
+  apiFetchMock.mockResolvedValue({ succeeded: 3, failed: 0, errors: [] });
 });
 
 afterEach(() => {
@@ -162,18 +163,82 @@ describe('BulkActionBar', () => {
     await waitFor(() => expect(onClear).toHaveBeenCalled());
   });
 
-  it('warns when the server reports part of the selection was stale', async () => {
-    apiFetchMock.mockResolvedValue({ succeeded: 1, notFoundIds: ['9'] });
+  // `{ succeeded, failed, errors }` is what all four routes actually return —
+  // `errors` is the only place a partial failure is ever described. An earlier
+  // revision watched for a `notFoundIds` array that no handler sends, so every
+  // partial failure was reported to the user as an unqualified success.
+  it('warns, with the server’s reason, when part of the selection failed', async () => {
+    apiFetchMock.mockResolvedValue({
+      succeeded: 1,
+      failed: 1,
+      errors: ['Page 9: not the owner'],
+    });
 
     render(
       <BulkActionBar selectedIds={['1', '9']} confluenceCount={0} onClear={vi.fn()} />,
       { wrapper: createWrapper() },
     );
 
+    fireEvent.click(screen.getByTestId('bulk-delete-btn'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Move 2 pages to trash' }));
+
+    await waitFor(() => {
+      expect(toastMock.warning).toHaveBeenCalledWith(
+        '1 page could not be moved to trash — Page 9: not the owner',
+      );
+    });
+    // The page that did succeed is still reported.
+    expect(toastMock.success).toHaveBeenCalledWith('1 page moved to trash');
+  });
+
+  it('reports only the failure when nothing succeeded', async () => {
+    apiFetchMock.mockResolvedValue({ succeeded: 0, failed: 2, errors: [] });
+
+    render(
+      <BulkActionBar selectedIds={['1', '2']} confluenceCount={0} onClear={vi.fn()} />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByTestId('bulk-quality-btn'));
+
+    await waitFor(() => {
+      expect(toastMock.warning).toHaveBeenCalledWith(
+        '2 pages could not be queued for quality analysis.',
+      );
+    });
+    expect(toastMock.success).not.toHaveBeenCalled();
+  });
+
+  it('says so when the server accepted the request and acted on nothing', async () => {
+    // Re-embed skips pages with no confluence_id, so a standalone-only
+    // selection comes back all zeroes. Staying silent would read as success.
+    apiFetchMock.mockResolvedValue({ succeeded: 0, failed: 0, errors: [] });
+
+    render(
+      <BulkActionBar selectedIds={['1']} confluenceCount={0} onClear={vi.fn()} />,
+      { wrapper: createWrapper() },
+    );
+
     fireEvent.click(screen.getByTestId('bulk-embed-btn'));
 
     await waitFor(() => {
-      expect(toastMock.warning).toHaveBeenCalledWith(expect.stringContaining('1 page could not be found'));
+      expect(toastMock.warning).toHaveBeenCalledWith('No pages were queued for embedding.');
+    });
+    expect(toastMock.success).not.toHaveBeenCalled();
+  });
+
+  it('reports the count the server acted on, not the count that was selected', async () => {
+    apiFetchMock.mockResolvedValue({ succeeded: 2, failed: 0, errors: [] });
+
+    render(
+      <BulkActionBar selectedIds={['1', '2', '3']} confluenceCount={0} onClear={vi.fn()} />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByTestId('bulk-embed-btn'));
+
+    await waitFor(() => {
+      expect(toastMock.success).toHaveBeenCalledWith('2 pages queued for embedding');
     });
   });
 

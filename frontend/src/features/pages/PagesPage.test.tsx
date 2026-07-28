@@ -1536,6 +1536,109 @@ describe('PagesPage', () => {
     });
   });
 
+  describe('bulk wire ids', () => {
+    // The bulk routes resolve ids in 'mixed' mode and map each found row back
+    // to `confluence_id` unless it is standalone, while `GET /pages` hands the
+    // frontend the PK for every row. Posting the PK verbatim still acted on
+    // synced pages, but the server could not match the id on the way back and
+    // counted every one of them in `failed`/`errors`.
+    const mixedPages = {
+      items: [
+        {
+          id: '1',
+          confluenceId: 'conf-abc',
+          source: 'confluence',
+          spaceKey: 'DEV',
+          title: 'Synced Page',
+          version: 1,
+          parentId: null,
+          labels: [],
+          author: 'Alice',
+          lastModifiedAt: '2025-01-15T00:00:00Z',
+          lastSynced: '2025-01-16T00:00:00Z',
+          embeddingDirty: false,
+          embeddingStatus: 'embedded',
+          embeddedAt: '2025-01-16T00:00:00Z',
+        },
+        {
+          id: '2',
+          confluenceId: null,
+          source: 'standalone',
+          spaceKey: null,
+          title: 'Local Page',
+          version: 1,
+          parentId: null,
+          labels: [],
+          author: 'Bob',
+          lastModifiedAt: '2025-01-15T00:00:00Z',
+          lastSynced: '2025-01-16T00:00:00Z',
+          embeddingDirty: false,
+          embeddingStatus: 'embedded',
+          embeddedAt: '2025-01-16T00:00:00Z',
+        },
+      ],
+      total: 2,
+      page: 1,
+      limit: 50,
+      totalPages: 1,
+    };
+
+    /** Installs a fetch mock over `mixedPages` and captures the bulk POST body. */
+    function mockMixedFetch() {
+      const bulkBodies: { url: string; body: unknown }[] = [];
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+        const url = typeof input === 'string' ? input : (input as Request).url;
+        const json = (data: unknown) =>
+          new Response(JSON.stringify(data), { headers: { 'Content-Type': 'application/json' } });
+
+        if (url.includes('/pages/bulk/')) {
+          bulkBodies.push({ url, body: JSON.parse(String(init?.body ?? '{}')) });
+          return json({ succeeded: 2, failed: 0, errors: [] });
+        }
+        if (url.includes('/embeddings/status')) return json(mockEmbeddingStatusIdle);
+        if (url.includes('/pages/filters')) return json(mockFilterOptions);
+        if (url.includes('/spaces')) return json(mockSpaces);
+        if (url.includes('/sync/status')) return json({ status: 'idle' });
+        if (url.includes('/pages/pinned')) return json({ items: [], total: 0 });
+        if (url.includes('/settings')) return json({});
+        return json(mixedPages);
+      });
+      return bulkBodies;
+    }
+
+    it('addresses a synced page by confluence id and a local page by its PK', async () => {
+      const bulkBodies = mockMixedFetch();
+      render(<PagesPage />, { wrapper: createWrapper() });
+      await screen.findByText('Synced Page');
+
+      fireEvent.click(screen.getByTestId('select-all-pages'));
+      fireEvent.click(await screen.findByTestId('bulk-embed-btn'));
+
+      await waitFor(() => expect(bulkBodies).toHaveLength(1));
+      expect(bulkBodies[0]!.url).toContain('/pages/bulk/embed');
+      expect(bulkBodies[0]!.body).toEqual({ ids: ['conf-abc', '2'] });
+    });
+
+    it('keeps selection and display keyed by row id', async () => {
+      // The wire mapping must not leak into the checkboxes: selection is keyed
+      // by PK, which is what the memo comparator and the Set both use.
+      const bulkBodies = mockMixedFetch();
+      render(<PagesPage />, { wrapper: createWrapper() });
+      await screen.findByText('Synced Page');
+
+      fireEvent.click(screen.getByLabelText('Select Synced Page'));
+
+      await waitFor(() => {
+        expect(screen.getByLabelText('Select Synced Page')).toBeChecked();
+      });
+      expect(screen.getByTestId('bulk-selection-count')).toHaveTextContent('1 page selected');
+
+      fireEvent.click(screen.getByTestId('bulk-embed-btn'));
+      await waitFor(() => expect(bulkBodies).toHaveLength(1));
+      expect(bulkBodies[0]!.body).toEqual({ ids: ['conf-abc'] });
+    });
+  });
+
   describe('list row density', () => {
     it('does not print a freshness badge beside the raw date it derives from', async () => {
       render(<PagesPage />, { wrapper: createWrapper() });

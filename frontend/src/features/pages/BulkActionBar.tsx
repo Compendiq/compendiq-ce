@@ -4,6 +4,12 @@ import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
 import { useBulkPageAction, type BulkAction } from '../../shared/hooks/use-bulk-page-actions';
 
 interface BulkActionBarProps {
+  /**
+   * Ids already mapped to the bulk-route wire shape via `bulkWireId` — the
+   * `confluence_id` for synced pages, the PK for standalone ones. These are
+   * posted verbatim, so they are not interchangeable with the row ids the
+   * selection Set is keyed by.
+   */
   selectedIds: string[];
   /** How many of the selected pages came from Confluence — re-sync needs them. */
   confluenceCount: number;
