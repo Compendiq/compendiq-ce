@@ -74,7 +74,7 @@ export function CommentThread({
               {formatRelativeTime(comment.createdAt)}
             </span>
             {comment.resolved && (
-              <span className="rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-400">
+              <span className="rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[11px] font-medium text-emerald-400">
                 Resolved
               </span>
             )}
@@ -155,13 +155,13 @@ export function CommentThread({
           >
             {replies.map((reply) => (
               <div key={reply.id} className="flex items-start gap-2" data-testid={`reply-${reply.id}`}>
-                <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted text-[10px] font-medium text-muted-foreground">
+                <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] font-medium text-muted-foreground">
                   {reply.authorName.charAt(0).toUpperCase()}
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <span className="text-xs font-medium">{reply.authorName}</span>
-                    <span className="text-[10px] text-muted-foreground">
+                    <span className="text-[11px] text-muted-foreground">
                       {formatRelativeTime(reply.createdAt)}
                     </span>
                   </div>

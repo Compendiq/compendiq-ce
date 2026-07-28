@@ -258,10 +258,18 @@ function AiAssistantInner() {
       />
       <div className="flex flex-wrap items-center gap-x-2 gap-y-2 rounded-xl border border-border/40 bg-card/50 px-3 py-2 backdrop-blur-sm">
         {/* Group A — mode segmented control */}
+        {/* Horizontally scrollable below the width that fits all six modes.
+            At 390px the row previously cut off mid-word after "Summar…", so
+            Diagram and Quality were unreachable with no scroll cue at all —
+            two of six modes simply did not exist on a phone. snap-x keeps the
+            tabs from resting half-visible; the edge mask signals there is more
+            to the right. Arrow-key navigation still reaches every tab, and
+            scroll-into-view keeps the focused one on screen. */}
         <div
           role="tablist"
           aria-label="AI mode"
-          className="flex items-center gap-0.5 rounded-lg bg-foreground/[0.04] p-1"
+          data-testid="ai-mode-tablist"
+          className="flex max-w-full snap-x snap-mandatory items-center gap-0.5 overflow-x-auto rounded-lg bg-foreground/[0.04] p-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden [mask-image:linear-gradient(to_right,transparent_0,black_12px,black_calc(100%-12px),transparent_100%)]"
           onKeyDown={(e) => {
             if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
               e.preventDefault();
@@ -271,7 +279,13 @@ function AiAssistantInner() {
                 ? (idx + 1) % keys.length
                 : (idx - 1 + keys.length) % keys.length;
               const nextKey = keys[next];
-              if (nextKey) setMode(nextKey);
+              if (nextKey) {
+                setMode(nextKey);
+                // Keep the newly focused tab on screen once the row scrolls.
+                e.currentTarget
+                  .querySelector(`[data-mode-tab="${nextKey}"]`)
+                  ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+              }
             }
           }}
         >
@@ -279,11 +293,12 @@ function AiAssistantInner() {
             <button
               key={key}
               role="tab"
+              data-mode-tab={key}
               aria-selected={mode === key}
               tabIndex={mode === key ? 0 : -1}
               onClick={() => setMode(key)}
               className={cn(
-                'flex h-7 items-center gap-1.5 rounded-md px-2.5 text-sm transition-colors',
+                'flex h-7 shrink-0 snap-start items-center gap-1.5 rounded-md px-2.5 text-sm transition-colors',
                 mode === key
                   // Inset honey-tinted surface (not filled) so the active tab
                   // doesn't compete with the honey-filled primary CTA in the
@@ -439,8 +454,15 @@ function AiAssistantInner() {
 
       {/* Messages — clean document-like surface, no heavy glass.
           flex-1 so the messages area grows to fill the column, pushing
-          the sticky input bar to the bottom of the page. */}
-      <div className="flex-1 overflow-hidden rounded-xl border border-border/40 bg-card/40 backdrop-blur-sm">
+          the sticky input bar to the bottom of the page.
+
+          overflow-y-auto, not overflow-hidden: at viewport heights at or below
+          768px the empty-state prompt cards were clipped with no way to reach
+          them — measured clean at 900px and cut at 720px, so any 1366x768
+          laptop lost them entirely, and on mobile they rendered behind the
+          composer. min-h-0 lets the flex child actually shrink so the scroll
+          container resolves instead of overflowing its parent. */}
+      <div className="min-h-0 flex-1 overflow-y-auto rounded-xl border border-border/40 bg-card/40 backdrop-blur-sm" data-testid="ai-message-pane">
         <div className="min-h-[360px] space-y-4 p-5">
           {/* Zero-embeddings notice (#938). Q&A answers via RAG over embedded
               pages; with none embedded, buildRagContext returns "No relevant

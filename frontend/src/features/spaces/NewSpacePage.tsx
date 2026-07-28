@@ -124,7 +124,7 @@ export function NewSpacePage() {
               className="w-full rounded-lg border border-border/50 bg-background/50 px-3 py-2 text-sm font-mono text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
               required
             />
-            <p className="mt-1 text-[10px] text-muted-foreground">
+            <p className="mt-1 text-[11px] text-muted-foreground">
               Uppercase letters, numbers, and underscores only. Cannot be changed later.
             </p>
           </div>
@@ -158,7 +158,7 @@ export function NewSpacePage() {
                   key={icon.value}
                   type="button"
                   onClick={() => setSelectedIcon(selectedIcon === icon.value ? undefined : icon.value)}
-                  className={`rounded-md border px-2 py-1 text-[10px] transition-colors ${
+                  className={`rounded-md border px-2 py-1 text-[11px] transition-colors ${
                     selectedIcon === icon.value
                       ? 'border-action bg-action/10 text-action font-medium'
                       : 'border-border/30 text-muted-foreground hover:bg-foreground/5 hover:text-foreground'

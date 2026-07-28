@@ -15,7 +15,7 @@ interface PanelHeaderProps {
  * to be here. The wrapping `<SettingsLayout>` already renders the page-level
  * "Settings" H1, so this is a deliberate H2 — second tier, not duplicate.
  *
- * The thin honey rule under the title reclaims the brand accent in a
+ * The thin steel rule under the title reclaims the brand accent in a
  * structural place (vs. floating in CTAs) — a small touch that ties the
  * page back to the Compendiq palette without becoming decorative noise.
  */
@@ -26,7 +26,7 @@ export function PanelHeader({ title, subtitle, action }: PanelHeaderProps) {
         <h2 className="text-lg font-semibold leading-tight tracking-[-0.01em] text-foreground">
           {title}
         </h2>
-        {/* 2px honey underline tick — 24px wide, sits 6px below the title. */}
+        {/* 2px steel underline tick — 24px wide, sits 6px below the title. */}
         <div
           aria-hidden="true"
           className="mt-1.5 h-[2px] w-6 rounded-full bg-[var(--color-primary-ink)]"

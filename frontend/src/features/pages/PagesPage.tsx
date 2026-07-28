@@ -1,9 +1,9 @@
 import { useState, useCallback, useMemo, useRef, useEffect, memo, type RefObject } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { m } from 'framer-motion';
-import { Search, FileText, Plus, RefreshCw, ChevronLeft, ChevronRight, FolderOpen, Filter, X, List, Loader2, Trash2, Lock, Globe, AlertTriangle } from 'lucide-react';
+import { Search, FileText, Plus, ChevronLeft, ChevronRight, FolderOpen, Filter, X, List, Loader2, Trash2, Lock, Globe, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
 import { PageSourceEnum, type PageSource } from '@compendiq/contracts';
 import { usePages, usePageFilterOptions, usePage, useEmbeddingStatus, type QualityStatus, type SummaryStatus } from '../../shared/hooks/use-pages';
@@ -11,11 +11,11 @@ import { useSpaces, useSync, useSyncStatus } from '../../shared/hooks/use-spaces
 import { useSettings } from '../../shared/hooks/use-settings';
 import { useSearch } from '../../shared/hooks/use-search';
 import { EmptyState } from '../../shared/components/feedback/EmptyState';
-import { FreshnessBadge } from '../../shared/components/badges/FreshnessBadge';
 import { EmbeddingStatusBadge } from '../../shared/components/badges/EmbeddingStatusBadge';
 import { QualityScoreBadge } from '../../shared/components/badges/QualityScoreBadge';
 import { SummaryStatusBadge } from '../../shared/components/badges/SummaryStatusBadge';
 import { KPICards } from './KPICards';
+import { BulkActionBar } from './BulkActionBar';
 import { PinnedArticlesSection } from './PinnedArticlesSection';
 import { cn } from '../../shared/lib/cn';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
@@ -59,10 +59,12 @@ interface PageListItemProps {
   };
   index: number;
   onNavigate: (id: string) => void;
+  selected?: boolean;
+  onToggleSelect?: (id: string, shiftKey: boolean) => void;
 }
 
 const PageListItem = memo(function PageListItem({
-  pageItem, index: _index, onNavigate,
+  pageItem, index: _index, onNavigate, selected = false, onToggleSelect,
 }: PageListItemProps) {
   return (
     <m.div
@@ -71,9 +73,25 @@ const PageListItem = memo(function PageListItem({
       transition={{ duration: 0.15 }}
     >
       <div
-        className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm transition-all hover:border-primary/50 flex w-full items-center gap-3 p-4 text-left"
+        className={cn(
+          'rounded-xl border bg-card/50 backdrop-blur-sm transition-all hover:border-primary/50 flex w-full items-center gap-3 p-4 text-left',
+          selected ? 'border-action/60 bg-action/[0.04]' : 'border-border/40',
+        )}
         data-testid={`article-hover-${pageItem.id}`}
       >
+        {onToggleSelect && (
+          <input
+            type="checkbox"
+            checked={selected}
+            // Shift-click extends from the last toggled row, the convention in
+            // every file list users already know.
+            onClick={(e) => onToggleSelect(pageItem.id, e.shiftKey)}
+            onChange={() => { /* click handler owns this; keeps React controlled */ }}
+            aria-label={`Select ${pageItem.title}`}
+            className="size-4 shrink-0 cursor-pointer accent-[var(--color-action)]"
+            data-testid={`page-select-${pageItem.id}`}
+          />
+        )}
         <button
           onClick={() => onNavigate(pageItem.id)}
           className="flex min-w-0 flex-1 items-center gap-4"
@@ -84,7 +102,7 @@ const PageListItem = memo(function PageListItem({
               {/* Source badge */}
               {pageItem.source === 'standalone' ? (
                 <span
-                  className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#e7f2e8] px-2 py-0.5 text-[10px] font-medium text-[#1f5a2a] dark:bg-[#1a2a1d] dark:text-[#9ad4a8]"
+                  className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#e7f2e8] px-2 py-0.5 text-[11px] font-medium text-[#1f5a2a] dark:bg-[#1a2a1d] dark:text-[#9ad4a8]"
                   data-testid="badge-local"
                   data-source-badge={pageItem.id}
                 >
@@ -92,7 +110,7 @@ const PageListItem = memo(function PageListItem({
                 </span>
               ) : (
                 <span
-                  className="inline-flex shrink-0 items-center gap-1 rounded-full bg-blue-500/15 px-2 py-0.5 text-[10px] font-medium text-blue-500"
+                  className="inline-flex shrink-0 items-center gap-1 rounded-full bg-blue-500/15 px-2 py-0.5 text-[11px] font-medium text-blue-500"
                   data-testid="badge-confluence"
                   data-source-badge={pageItem.id}
                 >
@@ -103,7 +121,7 @@ const PageListItem = memo(function PageListItem({
               {pageItem.source === 'standalone' && (
                 (pageItem.visibility === 'shared') ? (
                   <span
-                    className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#e6effb] px-2 py-0.5 text-[10px] font-medium text-[#1c3e72] dark:bg-[#162236] dark:text-[#a4c2eb]"
+                    className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#e6effb] px-2 py-0.5 text-[11px] font-medium text-[#1c3e72] dark:bg-[#162236] dark:text-[#a4c2eb]"
                     data-testid="badge-shared"
                     data-visibility-badge={pageItem.id}
                   >
@@ -112,7 +130,7 @@ const PageListItem = memo(function PageListItem({
                 ) : (
                   // Private = neutral gray. Was amber, but privacy carries no AI semantic.
                   <span
-                    className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#ececea] px-2 py-0.5 text-[10px] font-medium text-[#4a4a48] dark:bg-[#2a2925] dark:text-[#c5bea9]"
+                    className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#ececea] px-2 py-0.5 text-[11px] font-medium text-[#4a4a48] dark:bg-[#2a2925] dark:text-[#c5bea9]"
                     data-testid="badge-private"
                     data-visibility-badge={pageItem.id}
                   >
@@ -143,9 +161,10 @@ const PageListItem = memo(function PageListItem({
           />
           <SummaryStatusBadge status={pageItem.summaryStatus} />
           <EmbeddingStatusBadge embeddingDirty={pageItem.embeddingDirty} />
-          {pageItem.lastModifiedAt && (
-            <FreshnessBadge lastModified={pageItem.lastModifiedAt} />
-          )}
+          {/* No FreshnessBadge here: it is derived purely from lastModifiedAt,
+              which this row already prints as a date three lines above. Two
+              renderings of one field read as two facts. It stays on the page
+              detail and preview surfaces, where no raw date sits beside it. */}
           {pageItem.labels.length > 0 && (
             <div className="flex gap-1">
               {pageItem.labels.slice(0, 3).map((label) => (
@@ -172,6 +191,12 @@ const PageListItem = memo(function PageListItem({
   if (prev.pageItem.qualityStatus !== next.pageItem.qualityStatus) return false;
   if (prev.pageItem.summaryStatus !== next.pageItem.summaryStatus) return false;
   if (prev.index !== next.index) return false;
+  // Selection is row-local render state, not page data. Omitting it here made
+  // the checkbox permanently unclickable-looking: the Set updated and the
+  // action bar counted correctly, but the row skipped its re-render, so React
+  // restored the controlled input's DOM back to unchecked.
+  if (prev.selected !== next.selected) return false;
+  if (prev.onToggleSelect !== next.onToggleSelect) return false;
   return true;
 });
 
@@ -179,9 +204,13 @@ const PageListItem = memo(function PageListItem({
 
 export function PagesPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const isLight = useIsLightTheme();
   const [spaceKey, setSpaceKey] = useState<string>('');
-  const [search, setSearch] = useState('');
+  // Seed from `?search=` so a search can be linked to — the 404 page hands off
+  // the user's query this way, and it makes result URLs shareable. Read once
+  // on mount; typing afterwards owns the state and does not rewrite the URL.
+  const [search, setSearch] = useState(() => searchParams.get('search') ?? '');
   const [author, setAuthor] = useState<string>('');
   const [labels, setLabels] = useState<string>('');
   const [freshness, setFreshness] = useState<string>('');
@@ -195,13 +224,20 @@ export function PagesPage() {
   const [sourceFilter, setSourceFilter] = useState<PageSource | ''>('');
   const [searchMode, setSearchMode] = useState<'keyword' | 'semantic' | 'hybrid'>('keyword');
 
+  // Bulk selection. Held as a Set of page ids so toggling stays O(1) and the
+  // memoised PageListItem only re-renders for rows whose own state changed.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const lastToggledId = useRef<string | null>(null);
+
   // Debounce the search term before it reaches the keyword /pages query.
   // Typing stays responsive because `search` still drives the input value,
   // clear button, sort switch and semantic-mode gate synchronously; only the
   // network request waits for a 300ms pause (mirrors useSearch). Without this
   // every keystroke minted a new query key and fired a fresh, rate-limited
   // GET /pages?search=… (#874).
-  const [debouncedSearch, setDebouncedSearch] = useState('');
+  // Seeded from the same `?search=` param so a linked search fetches results
+  // on the first render instead of after an empty-list flash plus 300ms.
+  const [debouncedSearch, setDebouncedSearch] = useState(() => searchParams.get('search') ?? '');
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(search), 300);
     return () => clearTimeout(timer);
@@ -349,9 +385,69 @@ export function PagesPage() {
     navigate(`/pages/${id}`);
   }, [navigate]);
 
-  // Virtual scrolling for the keyword/browse page list
-  const pageItems = pagesData?.items ?? [];
+  // Virtual scrolling for the keyword/browse page list. Memoised because the
+  // `?? []` fallback would otherwise mint a new array every render and break
+  // the memoisation of every selection callback that depends on it.
+  const pageItems = useMemo(() => pagesData?.items ?? [], [pagesData?.items]);
   const scrollMargin = listContainerRef.current?.offsetTop ?? 0;
+
+  const toggleSelect = useCallback((id: string, shiftKey: boolean) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      const anchor = lastToggledId.current;
+
+      // Shift-click selects the contiguous run between the anchor and this
+      // row, matching the file-list convention. Falls back to a plain toggle
+      // when either end is no longer in the current result set (filters or
+      // pagination changed underneath the selection).
+      if (shiftKey && anchor && anchor !== id) {
+        const ids = pageItems.map((p) => p.id);
+        const from = ids.indexOf(anchor);
+        const to = ids.indexOf(id);
+        if (from !== -1 && to !== -1) {
+          const [lo, hi] = from < to ? [from, to] : [to, from];
+          const selecting = !prev.has(id);
+          for (const rangeId of ids.slice(lo, hi + 1)) {
+            if (selecting) next.add(rangeId);
+            else next.delete(rangeId);
+          }
+          lastToggledId.current = id;
+          return next;
+        }
+      }
+
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      lastToggledId.current = id;
+      return next;
+    });
+  }, [pageItems]);
+
+  const clearSelection = useCallback(() => {
+    setSelectedIds(new Set());
+    lastToggledId.current = null;
+  }, []);
+
+  // Drop ids that fell out of the result set, so the action bar never reports
+  // a count that includes rows the user can no longer see.
+  const visibleSelectedIds = useMemo(
+    () => pageItems.filter((p) => selectedIds.has(p.id)).map((p) => p.id),
+    [pageItems, selectedIds],
+  );
+  const selectedConfluenceCount = useMemo(
+    () => pageItems.filter((p) => selectedIds.has(p.id) && p.source === 'confluence').length,
+    [pageItems, selectedIds],
+  );
+  const allVisibleSelected = pageItems.length > 0 && visibleSelectedIds.length === pageItems.length;
+
+  const toggleSelectAll = useCallback(() => {
+    setSelectedIds((prev) => {
+      const allSelected = pageItems.length > 0 && pageItems.every((p) => prev.has(p.id));
+      if (allSelected) return new Set();
+      return new Set(pageItems.map((p) => p.id));
+    });
+    lastToggledId.current = null;
+  }, [pageItems]);
 
   const virtualizer = useVirtualizer({
     count: pageItems.length,
@@ -381,14 +477,9 @@ export function PagesPage() {
             <Trash2 size={16} />
             <span className="hidden sm:inline">Trash</span>
           </button>
-          <button
-            onClick={() => syncMutation.mutate()}
-            disabled={syncStatus?.status === 'syncing'}
-            className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm flex items-center gap-2 px-4 py-2 text-sm hover:bg-foreground/5 disabled:opacity-50"
-          >
-            <RefreshCw size={16} className={cn(syncStatus?.status === 'syncing' && 'animate-spin')} />
-            <span className="hidden sm:inline">{syncStatus?.status === 'syncing' ? 'Syncing...' : 'Sync'}</span>
-          </button>
+          {/* Sync moved into the Last Sync KPI card, where it sits beside the
+              value it acts on. Keeping a second copy here would have made the
+              header four buttons wide for no added reach. */}
           <button
             onClick={() => navigate('/pages/new')}
             className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
@@ -400,12 +491,20 @@ export function PagesPage() {
         </div>
       </div>
 
-      {/* KPI Cards */}
-      <KPICards
+      {/* Landmarked and headed so screen-reader users can jump between the
+          three regions of this page. Previously the whole dashboard exposed a
+          single H1 and nothing else, which made heading navigation — the
+          primary wayfinding tool — useless on the app's main screen. */}
+      <section aria-labelledby="kb-status-heading">
+        <h2 id="kb-status-heading" className="sr-only">Knowledge base status</h2>
+        <KPICards
         embeddingStatus={embeddingStatusData}
         spacesCount={spaces?.length ?? 0}
         lastSynced={syncStatus?.lastSynced}
-      />
+          onSync={() => syncMutation.mutate()}
+          isSyncing={syncStatus?.status === 'syncing'}
+        />
+      </section>
 
       {/* Sync progress */}
       {syncStatus?.status === 'syncing' && syncStatus.progress && (
@@ -448,7 +547,8 @@ export function PagesPage() {
       <PinnedArticlesSection />
 
       {/* Filters */}
-      <div className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm space-y-3 p-4">
+      <section aria-labelledby="kb-filters-heading" className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm space-y-3 p-4">
+        <h2 id="kb-filters-heading" className="sr-only">Search and filter pages</h2>
         <div className="flex flex-wrap items-center gap-3">
           {/* Search */}
           <div className="relative flex-1 min-w-48">
@@ -564,7 +664,7 @@ export function PagesPage() {
             <Filter size={14} />
             Filters
             {activeFilterCount > 0 && (
-              <span className="ml-1 flex h-5 w-5 items-center justify-center rounded-full bg-action text-[10px] font-bold text-action-foreground">
+              <span className="ml-1 flex h-5 w-5 items-center justify-center rounded-full bg-action text-[11px] font-bold text-action-foreground">
                 {activeFilterCount}
               </span>
             )}
@@ -748,7 +848,7 @@ export function PagesPage() {
             Advanced filters apply to keyword search only — they don't affect semantic or hybrid results.
           </p>
         )}
-      </div>
+      </section>
 
       {/* No-embeddings warning for semantic/hybrid search */}
       {search && searchMode !== 'keyword' && !searchResults.hasEmbeddings && (
@@ -798,6 +898,8 @@ export function PagesPage() {
       ) : (
       <>
       {/* Page list — semantic/hybrid search results */}
+      <section aria-labelledby="kb-results-heading">
+      <h2 id="kb-results-heading" className="sr-only">Page results</h2>
       {useSemanticSearch ? (
         <>
           {searchResults.isLoadingImmediate && searchResults.immediateResults.length === 0 ? (
@@ -926,6 +1028,35 @@ export function PagesPage() {
               action={!search ? { label: 'Go to Settings', onClick: () => navigate('/settings') } : undefined}
             />
           ) : (
+            <>
+            {/* Select-all + bulk actions. The four /pages/bulk/* endpoints
+                shipped with no UI, so re-embedding a large space meant one
+                row at a time. */}
+            <div className="mb-3 space-y-3">
+              <label className="flex w-fit cursor-pointer items-center gap-2 text-sm text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={allVisibleSelected}
+                  ref={(el) => {
+                    // Partial selection is a third state; without it the box
+                    // reads "nothing selected" while rows plainly are.
+                    if (el) el.indeterminate = visibleSelectedIds.length > 0 && !allVisibleSelected;
+                  }}
+                  onChange={toggleSelectAll}
+                  aria-label={allVisibleSelected ? 'Deselect all pages' : 'Select all pages'}
+                  className="size-4 cursor-pointer accent-[var(--color-action)]"
+                  data-testid="select-all-pages"
+                />
+                Select all on this page
+              </label>
+
+              <BulkActionBar
+                selectedIds={visibleSelectedIds}
+                confluenceCount={selectedConfluenceCount}
+                onClear={clearSelection}
+              />
+            </div>
+
             <div
               ref={listContainerRef}
               data-testid="virtual-list-container"
@@ -952,12 +1083,15 @@ export function PagesPage() {
                         pageItem={pageItem}
                         index={virtualRow.index}
                         onNavigate={navigateToPage}
+                        selected={selectedIds.has(pageItem.id)}
+                        onToggleSelect={toggleSelect}
                       />
                     </div>
                   </div>
                 );
               })}
             </div>
+            </>
           )}
 
           {/* Pagination */}
@@ -986,6 +1120,7 @@ export function PagesPage() {
           )}
         </>
       )}
+      </section>
       </>
       )}
     </div>

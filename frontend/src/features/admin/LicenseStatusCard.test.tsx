@@ -67,7 +67,9 @@ describe('LicenseStatusCard', () => {
     render(<LicenseStatusCard />, { wrapper: createWrapper() });
 
     expect(await screen.findByText('Community Edition')).toBeInTheDocument();
-    expect(screen.getByText(/Unlock enterprise features/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/More features are available with an enterprise license/),
+    ).toBeInTheDocument();
   });
 
   it('shows enterprise tier with features when licensed', async () => {
@@ -144,7 +146,7 @@ describe('LicenseStatusCard', () => {
     render(<LicenseStatusCard />, { wrapper: createWrapper() });
 
     expect(await screen.findByText('Enterprise Edition')).toBeInTheDocument();
-    expect(screen.queryByText(/Unlock enterprise features/)).not.toBeInTheDocument();
+    expect(screen.queryByTestId('license-upgrade-cta')).not.toBeInTheDocument();
   });
 
   it('does not show seat/expiry stats for community tier', async () => {
@@ -176,7 +178,7 @@ describe('LicenseStatusCard', () => {
     await screen.findByText('Community Edition');
     expect(screen.queryByTestId('license-key-form')).not.toBeInTheDocument();
     // Static upgrade message is shown instead
-    expect(screen.getByText(/Unlock enterprise features/)).toBeInTheDocument();
+    expect(screen.getByTestId('license-upgrade-cta')).toBeInTheDocument();
   });
 
   it('shows key entry form when backend declares canUpdate (EE community)', async () => {
@@ -363,5 +365,55 @@ describe('LicenseStatusCard', () => {
     });
     expect(putCall).toBeTruthy();
     expect(putCall?.[1]?.body).toContain('ATM-enterprise-50-20271231-CPQ1a2b3c4d.signature');
+  });
+});
+
+describe('LicenseStatusCard — upgrade CTA signals', () => {
+  // ADR-010 v0.4 reserves amber for warning/attention. Spending it on an
+  // upsell devalues it on the surfaces where it means something (sync
+  // failures, embedding stalls), so the CTA must stay on the steel accent.
+  it('does not use the warning color anywhere in the upgrade CTA', async () => {
+    mockFetch({ edition: 'community', tier: 'community', features: [], valid: true });
+
+    render(<LicenseStatusCard />, { wrapper: createWrapper() });
+
+    const cta = await screen.findByTestId('license-upgrade-cta');
+    expect(cta.querySelector('[class*="color-warning"]')).toBeNull();
+    expect(cta.querySelector('[class*="amber"]')).toBeNull();
+  });
+
+  it('does not tell the administrator to contact their administrator', async () => {
+    mockFetch({ edition: 'community', tier: 'community', features: [], valid: true });
+
+    render(<LicenseStatusCard />, { wrapper: createWrapper() });
+
+    const cta = await screen.findByTestId('license-upgrade-cta');
+    expect(cta.textContent).not.toMatch(/contact your administrator/i);
+  });
+
+  it('collapses the all-locked feature catalogue on community tier', async () => {
+    mockFetch({ edition: 'community', tier: 'community', features: [], valid: true });
+
+    render(<LicenseStatusCard />, { wrapper: createWrapper() });
+
+    const catalogue = await screen.findByTestId('feature-catalogue');
+    expect(catalogue).not.toHaveAttribute('open');
+    expect(catalogue).toHaveTextContent('0 of 5 active');
+  });
+
+  it('expands the catalogue when a paid tier makes the rows informative', async () => {
+    mockFetch({
+      edition: 'enterprise',
+      tier: 'enterprise',
+      features: ['oidc', 'audit-export'],
+      valid: true,
+      canUpdate: true,
+    });
+
+    render(<LicenseStatusCard />, { wrapper: createWrapper() });
+
+    const catalogue = await screen.findByTestId('feature-catalogue');
+    expect(catalogue).toHaveAttribute('open');
+    expect(catalogue).toHaveTextContent('2 of 5 active');
   });
 });

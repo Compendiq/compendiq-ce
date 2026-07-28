@@ -1376,4 +1376,174 @@ describe('PagesPage', () => {
       expect(screen.getByRole('button', { name: /next page/i })).toBeInTheDocument();
     });
   });
+
+  describe('screen-reader wayfinding', () => {
+    // Before the July-2026 critique this page exposed exactly one heading
+    // ("Pages") for the whole dashboard, so heading navigation — a screen
+    // reader user's primary way of moving around a screen — did nothing.
+    it('gives each region of the dashboard a heading', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      const headings = screen.getAllByRole('heading').map((h) => h.textContent);
+      expect(headings).toContain('Pages');
+      expect(headings).toContain('Knowledge base status');
+      expect(headings).toContain('Search and filter pages');
+      expect(headings).toContain('Page results');
+    });
+
+    it('associates each region with its heading', () => {
+      const { container } = render(<PagesPage />, { wrapper: createWrapper() });
+
+      const labelled = Array.from(container.querySelectorAll('section[aria-labelledby]'));
+      expect(labelled.length).toBeGreaterThanOrEqual(3);
+      for (const section of labelled) {
+        const id = section.getAttribute('aria-labelledby')!;
+        expect(container.querySelector(`#${id}`)).not.toBeNull();
+      }
+    });
+  });
+
+  describe('linkable search', () => {
+    it('seeds the search box from ?search=', async () => {
+      // The 404 page hands the user's query off this way, and it makes result
+      // URLs shareable.
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={['/?search=runbook']}>
+            <div data-scroll-container style={{ height: 800, overflow: 'auto' }}>
+              <PagesPage />
+            </div>
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+
+      const input = await screen.findByPlaceholderText('Search pages...');
+      expect((input as HTMLInputElement).value).toBe('runbook');
+    });
+
+    it('starts empty when no search param is present', async () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      const input = await screen.findByPlaceholderText('Search pages...');
+      expect((input as HTMLInputElement).value).toBe('');
+    });
+  });
+
+  describe('bulk selection', () => {
+    // /pages/bulk/{delete,sync,embed,quality} shipped on the backend with no
+    // frontend, so re-embedding a large space meant one row at a time.
+    it('shows no action bar until something is selected', async () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      await screen.findByText('Test Page');
+
+      expect(screen.getByTestId('select-all-pages')).toBeInTheDocument();
+      expect(screen.queryByTestId('bulk-action-bar')).not.toBeInTheDocument();
+    });
+
+    it('reveals the action bar when a row is checked', async () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      await screen.findByText('Test Page');
+
+      const checkbox = screen.getByLabelText('Select Test Page');
+      fireEvent.click(checkbox);
+
+      expect(await screen.findByTestId('bulk-action-bar')).toBeInTheDocument();
+      expect(screen.getByTestId('bulk-selection-count')).toHaveTextContent('1 page selected');
+    });
+
+    it('renders the row checkbox as checked once selected', async () => {
+      // PageListItem is memoised with a hand-written comparator. When that
+      // comparator omitted `selected`, the row skipped its re-render and React
+      // restored the controlled input to unchecked — selection state was
+      // correct and the action bar counted right, but every box looked empty.
+      render(<PagesPage />, { wrapper: createWrapper() });
+      await screen.findByText('Test Page');
+
+      const checkbox = screen.getByLabelText('Select Test Page');
+      expect(checkbox).not.toBeChecked();
+
+      fireEvent.click(checkbox);
+
+      await waitFor(() => {
+        expect(screen.getByLabelText('Select Test Page')).toBeChecked();
+      });
+    });
+
+    it('unchecks the row when toggled off', async () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      await screen.findByText('Test Page');
+
+      const checkbox = screen.getByLabelText('Select Test Page');
+      fireEvent.click(checkbox);
+      await waitFor(() => expect(screen.getByLabelText('Select Test Page')).toBeChecked());
+
+      fireEvent.click(screen.getByLabelText('Select Test Page'));
+      await waitFor(() => expect(screen.getByLabelText('Select Test Page')).not.toBeChecked());
+    });
+
+    it('checks every row when select-all is used', async () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      await screen.findByText('Test Page');
+
+      fireEvent.click(screen.getByTestId('select-all-pages'));
+
+      await waitFor(() => {
+        expect(screen.getByLabelText('Select Test Page')).toBeChecked();
+      });
+    });
+
+    it('selects and clears every visible row from the header checkbox', async () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      await screen.findByText('Test Page');
+
+      const selectAll = screen.getByTestId('select-all-pages');
+      fireEvent.click(selectAll);
+      expect(await screen.findByTestId('bulk-action-bar')).toBeInTheDocument();
+
+      fireEvent.click(selectAll);
+      await waitFor(() => {
+        expect(screen.queryByTestId('bulk-action-bar')).not.toBeInTheDocument();
+      });
+    });
+
+    it('marks the header checkbox indeterminate on a partial selection', async () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      await screen.findByText('Test Page');
+
+      const selectAll = screen.getByTestId('select-all-pages') as HTMLInputElement;
+      expect(selectAll.indeterminate).toBe(false);
+
+      fireEvent.click(screen.getByLabelText('Select Test Page'));
+
+      await waitFor(() => {
+        const box = screen.getByTestId('select-all-pages') as HTMLInputElement;
+        // Partial selection is a third state; without it the box reads
+        // "nothing selected" while rows plainly are.
+        expect(box.indeterminate || box.checked).toBe(true);
+      });
+    });
+
+    it('clears the selection from the action bar', async () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      await screen.findByText('Test Page');
+
+      fireEvent.click(screen.getByLabelText('Select Test Page'));
+      fireEvent.click(await screen.findByTestId('bulk-clear-btn'));
+
+      await waitFor(() => {
+        expect(screen.queryByTestId('bulk-action-bar')).not.toBeInTheDocument();
+      });
+    });
+  });
+
+  describe('list row density', () => {
+    it('does not print a freshness badge beside the raw date it derives from', async () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      // FreshnessBadge is computed purely from lastModifiedAt, which the row
+      // already renders as a date — two renderings of one field.
+      await screen.findByText('Test Page');
+      expect(screen.queryByTestId('badge-recent')).not.toBeInTheDocument();
+    });
+  });
 });

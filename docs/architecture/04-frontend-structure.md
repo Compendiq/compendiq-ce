@@ -22,7 +22,7 @@ flowchart TB
     subgraph features["features/ (domain UI)"]
         direction LR
         fAuth["auth/<br/>OidcCallbackPage (EE route)"]
-        fPages["pages/<br/>list · view · new · trash · pinned"]
+        fPages["pages/<br/>list · view · new · trash · pinned<br/>bulk actions · 404 catch-all"]
         fSpaces["spaces/<br/>settings · new"]
         fAI["ai/<br/>AiAssistantPage<br/>(ask / improve / generate / summarize)"]
         fGraph["graph/"]

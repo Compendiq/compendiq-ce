@@ -88,7 +88,7 @@ export function PagePreview({ pageId, children, className }: PagePreviewProps) {
                     </p>
                   )}
                   <div className="flex items-center gap-2">
-                    <span className="rounded bg-[#ececea] px-1.5 py-0.5 text-[10px] text-[#4a4a48] dark:bg-[#2a2925] dark:text-[#c5bea9]">
+                    <span className="rounded bg-[#ececea] px-1.5 py-0.5 text-[11px] text-[#4a4a48] dark:bg-[#2a2925] dark:text-[#c5bea9]">
                       {page.spaceKey}
                     </span>
                     {page.lastModifiedAt && (

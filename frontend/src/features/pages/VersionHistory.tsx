@@ -305,12 +305,12 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-medium">v{version.versionNumber}</span>
                         {version.isCurrent && (
-                          <span className="rounded bg-success/10 px-1.5 py-0.5 text-[10px] font-medium text-success">
+                          <span className="rounded bg-success/10 px-1.5 py-0.5 text-[11px] font-medium text-success">
                             Current
                           </span>
                         )}
                         {version.author && (
-                          <span className="text-[10px] text-muted-foreground">{version.author}</span>
+                          <span className="text-[11px] text-muted-foreground">{version.author}</span>
                         )}
                       </div>
                       <p className="truncate text-xs text-muted-foreground">

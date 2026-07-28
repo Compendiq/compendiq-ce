@@ -60,7 +60,7 @@ export function PresenceAvatarStack({
             data-user-id={viewer.userId}
             data-is-editing={viewer.isEditing ? 'true' : 'false'}
             className={cn(
-              'relative flex h-7 w-7 items-center justify-center rounded-full border-2 border-card text-[10px] font-semibold text-foreground',
+              'relative flex h-7 w-7 items-center justify-center rounded-full border-2 border-card text-[11px] font-semibold text-foreground',
               'bg-gradient-to-br from-primary/30 to-primary/10',
               idx > 0 && '-ml-2',
             )}
@@ -92,7 +92,7 @@ export function PresenceAvatarStack({
       {overflow > 0 && (
         <span
           data-testid="presence-overflow"
-          className="ml-1 inline-flex h-6 items-center justify-center rounded-full bg-muted px-2 text-[10px] font-medium text-muted-foreground"
+          className="ml-1 inline-flex h-6 items-center justify-center rounded-full bg-muted px-2 text-[11px] font-medium text-muted-foreground"
         >
           +{overflow}
         </span>

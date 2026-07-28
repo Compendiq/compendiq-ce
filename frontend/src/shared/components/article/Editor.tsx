@@ -451,7 +451,7 @@ function PanelInsert({ editor }: { editor: EditorType }) {
       </ToolbarButton>
       {open && (
         <div className="absolute top-full left-0 z-50 mt-1 rounded-lg border border-border/50 bg-card p-2 shadow-lg min-w-max">
-          <p className="mb-1.5 px-1 text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Panel</p>
+          <p className="mb-1.5 px-1 text-[12px] font-medium text-muted-foreground uppercase tracking-wider">Panel</p>
           <div className="grid grid-cols-2 gap-1">
             {PANEL_TYPES.map(({ value, label, Icon, swatch }) => (
               <button
@@ -989,7 +989,7 @@ function LayoutPresetPicker({ editor }: { editor: EditorType }) {
       </ToolbarButton>
       {open && (
         <div className="absolute top-full left-0 z-50 mt-1 rounded-lg border border-border/50 bg-card p-2 shadow-lg min-w-max">
-          <p className="mb-1.5 px-1 text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Page Layout</p>
+          <p className="mb-1.5 px-1 text-[12px] font-medium text-muted-foreground uppercase tracking-wider">Page Layout</p>
           <div className="flex gap-1">
             {LAYOUT_PRESETS.map((preset) => (
               <button
@@ -1002,7 +1002,7 @@ function LayoutPresetPicker({ editor }: { editor: EditorType }) {
                 className="flex flex-col items-center gap-1 rounded-md px-2 py-1.5 hover:bg-foreground/5 transition-colors"
               >
                 <LayoutPreview bars={preset.bars} size="md" />
-                <span className="text-[10px] text-muted-foreground whitespace-nowrap">{preset.label}</span>
+                <span className="text-[11px] text-muted-foreground whitespace-nowrap">{preset.label}</span>
               </button>
             ))}
           </div>

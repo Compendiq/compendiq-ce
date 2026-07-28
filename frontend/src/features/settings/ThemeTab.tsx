@@ -37,7 +37,7 @@ export function ThemeTab({ onSave }: ThemeTabProps) {
         if (categoryThemes.length === 0) return null;
         return (
           <section key={cat.key} data-testid={`theme-category-${cat.key}`}>
-            <h3 className="mb-3 text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
+            <h3 className="mb-3 text-[12px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
               {cat.label}
             </h3>
             <div

@@ -865,20 +865,20 @@ export function ArticleRightPane() {
           <div className="mx-3 h-px bg-[var(--glass-sidebar-divider)]" />
           <div className="px-3 py-3">
             <div className="flex flex-wrap gap-1.5">
-              <span className="inline-flex items-center gap-1 nm-pill-active rounded-full px-2 py-0.5 text-[10px] text-foreground/80">
+              <span className="inline-flex items-center gap-1 nm-pill-active rounded-full px-2 py-0.5 text-[11px] text-foreground/80">
                 {page.spaceKey}
               </span>
-              <span className="inline-flex items-center gap-1 nm-pill-active rounded-full px-2 py-0.5 text-[10px] text-foreground/80">
+              <span className="inline-flex items-center gap-1 nm-pill-active rounded-full px-2 py-0.5 text-[11px] text-foreground/80">
                 {page.hasChildren
                   ? <><FolderOpen size={10} className="shrink-0 text-muted-foreground/60" /> Folder</>
                   : <><FileText size={10} className="shrink-0 text-muted-foreground/60" /> Article</>}
               </span>
               {page.author && (
-                <span className="inline-flex max-w-[120px] truncate nm-pill-active rounded-full px-2 py-0.5 text-[10px] text-foreground/80">
+                <span className="inline-flex max-w-[120px] truncate nm-pill-active rounded-full px-2 py-0.5 text-[11px] text-foreground/80">
                   {page.author}
                 </span>
               )}
-              <span className="inline-flex nm-pill-active rounded-full px-2 py-0.5 text-[10px] text-foreground/80">
+              <span className="inline-flex nm-pill-active rounded-full px-2 py-0.5 text-[11px] text-foreground/80">
                 v{page.version}
               </span>
               {page.lastModifiedAt && <FreshnessBadge lastModified={page.lastModifiedAt} />}
@@ -905,7 +905,7 @@ export function ArticleRightPane() {
               {page.labels.map((label) => (
                 <span
                   key={label}
-                  className="nm-pill-active rounded-full px-2 py-0.5 text-[10px] text-muted-foreground"
+                  className="nm-pill-active rounded-full px-2 py-0.5 text-[11px] text-muted-foreground"
                 >
                   {label}
                 </span>
@@ -925,7 +925,7 @@ export function ArticleRightPane() {
                 <ListTree size={13} />
                 Outline
               </div>
-              <span className="text-[10px] text-muted-foreground/50">
+              <span className="text-[11px] text-muted-foreground/50">
                 {headings.length} section{headings.length === 1 ? '' : 's'}
               </span>
             </div>
