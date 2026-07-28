@@ -1116,7 +1116,9 @@ describe('AiAssistantPage', () => {
 
       render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?pageId=p1']) });
 
-      expect(screen.getByText('Test Page')).toBeInTheDocument();
+      // The page-context chip that used to render the bare title is gone
+      // (#1126); the mode's own empty state still names the resolved page.
+      expect(screen.getByText('Ready to improve: Test Page')).toBeInTheDocument();
       expect(screen.queryByText('+ Sub-pages')).not.toBeInTheDocument();
     });
 
@@ -1251,7 +1253,11 @@ describe('AiAssistantPage', () => {
   });
 
   describe('AI context page change (#417)', () => {
-    it('shows page context badge when navigated from sidebar', () => {
+    // #1126: the static page-context chip is deleted. It was a non-interactive
+    // <span> naming a page you could not click, clear, or swap — the literal
+    // "context is invisible and unswitchable" defect. Context still resolves
+    // from ?pageId=; it is simply no longer restated as a dead chip.
+    it('no longer renders the static page-context chip, but still resolves the context', () => {
       mockPageData = {
         data: { id: 'p1', title: 'My Article', bodyHtml: '<p>Content</p>', bodyText: 'Content' },
       };
@@ -1260,8 +1266,8 @@ describe('AiAssistantPage', () => {
         wrapper: createWrapper(['/ai?pageId=p1']),
       });
 
-      // The page title should be shown in the mode bar as context
-      expect(screen.getByText('My Article')).toBeInTheDocument();
+      expect(screen.queryByTitle('AI context is scoped to "My Article"')).not.toBeInTheDocument();
+      expect(screen.getByText('Ready to improve: My Article')).toBeInTheDocument();
     });
 
     it('starts fresh conversation when mounted with different pageId', () => {
@@ -1274,7 +1280,7 @@ describe('AiAssistantPage', () => {
         wrapper: createWrapper(['/ai?pageId=p1']),
       });
 
-      expect(screen.getByText('First Article')).toBeInTheDocument();
+      expect(screen.getByText('Ready to improve: First Article')).toBeInTheDocument();
       unmount();
 
       // Re-mount with p2 — should show fresh state with new page context
@@ -1286,9 +1292,10 @@ describe('AiAssistantPage', () => {
         wrapper: createWrapper(['/ai?pageId=p2']),
       });
 
-      // New page title shown, no stale state from p1
-      expect(screen.getByText('Second Article')).toBeInTheDocument();
-      expect(screen.queryByText('First Article')).not.toBeInTheDocument();
+      // New page resolved, no stale state from p1. Asserted through the mode's
+      // empty state rather than the deleted context chip (#1126).
+      expect(screen.getByText('Ready to improve: Second Article')).toBeInTheDocument();
+      expect(screen.queryByText('Ready to improve: First Article')).not.toBeInTheDocument();
     });
 
     it('reads the thread from the hoisted provider rather than one of its own (#1126)', () => {

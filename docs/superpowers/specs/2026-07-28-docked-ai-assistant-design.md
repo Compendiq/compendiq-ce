@@ -1,0 +1,185 @@
+# Docked AI Assistant — Design
+
+**Date:** 2026-07-28
+**Issue:** #1126 (AI context switching UX)
+**Status:** Approved design, not yet planned
+
+## Problem
+
+The AI assistant is a destination (`/ai`), not a tool. That produces three concrete
+defects:
+
+1. **Context is invisible and unswitchable.** `AiAssistantPage.tsx` renders the active
+   page as a static, non-interactive chip. It cannot be clicked, cleared, or used to
+   pick a different page.
+2. **Switching context destroys work.** `pageId` is derived purely from the `?pageId=`
+   URL search param (`AiContext.tsx:198`), and any change resets `messages`,
+   `conversationId`, and diff/diagram state (`AiContext.tsx:258-271`). A sidebar click
+   the user reads as navigation silently discards an in-progress conversation.
+3. **Two axes of state, no relationship between them.** The user picks one of six modes
+   *and* separately establishes a page context, with no affordance connecting them.
+
+The underlying cause is structural: `AiProvider` is mounted inside `AiAssistantPage`
+(`AiAssistantPage.tsx:575`), so the conversation cannot outlive the route.
+
+## Direction
+
+The assistant becomes a **dock**, not a destination. The open document *is* the
+context, so there is nothing to switch and nothing to reset.
+
+This extends the incumbent Slate Steel world (ADR-010 v0.5). No new visual language,
+no new tokens.
+
+### Topology
+
+On `/pages/:id`, opening the assistant forces `ArticleRightPane` into its **existing**
+40px collapsed rail (`ArticleRightPane.tsx:520-564`) and renders the assistant beside
+it at ~420px. Rail icons fly out on hover/focus so the outline stays reachable.
+
+```
+┌────────┬──────────────────────────┬──┬────────────────────────┐
+│Sidebar │  # Onboarding Guide      │⚭ │ ✦ Assistant          × │
+│        │                          │▤ │ ────────────────────── │
+│ ▸ Docs │  Lorem ipsum dolor sit   │⚡│ You: tighten the intro │
+│ ▸ API  │  amet, consectetur…      │▓ │                        │
+│ ▸ Onb… │                          │⏱ │ ✦ Here's a revision:   │
+│        │  ## Prerequisites        │  │  ┌──────────────────┐  │
+│        │  ▓▓▓▓▓▓▓▓ (selected)     │  │  │- Lorem ipsum dol │  │
+│        │                          │  │  │+ Getting started │  │
+│        │  You need a PAT…         │  │  └──────────────────┘  │
+│        │                          │  │  [Apply] [Skip]        │
+│        │                          │  │ ────────────────────── │
+│        │                          │  │ ⚡Improve ⚡Summarize   │
+│        │                          │  │ ⚡Diagram ⚡Quality     │
+│        │                          │  │ ┌────────────────────┐ │
+│        │                          │  │ │ Ask about this…  ⏎ │ │
+│        │                          │  │ └────────────────────┘ │
+└────────┴──────────────────────────┴──┴────────────────────────┘
+                                     40px        ~420px
+```
+
+The rail's existing `Wand2` "AI Improve" button (`ArticleRightPane.tsx:557-564`) stops
+navigating to `/ai?mode=improve&pageId=…` and instead opens the dock with an Improve
+prompt seeded.
+
+### One thread, four chips
+
+The six-mode tablist does not survive into the dock. Improve, Summarize, Diagram, and
+Quality become **chips that seed the conversation** rather than modes you switch into.
+This removes the mode-vs-context two-axis problem outright instead of bolting a
+context switcher onto it.
+
+**Generate stays on `/ai`.** It creates a new document rather than acting on an open
+one, and its upload zone plus long-form prompt fit badly in a 420px column. `/ai`
+loses its context chip entirely — it becomes the no-document home for Ask and
+Generate.
+
+### Color
+
+Violet marks the AI surface (panel header, streaming indicator, assistant avatar) per
+ADR-010. Steel remains the interaction accent for chips, `Apply`, and the send button.
+**Violet is never a button fill** — it identifies the surface, it does not invite a
+click.
+
+## Behavior
+
+### Threads
+
+Conversations are keyed by `pageId` and retained. Moving between documents **swaps**
+threads; it never destroys one. `AiProvider` moves from `AiAssistantPage` up to
+`AppLayout` so a thread outlives navigation. The `?pageId=` URL param becomes one
+*input* to context resolution, not its definition.
+
+### Diffs
+
+Diffs render inline in the thread with `Apply` / `Skip`, writing straight into the
+TipTap editor.
+
+- `Apply` requires edit mode. In read mode, offer to enter it rather than failing.
+- If the document changed under a pending diff, offer a re-diff. **Never silently
+  overwrite.**
+
+### Selection
+
+The existing bubble-menu AI Improve on a text selection routes into the dock instead
+of opening its own popover.
+
+### Composer
+
+The prompt is a `<textarea>`, not an `<input>` — Enter submits, Shift+Enter inserts a
+newline, matching `ImproveMode.tsx`. This resolves #1120's complaint in the surface
+where it actually matters.
+
+## States
+
+| State | Behavior |
+|---|---|
+| Empty thread | Chips and composer only, no placeholder chat bubbles |
+| Streaming | Violet streaming indicator; composer disabled |
+| Diff pending | Inline diff card with `Apply` / `Skip` |
+| Apply conflict | Document edited under a pending diff → offer re-diff |
+| Read mode | `Apply` offers to enter edit mode first |
+| Rail flyout | Hover or focus a rail icon → outline/actions fly out |
+| Model unavailable | Reuse the existing `modelsError` retry chip |
+
+## Responsive
+
+- **≥ ~1100px:** rail (40px) + assistant (~420px), as drawn.
+- **< ~1100px:** the rail+assistant pair would starve the editor. The assistant takes
+  the full pane width and the rail hides.
+- **< `md`:** no right pane exists at all today. The assistant opens as a
+  drag-to-expand **bottom sheet** over the article, mirroring how the left sidebar
+  already becomes a slide-over.
+
+## Accessibility
+
+- `prefers-reduced-motion: reduce` strips the flyout and bottom-sheet springs.
+- The 40px rail must stay operable under `forced-colors: active`.
+- Chips and the send button keep the 1px `--color-border-interactive` border required
+  by ADR-010's hybrid neumorphism (WCAG 1.4.11, 3:1).
+- The dock is a labelled landmark; opening it moves focus to the composer, and Escape
+  returns focus to the trigger.
+
+## Scope
+
+**In scope**
+
+- Dock on `/pages/:id`
+- Per-page thread retention
+- `AiProvider` hoisted to `AppLayout`
+- Mobile bottom sheet below `md`
+- The four seeding chips
+
+**Untouched**
+
+- Everything `ArticleRightPane` does today: outline, tags, actions, resize, `.` collapse
+- `/ai` keeps Generate
+
+**Anti-goals**
+
+- No multi-page context basket
+- No new AI modes
+- No changes to the visual system
+
+## Sequencing
+
+Three PRs, in order:
+
+1. **Hoist `AiProvider` to `AppLayout` + per-page thread retention.** Independently
+   valuable — this alone fixes the data-loss bug in #1126. No visual change.
+2. **The dock.** Rail coordination, chips, inline diff apply, `<textarea>` composer.
+3. **Mobile bottom sheet.**
+
+## Affected files
+
+- `frontend/src/features/ai/AiContext.tsx` — thread keying, provider hoist, decouple
+  `pageId` from the search param
+- `frontend/src/shared/components/layout/AppLayout.tsx` — mount `AiProvider`; pane
+  coordination at `:374`
+- `frontend/src/shared/components/article/ArticleRightPane.tsx` — rail flyout; rewire
+  the `Wand2` button
+- `frontend/src/features/ai/AiAssistantPage.tsx` — drop the context chip; `/ai` becomes
+  Ask + Generate
+- `frontend/src/features/ai/modes/*` — Improve/Summarize/Diagram/Quality become chip
+  prompts rather than mode screens
+- New: the dock component and its mobile sheet variant

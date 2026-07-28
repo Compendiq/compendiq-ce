@@ -2,13 +2,14 @@ import { memo } from 'react';
 import { m, useReducedMotion } from 'framer-motion';
 import {
   Bot, User, Loader2, MessageSquare, Brain, AlertTriangle,
-  Wand2, ListCollapse, Sparkles, GitBranch, FileText, ShieldCheck, Network,
+  Wand2, ListCollapse, Sparkles, GitBranch, ShieldCheck, Network,
 } from 'lucide-react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { cn } from '../../shared/lib/cn';
 import { ConfidenceBadge } from '../../shared/components/badges/ConfidenceBadge';
 import { AIThinkingBlob } from '../../shared/components/feedback/AIThinkingBlob';
+import { TypingIndicator } from '../../shared/components/feedback/TypingIndicator';
 import { SourceCitations } from './SourceCitations';
 import { CitationChips } from './CitationChips';
 import { StreamingMessage } from './StreamingMessage';
@@ -22,27 +23,6 @@ import {
   QualityModeInput, QUALITY_EMPTY_TITLE, qualityEmptySubtitle,
 } from './modes';
 import { isZeroEmbeddings } from '../../shared/hooks/use-pages';
-
-// ---------------------------------------------------------------------------
-// Typing indicator: 3 dots with staggered bounce
-// ---------------------------------------------------------------------------
-
-function TypingIndicator() {
-  return (
-    <div className="flex items-center gap-1" data-testid="typing-indicator" aria-label="AI is typing">
-      {[0, 1, 2].map((i) => (
-        <span
-          key={i}
-          className="h-1.5 w-1.5 rounded-full bg-primary/60"
-          style={{
-            animation: 'typing-bounce 1.2s ease-in-out infinite',
-            animationDelay: `${i * 0.15}s`,
-          }}
-        />
-      ))}
-    </div>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Memoized message bubble: skips re-render for completed (non-streaming) messages
@@ -364,15 +344,12 @@ export function AiAssistantPage() {
             </select>
           )}
 
-          {page && (
-            <span
-              className="flex h-7 items-center gap-1.5 rounded-md border border-border/40 bg-foreground/[0.03] px-2.5 text-xs text-muted-foreground"
-              title={`AI context is scoped to "${page.title}"`}
-            >
-              <FileText size={12} />
-              <span className="max-w-[180px] truncate">{page.title}</span>
-            </span>
-          )}
+          {/* The context chip is gone (#1126). It was a static, non-interactive
+              <span> naming a page you could not click, clear, or change — the
+              exact "context is invisible and unswitchable" complaint. The answer
+              is not a better chip here: on an article route the open document is
+              the context and the dock shows it directly, and `/ai` is now the
+              no-document home where there is nothing to name. */}
 
           {page && pageHasChildren && (
             <label

@@ -11,8 +11,14 @@ export const AUTO_GROW_MAX_HEIGHT = 160;
  * Grow a textarea to fit its content up to `maxHeight`, then let it scroll.
  *
  * Returns the ref to attach to the textarea. Re-measures whenever `value`
- * changes and on viewport resize, since a narrower composer rewraps the text
- * into a different number of lines.
+ * changes, whenever the field's own width changes, and on viewport resize,
+ * since a narrower composer rewraps the text into a different number of lines.
+ *
+ * The width observer is not redundant with the window listener: the composer's
+ * width changes for reasons the viewport knows nothing about — the AI dock
+ * animating open from 0 (#1126), its drag-resize handle, a sidebar collapse.
+ * Measuring mid-animation reports the wrapped height of a near-zero-width field,
+ * which pins the composer at `maxHeight` and, without this, never recovers.
  *
  * Degrades safely without layout: jsdom reports `scrollHeight` as 0, so the
  * measured path is skipped and the element's `rows` attribute stays in charge
@@ -46,6 +52,22 @@ export function useAutoGrowTextarea(value: string, maxHeight = AUTO_GROW_MAX_HEI
   useEffect(() => {
     window.addEventListener('resize', resize);
     return () => window.removeEventListener('resize', resize);
+  }, [resize]);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    // Only width changes are interesting. Height changes are this hook's own
+    // doing, and re-measuring on them would be a feedback loop.
+    let lastWidth = el.clientWidth;
+    const observer = new ResizeObserver(() => {
+      const width = el.clientWidth;
+      if (width === lastWidth) return;
+      lastWidth = width;
+      resize();
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
   }, [resize]);
 
   return ref;

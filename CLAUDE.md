@@ -100,6 +100,8 @@ Sixteen `nm-*` `@utility` classes (see `frontend/src/index.css`). Card surfaces 
 
 Palette changes are guarded by `frontend/src/neumorphic-themes.test.ts`, which parses the tokens out of `index.css` and **computes** WCAG ratios rather than pinning hex literals — retune a surface and it fails with the measured ratio.
 
+**Docked AI assistant (#1126).** On `/pages/:id` the assistant is a third column beside `ArticleRightPane`, not a destination — design of record in `docs/superpowers/specs/2026-07-28-docked-ai-assistant-design.md`, topology in `docs/architecture/04-frontend-structure.md`. Its open state is the **ephemeral** `stores/ai-dock-store.ts` (width is the persisted `aiDockWidth`); it ORs the article pane into its rail rather than writing the user's saved `articleSidebarCollapsed`. `Apply` on a proposed change writes into the open TipTap editor via the `requestEdit` / `applyContent` capabilities `PageViewPage` registers on `article-view-store` — nothing reaches the server or Confluence until Save. `useIsDockWideLayout()` (`shared/hooks/use-media-query.ts`) is the **only** JS media query in the app; everything else stays a Tailwind class.
+
 > **Brand parity caveat:** this palette no longer mirrors `compendiq-landing/src/styles/tokens.css`, which is still on the retired honey system (black `#0A0A0A` + honey `#F9C74F`). Cross-surface parity is broken until the landing page adopts the steel tokens.
 
 ## Content Pipeline (ADR-003)

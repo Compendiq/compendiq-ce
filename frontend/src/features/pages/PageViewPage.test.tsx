@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { PageViewPage } from './PageViewPage';
 import { useAuthStore } from '../../stores/auth-store';
 import { useArticleViewStore } from '../../stores/article-view-store';
+import { useAiDockStore } from '../../stores/ai-dock-store';
 import { apiFetch } from '../../shared/lib/api';
 
 const mockNavigate = vi.fn();
@@ -292,6 +293,7 @@ describe('PageViewPage', () => {
     vi.mocked(apiFetch).mockResolvedValue({} as never);
     localStorage.clear();
     Element.prototype.scrollTo = vi.fn();
+    useAiDockStore.setState({ open: false, seed: null });
 
     useAuthStore.getState().setAuth('token', {
       id: '1',
@@ -711,12 +713,17 @@ describe('PageViewPage', () => {
     expect(aiShortcut!.category).toBe('actions');
   });
 
-  it('Alt+I action navigates to AI improve page', () => {
+  // #1126: the third of three "AI Improve" call sites. All of them used to
+  // navigate to /ai?mode=improve&pageId=…, which took the document off screen
+  // in order to operate on it. They now open the dock beside it instead.
+  it('Alt+I action opens the docked assistant with Improve seeded', () => {
     render(<PageViewPage />, { wrapper: createWrapper() });
     const aiShortcut = capturedShortcuts.find((s) => s.key === 'Alt+I');
     expect(aiShortcut).toBeDefined();
     aiShortcut!.action();
-    expect(mockNavigate).toHaveBeenCalledWith('/ai?mode=improve&pageId=page-1');
+    expect(useAiDockStore.getState().open).toBe(true);
+    expect(useAiDockStore.getState().seed).toBe('improve');
+    expect(mockNavigate).not.toHaveBeenCalled();
   });
 
   // #703 / #769 — the sticky edit toolbar carries an opaque bg-background

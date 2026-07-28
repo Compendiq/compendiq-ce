@@ -24,7 +24,7 @@ flowchart TB
         fAuth["auth/<br/>OidcCallbackPage (EE route)"]
         fPages["pages/<br/>list · view · new · trash · pinned<br/>bulk actions · 404 catch-all"]
         fSpaces["spaces/<br/>settings · new"]
-        fAI["ai/<br/>AiAssistantPage<br/>(ask / improve / generate / summarize)"]
+        fAI["ai/<br/>AiAssistantPage (/ai — no-document home)<br/>dock/ AiDock · DockDiffCard (#1126)<br/>docked beside /pages/:id"]
         fGraph["graph/"]
         fSettings["settings/<br/>LoginPage · user + admin"]
         fAdmin["admin/<br/>LicenseStatusCard<br/>OidcSettingsPage (EE-gated)<br/>analytics/ (AnalyticsPage)"]
@@ -46,8 +46,9 @@ flowchart TB
     subgraph stores["stores/ (Zustand)"]
         zAuth["auth"]
         zTheme["theme"]
-        zUI["ui"]
-        zAV["article-view"]
+        zUI["ui (persisted)"]
+        zAV["article-view<br/>mirrors + editor capabilities"]
+        zDock["ai-dock (ephemeral)"]
         zCmd["command-palette"]
         zKb["keyboard-shortcuts"]
     end
@@ -61,8 +62,35 @@ flowchart TB
     class providers,qp,rp,ep,shell prov
     class features,fAuth,fPages,fSpaces,fAI,fGraph,fSettings,fAdmin feat
     class shared,sEnt,sComp,sHooks,sLib sh
-    class stores,zAuth,zTheme,zUI,zAV,zCmd,zKb st
+    class stores,zAuth,zTheme,zUI,zAV,zDock,zCmd,zKb st
 ```
+
+## Article route panels (#1126)
+
+On `/pages/:id` the shell renders three siblings in one flex row, so each
+panel scrolls independently and the editor column shrinks around them rather
+than having anything float above it.
+
+```mermaid
+flowchart LR
+    main["main<br/>[data-scroll-container]<br/>PageViewPage · TipTap"]
+    rail["ArticleRightPane<br/>280px pane ⇄ 40px rail<br/>outline flyout on hover/focus"]
+    dock["AiDock<br/>~420px, resizable<br/>chips + composer + inline diff"]
+
+    main --- rail --- dock
+```
+
+- Opening the dock **ORs** the pane into its rail; it never writes the user's
+  persisted `articleSidebarCollapsed`. `.` closes the dock while it is open,
+  so the key is never dead.
+- Below `min-width: 1100px` (`useIsDockWideLayout`) the rail is not rendered
+  and the dock is capped narrower — the only JS media query in the app;
+  everything else is a Tailwind class.
+- `Apply` on a proposed change writes into the **open TipTap editor** through
+  two capabilities `PageViewPage` registers on `article-view` (`requestEdit`,
+  `applyContent`). Nothing is published until the user saves. See
+  [`11-content-pipeline.md`](./11-content-pipeline.md) for the
+  markdown → HTML conversion that feeds it.
 
 ## Enterprise gating
 
