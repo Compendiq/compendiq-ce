@@ -46,3 +46,18 @@ export const DOCK_WIDE_QUERY = '(min-width: 1100px)';
 export function useIsDockWideLayout(): boolean {
   return useMediaQuery(DOCK_WIDE_QUERY);
 }
+
+/**
+ * Tailwind's `md` breakpoint, as a query. Kept as the *positive* min-width form
+ * rather than a `max-width: 767.98px` negation so it matches `@media (width >=
+ * 48rem)` exactly at the boundary — 768px is desktop in both.
+ */
+export const MD_QUERY = '(min-width: 768px)';
+
+/**
+ * True below `md`, where the shell has no right pane to dock into and the
+ * assistant becomes a bottom sheet over the article instead (#1126).
+ */
+export function useIsMobileLayout(): boolean {
+  return !useMediaQuery(MD_QUERY);
+}
