@@ -24,7 +24,7 @@ flowchart TB
         fAuth["auth/<br/>OidcCallbackPage (EE route)"]
         fPages["pages/<br/>list · view · new · trash · pinned<br/>bulk actions · 404 catch-all"]
         fSpaces["spaces/<br/>settings · new"]
-        fAI["ai/<br/>AiAssistantPage (/ai — no-document home)<br/>dock/ AiDock · DockDiffCard (#1126)<br/>docked beside /pages/:id"]
+        fAI["ai/<br/>AiAssistantPage (/ai — no-document home)<br/>dock/ AiDock · DockPanel · AiDockSheet · DockDiffCard (#1126)<br/>column beside /pages/:id, sheet over it below md"]
         fGraph["graph/"]
         fSettings["settings/<br/>LoginPage · user + admin"]
         fAdmin["admin/<br/>LicenseStatusCard<br/>OidcSettingsPage (EE-gated)<br/>analytics/ (AnalyticsPage)"]
@@ -84,9 +84,18 @@ flowchart LR
   persisted `articleSidebarCollapsed`. `.` closes the dock while it is open,
   so the key is never dead.
 - Below `min-width: 1100px` (`useIsDockWideLayout`) the rail is not rendered
-  and the dock is capped narrower. This is the only JS *width* query in the app
-  — `use-can-hover` and three one-shot checks read `matchMedia` for pointer and
-  motion capability, but every responsive *layout* decision is a Tailwind class.
+  and the dock is capped narrower. That query and `useIsMobileLayout` below are
+  the app's only JS *width* queries — `use-can-hover` and three one-shot checks
+  read `matchMedia` for pointer and motion capability, but every other
+  responsive layout decision is a Tailwind class.
+- Below `md` (`useIsMobileLayout`) there is no right side to dock into, so
+  `AiDock` swaps containers: `AiDockSheet` renders the same `DockPanel` as a
+  drag-to-expand bottom sheet over the article, the way the left sidebar
+  already becomes a slide-over there. Two detents (52% / 92% of the viewport),
+  dragged with a hand-rolled Pointer Events handler because the app's
+  `LazyMotion features={domAnimation}` excludes framer's `drag` feature bundle.
+  Unlike the column, the sheet **is** modal — backdrop, `aria-modal`, Tab trap
+  — because it occludes the document rather than sitting beside it.
 - `Apply` on a proposed change goes through **`POST /llm/improvements/apply`**,
   not a client-side write into the editor. That route runs `protectMedia` /
   `restoreMedia` (#723) and the column-layout realignment that returns **422**

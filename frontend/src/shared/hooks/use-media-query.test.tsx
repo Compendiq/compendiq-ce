@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { render, screen, act } from '@testing-library/react';
-import { useMediaQuery, useIsDockWideLayout, DOCK_WIDE_QUERY } from './use-media-query';
+import { useMediaQuery, useIsDockWideLayout, useIsMobileLayout, DOCK_WIDE_QUERY, MD_QUERY } from './use-media-query';
 
 function Probe({ query }: { query: string }) {
   return <span data-testid="result">{String(useMediaQuery(query))}</span>;
@@ -8,6 +8,10 @@ function Probe({ query }: { query: string }) {
 
 function DockProbe() {
   return <span data-testid="result">{String(useIsDockWideLayout())}</span>;
+}
+
+function MobileProbe() {
+  return <span data-testid="result">{String(useIsMobileLayout())}</span>;
 }
 
 describe('useMediaQuery', () => {
@@ -66,6 +70,36 @@ describe('useIsDockWideLayout', () => {
   it('is true once both fit', () => {
     window.innerWidth = 1440;
     render(<DockProbe />);
+    expect(screen.getByTestId('result')).toHaveTextContent('true');
+  });
+});
+
+describe('useIsMobileLayout', () => {
+  afterEach(() => {
+    window.innerWidth = 1024;
+  });
+
+  it('is Tailwind’s md breakpoint, as a min-width query', () => {
+    expect(MD_QUERY).toBe('(min-width: 768px)');
+  });
+
+  it('is true on a phone, where there is no right pane to dock into', () => {
+    window.innerWidth = 390;
+    render(<MobileProbe />);
+    expect(screen.getByTestId('result')).toHaveTextContent('true');
+  });
+
+  // The boundary is where a `md:` class would switch, not one pixel either
+  // side of it: 768 is desktop for Tailwind and must be desktop here too.
+  it('is false at exactly 768px, matching what a md: utility does', () => {
+    window.innerWidth = 768;
+    render(<MobileProbe />);
+    expect(screen.getByTestId('result')).toHaveTextContent('false');
+  });
+
+  it('is true one pixel below the breakpoint', () => {
+    window.innerWidth = 767;
+    render(<MobileProbe />);
     expect(screen.getByTestId('result')).toHaveTextContent('true');
   });
 });
