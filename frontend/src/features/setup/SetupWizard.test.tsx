@@ -68,6 +68,30 @@ function mockFetchForSetup(
       });
     }
 
+    // #1127: the Confluence step's probe + space picker + sync-status poll.
+    if (url.includes('/settings/test-confluence')) {
+      return new Response(JSON.stringify({ success: true, message: 'Connection successful' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+
+    if (url.includes('/spaces/available')) {
+      return new Response(JSON.stringify([
+        { key: 'ENG', name: 'Engineering Handbook', type: 'global' },
+      ]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+
+    if (url.includes('/sync/status')) {
+      return new Response(JSON.stringify({ userId: '1', status: 'idle' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+
     return new Response(JSON.stringify({}), {
       status: 200,
       headers: { 'content-type': 'application/json' },
@@ -222,6 +246,48 @@ describe('SetupWizard', () => {
     });
     expect(screen.getByTestId('goto-pages')).toBeInTheDocument();
     expect(screen.getByTestId('goto-settings')).toBeInTheDocument();
+  });
+
+  it('completes the Confluence step with no space selected (#1127)', async () => {
+    // The in-wizard space picker is additive: an admin who connects Confluence
+    // but picks nothing must still reach Complete via Continue. The wizard
+    // remains five steps — the picker lives inside the Confluence step.
+    sessionStorage.clear();
+    mockFetchForSetup({ steps: { admin: true, llm: true, confluence: false } });
+
+    renderWizard();
+
+    await waitFor(() => {
+      expect(screen.getByText('Connect Confluence')).toBeInTheDocument();
+    });
+
+    typeInto(screen.getByTestId('confluence-url'), 'https://confluence.example.com');
+    typeInto(screen.getByTestId('confluence-pat'), 'secret-pat');
+    fireEvent.click(screen.getByTestId('test-confluence-btn'));
+
+    // Picker appears, but nothing is selected and no sync is dispatched.
+    await waitFor(() => {
+      expect(screen.getByTestId('space-option-ENG')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('start-sync-btn')).toBeDisabled();
+
+    // Continue is live purely off the passing connection test.
+    const next = screen.getByTestId('confluence-next-btn');
+    expect(next).not.toBeDisabled();
+    fireEvent.click(next);
+
+    await waitFor(() => {
+      expect(screen.getByText(/You're All Set/i)).toBeInTheDocument();
+    });
+
+    expect(
+      fetchSpy.mock.calls.filter(
+        ([url, init]) =>
+          typeof url === 'string' &&
+          url.endsWith('/api/sync') &&
+          (init as RequestInit | undefined)?.method === 'POST',
+      ),
+    ).toHaveLength(0);
   });
 
   it('auto-detects Ollama on LLM step mount', async () => {
