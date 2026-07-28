@@ -1192,8 +1192,15 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
        ON CONFLICT (confluence_id) WHERE confluence_id IS NOT NULL DO UPDATE SET
          title = EXCLUDED.title, body_storage = EXCLUDED.body_storage, body_html = EXCLUDED.body_html,
          body_text = EXCLUDED.body_text, version = EXCLUDED.version, last_synced = NOW()`,
+      // #1123: bind the RESOLVED `confluenceParentId`, not the raw
+      // `body.parentId`. A Confluence-sourced child must store its parent's
+      // `confluence_id` — binding the frontend's internal numeric id wrote the
+      // standalone flavour into a Confluence row, so the tree CTE resolved the
+      // child against the wrong arm until the next sync silently corrected it.
+      // Relocate rewrites `parent_id` from what is actually stored, so this had
+      // to be right before that code could trust the column.
       [page.id, body.spaceKey, body.title, page.body?.storage?.value ?? storageBody,
-       bodyHtml, bodyText, page.version.number, body.parentId ?? null],
+       bodyHtml, bodyText, page.version.number, confluenceParentId ?? null],
     );
 
     // A new Confluence page is visible to every user with space access (#893),

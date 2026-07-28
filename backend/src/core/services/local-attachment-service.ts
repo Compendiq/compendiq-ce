@@ -271,4 +271,53 @@ export async function listLocalAttachments(
   return res.rows.map(mapRow);
 }
 
+/**
+ * Ungated listing of a page's local attachments, with each file's absolute
+ * path (#1123 relocate).
+ *
+ * Deliberately skips {@link assertLocalPageAccess}: relocate authorises the
+ * whole operation up front (`pages:relocate` + per-space write check + page
+ * access), and it must be able to migrate the attachments of a page it is in
+ * the act of flipping to `source='confluence'` — a state the gate rejects by
+ * design. Not exported through any route; callers must have authorised first.
+ */
+export async function listLocalAttachmentsForRelocate(
+  pageId: number,
+): Promise<Array<{ filename: string; contentType: string; path: string }>> {
+  const res = await query<{ filename: string; content_type: string }>(
+    'SELECT filename, content_type FROM local_attachments WHERE page_id = $1 ORDER BY filename',
+    [pageId],
+  );
+  return res.rows.map((r) => ({
+    filename: r.filename,
+    contentType: r.content_type,
+    path: localFilePath(pageId, r.filename),
+  }));
+}
+
+/**
+ * Write bytes into the local attachment store for a page without the access
+ * gate, returning nothing. Companion to
+ * {@link listLocalAttachmentsForRelocate} for the Confluence→local direction,
+ * where the row is still `source='confluence'` when the files are staged.
+ *
+ * Writes the file only — the `local_attachments` row is inserted by the
+ * caller's transaction so it can roll back with the rest of the move.
+ */
+export async function writeLocalAttachmentFileForRelocate(
+  pageId: number,
+  filename: string,
+  data: Buffer,
+): Promise<void> {
+  const dir = localPageDir(pageId);
+  const filePath = localFilePath(pageId, filename);
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(filePath, data);
+}
+
+/** Absolute directory holding a page's local attachments (#1123 relocate cleanup). */
+export function localAttachmentsDir(pageId: number): string {
+  return localPageDir(pageId);
+}
+
 export { MAX_LOCAL_ATTACHMENT_BYTES };

@@ -31,16 +31,14 @@ const ReorderPageSchema = z.object({
 });
 
 /**
- * Global mutex for PUT /pages/:id/move (#891 review follow-up). Arbitrary but
- * stable application-defined advisory-lock key — must stay unique among
- * advisory-lock users of this database (the migrations runner uses 745_001).
- * Taken with pg_advisory_xact_lock, i.e. transaction-scoped: it is released
- * automatically at COMMIT/ROLLBACK, so an error path can never leak it.
- * Page moves are rare, so one global lock is acceptable and far simpler than
- * row-level lock ordering. Exported for the integration test that proves
- * moves serialize on it.
+ * Global mutex for PUT /pages/:id/move (#891 review follow-up). Defined in
+ * `core/db/advisory-locks` since #1123 so `POST /api/pages/:id/relocate` can
+ * take the same lock without a domain → routes import; re-exported here
+ * because the integration test that proves moves serialize on it imports the
+ * constant from this module.
  */
-export const PAGE_MOVE_ADVISORY_LOCK_ID = 891_001;
+export { PAGE_MOVE_ADVISORY_LOCK_ID } from '../../core/db/advisory-locks.js';
+import { PAGE_MOVE_ADVISORY_LOCK_ID } from '../../core/db/advisory-locks.js';
 
 /**
  * Compute the materialized path for a page given its parent's path and its own id.

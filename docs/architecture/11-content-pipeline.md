@@ -8,7 +8,7 @@ representations that flow through the rest of the system.
 
 | Form | Stored in | Consumed by |
 |------|-----------|-------------|
-| **XHTML Storage** | `pages.body_storage` | Round-trip to Confluence (push-back not yet enabled in CE, but retained for fidelity) |
+| **XHTML Storage** | `pages.body_storage` | Round-trip to Confluence. Push-back **is** live in CE: `POST /api/pages` calls `createPage()` and `PUT /api/pages/:id` calls `updatePage()` for Confluence-sourced pages. Standalone articles leave it `NULL` until they are relocated into Confluence (#1123). |
 | **HTML (clean)** | `pages.body_html` | TipTap editor, viewer UI, diff UI |
 | **Plain text** | `pages.body_text` | Embedding input, FTS (`tsvector`) |
 | **Markdown** | not stored — derived per call | LLM prompts (Ollama / OpenAI) |
@@ -435,10 +435,59 @@ server-side.
 
 ## Attachments
 
-Images, drawio diagrams, and PDFs are downloaded during sync to
-`ATTACHMENTS_DIR` (default `data/attachments`) and rewritten in
-`body_html` to Compendiq-local `/api/attachments/{pageId}/{filename}`
-URLs; the on-disk cache is keyed by page and filename.
+There are **two disjoint attachment stores**, not one. Which store a file
+lives in follows the owning page's `source`, and both appear in `body_html`
+as URLs — so anything that changes `source` must migrate the files *and*
+rewrite the references.
+
+| | Store A — Confluence cache | Store B — local store |
+|---|---|---|
+| Module | `domains/confluence/services/attachment-handler.ts` | `core/services/local-attachment-service.ts` |
+| On disk | `<ATTACHMENTS_DIR>/<key>/<filename>` | `<ATTACHMENTS_DIR>/local/<page id>/<filename>` |
+| Key | `confluence_id` for Confluence pages; the numeric `pages.id` for standalone pages | always the numeric `pages.id` |
+| Metadata | none — the filesystem is the index | `local_attachments` table (migration 064) |
+| Served by | `GET /api/attachments/:pageId/:filename` | `GET /api/local-attachments/:pageId/:filename` |
+| Authority | a **cache** — a miss can be re-fetched from Confluence | **source of truth** — there is no upstream |
+
+Images, drawio diagrams, and PDFs on Confluence pages are downloaded during
+sync into Store A and rewritten in `body_html` to
+`/api/attachments/{confluence_id}/{filename}`. A standalone article ends up
+using *both*: images pasted into the editor go to Store A under its numeric
+id, while draw.io saves and explicit uploads go to Store B.
+
+`assertLocalPageAccess` rejects any page whose `source` is not `standalone`,
+so Store B becomes unreachable the moment a page turns Confluence-backed.
+
+### Relocate between the stores (#1123)
+
+`POST /api/pages/:id/relocate` migrates a page's attachments as part of the
+move. It is not a rename — the key changes, so every reference in `body_html`
+changes with it.
+
+- **local → Confluence.** Files are collected from Store A (numeric key)
+  *and* Store B, uploaded to the new Confluence page with `updateAttachment()`,
+  and written into Store A under the new `confluence_id`. Every `<img src>` /
+  `<a href>` is normalised onto `/api/attachments/…` and tagged with
+  `data-confluence-filename` **before** `htmlToConfluence()` runs: its selector
+  is `img[src^="/api/attachments/"]`, so a Store B image that skipped this step
+  would survive into storage format as a raw `<img>` pointing at a route
+  Confluence cannot reach. `body_storage` is then generated from the storage
+  Confluence accepted, and the `local_attachments` rows are deleted — they
+  would otherwise be permanently unreachable. An upload failure **aborts the
+  whole move**: publishing an article whose `ri:attachment` references point at
+  files that were never uploaded is worse than not moving it.
+- **Confluence → local.** Files are copied from Store A into Store B and a
+  `local_attachments` row is inserted for each, inside the move transaction.
+  References become `/api/local-attachments/{page id}/{filename}` — the route
+  the frontend already uses for a standalone page's draw.io round-trip.
+  **`body_storage` needs no rewrite:** storage format references attachments as
+  `<ri:attachment ri:filename="…">`, which carries no page key. It is kept
+  verbatim so macro fidelity survives a later move back.
+
+Bytes are always **copied** before the transaction commits, and the old
+directory is removed only afterwards, best-effort. A filesystem operation
+cannot join a database transaction, so the split is deliberate: the worst case
+is an orphaned directory, never a missing image.
 
 See [`08-flow-sync.md`](./08-flow-sync.md) for where this hooks into the
 sync pipeline.

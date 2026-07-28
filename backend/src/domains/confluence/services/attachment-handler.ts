@@ -759,6 +759,131 @@ export async function cleanPageAttachments(_userId: string, pageId: string): Pro
   await clearAttachmentFailures(getRedisClient(), pageId);
 }
 
+/**
+ * Resolve the attachments root at CALL time (#1123).
+ *
+ * `ATTACHMENTS_BASE` above is captured at module load, which is right for the
+ * long-lived process but pins the directory for anything importing this module
+ * — including integration tests that point `ATTACHMENTS_DIR` at a temp dir
+ * after the import graph is already resolved. The relocate helpers below run
+ * rarely and must be testable, so they re-read the env each call. Same
+ * rationale as `attachmentsBase()` in `core/services/local-attachment-service`.
+ */
+function attachmentsRootNow(): string {
+  return path.resolve(process.env.ATTACHMENTS_DIR ?? ATTACHMENTS_BASE);
+}
+
+/** Call-time equivalent of {@link attachmentDir}, with the same traversal guard. */
+function attachmentDirNow(pageId: string): string {
+  const safeId = validatePageId(pageId);
+  const root = attachmentsRootNow();
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- pageId is validated against PAGE_ID_PATTERN by validatePageId; containment is asserted below
+  const resolved = path.resolve(root, safeId);
+  if (!resolved.startsWith(root + path.sep)) {
+    throw new Error('Path traversal detected');
+  }
+  return resolved;
+}
+
+/** Absolute path of the Confluence-cache directory for an attachment key. */
+export function attachmentCacheDir(pageId: string): string {
+  return attachmentDirNow(pageId);
+}
+
+/** Filenames cached for an attachment key. Empty when the directory is absent. */
+export async function listCachedAttachments(pageId: string): Promise<string[]> {
+  try {
+    const entries = await fs.readdir(attachmentDirNow(pageId), { withFileTypes: true });
+    return entries.filter((e) => e.isFile()).map((e) => e.name);
+  } catch {
+    return [];
+  }
+}
+
+/** Read one cached attachment's bytes by key + filename, or null if absent. */
+export async function readCachedAttachmentFile(
+  pageId: string,
+  filename: string,
+): Promise<Buffer | null> {
+  const dir = attachmentDirNow(pageId);
+  const safeFilename = validateFilename(filename);
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- both inputs validated above (validatePageId via attachmentDirNow, validateFilename); containment asserted below
+  const resolved = path.resolve(dir, safeFilename);
+  if (!resolved.startsWith(attachmentsRootNow() + path.sep)) {
+    throw new Error('Path traversal detected');
+  }
+  try {
+    return await fs.readFile(resolved);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Copy a page's cached attachments from one key to another (#1123 relocate).
+ *
+ * A COPY, never a move: relocate runs this *before* its database transaction
+ * commits, so an abort must leave the original directory intact. The old key
+ * is removed only after the commit, via {@link cleanPageAttachments}.
+ * Idempotent — re-running overwrites the destination files.
+ *
+ * Returns the filenames copied.
+ */
+export async function copyAttachmentDirectory(
+  fromPageId: string,
+  toPageId: string,
+): Promise<string[]> {
+  if (fromPageId === toPageId) return [];
+  const filenames = await listCachedAttachments(fromPageId);
+  if (filenames.length === 0) return [];
+
+  const destDir = attachmentDirNow(toPageId);
+  await fs.mkdir(destDir, { recursive: true });
+
+  const copied: string[] = [];
+  for (const filename of filenames) {
+    const data = await readCachedAttachmentFile(fromPageId, filename);
+    if (data === null) continue;
+    const safeFilename = validateFilename(filename);
+    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- destDir is containment-checked by attachmentDirNow; safeFilename is basename-sanitised by validateFilename
+    await fs.writeFile(path.resolve(destDir, safeFilename), data);
+    copied.push(filename);
+  }
+  return copied;
+}
+
+/**
+ * Write bytes into the Confluence attachment cache under an explicit key,
+ * resolving the attachments root at call time. {@link writeAttachmentCache}
+ * does the same against the module-load root; relocate needs the call-time
+ * variant for the same testability reason as {@link attachmentsRootNow}.
+ */
+export async function writeAttachmentCacheAt(
+  pageId: string,
+  filename: string,
+  data: Buffer,
+): Promise<void> {
+  const dir = attachmentDirNow(pageId);
+  await fs.mkdir(dir, { recursive: true });
+  const safeFilename = validateFilename(filename);
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- dir is containment-checked by attachmentDirNow; safeFilename is basename-sanitised by validateFilename
+  await fs.writeFile(path.resolve(dir, safeFilename), data);
+}
+
+/**
+ * Remove a page's cached attachment directory, resolving the root at call
+ * time. Post-commit cleanup for relocate — best-effort by contract, so callers
+ * must treat a throw as non-fatal (orphaned files only; the DB is consistent).
+ */
+export async function removeAttachmentDirectory(pageId: string): Promise<void> {
+  try {
+    await fs.rm(attachmentDirNow(pageId), { recursive: true, force: true });
+  } catch {
+    // Directory may not exist, or the key may be unrepresentable on disk.
+  }
+  await clearAttachmentFailures(getRedisClient(), pageId);
+}
+
 // Test-only: expose validators so unit tests can exercise the validation logic
 // directly without going through the higher-level cache functions (which mock
 // out `fs` and `client`). Not part of the public module surface.

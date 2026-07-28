@@ -203,6 +203,150 @@ export const TrashListResponseSchema = z.object({
 });
 export type TrashListResponse = z.infer<typeof TrashListResponseSchema>;
 
+// -- Relocate between a local space and Confluence (Issue #1123) --
+
+/** Which system the article ends up in after the relocate. */
+export const RelocateTargetEnum = z.enum(['confluence', 'local']);
+export type RelocateTarget = z.infer<typeof RelocateTargetEnum>;
+
+/**
+ * A principal that gains or loses access as a result of a relocate. `label` is
+ * display text (username / group name); `kind` distinguishes the well-known
+ * pseudo-principals from real rows so the UI can render them differently.
+ */
+export const RelocatePrincipalSchema = z.object({
+  kind: z.enum(['user', 'group', 'everyone', 'owner']),
+  label: z.string(),
+});
+export type RelocatePrincipal = z.infer<typeof RelocatePrincipalSchema>;
+
+/**
+ * Who can read the article before vs. after the move (product decision 4 on
+ * #1123: the access-model change is warned, then the target model applies —
+ * no hybrid state). `gains`/`loses` are the resolved difference, capped by
+ * `truncated` when a space has more assignments than the preview enumerates.
+ */
+export const RelocateAccessChangeSchema = z.object({
+  from: z.string(),
+  to: z.string(),
+  gains: z.array(RelocatePrincipalSchema),
+  loses: z.array(RelocatePrincipalSchema),
+  truncated: z.boolean().default(false),
+});
+
+/**
+ * Query for `GET /api/pages/:id/relocate/preview`. Both are optional: the
+ * dialog fetches the preview once to render the counts, then re-fetches with
+ * the user's chosen destination so `accessChange` names real principals rather
+ * than describing the target model generically.
+ */
+export const RelocatePreviewQuerySchema = z.object({
+  spaceKey: z.string().min(1).optional(),
+  visibility: PageVisibilityEnum.optional(),
+});
+export type RelocatePreviewQuery = z.infer<typeof RelocatePreviewQuerySchema>;
+
+/**
+ * Response of `GET /api/pages/:id/relocate/preview` — everything the
+ * confirmation dialog must state before the user commits.
+ *
+ * `localVersionCount` is the exact number of `page_versions` rows destroyed by
+ * a move to Confluence; the caller must echo it back as
+ * `acknowledgeDiscardedVersions`, so a generic "history will be lost" warning
+ * cannot satisfy the confirmation.
+ */
+export const RelocatePreviewSchema = z.object({
+  pageId: z.number().int().positive(),
+  title: z.string(),
+  source: PageSourceEnum,
+  spaceKey: z.string().nullable(),
+  confluenceId: z.string().nullable(),
+  /** The only direction this page can move in, derived from its current source. */
+  target: RelocateTargetEnum,
+  /** Direct children whose `parent_id` the move rewrites. They are not moved. */
+  childCount: z.number().int().nonnegative(),
+  /** Attachments migrated between the two attachment stores. */
+  attachmentCount: z.number().int().nonnegative(),
+  /** Exact count to echo back in `acknowledgeDiscardedVersions`. 0 for a move to local. */
+  localVersionCount: z.number().int().nonnegative(),
+  accessChange: RelocateAccessChangeSchema,
+  /** Confluence page deleted upstream by this move. Null for a move to Confluence. */
+  upstreamDeletion: z
+    .object({
+      confluenceId: z.string(),
+      spaceKey: z.string(),
+      title: z.string(),
+    })
+    .nullable(),
+});
+export type RelocatePreview = z.infer<typeof RelocatePreviewSchema>;
+
+/**
+ * Body of `POST /api/pages/:id/relocate`.
+ *
+ * Every acknowledgement is a required, non-defaulted field: `z.literal(true)`
+ * cannot be omitted, and the two echo-back fields are verified against live
+ * state server-side (409 on mismatch). A client cannot blind-confirm a move
+ * without naming what it destroys.
+ */
+export const RelocatePageSchema = z.discriminatedUnion('target', [
+  z.object({
+    target: z.literal('confluence'),
+    /** Confluence space the article is published into. Chosen from a picker. */
+    spaceKey: z.string().min(1),
+    /**
+     * Standalone `private`/`shared` visibility has no Confluence analogue —
+     * after the move the space's RBAC governs access, which can widen it.
+     */
+    acknowledgeAccessChange: z.literal(true),
+    /**
+     * Exact `page_versions` count that will be discarded (decision 3). Verified
+     * against the live count; a stale or guessed number is rejected with 409.
+     */
+    acknowledgeDiscardedVersions: z.number().int().nonnegative(),
+  }),
+  z.object({
+    target: z.literal('local'),
+    /** Target local space, or null for a space-less standalone article. */
+    spaceKey: z.string().min(1).nullable().default(null),
+    /**
+     * Required, never inherited: Confluence has no visibility analogue, so the
+     * caller must choose the standalone access model explicitly (decision 4).
+     */
+    visibility: PageVisibilityEnum,
+    acknowledgeAccessChange: z.literal(true),
+    /**
+     * The Confluence page and space deleted upstream (decision 1). Both are
+     * matched against the live row, so the confirmation names exactly what is
+     * being destroyed rather than asserting a bare boolean.
+     */
+    confirmDeleteConfluencePage: z.object({
+      confluenceId: z.string().min(1),
+      spaceKey: z.string().min(1),
+    }),
+  }),
+]);
+export type RelocatePageInput = z.infer<typeof RelocatePageSchema>;
+
+/** Response of a successful `POST /api/pages/:id/relocate`. */
+export const RelocatePageResponseSchema = z.object({
+  pageId: z.number().int().positive(),
+  source: PageSourceEnum,
+  spaceKey: z.string().nullable(),
+  confluenceId: z.string().nullable(),
+  childrenRepointed: z.number().int().nonnegative(),
+  versionsDiscarded: z.number().int().nonnegative(),
+  attachmentsMigrated: z.number().int().nonnegative(),
+  /**
+   * False when the local side committed but the upstream Confluence delete
+   * could not be confirmed. The article is safe either way; the Confluence
+   * page may still exist and be re-imported by the next sync as a new row.
+   */
+  upstreamDeleted: z.boolean(),
+  warnings: z.array(z.string()).default([]),
+});
+export type RelocatePageResponse = z.infer<typeof RelocatePageResponseSchema>;
+
 // -- Duplicates & Export validation schemas (Issue #580) --
 
 export const DuplicatesQuerySchema = z.object({

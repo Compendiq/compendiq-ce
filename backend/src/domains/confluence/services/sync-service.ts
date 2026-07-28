@@ -176,6 +176,35 @@ async function renewSyncLock(lockId: string): Promise<void> {
   }
 }
 
+/**
+ * Is a sync run currently in flight anywhere in the deployment? (#1123)
+ *
+ * Reads the same Redis key {@link acquireSyncLock} sets, so it observes the
+ * worker mutex without being able to take or block it. Used by
+ * `POST /api/pages/:id/relocate` to refuse to start while a sync is running:
+ * relocate mutates `pages.source` / `confluence_id`, which the sync upsert
+ * (`ON CONFLICT (confluence_id)`) and deletion reconciliation both key off,
+ * and neither of those paths takes a lock a route could join.
+ *
+ * Fails OPEN (returns false) when Redis is unavailable or errors — the sync
+ * worker itself proceeds without the lock in that case, so refusing every
+ * relocate would be strictly worse than relying on the ordering guarantees
+ * inside the relocate transaction.
+ */
+export async function isSyncRunning(): Promise<boolean> {
+  const redis = getRedisClient();
+  if (!redis) return false;
+  try {
+    return (await redis.get(SYNC_LOCK_KEY)) !== null;
+  } catch (err) {
+    logger.debug(
+      { err: err instanceof Error ? err.message : String(err) },
+      'Sync-lock probe failed — treating as not running (fail-open)',
+    );
+    return false;
+  }
+}
+
 const MAX_ATTACHMENT_FAILURES = REDIS_MAX_ATTACHMENT_FAILURES;
 
 /** Page batch size for the missing-attachment retry pass — bounds peak heap (#888). */
