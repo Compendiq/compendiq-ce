@@ -11,56 +11,84 @@ import {
 } from './stores/theme-store';
 
 /**
- * Regression tests for the Honey Linen + Graphite Honey neumorphic theme overhaul (#30).
- * Palette mirrors compendiq-landing/src/styles/tokens.css for cross-surface brand parity.
+ * Regression tests for the Slate Steel + Frost Steel palette — the cool
+ * slate-and-steel system ported from lifecycle-management, replacing the
+ * Graphite Honey + Honey Linen pair.
  *
- * Verifies:
- *  - Theme store ships exactly two themes.
- *  - Retired theme IDs are gone.
- *  - index.css carries the brand anchors (linen / graphite / honey) in both
- *    the default @theme block (Graphite Honey = system default) and the
- *    [data-theme="honey-linen"] block.
- *  - Neumorphic shadow tokens (--nm-*) and status color tokens (--color-status-*)
- *    are defined for both themes; --color-primary-ink token exists for the
- *    WCAG-safe accent-as-text pattern.
+ * The load-bearing half of this file is `describe('Measured contrast')`: it
+ * parses the real token values out of index.css and COMPUTES WCAG contrast
+ * ratios rather than asserting hex strings. The previous version pinned
+ * literals, which passed for any value someone typed and only ever caught
+ * "this changed", never "this became unreadable". Retuning a surface here
+ * fails loudly and specifically — with the measured ratio in the message.
  */
 
 const cssPath = resolve(__dirname, 'index.css');
 const css = readFileSync(cssPath, 'utf-8');
 
-const themeBlock = extractBlock(css, '@theme {');
-const honeyLinenBlock = extractBlock(css, '[data-theme="honey-linen"] {');
+const darkBlock = extractBlock(css, '@theme {');
+const lightBlock = extractBlock(css, '[data-theme="frost-steel"] {');
 const lightSharedBlock = extractBlock(css, '[data-theme-type="light"] {');
 
-describe('Theme store ships exactly Graphite Honey + Honey Linen', () => {
+/** Read a `--token: #rrggbb;` declaration out of a CSS block. */
+function token(block: string, name: string): string {
+  const m = new RegExp(`${name}:\\s*(#[0-9a-fA-F]{6})\\b`).exec(block);
+  if (!m) throw new Error(`token not found (or not a 6-digit hex): ${name}`);
+  return m[1].toLowerCase();
+}
+
+// --- WCAG 2.1 relative luminance / contrast (SC 1.4.3, 1.4.11) ---
+function luminance(hex: string): number {
+  const [r, g, b] = [1, 3, 5].map((i) => {
+    const c = parseInt(hex.slice(i, i + 2), 16) / 255;
+    return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function contrast(a: string, b: string): number {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+/** Assert `fg` on `bg` clears `floor`, reporting the measured ratio on failure. */
+function expectContrast(label: string, fg: string, bg: string, floor: number) {
+  const ratio = contrast(fg, bg);
+  expect(
+    ratio,
+    `${label}: ${fg} on ${bg} measured ${ratio.toFixed(2)}:1, need ≥${floor}:1`,
+  ).toBeGreaterThanOrEqual(floor);
+}
+
+describe('Theme store ships exactly Slate Steel + Frost Steel', () => {
   it('THEMES has two entries', () => {
     expect(THEMES).toHaveLength(2);
     expect(THEME_IDS).toHaveLength(2);
   });
 
-  it('default dark theme is graphite-honey', () => {
-    expect(DEFAULT_DARK_THEME).toBe('graphite-honey');
+  it('default dark theme is slate-steel', () => {
+    expect(DEFAULT_DARK_THEME).toBe('slate-steel');
   });
 
-  it('default light theme is honey-linen', () => {
-    expect(DEFAULT_LIGHT_THEME).toBe('honey-linen');
+  it('default light theme is frost-steel', () => {
+    expect(DEFAULT_LIGHT_THEME).toBe('frost-steel');
   });
 
-  it('exposes graphite-honey as a dark theme', () => {
-    const dark = THEMES.find((t) => t.id === 'graphite-honey');
+  it('exposes slate-steel as a dark theme', () => {
+    const dark = THEMES.find((t) => t.id === 'slate-steel');
     expect(dark).toBeDefined();
     expect(dark!.category).toBe('dark');
   });
 
-  it('exposes honey-linen as a light theme', () => {
-    const light = THEMES.find((t) => t.id === 'honey-linen');
+  it('exposes frost-steel as a light theme', () => {
+    const light = THEMES.find((t) => t.id === 'frost-steel');
     expect(light).toBeDefined();
     expect(light!.category).toBe('light');
   });
 
-  it('LIGHT_THEMES contains only honey-linen', () => {
+  it('LIGHT_THEMES contains only frost-steel', () => {
     expect(LIGHT_THEMES.size).toBe(1);
-    expect(LIGHT_THEMES.has('honey-linen')).toBe(true);
+    expect(LIGHT_THEMES.has('frost-steel')).toBe(true);
   });
 
   it('retired theme IDs are gone', () => {
@@ -72,6 +100,8 @@ describe('Theme store ships exactly Graphite Honey + Honey Linen', () => {
       'parchment-glow',
       'ember-dusk',
       'sunrise-cream',
+      'graphite-honey',
+      'honey-linen',
     ];
     for (const id of retired) {
       expect(ids).not.toContain(id);
@@ -79,157 +109,268 @@ describe('Theme store ships exactly Graphite Honey + Honey Linen', () => {
   });
 
   it('theme labels match the spec', () => {
-    expect(THEMES.find((t) => t.id === 'graphite-honey')!.label).toBe('Graphite Honey');
-    expect(THEMES.find((t) => t.id === 'honey-linen')!.label).toBe('Honey Linen');
+    expect(THEMES.find((t) => t.id === 'slate-steel')!.label).toBe('Slate Steel');
+    expect(THEMES.find((t) => t.id === 'frost-steel')!.label).toBe('Frost Steel');
   });
 
-  it('descriptions mention honey / linen / graphite vocabulary', () => {
-    const dark = THEMES.find((t) => t.id === 'graphite-honey')!;
-    const light = THEMES.find((t) => t.id === 'honey-linen')!;
-    expect(dark.description.toLowerCase()).toMatch(/graphite|honey|neumorph/);
-    expect(light.description.toLowerCase()).toMatch(/linen|honey|cream|neumorph/);
+  it('descriptions use the slate / steel vocabulary', () => {
+    const dark = THEMES.find((t) => t.id === 'slate-steel')!;
+    const light = THEMES.find((t) => t.id === 'frost-steel')!;
+    expect(dark.description.toLowerCase()).toMatch(/slate|steel|navy|neumorph/);
+    expect(light.description.toLowerCase()).toMatch(/frost|steel|cool|neumorph/);
   });
 
-  it('preview hex colors carry the brand anchors', () => {
-    const dark = THEMES.find((t) => t.id === 'graphite-honey')!;
-    const light = THEMES.find((t) => t.id === 'honey-linen')!;
-    expect(dark.preview.bg.toLowerCase()).toBe('#121212');
-    expect(dark.preview.primary.toLowerCase()).toBe('#f9c74f');
-    // Honey Linen background must match the actual rendered surface
-    // (`--color-background` in [data-theme="honey-linen"]), not a brand-y
-    // approximation — the picker chip is the only preview users see.
-    expect(light.preview.bg.toLowerCase()).toBe('#f7f7f7');
-    expect(light.preview.primary.toLowerCase()).toBe('#f9c74f');
-  });
+  // The picker chip is the only way users preview a theme before applying it,
+  // so chip ↔ rendered-surface drift is a UX bug. Both chips are pulled from
+  // index.css and compared, rather than pinned as literals in two places.
+  it('preview chips match the rendered surfaces for BOTH themes', () => {
+    const cases = [
+      { id: 'slate-steel', block: darkBlock },
+      { id: 'frost-steel', block: lightBlock },
+    ] as const;
 
-  it('honey-linen preview chips match the rendered [data-theme="honey-linen"] surfaces', () => {
-    // The picker chip is the only way users preview a theme before applying
-    // it — chip ↔ surface drift is a UX bug. Pull the canonical values out
-    // of index.css and assert the THEMES metadata matches exactly.
-    const linenBlock = extractBlock(css, '[data-theme="honey-linen"] {');
-    const bgMatch = /--color-background:\s*(#[0-9a-fA-F]{3,8})/.exec(linenBlock);
-    const cardMatch = /--color-card:\s*(#[0-9a-fA-F]{3,8})/.exec(linenBlock);
-    expect(bgMatch).not.toBeNull();
-    expect(cardMatch).not.toBeNull();
-
-    const light = THEMES.find((t) => t.id === 'honey-linen')!;
-    expect(light.preview.bg.toLowerCase()).toBe(bgMatch![1].toLowerCase());
-    expect(light.preview.card.toLowerCase()).toBe(cardMatch![1].toLowerCase());
+    for (const { id, block } of cases) {
+      const meta = THEMES.find((t) => t.id === id)!;
+      expect(meta.preview.bg.toLowerCase()).toBe(token(block, '--color-background'));
+      expect(meta.preview.card.toLowerCase()).toBe(token(block, '--color-card'));
+      expect(meta.preview.primary.toLowerCase()).toBe(token(block, '--color-primary'));
+    }
   });
 });
 
-describe('Default @theme block carries Graphite Honey anchors', () => {
-  it('has the @theme block', () => {
-    expect(themeBlock).not.toBe('');
+describe('Measured contrast — Slate Steel (dark)', () => {
+  const bg = token(darkBlock, '--color-background');
+  const card = token(darkBlock, '--color-card');
+  const elevated = token(darkBlock, '--color-card-elevated');
+  const codeBg = token(darkBlock, '--color-code-bg');
+
+  // The card gradient's LIGHTEST stop is the worst case for text on a card:
+  // anything legible there is legible at the darker bottom of the pane too.
+  const cardGradientTop = /--surface-card:\s*linear-gradient\([^)]*?(#[0-9a-fA-F]{6})/.exec(
+    darkBlock,
+  )![1].toLowerCase();
+
+  it('body text clears AA on every surface it lands on', () => {
+    const fg = token(darkBlock, '--color-foreground');
+    for (const [name, surface] of Object.entries({ bg, card, elevated, cardGradientTop })) {
+      expectContrast(`foreground on ${name}`, fg, surface, 4.5);
+    }
   });
 
-  it('background is neutral graphite #121212', () => {
-    // Neutralised from #121211 in the v0.4 follow-up to remove the warm tint
-    // that bled into translucent panes (`bg-card/50`) and made the surface
-    // read as yellow instead of dark gray. Brand honey accent unchanged.
-    expect(themeBlock).toMatch(/--color-background:\s*#121212/i);
+  it('muted text clears AA on every surface it lands on', () => {
+    const muted = token(darkBlock, '--color-muted-foreground');
+    for (const [name, surface] of Object.entries({ bg, card, elevated, cardGradientTop })) {
+      expectContrast(`muted-foreground on ${name}`, muted, surface, 4.5);
+    }
   });
 
-  it('foreground is near-neutral cream #ece9e2', () => {
-    // Dialled back from #f5efe0 in the v0.4 follow-up — same legibility
-    // (still ≥ AA on graphite) without the warm yellow cast.
-    expect(themeBlock).toMatch(/--color-foreground:\s*#ece9e2/i);
+  it('steel reads as text on every surface (fill and ink are one value here)', () => {
+    const ink = token(darkBlock, '--color-primary-ink');
+    for (const [name, surface] of Object.entries({ bg, card, elevated })) {
+      expectContrast(`primary-ink on ${name}`, ink, surface, 4.5);
+    }
   });
 
-  it('primary is brand honey #f9c74f', () => {
-    expect(themeBlock).toMatch(/--color-primary:\s*#f9c74f/i);
+  it('ink on the primary fill clears AA, including the gradient end stop', () => {
+    const ink = token(darkBlock, '--color-primary-foreground');
+    expectContrast('primary-foreground on primary', ink, token(darkBlock, '--color-primary'), 4.5);
+    expectContrast(
+      'primary-foreground on gradient-end',
+      ink,
+      token(darkBlock, '--color-primary-gradient-end'),
+      4.5,
+    );
   });
 
-  it('primary-foreground is brand black #0a0a0a', () => {
-    expect(themeBlock).toMatch(/--color-primary-foreground:\s*#0a0a0a/i);
+  it('ink on the destructive fill clears AA', () => {
+    expectContrast(
+      'destructive-foreground on destructive',
+      token(darkBlock, '--color-destructive-foreground'),
+      token(darkBlock, '--color-destructive'),
+      4.5,
+    );
   });
 
-  it('muted-foreground is the #346-lifted #a39e8c (≥ AA on bg-background)', () => {
-    // Pinned by #346: #a39e8c lands at 6.99:1 against --color-background
-    // (#121211). Drift here re-introduces the "too dim" sidebar text bug.
-    expect(themeBlock).toMatch(/--color-muted-foreground:\s*#a39e8c/i);
+  it('every status colour clears AA on both background and card', () => {
+    for (const role of [
+      'connected',
+      'syncing',
+      'embedding',
+      'ai',
+      'disconnected',
+      'inactive',
+    ]) {
+      const value = token(darkBlock, `--color-status-${role}`);
+      expectContrast(`status-${role} on background`, value, bg, 4.5);
+      expectContrast(`status-${role} on card`, value, card, 4.5);
+    }
   });
 
-  it('defines --color-primary-ink for accent-as-text', () => {
-    expect(themeBlock).toMatch(/--color-primary-ink/);
+  it('every syntax colour clears AA on the code surface', () => {
+    for (const role of ['keyword', 'string', 'function', 'comment', 'number', 'type', 'meta']) {
+      expectContrast(
+        `code-${role} on code-bg`,
+        token(darkBlock, `--color-code-${role}`),
+        codeBg,
+        4.5,
+      );
+    }
   });
 
-  it('defines neumorphic shadow tokens', () => {
-    expect(themeBlock).toMatch(/--nm-shadow-out/);
-    expect(themeBlock).toMatch(/--nm-shadow-in/);
-    expect(themeBlock).toMatch(/--nm-highlight/);
-  });
-
-  it('defines status color tokens', () => {
-    expect(themeBlock).toMatch(/--color-status-connected/);
-    expect(themeBlock).toMatch(/--color-status-syncing/);
-    expect(themeBlock).toMatch(/--color-status-embedding/);
-    expect(themeBlock).toMatch(/--color-status-ai/);
-    expect(themeBlock).toMatch(/--color-status-disconnected/);
-    expect(themeBlock).toMatch(/--color-status-inactive/);
-  });
-
-  it('defines per-language code color tokens', () => {
-    expect(themeBlock).toMatch(/--color-code-bg/);
-    expect(themeBlock).toMatch(/--color-code-keyword/);
-    expect(themeBlock).toMatch(/--color-code-string/);
-    expect(themeBlock).toMatch(/--color-code-function/);
-    expect(themeBlock).toMatch(/--color-code-comment/);
-    expect(themeBlock).toMatch(/--color-code-number/);
-  });
-});
-
-describe('[data-theme="honey-linen"] block', () => {
-  it('exists', () => {
-    expect(honeyLinenBlock).not.toBe('');
-  });
-
-  it('background is neutral near-white #f7f7f7', () => {
-    // Was #fbf7ef (warmer linen) → #f7f7f4 (whisper of warmth) → #f7f7f7
-    // (fully neutral) in the v0.4 follow-up. Removes the yellow cast that
-    // bled through translucent `bg-card/50` panes in light mode.
-    expect(honeyLinenBlock).toMatch(/--color-background:\s*#f7f7f7/i);
-  });
-
-  it('foreground is brand near-black #0a0a0a', () => {
-    expect(honeyLinenBlock).toMatch(/--color-foreground:\s*#0a0a0a/i);
-  });
-
-  it('primary is brand honey #f9c74f (same as dark)', () => {
-    expect(honeyLinenBlock).toMatch(/--color-primary:\s*#f9c74f/i);
-  });
-
-  it('primary-foreground is brand black #0a0a0a', () => {
-    expect(honeyLinenBlock).toMatch(/--color-primary-foreground:\s*#0a0a0a/i);
-  });
-
-  it('defines darkened --color-primary-ink #8a6016 for AA-safe text use', () => {
-    expect(honeyLinenBlock).toMatch(/--color-primary-ink:\s*#8a6016/i);
-  });
-
-  it('muted-foreground is the #346-darkened #5f5c54 (≥ AA on bg-background)', () => {
-    // Pinned by #346: #5f5c54 lands at 6.22:1 against --color-background
-    // (#f7f7f4). Drift here re-introduces the washed-out sidebar text bug.
-    expect(honeyLinenBlock).toMatch(/--color-muted-foreground:\s*#5f5c54/i);
-  });
-
-  it('overrides status color tokens', () => {
-    expect(honeyLinenBlock).toMatch(/--color-status-connected/);
-    expect(honeyLinenBlock).toMatch(/--color-status-syncing/);
-    expect(honeyLinenBlock).toMatch(/--color-status-embedding/);
-    expect(honeyLinenBlock).toMatch(/--color-status-ai/);
-    expect(honeyLinenBlock).toMatch(/--color-status-disconnected/);
-    expect(honeyLinenBlock).toMatch(/--color-status-inactive/);
-  });
-
-  it('overrides per-language code tokens', () => {
-    expect(honeyLinenBlock).toMatch(/--color-code-keyword/);
-    expect(honeyLinenBlock).toMatch(/--color-code-string/);
-    expect(honeyLinenBlock).toMatch(/--color-code-function/);
+  // WCAG 1.4.11: the boundary of an operable control needs 3:1. The neumorphic
+  // recipe leans on shadow for depth, and forced-colors mode discards shadow —
+  // this border is what survives, so it is the one that has to measure up.
+  it('the interactive border clears the 3:1 non-text floor on every surface', () => {
+    const border = token(darkBlock, '--color-border-interactive');
+    for (const [name, surface] of Object.entries({ bg, card, elevated, cardGradientTop })) {
+      expectContrast(`border-interactive on ${name}`, border, surface, 3);
+    }
   });
 });
 
-describe('Retired themes are gone from index.css', () => {
+describe('Measured contrast — Frost Steel (light)', () => {
+  const bg = token(lightBlock, '--color-background');
+  const card = token(lightBlock, '--color-card');
+  const codeBg = token(lightBlock, '--color-code-bg');
+
+  it('body and muted text clear AA on background and card', () => {
+    for (const role of ['--color-foreground', '--color-muted-foreground']) {
+      const value = token(lightBlock, role);
+      expectContrast(`${role} on background`, value, bg, 4.5);
+      expectContrast(`${role} on card`, value, card, 4.5);
+    }
+  });
+
+  // Unlike dark, the light theme keeps a DARKENED steel for text: --color-primary
+  // itself sits too close to the 4.5:1 floor on a near-white surface to be used
+  // as body-size type. This asserts the split is real and still doing its job.
+  it('primary-ink is a distinct, darker value than the primary fill', () => {
+    const ink = token(lightBlock, '--color-primary-ink');
+    const fill = token(lightBlock, '--color-primary');
+    expect(ink).not.toBe(fill);
+    expect(luminance(ink)).toBeLessThan(luminance(fill));
+    expectContrast('primary-ink on background', ink, bg, 4.5);
+    expectContrast('primary-ink on card', ink, card, 4.5);
+  });
+
+  it('ink on the primary and destructive fills clears AA', () => {
+    expectContrast(
+      'primary-foreground on primary',
+      token(lightBlock, '--color-primary-foreground'),
+      token(lightBlock, '--color-primary'),
+      4.5,
+    );
+    expectContrast(
+      'destructive-foreground on destructive',
+      token(lightBlock, '--color-destructive-foreground'),
+      token(lightBlock, '--color-destructive'),
+      4.5,
+    );
+  });
+
+  it('every status colour clears AA on both background and card', () => {
+    for (const role of [
+      'connected',
+      'syncing',
+      'embedding',
+      'ai',
+      'disconnected',
+      'inactive',
+    ]) {
+      const value = token(lightBlock, `--color-status-${role}`);
+      expectContrast(`status-${role} on background`, value, bg, 4.5);
+      expectContrast(`status-${role} on card`, value, card, 4.5);
+    }
+  });
+
+  it('every syntax colour clears AA on the code surface', () => {
+    for (const role of ['keyword', 'string', 'function', 'comment', 'number', 'type', 'meta']) {
+      expectContrast(
+        `code-${role} on code-bg`,
+        token(lightBlock, `--color-code-${role}`),
+        codeBg,
+        4.5,
+      );
+    }
+  });
+
+  it('the interactive border clears the 3:1 non-text floor', () => {
+    const border = token(lightBlock, '--color-border-interactive');
+    expectContrast('border-interactive on background', border, bg, 3);
+    expectContrast('border-interactive on card', border, card, 3);
+  });
+});
+
+describe('Both themes declare a complete, symmetric token set', () => {
+  // A token present in dark but missing in light silently falls back to the
+  // dark value — which is how a light theme ends up with one navy surface.
+  const required = [
+    '--color-background',
+    '--color-foreground',
+    '--color-card',
+    '--color-card-elevated',
+    '--color-primary',
+    '--color-primary-foreground',
+    '--color-primary-ink',
+    '--color-action',
+    '--color-action-foreground',
+    '--color-muted-foreground',
+    '--color-destructive',
+    '--color-destructive-foreground',
+    '--color-border',
+    '--color-border-strong',
+    '--color-border-interactive',
+    '--color-ring',
+    '--color-success',
+    '--color-warning',
+    '--color-info',
+    '--color-code-bg',
+    '--color-code-keyword',
+    '--color-code-string',
+    '--color-code-function',
+    '--color-code-comment',
+    '--color-code-number',
+    '--color-code-type',
+    '--color-code-meta',
+    '--color-status-connected',
+    '--color-status-syncing',
+    '--color-status-embedding',
+    '--color-status-ai',
+    '--color-status-disconnected',
+    '--color-status-inactive',
+  ];
+
+  for (const name of required) {
+    it(`declares ${name} in both themes`, () => {
+      expect(() => token(darkBlock, name)).not.toThrow();
+      expect(() => token(lightBlock, name)).not.toThrow();
+    });
+  }
+
+  it('defines neumorphic shadow tokens in both themes', () => {
+    for (const block of [darkBlock, lightSharedBlock]) {
+      expect(block).toMatch(/--nm-shadow-out/);
+      expect(block).toMatch(/--nm-shadow-in/);
+      expect(block).toMatch(/--nm-highlight/);
+    }
+  });
+
+  it('defines the gradient chassis in both themes', () => {
+    for (const block of [darkBlock, lightSharedBlock]) {
+      expect(block).toMatch(/--surface-backdrop:\s*radial-gradient\(/);
+      expect(block).toMatch(/--surface-card:\s*linear-gradient\(/);
+    }
+  });
+
+  // The retired recipe tinted the light shadow warm brown (rgb 50/42/20) to sit
+  // under a honey accent. On a cool palette that reads as a stain.
+  it('uses the cool slate shadow tint, not the retired warm brown', () => {
+    expect(lightSharedBlock).not.toMatch(/rgba\(\s*50,\s*42,\s*20/);
+    expect(lightSharedBlock).toMatch(/rgba\(\s*23,\s*28,\s*44/);
+  });
+});
+
+describe('Retired palettes leave no residue', () => {
   it('no retired data-theme blocks remain', () => {
     const retired = [
       'void-indigo',
@@ -238,29 +379,23 @@ describe('Retired themes are gone from index.css', () => {
       'parchment-glow',
       'ember-dusk',
       'sunrise-cream',
+      'graphite-honey',
+      'honey-linen',
     ];
     for (const id of retired) {
       const re = new RegExp(`\\[data-theme="${id}"\\]\\s*\\{`);
       expect(css).not.toMatch(re);
     }
   });
-});
 
-describe('Light-shared block carries linen-tuned neumorphic adjustments', () => {
-  it('exists', () => {
-    expect(lightSharedBlock).not.toBe('');
-  });
-
-  it('redefines --nm-shadow-out for light surfaces', () => {
-    expect(lightSharedBlock).toMatch(/--nm-shadow-out/);
-  });
-
-  it('redefines --nm-highlight for light surfaces', () => {
-    expect(lightSharedBlock).toMatch(/--nm-highlight/);
-  });
-
-  it('uses warm-brown shadow tint matching the linen palette', () => {
-    expect(lightSharedBlock).toMatch(/rgba\(\s*50,\s*42,\s*20/);
+  // Honey survived in the CSS as literals rather than as a named theme, so a
+  // block-name check alone would miss a stray brand value left behind.
+  it('no honey brand hexes survive in the theme blocks', () => {
+    const honey = ['#f9c74f', '#fdd56d', '#f2b72e', '#8a6016', '#ece9e2', '#121212'];
+    for (const value of honey) {
+      expect(darkBlock.toLowerCase()).not.toContain(value);
+      expect(lightBlock.toLowerCase()).not.toContain(value);
+    }
   });
 });
 
@@ -280,6 +415,13 @@ describe('Neumorphic @utility set', () => {
     'nm-input',
   ] as const;
 
+  const interactive = [
+    'nm-card-interactive',
+    'nm-button-ghost',
+    'nm-icon-button',
+    'nm-input',
+  ];
+
   for (const name of expectedUtilities) {
     it(`defines @utility ${name}`, () => {
       const re = new RegExp(`@utility\\s+${name}\\s*\\{`);
@@ -288,31 +430,39 @@ describe('Neumorphic @utility set', () => {
   }
 
   it('every interactive utility carries a 1px hybrid border (WCAG 1.4.11)', () => {
-    const interactive = [
-      'nm-card-interactive',
-      'nm-button-primary',
-      'nm-button-ghost',
-      'nm-button-destructive',
-      'nm-icon-button',
-      'nm-input',
-    ];
-    for (const name of interactive) {
+    for (const name of [...interactive, 'nm-button-primary', 'nm-button-destructive']) {
       const block = extractBlock(css, `@utility ${name} {`);
       expect(block).not.toBe('');
       expect(block).toMatch(/border:\s*1(?:\.\d+)?(?:px|\.5px)?\s+solid|border:\s*1\.5px\s+solid/);
     }
   });
 
-  it('every interactive utility has a :focus-visible rule', () => {
-    const interactive = [
-      'nm-card-interactive',
-      'nm-button-primary',
-      'nm-button-ghost',
-      'nm-button-destructive',
-      'nm-icon-button',
-      'nm-input',
-    ];
+  // The two filled buttons are excluded on purpose: their border is derived
+  // from their own fill (`oklch(from var(--color-primary) …)`) so the edge
+  // tracks the button, not the page. Every other operable surface takes the
+  // measured --color-border-interactive rather than the quiet hairline.
+  it('outlined interactive utilities use the interactive border token', () => {
     for (const name of interactive) {
+      const block = extractBlock(css, `@utility ${name} {`);
+      expect(block, `${name} should use --color-border-interactive`).toMatch(
+        /border:\s*1(?:\.5)?px\s+solid\s+var\(--color-border-interactive\)/,
+      );
+    }
+  });
+
+  it('content panes paint the card gradient, chrome stays flat', () => {
+    for (const name of ['nm-card', 'nm-card-elevated', 'nm-card-interactive']) {
+      const block = extractBlock(css, `@utility ${name} {`);
+      expect(block, `${name} should paint --surface-card`).toMatch(/var\(--surface-card/);
+    }
+    for (const name of ['nm-sidebar', 'nm-header', 'nm-toolbar']) {
+      const block = extractBlock(css, `@utility ${name} {`);
+      expect(block, `${name} is chrome and should stay flat`).not.toMatch(/--surface-card/);
+    }
+  });
+
+  it('every interactive utility has a :focus-visible rule', () => {
+    for (const name of [...interactive, 'nm-button-primary', 'nm-button-destructive']) {
       const block = extractBlock(css, `@utility ${name} {`);
       expect(block).toMatch(/&:focus(?:-visible)?/);
     }
@@ -333,5 +483,24 @@ describe('Neumorphic @utility set', () => {
       /@media\s*\(\s*prefers-reduced-motion:\s*reduce\s*\)\s*\{[^}]*\.nm-/,
     );
     expect(nmReducedMotion).not.toBeNull();
+  });
+});
+
+describe('Typography is the Space Grotesk / Inter / JetBrains Mono system', () => {
+  it('display, sans and mono stacks are declared', () => {
+    expect(darkBlock).toMatch(/--font-display:\s*'Space Grotesk'/);
+    expect(darkBlock).toMatch(/--font-sans:\s*'Inter Variable'/);
+    expect(darkBlock).toMatch(/--font-mono:\s*'JetBrains Mono Variable'/);
+  });
+
+  it('headings resolve the display face, not the body face', () => {
+    const headingRule = /h1,\s*h2,\s*h3,\s*h4,\s*h5,\s*h6,[\s\S]{0,160}?\{([\s\S]*?)\}/.exec(css);
+    expect(headingRule).not.toBeNull();
+    expect(headingRule![1]).toMatch(/font-family:\s*var\(--font-display\)/);
+  });
+
+  it('the retired Newsreader / IBM Plex faces are no longer imported', () => {
+    expect(css).not.toMatch(/newsreader/i);
+    expect(css).not.toMatch(/ibm-plex-sans/i);
   });
 });

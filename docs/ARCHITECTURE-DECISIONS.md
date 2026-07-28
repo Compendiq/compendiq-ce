@@ -601,6 +601,57 @@ Badge palette unified: every status pill (Local / Shared / Private / Failed / Sk
 
 WCAG-AA regression guard: `e2e/contrast.spec.ts` audits 6 routes × 2 themes; any text-on-bg pair below AA fails CI.
 
+### v0.5 — Slate Steel / Frost Steel palette (supersedes the honey palette)
+
+**Owner decision.** The honey palette above is retired. The colour system is
+replaced wholesale by the cool slate-and-steel system ported from the
+`lifecycle-management` console (`apps/web/src/styles.css`, "Mission Bento").
+The **structural** decisions of v0.4 are unchanged and still binding: Radix
+primitives, the neumorphic `nm-*` surface system, mandatory hybrid borders,
+`:focus-visible` rings with offset, press = inset swap, reduced-motion
+stripping, and the `--color-status-*` semantic tokens.
+
+What changes is the palette, the accent semantics, and the type system:
+
+- **Themes.** `graphite-honey` → **`slate-steel`** (dark, default, navy
+  `#0E1220`); `honey-linen` → **`frost-steel`** (light, `#F4F6FA`). Both IDs
+  migrate on read — in `validateThemeId` *and* in the `index.html` FOUC script,
+  so a light-theme user does not flash dark before React mounts. Brightness is
+  preserved across the migration.
+- **Accent semantics inverted from v0.4.** Steel (`#6EA8FF` / `#2F6BD8`) is now
+  the single brand **and** interaction accent — primary CTAs, links, active
+  states, `--color-ring`. Honey's "AI is involved here" role moves to **violet**
+  (`--color-status-ai`, `#C084FC` / `#6D28D9`). **Amber is reserved for
+  warning/attention only**, which is what makes the ~36 files of literal
+  `amber-*`/`yellow-*` warning callouts semantically correct rather than stray
+  brand colour — they were deliberately left as-is.
+- **`--color-primary-ink`** keeps its v0.4 job only in the light theme, where
+  steel-as-text needs darkening (`#2857B3`). In dark, steel clears AA as text
+  unaided (7.73:1 on background), so ink and fill are one value.
+- **New: `--color-border-interactive`.** v0.4 mandated a 1px border at 3:1 for
+  WCAG 1.4.11 but used a single `--color-border` for both separators and
+  control edges — measured at **1.60:1** (dark) and **1.28:1** (light), the
+  requirement was not actually met. Borders are now split by role: the quiet
+  hairline stays `--color-border`; operable surfaces take
+  `--color-border-interactive`, measured ≥3:1 on every surface.
+- **New: gradient-lit chassis.** `--surface-backdrop` (radial) on the app shell
+  and `--surface-card` (linear) on content panes; chrome stays flat. Text
+  contrast is measured against the *lightest* gradient stop.
+- **Typography.** Newsreader/IBM Plex Sans → **Space Grotesk** (display,
+  headings) + **Inter** (body); JetBrains Mono unchanged.
+- **Regression guard strengthened.** `frontend/src/neumorphic-themes.test.ts`
+  now parses tokens out of `index.css` and **computes** WCAG ratios instead of
+  pinning hex literals, so a bad retune fails with the measured ratio. This
+  covers both themes, all status and syntax hues, and both border roles.
+  `e2e/contrast.spec.ts` still audits 6 routes × 2 themes.
+
+**Known consequence, accepted:** the app no longer mirrors
+`compendiq-landing/src/styles/tokens.css`, so the cross-surface brand parity
+that motivated v0.4's palette choice is broken until the landing page adopts
+the steel tokens. The brand mark itself was retinted (tile `#151B2C`, glyph
+`#E8ECF5`, magnifier strokes steel) across the React `Logo`, the standalone
+SVGs, and the generated favicons.
+
 ---
 
 ## ADR-011: Docker Deployment Architecture

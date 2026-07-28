@@ -92,7 +92,15 @@ License format: `ATM-{tier}-{seats}-{expiryYYYYMMDD}-{licenseId}.{ed25519Signatu
 
 ## UI/UX (ADR-010 v0.4)
 
-Neumorphic dashboard, brand palette black `#0A0A0A` + honey `#F9C74F`. Themes: **Graphite Honey** (dark, default), **Honey Linen** (light) — mirrors `compendiq-landing/src/styles/tokens.css`. Twelve `nm-*` `@utility` classes (see `frontend/src/index.css`). Hybrid neumorphism: every interactive surface keeps a 1px solid border for WCAG 1.4.11 (3:1) and `forced-colors: active`. Press = inset shadow swap; `prefers-reduced-motion: reduce` strips press transform. Animated gradient mesh background is preserved on the **setup wizard only** (not the rest of the app). Staggered entrance animations via Framer Motion `LazyMotion` (lazy-load to keep first paint cheap). Status colors: green=connected, red=disconnected, yellow=syncing, blue=embedding, purple=AI, gray=inactive.
+Neumorphic dashboard on a cool slate-and-steel palette. Themes: **Slate Steel** (dark, default — navy `#0E1220` chassis), **Frost Steel** (light — `#F4F6FA`). Steel (`#6EA8FF` dark / `#2F6BD8` light) is the single brand **and** interaction accent; **amber is reserved for warning/attention only**, violet marks AI. Both themes are gradient-lit: `--surface-backdrop` (radial) on the app shell, `--surface-card` (linear) on content panes; chrome (sidebar/header/toolbar) stays flat.
+
+Typography: **Space Grotesk** display/headings, **Inter** body, **JetBrains Mono** for code and data figures.
+
+Twelve `nm-*` `@utility` classes (see `frontend/src/index.css`). Hybrid neumorphism: every interactive surface keeps a 1px solid border for WCAG 1.4.11 (3:1) and `forced-colors: active` — that border is `--color-border-interactive` (measured ≥3:1 on every surface), **not** the quiet `--color-border` hairline used for separators and panes. Press = inset shadow swap; `prefers-reduced-motion: reduce` strips press transform. Animated gradient mesh background is preserved on the **setup wizard only**. Staggered entrance animations via Framer Motion `LazyMotion`. Status colors: green=connected, red=disconnected, amber=syncing, steel=embedding, violet=AI, slate=inactive.
+
+Palette changes are guarded by `frontend/src/neumorphic-themes.test.ts`, which parses the tokens out of `index.css` and **computes** WCAG ratios rather than pinning hex literals — retune a surface and it fails with the measured ratio.
+
+> **Brand parity caveat:** this palette no longer mirrors `compendiq-landing/src/styles/tokens.css`, which is still on the retired honey system (black `#0A0A0A` + honey `#F9C74F`). Cross-surface parity is broken until the landing page adopts the steel tokens.
 
 ## Content Pipeline (ADR-003)
 

@@ -174,12 +174,12 @@ test.describe('WCAG-AA contrast audit', () => {
   for (const route of ROUTES) {
     for (const theme of ['light', 'dark'] as const) {
       test(`contrast: ${route} (${theme})`, async ({ page }) => {
-        // 1. Set theme. graphite-honey is the default after fresh visit; flip
-        //    to honey-linen via the header toggle if light is requested.
+        // 1. Set theme. slate-steel is the default after fresh visit; flip
+        //    to frost-steel via the header toggle if light is requested.
         await page.goto('/');
         await expect(page.locator('html')).toHaveAttribute(
           'data-theme',
-          'graphite-honey',
+          'slate-steel',
         );
 
         if (theme === 'light') {
@@ -188,7 +188,7 @@ test.describe('WCAG-AA contrast audit', () => {
             .click();
           await expect(page.locator('html')).toHaveAttribute(
             'data-theme',
-            'honey-linen',
+            'frost-steel',
           );
         }
 

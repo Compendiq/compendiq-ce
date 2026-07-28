@@ -6,8 +6,8 @@ migrateStorageKey('kb-theme', 'compendiq-theme');
 migrateStorageKey('atlasmind-theme', 'compendiq-theme');
 
 export const THEME_IDS = [
-  'graphite-honey',
-  'honey-linen',
+  'slate-steel',
+  'frost-steel',
 ] as const;
 
 export type ThemeId = (typeof THEME_IDS)[number];
@@ -27,10 +27,10 @@ interface ThemeMeta {
   };
 }
 
-export const DEFAULT_DARK_THEME: ThemeId = 'graphite-honey';
-export const DEFAULT_LIGHT_THEME: ThemeId = 'honey-linen';
+export const DEFAULT_DARK_THEME: ThemeId = 'slate-steel';
+export const DEFAULT_LIGHT_THEME: ThemeId = 'frost-steel';
 
-export const LIGHT_THEMES: ReadonlySet<ThemeId> = new Set(['honey-linen']);
+export const LIGHT_THEMES: ReadonlySet<ThemeId> = new Set(['frost-steel']);
 
 export function isLightTheme(theme: ThemeId): boolean {
   return LIGHT_THEMES.has(theme);
@@ -38,21 +38,23 @@ export function isLightTheme(theme: ThemeId): boolean {
 
 export const THEMES: ThemeMeta[] = [
   {
-    id: 'graphite-honey',
-    label: 'Graphite Honey',
-    description: 'Graphite surfaces with honey accent — neumorphic dark',
+    id: 'slate-steel',
+    label: 'Slate Steel',
+    description: 'Navy slate surfaces with a steel accent — neumorphic dark',
     category: 'dark',
-    preview: { bg: '#121212', card: '#1f1f1f', primary: '#f9c74f', accent: '#ece9e2' },
+    // Hex values must match the actual rendered surfaces in index.css — the
+    // picker chip is the only way users see the surface color before applying
+    // the theme. `bg` is the flat --color-background rather than the lightest
+    // stop of --surface-backdrop: the chip is too small to read a gradient,
+    // and the flat value is what the majority of the viewport settles to.
+    preview: { bg: '#0e1220', card: '#151b2c', primary: '#6ea8ff', accent: '#e8ecf5' },
   },
   {
-    id: 'honey-linen',
-    label: 'Honey Linen',
-    description: 'Linen cream with honey accent — neumorphic light',
+    id: 'frost-steel',
+    label: 'Frost Steel',
+    description: 'Cool near-white with a steel accent — neumorphic light',
     category: 'light',
-    // Hex values must match the actual rendered surfaces in
-    // index.css [data-theme="honey-linen"] — the picker chip is the only
-    // way users see the surface color before applying the theme.
-    preview: { bg: '#f7f7f7', card: '#ffffff', primary: '#f9c74f', accent: '#0a0a0a' },
+    preview: { bg: '#f4f6fa', card: '#ffffff', primary: '#2f6bd8', accent: '#171c2c' },
   },
 ];
 
@@ -71,12 +73,18 @@ interface ThemeState {
  * these persisted should land on the *light* default after upgrade rather than
  * being silently flipped to dark — that's a worse experience than picking the
  * wrong shade of light.
+ *
+ * `honey-linen` is the light half of the retired Honey Linen / Graphite Honey
+ * pair, replaced by Frost Steel / Slate Steel. Its dark sibling
+ * (`graphite-honey`) needs no entry: it falls through to DEFAULT_DARK_THEME,
+ * which is already the right answer.
  */
 const RETIRED_LIGHT_THEME_IDS: ReadonlySet<string> = new Set([
   'polar-slate',
   'parchment-glow',
   'sunrise-cream',
   'cloud-white',
+  'honey-linen',
 ]);
 
 export function validateThemeId(id: string): ThemeId {

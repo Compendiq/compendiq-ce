@@ -12,7 +12,7 @@ describe('ThemeTab', () => {
   let onSave: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
-    useThemeStore.setState({ theme: 'graphite-honey' });
+    useThemeStore.setState({ theme: 'slate-steel' });
     onSave = vi.fn();
   });
 
@@ -37,20 +37,20 @@ describe('ThemeTab', () => {
   it('renders every theme option across categories', () => {
     render(<ThemeTab onSave={onSave} />);
 
-    expect(screen.getByTestId('theme-graphite-honey')).toBeInTheDocument();
-    expect(screen.getByTestId('theme-honey-linen')).toBeInTheDocument();
+    expect(screen.getByTestId('theme-slate-steel')).toBeInTheDocument();
+    expect(screen.getByTestId('theme-frost-steel')).toBeInTheDocument();
   });
 
   it('displays theme labels and descriptions', () => {
     render(<ThemeTab onSave={onSave} />);
 
-    expect(screen.getByText('Graphite Honey')).toBeInTheDocument();
-    expect(screen.getByText('Honey Linen')).toBeInTheDocument();
+    expect(screen.getByText('Slate Steel')).toBeInTheDocument();
+    expect(screen.getByText('Frost Steel')).toBeInTheDocument();
     expect(
-      screen.getByText('Graphite surfaces with honey accent — neumorphic dark'),
+      screen.getByText('Navy slate surfaces with a steel accent — neumorphic dark'),
     ).toBeInTheDocument();
     expect(
-      screen.getByText('Linen cream with honey accent — neumorphic light'),
+      screen.getByText('Cool near-white with a steel accent — neumorphic light'),
     ).toBeInTheDocument();
   });
 
@@ -61,7 +61,7 @@ describe('ThemeTab', () => {
     expect(activeBadge).toBeInTheDocument();
     expect(activeBadge).toHaveTextContent('Active');
 
-    const activeCard = screen.getByTestId('theme-graphite-honey');
+    const activeCard = screen.getByTestId('theme-slate-steel');
     expect(activeCard).toHaveAttribute('aria-pressed', 'true');
     expect(
       activeCard.querySelector('[data-testid="theme-active-badge"]'),
@@ -71,30 +71,30 @@ describe('ThemeTab', () => {
   it('updates the theme store when a different theme card is clicked', () => {
     render(<ThemeTab onSave={onSave} />);
 
-    fireEvent.click(screen.getByTestId('theme-honey-linen'));
+    fireEvent.click(screen.getByTestId('theme-frost-steel'));
 
-    expect(useThemeStore.getState().theme).toBe('honey-linen');
+    expect(useThemeStore.getState().theme).toBe('frost-steel');
   });
 
   it('calls onSave with the selected theme id', () => {
     render(<ThemeTab onSave={onSave} />);
 
-    fireEvent.click(screen.getByTestId('theme-honey-linen'));
+    fireEvent.click(screen.getByTestId('theme-frost-steel'));
 
-    expect(onSave).toHaveBeenCalledWith({ theme: 'honey-linen' });
+    expect(onSave).toHaveBeenCalledWith({ theme: 'frost-steel' });
   });
 
   it('moves the active badge to the newly selected theme', () => {
     render(<ThemeTab onSave={onSave} />);
 
-    fireEvent.click(screen.getByTestId('theme-honey-linen'));
+    fireEvent.click(screen.getByTestId('theme-frost-steel'));
 
-    const selectedCard = screen.getByTestId('theme-honey-linen');
+    const selectedCard = screen.getByTestId('theme-frost-steel');
     expect(selectedCard).toHaveAttribute('aria-pressed', 'true');
     expect(
       selectedCard.querySelector('[data-testid="theme-active-badge"]'),
     ).toBeInTheDocument();
-    expect(screen.getByTestId('theme-graphite-honey')).toHaveAttribute(
+    expect(screen.getByTestId('theme-slate-steel')).toHaveAttribute(
       'aria-pressed',
       'false',
     );

@@ -3,7 +3,7 @@ import { useThemeStore, isLightTheme, DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME } 
 
 /**
  * Header toggle that switches between dark and light modes.
- * Dark → graphite-honey, Light → honey-linen.
+ * Dark → slate-steel, Light → frost-steel.
  */
 export function ThemeToggle() {
   const theme = useThemeStore((s) => s.theme);

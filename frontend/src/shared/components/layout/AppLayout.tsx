@@ -240,7 +240,10 @@ export function AppLayout({ children }: { children: ReactNode }) {
   }, [location.key]);
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-background">
+    // `app-backdrop` (index.css) paints the gradient chassis rather than a flat
+    // --color-background. It must not be swapped back to a `bg-*` utility:
+    // those set background-color, which cannot express the gradient.
+    <div className="app-backdrop flex h-screen flex-col overflow-hidden">
       <CommandPalette />
       <KeyboardShortcutsModal />
 

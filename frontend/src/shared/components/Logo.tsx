@@ -9,8 +9,16 @@ interface LogoProps {
  * Two color regions:
  * - Wordmark "Compendiq" text + Q outline → `currentColor` (inherits from
  *   the host's text color so it stays readable in BOTH themes).
- * - The two amber magnifier strokes → hard-coded #f9c74f. They are the
- *   brand AI signal and must not invert with theme.
+ * - The two magnifier strokes → hard-coded steel #6ea8ff. They are the brand
+ *   AI signal and must not invert with theme.
+ *
+ * Retinted from the retired honey palette (tile #1a1a1a, glyph #fff8e9,
+ * strokes #f9c74f) to the steel system: the tile now sits at --color-card so
+ * the mark reads as part of the navy chassis instead of a black sticker on
+ * it, the glyph takes the cool foreground, and the strokes are steel. These
+ * stay literal rather than `var(--color-*)` because the same geometry is
+ * mirrored in public/compendiq-lockup-horizontal.svg and the favicons, which
+ * render with no CSS custom properties available.
  *
  * Geometry copied verbatim from public/compendiq-lockup-horizontal.svg
  * (kept on disk for favicon / OG image / non-React consumers).
@@ -28,13 +36,13 @@ export function Logo({ className, title = 'Compendiq' }: LogoProps) {
       <title>{title}</title>
       <path
         d="M1000,115l0,770c0,63.47 -51.53,115 -115,115l-770,0c-63.47,0 -115,-51.53 -115,-115l0,-770c0,-63.47 51.53,-115 115,-115l770,0c63.47,0 115,51.53 115,115Z"
-        fill="#1a1a1a"
+        fill="#151b2c"
       />
       <path
         d="M500,95c222.176,-0 405,182.824 405,405c0,222.176 -182.824,405 -405,405c-222.176,0 -405,-182.824 -405,-405c-0,-222.176 182.824,-405 405,-405Zm285.424,301.118c-43.57,-119.717 -158.035,-199.868 -285.434,-199.868c-166.632,0 -303.75,137.118 -303.75,303.75c0,166.632 137.118,303.75 303.75,303.75c127.399,0 241.863,-80.151 285.434,-199.868l-95.074,-48.532c-24.669,86.814 -104.537,147.15 -194.789,147.15c-111.088,0 -202.5,-91.412 -202.5,-202.5c0,-111.088 91.412,-202.5 202.5,-202.5c90.251,0 170.12,60.336 194.789,147.15l95.074,-48.532Z"
-        fill="#fff8e9"
+        fill="#e8ecf5"
       />
-      <path d="M618.125,618.125l165.375,165.375" fill="none" stroke="#f9c74f" strokeWidth="67.5" />
+      <path d="M618.125,618.125l165.375,165.375" fill="none" stroke="#6ea8ff" strokeWidth="67.5" />
       <text
         x="1064.82"
         y="692.255"
@@ -53,7 +61,7 @@ export function Logo({ className, title = 'Compendiq' }: LogoProps) {
         <path d="M3761.869,554.017l0,138.238" fill="none" stroke="currentColor" strokeWidth="40.28" strokeLinecap="butt" />
         <path d="M3627.682,692.207l138.238,0.057" fill="none" stroke="currentColor" strokeWidth="40.28" strokeLinecap="butt" />
         <circle cx="3623.631" cy="554.017" r="138.238" fill="none" stroke="currentColor" strokeWidth="40.28" strokeLinecap="butt" />
-        <path d="M3723.288,649.755l101.86,101.86" fill="none" stroke="#f9c74f" strokeWidth="40.28" strokeLinejoin="bevel" />
+        <path d="M3723.288,649.755l101.86,101.86" fill="none" stroke="#6ea8ff" strokeWidth="40.28" strokeLinejoin="bevel" />
       </g>
     </svg>
   );

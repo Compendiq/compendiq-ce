@@ -15,16 +15,16 @@ import {
 
 describe('theme-store', () => {
   beforeEach(() => {
-    useThemeStore.setState({ theme: 'graphite-honey' });
+    useThemeStore.setState({ theme: 'slate-steel' });
   });
 
-  it('has graphite-honey as the default theme', () => {
-    expect(useThemeStore.getState().theme).toBe('graphite-honey');
+  it('has slate-steel as the default theme', () => {
+    expect(useThemeStore.getState().theme).toBe('slate-steel');
   });
 
   it('sets a new theme', () => {
-    useThemeStore.getState().setTheme('honey-linen');
-    expect(useThemeStore.getState().theme).toBe('honey-linen');
+    useThemeStore.getState().setTheme('frost-steel');
+    expect(useThemeStore.getState().theme).toBe('frost-steel');
   });
 
   it('defines exactly 2 themes (1 dark + 1 light)', () => {
@@ -77,69 +77,69 @@ describe('theme-store', () => {
   });
 
   it('exports correct default theme constants', () => {
-    expect(DEFAULT_DARK_THEME).toBe('graphite-honey');
-    expect(DEFAULT_LIGHT_THEME).toBe('honey-linen');
+    expect(DEFAULT_DARK_THEME).toBe('slate-steel');
+    expect(DEFAULT_LIGHT_THEME).toBe('frost-steel');
   });
 
   it('sets light theme', () => {
-    useThemeStore.getState().setTheme('honey-linen');
-    expect(useThemeStore.getState().theme).toBe('honey-linen');
+    useThemeStore.getState().setTheme('frost-steel');
+    expect(useThemeStore.getState().theme).toBe('frost-steel');
   });
 
   it('sets dark theme', () => {
-    useThemeStore.getState().setTheme('graphite-honey');
-    expect(useThemeStore.getState().theme).toBe('graphite-honey');
+    useThemeStore.getState().setTheme('slate-steel');
+    expect(useThemeStore.getState().theme).toBe('slate-steel');
   });
 
   describe('isLightTheme', () => {
-    it('returns true for honey-linen', () => {
-      expect(isLightTheme('honey-linen')).toBe(true);
+    it('returns true for frost-steel', () => {
+      expect(isLightTheme('frost-steel')).toBe(true);
     });
 
-    it('returns false for graphite-honey', () => {
-      expect(isLightTheme('graphite-honey')).toBe(false);
+    it('returns false for slate-steel', () => {
+      expect(isLightTheme('slate-steel')).toBe(false);
     });
   });
 
   describe('applyThemeToDocument', () => {
     it('sets data-theme attribute on document root', () => {
-      applyThemeToDocument('honey-linen');
-      expect(document.documentElement.getAttribute('data-theme')).toBe('honey-linen');
+      applyThemeToDocument('frost-steel');
+      expect(document.documentElement.getAttribute('data-theme')).toBe('frost-steel');
     });
 
-    it('sets data-theme-type to dark for graphite-honey', () => {
-      applyThemeToDocument('graphite-honey');
+    it('sets data-theme-type to dark for slate-steel', () => {
+      applyThemeToDocument('slate-steel');
       expect(document.documentElement.dataset.themeType).toBe('dark');
     });
 
-    it('sets data-theme-type to light for honey-linen', () => {
-      applyThemeToDocument('honey-linen');
+    it('sets data-theme-type to light for frost-steel', () => {
+      applyThemeToDocument('frost-steel');
       expect(document.documentElement.dataset.themeType).toBe('light');
     });
 
     it('adds the dark class when applying a dark theme', () => {
       document.documentElement.classList.remove('dark');
-      applyThemeToDocument('graphite-honey');
+      applyThemeToDocument('slate-steel');
       expect(document.documentElement.classList.contains('dark')).toBe(true);
     });
 
     it('removes the dark class when applying a light theme', () => {
       document.documentElement.classList.add('dark');
-      applyThemeToDocument('honey-linen');
+      applyThemeToDocument('frost-steel');
       expect(document.documentElement.classList.contains('dark')).toBe(false);
     });
   });
 
   describe('setTheme applies to document', () => {
     it('updates data-theme when setTheme is called (dark)', () => {
-      useThemeStore.getState().setTheme('graphite-honey');
-      expect(document.documentElement.getAttribute('data-theme')).toBe('graphite-honey');
+      useThemeStore.getState().setTheme('slate-steel');
+      expect(document.documentElement.getAttribute('data-theme')).toBe('slate-steel');
       expect(document.documentElement.dataset.themeType).toBe('dark');
     });
 
-    it('updates data-theme-type to light when switching to honey-linen', () => {
-      useThemeStore.getState().setTheme('honey-linen');
-      expect(document.documentElement.getAttribute('data-theme')).toBe('honey-linen');
+    it('updates data-theme-type to light when switching to frost-steel', () => {
+      useThemeStore.getState().setTheme('frost-steel');
+      expect(document.documentElement.getAttribute('data-theme')).toBe('frost-steel');
       expect(document.documentElement.dataset.themeType).toBe('light');
     });
   });
@@ -166,13 +166,13 @@ describe('theme-store', () => {
 
     it('accepts the two current theme IDs as valid', () => {
       const validIds = [...THEME_IDS] as string[];
-      expect(validIds).toContain('graphite-honey');
-      expect(validIds).toContain('honey-linen');
+      expect(validIds).toContain('slate-steel');
+      expect(validIds).toContain('frost-steel');
     });
 
     it('passes through current theme IDs unchanged', () => {
-      expect(validateThemeId('graphite-honey')).toBe('graphite-honey');
-      expect(validateThemeId('honey-linen')).toBe('honey-linen');
+      expect(validateThemeId('slate-steel')).toBe('slate-steel');
+      expect(validateThemeId('frost-steel')).toBe('frost-steel');
     });
 
     it('falls back retired light themes to the light default (no silent dark flip)', () => {
@@ -192,6 +192,19 @@ describe('theme-store', () => {
       expect(validateThemeId('catppuccin-mocha')).toBe(DEFAULT_DARK_THEME);
       expect(validateThemeId('totally-made-up-id')).toBe(DEFAULT_DARK_THEME);
       expect(validateThemeId('')).toBe(DEFAULT_DARK_THEME);
+    });
+
+    // The honey → steel rebrand retired both halves of the previous pair.
+    // Users hold these in localStorage, so each must land on the replacement
+    // of the SAME brightness — a light-theme user must not be flipped to dark.
+    it('migrates the retired honey pair to its steel replacement', () => {
+      expect(validateThemeId('honey-linen')).toBe('frost-steel');
+      expect(validateThemeId('graphite-honey')).toBe('slate-steel');
+    });
+
+    it('lands a migrated honey theme on the matching brightness', () => {
+      expect(isLightTheme(validateThemeId('honey-linen'))).toBe(true);
+      expect(isLightTheme(validateThemeId('graphite-honey'))).toBe(false);
     });
   });
 });
