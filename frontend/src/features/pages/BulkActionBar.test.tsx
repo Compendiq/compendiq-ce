@@ -34,12 +34,43 @@ afterEach(() => {
 });
 
 describe('BulkActionBar', () => {
-  it('renders nothing with an empty selection', () => {
-    const { container } = render(
+  it('renders no action bar with an empty selection', () => {
+    render(
       <BulkActionBar selectedIds={[]} confluenceCount={0} onClear={vi.fn()} />,
       { wrapper: createWrapper() },
     );
-    expect(container).toBeEmptyDOMElement();
+    expect(screen.queryByTestId('bulk-action-bar')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('bulk-selection-count')).not.toBeInTheDocument();
+  });
+
+  it('keeps an empty live region mounted before anything is selected', () => {
+    // A live region that appears at the same moment as its own text is not
+    // announced — it has to already exist and then change. Mounting it with
+    // the bar made the first selection, the one that reveals the bar, silent.
+    const { rerender } = render(
+      <BulkActionBar selectedIds={[]} confluenceCount={0} onClear={vi.fn()} />,
+      { wrapper: createWrapper() },
+    );
+
+    const live = screen.getByTestId('bulk-selection-live');
+    expect(live).toHaveAttribute('aria-live', 'polite');
+    expect(live).toBeEmptyDOMElement();
+
+    rerender(<BulkActionBar selectedIds={['1']} confluenceCount={0} onClear={vi.fn()} />);
+
+    // Same node, new text — that is what gets announced.
+    expect(screen.getByTestId('bulk-selection-live')).toBe(live);
+    expect(live).toHaveTextContent('1 page selected');
+  });
+
+  it('does not mark the visible count as a second live region', () => {
+    // Two live regions with the same text announce it twice.
+    render(
+      <BulkActionBar selectedIds={['1', '2']} confluenceCount={0} onClear={vi.fn()} />,
+      { wrapper: createWrapper() },
+    );
+    expect(screen.getByTestId('bulk-selection-count')).not.toHaveAttribute('aria-live');
+    expect(screen.getByTestId('bulk-selection-live')).toHaveTextContent('2 pages selected');
   });
 
   it('reports the selection count with correct pluralisation', () => {

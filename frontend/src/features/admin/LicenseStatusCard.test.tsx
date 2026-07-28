@@ -401,6 +401,19 @@ describe('LicenseStatusCard — upgrade CTA signals', () => {
     expect(catalogue).toHaveTextContent('0 of 5 active');
   });
 
+  it('keeps the catalogue on the heading outline while collapsed', async () => {
+    // Collapsing the section must not cost the panel a step in heading
+    // navigation — the disclosure is a button, which heading navigation skips.
+    mockFetch({ edition: 'community', tier: 'community', features: [], valid: true });
+
+    render(<LicenseStatusCard />, { wrapper: createWrapper() });
+
+    const heading = await screen.findByRole('heading', { name: /Enterprise feature catalogue/ });
+    expect(heading).toBeInTheDocument();
+    // Still a disclosure, not just a heading.
+    expect(heading.closest('summary')).not.toBeNull();
+  });
+
   it('expands the catalogue when a paid tier makes the rows informative', async () => {
     mockFetch({
       edition: 'enterprise',

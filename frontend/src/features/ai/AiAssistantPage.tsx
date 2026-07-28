@@ -263,8 +263,8 @@ function AiAssistantInner() {
             Diagram and Quality were unreachable with no scroll cue at all —
             two of six modes simply did not exist on a phone. snap-x keeps the
             tabs from resting half-visible; the edge mask signals there is more
-            to the right. Arrow-key navigation still reaches every tab, and
-            scroll-into-view keeps the focused one on screen. */}
+            to the right. Arrow-key navigation still reaches every tab, moving
+            focus with the selection so the focused tab is the visible one. */}
         <div
           role="tablist"
           aria-label="AI mode"
@@ -281,10 +281,18 @@ function AiAssistantInner() {
               const nextKey = keys[next];
               if (nextKey) {
                 setMode(nextKey);
-                // Keep the newly focused tab on screen once the row scrolls.
-                e.currentTarget
-                  .querySelector(`[data-mode-tab="${nextKey}"]`)
-                  ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+                // Move DOM focus along with the selection. These tabs use a
+                // roving tabindex, so selecting without focusing strands focus
+                // on a tab that just became tabIndex={-1} — and once the row
+                // scrolls, off-screen as well: the highlighted tab and the
+                // focused one were different tabs. preventScroll + an explicit
+                // scrollIntoView keeps the correction horizontal, inside the
+                // tablist, instead of letting the browser jump the page.
+                const nextTab = e.currentTarget.querySelector<HTMLElement>(
+                  `[data-mode-tab="${nextKey}"]`,
+                );
+                nextTab?.focus({ preventScroll: true });
+                nextTab?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
               }
             }
           }}

@@ -28,21 +28,34 @@ export function BulkActionBar({ selectedIds, confluenceCount, onClear }: BulkAct
   const [pendingDelete, setPendingDelete] = useState(false);
   const bulk = useBulkPageAction(onClear);
 
-  if (selectedIds.length === 0) return null;
-
   const count = selectedIds.length;
   const noun = count === 1 ? 'page' : 'pages';
   const run = (action: BulkAction) => bulk.mutate({ action, ids: selectedIds });
 
+  // Mounted whether or not anything is selected. A live region that appears at
+  // the same moment as its own text is not announced by most screen readers —
+  // the region has to already exist and then change — so the first selection,
+  // the one that reveals the bar, was silent.
+  const liveRegion = (
+    <span className="sr-only" aria-live="polite" data-testid="bulk-selection-live">
+      {count > 0 ? `${count} ${noun} selected` : ''}
+    </span>
+  );
+
+  if (count === 0) return liveRegion;
+
   return (
     <>
+      {liveRegion}
       <div
         role="region"
         aria-label={`Actions for ${count} selected ${noun}`}
         className="flex flex-wrap items-center gap-3 rounded-xl border border-action/40 bg-action/[0.06] px-4 py-3"
         data-testid="bulk-action-bar"
       >
-        <span className="text-sm font-medium" aria-live="polite" data-testid="bulk-selection-count">
+        {/* Visible copy of the count. Not itself the live region — announcing
+            is `liveRegion`'s job, and marking both would say it twice. */}
+        <span className="text-sm font-medium" data-testid="bulk-selection-count">
           {count} {noun} selected
         </span>
 

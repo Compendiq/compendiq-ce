@@ -329,7 +329,11 @@ export function LicenseStatusCard() {
             aria-hidden="true"
             className="shrink-0 transition-transform group-open:rotate-90"
           />
-          Enterprise feature catalogue
+          {/* Stays a real heading inside the summary — collapsing the section
+              must not cost the panel a step on the heading outline. `summary`
+              permits heading content, and the disclosure is still exposed as a
+              button either way. */}
+          <h3 className="text-sm font-medium">Enterprise feature catalogue</h3>
           <span className="text-xs font-normal text-muted-foreground/70">
             {activeFeatureCount} of {ENTERPRISE_FEATURES.length} active
           </span>
