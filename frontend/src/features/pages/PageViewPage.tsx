@@ -18,7 +18,7 @@ import { useSubmitFeedback, useVerifyPage } from '../../shared/hooks/use-standal
 import { useAuthenticatedSrc } from '../../shared/hooks/use-authenticated-src';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { useKeyboardShortcuts, type ShortcutDefinition } from '../../shared/hooks/use-keyboard-shortcuts';
-import { useArticleViewStore, type ApplyArticleContentResult } from '../../stores/article-view-store';
+import { useArticleViewStore } from '../../stores/article-view-store';
 import { useAiDockStore } from '../../stores/ai-dock-store';
 import { useAuthStore } from '../../stores/auth-store';
 import { cn } from '../../shared/lib/cn';
@@ -158,9 +158,6 @@ export function PageViewPage() {
 
   const setStoreHeadings = useArticleViewStore((s) => s.setHeadings);
   const setStoreEditing = useArticleViewStore((s) => s.setEditing);
-  const setStoreEditorDirty = useArticleViewStore((s) => s.setEditorDirty);
-  const setStoreRequestEdit = useArticleViewStore((s) => s.setRequestEdit);
-  const setStoreApplyContent = useArticleViewStore((s) => s.setApplyContent);
   const openDock = useAiDockStore((s) => s.openDock);
 
   const [editing, setEditing] = useState(false);
@@ -205,13 +202,6 @@ export function PageViewPage() {
     setStoreEditing(editing);
   }, [editing, setStoreEditing]);
 
-  // Mirror the dirty flag too (#1126): the docked assistant has to know that the
-  // editor holds work it was never shown before it offers to replace the
-  // document with a rewrite of the *published* text.
-  useEffect(() => {
-    setStoreEditorDirty(editing && isDirty);
-  }, [editing, isDirty, setStoreEditorDirty]);
-
   // Real-time co-presence (#301). Propagates our editing flag to other viewers
   // via a 10s heartbeat so the pencil badge toggles for them within one tick.
   const { viewers: presenceViewers, setEditing: setPresenceEditing } = usePresence(id);
@@ -229,7 +219,6 @@ export function PageViewPage() {
     return () => {
       useArticleViewStore.getState().setHeadings([]);
       useArticleViewStore.getState().setEditing(false);
-      useArticleViewStore.getState().setEditorDirty(false);
     };
   }, []);
 
@@ -318,39 +307,6 @@ export function PageViewPage() {
     setIsDirty(false);
     setEditing(true);
   }, [page]);
-
-  // Replace the open document with AI-authored HTML (#1126). This is the only
-  // `setContent` call in the app — the editor's `content` prop seeds it once at
-  // mount and is never re-seeded — so it deliberately lives here, next to the
-  // save path, rather than being reachable from anywhere with an editor handle.
-  //
-  // It writes into the *editor*, not the server: the change is a normal unsaved
-  // edit that TipTap history can undo and Save publishes, instead of the
-  // one-click irreversible page write + Confluence push that `/ai`'s Improve
-  // Accept performs.
-  const applyAiContent = useCallback(
-    (html: string): ApplyArticleContentResult => {
-      if (!editorInstance) return 'no-editor';
-      editorInstance.commands.setContent(html, { emitUpdate: true });
-      setIsDirty(true);
-      return 'applied';
-    },
-    [editorInstance],
-  );
-
-  // Publish both capabilities to the article view store while this page is
-  // mounted, so the docked assistant (which lives in AppLayout, outside the
-  // route) can ask for edit mode and hand over content without reaching into
-  // this component's state.
-  useEffect(() => {
-    setStoreRequestEdit(handleStartEditing);
-    return () => setStoreRequestEdit(null);
-  }, [handleStartEditing, setStoreRequestEdit]);
-
-  useEffect(() => {
-    setStoreApplyContent(applyAiContent);
-    return () => setStoreApplyContent(null);
-  }, [applyAiContent, setStoreApplyContent]);
 
   // The editor is dirty when the title diverges from the persisted page or the
   // body was touched. `isDirty` is set by the Editor's onChange (and seeded

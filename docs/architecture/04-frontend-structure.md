@@ -86,11 +86,21 @@ flowchart LR
 - Below `min-width: 1100px` (`useIsDockWideLayout`) the rail is not rendered
   and the dock is capped narrower — the only JS media query in the app;
   everything else is a Tailwind class.
-- `Apply` on a proposed change writes into the **open TipTap editor** through
-  two capabilities `PageViewPage` registers on `article-view` (`requestEdit`,
-  `applyContent`). Nothing is published until the user saves. See
-  [`11-content-pipeline.md`](./11-content-pipeline.md) for the
-  markdown → HTML conversion that feeds it.
+- `Apply` on a proposed change goes through **`POST /llm/improvements/apply`**,
+  not a client-side write into the editor. That route runs `protectMedia` /
+  `restoreMedia` (#723) and the column-layout realignment that returns **422**
+  when the layout is unrecoverable (#781). Those guards live in
+  `backend/src/core/services/content-converter.ts` and have no frontend
+  counterpart, so a client-side Markdown→HTML round-trip would silently strip
+  Confluence macros and media — see
+  [`11-content-pipeline.md`](./11-content-pipeline.md). What the dock changes
+  is *where the decision happens* — inline in the thread, beside the document —
+  not how it is applied. Consequently Apply is unavailable while the editor is
+  open: it rewrites the saved page, which an open editor would overwrite on its
+  next save. `article-view` therefore stays a set of read-only mirrors.
+- `/ai` keeps only the Ask and Generate tabs. The four document actions are
+  dock chips; their mode screens still render for `?mode=…` deep links (which
+  `SidebarTreeView` and old bookmarks still produce), but nothing offers them.
 
 ## Enterprise gating
 

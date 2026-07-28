@@ -2,7 +2,7 @@ import { memo } from 'react';
 import { m, useReducedMotion } from 'framer-motion';
 import {
   Bot, User, Loader2, MessageSquare, Brain, AlertTriangle,
-  Wand2, ListCollapse, Sparkles, GitBranch, ShieldCheck, Network,
+  Sparkles, Network,
 } from 'lucide-react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -151,13 +151,24 @@ const MessageBubble = memo(function MessageBubble({
 // Mode button definitions
 // ---------------------------------------------------------------------------
 
+/**
+ * The tabs `/ai` offers (#1126).
+ *
+ * Improve, Summarize, Diagram and Quality are gone from this list: they act on
+ * an open document, and the dock is where a document is open. Leaving them here
+ * would advertise six modes on a route that cannot show you the page they
+ * operate on, beside a dock offering four chips for the same jobs — two
+ * surfaces for one task, with no signal which is canonical.
+ *
+ * Their screens below are NOT removed. `/ai?mode=improve&pageId=…` still
+ * renders Improve in full, so bookmarks and any link produced before this
+ * change keep working — including SidebarTreeView's `isAiRoute` re-navigation.
+ * Retiring those screens is a separate change, once nothing is observed
+ * reaching them.
+ */
 const MODE_BUTTONS: Array<{ key: Mode; icon: typeof MessageSquare; label: string }> = [
   { key: 'ask', icon: MessageSquare, label: 'Q&A' },
-  { key: 'improve', icon: Wand2, label: 'Improve' },
   { key: 'generate', icon: Sparkles, label: 'Generate' },
-  { key: 'summarize', icon: ListCollapse, label: 'Summarize' },
-  { key: 'diagram', icon: GitBranch, label: 'Diagram' },
-  { key: 'quality', icon: ShieldCheck, label: 'Quality' },
 ];
 
 // ---------------------------------------------------------------------------

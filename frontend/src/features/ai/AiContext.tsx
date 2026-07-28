@@ -334,7 +334,14 @@ export function AiProvider({ children }: { children: ReactNode }) {
 
   const rawMode = searchParams.get('mode');
   const urlMode = VALID_MODES.includes(rawMode as Mode) ? (rawMode as Mode) : null;
-  const [mode, setMode] = useState<Mode>(urlMode ?? (pageId ? 'improve' : 'ask'));
+  // `/ai` offers Ask and Generate only, now that the four document actions are
+  // chips in the dock (#1126). The old default — `pageId ? 'improve' : 'ask'` —
+  // would land `/ai?pageId=…` (which SidebarTreeView still produces) on Improve:
+  // a mode with no tab, which the user could leave but never return to. A page
+  // context is still an *input* to Ask, so Ask is the honest default here; only
+  // an explicit `?mode=` reaches a document mode, which is what keeps existing
+  // deep links rendering.
+  const [mode, setMode] = useState<Mode>(urlMode ?? 'ask');
   // Conversations keyed by page and retained (#1126). Changing pages swaps
   // which thread is on screen; it never destroys one.
   const threadKey = threadKeyFor(pageId);

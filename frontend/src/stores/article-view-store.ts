@@ -2,57 +2,28 @@ import { create } from 'zustand';
 import type { TocHeading } from '../shared/components/article/TableOfContents';
 
 /**
- * Result of asking the open article to absorb AI-authored HTML.
+ * Read-only mirrors of the open article's state, published by PageViewPage for
+ * surfaces that live outside the route — `ArticleRightPane` and the docked AI
+ * assistant, both mounted in AppLayout.
  *
- * `no-editor` is not a failure the caller can retry — it means the article is
- * in read mode, so there is no TipTap instance to write into and the caller has
- * to ask for edit mode first.
+ * Deliberately still mirrors only. An earlier revision of #1126 added
+ * `requestEdit` / `applyContent` capabilities here so the dock could write an
+ * AI rewrite straight into TipTap; they were removed once it was clear that a
+ * client-side Markdown→HTML round-trip bypasses the media and column-layout
+ * guards `POST /llm/improvements/apply` runs server-side (see the header
+ * comment on `features/ai/dock/DockDiffCard.tsx`). Apply is a server call, so
+ * nothing outside the route needs to reach into the editor — keep it that way.
  */
-export type ApplyArticleContentResult = 'applied' | 'no-editor';
-
 interface ArticleViewState {
   headings: TocHeading[];
   editing: boolean;
-  /** True once the open editor has unsaved changes (mirrors PageViewPage's `isDirty`). */
-  editorDirty: boolean;
   setHeadings: (headings: TocHeading[]) => void;
   setEditing: (editing: boolean) => void;
-  setEditorDirty: (dirty: boolean) => void;
-
-  // --- Capabilities registered by PageViewPage while it is mounted ----------
-  //
-  // `editing` above is a *mirror*: writing it would lie about the article's
-  // state without changing it. The docked assistant (#1126) lives in AppLayout,
-  // outside the route, and has to be able to (a) ask the article to enter edit
-  // mode and (b) hand it improved content. Both are operations only
-  // PageViewPage can perform — it owns the draft-restore flow and the editor
-  // instance — so it registers them here rather than exposing its internals.
-
-  /**
-   * Enter edit mode. May not take effect synchronously (or at all): when a
-   * localStorage draft diverges from the published body, PageViewPage defers
-   * behind a "Restore draft?" dialog and the user may dismiss it. Callers must
-   * watch `editing` rather than assume this succeeded.
-   */
-  requestEdit: (() => void) | null;
-  setRequestEdit: (fn: (() => void) | null) => void;
-
-  /** Replace the open editor's document with `html`. Null / `'no-editor'` in read mode. */
-  applyContent: ((html: string) => ApplyArticleContentResult) | null;
-  setApplyContent: (fn: ((html: string) => ApplyArticleContentResult) | null) => void;
 }
 
 export const useArticleViewStore = create<ArticleViewState>()((set) => ({
   headings: [],
   editing: false,
-  editorDirty: false,
   setHeadings: (headings) => set({ headings }),
   setEditing: (editing) => set({ editing }),
-  // Guarded so the editor's per-keystroke `setIsDirty(true)` doesn't notify
-  // every subscriber on every keystroke once the flag is already true.
-  setEditorDirty: (dirty) => set((s) => (s.editorDirty === dirty ? s : { editorDirty: dirty })),
-  requestEdit: null,
-  setRequestEdit: (fn) => set({ requestEdit: fn }),
-  applyContent: null,
-  setApplyContent: (fn) => set({ applyContent: fn }),
 }));
