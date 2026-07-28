@@ -68,3 +68,11 @@ firebase-debug.log
 # k6 output files
 perf/*.json
 perf/*.html
+
+# Impeccable — local UI critique runs and live-iteration scratch state
+.impeccable/
+
+# Local Confluence fixture that fakes the clock to keep an evaluation
+# licence alive; not part of the shipped docker/ compose set.
+docker/confluence-faketime.Dockerfile
+docker/docker-compose.confluence.faketime.yml
