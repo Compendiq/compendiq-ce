@@ -15,6 +15,7 @@ import { UserMenu } from './UserMenu';
 import { SidebarTreeView } from './SidebarTreeView';
 import { SettingsSidebar } from './SettingsSidebar';
 import { ArticleRightPane } from '../article/ArticleRightPane';
+import { AiProvider } from '../../../features/ai/AiContext';
 import { ShortcutHint } from '../ShortcutHint';
 import { Logo } from '../Logo';
 import { ThemeToggle } from './ThemeToggle';
@@ -240,9 +241,14 @@ export function AppLayout({ children }: { children: ReactNode }) {
   }, [location.key]);
 
   return (
-    // `app-backdrop` (index.css) paints the gradient chassis rather than a flat
-    // --color-background. It must not be swapped back to a `bg-*` utility:
-    // those set background-color, which cannot express the gradient.
+    // AiProvider sits above the whole shell, not inside the /ai route (#1126),
+    // so a conversation survives navigation instead of being torn down with
+    // the page that started it. It is inert until an AI surface mounts and
+    // registers as a consumer — see `retainAi` in AiContext.
+    <AiProvider>
+    {/* `app-backdrop` (index.css) paints the gradient chassis rather than a flat
+        --color-background. It must not be swapped back to a `bg-*` utility:
+        those set background-color, which cannot express the gradient. */}
     <div className="app-backdrop flex h-screen flex-col overflow-hidden">
       <CommandPalette />
       <KeyboardShortcutsModal />
@@ -395,5 +401,6 @@ export function AppLayout({ children }: { children: ReactNode }) {
         )}
       </AnimatePresence>
     </div>
+    </AiProvider>
   );
 }

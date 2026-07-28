@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { AiAssistantPage } from './AiAssistantPage';
+import { AiProvider } from './AiContext';
 import { ApiError } from '../../shared/lib/api';
 import { useAuthStore } from '../../stores/auth-store';
 
@@ -46,6 +47,8 @@ vi.mock('sonner', () => ({
   },
 }));
 
+// AiProvider is mounted by the wrapper, not by the page: it lives in AppLayout
+// now (#1126) so a conversation outlives the /ai route.
 function createWrapper(initialEntries = ['/ai']) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -55,7 +58,7 @@ function createWrapper(initialEntries = ['/ai']) {
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={initialEntries}>
           <LazyMotion features={domAnimation}>
-            {children}
+            <AiProvider>{children}</AiProvider>
           </LazyMotion>
         </MemoryRouter>
       </QueryClientProvider>
@@ -78,7 +81,9 @@ function createWrapperWithClient(initialEntries = ['/ai']): {
   const Wrapper = ({ children }: { children: React.ReactNode }) => (
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={initialEntries}>
-        <LazyMotion features={domAnimation}>{children}</LazyMotion>
+        <LazyMotion features={domAnimation}>
+          <AiProvider>{children}</AiProvider>
+        </LazyMotion>
       </MemoryRouter>
     </QueryClientProvider>
   );

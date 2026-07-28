@@ -12,7 +12,7 @@ import { AIThinkingBlob } from '../../shared/components/feedback/AIThinkingBlob'
 import { SourceCitations } from './SourceCitations';
 import { CitationChips } from './CitationChips';
 import { StreamingMessage } from './StreamingMessage';
-import { AiProvider, useAiContext, type Mode, type Message } from './AiContext';
+import { useAiContext, type Mode, type Message } from './AiContext';
 import {
   AskModeInput, AskExamplePrompts, ASK_EMPTY_TITLE, ASK_EMPTY_SUBTITLE,
   ImproveTypeSelector, ImproveDiffView, ImproveModeInput, IMPROVE_EMPTY_TITLE, improveEmptySubtitle,
@@ -207,10 +207,14 @@ function getEmptySubtitle(mode: Mode, page: { title: string } | undefined): stri
 }
 
 // ---------------------------------------------------------------------------
-// Inner component (consumes AiContext)
+// Page (consumes AiContext)
+//
+// The provider is NOT mounted here: it lives in AppLayout (#1126) so a
+// conversation outlives the route. Mounting one here again would give /ai its
+// own thread map and reintroduce exactly the reset this fixed.
 // ---------------------------------------------------------------------------
 
-function AiAssistantInner() {
+export function AiAssistantPage() {
   const ctx = useAiContext();
   const {
     mode, setMode, page, pageHasChildren,
@@ -563,17 +567,5 @@ function AiAssistantInner() {
         {mode === 'quality' && <QualityModeInput />}
       </div>
     </m.div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Public export: wraps inner in AiProvider
-// ---------------------------------------------------------------------------
-
-export function AiAssistantPage() {
-  return (
-    <AiProvider>
-      <AiAssistantInner />
-    </AiProvider>
   );
 }
