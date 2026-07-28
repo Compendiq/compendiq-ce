@@ -1,6 +1,6 @@
 /* eslint-disable react-refresh/only-export-components */
 import { createContext, useContext, useState, useRef, useEffect, useCallback, type ReactNode } from 'react';
-import { useSearchParams, useNavigate } from 'react-router-dom';
+import { useSearchParams, useNavigate, useLocation } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { UsecaseDefault } from '@compendiq/contracts';
 import { apiFetch, ApiError } from '../../shared/lib/api';
@@ -50,6 +50,13 @@ interface PageData {
 }
 
 interface AiContextValue {
+  /**
+   * Registers the calling component as an active AI consumer. `useAiContext`
+   * calls this for you; nothing else should. See `retainAi` in the provider
+   * for why the provider stays inert until someone does.
+   */
+  retainAi: () => () => void;
+
   // Route / query state
   pageId: string | null;
   page: PageData | undefined;
@@ -183,32 +190,152 @@ const AiCtx = createContext<AiContextValue | null>(null);
 
 export function useAiContext(): AiContextValue {
   const ctx = useContext(AiCtx);
+  // Registering as a consumer is what wakes the provider up. AiProvider mounts
+  // in AppLayout — i.e. on every route — so it must not fetch models,
+  // conversations, embedding status or the context page on routes where no AI
+  // surface is on screen. The hooks run unconditionally (before the throw) so
+  // the hook order is stable for every component that consumes the context.
+  const retainAi = ctx?.retainAi;
+  useEffect(() => retainAi?.(), [retainAi]);
   if (!ctx) throw new Error('useAiContext must be used within AiProvider');
   return ctx;
+}
+
+// ---------------------------------------------------------------------------
+// Threads
+// ---------------------------------------------------------------------------
+
+/**
+ * The slice of provider state that belongs to one conversation. Everything in
+ * here is swapped when the AI context page changes; everything outside it
+ * (mode, model, thinking mode, improvement / diagram type) is a preference
+ * that follows the user across pages.
+ */
+interface AiThread {
+  messages: Message[];
+  conversationId: string | null;
+  input: string;
+  showDiffView: boolean;
+  improvedContent: string;
+  originalMarkdown: string;
+  layoutTokensLost: boolean | undefined;
+  diagramCode: string;
+}
+
+const EMPTY_THREAD: AiThread = {
+  messages: [],
+  conversationId: null,
+  input: '',
+  showDiffView: false,
+  improvedContent: '',
+  originalMarkdown: '',
+  layoutTokensLost: undefined,
+  diagramCode: '',
+};
+
+/**
+ * Thread key for the no-document case (`/ai` with no page context). The
+ * `page:` prefix on every real key makes a collision with a page id — even a
+ * page literally called `no-page` — impossible.
+ */
+const NO_PAGE_THREAD_KEY = 'no-page';
+
+function threadKeyFor(pageId: string | null): string {
+  return pageId ? `page:${pageId}` : NO_PAGE_THREAD_KEY;
+}
+
+/**
+ * Cap on retained threads. Threads live in memory for the whole session now
+ * that the provider outlives the route, so an uncapped map would grow without
+ * bound as a user walks the page tree. Eviction is least-recently-used, and
+ * the active thread is by construction the most recently used one, so it can
+ * never be evicted. Losing an evicted thread is cheap: anything with a
+ * `conversationId` is also persisted server-side and can be reopened from the
+ * conversation list.
+ */
+const MAX_RETAINED_THREADS = 12;
+
+/**
+ * Apply `patch` to one thread and mark it most-recently-used. A Map iterates
+ * in insertion order, so delete-then-set moves the touched key to the end and
+ * the first key is always the least recently used thread.
+ */
+function touchThread(
+  threads: Map<string, AiThread>,
+  key: string,
+  patch: (thread: AiThread) => Partial<AiThread>,
+): Map<string, AiThread> {
+  const current = threads.get(key) ?? EMPTY_THREAD;
+  const next = new Map(threads);
+  next.delete(key);
+  next.set(key, { ...current, ...patch(current) });
+  while (next.size > MAX_RETAINED_THREADS) {
+    const oldest = next.keys().next().value;
+    if (oldest === undefined) break;
+    next.delete(oldest);
+  }
+  return next;
+}
+
+const ARTICLE_ROUTE = /^\/pages\/([^/]+)$/;
+
+/**
+ * Resolve which page the assistant is talking about. `?pageId=` is one *input*
+ * to this, not the definition of it: on an article route the open document is
+ * the context, which is what lets a thread follow the page being read. An
+ * explicit `?pageId=` still wins, so `/ai?pageId=…` keeps working unchanged.
+ */
+export function resolveAiPageId(pathname: string, searchParams: URLSearchParams): string | null {
+  const explicit = searchParams.get('pageId');
+  if (explicit) return explicit;
+  const routeId = ARTICLE_ROUTE.exec(pathname)?.[1];
+  // /pages/new is the create route, not a document.
+  return routeId && routeId !== 'new' ? routeId : null;
 }
 
 // ---------------------------------------------------------------------------
 // Provider
 // ---------------------------------------------------------------------------
 
+const VALID_MODES: Mode[] = ['ask', 'improve', 'generate', 'summarize', 'diagram', 'quality'];
+
 export function AiProvider({ children }: { children: ReactNode }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const queryClient = useQueryClient();
-  const pageId = searchParams.get('pageId');
+  const pageId = resolveAiPageId(location.pathname, searchParams);
   const isLight = useIsLightTheme();
 
-  const VALID_MODES: Mode[] = ['ask', 'improve', 'generate', 'summarize', 'diagram', 'quality'];
+  // Consumer registration (see `useAiContext`). The count lives in a ref so
+  // mount/unmount churn is cheap; the boolean is state because the queries
+  // below have to re-run when it flips.
+  const consumerCountRef = useRef(0);
+  const [hasConsumers, setHasConsumers] = useState(false);
+  const retainAi = useCallback(() => {
+    consumerCountRef.current += 1;
+    setHasConsumers(true);
+    return () => {
+      consumerCountRef.current -= 1;
+      if (consumerCountRef.current === 0) setHasConsumers(false);
+    };
+  }, []);
+
   const rawMode = searchParams.get('mode');
   const urlMode = VALID_MODES.includes(rawMode as Mode) ? (rawMode as Mode) : null;
   const [mode, setMode] = useState<Mode>(urlMode ?? (pageId ? 'improve' : 'ask'));
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [input, setInput] = useState('');
+  // Conversations keyed by page and retained (#1126). Changing pages swaps
+  // which thread is on screen; it never destroys one.
+  const threadKey = threadKeyFor(pageId);
+  const [threads, setThreads] = useState<Map<string, AiThread>>(() => new Map());
+  const {
+    messages, conversationId, input, showDiffView,
+    improvedContent, originalMarkdown, layoutTokensLost, diagramCode,
+  } = threads.get(threadKey) ?? EMPTY_THREAD;
   const [isStreaming, setIsStreaming] = useState(false);
   const [isThinking, setIsThinking] = useState(false);
   const [thinkingElapsed, setThinkingElapsed] = useState(false);
   const thinkingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [conversationId, setConversationId] = useState<string | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [model, setModel] = useState('');
   const [includeSubPages, setIncludeSubPages] = useState(false);
@@ -218,13 +345,53 @@ export function AiProvider({ children }: { children: ReactNode }) {
     localStorage.setItem('ai-thinking-mode', String(v));
   }, []);
   const [improvementType, setImprovementType] = useState('grammar');
-  const [showDiffView, setShowDiffView] = useState(false);
-  const [improvedContent, setImprovedContent] = useState('');
-  const [originalMarkdown, setOriginalMarkdown] = useState('');
-  const [layoutTokensLost, setLayoutTokensLost] = useState<boolean | undefined>(undefined);
   const [diagramType, setDiagramType] = useState('flowchart');
-  const [diagramCode, setDiagramCode] = useState('');
   const [isInsertingDiagram, setIsInsertingDiagram] = useState(false);
+
+  // Writers for the active thread. Each is bound to the thread key of the
+  // render that produced it, so a handler captured before a page change (most
+  // importantly runStream's) keeps writing into the thread it started in.
+  const updateThread = useCallback(
+    (key: string, patch: (thread: AiThread) => Partial<AiThread>) => {
+      setThreads((prev) => touchThread(prev, key, patch));
+    },
+    [],
+  );
+  const setMessages = useCallback<React.Dispatch<React.SetStateAction<Message[]>>>(
+    (action) =>
+      updateThread(threadKey, (t) => ({
+        messages: typeof action === 'function' ? action(t.messages) : action,
+      })),
+    [threadKey, updateThread],
+  );
+  const setConversationId = useCallback(
+    (id: string | null) => updateThread(threadKey, () => ({ conversationId: id })),
+    [threadKey, updateThread],
+  );
+  const setInput = useCallback(
+    (v: string) => updateThread(threadKey, () => ({ input: v })),
+    [threadKey, updateThread],
+  );
+  const setShowDiffView = useCallback(
+    (v: boolean) => updateThread(threadKey, () => ({ showDiffView: v })),
+    [threadKey, updateThread],
+  );
+  const setImprovedContent = useCallback(
+    (v: string) => updateThread(threadKey, () => ({ improvedContent: v })),
+    [threadKey, updateThread],
+  );
+  const setOriginalMarkdown = useCallback(
+    (v: string) => updateThread(threadKey, () => ({ originalMarkdown: v })),
+    [threadKey, updateThread],
+  );
+  const setLayoutTokensLost = useCallback(
+    (v: boolean | undefined) => updateThread(threadKey, () => ({ layoutTokensLost: v })),
+    [threadKey, updateThread],
+  );
+  const setDiagramCode = useCallback(
+    (v: string) => updateThread(threadKey, () => ({ diagramCode: v })),
+    [threadKey, updateThread],
+  );
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -242,8 +409,8 @@ export function AiProvider({ children }: { children: ReactNode }) {
     finish: streamingFinish,
   } = streaming;
   const streamingDisplayContent = streaming.displayContent;
-  const { data: page, isLoading: isPageLoading } = usePage(pageId ?? undefined);
-  const { data: embeddingStatus } = useEmbeddingStatus();
+  const { data: page, isLoading: isPageLoading } = usePage(hasConsumers ? pageId ?? undefined : undefined);
+  const { data: embeddingStatus } = useEmbeddingStatus(hasConsumers);
   const pageHasChildren = page?.hasChildren ?? false;
 
   // Abort any in-flight stream on unmount
@@ -253,29 +420,46 @@ export function AiProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  // Clear conversation when the AI context page changes (e.g. sidebar click)
-  const prevPageIdRef = useRef(pageId);
+  // Changing the AI context page swaps threads (#1126) — it no longer clears
+  // messages, conversation id or diff/diagram state, which is what silently
+  // discarded an in-progress conversation on a sidebar click. The one thing a
+  // switch still does is stop an in-flight stream; its partial answer is
+  // committed to the thread that started it, not to the one being switched to,
+  // because runStream captured that thread's writers.
+  const prevThreadKeyRef = useRef(threadKey);
   useEffect(() => {
-    if (pageId !== prevPageIdRef.current) {
-      prevPageIdRef.current = pageId;
-      // Abort any in-flight stream and reset conversation state
-      abortRef.current?.abort();
-      setMessages([]);
-      setConversationId(null);
-      setInput('');
-      setShowDiffView(false);
-      setImprovedContent('');
-      setOriginalMarkdown('');
-      setDiagramCode('');
-    }
-  }, [pageId]);
+    if (threadKey === prevThreadKeyRef.current) return;
+    prevThreadKeyRef.current = threadKey;
+    abortRef.current?.abort();
+  }, [threadKey]);
+
+  // The provider now outlives the /ai route, so `mode` can no longer be seeded
+  // once from the URL at mount. Re-apply an explicit `?mode=` whenever the
+  // URL's mode/page inputs change — that is what navigations like
+  // /ai?mode=improve&pageId=… (the article rail's "AI Improve" button) relied
+  // on when entering the route still remounted the provider. Only an explicit
+  // mode is applied: inferring one from the page would flip the mode under a
+  // user who is merely browsing articles.
+  const urlModeSignature = `${rawMode ?? ''}|${pageId ?? ''}`;
+  const appliedModeSignatureRef = useRef(urlModeSignature);
+  useEffect(() => {
+    if (appliedModeSignatureRef.current === urlModeSignature) return;
+    appliedModeSignatureRef.current = urlModeSignature;
+    if (urlMode) setMode(urlMode);
+  }, [urlModeSignature, urlMode]);
 
   // Prefill the composer from the ?q param so a question typed in the command
   // palette's AI mode isn't dropped on navigation (#957). Reactive (not a mount
   // initializer) so it also works when /ai is already mounted and only the
   // search params change. The param is consumed — removed from the URL with a
   // replace navigation — so refresh/back doesn't re-prefill an asked question.
-  const urlQuestion = searchParams.get('q');
+  //
+  // Scoped to /ai, which is the only route CommandPalette ever puts ?q= on
+  // (CommandPalette.tsx:134). The provider mounts app-wide now, so without the
+  // guard it would claim `q` from ANY route carrying it — silently rewriting
+  // that page's URL and stuffing its search term into the AI composer.
+  const isAiRoute = location.pathname === '/ai';
+  const urlQuestion = isAiRoute ? searchParams.get('q') : null;
   useEffect(() => {
     if (urlQuestion === null) return;
     if (urlQuestion) setInput(urlQuestion);
@@ -287,7 +471,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
       },
       { replace: true },
     );
-  }, [urlQuestion, setSearchParams]);
+  }, [urlQuestion, setSearchParams, setInput]);
 
   // After 2 seconds of thinking, promote from TypingIndicator to ThinkingBlob
   useEffect(() => {
@@ -311,7 +495,9 @@ export function AiProvider({ children }: { children: ReactNode }) {
     };
   }, [isThinking]);
 
-  // Load models and conversations on mount.
+  // Load models and conversations once an AI surface is actually mounted.
+  // These were mount-time fetches when the provider only existed on /ai; it
+  // now mounts app-wide, so every one of them is gated on `hasConsumers`.
   // #355: prefer the admin-configured chat use-case default (resolveUsecase
   // 'chat'); when the chat use-case isn't configured we fall through to the
   // first available model (see modelsQuery below) so the input never shows
@@ -329,6 +515,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
     // not retry it as an error.
     retry: false,
     staleTime: 30_000,
+    enabled: hasConsumers,
   });
   const chatDefault = chatDefaultQuery.data;
 
@@ -342,6 +529,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
     queryFn: () => apiFetch<Array<{ name: string }>>('/ollama/models?usecase=chat'),
     retry: false,
     staleTime: 30_000,
+    enabled: hasConsumers,
   });
   const models = modelsQuery.data ?? [];
 
@@ -350,6 +538,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
     queryFn: () => apiFetch<Conversation[]>('/llm/conversations'),
     retry: false,
     staleTime: 30_000,
+    enabled: hasConsumers,
   });
   useEffect(() => {
     if (conversationsQuery.data) setConversations(conversationsQuery.data);
@@ -392,10 +581,11 @@ export function AiProvider({ children }: { children: ReactNode }) {
     messagesEndRef.current?.scrollIntoView({ behavior: 'instant' });
   }, [conversationId]);
 
+  // Deliberate reset of the *active* thread. Threads are no longer discarded
+  // by navigation (#1126), so this is the one way a user clears one — other
+  // pages' threads are untouched.
   const startNewConversation = useCallback(() => {
-    setMessages([]);
-    setConversationId(null);
-    setInput('');
+    updateThread(threadKey, () => ({ messages: [], conversationId: null, input: '' }));
     // #355 (Finding 2, AC-4): reset the model selector to the current chat
     // default so a per-conversation override (set via loadConversation or the
     // dropdown) doesn't leak into newly-started conversations. We read from
@@ -404,23 +594,23 @@ export function AiProvider({ children }: { children: ReactNode }) {
     if (chatDefault?.model) {
       setModel(chatDefault.model);
     }
-  }, [chatDefault]);
+  }, [chatDefault, threadKey, updateThread]);
 
   const loadConversation = useCallback(async (id: string) => {
     try {
       const conv = await apiFetch<{ messages: Array<{ role: string; content: string; sources?: Source[] }>; model: string; id: string }>(`/llm/conversations/${id}`);
-      setMessages(
-        conv.messages
+      updateThread(threadKey, () => ({
+        messages: conv.messages
           .filter((m) => m.role !== 'system')
           .map((m) => ({ id: nextMessageId(), role: m.role as 'user' | 'assistant', content: m.content, sources: m.sources })),
-      );
-      setConversationId(conv.id);
+        conversationId: conv.id,
+      }));
       setModel(conv.model);
       setMode('ask');
     } catch {
       toast.error('Failed to load conversation');
     }
-  }, []);
+  }, [threadKey, updateThread]);
 
   const deleteConversation = useCallback(async (id: string) => {
     try {
@@ -435,6 +625,10 @@ export function AiProvider({ children }: { children: ReactNode }) {
   /**
    * Generic SSE streaming helper used by all mode handlers.
    * Manages abort controller, streaming state, thinking state, and message accumulation.
+   *
+   * `setMessages` / `setConversationId` are the *active thread's* writers, so a
+   * call that started before a page change keeps writing into the thread that
+   * asked the question — including the partial answer committed on abort.
    */
   const runStream = useCallback(async <T extends StreamChunk>(
     endpoint: string,
@@ -583,9 +777,10 @@ export function AiProvider({ children }: { children: ReactNode }) {
       setIsStreaming(false);
       setIsThinking(false);
     }
-  }, [streamingStart, streamingAppend, streamingReplace, streamingFinish]);
+  }, [streamingStart, streamingAppend, streamingReplace, streamingFinish, setMessages, setConversationId]);
 
   const value: AiContextValue = {
+    retainAi,
     pageId,
     page: page as PageData | undefined,
     pageHasChildren,

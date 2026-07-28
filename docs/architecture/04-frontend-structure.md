@@ -30,7 +30,8 @@ flowchart TB
         fAdmin["admin/<br/>LicenseStatusCard<br/>OidcSettingsPage (EE-gated)<br/>analytics/ (AnalyticsPage)"]
     end
 
-    app --> features
+    app --> shell["AppLayout (authenticated shell)<br/>mounts AiProvider above the routes (#1126):<br/>conversations keyed by page and retained,<br/>inert until an AI surface consumes it"]
+    shell --> features
 
     subgraph shared["shared/"]
         direction LR
@@ -57,7 +58,7 @@ flowchart TB
     classDef feat fill:#eefbe8,stroke:#4caf50
     classDef sh fill:#fff4e5,stroke:#e5a23c
     classDef st fill:#f5eafd,stroke:#9b59b6
-    class providers,qp,rp,ep prov
+    class providers,qp,rp,ep,shell prov
     class features,fAuth,fPages,fSpaces,fAI,fGraph,fSettings,fAdmin feat
     class shared,sEnt,sComp,sHooks,sLib sh
     class stores,zAuth,zTheme,zUI,zAV,zCmd,zKb st

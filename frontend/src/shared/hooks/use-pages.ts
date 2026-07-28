@@ -312,10 +312,16 @@ export function isZeroEmbeddings(status: EmbeddingStatusData | undefined): boole
   return !!status && status.totalPages > 0 && status.embeddedPages === 0;
 }
 
-export function useEmbeddingStatus() {
+/**
+ * `enabled` gates both the fetch and its 3s processing poll. AiProvider passes
+ * false while no AI surface is mounted — it lives in AppLayout now, so an
+ * ungated query there would poll on every route in the app.
+ */
+export function useEmbeddingStatus(enabled = true) {
   return useQuery<EmbeddingStatusData>({
     queryKey: ['embeddings', 'status'],
     queryFn: () => apiFetch('/embeddings/status'),
+    enabled,
     refetchInterval: (query) => {
       return query.state.data?.isProcessing ? 3000 : false;
     },

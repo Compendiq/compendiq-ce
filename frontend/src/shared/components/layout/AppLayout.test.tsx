@@ -1,9 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { StrictMode } from 'react';
 import { render, screen, fireEvent, act, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { AppLayout } from './AppLayout';
+import { useAiContext } from '../../../features/ai/AiContext';
 import { useCommandPaletteStore } from '../../../stores/command-palette-store';
 import { useUiStore } from '../../../stores/ui-store';
 import * as keyboardShortcutsModule from '../../hooks/use-keyboard-shortcuts';
@@ -467,5 +469,110 @@ describe('AppLayout', () => {
     expect(escapeShortcut).toBeUndefined();
 
     spy.mockRestore();
+  });
+
+  // AiProvider was hoisted out of the /ai route into the shell (#1126) so a
+  // conversation outlives navigation. Mounting it on every route only works if
+  // it does nothing at all until an AI surface asks for it.
+  describe('AI provider (#1126)', () => {
+    /** Renders the page id the provider resolved — proves the context exists. */
+    function AiConsumerProbe() {
+      const { pageId } = useAiContext();
+      return <span data-testid="ai-consumer">{pageId ?? 'no page'}</span>;
+    }
+
+    function spyOnFetch() {
+      return vi.spyOn(globalThis, 'fetch').mockImplementation(() =>
+        Promise.resolve(
+          new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } }),
+        ),
+      );
+    }
+
+    /** Requests only the AI provider issues. */
+    function aiRequests(spy: ReturnType<typeof spyOnFetch>): string[] {
+      return spy.mock.calls
+        .map((call) => String(call[0]))
+        .filter((url) => /\/(llm|ollama|embeddings)\//.test(url));
+    }
+
+    it('provides the AI context to the whole shell', () => {
+      render(
+        <AppLayout>
+          <AiConsumerProbe />
+        </AppLayout>,
+        { wrapper: createWrapper('/pages/abc') },
+      );
+      // Resolved from the article route, without a ?pageId= search param.
+      expect(screen.getByTestId('ai-consumer')).toHaveTextContent('abc');
+    });
+
+    it('issues no AI requests on a route with no AI surface mounted', async () => {
+      const fetchSpy = spyOnFetch();
+      render(
+        <AppLayout>
+          <div>just a page</div>
+        </AppLayout>,
+        { wrapper: createWrapper('/pages/abc') },
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('just a page')).toBeInTheDocument();
+      });
+      expect(aiRequests(fetchSpy)).toEqual([]);
+
+      fetchSpy.mockRestore();
+    });
+
+    it('issues them once an AI surface mounts (control for the assertion above)', async () => {
+      const fetchSpy = spyOnFetch();
+      render(
+        <AppLayout>
+          <AiConsumerProbe />
+        </AppLayout>,
+        { wrapper: createWrapper('/pages/abc') },
+      );
+
+      await waitFor(() => {
+        expect(aiRequests(fetchSpy).length).toBeGreaterThan(0);
+      });
+
+      fetchSpy.mockRestore();
+    });
+
+    // Consumer registration is a mount effect, and StrictMode runs it
+    // mount -> cleanup -> mount. Both the gate and the wake-up have to survive
+    // that; the app renders under StrictMode in development.
+    it('holds the gate under StrictMode double-invoked effects', async () => {
+      const inertSpy = spyOnFetch();
+      const { unmount } = render(
+        <StrictMode>
+          <AppLayout>
+            <div>just a page</div>
+          </AppLayout>
+        </StrictMode>,
+        { wrapper: createWrapper('/pages/abc') },
+      );
+      await waitFor(() => {
+        expect(screen.getByText('just a page')).toBeInTheDocument();
+      });
+      expect(aiRequests(inertSpy)).toEqual([]);
+      inertSpy.mockRestore();
+      unmount();
+
+      const wokenSpy = spyOnFetch();
+      render(
+        <StrictMode>
+          <AppLayout>
+            <AiConsumerProbe />
+          </AppLayout>
+        </StrictMode>,
+        { wrapper: createWrapper('/pages/abc') },
+      );
+      await waitFor(() => {
+        expect(aiRequests(wokenSpy).length).toBeGreaterThan(0);
+      });
+      wokenSpy.mockRestore();
+    });
   });
 });
