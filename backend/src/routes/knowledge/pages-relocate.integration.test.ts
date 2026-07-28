@@ -951,6 +951,39 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
       expect(row.body_html).toContain('/api/attachments/900030/chart.png');
     });
 
+    it('refuses when two references would publish under the same filename', async () => {
+      // Two images borrowed from different pages, both really called
+      // "chart.png", cached under distinct synthetic xref names. A Confluence
+      // page holds one attachment per name, so publishing both would upload
+      // "chart.png" twice and BOTH images would then render the same picture —
+      // one of them silently wrong, on a move that cannot be undone. Refuse,
+      // matching what this flow already does for an ambiguous identifier.
+      const a = 'chart.xref-aaaaaaaaaaaa.png';
+      const b = 'chart.xref-bbbbbbbbbbbb.png';
+      const id = await createPage({
+        title: 'Two borrowed charts', source: 'standalone', spaceKey: 'LOCAL', ownerId: userId,
+        bodyHtml:
+          `<p><img src="/api/local-attachments/PLACEHOLDER/${a}" ` +
+          `data-confluence-image-source="attachment" data-confluence-filename="chart.png"></p>` +
+          `<p><img src="/api/local-attachments/PLACEHOLDER/${b}" ` +
+          `data-confluence-image-source="attachment" data-confluence-filename="chart.png"></p>`,
+      });
+      await query('UPDATE pages SET body_html = REPLACE(body_html, $2, $3) WHERE id = $1', [
+        id, 'PLACEHOLDER', String(id),
+      ]);
+      await writeStoreB(id, a, 'first-chart', userId);
+      await writeStoreB(id, b, 'second-chart', userId);
+
+      const res = await toConfluence(id);
+
+      expect(res.statusCode).toBe(409);
+      expect(res.json().error).toContain('chart.png');
+      // Detected before the upstream create, so neither side changed at all.
+      expect(h.client.createPage).not.toHaveBeenCalled();
+      expect(h.client.updateAttachment).not.toHaveBeenCalled();
+      expect((await getRow(id)).source).toBe('standalone');
+    });
+
     it('repoints soft-deleted children so restoring one from trash does not orphan it (R1)', async () => {
       const parent = await createPage({
         title: 'Parent', source: 'confluence', confluenceId: '700200', spaceKey: 'CONF',

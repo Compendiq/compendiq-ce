@@ -420,6 +420,7 @@ async function relocateToConfluence(opts: {
   // cache key, so `confluenceToHtml` regenerates URLs that resolve.
   const payloads: Array<{ local: string; target: string; data: Buffer }> = [];
   const claimedTargets = new Map<string, string>();
+  const collisions: string[] = [];
   for (const local of await collectAttachmentFilenames(page)) {
     const data = await readAttachmentBytes(page, local);
     if (data === null) {
@@ -427,17 +428,32 @@ async function relocateToConfluence(opts: {
       continue;
     }
     const target = targetByLocal.get(local) ?? local;
-    // Two cross-page references can share a real filename while their cached
-    // copies differ. Flattening them onto one page can only keep one, so say
-    // so rather than silently overwriting.
+    // Two cross-page references borrowed from different pages can share a real
+    // filename while their cached copies differ. A Confluence page holds one
+    // attachment per name, so publishing both would upload `chart.png` twice —
+    // the second overwriting the first — and BOTH images would then render the
+    // same picture, one of them silently wrong.
     const previous = claimedTargets.get(target);
     if (previous !== undefined && previous !== local) {
-      warnings.push(
-        `Attachments "${previous}" and "${local}" both publish as "${target}"; only one copy survives on the Confluence page.`,
-      );
+      collisions.push(`"${previous}" and "${local}" both publish as "${target}"`);
     }
     claimedTargets.set(target, local);
     payloads.push({ local, target, data });
+  }
+
+  // Refuse rather than corrupt — the same call this function already makes for
+  // an ambiguous identifier and for a failed attachment upload. The move
+  // discards local version history and cannot be undone, so a warning on a
+  // success response is not an adequate signal for a wrong image. Nothing has
+  // happened yet at this point: no upstream page, no local change.
+  if (collisions.length > 0) {
+    throw new RelocateError(
+      409,
+      `Cannot relocate: ${collisions.join('; ')}. A Confluence page can hold only one attachment ` +
+        `per filename, so one image would be silently replaced by the other. Rename or remove the ` +
+        `duplicate reference and try again.`,
+      { collisions },
+    );
   }
   const parentConfluenceId = await resolveConfluenceParent(page.id);
 
@@ -638,7 +654,11 @@ async function relocateToLocal(opts: {
     if (fresh.source !== 'confluence' || fresh.confluence_id !== oldConfluenceId) {
       throw new RelocateError(409, 'Page changed while this move was in flight');
     }
-    // Re-check under the lock — see the same call in relocateToConfluence.
+    // Re-check BOTH identifiers under the lock — see the same pair in
+    // relocateToConfluence. The old key matters as much as the new one: the
+    // repoint below keys on it, so a row that claimed it since the pre-flight
+    // check would make the rewrite ambiguous.
+    await assertIdentifierUnambiguous(oldConfluenceId, page.id, 'current', txClient);
     await assertIdentifierUnambiguous(newKey, page.id, 'new local', txClient);
 
     await txClient.query(
