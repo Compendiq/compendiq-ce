@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { m } from 'framer-motion';
 import { toast } from 'sonner';
 import { apiFetch } from '../../../shared/lib/api';
+import { SpaceSyncPanel } from './SpaceSyncPanel';
 
 interface ConfluenceStepProps {
   onNext: () => void;
@@ -106,15 +107,19 @@ export function ConfluenceStep({ onNext, onBack }: ConfluenceStepProps) {
           </p>
         </div>
 
-        {/* Test result indicator */}
+        {/* Test result indicator. Uses the semantic status tokens rather than
+            literal Tailwind emerald/red: those shades are dark-theme tuned and
+            (unlike the amber ones) are not remapped for Frost Steel, so they
+            rendered at ~1.6:1 on the light surface. The status tokens carry an
+            AA-passing value per theme, and match the sync banners below. */}
         {testSuccess !== null && (
           <m.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             className={`rounded-lg border p-3 text-sm ${
               testSuccess
-                ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
-                : 'border-red-500/30 bg-red-500/10 text-red-300'
+                ? 'border-status-connected/30 bg-status-connected/10 text-status-connected'
+                : 'border-status-disconnected/30 bg-status-disconnected/10 text-status-disconnected'
             }`}
             data-testid="confluence-test-result"
           >
@@ -131,6 +136,13 @@ export function ConfluenceStep({ onNext, onBack }: ConfluenceStepProps) {
           {testing ? 'Testing...' : 'Test Connection'}
         </button>
       </form>
+
+      {/* #1127: the space picker is the consequence of a passing probe, so it
+          lives in this step rather than a sixth one — the whole point is that
+          the admin never has to go looking for Settings → Spaces. It is purely
+          additive: `testSuccess` alone still enables Continue below, and the
+          panel's own sync state is deliberately not consulted there. */}
+      {testSuccess === true && <SpaceSyncPanel />}
 
       <div className="mt-6 flex items-center justify-between">
         <button
