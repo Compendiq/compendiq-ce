@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import { OidcConfigSchema, type OidcConfig, RegistrationPolicySchema } from '@compendiq/contracts';
 import { useAuthStore } from '../../stores/auth-store';
 import { apiFetch } from '../../shared/lib/api';
+import { Logo } from '../../shared/components/Logo';
 
 /**
  * Friendly copy for the OIDC/OAuth2 error codes an IdP may append to the
@@ -106,14 +107,18 @@ export function LoginPage() {
   }
 
   return (
-    <div className="bg-background flex min-h-screen items-center justify-center p-4">
+    // `app-backdrop`, not `bg-background`: login is a full-screen app surface
+    // and gets the same gradient chassis as AppLayout. A flat utility here
+    // would make the first screen a user sees the only one without it.
+    <div className="app-backdrop flex min-h-screen items-center justify-center p-4">
       <div className="w-full max-w-md rounded-xl border border-border/40 bg-card/50 p-8 backdrop-blur-sm">
+        {/* The <Logo> component, not the standalone /compendiq-lockup-horizontal.svg:
+            inside an <img> the lockup's `currentColor` cannot inherit, so its
+            wordmark falls back to the dark ink baked into the file — readable on
+            a light surface, invisible on this dark card. The component inherits
+            `text-foreground` and is therefore readable in both themes. */}
         <div className="mb-2 flex flex-col items-center">
-          <img
-            src="/compendiq-lockup-horizontal.svg"
-            alt="Compendiq"
-            className="h-16 w-auto"
-          />
+          <Logo className="h-16 w-auto text-foreground" title="Compendiq" />
         </div>
         <p className="mb-8 text-center text-sm text-muted-foreground">
           {isRegister ? 'Create your account' : 'Sign in to your account'}

@@ -88,13 +88,26 @@ the backend side.
 ## Styling
 
 - **TailwindCSS 4** with CSS variables for theming. Two themes ship —
-  **Graphite Honey** (dark, default) and **Honey Linen** (light) — both
-  anchored on the brand palette (black `#0A0A0A` + honey `#F9C74F`); see
-  ADR-010 v0.4 for the full rationale and the migration away from the
-  v0.3-era glassmorphic surfaces.
-- **Neumorphic** surface system (ADR-010 v0.4): fifteen `nm-*` `@utility`
+  **Slate Steel** (dark, default, navy `#0E1220`) and **Frost Steel** (light,
+  `#F4F6FA`) — a cool slate-and-steel system in one hue family, with steel
+  (`#6EA8FF` / `#2F6BD8`) as the single brand and interaction accent, amber
+  reserved for warning/attention, and violet for AI ornament (operable
+  things stay steel). Both themes are gradient-lit via `--surface-backdrop`,
+  `--surface-card` and `--surface-card-elevated`. Those are background
+  *images*, so a `hover:bg-*` utility on a card surface is a silent no-op —
+  use `nm-card-hover`. See ADR-010 v0.5 for the palette, and v0.4
+  for the neumorphic surface rationale and the migration away from the
+  v0.3-era glassmorphic surfaces. This palette replaces the Graphite Honey /
+  Honey Linen pair and no longer mirrors the landing page's honey tokens.
+- **Two border weights, split by role.** `--color-border` is the quiet
+  hairline for separators, panes and prose rules;
+  `--color-border-interactive` is the visible edge of anything operable and
+  is measured ≥3:1 against every surface it lands on (WCAG 1.4.11). The
+  neumorphic recipe leans on shadow for depth, and forced-colors mode
+  discards shadow — this border is what survives.
+- **Neumorphic** surface system (ADR-010 v0.4): sixteen `nm-*` `@utility`
   classes (`nm-card`, `nm-card-elevated`, `nm-card-interactive`,
-  `nm-toolbar`, `nm-sidebar`, `nm-header`, `nm-pill-active`,
+  `nm-card-hover`, `nm-toolbar`, `nm-sidebar`, `nm-header`, `nm-pill-active`,
   `nm-button-primary`, `nm-button-destructive`, `nm-button-ghost`,
   `nm-icon-button`, `nm-composer`, `nm-input`, `nm-select`, `nm-select-md`)
   built on theme-tinted shadow recipes plus a mandatory 1px solid border

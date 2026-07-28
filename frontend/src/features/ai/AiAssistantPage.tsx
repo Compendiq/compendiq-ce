@@ -308,9 +308,11 @@ function AiAssistantInner() {
               className={cn(
                 'flex h-7 shrink-0 snap-start items-center gap-1.5 rounded-md px-2.5 text-sm transition-colors',
                 mode === key
-                  // Inset honey-tinted surface (not filled) so the active tab
-                  // doesn't compete with the honey-filled primary CTA in the
-                  // mode's input bar.
+                  // Inset steel-tinted surface (not filled) so the active tab
+                  // doesn't compete with the steel-filled primary CTA in the
+                  // mode's input bar. Steel rather than the AI violet on
+                  // purpose: a mode tab is something you operate, and under
+                  // ADR-010 v0.5 that is exactly what steel means.
                   ? 'bg-card text-primary-ink shadow-sm ring-1 ring-primary/35 font-medium'
                   : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
               )}
@@ -494,14 +496,17 @@ function AiAssistantInner() {
           )}
           {messages.length === 0 && (
             <div className="flex min-h-[300px] flex-col items-center justify-center text-center">
-              {/* Robot wrapped in a honey-tinted aura so the empty state reads
-                  as "ready to help", not "page failed to load" (a complaint
-                  in the May-2026 audit). 64 px icon + soft glow vs. the prior
-                  44 px muted-grey glyph. */}
+              {/* Robot wrapped in a violet aura so the empty state reads as
+                  "ready to help", not "page failed to load" (a complaint in
+                  the May-2026 audit). 64 px icon + soft glow vs. the prior
+                  44 px muted-grey glyph.
+                  Violet, not steel: under ADR-010 v0.5 --color-status-ai marks
+                  "an AI does this" and steel means "you can operate this".
+                  This ornament is the former — it is not clickable. */}
               <div className="relative mb-5 flex h-20 w-20 items-center justify-center">
-                <div className="absolute inset-0 rounded-full bg-primary/10 blur-2xl" aria-hidden />
-                <div className="relative flex h-16 w-16 items-center justify-center rounded-full bg-primary/12 ring-1 ring-primary/25">
-                  <Bot size={32} className="text-primary" />
+                <div className="absolute inset-0 rounded-full bg-status-ai/10 blur-2xl" aria-hidden />
+                <div className="relative flex h-16 w-16 items-center justify-center rounded-full bg-status-ai/12 ring-1 ring-status-ai/25">
+                  <Bot size={32} className="text-status-ai" />
                 </div>
               </div>
               <p className="text-lg font-medium">{getEmptyTitle(mode)}</p>

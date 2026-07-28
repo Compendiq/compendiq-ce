@@ -5,29 +5,29 @@ import { useThemeStore } from '../../stores/theme-store';
 
 describe('useIsLightTheme', () => {
   beforeEach(() => {
-    useThemeStore.setState({ theme: 'graphite-honey' });
+    useThemeStore.setState({ theme: 'slate-steel' });
   });
 
-  it('returns false for the dark theme (graphite-honey)', () => {
+  it('returns false for the dark theme (slate-steel)', () => {
     const { result } = renderHook(() => useIsLightTheme());
     expect(result.current).toBe(false);
   });
 
-  it('returns true when switched to honey-linen', () => {
+  it('returns true when switched to frost-steel', () => {
     const { result } = renderHook(() => useIsLightTheme());
     act(() => {
-      useThemeStore.getState().setTheme('honey-linen');
+      useThemeStore.getState().setTheme('frost-steel');
     });
     expect(result.current).toBe(true);
   });
 
-  it('returns false when switched back to graphite-honey', () => {
-    useThemeStore.setState({ theme: 'honey-linen' });
+  it('returns false when switched back to slate-steel', () => {
+    useThemeStore.setState({ theme: 'frost-steel' });
     const { result } = renderHook(() => useIsLightTheme());
     expect(result.current).toBe(true);
 
     act(() => {
-      useThemeStore.getState().setTheme('graphite-honey');
+      useThemeStore.getState().setTheme('slate-steel');
     });
     expect(result.current).toBe(false);
   });

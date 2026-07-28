@@ -179,7 +179,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
           renderTrigger(open)
         ) : (
           <button
-            className="nm-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
+            className="nm-card nm-card-hover flex items-center gap-1.5 px-3 py-1.5 text-sm"
             title="Version history"
           >
             <History size={14} />
@@ -243,7 +243,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                 </p>
                 <button
                   onClick={() => void refetch()}
-                  className="nm-card mt-1 px-3 py-1.5 text-xs hover:bg-foreground/5"
+                  className="nm-card nm-card-hover mt-1 px-3 py-1.5 text-xs"
                 >
                   Retry
                 </button>

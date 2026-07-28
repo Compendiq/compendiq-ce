@@ -116,8 +116,12 @@ export function CommentsSidebar({ pageId, className }: CommentsSidebarProps) {
       <button
         onClick={() => setIsOpen((v) => !v)}
         className={cn(
-          'nm-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5 transition-colors',
-          isOpen && 'nm-pill-active text-action',
+          'nm-card flex items-center gap-1.5 px-3 py-1.5 text-sm transition-colors',
+          // Mutually exclusive on purpose: `nm-pill-active` repaints the
+          // surface with its own accent tint, and `nm-card-hover` composes its
+          // tint on top of the *card* surface — layering both would drag the
+          // card gradient back over the active pill on hover.
+          isOpen ? 'nm-pill-active text-action' : 'nm-card-hover',
         )}
         data-testid="comments-toggle"
         aria-label={isOpen ? 'Close comments' : 'Open comments'}

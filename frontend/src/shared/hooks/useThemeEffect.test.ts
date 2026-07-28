@@ -13,70 +13,70 @@ import { useThemeEffect } from './useThemeEffect';
  */
 describe('useThemeEffect', () => {
   beforeEach(() => {
-    useThemeStore.setState({ theme: 'graphite-honey' });
+    useThemeStore.setState({ theme: 'slate-steel' });
     document.documentElement.removeAttribute('data-theme');
     document.documentElement.removeAttribute('data-theme-type');
     document.documentElement.classList.remove('dark');
   });
 
-  it('sets data-theme to graphite-honey for the default theme', () => {
+  it('sets data-theme to slate-steel for the default theme', () => {
     renderHook(() => useThemeEffect());
-    expect(document.documentElement.getAttribute('data-theme')).toBe('graphite-honey');
+    expect(document.documentElement.getAttribute('data-theme')).toBe('slate-steel');
     expect(document.documentElement.dataset.themeType).toBe('dark');
   });
 
-  it('sets data-theme attribute when honey-linen is selected', () => {
-    useThemeStore.setState({ theme: 'honey-linen' });
+  it('sets data-theme attribute when frost-steel is selected', () => {
+    useThemeStore.setState({ theme: 'frost-steel' });
     renderHook(() => useThemeEffect());
-    expect(document.documentElement.getAttribute('data-theme')).toBe('honey-linen');
+    expect(document.documentElement.getAttribute('data-theme')).toBe('frost-steel');
     expect(document.documentElement.dataset.themeType).toBe('light');
   });
 
   it('updates data-theme when the theme changes', () => {
     renderHook(() => useThemeEffect());
-    expect(document.documentElement.getAttribute('data-theme')).toBe('graphite-honey');
+    expect(document.documentElement.getAttribute('data-theme')).toBe('slate-steel');
 
     act(() => {
-      useThemeStore.getState().setTheme('honey-linen');
+      useThemeStore.getState().setTheme('frost-steel');
     });
-    expect(document.documentElement.getAttribute('data-theme')).toBe('honey-linen');
+    expect(document.documentElement.getAttribute('data-theme')).toBe('frost-steel');
   });
 
-  it('updates data-theme back to graphite-honey when switching from honey-linen', () => {
-    useThemeStore.setState({ theme: 'honey-linen' });
+  it('updates data-theme back to slate-steel when switching from frost-steel', () => {
+    useThemeStore.setState({ theme: 'frost-steel' });
     renderHook(() => useThemeEffect());
-    expect(document.documentElement.getAttribute('data-theme')).toBe('honey-linen');
+    expect(document.documentElement.getAttribute('data-theme')).toBe('frost-steel');
 
     act(() => {
-      useThemeStore.getState().setTheme('graphite-honey');
+      useThemeStore.getState().setTheme('slate-steel');
     });
-    expect(document.documentElement.getAttribute('data-theme')).toBe('graphite-honey');
+    expect(document.documentElement.getAttribute('data-theme')).toBe('slate-steel');
     expect(document.documentElement.dataset.themeType).toBe('dark');
   });
 
-  it('keeps dark class for graphite-honey', () => {
+  it('keeps dark class for slate-steel', () => {
     renderHook(() => useThemeEffect());
     expect(document.documentElement.classList.contains('dark')).toBe(true);
   });
 
-  it('removes dark class for honey-linen', () => {
-    useThemeStore.setState({ theme: 'honey-linen' });
+  it('removes dark class for frost-steel', () => {
+    useThemeStore.setState({ theme: 'frost-steel' });
     renderHook(() => useThemeEffect());
     expect(document.documentElement.classList.contains('dark')).toBe(false);
-    expect(document.documentElement.getAttribute('data-theme')).toBe('honey-linen');
+    expect(document.documentElement.getAttribute('data-theme')).toBe('frost-steel');
   });
 
-  it('toggles dark class when switching between honey-linen and graphite-honey', () => {
+  it('toggles dark class when switching between frost-steel and slate-steel', () => {
     renderHook(() => useThemeEffect());
     expect(document.documentElement.classList.contains('dark')).toBe(true);
 
     act(() => {
-      useThemeStore.getState().setTheme('honey-linen');
+      useThemeStore.getState().setTheme('frost-steel');
     });
     expect(document.documentElement.classList.contains('dark')).toBe(false);
 
     act(() => {
-      useThemeStore.getState().setTheme('graphite-honey');
+      useThemeStore.getState().setTheme('slate-steel');
     });
     expect(document.documentElement.classList.contains('dark')).toBe(true);
   });

@@ -511,30 +511,42 @@ describe('GraphPage', () => {
     return fillStyles;
   }
 
-  it('paints node labels in a near-black colour on the light theme (#941)', async () => {
+  // The canvas resolves no CSS custom properties, so these inks are literals
+  // mirroring --color-foreground per theme. Asserting the LUMINANCE rather than
+  // the exact rgba triple keeps the test about the thing that matters — the
+  // label is dark on light and light on dark — so a palette retune does not
+  // fail it, but painting the wrong theme's ink still does.
+  function labelLuminance(fill: string): number {
+    const [r, g, b] = /rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/
+      .exec(fill)!
+      .slice(1, 4)
+      .map(Number);
+    return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+  }
+
+  it('paints node labels in a dark ink on the light theme (#941)', async () => {
     const { useThemeStore } = await import('../../stores/theme-store');
-    act(() => useThemeStore.getState().setTheme('honey-linen'));
+    act(() => useThemeStore.getState().setTheme('frost-steel'));
 
     const fillStyles = await captureLabelFillStyles();
 
-    // The label is painted after the node circle; its fillStyle must NOT be
-    // white on the light theme (invisible on the linen surface).
+    // The label is painted after the node circle; on the light theme its ink
+    // must be dark — a light label is invisible on the pale surface.
     const labelFill = fillStyles[fillStyles.length - 1];
     expect(labelFill).toBeDefined();
-    expect(labelFill).not.toMatch(/rgba?\(\s*255\s*,\s*255\s*,\s*255/);
-    expect(labelFill).toMatch(/rgba?\(\s*10\s*,\s*10\s*,\s*10/);
+    expect(labelLuminance(labelFill)).toBeLessThan(0.2);
 
-    act(() => useThemeStore.getState().setTheme('graphite-honey'));
+    act(() => useThemeStore.getState().setTheme('slate-steel'));
   });
 
-  it('keeps node labels white on the dark theme (#941)', async () => {
+  it('keeps node labels light on the dark theme (#941)', async () => {
     const { useThemeStore } = await import('../../stores/theme-store');
-    act(() => useThemeStore.getState().setTheme('graphite-honey'));
+    act(() => useThemeStore.getState().setTheme('slate-steel'));
 
     const fillStyles = await captureLabelFillStyles();
 
     const labelFill = fillStyles[fillStyles.length - 1];
-    expect(labelFill).toMatch(/rgba?\(\s*255\s*,\s*255\s*,\s*255/);
+    expect(labelLuminance(labelFill)).toBeGreaterThan(0.7);
   });
 
   it('switches to clustered view when toggle is clicked', async () => {

@@ -13,9 +13,14 @@ import { extractBlock } from './test-utils';
  *
  * `font-synthesis: style` on body disables weight (and small-caps) synthesis
  * app-wide while keeping style synthesis: the app uses the `italic` utility
- * and the editor's Italic mark, but ships no italic cut of IBM Plex Sans, so
- * italics depend on oblique synthesis. Full `font-synthesis: none` would
- * silently un-italicize them — guard against that too.
+ * and the editor's Italic mark, but neither Inter Variable nor Space Grotesk
+ * Variable ships an italic cut, so italics depend on oblique synthesis. Full
+ * `font-synthesis: none` would silently un-italicize them — guard against
+ * that too.
+ *
+ * Disabling weight synthesis is also why all three faces must be variable:
+ * a static cut set cannot render an in-between weight and the browser is not
+ * allowed to fake it. `neumorphic-themes.test.ts` guards the import side.
  */
 
 const css = readFileSync(resolve(__dirname, 'index.css'), 'utf-8');
