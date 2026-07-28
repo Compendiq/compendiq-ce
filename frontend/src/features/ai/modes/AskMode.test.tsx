@@ -330,6 +330,95 @@ describe('AskMode', () => {
     });
   });
 
+  it('renders the prompt as a multi-line textarea (#1120)', () => {
+    render(<AskModeInput />, { wrapper: createWrapper() });
+    const input = screen.getByPlaceholderText('Ask a question...');
+    expect(input.tagName).toBe('TEXTAREA');
+  });
+
+  it('Shift+Enter inserts a newline instead of submitting (#1120)', async () => {
+    apiFetchMock.mockImplementation((path: string) => {
+      if (path === '/settings') {
+        return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+      }
+      if (path.startsWith('/ollama/models')) {
+        return Promise.resolve([{ name: 'llama3' }]);
+      }
+      if (path === '/llm/conversations') {
+        return Promise.resolve([]);
+      }
+      return Promise.resolve([]);
+    });
+
+    async function* fakeStream() {
+      yield { content: 'Answer' };
+    }
+    streamSSEMock.mockReturnValue(fakeStream());
+
+    render(<AskModeInput />, { wrapper: createWrapper() });
+
+    const input = screen.getByPlaceholderText('Ask a question...') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: 'first line' } });
+
+    await waitFor(() => {
+      expect(screen.getByRole('button')).not.toBeDisabled();
+    });
+
+    // Shift+Enter must fall through to the textarea's own newline handling:
+    // nothing is sent and the draft survives.
+    const shiftEnter = fireEvent.keyDown(input, { key: 'Enter', shiftKey: true });
+    expect(streamSSEMock).not.toHaveBeenCalled();
+    expect(input.value).toBe('first line');
+    // Not default-prevented, so the browser is still free to insert the newline
+    // that jsdom does not simulate for us.
+    expect(shiftEnter).toBe(true);
+
+    // The second line is typed, then a bare Enter sends the whole thing.
+    fireEvent.change(input, { target: { value: 'first line\nsecond line' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() => {
+      expect(streamSSEMock).toHaveBeenCalledWith(
+        '/llm/ask',
+        expect.objectContaining({ question: 'first line\nsecond line' }),
+        expect.any(Object),
+      );
+    });
+  });
+
+  it('suppresses the browser newline when a bare Enter submits (#1120)', async () => {
+    apiFetchMock.mockImplementation((path: string) => {
+      if (path === '/settings') {
+        return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+      }
+      if (path.startsWith('/ollama/models')) {
+        return Promise.resolve([{ name: 'llama3' }]);
+      }
+      if (path === '/llm/conversations') {
+        return Promise.resolve([]);
+      }
+      return Promise.resolve([]);
+    });
+
+    async function* fakeStream() {
+      yield { content: 'Answer' };
+    }
+    streamSSEMock.mockReturnValue(fakeStream());
+
+    render(<AskModeInput />, { wrapper: createWrapper() });
+
+    const input = screen.getByPlaceholderText('Ask a question...') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: 'a question' } });
+
+    await waitFor(() => {
+      expect(screen.getByRole('button')).not.toBeDisabled();
+    });
+
+    // fireEvent returns false when the handler called preventDefault. Without
+    // it a textarea would submit *and* leave a stray "\n" in the cleared field.
+    expect(fireEvent.keyDown(input, { key: 'Enter' })).toBe(false);
+  });
+
   it('sends conversationId as undefined (not null) when no conversation is active', async () => {
     apiFetchMock.mockImplementation((path: string) => {
       if (path === '/settings') {

@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Send, Loader2, Link2, X, Plus } from 'lucide-react';
 import { useAiContext, nextMessageId } from '../AiContext';
 import { toast } from 'sonner';
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '../../../shared/lib/api';
+import { useAutoGrowTextarea } from '../../../shared/hooks/use-auto-grow-textarea';
+import { PROMPT_MAX_LENGTH } from './prompt-limits';
 import { buildAskPrompts } from './ask-example-prompts';
 import { usePages, usePageFilterOptions } from '../../../shared/hooks/use-pages';
 import { useSpaces } from '../../../shared/hooks/use-spaces';
@@ -59,14 +61,15 @@ export function AskModeInput() {
     setExternalUrls((prev) => prev.filter((u) => u !== url));
   };
 
-  const inputRef = useRef<HTMLInputElement>(null);
+  // Doubles as the auto-grow handle and the mount-focus target.
+  const inputRef = useAutoGrowTextarea(input);
 
   // #350: focus input on mount so the user can type immediately. Use a ref +
   // useEffect rather than autoFocus so it survives StrictMode double-mount and
   // route transitions reliably.
   useEffect(() => {
     inputRef.current?.focus();
-  }, []);
+  }, [inputRef]);
 
   const handleAsk = useCallback(async () => {
     if (!input.trim() || isStreaming) return;
@@ -104,6 +107,16 @@ export function AskModeInput() {
   }, [input, model, isStreaming, conversationId, pageId, includeSubPages, thinkingMode, externalUrls, setInput, setMessages, runStream]);
 
   const handleSubmit = () => handleAsk();
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Unchanged contract: Enter submits, Shift+Enter inserts a newline. On a
+    // textarea the bare Enter has to be prevented explicitly, otherwise it
+    // submits *and* leaves the browser's own newline behind in the field.
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSubmit();
+    }
+  };
 
   return (
     <div className="mt-3 border-t border-border/40 pt-3">
@@ -164,7 +177,7 @@ export function AskModeInput() {
           <button
             onClick={() => setShowUrlInput(!showUrlInput)}
             title="Attach external documentation URL"
-            className={`shrink-0 rounded-md p-1.5 transition-colors ${
+            className={`shrink-0 self-end rounded-md p-1.5 transition-colors ${
               showUrlInput || externalUrls.length > 0
                 ? 'bg-primary/15 text-primary-ink'
                 : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground'
@@ -174,21 +187,30 @@ export function AskModeInput() {
             <Link2 size={16} />
           </button>
         )}
-        <input
+        <textarea
           ref={inputRef}
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSubmit()}
+          onKeyDown={handleKeyDown}
           placeholder="Ask a question..."
+          maxLength={PROMPT_MAX_LENGTH}
+          rows={1}
           disabled={isStreaming}
-          className="flex-1 bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
+          // The composer wrapper owns the inset surface, border and focus ring,
+          // so the field stays transparent. resize-none because the auto-grow
+          // hook owns the height — a drag handle would fight it.
+          // min-w-0 so a textarea's intrinsic `cols` width can't push the
+          // composer wider than a narrow viewport.
+          className="min-w-0 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
           data-testid="ask-input"
         />
         <button
           onClick={handleSubmit}
           disabled={isStreaming || !input.trim() || !model}
           aria-label={isStreaming ? 'Sending...' : 'Send message'}
-          className="shrink-0 flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50"
+          // self-end keeps Send on the last line of a grown prompt instead of
+          // floating it in the middle of the text block.
+          className="shrink-0 self-end flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50"
         >
           {isStreaming ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
         </button>
@@ -228,7 +250,7 @@ export function AskExamplePrompts() {
     setInput(prompt);
     // Defer focus to next tick so the input mounts before we focus it.
     requestAnimationFrame(() => {
-      const el = document.querySelector<HTMLInputElement>('[data-testid="ask-input"]');
+      const el = document.querySelector<HTMLTextAreaElement>('[data-testid="ask-input"]');
       el?.focus();
     });
   };

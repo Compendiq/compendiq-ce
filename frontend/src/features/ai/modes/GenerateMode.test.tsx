@@ -200,6 +200,69 @@ describe('GenerateMode', () => {
       expect(titleInput.value).toBe('Docker Guide');
     });
 
+    it('renders the prompt as a multi-line textarea (#1120)', () => {
+      render(<GenerateModeInput />, { wrapper: createWrapper() });
+      const input = screen.getByPlaceholderText('Describe the page to generate...');
+      expect(input.tagName).toBe('TEXTAREA');
+    });
+
+    it('Shift+Enter inserts a newline instead of submitting (#1120)', async () => {
+      async function* fakeStream() {
+        yield { content: '# Article' };
+      }
+      streamSSEMock.mockReturnValue(fakeStream());
+
+      render(<GenerateModeInput />, { wrapper: createWrapper() });
+
+      const input = screen.getByPlaceholderText('Describe the page to generate...') as HTMLTextAreaElement;
+      fireEvent.change(input, { target: { value: 'Write a guide' } });
+
+      await waitFor(() => {
+        expect(getSendButton()).not.toBeDisabled();
+      });
+
+      // Shift+Enter must fall through to the textarea's own newline handling:
+      // nothing is sent and the draft survives.
+      const shiftEnter = fireEvent.keyDown(input, { key: 'Enter', shiftKey: true });
+      expect(streamSSEMock).not.toHaveBeenCalled();
+      expect(input.value).toBe('Write a guide');
+      // Not default-prevented, so the browser is still free to insert the
+      // newline that jsdom does not simulate for us.
+      expect(shiftEnter).toBe(true);
+
+      // The second line is typed, then a bare Enter sends the whole thing.
+      fireEvent.change(input, { target: { value: 'Write a guide\ncovering Docker Compose' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+
+      await waitFor(() => {
+        expect(streamSSEMock).toHaveBeenCalledWith(
+          '/llm/generate',
+          expect.objectContaining({ prompt: 'Write a guide\ncovering Docker Compose' }),
+          expect.any(Object),
+        );
+      });
+    });
+
+    it('suppresses the browser newline when a bare Enter submits (#1120)', async () => {
+      async function* fakeStream() {
+        yield { content: '# Article' };
+      }
+      streamSSEMock.mockReturnValue(fakeStream());
+
+      render(<GenerateModeInput />, { wrapper: createWrapper() });
+
+      const input = screen.getByPlaceholderText('Describe the page to generate...') as HTMLTextAreaElement;
+      fireEvent.change(input, { target: { value: 'Write a guide' } });
+
+      await waitFor(() => {
+        expect(getSendButton()).not.toBeDisabled();
+      });
+
+      // fireEvent returns false when the handler called preventDefault. Without
+      // it a textarea would submit *and* leave a stray "\n" in the cleared field.
+      expect(fireEvent.keyDown(input, { key: 'Enter' })).toBe(false);
+    });
+
     it('shows error toast when stream fails', async () => {
       // eslint-disable-next-line require-yield
       async function* fakeErrorStream() {
