@@ -7,7 +7,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
-import { MemoryRouter, Routes, Route, useNavigate } from 'react-router-dom';
+import { MemoryRouter, Routes, Route, useNavigate, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AiProvider, useAiContext, nextMessageId, resolveAiPageId } from './AiContext';
 
@@ -78,6 +78,12 @@ function NavButton({ to }: { to: string }) {
   return <button onClick={() => navigate(to)}>{`go ${to}`}</button>;
 }
 
+/** Not an AI consumer — lets a test see URL rewrites the provider performs. */
+function LocationDisplay() {
+  const location = useLocation();
+  return <span data-testid="location">{location.pathname + location.search}</span>;
+}
+
 /**
  * Mount the probe under a hoisted provider, with a nav button per destination.
  * `destinations` are the URLs the test navigates between; each gets a button
@@ -89,6 +95,7 @@ function renderThreadApp(initialEntry: string, destinations: string[] = []) {
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[initialEntry]}>
         <AiProvider>
+          <LocationDisplay />
           {destinations.map((to) => (
             <NavButton key={to} to={to} />
           ))}
@@ -277,6 +284,29 @@ describe('AiContext per-page threads (#1126)', () => {
         'streamed question about page-a',
         'partial answer',
       ]);
+    });
+  });
+
+  // The ?q= consumer (#957) rewrites the URL with a replace navigation. It ran
+  // on mount of /ai before the hoist; it now sees every route in the app.
+  describe('?q= composer prefill is scoped to /ai', () => {
+    it('consumes ?q= on /ai', () => {
+      renderThreadApp('/ai?q=how do I configure sync');
+
+      expect(screen.getByTestId('draft')).toHaveTextContent('how do I configure sync');
+      // Consumed, so refresh/back does not re-prefill an asked question.
+      expect(screen.getByTestId('location')).toHaveTextContent('/ai');
+      expect(screen.getByTestId('location').textContent).not.toContain('q=');
+    });
+
+    it('leaves ?q= alone on a route that is not /ai', () => {
+      // CommandPalette only ever puts ?q= on /ai, but the provider must not
+      // claim the param from an unrelated page that happens to carry it —
+      // that would rewrite that page's URL and hijack its search term.
+      renderThreadApp('/pages/page-a?q=someone elses search');
+
+      expect(screen.getByTestId('draft')).toHaveTextContent('');
+      expect(screen.getByTestId('location').textContent).toContain('q=someone');
     });
   });
 

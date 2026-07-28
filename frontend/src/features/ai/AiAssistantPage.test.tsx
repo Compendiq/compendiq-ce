@@ -4,7 +4,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { AiAssistantPage } from './AiAssistantPage';
-import { AiProvider } from './AiContext';
+import { AiProvider, useAiContext } from './AiContext';
 import { ApiError } from '../../shared/lib/api';
 import { useAuthStore } from '../../stores/auth-store';
 
@@ -1289,6 +1289,36 @@ describe('AiAssistantPage', () => {
       // New page title shown, no stale state from p1
       expect(screen.getByText('Second Article')).toBeInTheDocument();
       expect(screen.queryByText('First Article')).not.toBeInTheDocument();
+    });
+
+    it('reads the thread from the hoisted provider rather than one of its own (#1126)', () => {
+      // The page must NOT mount an AiProvider of its own. If it did, /ai would
+      // hold a thread nobody else can see — and every test that only exercises
+      // /ai would still pass against that private instance. Seeding through a
+      // sibling consumer of the shell's provider is what catches it.
+      function ThreadSeeder() {
+        const { setMessages } = useAiContext();
+        return (
+          <button
+            onClick={() =>
+              setMessages([{ id: 'seeded-1', role: 'user', content: 'seeded outside the page' }])
+            }
+          >
+            seed thread
+          </button>
+        );
+      }
+
+      render(
+        <>
+          <ThreadSeeder />
+          <AiAssistantPage />
+        </>,
+        { wrapper: createWrapper(['/ai?pageId=p1']) },
+      );
+
+      fireEvent.click(screen.getByText('seed thread'));
+      expect(screen.getByText('seeded outside the page')).toBeInTheDocument();
     });
 
     it('defaults to improve mode when pageId is present', () => {

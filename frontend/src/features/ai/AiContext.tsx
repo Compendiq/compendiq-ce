@@ -453,7 +453,13 @@ export function AiProvider({ children }: { children: ReactNode }) {
   // initializer) so it also works when /ai is already mounted and only the
   // search params change. The param is consumed — removed from the URL with a
   // replace navigation — so refresh/back doesn't re-prefill an asked question.
-  const urlQuestion = searchParams.get('q');
+  //
+  // Scoped to /ai, which is the only route CommandPalette ever puts ?q= on
+  // (CommandPalette.tsx:134). The provider mounts app-wide now, so without the
+  // guard it would claim `q` from ANY route carrying it — silently rewriting
+  // that page's URL and stuffing its search term into the AI composer.
+  const isAiRoute = location.pathname === '/ai';
+  const urlQuestion = isAiRoute ? searchParams.get('q') : null;
   useEffect(() => {
     if (urlQuestion === null) return;
     if (urlQuestion) setInput(urlQuestion);
