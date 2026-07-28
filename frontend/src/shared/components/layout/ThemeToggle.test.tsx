@@ -5,7 +5,7 @@ import { useThemeStore } from '../../../stores/theme-store';
 
 describe('ThemeToggle', () => {
   beforeEach(() => {
-    useThemeStore.setState({ theme: 'graphite-honey' });
+    useThemeStore.setState({ theme: 'slate-steel' });
   });
 
   it('renders a button with accessible label', () => {
@@ -16,28 +16,28 @@ describe('ThemeToggle', () => {
   });
 
   it('shows "Switch to light mode" label when in dark theme', () => {
-    useThemeStore.setState({ theme: 'graphite-honey' });
+    useThemeStore.setState({ theme: 'slate-steel' });
     render(<ThemeToggle />);
     expect(screen.getByRole('button')).toHaveAttribute('aria-label', 'Switch to light mode');
   });
 
   it('shows "Switch to dark mode" label when in light theme', () => {
-    useThemeStore.setState({ theme: 'honey-linen' });
+    useThemeStore.setState({ theme: 'frost-steel' });
     render(<ThemeToggle />);
     expect(screen.getByRole('button')).toHaveAttribute('aria-label', 'Switch to dark mode');
   });
 
   it('switches from dark to light on click', () => {
-    useThemeStore.setState({ theme: 'graphite-honey' });
+    useThemeStore.setState({ theme: 'slate-steel' });
     render(<ThemeToggle />);
     fireEvent.click(screen.getByRole('button'));
-    expect(useThemeStore.getState().theme).toBe('honey-linen');
+    expect(useThemeStore.getState().theme).toBe('frost-steel');
   });
 
   it('switches from light to dark on click', () => {
-    useThemeStore.setState({ theme: 'honey-linen' });
+    useThemeStore.setState({ theme: 'frost-steel' });
     render(<ThemeToggle />);
     fireEvent.click(screen.getByRole('button'));
-    expect(useThemeStore.getState().theme).toBe('graphite-honey');
+    expect(useThemeStore.getState().theme).toBe('slate-steel');
   });
 });

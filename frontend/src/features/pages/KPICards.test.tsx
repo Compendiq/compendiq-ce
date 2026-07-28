@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { KPICards } from './KPICards';
 import { formatRelativeTime } from '../../shared/lib/format-relative-time';
@@ -25,7 +25,11 @@ describe('KPICards', () => {
     vi.restoreAllMocks();
   });
 
-  it('renders all five KPI cards', () => {
+  it('renders three tiles, not five', () => {
+    // The July-2026 critique found five equal-weight tiles where two were
+    // derived from the others: "Embedding Coverage" was embedded/total, and
+    // both operands sat immediately to its left. Coverage and the space count
+    // are now qualifiers inside the tiles they describe.
     render(
       <KPICards
         embeddingStatus={mockEmbeddingStatus}
@@ -38,9 +42,57 @@ describe('KPICards', () => {
     expect(screen.getByTestId('kpi-cards')).toBeInTheDocument();
     expect(screen.getByTestId('kpi-total-articles')).toBeInTheDocument();
     expect(screen.getByTestId('kpi-embedded-pages')).toBeInTheDocument();
-    expect(screen.getByTestId('kpi-spaces-synced')).toBeInTheDocument();
-    expect(screen.getByTestId('kpi-embedding-coverage')).toBeInTheDocument();
     expect(screen.getByTestId('kpi-last-sync')).toBeInTheDocument();
+
+    // Coverage and spaces still render — inside their parent tiles.
+    expect(screen.getByTestId('kpi-total-articles')).toContainElement(
+      screen.getByTestId('kpi-spaces-synced'),
+    );
+    expect(screen.getByTestId('kpi-embedded-pages')).toContainElement(
+      screen.getByTestId('kpi-embedding-coverage'),
+    );
+  });
+
+  it('gives the Last Sync tile double width so one tile leads the row', () => {
+    render(
+      <KPICards embeddingStatus={mockEmbeddingStatus} spacesCount={5} />,
+      { wrapper: Wrapper },
+    );
+
+    const lastSync = screen.getByTestId('kpi-last-sync');
+    expect(lastSync.closest('.sm\\:col-span-2')).not.toBeNull();
+  });
+
+  it('offers the sync action inside the Last Sync tile', () => {
+    const onSync = vi.fn();
+    render(
+      <KPICards embeddingStatus={mockEmbeddingStatus} spacesCount={5} onSync={onSync} />,
+      { wrapper: Wrapper },
+    );
+
+    const btn = screen.getByTestId('kpi-sync-btn');
+    expect(screen.getByTestId('kpi-last-sync')).toContainElement(btn);
+    fireEvent.click(btn);
+    expect(onSync).toHaveBeenCalledOnce();
+  });
+
+  it('disables the sync action while a sync is running', () => {
+    render(
+      <KPICards embeddingStatus={mockEmbeddingStatus} spacesCount={5} onSync={vi.fn()} isSyncing />,
+      { wrapper: Wrapper },
+    );
+
+    expect(screen.getByTestId('kpi-sync-btn')).toBeDisabled();
+    expect(screen.getByTestId('kpi-sync-btn')).toHaveTextContent('Syncing...');
+  });
+
+  it('omits the sync action when no handler is supplied', () => {
+    render(
+      <KPICards embeddingStatus={mockEmbeddingStatus} spacesCount={5} />,
+      { wrapper: Wrapper },
+    );
+
+    expect(screen.queryByTestId('kpi-sync-btn')).not.toBeInTheDocument();
   });
 
   it('displays correct total articles count', async () => {
@@ -70,13 +122,13 @@ describe('KPICards', () => {
     );
 
     const card = screen.getByTestId('kpi-embedded-pages');
-    expect(card).toHaveTextContent('Embedded Pages');
+    expect(card).toHaveTextContent('Embedded');
     await waitFor(() => {
       expect(card).toHaveTextContent('75');
     }, { timeout: 3000 });
   });
 
-  it('displays correct spaces count', async () => {
+  it('displays the spaces count as a qualifier on the total-pages tile', () => {
     render(
       <KPICards
         embeddingStatus={mockEmbeddingStatus}
@@ -85,14 +137,21 @@ describe('KPICards', () => {
       { wrapper: Wrapper },
     );
 
-    const card = screen.getByTestId('kpi-spaces-synced');
-    expect(card).toHaveTextContent('Spaces Synced');
-    await waitFor(() => {
-      expect(card).toHaveTextContent('7');
-    }, { timeout: 3000 });
+    expect(screen.getByTestId('kpi-spaces-synced')).toHaveTextContent('across 7 spaces');
   });
 
-  it('displays correct embedding coverage percentage', async () => {
+  it('pluralises a single space correctly', () => {
+    render(
+      <KPICards embeddingStatus={mockEmbeddingStatus} spacesCount={1} />,
+      { wrapper: Wrapper },
+    );
+
+    // "1 pages" appeared elsewhere in the app; don't repeat it here.
+    expect(screen.getByTestId('kpi-spaces-synced')).toHaveTextContent('across 1 space');
+    expect(screen.getByTestId('kpi-spaces-synced')).not.toHaveTextContent('1 spaces');
+  });
+
+  it('folds coverage into the embedded tile as "of N (P%)"', async () => {
     render(
       <KPICards
         embeddingStatus={mockEmbeddingStatus}
@@ -102,9 +161,8 @@ describe('KPICards', () => {
     );
 
     const card = screen.getByTestId('kpi-embedding-coverage');
-    expect(card).toHaveTextContent('Embedding Coverage');
     await waitFor(() => {
-      expect(card).toHaveTextContent('75%');
+      expect(card).toHaveTextContent('of 100 (75%)');
     }, { timeout: 3000 });
   });
 
@@ -269,9 +327,7 @@ describe('KPICards', () => {
     const testIds = [
       'kpi-total-articles',
       'kpi-embedded-pages',
-      'kpi-spaces-synced',
       'kpi-last-sync',
-      'kpi-embedding-coverage',
     ];
 
     for (const testId of testIds) {

@@ -265,6 +265,18 @@ function createWrapper() {
   };
 }
 
+// scrollArticleToTop() (in PageViewPage) resets scroll synchronously and then
+// again inside a double requestAnimationFrame. Await enough real frames (inside
+// act) to fully drain that chain, so scroll-reset assertions never race a late
+// rAF-scheduled scrollTo under full-file load (#943 flake).
+async function flushScrollResetFrames() {
+  await act(async () => {
+    for (let i = 0; i < 3; i++) {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }
+  });
+}
+
 describe('PageViewPage', () => {
   beforeEach(() => {
     currentMockPage = mockPage;
@@ -1120,11 +1132,15 @@ describe('PageViewPage', () => {
       currentMockPage = mockPage;
       const { rerender } = render(<PageViewPage />, { wrapper: createWrapper() });
 
-      // Initial mount scrolls to top (navigation reset). Wait for it, then
-      // clear the spy so we only observe the refetch behaviour.
+      // Initial mount scrolls to top (navigation reset). Wait for it, then DRAIN
+      // the reset's double-rAF chain before clearing the spy — otherwise, under
+      // full-file load, a late rAF-scheduled scrollTo from the mount reset fires
+      // after mockClear and is mis-counted as an in-place-refetch scroll (this
+      // was the #943 flake — a test race, not a component bug).
       await waitFor(() => {
         expect(scrollSpy).toHaveBeenCalledWith({ top: 0, left: 0, behavior: 'auto' });
       });
+      await flushScrollResetFrames();
       scrollSpy.mockClear();
 
       // Simulate an optimistic write / invalidation: a brand-new page object
@@ -1135,11 +1151,9 @@ describe('PageViewPage', () => {
       };
       rerender(<PageViewPage />);
 
-      // Give any effects + double-rAF a chance to fire, then assert the scroll
-      // container was NOT reset — the reader keeps their place.
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      });
+      // Drain a full double-rAF window so any (erroneous) reset would have fired,
+      // then assert the scroll container was NOT reset — the reader keeps place.
+      await flushScrollResetFrames();
       expect(scrollSpy).not.toHaveBeenCalled();
 
       scrollContainer.remove();

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import * as Popover from '@radix-ui/react-popover';
 import { useEditor, useEditorState, EditorContent } from '@tiptap/react';
+import { TextSelection } from '@tiptap/pm/state';
 import DragHandle from '@tiptap/extension-drag-handle-react';
 import StarterKit from '@tiptap/starter-kit';
 import { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
@@ -22,6 +23,7 @@ import {
   Trash2, Columns3, Rows3, Merge, SplitSquareHorizontal, Square,
   ToggleLeft, PanelTop, Workflow, Underline, Highlighter, Palette,
   Badge, ChevronsUpDown, Hash, Paperclip, ListTree, ImagePlus, TableProperties, Table2,
+  Info, TriangleAlert, StickyNote, Lightbulb,
   GripVertical,
   Terminal,
 } from 'lucide-react';
@@ -118,7 +120,7 @@ const ConfluenceImage = Image.extend({
     };
   },
 
-  // Browser `<img>` tags cannot send Authorization headers, so the JWT-gated
+  // Browser `img` tags cannot send Authorization headers, so the JWT-gated
   // `/api/attachments/...` endpoint returns 401 for every direct image load —
   // both for pasted uploads and for Confluence-synced attachments. The
   // ArticleViewer (read mode) works around this by rewriting srcs to blob
@@ -382,6 +384,102 @@ function StatusLabelInsert({ editor }: { editor: EditorType }) {
   );
 }
 
+/**
+ * The four Confluence panel macros, in the same order the content converter
+ * and the `.panel-*` stylesheet rules use. `swatch` points at the very token
+ * each panel is rendered with, so the picker can't drift from the box the
+ * author ends up looking at. Every entry pairs its color with an icon and a
+ * text label — the type must stay distinguishable without relying on hue.
+ */
+const PANEL_TYPES = [
+  { value: 'info', label: 'Info', Icon: Info, swatch: 'var(--color-info)' },
+  { value: 'warning', label: 'Warning', Icon: TriangleAlert, swatch: 'var(--color-warning)' },
+  { value: 'note', label: 'Note', Icon: StickyNote, swatch: 'var(--color-primary)' },
+  { value: 'tip', label: 'Tip', Icon: Lightbulb, swatch: 'var(--color-success)' },
+] as const;
+
+type PanelType = (typeof PANEL_TYPES)[number]['value'];
+
+/**
+ * Inserts an empty panel and leaves the caret inside it, so the author types
+ * straight into the box instead of clearing out placeholder copy first.
+ */
+function insertPanel(editor: EditorType, panelType: PanelType) {
+  editor
+    .chain()
+    .focus()
+    .insertContent({ type: 'panel', attrs: { panelType }, content: [{ type: 'paragraph' }] })
+    .command(({ tr, dispatch }) => {
+      if (!dispatch) return true;
+      // insertContent parks the caret *after* the new block whenever content
+      // follows it, which would leave the author typing underneath the box
+      // rather than inside it. Panels *can* nest (Panel.content is 'block+'),
+      // so stopping descent at the first panel node meant one inserted
+      // inside an existing panel was never visited, landing the caret in the
+      // *outer* panel instead. Visiting every descendant and keeping the
+      // last match finds the innermost one instead: a nested panel starts at
+      // a higher position than its parent, so it's visited (and overwrites
+      // the match) after it. Same transaction, so a single undo removes the
+      // panel.
+      const { from } = tr.selection;
+      let caret: number | null = null;
+      tr.doc.descendants((node, pos) => {
+        if (node.type.name === 'panel' && pos <= from) {
+          caret = pos + 2;
+        }
+        return true;
+      });
+      if (caret !== null) {
+        tr.setSelection(TextSelection.create(tr.doc, caret));
+      }
+      return true;
+    })
+    .run();
+}
+
+function PanelInsert({ editor }: { editor: EditorType }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative">
+      <ToolbarButton onClick={() => setOpen(!open)} active={open} title="Insert Panel">
+        <Info size={16} />
+      </ToolbarButton>
+      {open && (
+        <div className="absolute top-full left-0 z-50 mt-1 rounded-lg border border-border/50 bg-card p-2 shadow-lg min-w-max">
+          <p className="mb-1.5 px-1 text-[12px] font-medium text-muted-foreground uppercase tracking-wider">Panel</p>
+          <div className="grid grid-cols-2 gap-1">
+            {PANEL_TYPES.map(({ value, label, Icon, swatch }) => (
+              <button
+                key={value}
+                title={label}
+                onClick={() => {
+                  insertPanel(editor, value);
+                  setOpen(false);
+                }}
+                className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-foreground/5"
+              >
+                <Icon size={14} style={{ color: swatch }} />
+                <span className="text-[11px] whitespace-nowrap text-muted-foreground">{label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 const PRESET_COLORS = [
   { label: 'Red', value: '#ef4444' },
   { label: 'Orange', value: '#f97316' },
@@ -618,6 +716,7 @@ export function EditorToolbar({ editor, headerNumbering, onToggleHeaderNumbering
         >
           <ChevronsUpDown size={16} />
         </ToolbarButton>
+        <PanelInsert editor={editor} />
         <ToolbarButton
           onClick={() => {
             editor.chain().focus().insertContent({
@@ -896,7 +995,7 @@ function LayoutPresetPicker({ editor }: { editor: EditorType }) {
       </ToolbarButton>
       {open && (
         <div className="absolute top-full left-0 z-50 mt-1 rounded-lg border border-border/50 bg-card p-2 shadow-lg min-w-max">
-          <p className="mb-1.5 px-1 text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Page Layout</p>
+          <p className="mb-1.5 px-1 text-[12px] font-medium text-muted-foreground uppercase tracking-wider">Page Layout</p>
           <div className="flex gap-1">
             {LAYOUT_PRESETS.map((preset) => (
               <button
@@ -909,7 +1008,7 @@ function LayoutPresetPicker({ editor }: { editor: EditorType }) {
                 className="flex flex-col items-center gap-1 rounded-md px-2 py-1.5 hover:bg-foreground/5 transition-colors"
               >
                 <LayoutPreview bars={preset.bars} size="md" />
-                <span className="text-[10px] text-muted-foreground whitespace-nowrap">{preset.label}</span>
+                <span className="text-[11px] text-muted-foreground whitespace-nowrap">{preset.label}</span>
               </button>
             ))}
           </div>
@@ -1162,7 +1261,7 @@ async function importHttpImage(sourceUrl: string, pageId: string): Promise<strin
 const PASTE_IMPORT_CONCURRENCY = 5;
 
 /**
- * Walk pasted HTML and replace any non-internal `<img>` srcs with our own
+ * Walk pasted HTML and replace any non-internal `img` srcs with our own
  * attachment URLs (#683). Mutates a clone of the input; returns the rewritten
  * HTML plus a summary of imports for the user-facing toast.
  *
@@ -1431,7 +1530,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
         }
 
         // Rich HTML paste (#683). If the clipboard carries `text/html` that
-        // contains `<img>` tags with non-internal srcs (relative paths from
+        // contains `img` tags with non-internal srcs (relative paths from
         // imported Sphinx docs, absolute URLs from a wiki, data: URIs), walk
         // the HTML and rewrite each src to an internal attachment URL we
         // actually serve. We hold off on inserting the original HTML so the

@@ -263,6 +263,182 @@ describe('Editor', () => {
     });
   });
 
+  describe('insert panel command (#1134)', () => {
+    // Panels synced in from Confluence already round-trip, but until #1134
+    // there was no way to author one in Compendiq. These drive the toolbar
+    // picker through a real editor so the assertions are about the document
+    // ProseMirror actually builds, not about a mocked chain call.
+    async function renderEditorWithToolbar() {
+      let editor: EditorType | null = null;
+      render(
+        <Editor content="<p>Test</p>" editable={true} onEditorReady={(e) => { editor = e; }} />,
+      );
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+      return editor!;
+    }
+
+    it.each([
+      ['Info', 'panel-info'],
+      ['Warning', 'panel-warning'],
+      ['Note', 'panel-note'],
+      ['Tip', 'panel-tip'],
+    ])('inserts a %s panel that serializes to .%s', async (label, className) => {
+      const editor = await renderEditorWithToolbar();
+
+      fireEvent.click(screen.getByTitle('Insert Panel'));
+      fireEvent.click(screen.getByTitle(label));
+
+      expect(editor.getHTML()).toContain(`class="${className}"`);
+    });
+
+    it('places the caret inside the new panel so the user can type immediately', async () => {
+      const editor = await renderEditorWithToolbar();
+
+      fireEvent.click(screen.getByTitle('Insert Panel'));
+      fireEvent.click(screen.getByTitle('Info'));
+
+      // isActive('panel') alone is true for any panel at any depth, so it
+      // wouldn't catch the caret landing in the wrong (e.g. outer) panel.
+      // The new panel's paragraph is always empty, so asserting that pins
+      // down which paragraph the caret actually sits in.
+      expect(editor.isActive('panel')).toBe(true);
+      expect(editor.state.selection.$from.parent.textContent).toBe('');
+    });
+
+    it('places the caret inside the panel when the document is empty', async () => {
+      // insertContent branches on whether the caret sits at offset 0 of a
+      // non-empty block, so the caret landed in a different place depending on
+      // the surrounding content. Both contexts must end up inside the panel.
+      let editor: EditorType | null = null;
+      render(
+        <Editor content="" editable={true} onEditorReady={(e) => { editor = e; }} />,
+      );
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+
+      fireEvent.click(screen.getByTitle('Insert Panel'));
+      fireEvent.click(screen.getByTitle('Info'));
+
+      expect(editor!.isActive('panel')).toBe(true);
+      expect(editor!.state.selection.$from.parent.textContent).toBe('');
+    });
+
+    it('places the caret inside the panel when inserting mid-paragraph', async () => {
+      const editor = await renderEditorWithToolbar();
+      editor.commands.setTextSelection(3);
+
+      fireEvent.click(screen.getByTitle('Insert Panel'));
+      fireEvent.click(screen.getByTitle('Info'));
+
+      expect(editor.isActive('panel')).toBe(true);
+      expect(editor.state.selection.$from.parent.textContent).toBe('');
+    });
+
+    it('places the caret inside the newly inserted panel, not the outer one, when inserting into an existing panel (#1140)', async () => {
+      // Panel.content is 'block+', so panels can nest. The insert command
+      // used to scan the doc for "the last panel node", which stopped
+      // descending at the first (outer) panel it found and so never saw the
+      // nested one — landing the caret, and the author's next keystrokes, in
+      // the *existing* panel instead of the one they just inserted.
+      let editor: EditorType | null = null;
+      render(
+        <Editor
+          content='<div class="panel-info"><p>Existing</p></div>'
+          editable={true}
+          onEditorReady={(e) => { editor = e; }}
+        />,
+      );
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+      // Caret between "Exi" and "sting" inside the existing panel's paragraph.
+      editor!.commands.setTextSelection(5);
+
+      fireEvent.click(screen.getByTitle('Insert Panel'));
+      fireEvent.click(screen.getByTitle('Tip'));
+
+      const { $from } = editor!.state.selection;
+      expect($from.parent.textContent).toBe('');
+
+      let nearestPanel: { attrs: { panelType: string } } | null = null;
+      for (let depth = $from.depth; depth > 0; depth--) {
+        const node = $from.node(depth);
+        if (node.type.name === 'panel') {
+          nearestPanel = node as unknown as { attrs: { panelType: string } };
+          break;
+        }
+      }
+      expect(nearestPanel?.attrs.panelType).toBe('tip');
+    });
+
+    it('inserts an empty panel rather than placeholder text', async () => {
+      // An Info box the author has to empty out first is worse than one they
+      // can type straight into — unlike the Expand insert, there is no summary
+      // line here that needs a default.
+      const editor = await renderEditorWithToolbar();
+
+      fireEvent.click(screen.getByTitle('Insert Panel'));
+      fireEvent.click(screen.getByTitle('Info'));
+
+      expect(editor.getHTML()).toMatch(/<div[^>]*class="panel-info"[^>]*><p><\/p><\/div>/);
+    });
+
+    it('closes the picker after inserting', async () => {
+      const editor = await renderEditorWithToolbar();
+      expect(editor).not.toBeNull();
+
+      fireEvent.click(screen.getByTitle('Insert Panel'));
+      fireEvent.click(screen.getByTitle('Info'));
+
+      expect(screen.queryByTitle('Warning')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('panel serialization', () => {
+    // The `panel-*` class already encodes the type, and it is the only thing
+    // the parse rules and htmlToConfluence read. TipTap's default attribute
+    // rendering also emitted `paneltype="…"` onto the div, so every save wrote
+    // a second copy of the type that nothing consumes — into body_html, and
+    // from there into whatever the reverse pass leaves behind.
+    it('keeps a Confluence-synced panel free of the redundant panelType attribute', async () => {
+      let editor: EditorType | null = null;
+      render(
+        <Editor
+          content='<div class="panel-warning"><p>careful</p></div>'
+          editable={true}
+          onEditorReady={(e) => { editor = e; }}
+        />,
+      );
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+
+      const html = editor!.getHTML();
+      expect(html).toContain('class="panel-warning"');
+      expect(html).not.toContain('paneltype');
+    });
+
+    it('keeps an editor-authored panel free of the redundant panelType attribute', async () => {
+      let editor: EditorType | null = null;
+      render(
+        <Editor content="<p>Test</p>" editable={true} onEditorReady={(e) => { editor = e; }} />,
+      );
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+
+      fireEvent.click(screen.getByTitle('Insert Panel'));
+      fireEvent.click(screen.getByTitle('Tip'));
+
+      const html = editor!.getHTML();
+      expect(html).toContain('class="panel-tip"');
+      expect(html).not.toContain('paneltype');
+    });
+  });
+
   describe('clipboard image paste (#17)', () => {
     it('renders and accepts the pageId prop', async () => {
       const { container } = render(
@@ -315,7 +491,7 @@ describe('Editor', () => {
   });
 
   describe('image NodeView — JWT-gated attachment rewrite', () => {
-    // Browsers can't send Authorization headers on <img> requests, so
+    // Browsers can't send Authorization headers on `img` requests, so
     // `/api/attachments/...` always 401's a direct load. The NodeView
     // intercepts these srcs, fetches them with the bearer token, and
     // renders via a blob URL — while leaving `node.attrs.src` (and
@@ -417,7 +593,7 @@ describe('Editor', () => {
         expect(document.querySelector('img')?.getAttribute('src')).toBe('blob:fake');
       });
 
-      // DOM `<img>` is showing the blob URL, but the editor's serialized
+      // DOM `img` is showing the blob URL, but the editor's serialized
       // state must still hold the canonical URL.
       const html = editor!.getHTML();
       const json = editor!.getJSON();
@@ -528,8 +704,8 @@ describe('Editor', () => {
     });
   });
 
-  describe('HTML paste — import non-internal <img> srcs (#683)', () => {
-    // When the user pastes HTML containing `<img>` tags whose srcs are not
+  describe('HTML paste — import non-internal img srcs (#683)', () => {
+    // When the user pastes HTML containing `img` tags whose srcs are not
     // already pointing at our backend, the editor rewrites each src to an
     // internal `/api/attachments/...` URL by routing through the inline
     // upload endpoint (data: URIs) or the new `/import` endpoint (http(s)).
@@ -572,7 +748,7 @@ describe('Editor', () => {
       return pm.dispatchEvent(evt);
     }
 
-    it('rewrites a single http(s) <img> src via /pages/:id/images/import', async () => {
+    it('rewrites a single http(s) img src via /pages/:id/images/import', async () => {
       mockApiFetch.mockResolvedValueOnce({ url: '/api/attachments/42/imported.png' });
 
       render(<Editor content="<p>seed</p>" editable={true} pageId="42" />);
@@ -597,7 +773,7 @@ describe('Editor', () => {
       });
     });
 
-    it('rewrites a data: URI <img> via /pages/:id/images (existing upload endpoint)', async () => {
+    it('rewrites a data: URI img via /pages/:id/images (existing upload endpoint)', async () => {
       mockApiFetch.mockResolvedValueOnce({ url: '/api/attachments/42/imported-data.png' });
 
       render(<Editor content="<p>seed</p>" editable={true} pageId="42" />);
@@ -707,7 +883,7 @@ describe('Editor', () => {
     });
 
     it('reports mixed outcomes via the toast (warning when some imports fail)', async () => {
-      // Two http(s) <img>s: first import succeeds, second fails. The toast
+      // Two http(s) img tags: first import succeeds, second fails. The toast
       // helper should land on `toast.warning` with the X-of-Y message.
       mockApiFetch
         .mockResolvedValueOnce({ url: '/api/attachments/42/ok.png' })
@@ -1049,5 +1225,42 @@ describe('EditorToolbar — header numbering toggle', () => {
     const italicBtn = screen.getByTitle('Italic (Ctrl+I)');
     expect(boldBtn).toHaveAttribute('aria-pressed', 'true');
     expect(italicBtn).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  // ---------- #1134 insert-panel picker ----------
+
+  it('renders the Insert Panel trigger inside the insert group (#1134)', () => {
+    const editor = createMockEditor();
+    render(<EditorToolbar editor={editor} />);
+
+    const trigger = screen.getByTitle('Insert Panel');
+    expect(screen.getByTestId('toolbar-group-insert')).toContainElement(trigger);
+  });
+
+  it('offers all four Confluence panel types once opened (#1134)', () => {
+    // The backend converter and the .panel-* styles both cover
+    // info/warning/note/tip, so the picker must not strand three of them.
+    const editor = createMockEditor();
+    render(<EditorToolbar editor={editor} />);
+
+    // Closed by default — no picking surface until the user asks for it.
+    expect(screen.queryByTitle('Info')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTitle('Insert Panel'));
+
+    for (const label of ['Info', 'Warning', 'Note', 'Tip']) {
+      expect(screen.getByTitle(label)).toBeInTheDocument();
+    }
+  });
+
+  it('closes the panel picker on an outside click (#1134)', () => {
+    const editor = createMockEditor();
+    render(<EditorToolbar editor={editor} />);
+
+    fireEvent.click(screen.getByTitle('Insert Panel'));
+    expect(screen.getByTitle('Info')).toBeInTheDocument();
+
+    fireEvent.mouseDown(document.body);
+    expect(screen.queryByTitle('Info')).not.toBeInTheDocument();
   });
 });

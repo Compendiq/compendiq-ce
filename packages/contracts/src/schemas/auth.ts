@@ -23,6 +23,19 @@ export const AuthResponseSchema = z.object({
   }),
 });
 
+/**
+ * Public registration policy (#1051). Returned by the unauthenticated
+ * `GET /api/auth/registration-policy` so the SPA knows whether to render the
+ * self-service signup toggle. Deliberately minimal — it exposes only the
+ * boolean the login page needs, never the underlying `open`/`closed` mode nor
+ * any hint about how many admins exist. The frontend fails **closed**: any
+ * parse/fetch error leaves signup hidden.
+ */
+export const RegistrationPolicySchema = z.object({
+  allowRegistration: z.boolean(),
+});
+export type RegistrationPolicy = z.infer<typeof RegistrationPolicySchema>;
+
 export type RegisterInput = z.infer<typeof RegisterSchema>;
 export type LoginInput = z.infer<typeof LoginSchema>;
 export type AuthResponse = z.infer<typeof AuthResponseSchema>;

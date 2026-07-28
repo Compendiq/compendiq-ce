@@ -81,6 +81,35 @@ describe('Health routes', () => {
     app = Fastify({ logger: false });
     await app.register(sensible);
     app.decorate('redis', {});
+    // #1052: /api/health reuses `fastify.authenticate` to tier its response.
+    // Stub it so anonymous callers get the coarse body, `Bearer admin-tok`
+    // gets full detail, and `Bearer user-tok` (authenticated non-admin) gets
+    // the coarse body. The stub throws on anything else, which the handler's
+    // swallow-try treats as anonymous.
+    app.decorate(
+      'authenticate',
+      async (request: {
+        headers: { authorization?: string };
+        userId: string;
+        username: string;
+        userRole: string;
+      }) => {
+        const authHeader = request.headers.authorization;
+        if (authHeader === 'Bearer admin-tok') {
+          request.userId = 'admin-1';
+          request.username = 'admin';
+          request.userRole = 'admin';
+          return;
+        }
+        if (authHeader === 'Bearer user-tok') {
+          request.userId = 'user-1';
+          request.username = 'user';
+          request.userRole = 'user';
+          return;
+        }
+        throw new Error('Unauthorized');
+      },
+    );
     await app.register(healthRoutes, { prefix: '/api' });
     await app.ready();
   });
@@ -127,13 +156,16 @@ describe('Health routes', () => {
   });
 
   describe('GET /api/health/ready', () => {
-    it('should return 200 when PostgreSQL and Redis are healthy', async () => {
+    it('should return 200 with a coarse status when PostgreSQL and Redis are healthy', async () => {
       const response = await app.inject({ method: 'GET', url: '/api/health/ready' });
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
-      expect(body.status).toBe('ok');
-      expect(body.services.postgres).toBe(true);
-      expect(body.services.redis).toBe(true);
+      expect(body).toEqual({ status: 'ok' });
+      // #1052: the public readiness probe must not leak telemetry.
+      expect(body).not.toHaveProperty('services');
+      expect(body).not.toHaveProperty('version');
+      expect(body).not.toHaveProperty('edition');
+      expect(body).not.toHaveProperty('uptime');
     });
 
     it('should return 503 when PostgreSQL is down', async () => {
@@ -159,11 +191,16 @@ describe('Health routes', () => {
   });
 
   describe('GET /api/health/start', () => {
-    it('should include llmProvider and llmAvailable in response', async () => {
+    it('should return only the coarse startup checks (no LLM telemetry)', async () => {
       const response = await app.inject({ method: 'GET', url: '/api/health/start' });
       const body = JSON.parse(response.body);
-      expect(body.checks).toHaveProperty('llmAvailable');
-      expect(body.checks).toHaveProperty('llmProvider');
+      expect(body.checks).toHaveProperty('startupComplete');
+      expect(body.checks).toHaveProperty('postgres');
+      // #1052: the LLM probe (and its provider-name leak) is dropped entirely.
+      expect(body.checks).not.toHaveProperty('llmAvailable');
+      expect(body.checks).not.toHaveProperty('llmProvider');
+      expect(body).not.toHaveProperty('version');
+      expect(body).not.toHaveProperty('edition');
     });
 
     it('should return 200 after markStartupComplete when postgres is healthy', async () => {
@@ -176,72 +213,136 @@ describe('Health routes', () => {
       expect(body.checks.postgres).toBe(true);
     });
 
-    it('should report llmAvailable=false when LLM is unreachable', async () => {
+    it('should return 503 with starting status when postgres is down', async () => {
       markStartupComplete();
-      mockCheckHealth.mockResolvedValue({ connected: false, error: 'Connection refused' });
-
+      (mockCheckPg as ReturnType<typeof vi.fn>).mockResolvedValue(false);
       const response = await app.inject({ method: 'GET', url: '/api/health/start' });
+      expect(response.statusCode).toBe(503);
       const body = JSON.parse(response.body);
-      expect(body.checks.llmAvailable).toBe(false);
-    });
-
-    it('should report correct llmProvider', async () => {
-      mockQuery.mockResolvedValueOnce({
-        rows: [
-          {
-            id: 'prov-openai',
-            name: 'openai',
-            base_url: 'https://api.openai.com/v1',
-            api_key: 'sk-xxxx',
-            auth_type: 'bearer',
-            verify_ssl: true,
-          },
-        ],
-      });
-      const response = await app.inject({ method: 'GET', url: '/api/health/start' });
-      const body = JSON.parse(response.body);
-      expect(body.checks.llmProvider).toBe('openai');
+      expect(body.status).toBe('starting');
+      expect(body.checks.postgres).toBe(false);
     });
   });
 
   describe('GET /api/health (backward compat)', () => {
-    it('should return coarse public health status (status/services/llmProvider/version)', async () => {
+    // #1052: anonymous callers get ONLY a coarse `{ status }`.
+    it('returns ONLY { status } to anonymous callers — no telemetry leaks', async () => {
       const response = await app.inject({ method: 'GET', url: '/api/health' });
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body).toEqual({ status: 'ok' });
+      // The deployment-fingerprinting fields from #1052 must all be absent.
+      expect(body).not.toHaveProperty('version');
+      expect(body).not.toHaveProperty('edition');
+      expect(body).not.toHaveProperty('uptime');
+      expect(body).not.toHaveProperty('services');
+      expect(body).not.toHaveProperty('llmProvider');
+      expect(body).not.toHaveProperty('commit');
+      expect(body).not.toHaveProperty('ceCommit');
+      expect(body).not.toHaveProperty('builtAt');
+    });
+
+    it('returns a coarse { status } to authenticated NON-admin callers', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/health',
+        headers: { authorization: 'Bearer user-tok' },
+      });
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body).toEqual({ status: 'ok' });
+      expect(body).not.toHaveProperty('services');
+      expect(body).not.toHaveProperty('version');
+    });
+
+    it('exposes full detail (status/services/llmProvider/version/commit) to admins', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/health',
+        headers: { authorization: 'Bearer admin-tok' },
+      });
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
       expect(body.status).toBe('ok');
       expect(body.services).toHaveProperty('postgres');
       expect(body.services).toHaveProperty('redis');
       expect(body.services).toHaveProperty('llm');
-      // Frontend reads these unauthenticated fields — they must remain.
       expect(body).toHaveProperty('llmProvider');
       expect(body).toHaveProperty('version');
       expect(body).toHaveProperty('commit');
+      expect(body).toHaveProperty('uptime');
     });
 
-    it('does NOT leak internal operational telemetry to unauthenticated callers (#818)', async () => {
+    it('does NOT leak internal operational telemetry even to admins (#818)', async () => {
       // Live per-provider breakers + queue depth would be exposed if the leak regressed.
       mockListProviderBreakers.mockReturnValue([
         { providerId: 'uuid-b', state: 'open', failureCount: 3, nextRetryTime: 99 },
       ]);
       mockListProviders.mockResolvedValue([{ id: 'uuid-b', name: 'OpenAI' }]);
 
-      const response = await app.inject({ method: 'GET', url: '/api/health' });
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/health',
+        headers: { authorization: 'Bearer admin-tok' },
+      });
       const body = JSON.parse(response.body);
       expect(body).not.toHaveProperty('circuitBreakers');
       expect(body).not.toHaveProperty('llmQueue');
       expect(body).not.toHaveProperty('queues');
     });
 
-    it('should report llm=false when LLM provider is unreachable', async () => {
-      mockCheckHealth.mockResolvedValue({ connected: false, error: 'timeout' });
+    it('does NOT run the LLM probe for anonymous callers', async () => {
+      await app.inject({ method: 'GET', url: '/api/health' });
+      expect(mockCheckHealth).not.toHaveBeenCalled();
+    });
+
+    // #1052: the exception/fallback branch is tiered by admin too, so a
+    // dependency check that THROWS (not merely returns false) must never leak
+    // telemetry to anonymous callers. Regression guard for the added catch.
+    it('does NOT leak telemetry on the exception/fallback path (anonymous)', async () => {
+      (mockCheckPg as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('pg boom'));
 
       const response = await app.inject({ method: 'GET', url: '/api/health' });
+
+      expect(response.statusCode).toBe(503);
+      const body = JSON.parse(response.body);
+      expect(body).toEqual({ status: 'degraded' });
+      expect(body).not.toHaveProperty('services');
+      expect(body).not.toHaveProperty('version');
+      expect(body).not.toHaveProperty('edition');
+      expect(body).not.toHaveProperty('uptime');
+      expect(body).not.toHaveProperty('llmProvider');
+    });
+
+    it('still serves fallback detail to admins on the exception path', async () => {
+      (mockCheckPg as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('pg boom'));
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/health',
+        headers: { authorization: 'Bearer admin-tok' },
+      });
+
+      expect(response.statusCode).toBe(503);
+      const body = JSON.parse(response.body);
+      expect(body.status).toBe('degraded');
+      expect(body.services).toHaveProperty('postgres');
+      expect(body).toHaveProperty('version');
+    });
+
+    it('should report llm=false when LLM provider is unreachable (admin)', async () => {
+      mockCheckHealth.mockResolvedValue({ connected: false, error: 'timeout' });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/health',
+        headers: { authorization: 'Bearer admin-tok' },
+      });
       const body = JSON.parse(response.body);
       expect(body.services.llm).toBe(false);
     });
 
-    it('should use active provider for health check', async () => {
+    it('should use active provider for health check (admin)', async () => {
       mockQuery.mockResolvedValue({
         rows: [
           {
@@ -256,7 +357,11 @@ describe('Health routes', () => {
       });
       mockCheckHealth.mockResolvedValue({ connected: true });
 
-      const response = await app.inject({ method: 'GET', url: '/api/health' });
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/health',
+        headers: { authorization: 'Bearer admin-tok' },
+      });
       const body = JSON.parse(response.body);
       expect(body.services.llm).toBe(true);
       expect(body.llmProvider).toBe('openai');

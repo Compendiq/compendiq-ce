@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { m } from 'framer-motion';
 import { toast } from 'sonner';
-import { Crown, Users, Calendar, CheckCircle2, Lock, AlertTriangle, KeyRound, Loader2, Save, Trash2, ArrowUpRight } from 'lucide-react';
+import { Crown, Users, Calendar, CheckCircle2, Lock, Sparkles, ChevronRight, KeyRound, Loader2, Save, Trash2, ArrowUpRight } from 'lucide-react';
 import { PanelHeader } from '../settings/PanelHeader';
 import type { LicenseInfoResponse } from '@compendiq/contracts';
 import { apiFetch } from '../../shared/lib/api';
@@ -42,6 +42,15 @@ const tierConfig: Record<string, { label: string; color: string; bgColor: string
     borderColor: 'border-amber-500/30',
   },
 };
+
+/** The EE feature set, in the order the catalogue lists it. */
+const ENTERPRISE_FEATURES = [
+  { key: 'oidc', label: 'SSO / OIDC Authentication', description: 'Single sign-on with your identity provider' },
+  { key: 'audit-export', label: 'Audit Log Export', description: 'Export audit logs for compliance' },
+  { key: 'custom-branding', label: 'Custom Branding', description: 'White-label with your organization branding' },
+  { key: 'multi-instance', label: 'Multi-Instance', description: 'Deploy multiple isolated instances' },
+  { key: 'priority-support', label: 'Priority Support', description: 'Dedicated support channel' },
+] as const;
 
 export function LicenseStatusCard() {
   const { data, isLoading } = useLicenseStatus();
@@ -99,6 +108,9 @@ export function LicenseStatusCard() {
   // otherwise the admin sees "Community — Free" and has to decode the
   // expiry date out of the masked key string.
   const storedKeyInvalid = hasStoredKey && !isValid;
+  const activeFeatureCount = ENTERPRISE_FEATURES.filter(
+    (f) => data?.features?.includes(f.key) ?? false,
+  ).length;
   const expiredDate = data?.expiresAt ? new Date(data.expiresAt) : null;
   const isExpired = storedKeyInvalid && expiredDate !== null && expiredDate.getTime() < Date.now();
 
@@ -120,23 +132,30 @@ export function LicenseStatusCard() {
 
       {/* Community-upgrade CTA promoted to top: in CE the admin is most
           likely here BECAUSE they want to upgrade. Lead with the action,
-          not the deny-list. Hidden once a paid tier is active. */}
+          not the deny-list. Hidden once a paid tier is active.
+
+          Deliberately steel, not amber: amber is this app's syncing/attention
+          signal (ADR-010 v0.4 — "amber is reserved for warning/attention
+          only"). Spending it on an upsell teaches admins to discount amber
+          everywhere, including on real sync failures. Nothing is wrong here,
+          so nothing warns. */}
       {isCommunity && !canUpdate && (
         <m.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           className="flex items-start justify-between gap-4 rounded-lg border border-[var(--color-primary)]/30 bg-[var(--color-primary)]/[0.06] p-4"
+          data-testid="license-upgrade-cta"
         >
           <div className="flex items-start gap-3">
-            <AlertTriangle size={18} className="mt-0.5 shrink-0 text-[var(--color-warning)]" />
+            <Sparkles size={18} className="mt-0.5 shrink-0 text-[var(--color-primary)]" aria-hidden="true" />
             <div>
               <div className="text-sm font-medium text-foreground">
-                Unlock enterprise features
+                More features are available with an enterprise license
               </div>
               <div className="mt-1 text-xs text-muted-foreground">
                 SSO/OIDC, audit export, custom branding, multi-instance and priority
-                support require a Compendiq enterprise license. Contact your
-                administrator or visit the Compendiq website.
+                support ship with the enterprise edition. Everything else in Compendiq
+                is yours to keep on Community.
               </div>
             </div>
           </div>
@@ -299,18 +318,28 @@ export function LicenseStatusCard() {
           state uses an emerald CheckCircle (familiar "on") and the inactive
           state uses Lock instead of XCircle (X reads as "close", Lock reads
           as "unavailable until you have access"). */}
-      <div>
-        <h3 className="mb-3 text-sm font-medium text-muted-foreground">
-          Enterprise feature catalogue
-        </h3>
-        <ul role="list" className="divide-y divide-border/40 rounded-lg border border-border/40">
-          {[
-            { key: 'oidc', label: 'SSO / OIDC Authentication', description: 'Single sign-on with your identity provider' },
-            { key: 'audit-export', label: 'Audit Log Export', description: 'Export audit logs for compliance' },
-            { key: 'custom-branding', label: 'Custom Branding', description: 'White-label with your organization branding' },
-            { key: 'multi-instance', label: 'Multi-Instance', description: 'Deploy multiple isolated instances' },
-            { key: 'priority-support', label: 'Priority Support', description: 'Dedicated support channel' },
-          ].map((feature) => {
+      {/* Collapsed by default in CE: with nothing licensed, all five rows read
+          LOCKED and restate the banner above. An admin who wants the detail
+          opens it; everyone else gets a one-line summary. Expanded by default
+          once a paid tier is active, where the rows carry real information. */}
+      <details className="group" open={!isCommunity} data-testid="feature-catalogue">
+        <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
+          <ChevronRight
+            size={14}
+            aria-hidden="true"
+            className="shrink-0 transition-transform group-open:rotate-90"
+          />
+          {/* Stays a real heading inside the summary — collapsing the section
+              must not cost the panel a step on the heading outline. `summary`
+              permits heading content, and the disclosure is still exposed as a
+              button either way. */}
+          <h3 className="text-sm font-medium">Enterprise feature catalogue</h3>
+          <span className="text-xs font-normal text-muted-foreground/70">
+            {activeFeatureCount} of {ENTERPRISE_FEATURES.length} active
+          </span>
+        </summary>
+        <ul role="list" className="mt-3 divide-y divide-border/40 rounded-lg border border-border/40">
+          {ENTERPRISE_FEATURES.map((feature) => {
             const isAvailable = data?.features?.includes(feature.key) ?? false;
             return (
               <li
@@ -338,7 +367,7 @@ export function LicenseStatusCard() {
                 </div>
                 <span
                   className={cn(
-                    'rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider',
+                    'rounded-full px-2 py-0.5 text-[12px] font-medium uppercase tracking-wider',
                     isAvailable
                       ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
                       : 'bg-foreground/[0.04] text-muted-foreground',
@@ -350,7 +379,7 @@ export function LicenseStatusCard() {
             );
           })}
         </ul>
-      </div>
+      </details>
     </div>
   );
 }

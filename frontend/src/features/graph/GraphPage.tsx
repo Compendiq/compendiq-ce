@@ -75,10 +75,13 @@ const EDGE_COLORS: Record<string, string> = {
 const MAX_TOOLTIP_LABELS = 5;
 
 // #941: node text/border colours must adapt to the active theme. On the light
-// (Honey Linen) theme the previously-hardcoded white label was invisible
-// against the linen surface. Text goes near-black on light, white on dark;
-// borders mirror that so the outline reads on both surfaces. The honey
-// center-node stroke stays theme-independent (it reads on both).
+// theme the previously-hardcoded white label was invisible against the pale
+// surface. Text takes the deep navy ink on light and the cool near-white on
+// dark; borders mirror that so the outline reads on both surfaces.
+//
+// These are the palette's --color-foreground values written as literals:
+// react-force-graph-2d paints to a <canvas> via ctx.fillStyle, which resolves
+// no CSS custom properties. Keep them in step with the tokens in index.css.
 interface GraphCanvasColors {
   label: string;
   title: string;
@@ -91,20 +94,22 @@ interface GraphCanvasColors {
 function getCanvasColors(isLight: boolean): GraphCanvasColors {
   return isLight
     ? {
-        label: 'rgba(10,10,10,0.85)',
-        title: 'rgba(10,10,10,0.95)',
-        badge: 'rgba(10,10,10,0.7)',
-        border: 'rgba(10,10,10,0.4)',
-        borderHover: 'rgba(10,10,10,0.9)',
-        hoverStroke: 'rgba(10,10,10,0.8)',
+        // Frost Steel --color-foreground #171c2c
+        label: 'rgba(23,28,44,0.85)',
+        title: 'rgba(23,28,44,0.95)',
+        badge: 'rgba(23,28,44,0.7)',
+        border: 'rgba(23,28,44,0.4)',
+        borderHover: 'rgba(23,28,44,0.9)',
+        hoverStroke: 'rgba(23,28,44,0.8)',
       }
     : {
-        label: 'rgba(255,255,255,0.85)',
-        title: 'rgba(255,255,255,0.95)',
-        badge: 'rgba(255,255,255,0.7)',
-        border: 'rgba(255,255,255,0.4)',
-        borderHover: 'rgba(255,255,255,0.9)',
-        hoverStroke: 'rgba(255,255,255,0.8)',
+        // Slate Steel --color-foreground #e8ecf5
+        label: 'rgba(232,236,245,0.85)',
+        title: 'rgba(232,236,245,0.95)',
+        badge: 'rgba(232,236,245,0.7)',
+        border: 'rgba(232,236,245,0.4)',
+        borderHover: 'rgba(232,236,245,0.9)',
+        hoverStroke: 'rgba(232,236,245,0.8)',
       };
 }
 
@@ -192,7 +197,7 @@ export function GraphPage() {
   const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
 
   // #941: derive theme-aware canvas colours so node labels/borders stay
-  // legible on both the dark (Graphite Honey) and light (Honey Linen) themes.
+  // legible on both the dark (Slate Steel) and light (Frost Steel) themes.
   const isLight = useIsLightTheme();
   const canvasColors = useMemo(() => getCanvasColors(isLight), [isLight]);
 
@@ -727,7 +732,7 @@ function ArticlePickerLanding({ onPick, onShowFullGraph }: ArticlePickerLandingP
                 >
                   <span className="truncate">{item.title}</span>
                   {item.spaceKey && (
-                    <span className="ml-2 shrink-0 rounded bg-foreground/5 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                    <span className="ml-2 shrink-0 rounded bg-foreground/5 px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
                       {item.spaceKey}
                     </span>
                   )}
@@ -946,7 +951,7 @@ export function GraphFilterSidebar({
                 type="button"
                 onClick={() => toggleLabel(label)}
                 className={cn(
-                  'rounded-full px-2 py-0.5 text-[10px] transition-colors',
+                  'rounded-full px-2 py-0.5 text-[11px] transition-colors',
                   labels.includes(label)
                     ? 'bg-action/20 text-action'
                     : 'bg-foreground/5 text-muted-foreground hover:text-foreground',

@@ -1321,9 +1321,98 @@ describe('AiAssistantPage', () => {
       render(<AiAssistantPage />, { wrapper: createWrapper() });
 
       expect(screen.getByText('Ask questions about your knowledge base')).toBeInTheDocument();
-      expect(screen.getByText('Your questions will be answered using RAG over your Confluence pages')).toBeInTheDocument();
+      expect(
+        screen.getByText('Answers are drawn from your synced pages, with links to the ones they came from'),
+      ).toBeInTheDocument();
       // Should NOT show other mode messages
       expect(screen.queryByText('Select a page and improvement type')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('narrow-viewport reachability', () => {
+    // jsdom does not implement scrollIntoView, and the tablist's arrow-key
+    // handler calls it. Stub for this block only and put the prototype back —
+    // assigning without restoring would leak into every later test in the file.
+    const originalScrollIntoView = Element.prototype.scrollIntoView;
+    let scrollIntoViewMock: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      scrollIntoViewMock = vi.fn();
+      Element.prototype.scrollIntoView = scrollIntoViewMock;
+    });
+
+    afterEach(() => {
+      Element.prototype.scrollIntoView = originalScrollIntoView;
+    });
+
+    // At 390px the mode row cut off after "Summar…", leaving Diagram and
+    // Quality unreachable with no scroll cue — two of six modes did not exist
+    // on a phone.
+    it('lets the mode row scroll horizontally instead of clipping', () => {
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      const tablist = screen.getByTestId('ai-mode-tablist');
+      expect(tablist.className).toContain('overflow-x-auto');
+      expect(tablist.className).toContain('max-w-full');
+      expect(tablist.className).not.toContain('overflow-hidden');
+    });
+
+    it('keeps every mode present in the tablist', () => {
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      const tabs = screen.getAllByRole('tab');
+      expect(tabs).toHaveLength(6);
+      for (const tab of tabs) {
+        // shrink-0 stops the flex row squashing tabs into unreadable slivers
+        // instead of scrolling.
+        expect(tab.className).toContain('shrink-0');
+      }
+    });
+
+    it('moves focus with the selection when arrowing through modes', () => {
+      // The tabs use a roving tabindex, so selecting a tab without focusing it
+      // leaves focus on one that just became tabIndex={-1}. Once the row
+      // scrolls on a narrow viewport, that stranded tab is also off-screen —
+      // the highlighted tab and the focused tab were different tabs.
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      const tabs = screen.getAllByRole('tab');
+      const first = tabs[0]!;
+      first.focus();
+      expect(document.activeElement).toBe(first);
+
+      fireEvent.keyDown(screen.getByTestId('ai-mode-tablist'), { key: 'ArrowRight' });
+
+      const second = screen.getAllByRole('tab')[1]!;
+      expect(second).toHaveAttribute('aria-selected', 'true');
+      expect(document.activeElement).toBe(second);
+      // Focus is the only tab reachable by Tab; the old one steps aside.
+      expect(second).toHaveAttribute('tabindex', '0');
+      expect(screen.getAllByRole('tab')[0]!).toHaveAttribute('tabindex', '-1');
+      expect(scrollIntoViewMock).toHaveBeenCalled();
+    });
+
+    it('wraps focus round the ends of the mode row', () => {
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      const tablist = screen.getByTestId('ai-mode-tablist');
+      // ArrowLeft from the first tab wraps to the last, which is the tab most
+      // likely to be off-screen at 390px.
+      fireEvent.keyDown(tablist, { key: 'ArrowLeft' });
+
+      const tabs = screen.getAllByRole('tab');
+      expect(document.activeElement).toBe(tabs[tabs.length - 1]);
+    });
+
+    it('scrolls the message pane rather than hiding overflow', () => {
+      // At viewport heights <= 768px the empty-state prompt cards were clipped
+      // with no way to reach them; on mobile they rendered behind the composer.
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      const pane = screen.getByTestId('ai-message-pane');
+      expect(pane.className).toContain('overflow-y-auto');
+      expect(pane.className).toContain('min-h-0');
+      expect(pane.className).not.toContain('overflow-hidden');
     });
   });
 

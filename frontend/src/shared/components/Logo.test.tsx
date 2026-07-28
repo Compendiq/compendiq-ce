@@ -17,10 +17,21 @@ describe('Logo', () => {
     expect(wordmark!.getAttribute('fill')).toBe('currentColor');
   });
 
-  it('keeps the amber magnifier stroke hard-coded (the AI signal must NOT inherit)', () => {
+  it('keeps the steel magnifier stroke hard-coded (the AI signal must NOT inherit)', () => {
     const { container } = render(<Logo />);
-    const ambers = container.querySelectorAll('[stroke="#f9c74f"], [stroke="#F9C74F"]');
-    expect(ambers.length).toBe(2);
+    const steels = container.querySelectorAll('[stroke="#6ea8ff"], [stroke="#6EA8FF"]');
+    expect(steels.length).toBe(2);
+  });
+
+  // The mark is mirrored in public/*.svg and the generated favicons, which
+  // render with no CSS custom properties available — so the retired honey
+  // values must not survive anywhere in the component either.
+  it('carries no retired honey-palette values', () => {
+    const { container } = render(<Logo />);
+    const markup = container.innerHTML.toLowerCase();
+    for (const retired of ['#f9c74f', '#fff8e9', '#1a1a1a']) {
+      expect(markup).not.toContain(retired);
+    }
   });
 
   it('forwards className to the root svg', () => {

@@ -261,7 +261,7 @@ export function CommandPalette() {
                   aria-activedescendant={activeOptionId}
                   autoComplete="off"
                 />
-                <kbd className="rounded border border-border/50 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                <kbd className="rounded border border-border/50 px-1.5 py-0.5 text-[11px] text-muted-foreground">
                   ESC
                 </kbd>
               </div>
@@ -276,7 +276,7 @@ export function CommandPalette() {
                 {/* AI mode result */}
                 {isAiMode && (
                   <div className="mb-2">
-                    <p className="mb-1 px-2 text-[11px] font-medium uppercase tracking-wider text-purple-400">
+                    <p className="mb-1 px-2 text-[12px] font-medium uppercase tracking-wider text-purple-400">
                       AI Assistant
                     </p>
                     <button
@@ -295,7 +295,7 @@ export function CommandPalette() {
                     >
                       <Sparkles size={14} className="shrink-0 text-purple-400" />
                       <span className="font-medium">{aiQuery ? `Ask AI: ${aiQuery}` : 'Ask AI'}</span>
-                      <kbd className="ml-auto rounded border border-border/50 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                      <kbd className="ml-auto rounded border border-border/50 px-1.5 py-0.5 text-[11px] text-muted-foreground">
                         Enter
                       </kbd>
                     </button>
@@ -305,7 +305,7 @@ export function CommandPalette() {
                 {/* Search results */}
                 {query.trim() && !isAiMode && results.length > 0 && (
                   <div className="mb-2">
-                    <p className="mb-1 px-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                    <p className="mb-1 px-2 text-[12px] font-medium uppercase tracking-wider text-muted-foreground">
                       Pages
                     </p>
                     {results.map((result, i) => {
@@ -351,7 +351,7 @@ export function CommandPalette() {
                 {/* Recent searches */}
                 {!query.trim() && recentSearches.length > 0 && (
                   <div className="mb-2">
-                    <p className="mb-1 px-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                    <p className="mb-1 px-2 text-[12px] font-medium uppercase tracking-wider text-muted-foreground">
                       Recent Searches
                     </p>
                     {recentSearches.map((term, i) => {
@@ -383,7 +383,7 @@ export function CommandPalette() {
                 {/* Quick actions (hidden in AI mode) */}
                 {!isAiMode && (
                   <div>
-                    <p className="mb-1 px-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                    <p className="mb-1 px-2 text-[12px] font-medium uppercase tracking-wider text-muted-foreground">
                       Quick Actions
                     </p>
                     {QUICK_ACTIONS.map((action, i) => {

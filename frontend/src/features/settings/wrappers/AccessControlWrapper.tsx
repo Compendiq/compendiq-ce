@@ -9,6 +9,7 @@ const RbacPage = lazy(() => import('../../admin/RbacPage').then((m) => ({ defaul
 const OidcSettingsPage = lazy(() => import('../../admin/OidcSettingsPage').then((m) => ({ default: m.OidcSettingsPage })));
 const IpAllowlistTab = lazy(() => import('../../admin/IpAllowlistTab').then((m) => ({ default: m.IpAllowlistTab })));
 const RateLimitsTab = lazy(() => import('../RateLimitsTab').then((m) => ({ default: m.RateLimitsTab })));
+const RegistrationPolicyTab = lazy(() => import('../RegistrationPolicyTab').then((m) => ({ default: m.RegistrationPolicyTab })));
 
 /**
  * "Access Control" wrapper — collapses Users, Roles, SSO, IP allowlist, and
@@ -68,6 +69,15 @@ export function AccessControlWrapper() {
       render: () => (
         <Suspense fallback={<SkeletonFormFields />}>
           <RateLimitsTab />
+        </Suspense>
+      ),
+    },
+    {
+      id: 'registration',
+      label: 'Registration',
+      render: () => (
+        <Suspense fallback={<SkeletonFormFields />}>
+          <RegistrationPolicyTab />
         </Suspense>
       ),
     },

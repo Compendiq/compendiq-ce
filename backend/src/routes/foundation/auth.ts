@@ -12,6 +12,7 @@ import {
 } from '../../core/plugins/auth.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
+import { getEffectiveRegistrationPolicy } from '../../core/services/registration-policy-service.js';
 
 const SALT_ROUNDS = 12;
 const REFRESH_COOKIE = 'kb_refresh';
@@ -25,6 +26,23 @@ const AUTH_RATE_LIMIT = { config: { rateLimit: { max: async () => (await getRate
 export async function authRoutes(fastify: FastifyInstance) {
   fastify.post('/register', AUTH_RATE_LIMIT, async (request, reply) => {
     const body = RegisterSchema.parse(request.body);
+
+    // Issue #1051 — deployment-level self-registration gate. Enforced BEFORE
+    // any password hashing so a disabled endpoint does no bcrypt work and
+    // leaks no timing signal. Emitted as an explicit reply (NOT a thrown
+    // httpError) so the global error handler's `safeErrorName` does not
+    // rewrite the machine-readable `registration_disabled` code. Bootstrap
+    // (no real admin yet) is always allowed regardless of the stored mode.
+    const { allowRegistration } = await getEffectiveRegistrationPolicy();
+    if (!allowRegistration) {
+      logger.warn({ username: body.username }, 'Registration blocked (registration_disabled)');
+      return reply.code(403).send({
+        error: 'registration_disabled',
+        message: 'Public registration is disabled',
+        statusCode: 403,
+      });
+    }
+
     const email = body.email?.trim().toLowerCase() ?? null;
     const displayName = body.displayName?.trim() ?? null;
 
@@ -87,6 +105,20 @@ export async function authRoutes(fastify: FastifyInstance) {
       throw err;
     }
   });
+
+  // Issue #1051 — public policy probe the SPA reads on the login screen to
+  // decide whether to render the self-service signup toggle. Deliberately
+  // exposes only the boolean (never the raw mode nor whether an admin exists).
+  // Public (no `authenticate` hook — it lives under the public /api/auth/*
+  // surface) and lightly rate-limited.
+  fastify.get(
+    '/registration-policy',
+    { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } },
+    async () => {
+      const { allowRegistration } = await getEffectiveRegistrationPolicy();
+      return { allowRegistration };
+    },
+  );
 
   fastify.post('/login', AUTH_RATE_LIMIT, async (request, reply) => {
     const body = LoginSchema.parse(request.body);

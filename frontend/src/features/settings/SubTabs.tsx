@@ -104,7 +104,7 @@ export function SubTabs({ ariaLabel, tabs, testIdRoot }: SubTabsProps) {
             >
               <span>{tab.label}</span>
               {tab.badge && (
-                <span className="rounded-sm border border-white/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                <span className="rounded-sm border border-white/10 px-1.5 py-0.5 text-[12px] font-medium uppercase tracking-wider text-muted-foreground">
                   {tab.badge}
                 </span>
               )}

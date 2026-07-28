@@ -182,6 +182,105 @@ describe('buildApp — CORS multi-origin support', () => {
   });
 });
 
+describe('buildApp — CORS allowed methods (#1055)', () => {
+  const originalFrontendUrl = process.env.FRONTEND_URL;
+
+  afterEach(() => {
+    if (originalFrontendUrl === undefined) {
+      delete process.env.FRONTEND_URL;
+    } else {
+      process.env.FRONTEND_URL = originalFrontendUrl;
+    }
+  });
+
+  // Parse the comma-joined Access-Control-Allow-Methods header into an
+  // uppercase Set so assertions are agnostic to the plugin's comma spacing.
+  function methodSet(header: string | undefined): Set<string> {
+    return new Set(
+      (header ?? '')
+        .split(',')
+        .map((m) => m.trim().toUpperCase())
+        .filter(Boolean),
+    );
+  }
+
+  const ALL_VERBS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'] as const;
+
+  it('advertises the full method set for an allowed origin', async () => {
+    process.env.FRONTEND_URL = 'http://localhost:8081';
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+
+    try {
+      const response = await app.inject({
+        method: 'OPTIONS',
+        url: '/api/pages/5',
+        headers: {
+          origin: 'http://localhost:8081',
+          'access-control-request-method': 'PUT',
+        },
+      });
+
+      expect(response.headers['access-control-allow-origin']).toBe('http://localhost:8081');
+      const methods = methodSet(response.headers['access-control-allow-methods'] as string);
+      // Regression guard: PUT/PATCH/DELETE were previously missing (plugin
+      // default was GET,HEAD,POST only).
+      for (const verb of ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']) {
+        expect(methods.has(verb)).toBe(true);
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  it.each(ALL_VERBS)('allowed-origin preflight advertises %s', async (verb) => {
+    process.env.FRONTEND_URL = 'http://localhost:8081';
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+
+    try {
+      const response = await app.inject({
+        method: 'OPTIONS',
+        url: '/api/pages/5',
+        headers: {
+          origin: 'http://localhost:8081',
+          'access-control-request-method': verb,
+        },
+      });
+
+      const methods = methodSet(response.headers['access-control-allow-methods'] as string);
+      expect(methods.has(verb)).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it.each(ALL_VERBS)('disallowed origin cannot read a credentialed %s response', async (verb) => {
+    // Multi-origin (array) form so @fastify/cors exercises reflect-or-reject;
+    // a single configured origin is reflected unconditionally.
+    process.env.FRONTEND_URL = 'http://localhost:8081, http://localhost:5273';
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+
+    try {
+      const response = await app.inject({
+        method: 'OPTIONS',
+        url: '/api/pages/5',
+        headers: {
+          origin: 'http://evil.example.com',
+          'access-control-request-method': verb,
+        },
+      });
+
+      // No matching Access-Control-Allow-Origin → browser blocks reading the
+      // credentialed response regardless of verb.
+      expect(response.headers['access-control-allow-origin']).not.toBe('http://evil.example.com');
+    } finally {
+      await app.close();
+    }
+  });
+});
+
 describe('buildApp — compression threshold', () => {
   // Regression guard for the production-only @fastify/compress bug observed in
   // the EE backend container: a ~1KB JSON response (/api/health, 1042 bytes)

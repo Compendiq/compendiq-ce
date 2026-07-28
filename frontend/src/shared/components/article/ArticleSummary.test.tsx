@@ -143,7 +143,12 @@ describe('ArticleSummary', () => {
       expect(await screen.findByTestId('article-summary-offline')).toBeInTheDocument();
       expect(screen.getByText('AI summary unavailable — LLM provider offline')).toBeInTheDocument();
       expect(screen.queryByText('AI summary will be generated shortly')).not.toBeInTheDocument();
-      expect(fetchMock).toHaveBeenCalledWith('/api/health');
+      // #1052: the request carries the admin token so the backend returns the
+      // per-service `services` payload.
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/health',
+        expect.objectContaining({ headers: expect.anything() }),
+      );
     });
 
     it('keeps the pending text when health reports llm: true', async () => {
@@ -154,7 +159,10 @@ describe('ArticleSummary', () => {
       renderWithStatus('pending');
 
       await waitFor(() => {
-        expect(fetchMock).toHaveBeenCalledWith('/api/health');
+        expect(fetchMock).toHaveBeenCalledWith(
+          '/api/health',
+          expect.objectContaining({ headers: expect.anything() }),
+        );
       });
       expect(screen.getByText('AI summary will be generated shortly')).toBeInTheDocument();
       expect(screen.queryByTestId('article-summary-offline')).not.toBeInTheDocument();
@@ -166,7 +174,10 @@ describe('ArticleSummary', () => {
       renderWithStatus('pending');
 
       await waitFor(() => {
-        expect(fetchMock).toHaveBeenCalledWith('/api/health');
+        expect(fetchMock).toHaveBeenCalledWith(
+          '/api/health',
+          expect.objectContaining({ headers: expect.anything() }),
+        );
       });
       expect(screen.getByText('AI summary will be generated shortly')).toBeInTheDocument();
       expect(screen.queryByTestId('article-summary-offline')).not.toBeInTheDocument();

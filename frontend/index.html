@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="graphite-honey" data-theme-type="dark" class="dark">
+<html lang="en" data-theme="slate-steel" data-theme-type="dark" class="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -11,8 +11,10 @@
     <link rel="icon" type="image/x-icon" href="/favicon.ico" />
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/site.webmanifest" />
-    <meta name="theme-color" content="#f9c74f" media="(prefers-color-scheme: dark)" />
-    <meta name="theme-color" content="#f9c74f" media="(prefers-color-scheme: light)" />
+    <!-- Browser chrome (mobile address bar / PWA surround) blends with the page
+         surface, so these are the theme BACKGROUNDS, not the accent. -->
+    <meta name="theme-color" content="#0e1220" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#f4f6fa" media="(prefers-color-scheme: light)" />
 
     <!--
       Open Graph — og:image MUST be an absolute URL for social scrapers.
@@ -36,8 +38,23 @@
       // Only the two current themes are honored; unknown values fall through
       // to the defaults already set on <html> above. Legacy localStorage keys
       // are still checked so upgrading users keep their preference.
+      //
+      // RETIRED maps superseded theme IDs onto their replacement BEFORE first
+      // paint. Without it, a user still holding `honey-linen` would paint dark
+      // (the <html> default), then get corrected to Frost Steel a frame later
+      // when the store rehydrates — a full-brightness light-on-dark flash.
+      // Keep this table in sync with RETIRED_LIGHT_THEME_IDS in
+      // src/stores/theme-store.ts, which does the same remap for the store.
       (function() {
-        var VALID = { 'graphite-honey': 'dark', 'honey-linen': 'light' };
+        var VALID = { 'slate-steel': 'dark', 'frost-steel': 'light' };
+        var RETIRED = {
+          'honey-linen': 'frost-steel',
+          'polar-slate': 'frost-steel',
+          'parchment-glow': 'frost-steel',
+          'sunrise-cream': 'frost-steel',
+          'cloud-white': 'frost-steel',
+          'graphite-honey': 'slate-steel'
+        };
         try {
           var raw = localStorage.getItem('compendiq-theme')
                   || localStorage.getItem('atlasmind-theme')
@@ -45,6 +62,7 @@
           if (raw) {
             var parsed = JSON.parse(raw);
             var theme = parsed && parsed.state && parsed.state.theme;
+            if (theme && RETIRED[theme]) theme = RETIRED[theme];
             if (theme && VALID[theme]) {
               var type = VALID[theme];
               document.documentElement.setAttribute('data-theme', theme);
@@ -56,7 +74,9 @@
       })();
     </script>
   </head>
-  <body class="h-screen overflow-hidden bg-background text-foreground antialiased">
+  <!-- No `bg-background` here: index.css paints <body> with the gradient
+       chassis (--surface-backdrop), and a solid utility would cover it. -->
+  <body class="h-screen overflow-hidden text-foreground antialiased">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

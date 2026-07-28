@@ -1,5 +1,6 @@
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useAuthStore } from '../../../stores/auth-store';
 
 interface HealthResponse {
   status?: string;
@@ -13,11 +14,17 @@ interface HealthResponse {
 function useBackendBuildInfo() {
   return useQuery<HealthResponse>({
     queryKey: ['backend', 'build-info'],
-    // /api/health is public (no auth) and cheap — it's what compose
-    // healthchecks hit. We read it once to surface build metadata.
+    // #1052: /api/health now returns build metadata only to an authenticated
+    // admin (anonymous callers get a coarse `{ status }`). This Diagnostics
+    // page is admin-only, so attach the access token. 200 (ok) and 503
+    // (degraded) both carry the payload, so keep the raw fetch (a helper that
+    // threw on 503 would drop the build info during an outage).
     queryFn: async () => {
-      const response = await fetch('/api/health');
-      // 200 (ok) and 503 (degraded) both carry the version payload.
+      const { accessToken } = useAuthStore.getState();
+      const response = await fetch('/api/health', {
+        headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+        credentials: 'include',
+      });
       return response.json() as Promise<HealthResponse>;
     },
     staleTime: 60_000,

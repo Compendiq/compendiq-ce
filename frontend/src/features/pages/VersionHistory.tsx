@@ -179,7 +179,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
           renderTrigger(open)
         ) : (
           <button
-            className="nm-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
+            className="nm-card nm-card-hover flex items-center gap-1.5 px-3 py-1.5 text-sm"
             title="Version history"
           >
             <History size={14} />
@@ -243,7 +243,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                 </p>
                 <button
                   onClick={() => void refetch()}
-                  className="nm-card mt-1 px-3 py-1.5 text-xs hover:bg-foreground/5"
+                  className="nm-card nm-card-hover mt-1 px-3 py-1.5 text-xs"
                 >
                   Retry
                 </button>
@@ -305,12 +305,12 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-medium">v{version.versionNumber}</span>
                         {version.isCurrent && (
-                          <span className="rounded bg-success/10 px-1.5 py-0.5 text-[10px] font-medium text-success">
+                          <span className="rounded bg-success/10 px-1.5 py-0.5 text-[11px] font-medium text-success">
                             Current
                           </span>
                         )}
                         {version.author && (
-                          <span className="text-[10px] text-muted-foreground">{version.author}</span>
+                          <span className="text-[11px] text-muted-foreground">{version.author}</span>
                         )}
                       </div>
                       <p className="truncate text-xs text-muted-foreground">

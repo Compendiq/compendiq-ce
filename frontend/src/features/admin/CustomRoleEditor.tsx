@@ -371,7 +371,7 @@ export function CustomRoleEditor({ open, onOpenChange, editRole }: CustomRoleEdi
                     <div className="space-y-4" data-testid="permission-groups">
                       {Object.entries(grouped).map(([category, perms]) => (
                         <div key={category} data-testid={`permission-group-${category}`}>
-                          <h4 className="mb-1.5 text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
+                          <h4 className="mb-1.5 text-[12px] font-semibold uppercase tracking-widest text-muted-foreground">
                             {getCategoryLabel(category)}
                           </h4>
                           <div className="space-y-1.5">

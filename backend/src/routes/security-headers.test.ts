@@ -19,14 +19,30 @@ describe.skipIf(!dbAvailable)('HTTP security headers (@fastify/helmet)', () => {
     await teardownTestDb();
   });
 
-  it('should set X-Content-Type-Options: nosniff', async () => {
+  // The four headers below are owned by the nginx edge
+  // (frontend/nginx-security-headers.conf), which is the only surface a client
+  // ever reaches (the backend is never host-published). Helmet is configured
+  // NOT to emit them so nginx's appending `add_header` cannot produce duplicate
+  // or conflicting values on proxied responses (#1053).
+
+  it('should NOT set X-Content-Type-Options (owned by the nginx edge)', async () => {
     const response = await app.inject({ method: 'GET', url: '/api/health/live' });
-    expect(response.headers['x-content-type-options']).toBe('nosniff');
+    expect(response.headers['x-content-type-options']).toBeUndefined();
   });
 
-  it('should set X-Frame-Options: SAMEORIGIN', async () => {
+  it('should NOT set X-Frame-Options (owned by the nginx edge)', async () => {
     const response = await app.inject({ method: 'GET', url: '/api/health/live' });
-    expect(response.headers['x-frame-options']).toBe('SAMEORIGIN');
+    expect(response.headers['x-frame-options']).toBeUndefined();
+  });
+
+  it('should NOT set Referrer-Policy (owned by the nginx edge)', async () => {
+    const response = await app.inject({ method: 'GET', url: '/api/health/live' });
+    expect(response.headers['referrer-policy']).toBeUndefined();
+  });
+
+  it('should NOT set the deprecated X-XSS-Protection header', async () => {
+    const response = await app.inject({ method: 'GET', url: '/api/health/live' });
+    expect(response.headers['x-xss-protection']).toBeUndefined();
   });
 
   it('should set X-DNS-Prefetch-Control: off', async () => {
@@ -49,10 +65,11 @@ describe.skipIf(!dbAvailable)('HTTP security headers (@fastify/helmet)', () => {
     expect(response.headers['content-security-policy']).toBeUndefined();
   });
 
-  it('should set security headers on all routes, not just health', async () => {
-    // Try an unauthenticated route that returns 401 - headers should still be present
+  it('should set backend-owned security headers on all routes, not just health', async () => {
+    // Try an unauthenticated route that returns 401 - the headers Helmet still
+    // owns (COOP/CORP/DNS-prefetch) must be present regardless of status.
     const response = await app.inject({ method: 'GET', url: '/api/settings' });
-    expect(response.headers['x-content-type-options']).toBe('nosniff');
-    expect(response.headers['x-frame-options']).toBe('SAMEORIGIN');
+    expect(response.headers['cross-origin-resource-policy']).toBe('same-origin');
+    expect(response.headers['x-dns-prefetch-control']).toBe('off');
   });
 });

@@ -391,7 +391,7 @@ function SubscriptionRow({
             {sub.eventTypes.map((ev) => (
               <span
                 key={ev}
-                className="inline-flex items-center rounded-full bg-foreground/5 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide text-muted-foreground"
+                className="inline-flex items-center rounded-full bg-foreground/5 px-2 py-0.5 font-mono text-[12px] uppercase tracking-wide text-muted-foreground"
               >
                 {ev}
               </span>
@@ -1277,7 +1277,7 @@ function StatusChip({ status }: { status: WebhookDelivery['status'] }) {
   return (
     <span
       className={cn(
-        'inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium',
+        'inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium',
         styles[status],
       )}
     >

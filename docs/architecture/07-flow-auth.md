@@ -47,8 +47,11 @@ sequenceDiagram
 
 ### Client-side token refresh
 
-The SPA keeps the access token in memory (rehydrated from `localStorage` on
-reload) and refreshes it four ways, all funneling through the single-flight
+The SPA keeps the access token **in memory only** — it is never written to
+`localStorage` or `sessionStorage` (CWE-922). On reload / new tab it is
+re-minted from the HttpOnly refresh cookie via `useSessionInit` (see below).
+Only non-sensitive `user` + `isAuthenticated` are persisted. The token is
+refreshed four ways, all funneling through the single-flight
 `refreshAccessTokenOnce()` so concurrent requests trigger exactly one
 `POST /api/auth/refresh`:
 
@@ -60,12 +63,26 @@ reload) and refreshes it four ways, all funneling through the single-flight
 - **Reactive** — a `401` response still triggers a refresh + retry as the
   fallback for server-side revocation / clock skew.
 - **Session init (#884)** — `useSessionInit` fires once on app load when the
-  user looks authenticated but has no in-memory token (e.g. `localStorage`
-  migrated from an older key). It must go through the single-flight helper too:
-  in that state every mounted query also 401s and refreshes, so an independent
-  refresh here would race the deduped path — the loser presents an
+  user looks authenticated but has no in-memory token. Because the token is
+  memory-only, this is the normal state after every reload / new tab (#1054),
+  not just a migrated-key edge case. It must go through the single-flight
+  helper too: in that state every mounted query also 401s and refreshes, so an
+  independent refresh here would race the deduped path — the loser presents an
   already-rotated (revoked) JTI, tripping token-family reuse detection and
   logging the user out despite a valid session.
+
+#### Cross-tab coordination (#1054)
+
+Token adoption and logout are propagated between tabs over an **in-memory,
+same-origin `BroadcastChannel('compendiq-auth')`** — the access token is
+**never** broadcast through Web Storage. When one tab refreshes/logs in, it
+posts the new token to peers; on logout it posts a `logout` message that clears
+in-memory auth (and, via `useClearCacheOnLogout`, the cached user data) in every
+other tab. The `BroadcastChannel` is feature-guarded; where it is unavailable
+the retained `localStorage` `storage` event still coordinates **logout**
+(because `isAuthenticated` persists), and each tab otherwise re-mints its own
+token from the refresh cookie. Received messages are applied under a
+re-entrancy guard so a tab never echoes a change it just received.
 
 ### Registration quirks
 
@@ -73,8 +90,34 @@ reload) and refreshes it four ways, all funneling through the single-flight
 - **The first successful registration creates an admin.** Subsequent
   registrations create regular users. This transition is atomic
   (single `INSERT … RETURNING role` guarded by a transaction).
-- Registration may be disabled by an admin setting (`admin_settings`
-  key) once the initial user is created.
+
+#### Registration policy (opt-in self-registration, #1051)
+
+Self-registration after the initial account is **opt-in**, controlled by the
+key-value `admin_settings.registration_mode` (`open` | `closed`). There is no
+migration and no env var.
+
+- **Default `closed`.** Once a real (non-sentinel) admin exists, an unset or
+  `closed` mode makes `POST /api/auth/register` return
+  `403 { error: 'registration_disabled' }`. The gate runs **before**
+  `bcrypt.hash`, and the 403 is written with an explicit `reply.code(403).send`
+  (not a thrown `httpError`) so the machine-readable code survives the global
+  error handler's `safeErrorName` sanitisation.
+- **Bootstrap is always allowed.** While no real admin exists yet, registration
+  is permitted regardless of the stored mode, using the same
+  sentinel-excluding predicate (`role='admin' AND id != <SYSTEM_USER_ID>`) as
+  `GET /api/health/setup-status` / `POST /api/setup/admin`. This is why the
+  first account can always be created on a fresh install.
+- **Admin opt-in.** Admins flip the mode via `GET/PUT /api/admin/settings`
+  (`registrationMode`), surfaced under Settings → Access Control → Registration.
+  Choosing `open` shows a warning that any visitor can self-register and that
+  self-registered users can view/edit shared standalone pages.
+- **SPA gate.** The login screen reads the public, unauthenticated
+  `GET /api/auth/registration-policy` → `{ allowRegistration }` and only renders
+  the signup toggle when it is `true`. The client fails **closed** (a
+  fetch/parse error hides signup) and refuses to submit a disabled registration.
+  The endpoint exposes only the boolean — never the raw mode nor whether an
+  admin exists.
 
 ### Logout
 

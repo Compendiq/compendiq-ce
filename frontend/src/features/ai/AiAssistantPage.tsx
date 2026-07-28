@@ -258,10 +258,18 @@ function AiAssistantInner() {
       />
       <div className="flex flex-wrap items-center gap-x-2 gap-y-2 rounded-xl border border-border/40 bg-card/50 px-3 py-2 backdrop-blur-sm">
         {/* Group A — mode segmented control */}
+        {/* Horizontally scrollable below the width that fits all six modes.
+            At 390px the row previously cut off mid-word after "Summar…", so
+            Diagram and Quality were unreachable with no scroll cue at all —
+            two of six modes simply did not exist on a phone. snap-x keeps the
+            tabs from resting half-visible; the edge mask signals there is more
+            to the right. Arrow-key navigation still reaches every tab, moving
+            focus with the selection so the focused tab is the visible one. */}
         <div
           role="tablist"
           aria-label="AI mode"
-          className="flex items-center gap-0.5 rounded-lg bg-foreground/[0.04] p-1"
+          data-testid="ai-mode-tablist"
+          className="flex max-w-full snap-x snap-mandatory items-center gap-0.5 overflow-x-auto rounded-lg bg-foreground/[0.04] p-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden [mask-image:linear-gradient(to_right,transparent_0,black_12px,black_calc(100%-12px),transparent_100%)]"
           onKeyDown={(e) => {
             if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
               e.preventDefault();
@@ -271,7 +279,21 @@ function AiAssistantInner() {
                 ? (idx + 1) % keys.length
                 : (idx - 1 + keys.length) % keys.length;
               const nextKey = keys[next];
-              if (nextKey) setMode(nextKey);
+              if (nextKey) {
+                setMode(nextKey);
+                // Move DOM focus along with the selection. These tabs use a
+                // roving tabindex, so selecting without focusing strands focus
+                // on a tab that just became tabIndex={-1} — and once the row
+                // scrolls, off-screen as well: the highlighted tab and the
+                // focused one were different tabs. preventScroll + an explicit
+                // scrollIntoView keeps the correction horizontal, inside the
+                // tablist, instead of letting the browser jump the page.
+                const nextTab = e.currentTarget.querySelector<HTMLElement>(
+                  `[data-mode-tab="${nextKey}"]`,
+                );
+                nextTab?.focus({ preventScroll: true });
+                nextTab?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+              }
             }
           }}
         >
@@ -279,15 +301,18 @@ function AiAssistantInner() {
             <button
               key={key}
               role="tab"
+              data-mode-tab={key}
               aria-selected={mode === key}
               tabIndex={mode === key ? 0 : -1}
               onClick={() => setMode(key)}
               className={cn(
-                'flex h-7 items-center gap-1.5 rounded-md px-2.5 text-sm transition-colors',
+                'flex h-7 shrink-0 snap-start items-center gap-1.5 rounded-md px-2.5 text-sm transition-colors',
                 mode === key
-                  // Inset honey-tinted surface (not filled) so the active tab
-                  // doesn't compete with the honey-filled primary CTA in the
-                  // mode's input bar.
+                  // Inset steel-tinted surface (not filled) so the active tab
+                  // doesn't compete with the steel-filled primary CTA in the
+                  // mode's input bar. Steel rather than the AI violet on
+                  // purpose: a mode tab is something you operate, and under
+                  // ADR-010 v0.5 that is exactly what steel means.
                   ? 'bg-card text-primary-ink shadow-sm ring-1 ring-primary/35 font-medium'
                   : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
               )}
@@ -439,8 +464,15 @@ function AiAssistantInner() {
 
       {/* Messages — clean document-like surface, no heavy glass.
           flex-1 so the messages area grows to fill the column, pushing
-          the sticky input bar to the bottom of the page. */}
-      <div className="flex-1 overflow-hidden rounded-xl border border-border/40 bg-card/40 backdrop-blur-sm">
+          the sticky input bar to the bottom of the page.
+
+          overflow-y-auto, not overflow-hidden: at viewport heights at or below
+          768px the empty-state prompt cards were clipped with no way to reach
+          them — measured clean at 900px and cut at 720px, so any 1366x768
+          laptop lost them entirely, and on mobile they rendered behind the
+          composer. min-h-0 lets the flex child actually shrink so the scroll
+          container resolves instead of overflowing its parent. */}
+      <div className="min-h-0 flex-1 overflow-y-auto rounded-xl border border-border/40 bg-card/40 backdrop-blur-sm" data-testid="ai-message-pane">
         <div className="min-h-[360px] space-y-4 p-5">
           {/* Zero-embeddings notice (#938). Q&A answers via RAG over embedded
               pages; with none embedded, buildRagContext returns "No relevant
@@ -464,14 +496,17 @@ function AiAssistantInner() {
           )}
           {messages.length === 0 && (
             <div className="flex min-h-[300px] flex-col items-center justify-center text-center">
-              {/* Robot wrapped in a honey-tinted aura so the empty state reads
-                  as "ready to help", not "page failed to load" (a complaint
-                  in the May-2026 audit). 64 px icon + soft glow vs. the prior
-                  44 px muted-grey glyph. */}
+              {/* Robot wrapped in a violet aura so the empty state reads as
+                  "ready to help", not "page failed to load" (a complaint in
+                  the May-2026 audit). 64 px icon + soft glow vs. the prior
+                  44 px muted-grey glyph.
+                  Violet, not steel: under ADR-010 v0.5 --color-status-ai marks
+                  "an AI does this" and steel means "you can operate this".
+                  This ornament is the former — it is not clickable. */}
               <div className="relative mb-5 flex h-20 w-20 items-center justify-center">
-                <div className="absolute inset-0 rounded-full bg-primary/10 blur-2xl" aria-hidden />
-                <div className="relative flex h-16 w-16 items-center justify-center rounded-full bg-primary/12 ring-1 ring-primary/25">
-                  <Bot size={32} className="text-primary" />
+                <div className="absolute inset-0 rounded-full bg-status-ai/10 blur-2xl" aria-hidden />
+                <div className="relative flex h-16 w-16 items-center justify-center rounded-full bg-status-ai/12 ring-1 ring-status-ai/25">
+                  <Bot size={32} className="text-status-ai" />
                 </div>
               </div>
               <p className="text-lg font-medium">{getEmptyTitle(mode)}</p>

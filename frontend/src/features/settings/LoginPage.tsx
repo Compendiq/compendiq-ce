@@ -1,9 +1,10 @@
 import { useState, useEffect, type FormEvent } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
-import { OidcConfigSchema, type OidcConfig } from '@compendiq/contracts';
+import { OidcConfigSchema, type OidcConfig, RegistrationPolicySchema } from '@compendiq/contracts';
 import { useAuthStore } from '../../stores/auth-store';
 import { apiFetch } from '../../shared/lib/api';
+import { Logo } from '../../shared/components/Logo';
 
 /**
  * Friendly copy for the OIDC/OAuth2 error codes an IdP may append to the
@@ -31,6 +32,9 @@ export function LoginPage() {
   const [confirmError, setConfirmError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [oidcConfig, setOidcConfig] = useState<OidcConfig | null>(null);
+  // #1051 — fail closed: hide the signup toggle until the server confirms
+  // registration is allowed. A fetch/parse failure leaves it hidden.
+  const [allowRegistration, setAllowRegistration] = useState(false);
 
   useEffect(() => {
     const searchError = searchParams.get('error');
@@ -55,8 +59,27 @@ export function LoginPage() {
     fetchOidcConfig();
   }, []);
 
+  useEffect(() => {
+    async function fetchRegistrationPolicy() {
+      try {
+        const policy = RegistrationPolicySchema.parse(await apiFetch('/auth/registration-policy'));
+        setAllowRegistration(policy.allowRegistration);
+      } catch {
+        // Fail closed — a fetch/parse failure keeps the signup toggle hidden.
+      }
+    }
+    fetchRegistrationPolicy();
+  }, []);
+
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
+
+    // #1051 — refuse to submit a registration the server has disabled. The
+    // toggle is normally hidden, but this guards against a stale UI state.
+    if (isRegister && !allowRegistration) {
+      toast.error('Registration is disabled');
+      return;
+    }
 
     // Client-side confirmation check (register mode only) — block the
     // request entirely on mismatch.
@@ -84,14 +107,18 @@ export function LoginPage() {
   }
 
   return (
-    <div className="bg-background flex min-h-screen items-center justify-center p-4">
+    // `app-backdrop`, not `bg-background`: login is a full-screen app surface
+    // and gets the same gradient chassis as AppLayout. A flat utility here
+    // would make the first screen a user sees the only one without it.
+    <div className="app-backdrop flex min-h-screen items-center justify-center p-4">
       <div className="w-full max-w-md rounded-xl border border-border/40 bg-card/50 p-8 backdrop-blur-sm">
+        {/* The <Logo> component, not the standalone /compendiq-lockup-horizontal.svg:
+            inside an <img> the lockup's `currentColor` cannot inherit, so its
+            wordmark falls back to the dark ink baked into the file — readable on
+            a light surface, invisible on this dark card. The component inherits
+            `text-foreground` and is therefore readable in both themes. */}
         <div className="mb-2 flex flex-col items-center">
-          <img
-            src="/compendiq-lockup-horizontal.svg"
-            alt="Compendiq"
-            className="h-16 w-auto"
-          />
+          <Logo className="h-16 w-auto text-foreground" title="Compendiq" />
         </div>
         <p className="mb-8 text-center text-sm text-muted-foreground">
           {isRegister ? 'Create your account' : 'Sign in to your account'}
@@ -184,19 +211,21 @@ export function LoginPage() {
           </button>
         </form>
 
-        <p className="mt-6 text-center text-sm text-muted-foreground">
-          {isRegister ? 'Already have an account?' : "Don't have an account?"}{' '}
-          <button
-            onClick={() => {
-              setIsRegister(!isRegister);
-              setConfirmPassword('');
-              setConfirmError(null);
-            }}
-            className="text-action hover:underline"
-          >
-            {isRegister ? 'Sign in' : 'Create one'}
-          </button>
-        </p>
+        {allowRegistration && (
+          <p className="mt-6 text-center text-sm text-muted-foreground">
+            {isRegister ? 'Already have an account?' : "Don't have an account?"}{' '}
+            <button
+              onClick={() => {
+                setIsRegister(!isRegister);
+                setConfirmPassword('');
+                setConfirmError(null);
+              }}
+              className="text-action hover:underline"
+            >
+              {isRegister ? 'Sign in' : 'Create one'}
+            </button>
+          </p>
+        )}
       </div>
     </div>
   );

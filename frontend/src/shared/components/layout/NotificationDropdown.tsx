@@ -111,7 +111,7 @@ export function NotificationDropdown({
       <div className="max-h-[400px] overflow-y-auto">
         {groups.map((group) => (
           <div key={group.label}>
-            <div className="sticky top-0 bg-card px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <div className="sticky top-0 bg-card px-3 py-1.5 text-[12px] font-semibold uppercase tracking-wider text-muted-foreground">
               {group.label}
             </div>
             {group.items.map((notification, i) => {
@@ -145,7 +145,7 @@ export function NotificationDropdown({
                     <p className="mt-0.5 text-xs text-muted-foreground line-clamp-1">
                       {notification.body}
                     </p>
-                    <span className="mt-0.5 text-[10px] text-muted-foreground/70">
+                    <span className="mt-0.5 text-[11px] text-muted-foreground/70">
                       {formatTime(notification.createdAt)}
                     </span>
                   </div>

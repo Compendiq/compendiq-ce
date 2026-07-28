@@ -89,7 +89,7 @@ export function AutoTagger({ pageId, currentLabels, model, className }: AutoTagg
       <button
         onClick={() => autoTagMutation.mutate()}
         disabled={autoTagMutation.isPending}
-        className={className ?? "nm-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5 disabled:opacity-50"}
+        className={className ?? "nm-card nm-card-hover flex items-center gap-1.5 px-3 py-1.5 text-sm disabled:opacity-50"}
         title="Suggest tags using AI"
       >
         {autoTagMutation.isPending ? (

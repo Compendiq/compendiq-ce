@@ -65,7 +65,9 @@ export async function healthRoutes(fastify: FastifyInstance) {
 
   // GET /api/health/ready - Readiness probe
   // Can the service accept traffic? Checks PostgreSQL + Redis.
-  // Used by k8s readiness probe.
+  // Used by k8s readiness probe (unauthenticated). #1052: the response is
+  // deliberately coarse — only `status` + the 200/503 code that orchestrators
+  // consume. No services/version/edition/commit/uptime telemetry leaks here.
   fastify.get('/health/ready', async (_request, reply) => {
     const [postgres, redis] = await Promise.all([
       checkPg(),
@@ -82,30 +84,17 @@ export async function healthRoutes(fastify: FastifyInstance) {
       status = 'error';
     }
 
-    reply.status(allHealthy ? 200 : 503).send({
-      status,
-      services: {
-        postgres,
-        redis,
-      },
-      version: APP_VERSION,
-      edition: APP_BUILD_INFO.edition,
-      commit: APP_BUILD_INFO.commit,
-      ceCommit: APP_BUILD_INFO.ceCommit,
-      builtAt: APP_BUILD_INFO.builtAt,
-      uptime: process.uptime(),
-    });
+    reply.status(allHealthy ? 200 : 503).send({ status });
   });
 
   // GET /api/health/start - Startup probe
-  // Has the service completed initialization?
-  // Checks migrations ran + LLM provider reachable.
-  // Used by k8s startup probe.
+  // Has the service completed initialization? Readiness is gated on
+  // `startupComplete && postgres` — the LLM probe never gated it, so #1052
+  // drops the LLM check (and its provider-name leak) entirely. The response
+  // is coarse: only the gating checks + the 200/503 code. Used by k8s startup
+  // probe (unauthenticated).
   fastify.get('/health/start', async (_request, reply) => {
-    const [postgres, llmStatus] = await Promise.all([
-      checkPg(),
-      checkLlm(),
-    ]);
+    const postgres = await checkPg();
 
     const ready = startupComplete && postgres;
 
@@ -114,35 +103,48 @@ export async function healthRoutes(fastify: FastifyInstance) {
       checks: {
         startupComplete,
         postgres,
-        llmAvailable: llmStatus.connected,
-        llmProvider: llmStatus.providerName,
       },
-      version: APP_VERSION,
-      edition: APP_BUILD_INFO.edition,
-      commit: APP_BUILD_INFO.commit,
-      ceCommit: APP_BUILD_INFO.ceCommit,
-      builtAt: APP_BUILD_INFO.builtAt,
     });
   });
 
-  // GET /api/health - backward compatibility alias for /api/health/ready
-  // Also includes LLM status for full picture.
-  fastify.get('/health', async (_request, reply) => {
+  // GET /api/health - backward compatibility alias for /api/health/ready.
+  //
+  // #1052: this is a public, unauthenticated endpoint, so anonymous callers get
+  // only the coarse `{ status }` (+ 200/503 code). Detailed operational
+  // telemetry — per-service postgres/redis/llm status, the configured LLM
+  // provider name, version/edition/commit/build metadata, and uptime — is
+  // exposed ONLY to an authenticated ADMIN. We reuse the existing
+  // `fastify.authenticate` decorator inside a swallow-try: anonymous or
+  // non-admin callers silently fall through to the coarse response, so the
+  // endpoint keeps working for unauthenticated docker/k8s health checks.
+  fastify.get('/health', async (request, reply) => {
+    let isAdmin = false;
     try {
-      const [postgres, redis, llmStatus] = await Promise.all([
+      await fastify.authenticate(request);
+      isAdmin = request.userRole === 'admin';
+    } catch {
+      // Anonymous or invalid token → coarse public response.
+    }
+
+    try {
+      const [postgres, redis] = await Promise.all([
         checkPg(),
         checkRedisConnection(fastify.redis),
-        checkLlm(),
       ]);
 
       const allHealthy = postgres && redis;
       const status = allHealthy ? 'ok' : (postgres || redis) ? 'degraded' : 'error';
 
-      // #818: /api/health is a public, unauthenticated endpoint, so it exposes
-      // only the coarse status/version fields the frontend reads (services,
-      // llmProvider, commit). Internal operational telemetry that leaked here —
-      // per-provider circuit-breaker state/failure counts, LLM queue depth, and
-      // BullMQ queue metrics — has been dropped (it had no consumers).
+      if (!isAdmin) {
+        reply.status(allHealthy ? 200 : 503).send({ status });
+        return;
+      }
+
+      // Admin-only detail. The LLM probe (which reads the configured provider
+      // name) runs only on this branch so its identity never leaks publicly.
+      // #818: internal operational telemetry (circuit-breaker state, LLM queue
+      // depth, BullMQ metrics) stays dropped — it had no consumers.
+      const llmStatus = await checkLlm();
       reply.status(allHealthy ? 200 : 503).send({
         status,
         services: { postgres, redis, llm: llmStatus.connected },
@@ -155,12 +157,17 @@ export async function healthRoutes(fastify: FastifyInstance) {
         uptime: process.uptime(),
       });
     } catch {
-      // Fallback: if any check throws unexpectedly, report partial status
+      // Fallback: if any check throws unexpectedly, report partial status —
+      // still tiered by admin so the fallback never leaks detail either.
       const [postgres, redis] = await Promise.all([checkPg(), checkRedisConnection(fastify.redis)]).catch((error) => {
         logger.warn({ error }, 'Fallback health dependency checks failed');
         return [false, false] as const;
       });
       const allHealthy = postgres && redis;
+      if (!isAdmin) {
+        reply.status(allHealthy ? 200 : 503).send({ status: allHealthy ? 'ok' : 'degraded' });
+        return;
+      }
       reply.status(allHealthy ? 200 : 503).send({
         status: allHealthy ? 'ok' : 'degraded',
         services: { postgres, redis, llm: false },

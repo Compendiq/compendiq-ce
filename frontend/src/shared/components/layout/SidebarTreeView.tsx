@@ -597,7 +597,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
               {/* Confluence spaces */}
               {confluenceOptions.length > 0 && (
                 <>
-                  <div className="px-2.5 py-1.5 text-[10px] font-semibold text-muted-foreground">
+                  <div className="px-2.5 py-1.5 text-[11px] font-semibold text-muted-foreground">
                     Confluence
                   </div>
                   {confluenceOptions.map((space) => (
@@ -627,7 +627,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
               {/* Local spaces */}
               {localOptions.length > 0 && (
                 <>
-                  <div className="px-2.5 py-1.5 text-[10px] font-semibold text-muted-foreground">
+                  <div className="px-2.5 py-1.5 text-[11px] font-semibold text-muted-foreground">
                     Local
                   </div>
                   {localOptions.map((space) => (
@@ -798,7 +798,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
       {/* Footer stats */}
       {treeData && (
         <div className="px-3 py-1.5">
-          <span className="text-[10px] text-muted-foreground">
+          <span className="text-[11px] text-muted-foreground">
             {treeData.total} {treeData.total === 1 ? 'page' : 'pages'}{treeSidebarSpaceKey ? ` in ${treeSidebarSpaceKey}` : ''}
           </span>
         </div>

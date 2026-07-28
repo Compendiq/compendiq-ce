@@ -81,6 +81,17 @@ export const AdminSettingsSchema = z.object({
    * per-pod memory bounded; the route handler enforces this same range.
    */
   llmMaxQueueDepth: z.number().int().min(1).max(1000),
+  /**
+   * Issue #1051 — deployment-level self-registration policy. Persisted in
+   * `admin_settings.registration_mode`.
+   *   - `closed` (default): public `POST /api/auth/register` is rejected with
+   *     403 `registration_disabled` once a real admin exists.
+   *   - `open`: any visitor may self-register.
+   * Registration is always implicitly allowed during bootstrap (before the
+   * first real admin exists) regardless of this value, so the very first
+   * account can be created on a fresh install.
+   */
+  registrationMode: z.enum(['open', 'closed']),
 });
 
 export const UpdateAdminSettingsSchema = z.object({
@@ -125,6 +136,8 @@ export const UpdateAdminSettingsSchema = z.object({
    * keep per-pod memory bounded.
    */
   llmMaxQueueDepth: z.number().int().min(1).max(1000).optional(),
+  /** Issue #1051 — optional on update; omitted → leave the registration policy unchanged. */
+  registrationMode: z.enum(['open', 'closed']).optional(),
 });
 
 export type AdminSettings = z.infer<typeof AdminSettingsSchema>;

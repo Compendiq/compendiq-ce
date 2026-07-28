@@ -110,7 +110,7 @@ export function SpaceSettingsPage() {
               <HardDrive size={14} className="text-action/70" />
               <span className="font-mono text-sm text-muted-foreground">{key}</span>
             </div>
-            <p className="mt-1 text-[10px] text-muted-foreground">
+            <p className="mt-1 text-[11px] text-muted-foreground">
               Space keys cannot be changed after creation.
             </p>
           </div>
