@@ -22,9 +22,9 @@ vi.mock('../../../shared/lib/sse', () => ({
 
 const mockExtractPdf = vi.fn();
 const mockIsExtracting = { value: false };
-vi.mock('../../../shared/hooks/use-extract-pdf', () => ({
-  useExtractPdf: () => ({
-    extractPdf: (...args: unknown[]) => mockExtractPdf(...args),
+vi.mock('../../../shared/hooks/use-extract-document', () => ({
+  useExtractDocument: () => ({
+    extractDocument: (...args: unknown[]) => mockExtractPdf(...args),
     isExtracting: mockIsExtracting.value,
     error: null,
   }),

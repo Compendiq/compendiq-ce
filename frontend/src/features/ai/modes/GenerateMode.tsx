@@ -1,11 +1,12 @@
-import { useState, useCallback, useRef, useMemo } from 'react';
-import { Send, Loader2, Save, Search, ChevronDown, X, FolderOpen, Upload, FileText, AlertTriangle, Globe } from 'lucide-react';
+import { useState, useCallback, useMemo } from 'react';
+import { Send, Loader2, Save, Search, ChevronDown, X, FolderOpen, Globe } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { useAiContext, nextMessageId } from '../AiContext';
 import { useSpaces } from '../../../shared/hooks/use-spaces';
 import { useLocalSpaces } from '../../../shared/hooks/use-standalone';
 import { usePages, useCreatePage, type PageFilters } from '../../../shared/hooks/use-pages';
-import { useExtractPdf, type ExtractPdfResult } from '../../../shared/hooks/use-extract-pdf';
+import { useExtractDocument, type ExtractDocumentResult } from '../../../shared/hooks/use-extract-document';
+import { DocumentUploadZone } from '../../../shared/components/upload/DocumentUploadZone';
 import { useAutoGrowTextarea } from '../../../shared/hooks/use-auto-grow-textarea';
 import { PROMPT_MAX_LENGTH } from './prompt-limits';
 import { apiFetch } from '../../../shared/lib/api';
@@ -13,8 +14,13 @@ import { improveMarkdownToHtml } from '../../../shared/components/article/improv
 import { toast } from 'sonner';
 import { cn } from '../../../shared/lib/cn';
 
-/** Threshold above which the backend truncates PDF text for the LLM context window. */
-const PDF_TEXT_TRUNCATION_THRESHOLD = 80_000;
+/**
+ * Generate stays PDF-only for now. The upload zone and the extraction endpoint
+ * both handle six formats already; widening *this* surface — its copy, its
+ * preview card, its `pdfText` request field — is #1132, deliberately kept out
+ * of #1131 so the shared-component extraction lands as a pure move.
+ */
+const GENERATE_FORMATS = ['pdf'] as const;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -24,13 +30,6 @@ const PDF_TEXT_TRUNCATION_THRESHOLD = 80_000;
 function extractTitleFromMarkdown(md: string): string {
   const match = md.match(/^#{1,3}\s+(.+)$/m);
   return match?.[1]?.trim() ?? '';
-}
-
-/** Format bytes to human-readable size. */
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 // ---------------------------------------------------------------------------
@@ -160,153 +159,6 @@ function ParentPagePicker({
           </div>
         </div>
       )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// PDF Upload Zone
-// ---------------------------------------------------------------------------
-
-function PdfUploadZone({
-  extractPdf,
-  onExtracted,
-  pdfData,
-  pdfFilename,
-  onRemove,
-  isExtracting,
-  disabled,
-}: {
-  extractPdf: (file: File) => Promise<ExtractPdfResult>;
-  onExtracted: (result: ExtractPdfResult, filename: string) => void;
-  pdfData: ExtractPdfResult | null;
-  pdfFilename: string | null;
-  onRemove: () => void;
-  isExtracting: boolean;
-  disabled: boolean;
-}) {
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const [isDragOver, setIsDragOver] = useState(false);
-
-  const handleFile = useCallback(async (file: File) => {
-    if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
-      toast.error('Only PDF files are accepted');
-      return;
-    }
-    if (file.size > 20 * 1024 * 1024) {
-      toast.error('File exceeds 20 MB limit');
-      return;
-    }
-    try {
-      const result = await extractPdf(file);
-      onExtracted(result, file.name);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'PDF extraction failed');
-    }
-  }, [extractPdf, onExtracted]);
-
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(false);
-    const file = e.dataTransfer.files[0];
-    if (file) handleFile(file);
-  }, [handleFile]);
-
-  const handleDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(true);
-  }, []);
-
-  const handleDragLeave = useCallback(() => {
-    setIsDragOver(false);
-  }, []);
-
-  // Show preview card if PDF is already extracted
-  if (pdfData && pdfFilename) {
-    return (
-      <div
-        className="flex items-start gap-3 rounded-lg border border-border/40 bg-background/50 p-3"
-        data-testid="pdf-preview-card"
-      >
-        <FileText size={20} className="mt-0.5 shrink-0 text-primary" />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 text-sm font-medium">
-            <span className="truncate">{pdfFilename}</span>
-            <span className="shrink-0 text-xs text-muted-foreground">
-              {formatFileSize(pdfData.fileSize)}
-            </span>
-            <span className="shrink-0 text-xs text-muted-foreground">
-              {pdfData.totalPages} {pdfData.totalPages === 1 ? 'page' : 'pages'}
-            </span>
-          </div>
-          <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
-            {pdfData.preview}
-          </p>
-          {pdfData.text.length > PDF_TEXT_TRUNCATION_THRESHOLD && (
-            <p className="mt-1 flex items-center gap-1 text-xs text-yellow-600 dark:text-yellow-400" data-testid="pdf-truncation-warning">
-              <AlertTriangle size={12} />
-              Document will be truncated to ~80K characters for the LLM
-            </p>
-          )}
-        </div>
-        <button
-          type="button"
-          onClick={onRemove}
-          disabled={disabled}
-          aria-label="Remove PDF"
-          className="shrink-0 rounded p-1 text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
-          data-testid="pdf-remove-button"
-        >
-          <X size={14} />
-        </button>
-      </div>
-    );
-  }
-
-  // Show upload zone
-  return (
-    <div>
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="application/pdf,.pdf"
-        className="hidden"
-        onChange={(e) => {
-          const file = e.target.files?.[0];
-          if (file) handleFile(file);
-          // Reset so re-selecting the same file triggers onChange
-          e.target.value = '';
-        }}
-        data-testid="pdf-file-input"
-      />
-      <button
-        type="button"
-        onClick={() => fileInputRef.current?.click()}
-        onDrop={handleDrop}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        disabled={isExtracting || disabled}
-        className={cn(
-          'flex w-full items-center justify-center gap-2 rounded-lg border border-dashed px-4 py-3 text-sm transition-colors',
-          isDragOver
-            ? 'border-primary bg-primary/10 text-primary-ink'
-            : 'border-border/40 text-muted-foreground hover:border-border/60 hover:text-foreground',
-          (isExtracting || disabled) && 'pointer-events-none opacity-50',
-        )}
-        data-testid="pdf-upload-zone"
-      >
-        {isExtracting ? (
-          <>
-            <Loader2 size={16} className="animate-spin" />
-            Extracting text...
-          </>
-        ) : (
-          <>
-            <Upload size={16} />
-            Drop a PDF here or click to browse (max 20 MB)
-          </>
-        )}
-      </button>
     </div>
   );
 }
@@ -497,14 +349,14 @@ export function GenerateModeInput() {
   });
   const mcpEnabled = mcpSettings?.enabled ?? false;
 
-  // PDF upload state — a single useExtractPdf instance shared with PdfUploadZone
-  // so that `isExtracting` reflects the same extraction that PdfUploadZone runs
-  // (#940). Two separate instances left the spinner/disabled state stuck.
-  const { extractPdf, isExtracting } = useExtractPdf();
-  const [pdfData, setPdfData] = useState<ExtractPdfResult | null>(null);
+  // PDF upload state — a single useExtractDocument instance shared with the
+  // upload zone so that `isExtracting` reflects the same extraction the zone
+  // runs (#940). Two separate instances left the spinner/disabled state stuck.
+  const { extractDocument, isExtracting } = useExtractDocument();
+  const [pdfData, setPdfData] = useState<ExtractDocumentResult | null>(null);
   const [pdfFilename, setPdfFilename] = useState<string | null>(null);
 
-  const handlePdfExtracted = useCallback((result: ExtractPdfResult, filename: string) => {
+  const handlePdfExtracted = useCallback((result: ExtractDocumentResult, filename: string) => {
     setPdfData(result);
     setPdfFilename(filename);
   }, []);
@@ -588,14 +440,16 @@ export function GenerateModeInput() {
       )}
 
       <div className="mt-3 space-y-3 border-t border-border/40 pt-3">
-        <PdfUploadZone
-          extractPdf={extractPdf}
+        <DocumentUploadZone
+          formats={GENERATE_FORMATS}
+          extract={extractDocument}
           onExtracted={handlePdfExtracted}
-          pdfData={pdfData}
-          pdfFilename={pdfFilename}
+          extracted={pdfData}
+          filename={pdfFilename}
           onRemove={handlePdfRemove}
           isExtracting={isExtracting}
           disabled={isStreaming}
+          testIdPrefix="pdf"
         />
 
         {mcpEnabled && (

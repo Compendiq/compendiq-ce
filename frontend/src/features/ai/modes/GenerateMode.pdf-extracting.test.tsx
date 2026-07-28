@@ -17,24 +17,25 @@ vi.mock('../../../shared/lib/sse', () => ({
   streamSSE: vi.fn(),
 }));
 
-// Per-instance mock of useExtractPdf that mirrors the REAL hook's behaviour:
-// each call to useExtractPdf() owns its own `isExtracting` state (the real
-// hook keeps it in per-instance useState). `extractPdf` flips that instance's
-// state to true and never resolves, so we can observe the busy state.
+// Per-instance mock of useExtractDocument that mirrors the REAL hook's
+// behaviour: each call to useExtractDocument() owns its own `isExtracting`
+// state (the real hook keeps it in per-instance useState). `extractDocument`
+// flips that instance's state to true and never resolves, so we can observe
+// the busy state.
 //
-// This is the crux of #940: GenerateModeInput and PdfUploadZone must share a
-// single instance. A shared-singleton mock (as in GenerateMode.test.tsx) would
-// hide the bug because both instances would read the same value.
-vi.mock('../../../shared/hooks/use-extract-pdf', async () => {
+// This is the crux of #940: GenerateModeInput and DocumentUploadZone must share
+// a single instance. A shared-singleton mock (as in GenerateMode.test.tsx)
+// would hide the bug because both instances would read the same value.
+vi.mock('../../../shared/hooks/use-extract-document', async () => {
   const React = await import('react');
   return {
-    useExtractPdf: () => {
+    useExtractDocument: () => {
       const [isExtracting, setIsExtracting] = React.useState(false);
-      const extractPdf = React.useCallback(() => {
+      const extractDocument = React.useCallback(() => {
         setIsExtracting(true);
         return new Promise(() => { /* stays pending: keeps this instance busy */ });
       }, []);
-      return { extractPdf, isExtracting, error: null };
+      return { extractDocument, isExtracting, error: null };
     },
   };
 });
@@ -106,7 +107,7 @@ describe('GenerateMode PDF extraction busy state (#940)', () => {
     fireEvent.change(fileInput, { target: { files: [pdfFile] } });
 
     // The busy state must surface: spinner text visible and the zone disabled.
-    // With two separate useExtractPdf instances (the #940 bug) the parent's
+    // With two separate useExtractDocument instances (the #940 bug) the parent's
     // isExtracting never flips, so neither of these ever becomes true.
     await waitFor(() => {
       expect(screen.getByText('Extracting text...')).toBeInTheDocument();

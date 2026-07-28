@@ -15,6 +15,17 @@ export const ImproveRequestSchema = z.object({
   pageId: z.string().optional(),
   includeSubPages: z.boolean().optional(),
   instruction: z.string().max(10000).optional(),
+  /**
+   * #1131: text of a document the user attached as background for the rewrite.
+   *
+   * Deliberately *not* folded into `instruction`. That field is capped at 10K
+   * and is appended to the **system prompt**, so a real uploaded document would
+   * blow the cap on the first attachment and, worse, arrive with the authority
+   * of an instruction. Reference material is user *content*: it takes the same
+   * 200K ceiling as `GenerateRequestSchema.pdfText` and is merged into the user
+   * turn, sanitized separately.
+   */
+  referenceText: z.string().max(200_000).optional(),
   thinking: z.boolean().optional(),
   searchWeb: z.boolean().optional(),
   searchQuery: z.string().max(500).optional(),
@@ -53,13 +64,6 @@ export const ExtractDocumentResponseSchema = z.object({
    */
   totalPages: z.number().optional(),
 });
-
-/**
- * @deprecated Use {@link ExtractDocumentResponseSchema}. Retained so the
- * pre-#1131 `useExtractPdf` hook keeps compiling while the UI half of #1131
- * lands; removed together with the `POST /api/llm/extract-pdf` alias.
- */
-export const ExtractPdfResponseSchema = ExtractDocumentResponseSchema;
 
 export const SummarizeRequestSchema = z.object({
   content: z.string().min(1),
@@ -161,6 +165,4 @@ export type Improvement = z.infer<typeof ImprovementSchema>;
 export type OllamaModel = z.infer<typeof OllamaModelSchema>;
 export type DocumentFormat = z.infer<typeof DocumentFormatSchema>;
 export type ExtractDocumentResponse = z.infer<typeof ExtractDocumentResponseSchema>;
-/** @deprecated Use {@link ExtractDocumentResponse}. */
-export type ExtractPdfResponse = ExtractDocumentResponse;
 export type EmbeddingStatus = z.infer<typeof EmbeddingStatusSchema>;

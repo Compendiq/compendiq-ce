@@ -3,6 +3,16 @@ import { toast } from 'sonner';
 import { useAiContext, nextMessageId } from '../AiContext';
 import { chipUserMessage, type DockChipId } from './dock-chips';
 
+export interface DockActionOptions {
+  /**
+   * Text of a document attached in the composer (#1131). Improve is the one
+   * action that can use it, so it is the one action that sends it. Passed in
+   * rather than read from AiContext because the attachment belongs to the dock
+   * that holds it, not to the conversation.
+   */
+  referenceText?: string;
+}
+
 /**
  * Submit handlers for the docked assistant: the free-text question and the four
  * seeding chips (#1126).
@@ -12,7 +22,7 @@ import { chipUserMessage, type DockChipId } from './dock-chips';
  * None of it was ever mode-local state, which is why four modes could collapse
  * into four chips without moving any data.
  */
-export function useDockActions() {
+export function useDockActions({ referenceText }: DockActionOptions = {}) {
   const {
     page, pageId, model, includeSubPages, thinkingMode, isStreaming, conversationId,
     improvementType, diagramType, input, setInput, setMessages, runStream,
@@ -85,6 +95,10 @@ export function useDockActions() {
             pageId,
             includeSubPages,
             ...(instruction && { instruction }),
+            // A dedicated field, never folded into `instruction`: that one is
+            // capped at 10K and lands in the system prompt, so a real document
+            // would both overflow it and arrive with a directive's authority.
+            ...(referenceText && { referenceText }),
             ...thinking,
           },
           {
@@ -126,7 +140,7 @@ export function useDockActions() {
     }
   }, [
     page, pageId, canRun, input, improvementType, diagramType, thinkingMode, model,
-    includeSubPages, runStream, setInput, setShowDiffView, setImprovedContent,
+    includeSubPages, referenceText, runStream, setInput, setShowDiffView, setImprovedContent,
     setOriginalMarkdown, setLayoutTokensLost, setDiffBaseVersion, setDiagramCode,
   ]);
 
