@@ -484,9 +484,31 @@ describe('docker/Dockerfile.enterprise keeps the GitHub token out of image layer
     expect(dockerfileEnterprise).not.toMatch(/^\s*ARG GITHUB_TOKEN\s*$/m);
   });
 
-  it('injects the token via a BuildKit secret mount instead', () => {
+  it('injects the token via a BuildKit secret mount when it needs one', () => {
     // BuildKit secret mounts (`--mount=type=secret`) expose the value only for
     // the duration of that RUN and are never committed to a layer or the cache.
+    //
+    // Conditional on the Dockerfile actually consuming a registry credential.
+    // The invariant #930 protects is "the token never lands in a layer" — a
+    // Dockerfile that authenticates to no private registry satisfies that by
+    // construction, and demanding the mount anyway asserts a mechanism rather
+    // than the property.
+    //
+    // This is not hypothetical: the EE overlay ships its own
+    // docker/Dockerfile.enterprise, which installs nothing from GitHub
+    // Packages and references no token at all. In a merged EE tree `repoRoot`
+    // resolves to that file, and the unconditional assertion failed the whole
+    // enterprise build for a Dockerfile that was never at risk.
+    const usesRegistryCredential =
+      /GITHUB_TOKEN|_authToken|\.npmrc/.test(dockerfileEnterprise);
+
+    if (!usesRegistryCredential) {
+      // Nothing to protect — but prove that, so this branch cannot silently
+      // become a way to skip the check if a token is reintroduced later.
+      expect(dockerfileEnterprise).not.toMatch(/--mount=type=secret,id=github_token/);
+      return;
+    }
+
     expect(dockerfileEnterprise).toMatch(/--mount=type=secret,id=github_token/);
   });
 });

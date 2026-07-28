@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-07-28
+
+> Patch: unblocks the Enterprise Edition image build. No CE-visible behaviour change.
+
+### Fixed
+
+- The issue-#930 supply-chain invariant now requires `--mount=type=secret,id=github_token` only when `docker/Dockerfile.enterprise` actually references a registry credential. The invariant being protected is "the token never lands in an image layer"; the assertion checked a mechanism instead. The EE overlay ships its own enterprise Dockerfile that installs nothing from GitHub Packages and references no token, so in a merged EE tree the check failed a Dockerfile that was never at risk — taking the whole EE image build with it and leaving EE v0.7.1 tagged with no published images. The else-branch asserts the mount is *absent* rather than skipping, so reintroducing a token without the mount still fails (#1151).
+
 ## [0.7.1] - 2026-07-28
 
 > Patch: unblocks Enterprise Edition builds. No CE-visible behaviour change.
