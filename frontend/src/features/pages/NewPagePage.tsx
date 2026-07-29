@@ -36,6 +36,13 @@ export function NewPagePage() {
   const [visibility, setVisibility] = useState<Visibility>('private');
   const [showTemplateGallery, setShowTemplateGallery] = useState(false);
   const [editorInstance, setEditorInstance] = useState<EditorType | null>(null);
+  // Labels declared in an imported file's YAML front-matter (#1133). They can
+  // only be applied once the page exists, because `POST /pages` has no labels
+  // field — so they wait here until the create returns an id.
+  const [pendingLabels, setPendingLabels] = useState<string[]>([]);
+  // The title the last import wrote, so a second import can tell its own
+  // handiwork from something the user typed.
+  const importedTitleRef = useRef<string | null>(null);
 
   const { data: localSpacesData } = useLocalSpaces();
 
@@ -155,10 +162,17 @@ export function NewPagePage() {
         bodyHtml: bodyToSave,
         ...(parentId ? { parentId } : {}),
         ...(selectedSpace?.source === 'local' ? { visibility } : {}),
+        // Front-matter labels from an imported file (#1133). Sent with the
+        // create rather than applied afterwards: the id this route returns is
+        // the *Confluence content id* for a Confluence create, and it is
+        // numeric, so `PUT /pages/:id/labels` would read it as a database
+        // primary key and label a different page entirely.
+        ...(pendingLabels.length > 0 ? { labels: pendingLabels } : {}),
       } as Parameters<typeof createMutation.mutateAsync>[0]);
       // Only after a create actually succeeded — remembering a space the user
       // merely browsed to would make the next visit preselect a dead end.
       if (selectedSpace?.source === 'confluence') rememberConfluenceSpace(spaceKey);
+
       clearDraft(NEW_PAGE_DRAFT_KEY);
       navigate(`/pages/${result.id}`);
       toast.success('Page created');
@@ -167,39 +181,69 @@ export function NewPagePage() {
     }
   };
 
+  /**
+   * Load an uploaded Markdown file into the editor — the same shape as "Use
+   * Template", and for the same reason (#1133).
+   *
+   * This used to POST the Markdown to a route that created the page outright,
+   * always under the hardcoded `_standalone` space, then navigate straight to
+   * the read-only view. So picking a Confluence space and then importing filed
+   * the page somewhere else, and the user never saw it before it was saved.
+   * Now nothing is persisted here: the converted body lands in the editor and
+   * `handleCreate` performs the save with the space, parent and visibility the
+   * form is showing.
+   */
   const handleImportMarkdown = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
     try {
       const markdown = await file.text();
-      const fileTitle = file.name.replace(/\.md$/, '');
-      const result = await importMarkdownMutation.mutateAsync({
-        markdown,
-        title: fileTitle,
-      });
-      // The backend returns a batch envelope; the created page's id is the
-      // synthetic standalone-<uuid> confluence id in articles[0].
-      const newId = result.articles[0]?.id;
-      if (newId) {
-        navigate(`/pages/${newId}`);
-        toast.success('Markdown imported successfully');
-      } else {
-        toast.error('Import did not return a page');
-      }
+      const fileTitle = file.name.replace(/\.(md|markdown)$/i, '');
+      const preview = await importMarkdownMutation.mutateAsync({ markdown, title: fileTitle });
+
+      // Push into the live TipTap instance — the Editor never re-reads its
+      // `content` prop after mount, so setContent is how this becomes visible.
+      // `emitUpdate` fires onUpdate so the localStorage draft is written, and
+      // `setBodyHtml` seeds the brief window before TipTap has mounted. Both
+      // mirror the template flow exactly (#954).
+      editorInstance?.commands.setContent(preview.bodyHtml, { emitUpdate: true });
+      setBodyHtml(preview.bodyHtml);
+
+      // Front-matter title, else the filename — but never over something the
+      // user has already typed. A title a *previous import* wrote is not that,
+      // so importing a second file replaces it rather than leaving the new
+      // body under the old file's name.
+      // Read before the assignment below: `setTitle`'s updater runs later, so
+      // comparing against the ref inside it would compare against *this*
+      // import's title and never match.
+      const titleFromPreviousImport = importedTitleRef.current;
+      setTitle((current) => (
+        !current.trim() || current === titleFromPreviousImport ? preview.title : current
+      ));
+      importedTitleRef.current = preview.title;
+      // Applied after the page exists; `POST /pages` has no labels field.
+      setPendingLabels(preview.labels);
+
+      toast.success('Markdown loaded — review it, then press Create Page');
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to import markdown');
     }
     // Reset file input so the same file can be re-selected
     if (fileInputRef.current) fileInputRef.current.value = '';
-  }, [importMarkdownMutation, navigate]);
+  }, [importMarkdownMutation, editorInstance]);
 
-  const isCreateDisabled = createMutation.isPending
+  // Labels ride along with the create (#1133), so there is exactly one request
+  // between the click and the navigate — no window in which the button
+  // re-enables while the user is still looking at the form.
+  const isCreating = createMutation.isPending;
+
+  const isCreateDisabled = isCreating
     || !title.trim()
     || !spaceKey;
   // Explain WHY create is disabled — but not while a create is in flight
   // (the button already says "Creating...").
-  const showCreateHint = isCreateDisabled && !createMutation.isPending;
+  const showCreateHint = isCreateDisabled && !isCreating;
   // With a space preselected (#1122), "select a space" is usually already done —
   // saying so anyway sends the user hunting for a control that is fine.
   const createHint = !spaceKey
@@ -263,7 +307,7 @@ export function NewPagePage() {
                   aria-describedby={showCreateHint ? 'create-page-hint' : undefined}
                   className="nm-button-primary"
                 >
-                  <Save size={14} /> {createMutation.isPending ? 'Creating...' : 'Create Page'}
+                  <Save size={14} /> {isCreating ? 'Creating...' : 'Create Page'}
                 </button>
               </span>
             </div>
@@ -435,6 +479,8 @@ export function NewPagePage() {
             // localStorage draft is written; the body is read back from the
             // editor instance on create (#954).
             editorInstance?.commands.setContent(html, { emitUpdate: true });
+            // The imported body is gone, so its front-matter labels go with it.
+            setPendingLabels([]);
             // Seed fallback for the brief window before TipTap finishes
             // mounting (immediatelyRender: false), when editorInstance is still
             // null: the Editor picks this up as its initial content.

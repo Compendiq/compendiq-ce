@@ -1,23 +1,48 @@
+/**
+ * Markdown import for the New Page form (#1133).
+ *
+ * This used to be `POST /api/pages/import`, which converted the Markdown *and
+ * inserted a row* — always with a hardcoded `space_key = '_standalone'`, with
+ * no way to pass a space. Picking a Confluence space in the form and then
+ * importing filed the page somewhere else entirely, and did so before the user
+ * had seen a word of it.
+ *
+ * The conversion is the part worth keeping, so the route lost its persistence
+ * instead of being deleted: it now returns the converted article and the New
+ * Page form loads it into the editor, exactly as "Use Template" does, leaving
+ * `POST /api/pages` to do the save with the space, parent and visibility the
+ * user actually chose.
+ *
+ * The path changed rather than the semantics of the old one. A client still
+ * POSTing to `/pages/import` and expecting a created page should get a 404, not
+ * a 200 that quietly created nothing.
+ *
+ * Conversion stays server-side per ADR-003: `markdownToHtml` is the canonical
+ * pipeline entry point and has no frontend counterpart.
+ */
+
 import { FastifyInstance } from 'fastify';
-import { query } from '../../core/db/postgres.js';
-import { markdownToHtml, htmlToText } from '../../core/services/content-converter.js';
-import { logAuditEvent } from '../../core/services/audit-service.js';
+import { markdownToHtml } from '../../core/services/content-converter.js';
 import { z } from 'zod';
-import { randomUUID } from 'crypto';
 import DOMPurify from 'isomorphic-dompurify';
+
+/** Shared by the request schema and the front-matter merge below. */
+const MAX_TITLE_LENGTH = 500;
+const MAX_LABEL_LENGTH = 100;
+const MAX_LABELS = 50;
 
 const ImportMarkdownSchema = z.object({
   markdown: z.string().min(1, 'markdown field required').max(1_000_000, 'Markdown too large (max ~1MB)'),
-  title: z.string().min(1).max(500).optional(),
-  labels: z.array(z.string().min(1).max(100)).max(50).optional(),
+  title: z.string().min(1).max(MAX_TITLE_LENGTH).optional(),
+  labels: z.array(z.string().min(1).max(MAX_LABEL_LENGTH)).max(MAX_LABELS).optional(),
 });
 
 export async function pagesImportRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
 
-  // POST /api/pages/import — import article from Markdown text (with optional YAML front-matter)
-  fastify.post('/pages/import', async (request) => {
-    const userId = request.userId;
+  // POST /api/pages/import/preview — convert Markdown (with optional YAML
+  // front-matter) into editor-ready HTML. Persists nothing.
+  fastify.post('/pages/import/preview', async (request) => {
     const parsed = ImportMarkdownSchema.safeParse(request.body);
     if (!parsed.success) {
       throw fastify.httpErrors.badRequest(
@@ -26,19 +51,7 @@ export async function pagesImportRoutes(fastify: FastifyInstance) {
     }
     const body = parsed.data;
 
-    const article = await importMarkdown(body.markdown, body.title, body.labels, userId);
-
-    await logAuditEvent(userId, 'PAGE_CREATED', 'page', article.confluenceId, {
-      title: article.title,
-      source: 'standalone',
-      method: 'markdown_import',
-    }, request);
-
-    return {
-      imported: 1,
-      total: 1,
-      articles: [{ id: article.confluenceId, title: article.title, success: true }],
-    };
+    return convertMarkdown(body.markdown, body.title, body.labels);
   });
 }
 
@@ -93,48 +106,40 @@ function sanitizeHtml(html: string): string {
   });
 }
 
-async function importMarkdown(
+/**
+ * Convert Markdown into the title, HTML body and labels the New Page form
+ * needs. Pure: nothing is written.
+ */
+async function convertMarkdown(
   markdown: string,
   defaultTitle: string | undefined,
   bodyLabels: string[] | undefined,
-  userId: string,
-): Promise<{ confluenceId: string; title: string }> {
+): Promise<{ title: string; bodyHtml: string; labels: string[] }> {
   const { metadata, content } = parseFrontMatter(markdown);
 
-  const title = (typeof metadata.title === 'string' && metadata.title)
+  // Front-matter is untrusted input just like the request body, so it gets the
+  // same bounds the schema applies there — otherwise a crafted file returns a
+  // title or label set the route's own contract would have rejected, and
+  // `POST /api/pages` (title ≤500, ≤50 labels of ≤100) then 400s on a payload
+  // the user never typed.
+  const title = ((typeof metadata.title === 'string' && metadata.title)
     || defaultTitle
-    || 'Imported Article';
+    || 'Imported Article').slice(0, MAX_TITLE_LENGTH);
 
   // Merge labels from front-matter and request body (deduplicated)
   const fmLabels = Array.isArray(metadata.tags) ? metadata.tags
     : Array.isArray(metadata.labels) ? metadata.labels
     : [];
-  const labels = [...new Set([...fmLabels, ...(bodyLabels ?? [])])];
+  const labels = [...new Set([...fmLabels, ...(bodyLabels ?? [])])]
+    .map((label) => label.slice(0, MAX_LABEL_LENGTH))
+    .filter(Boolean)
+    .slice(0, MAX_LABELS);
 
-  // Convert Markdown to HTML, then sanitize
+  // Convert Markdown to HTML, then sanitize. The sanitize step still matters
+  // even though nothing is stored: this HTML goes straight into the user's
+  // editor, and from there into whatever they create.
   const rawHtml = await markdownToHtml(content);
   const bodyHtml = sanitizeHtml(rawHtml);
-  const bodyText = htmlToText(bodyHtml);
 
-  // Generate synthetic confluence_id for standalone articles
-  const confluenceId = `standalone-${randomUUID()}`;
-
-  const result = await query<{ id: number }>(
-    `INSERT INTO pages
-       (confluence_id, space_key, title, body_storage, body_html, body_text,
-        version, labels, embedding_dirty, embedding_status, last_synced,
-        source, created_by_user_id)
-     VALUES ($1, '_standalone', $2, NULL, $3, $4,
-             1, $5, TRUE, 'not_embedded', NOW(),
-             'standalone', $6)
-     RETURNING id`,
-    [confluenceId, title, bodyHtml, bodyText, labels, userId],
-  );
-
-  // Ensure the insert succeeded
-  if (result.rows.length === 0) {
-    throw new Error('Failed to insert standalone article');
-  }
-
-  return { confluenceId, title };
+  return { title, bodyHtml, labels };
 }

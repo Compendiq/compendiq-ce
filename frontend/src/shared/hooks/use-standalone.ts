@@ -201,24 +201,30 @@ export function useExportPdf() {
 
 // ======== Markdown Import ========
 
+export interface MarkdownPreview {
+  title: string;
+  bodyHtml: string;
+  labels: string[];
+}
+
+/**
+ * Convert an uploaded Markdown file into editor-ready HTML (#1133).
+ *
+ * `POST /api/pages/import/preview` persists nothing — the caller loads the
+ * result into the editor and the normal `POST /api/pages` create does the save,
+ * with the space, parent and visibility the user actually chose. Hence no cache
+ * invalidation here: no page exists yet.
+ *
+ * Conversion stays on the server because `markdownToHtml` is the canonical
+ * pipeline entry point (ADR-003) and has no frontend counterpart.
+ */
 export function useImportMarkdown() {
-  const queryClient = useQueryClient();
-  // Backend route is POST /api/pages/import (see backend pages-import.ts); it
-  // returns a batch envelope and always files standalone imports under the
-  // '_standalone' space, so spaceKey is not accepted.
   return useMutation({
     mutationFn: (data: { markdown: string; title: string }) =>
-      apiFetch<{
-        imported: number;
-        total: number;
-        articles: { id: string; title: string; success: boolean }[];
-      }>('/pages/import', {
+      apiFetch<MarkdownPreview>('/pages/import/preview', {
         method: 'POST',
         body: JSON.stringify(data),
       }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['pages'] });
-    },
   });
 }
 

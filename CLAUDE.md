@@ -115,6 +115,14 @@ DB (HTML) ⇄ htmlToMarkdown/markdownToHtml ⇄ {LLM: Markdown, Editor/TipTap: H
 ```
 Custom `turndown` rules per Confluence macro (code blocks, task lists, panels, mentions, page links, draw.io). See `docs/architecture/11-content-pipeline.md`.
 
+**Markdown import** on the New Page form is a *conversion*, not a create (#1133).
+`POST /api/pages/import/preview` parses YAML front-matter, runs `markdownToHtml` and
+sanitizes — and persists nothing. The form loads the result into the editor the way
+"Use Template" does, and the normal `POST /api/pages` create saves it with the space,
+parent and visibility the user chose. It replaces `POST /api/pages/import`, which
+inserted the row itself under a hardcoded `space_key = '_standalone'`. Don't reintroduce
+a client-side Markdown→HTML path: `markdownToHtml` has no frontend counterpart.
+
 **Uploaded documents** (#1131) enter through `core/services/document-extractor.ts`, behind
 `POST /api/llm/extract-document`: pdf (`unpdf`), docx (`mammoth` → `htmlToMarkdown`), odt
 (`content.xml` walk), rtf (control-word strip), md/txt (read directly). The format is decided

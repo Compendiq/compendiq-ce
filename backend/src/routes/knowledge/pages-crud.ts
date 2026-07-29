@@ -1103,13 +1103,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         `INSERT INTO pages
            (title, body_html, body_text, body_storage, source, created_by_user_id,
             visibility, version, space_key, confluence_id, parent_id,
-            page_type, embedding_dirty, embedding_status, last_synced)
+            page_type, embedding_dirty, embedding_status, last_synced, labels)
          VALUES ($1, $2, $3, NULL, 'standalone', $4, $5, 1, $6, NULL, $7,
-                 $8, $9, 'not_embedded', NOW())
+                 $8, $9, 'not_embedded', NOW(), $10)
          RETURNING id, title, version`,
         [body.title, effectiveBodyHtml, bodyText, userId,
          visibility, spaceKey, body.parentId ?? null,
-         pageType, !isFolder],
+         pageType, !isFolder, body.labels ?? []],
       );
 
       const newPage = result.rows[0]!;
@@ -1208,6 +1208,21 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // create just changed — clear both caches for every user.
     await cache.invalidateAcrossUsers('pages');
     await cache.invalidateAcrossUsers('spaces');
+
+    // Labels supplied at creation (#1133). Confluence owns them for a synced
+    // page, so they go upstream first and the local row mirrors what stuck. A
+    // failure here must not fail the create: the page exists and is correct.
+    if (body.labels?.length) {
+      try {
+        await client.addLabels(page.id, body.labels);
+        await query('UPDATE pages SET labels = $2 WHERE confluence_id = $1', [page.id, body.labels]);
+      } catch (err) {
+        logger.warn(
+          { err, confluenceId: page.id, labels: body.labels },
+          'Page created but its labels could not be applied in Confluence',
+        );
+      }
+    }
 
     await logAuditEvent(userId, 'PAGE_CREATED', 'page', page.id, { spaceKey: body.spaceKey, title: body.title }, request);
 
