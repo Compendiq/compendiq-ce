@@ -1,6 +1,22 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, waitFor, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { handleTableCellTripleClick } from './table-cell-selection';
+
+// Records every options object passed to `useEditor`, so a test can assert what
+// ArticleViewer wires into its editor without needing a reference to the view.
+// Delegates to the real hook, so nothing else in this file changes behaviour.
+const capturedEditorOptions: { editorProps?: Record<string, unknown> }[] = [];
+vi.mock('@tiptap/react', async () => {
+  const actual = await vi.importActual<typeof import('@tiptap/react')>('@tiptap/react');
+  return {
+    ...actual,
+    useEditor: (options: Parameters<typeof actual.useEditor>[0], deps?: unknown[]) => {
+      capturedEditorOptions.push(options as { editorProps?: Record<string, unknown> });
+      return actual.useEditor(options, deps as never);
+    },
+  };
+});
 
 // Mock mermaid (must be before component import)
 const mockMermaidRender = vi.fn().mockResolvedValue({ svg: '<svg data-testid="mermaid-svg">diagram</svg>' });
@@ -781,6 +797,33 @@ describe('ArticleViewer', () => {
       const articleViewer = container.querySelector('.article-viewer') as HTMLElement;
       const articleViewerStyle = window.getComputedStyle(articleViewer);
       expect(articleViewerStyle.overflowX).not.toBe('hidden');
+    });
+  });
+
+  // #1135 wires the same triple-click handler into ArticleViewer, which builds
+  // its own `useEditor` with its own `editorProps` and so inherits nothing from
+  // `Editor`. Editor.test.tsx cannot cover this: it renders `Editor` with
+  // `editable={false}`, which is a different component.
+  //
+  // Asserted on the options ArticleViewer hands to `useEditor` rather than by
+  // synthesising a click: ProseMirror resolves a real triple-click through
+  // `posAtCoords`, which needs layout jsdom does not do. The handler's own
+  // behaviour is covered in Editor.test.tsx; what is unproven without this is
+  // that this component installs it at all.
+  describe('table cell triple-click (#1135)', () => {
+    it('installs the whole-cell handler in its own editorProps', async () => {
+      capturedEditorOptions.length = 0;
+
+      render(<ArticleViewer content="<table><tbody><tr><td><p>a</p><p>b</p></td></tr></tbody></table>" />);
+
+      await waitFor(() => {
+        expect(capturedEditorOptions.length).toBeGreaterThan(0);
+      });
+
+      // One capture per render, so assert on identity rather than on a count.
+      const handlers = capturedEditorOptions.map((o) => o?.editorProps?.handleTripleClick);
+      expect(handlers.length).toBeGreaterThan(0);
+      expect(new Set(handlers)).toEqual(new Set([handleTableCellTripleClick]));
     });
   });
 });

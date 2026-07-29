@@ -29,6 +29,8 @@ vi.mock('sonner', () => ({
 
 import { Editor, EditorToolbar, clearDraft } from './Editor';
 import type { Editor as EditorType } from '@tiptap/react';
+import { TextSelection } from '@tiptap/pm/state';
+import { handleTableCellTripleClick } from './table-cell-selection';
 
 // Minimal mock of a TipTap Editor instance for toolbar-level tests
 function createMockEditor(): EditorType {
@@ -908,6 +910,269 @@ describe('Editor', () => {
           expect.objectContaining({ id: 'toast-id-1' }),
         );
       });
+    });
+  });
+
+  describe('table cell triple-click (#1135)', () => {
+    // What this is actually fixing: prosemirror-tables' own `tableEditing`
+    // plugin already claims handleTripleClick and answers it with a
+    // `CellSelection`. `CellSelection.prototype.visible === false`, so
+    // ProseMirror deliberately hides the browser selection and expects the
+    // app to paint `.selectedCell` instead — a class this app has never
+    // styled. The net effect for the user is a triple-click that highlights
+    // nothing beyond whatever the preceding double-click grabbed. Installing
+    // our handler in `editorProps` preempts the plugin (view.someProp reads
+    // direct props before plugin props) and produces an ordinary, visible
+    // TextSelection over the cell's whole content.
+    //
+    // ProseMirror resolves a real triple click into a document position with
+    // `view.posAtCoords`, which needs layout boxes jsdom never produces — a
+    // `detail: 3` MouseEvent dispatched at the DOM dies there, before any
+    // handler runs. So these tests resolve the position themselves and reach
+    // the handler exactly the way prosemirror-view does internally, through
+    // `view.someProp('handleTripleClick', …)`. That lookup only finds the
+    // function if it is genuinely installed in `editorProps`, so the wiring
+    // is under test too, not just the handler body.
+    const TABLE_HTML = [
+      '<table><tbody>',
+      '<tr><th><p>Head one</p><p>Head two</p></th><td><p>First para</p><p>Second para</p></td></tr>',
+      '<tr><td><p>Only para</p></td><td><p></p></td></tr>',
+      '</tbody></table>',
+      '<p>Outside paragraph</p>',
+    ].join('');
+
+    // A cell holding a block atom and no textblock at all. `tableCell` content
+    // is `block+` and the image node is `group: 'block'`, so this is a legal
+    // shape — and the one the sync pipeline actually produces:
+    // content-converter's `image.replaceWith(img)` turns `<td><ac:image/></td>`
+    // into `<td><img/></td>` with no wrapping paragraph.
+    const ATOM_CELL_HTML = [
+      '<p>Lead paragraph</p>',
+      '<table><tbody>',
+      '<tr><td><img src="shot.png" alt="shot"></td><td><p>Next cell</p></td></tr>',
+      '</tbody></table>',
+    ].join('');
+
+    async function renderEditorWithTable(editable = true) {
+      let editor: EditorType | null = null;
+      render(
+        <Editor content={TABLE_HTML} editable={editable} onEditorReady={(e) => { editor = e; }} />,
+      );
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+      return editor!;
+    }
+
+    /** Document position inside the first text node containing `needle`. */
+    function posInText(editor: EditorType, needle: string): number {
+      let found = -1;
+      editor.state.doc.descendants((node, pos) => {
+        if (found !== -1) return false;
+        const at = node.isText ? (node.text ?? '').indexOf(needle) : -1;
+        if (at !== -1) {
+          found = pos + at + 1;
+          return false;
+        }
+        return true;
+      });
+      if (found === -1) throw new Error(`no text node containing "${needle}"`);
+      return found;
+    }
+
+    /** Document position inside the nth table cell, counting cells in document order. */
+    function posInCell(editor: EditorType, index: number): number {
+      const cellStarts: number[] = [];
+      editor.state.doc.descendants((node, pos) => {
+        if (node.type.name === 'tableCell' || node.type.name === 'tableHeader') cellStarts.push(pos);
+        return true;
+      });
+      const start = cellStarts[index];
+      if (start === undefined) throw new Error(`no cell at index ${index}`);
+      // +1 enters the cell, +1 more enters its first child block.
+      return start + 2;
+    }
+
+    /** Run the editor's registered handleTripleClick at `pos`. */
+    function tripleClickAt(editor: EditorType, pos: number, button = 0): boolean {
+      const { view } = editor;
+      const event = new MouseEvent('mousedown', {
+        bubbles: true,
+        cancelable: true,
+        button,
+        detail: 3,
+      });
+      return view.someProp('handleTripleClick', (f) => f(view, pos, event)) === true;
+    }
+
+    /**
+     * prosemirror-tables answers this gesture with a `CellSelection`, which
+     * spans the same range and so yields the same `textBetween` — the whole
+     * reason its highlight is invisible is that it is not a TextSelection.
+     * Asserting on the text alone therefore cannot tell the fix from the bug.
+     */
+    function isPlainTextSelection(editor: EditorType): boolean {
+      return editor.state.selection instanceof TextSelection
+        && editor.state.selection.constructor === TextSelection;
+    }
+
+    function selectedText(editor: EditorType): string {
+      const { from, to } = editor.state.selection;
+      return editor.state.doc.textBetween(from, to, '\n');
+    }
+
+    it('selects every block in a multi-paragraph cell, not just the clicked one', async () => {
+      const editor = await renderEditorWithTable();
+
+      expect(tripleClickAt(editor, posInText(editor, 'First para'))).toBe(true);
+      // Not a CellSelection: that is what makes the highlight visible.
+      expect(isPlainTextSelection(editor)).toBe(true);
+      expect(selectedText(editor)).toBe('First para\nSecond para');
+    });
+
+    it('makes it a visible TextSelection, not the invisible CellSelection', async () => {
+      const editor = await renderEditorWithTable();
+
+      tripleClickAt(editor, posInText(editor, 'First para'));
+
+      // The selection must be a plain TextSelection — a CellSelection has
+      // `visible === false` and would render as no highlight at all here.
+      expect(editor.state.selection).toBeInstanceOf(TextSelection);
+      expect(editor.state.selection.visible).toBe(true);
+    });
+
+    it('selects the whole cell when the click lands in the second paragraph', async () => {
+      const editor = await renderEditorWithTable();
+
+      expect(tripleClickAt(editor, posInText(editor, 'Second para'))).toBe(true);
+      expect(selectedText(editor)).toBe('First para\nSecond para');
+    });
+
+    it('spans exactly the cell content — no table structure either side', async () => {
+      const editor = await renderEditorWithTable();
+      const cellStart = posInCell(editor, 1) - 1; // position of the cell's first block
+
+      tripleClickAt(editor, posInText(editor, 'First para'));
+
+      const cell = editor.state.doc.nodeAt(cellStart - 1);
+      expect(cell?.type.name).toBe('tableCell');
+      expect(editor.state.selection.from).toBe(cellStart + 1);
+      expect(editor.state.selection.to).toBe(cellStart + cell!.content.size - 1);
+    });
+
+    it('treats a header cell the same as a body cell', async () => {
+      const editor = await renderEditorWithTable();
+
+      expect(tripleClickAt(editor, posInText(editor, 'Head two'))).toBe(true);
+      expect(selectedText(editor)).toBe('Head one\nHead two');
+    });
+
+    it('still selects just that paragraph in a single-paragraph cell', async () => {
+      const editor = await renderEditorWithTable();
+
+      expect(tripleClickAt(editor, posInText(editor, 'Only para'))).toBe(true);
+      expect(selectedText(editor)).toBe('Only para');
+      expect(editor.state.selection).toBeInstanceOf(TextSelection);
+    });
+
+    it('leaves the selection inside an empty cell without throwing', async () => {
+      const editor = await renderEditorWithTable();
+      const emptyCell = posInCell(editor, 3);
+
+      expect(() => tripleClickAt(editor, emptyCell)).not.toThrow();
+      expect(selectedText(editor)).toBe('');
+      expect(editor.state.selection.empty).toBe(true);
+      expect(editor.state.selection.from).toBe(emptyCell);
+    });
+
+        // A cell with no textblock has no valid text position inside it, so
+    // `TextSelection.between` searches OUTWARD and lands in a neighbouring
+    // block. Returning `true` on that would suppress every fallback and
+    // teleport the caret out of the table — strictly worse than the
+    // prosemirror-tables CellSelection this handler replaces, which at least
+    // spans the cell and copies its content.
+    // ProseMirror's own defaultTripleClick bails on `event.button != 0`. This
+    // handler runs before it, so without the same guard it would answer a
+    // triple right-click — the gesture that opens a context menu.
+    //
+    // Asserted against the exported handler rather than through `someProp`:
+    // when ours declines, the lookup continues to prosemirror-tables' plugin
+    // handler, which does not guard the button either. That is pre-existing
+    // behaviour on `dev` and is not this change's to fix — what matters is
+    // that we stop making it worse.
+    it.each([[1, 'middle'], [2, 'right']])('declines button %i (%s) inside a cell', async (button) => {
+      const editor = await renderEditorWithTable();
+      const pos = posInText(editor, 'First para');
+      const event = new MouseEvent('mousedown', { bubbles: true, cancelable: true, button, detail: 3 });
+
+      expect(handleTableCellTripleClick(editor.view, pos, event)).toBe(false);
+    });
+
+    it('still answers the left button', async () => {
+      const editor = await renderEditorWithTable();
+      const pos = posInText(editor, 'First para');
+      const event = new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, detail: 3 });
+
+      expect(handleTableCellTripleClick(editor.view, pos, event)).toBe(true);
+    });
+
+    it('declines a cell that holds only a block atom, rather than selecting outside it', async () => {
+      let editor: EditorType | null = null;
+      render(<Editor content={ATOM_CELL_HTML} onEditorReady={(e) => { editor = e; }} />);
+      await waitFor(() => { expect(editor).not.toBeNull(); });
+      const ed = editor!;
+
+      // Locate the image-only cell and a position inside it.
+      let cellPos = -1;
+      let cellNode: ReturnType<typeof ed.state.doc.nodeAt> = null;
+      ed.state.doc.descendants((node, pos) => {
+        if (cellPos !== -1) return false;
+        if (node.type.name === 'tableCell' && node.firstChild?.type.name === 'image') {
+          cellPos = pos;
+          cellNode = node;
+          return false;
+        }
+        return true;
+      });
+      expect(cellPos).toBeGreaterThan(-1);
+
+      const contentStart = cellPos + 1;
+      const contentEnd = contentStart + cellNode!.content.size;
+
+      const handled = tripleClickAt(ed, contentStart);
+
+      // Either it declines (letting prosemirror-tables answer), or it selects
+      // within the cell. What it must never do is move the selection out.
+      const { from, to } = ed.state.selection;
+      if (handled) {
+        expect(from).toBeGreaterThanOrEqual(contentStart);
+        expect(to).toBeLessThanOrEqual(contentEnd);
+      } else {
+        expect(handled).toBe(false);
+      }
+    });
+
+it('declines a click outside any table so ProseMirror\'s default runs', async () => {
+      const editor = await renderEditorWithTable();
+      const before = editor.state.selection;
+
+      expect(tripleClickAt(editor, posInText(editor, 'Outside paragraph'))).toBe(false);
+      // Returning false must also mean we did not touch the selection.
+      expect(editor.state.selection.from).toBe(before.from);
+      expect(editor.state.selection.to).toBe(before.to);
+    });
+
+    // A non-editable Editor, which is the mode ArticleViewer runs in — but not
+    // ArticleViewer itself. Its own wiring is asserted in
+    // `ArticleViewer.test.tsx`, because it builds a separate `useEditor` with
+    // separate `editorProps` and would not inherit these.
+    it('works when the editor is not editable', async () => {
+      const editor = await renderEditorWithTable(false);
+
+      expect(editor.isEditable).toBe(false);
+      expect(tripleClickAt(editor, posInText(editor, 'First para'))).toBe(true);
+      expect(selectedText(editor)).toBe('First para\nSecond para');
+      expect(isPlainTextSelection(editor)).toBe(true);
     });
   });
 
