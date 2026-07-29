@@ -30,6 +30,7 @@ vi.mock('sonner', () => ({
 import { Editor, EditorToolbar, clearDraft } from './Editor';
 import type { Editor as EditorType } from '@tiptap/react';
 import { TextSelection } from '@tiptap/pm/state';
+import { handleTableCellTripleClick } from './table-cell-selection';
 
 // Minimal mock of a TipTap Editor instance for toolbar-level tests
 function createMockEditor(): EditorType {
@@ -993,15 +994,26 @@ describe('Editor', () => {
     }
 
     /** Run the editor's registered handleTripleClick at `pos`. */
-    function tripleClickAt(editor: EditorType, pos: number): boolean {
+    function tripleClickAt(editor: EditorType, pos: number, button = 0): boolean {
       const { view } = editor;
       const event = new MouseEvent('mousedown', {
         bubbles: true,
         cancelable: true,
-        button: 0,
+        button,
         detail: 3,
       });
       return view.someProp('handleTripleClick', (f) => f(view, pos, event)) === true;
+    }
+
+    /**
+     * prosemirror-tables answers this gesture with a `CellSelection`, which
+     * spans the same range and so yields the same `textBetween` — the whole
+     * reason its highlight is invisible is that it is not a TextSelection.
+     * Asserting on the text alone therefore cannot tell the fix from the bug.
+     */
+    function isPlainTextSelection(editor: EditorType): boolean {
+      return editor.state.selection instanceof TextSelection
+        && editor.state.selection.constructor === TextSelection;
     }
 
     function selectedText(editor: EditorType): string {
@@ -1013,6 +1025,8 @@ describe('Editor', () => {
       const editor = await renderEditorWithTable();
 
       expect(tripleClickAt(editor, posInText(editor, 'First para'))).toBe(true);
+      // Not a CellSelection: that is what makes the highlight visible.
+      expect(isPlainTextSelection(editor)).toBe(true);
       expect(selectedText(editor)).toBe('First para\nSecond para');
     });
 
@@ -1077,6 +1091,31 @@ describe('Editor', () => {
     // teleport the caret out of the table — strictly worse than the
     // prosemirror-tables CellSelection this handler replaces, which at least
     // spans the cell and copies its content.
+    // ProseMirror's own defaultTripleClick bails on `event.button != 0`. This
+    // handler runs before it, so without the same guard it would answer a
+    // triple right-click — the gesture that opens a context menu.
+    //
+    // Asserted against the exported handler rather than through `someProp`:
+    // when ours declines, the lookup continues to prosemirror-tables' plugin
+    // handler, which does not guard the button either. That is pre-existing
+    // behaviour on `dev` and is not this change's to fix — what matters is
+    // that we stop making it worse.
+    it.each([[1, 'middle'], [2, 'right']])('declines button %i (%s) inside a cell', async (button) => {
+      const editor = await renderEditorWithTable();
+      const pos = posInText(editor, 'First para');
+      const event = new MouseEvent('mousedown', { bubbles: true, cancelable: true, button, detail: 3 });
+
+      expect(handleTableCellTripleClick(editor.view, pos, event)).toBe(false);
+    });
+
+    it('still answers the left button', async () => {
+      const editor = await renderEditorWithTable();
+      const pos = posInText(editor, 'First para');
+      const event = new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, detail: 3 });
+
+      expect(handleTableCellTripleClick(editor.view, pos, event)).toBe(true);
+    });
+
     it('declines a cell that holds only a block atom, rather than selecting outside it', async () => {
       let editor: EditorType | null = null;
       render(<Editor content={ATOM_CELL_HTML} onEditorReady={(e) => { editor = e; }} />);
@@ -1123,12 +1162,17 @@ it('declines a click outside any table so ProseMirror\'s default runs', async ()
       expect(editor.state.selection.to).toBe(before.to);
     });
 
-    it('works in a read-only editor too — the ArticleViewer path (#1135)', async () => {
+    // A non-editable Editor, which is the mode ArticleViewer runs in — but not
+    // ArticleViewer itself. Its own wiring is asserted in
+    // `ArticleViewer.test.tsx`, because it builds a separate `useEditor` with
+    // separate `editorProps` and would not inherit these.
+    it('works when the editor is not editable', async () => {
       const editor = await renderEditorWithTable(false);
 
       expect(editor.isEditable).toBe(false);
       expect(tripleClickAt(editor, posInText(editor, 'First para'))).toBe(true);
       expect(selectedText(editor)).toBe('First para\nSecond para');
+      expect(isPlainTextSelection(editor)).toBe(true);
     });
   });
 

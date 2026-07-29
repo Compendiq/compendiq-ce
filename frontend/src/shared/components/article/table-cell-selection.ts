@@ -21,10 +21,20 @@ const CELL_NODE_TYPES = new Set(['tableCell', 'tableHeader']);
  * view's direct props before any plugin's — and produces an ordinary,
  * visible `TextSelection` over the whole cell.
  *
- * Returns `false` for a click outside any cell — and for a cell this cannot
- * safely handle — so ProseMirror's default runs unchanged.
+ * Returns `false` for a non-left button, for a click outside any cell, and for
+ * a cell this cannot safely handle — so ProseMirror's default runs unchanged.
  */
-export function handleTableCellTripleClick(view: EditorView, pos: number): boolean {
+export function handleTableCellTripleClick(
+  view: EditorView,
+  pos: number,
+  event: MouseEvent,
+): boolean {
+  // Left button only, matching ProseMirror's own `defaultTripleClick`
+  // (`if (event.button != 0) return false`). This handler runs *before* that
+  // one, so without the same guard a triple right-click — the gesture that
+  // opens a context menu — would hijack the selection on its way past.
+  if (event.button !== 0) return false;
+
   const { doc } = view.state;
   if (pos < 0 || pos > doc.content.size) return false;
 
