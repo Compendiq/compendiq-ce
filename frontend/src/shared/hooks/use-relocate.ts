@@ -57,6 +57,13 @@ export function useRelocatePreview(
     // Counts and rosters are the whole point; never serve a cached answer.
     staleTime: 0,
     retry: false,
+    // …but never swap them out from under the user either. With `staleTime: 0`
+    // the default would refetch whenever the tab regains focus, which can
+    // change the version count or the access roster *behind* acknowledgements
+    // that have already been ticked for the old ones. The dialog refetches
+    // deliberately — on a destination change, or on the 409 recovery — and both
+    // of those clear the acknowledgements first.
+    refetchOnWindowFocus: false,
     // Keep the previous preview on screen while the destination-keyed one
     // loads. Without it the whole dialog collapses back to its loading state
     // the moment a destination is picked — the one interaction that is

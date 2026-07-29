@@ -336,7 +336,12 @@ function AccessChangeSection({
 // ── Dialog ──────────────────────────────────────────────────────────
 
 export function RelocateDialog({ open, pageId, pageTitle, source, onClose }: RelocateDialogProps) {
-  const target: Target = source === 'standalone' ? 'confluence' : 'local';
+  // `source` comes from a cached `usePage`, so it can be stale — a page synced
+  // to Confluence since the cache was filled would otherwise render the
+  // move-to-Confluence dialog, which offers no upstream-deletion confirmation.
+  // The preview is the server's own answer, so it wins as soon as it lands; the
+  // prop only decides what to show while the first fetch is in flight.
+  const fallbackTarget: Target = source === 'standalone' ? 'confluence' : 'local';
 
   const [spaceKey, setSpaceKey] = useState('');
   const [visibility, setVisibility] = useState<'private' | 'shared' | undefined>(undefined);
@@ -353,6 +358,8 @@ export function RelocateDialog({ open, pageId, pageTitle, source, onClose }: Rel
     setAckAccess(false);
     setAckDestructive(false);
     setFailure(null);
+    setServerTarget(null);
+    setLastGoodPreview(null);
   }, [open, pageId]);
 
   const { data: spaces } = useSpaces();
@@ -361,6 +368,13 @@ export function RelocateDialog({ open, pageId, pageTitle, source, onClose }: Rel
     () => (spaces ?? []).filter((space) => space.source === 'confluence'),
     [spaces],
   );
+
+  // Adopted from the preview once it lands. Held as state rather than read
+  // inline so the query arguments below — which decide whether a `spaceKey` or
+  // a `visibility` is sent — are keyed on the same value the UI renders. Sending
+  // a local space key to the preview route's Confluence-space check would 403.
+  const [serverTarget, setServerTarget] = useState<Target | null>(null);
+  const target: Target = serverTarget ?? fallbackTarget;
 
   const {
     data: preview,
@@ -376,11 +390,26 @@ export function RelocateDialog({ open, pageId, pageTitle, source, onClose }: Rel
     open,
   );
 
+  useEffect(() => {
+    if (preview && preview.target !== serverTarget) setServerTarget(preview.target);
+  }, [preview, serverTarget]);
+
+  // `placeholderData` only covers the *pending* state — once a destination-keyed
+  // fetch errors, TanStack drops `data` for that key entirely. Without holding
+  // the last good preview the whole body unmounts, taking the destination
+  // picker with it, and the only recovery on offer is re-requesting the same
+  // failing key. Never used to submit: `canSubmit` refuses while `previewError`.
+  const [lastGoodPreview, setLastGoodPreview] = useState<RelocatePreview | null>(null);
+  useEffect(() => {
+    if (preview) setLastGoodPreview(preview);
+  }, [preview]);
+  const shownPreview = preview ?? lastGoodPreview;
+
   const relocate = useRelocatePage();
 
   const destinationChosen = target === 'confluence' ? spaceKey !== '' : visibility !== undefined;
-  const upstream = preview?.upstreamDeletion ?? null;
-  const discardsVersions = target === 'confluence' && (preview?.localVersionCount ?? 0) > 0;
+  const upstream = shownPreview?.upstreamDeletion ?? null;
+  const discardsVersions = target === 'confluence' && (shownPreview?.localVersionCount ?? 0) > 0;
   const needsDestructiveAck = target === 'local' || discardsVersions;
 
   // Red is spent where something is destroyed. A move to a local space always
@@ -392,6 +421,13 @@ export function RelocateDialog({ open, pageId, pageTitle, source, onClose }: Rel
 
   const canSubmit =
     !!preview &&
+    // A stale body is on screen while the chosen destination is unresolved.
+    !previewError &&
+    // `placeholderData` deliberately keeps the previous preview on screen while
+    // the destination-keyed one loads, so `preview` is truthy throughout.
+    // Without this the acknowledgements could be ticked and the move confirmed
+    // against the roster and version count of the *previous* destination.
+    !previewFetching &&
     !relocate.isPending &&
     destinationChosen &&
     acknowledged &&
@@ -403,7 +439,13 @@ export function RelocateDialog({ open, pageId, pageTitle, source, onClose }: Rel
    * viewport the acknowledgements it is waiting for are below the fold.
    */
   const blockedBecause = ((): string | null => {
-    if (!preview || canSubmit) return null;
+    if (!shownPreview || canSubmit) return null;
+    // Telling someone to choose from an empty list is worse than saying why
+    // there is nothing to choose from.
+    if (target === 'confluence' && confluenceSpaces.length === 0) {
+      return 'No Confluence space is available to you. Ask an administrator for access, or sync a space first.';
+    }
+    if (previewFetching) return 'Working out what this destination changes…';
     if (!destinationChosen) {
       return target === 'confluence'
         ? 'Choose a Confluence space to continue.'
@@ -545,14 +587,14 @@ export function RelocateDialog({ open, pageId, pageTitle, source, onClose }: Rel
                 <Loader2 size={15} className="animate-spin" aria-hidden />
                 Working out what this move would do…
               </div>
-            ) : previewError ? (
+            ) : previewError && !shownPreview ? (
               <div className="py-8 text-sm" role="alert" data-testid="relocate-preview-error">
                 <p className="text-destructive">
                   {previewError instanceof Error ? previewError.message : 'Could not load the preview.'}
                 </p>
                 <button
                   type="button"
-                  onClick={() => void refetchPreview()}
+                  onClick={handleReloadPreview}
                   className="nm-button-ghost mt-4"
                   data-testid="relocate-preview-retry"
                 >
@@ -560,8 +602,25 @@ export function RelocateDialog({ open, pageId, pageTitle, source, onClose }: Rel
                   Try again
                 </button>
               </div>
-            ) : preview ? (
+            ) : shownPreview ? (
               <div className="space-y-6" data-testid="relocate-preview">
+                {/* A *dependent* fetch failed while an earlier preview is still
+                    on screen. Replacing the body would take the destination
+                    picker with it, leaving the user able to do nothing but
+                    re-request the same failing key. */}
+                {previewError && (
+                  <p
+                    className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+                    role="alert"
+                    data-testid="relocate-destination-error"
+                  >
+                    {previewError instanceof Error
+                      ? previewError.message
+                      : 'Could not check that destination.'}{' '}
+                    The details below are for the previous one — pick another destination, or try again.
+                  </p>
+                )}
+
                 {/* 1 — destination */}
                 <section className="space-y-3">
                   <h3 className="text-sm font-semibold text-foreground">Where it goes</h3>
@@ -629,14 +688,14 @@ export function RelocateDialog({ open, pageId, pageTitle, source, onClose }: Rel
                 {/* 2 — consequences */}
                 <section className="space-y-3">
                   <h3 className="text-sm font-semibold text-foreground">What this move does</h3>
-                  <ConsequenceLedger preview={preview} target={target} />
+                  <ConsequenceLedger preview={shownPreview} target={target} />
                 </section>
 
                 <hr className="border-border" />
 
                 {/* 3 — access */}
                 <AccessChangeSection
-                  accessChange={preview.accessChange}
+                  accessChange={shownPreview.accessChange}
                   destinationChosen={destinationChosen}
                   updating={previewFetching}
                 />
@@ -669,8 +728,8 @@ export function RelocateDialog({ open, pageId, pageTitle, source, onClose }: Rel
                       />
                       <span className="text-sm text-foreground" data-testid="relocate-ack-versions-label">
                         Permanently delete this article’s{' '}
-                        <Count>{preview.localVersionCount}</Count> local version
-                        {preview.localVersionCount === 1 ? '' : 's'}. Confluence becomes its only
+                        <Count>{shownPreview.localVersionCount}</Count> local version
+                        {shownPreview.localVersionCount === 1 ? '' : 's'}. Confluence becomes its only
                         history.
                       </span>
                     </label>

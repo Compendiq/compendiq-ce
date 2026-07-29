@@ -176,14 +176,12 @@ vi.mock('../../shared/hooks/use-permission', () => ({
   }),
 }));
 
-vi.mock('./RelocateDialog', () => ({
-  RelocateDialog: ({ open, source }: { open: boolean; source: string }) =>
-    open ? <div data-testid="relocate-dialog" data-source={source} /> : null,
-}));
-
 vi.mock('../../shared/hooks/use-standalone', () => ({
   useSubmitFeedback: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useVerifyPage: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  // Needed by the real RelocateDialog, which this file renders rather than
+  // stubs — a stubbed child cannot show that this page hands it the right props.
+  useLocalSpaces: () => ({ data: [{ key: 'HOME', name: 'Home', source: 'local' }] }),
 }));
 
 let capturedShortcuts: Array<{ key: string; keys: string[]; mod?: boolean; alt?: boolean; shift?: boolean; description: string; category: string; action: () => void }> = [];
@@ -1242,11 +1240,18 @@ describe('PageViewPage', () => {
       currentMockPage = { ...mockPage, source: 'standalone' };
       render(<PageViewPage />, { wrapper: createWrapper() });
 
-      expect(screen.queryByTestId('relocate-dialog')).not.toBeInTheDocument();
+      // The real dialog, not a stand-in: CLAUDE.md puts the mock boundary at
+      // the network, and a stubbed child cannot show that this page hands it
+      // the right `source` — only that it passed *something*.
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
       fireEvent.click(screen.getByTestId('relocate-btn'));
 
-      await waitFor(() => expect(screen.getByTestId('relocate-dialog')).toBeInTheDocument());
-      expect(screen.getByTestId('relocate-dialog')).toHaveAttribute('data-source', 'standalone');
+      const dialog = await screen.findByRole('dialog');
+      // `source: 'standalone'` is what makes this the move-to-Confluence
+      // direction; the reverse dialog names an upstream deletion instead.
+      await waitFor(() => {
+        expect(dialog).toHaveTextContent(/move to confluence/i);
+      });
     });
 
     it('hides the relocate control while the editor is open', () => {

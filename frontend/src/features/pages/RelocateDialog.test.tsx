@@ -141,6 +141,25 @@ function givenPreview(build: (params: URLSearchParams) => RelocatePreview) {
   ];
 }
 
+/** Preview route that fails, optionally only once the destination is chosen. */
+function givenFailingPreview(opts: { onlyWithDestination?: boolean } = {}) {
+  routes = [
+    { match: /\/api\/spaces\/local$/, respond: () => ({ body: LOCAL_SPACES }) },
+    { match: /\/api\/spaces$/, respond: () => ({ body: CONFLUENCE_SPACES }) },
+    {
+      match: /\/relocate\/preview/,
+      respond: (url) => {
+        const params = new URL(url, 'http://localhost').searchParams;
+        const chosen = params.has('spaceKey') || params.has('visibility');
+        if (opts.onlyWithDestination && !chosen) {
+          return { body: standalonePreview({ localVersionCount: 12 }) };
+        }
+        return { status: 403, body: { message: 'Access denied to this space' } };
+      },
+    },
+  ];
+}
+
 function givenRelocate(response: StubResponse) {
   routes.push({ match: /\/relocate$/, method: 'POST', respond: () => response });
 }
@@ -529,11 +548,44 @@ describe('RelocateDialog — gating', () => {
 
     fireEvent.change(screen.getByTestId('relocate-space-select'), { target: { value: 'DEV' } });
     await waitFor(() => expect(previewUrls()).toHaveLength(2));
-    expect(screen.getByTestId('relocate-submit-hint')).toHaveTextContent(/confirm|acknowledge/i);
+    // The destination-keyed preview is in flight; until it lands the roster on
+    // screen belongs to the previous destination, so the move stays refused for
+    // that reason rather than for a missing tick.
+    await waitFor(() => {
+      expect(screen.getByTestId('relocate-submit-hint')).toHaveTextContent(/confirm|acknowledge/i);
+    });
 
     fireEvent.click(screen.getByTestId('relocate-ack-access'));
     fireEvent.click(screen.getByTestId('relocate-ack-versions'));
     expect(screen.queryByTestId('relocate-submit-hint')).not.toBeInTheDocument();
+  });
+
+  // `placeholderData` keeps the previous preview on screen while the
+  // destination-keyed one loads, so `preview` stays truthy throughout. Without
+  // gating on the fetch, both boxes could be ticked and the move confirmed
+  // against the roster and version count of the *previous* destination.
+  it('refuses the move while the destination-keyed preview is still loading', async () => {
+    let release: (() => void) | undefined;
+    givenPreview(() => standalonePreview({ localVersionCount: 12 }));
+    renderDialog();
+    await awaitPreview();
+
+    // Hold the second request open.
+    givenPreview(async () => {
+      await new Promise<void>((resolve) => { release = resolve; });
+      return standalonePreview({ localVersionCount: 12 });
+    });
+
+    fireEvent.change(screen.getByTestId('relocate-space-select'), { target: { value: 'DEV' } });
+    await waitFor(() => expect(previewUrls()).toHaveLength(2));
+
+    fireEvent.click(screen.getByTestId('relocate-ack-access'));
+    fireEvent.click(screen.getByTestId('relocate-ack-versions'));
+
+    expect(screen.getByTestId('relocate-submit')).toBeDisabled();
+    expect(screen.getByTestId('relocate-submit-hint')).toHaveTextContent(/working out/i);
+
+    release?.();
   });
 
   it('asks for a visibility first when moving to a local space', async () => {
@@ -697,3 +749,109 @@ describe('RelocateDialog — success', () => {
     expect(String(mockToastWarning.mock.calls[0]?.[0])).toMatch(/chart\.png/);
   });
 });
+
+describe('RelocateDialog — preview failures (#1123 review)', () => {
+  it('offers a retry when the first preview fails', async () => {
+    givenFailingPreview();
+    renderDialog();
+
+    const error = await screen.findByTestId('relocate-preview-error');
+    expect(error).toHaveTextContent(/access denied/i);
+    expect(screen.getByTestId('relocate-preview-retry')).toBeInTheDocument();
+    expect(screen.queryByTestId('relocate-preview')).not.toBeInTheDocument();
+  });
+
+  // Replacing the whole body would take the destination picker with it, so the
+  // only offered recovery would be re-requesting the same failing key.
+  it('keeps the destination picker reachable when a chosen destination fails', async () => {
+    givenFailingPreview({ onlyWithDestination: true });
+    renderDialog();
+    await awaitPreview();
+
+    fireEvent.change(screen.getByTestId('relocate-space-select'), { target: { value: 'DEV' } });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('relocate-destination-error')).toHaveTextContent(/access denied/i);
+    });
+    // Still there, so another destination can be picked.
+    expect(screen.getByTestId('relocate-space-select')).toBeInTheDocument();
+    expect(screen.getByTestId('relocate-submit')).toBeDisabled();
+  });
+
+  it('recovers when a retried first preview succeeds', async () => {
+    givenFailingPreview();
+    renderDialog();
+    await screen.findByTestId('relocate-preview-error');
+
+    givenPreview(() => standalonePreview({ localVersionCount: 12 }));
+    fireEvent.click(screen.getByTestId('relocate-preview-retry'));
+
+    await awaitPreview();
+    expect(screen.queryByTestId('relocate-preview-error')).not.toBeInTheDocument();
+    expect(screen.getByTestId('relocate-space-select')).toBeInTheDocument();
+  });
+
+  // `staleTime: 0` leaves `refetchOnWindowFocus` on by default, which can
+  // replace the version count and access roster behind acknowledgements
+  // already ticked for the old ones.
+  it('does not refetch the preview when the tab regains focus', async () => {
+    givenPreview(() => standalonePreview({ localVersionCount: 12 }));
+    renderDialog();
+    await awaitPreview();
+    const before = previewUrls().length;
+
+    fireEvent.focus(window);
+    window.dispatchEvent(new Event('visibilitychange'));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(previewUrls()).toHaveLength(before);
+  });
+
+  // "Choose a Confluence space to continue" is not an instruction anyone can
+  // follow when the picker is empty.
+  it('explains an empty Confluence space list instead of instructing', async () => {
+    routes = [
+      { match: /\/api\/spaces\/local$/, respond: () => ({ body: LOCAL_SPACES }) },
+      { match: /\/api\/spaces$/, respond: () => ({ body: [] }) },
+      {
+        match: /\/relocate\/preview/,
+        respond: () => ({ body: standalonePreview({ localVersionCount: 0 }) }),
+      },
+    ];
+    renderDialog();
+    await awaitPreview();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('relocate-submit-hint')).toHaveTextContent(/no confluence space is available/i);
+    });
+    expect(screen.getByTestId('relocate-submit')).toBeDisabled();
+  });
+
+  // A cached `source` can be stale; the preview is the server's own answer.
+  it('follows the server\'s target when it disagrees with the cached source', async () => {
+    givenPreview(() => confluencePreview());
+    // Caller believes the page is still standalone.
+    renderDialog({ source: 'standalone' });
+    await awaitPreview();
+
+    // The move-to-local dialog, which is what the server says this page needs.
+    await waitFor(() => {
+      expect(screen.getByTestId('relocate-ack-delete')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('relocate-visibility-private')).toBeInTheDocument();
+  });
+
+  it('refuses a move to local when the page has no Confluence page on record', async () => {
+    givenPreview(() => confluencePreview({ upstreamDeletion: null }));
+    renderDialog({ source: 'confluence' });
+    await awaitPreview();
+
+    fireEvent.click(screen.getByTestId('relocate-visibility-private'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('relocate-no-upstream')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('relocate-submit')).toBeDisabled();
+  });
+});
+
