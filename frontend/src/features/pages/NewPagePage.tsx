@@ -40,8 +40,10 @@ export function NewPagePage() {
   const { data: localSpacesData } = useLocalSpaces();
 
   const allSpaces = useMemo(() => {
-    const merged: { key: string; name: string; source: 'confluence' | 'local' }[] = [];
-    (spaces ?? []).forEach((s) => merged.push({ key: s.key, name: s.name, source: s.source ?? 'confluence' }));
+    const merged: { key: string; name: string; source: 'confluence' | 'local'; lastSynced?: string | null }[] = [];
+    (spaces ?? []).forEach((s) => merged.push({
+      key: s.key, name: s.name, source: s.source ?? 'confluence', lastSynced: s.lastSynced,
+    }));
     const localArr = Array.isArray(localSpacesData) ? localSpacesData : [];
     localArr.forEach((s) => {
       if (!merged.some((m) => m.key === s.key)) {
@@ -93,38 +95,46 @@ export function NewPagePage() {
   );
 
   /**
-   * Preselect a Confluence space once the space lists have loaded (#1122).
+   * Preselect a Confluence space once `GET /api/spaces` has answered (#1122).
    * Most articles are authored in Confluence, so starting on "Local" with an
    * empty picker made the common case two clicks longer than the rare one.
    *
-   * Every edge case resolves through the same list, which is why there is no
-   * separate probe for any of them:
-   *
-   * - **Confluence not configured / nothing synced** — no space carries
-   *   `source: 'confluence'`, so nothing is preselected and the form stays on
-   *   Local exactly as before.
-   * - **No permission to write there** — `GET /api/spaces` already returns only
+   * - **No permission to write there** — `GET /api/spaces` returns only
    *   RBAC-accessible spaces, and `POST /api/pages` gates a Confluence create on
    *   that same `getUserAccessibleSpaces` check. Preselecting from this list
    *   therefore cannot preselect a space the app would reject. (Confluence's own
    *   PAT permissions can still refuse, but that is strictly narrower than what
    *   any client-side check could predict, and it already surfaces on create.)
+   * - **Confluence not configured** — nothing is RBAC-assigned and nothing is
+   *   synced, so the list holds no Confluence space and the form stays on Local
+   *   exactly as before.
+   * - **Assigned but not yet synced** — `GET /api/spaces` appends those keys
+   *   with `source: 'confluence'`, `lastSynced: null` and the key as the name
+   *   (`spaces.ts`, `unsyncedSelections`). They are legitimate create targets —
+   *   `POST /api/pages` writes straight to Confluence, not to the mirror — but a
+   *   space the user demonstrably works in is the better guess, so a synced one
+   *   wins and an unsynced one is only the fallback.
    * - **Which of several** — the space the user last created in, if they can
    *   still reach it; otherwise the first, which the API returns sorted by name.
    */
   useEffect(() => {
     if (preselectSettled.current) return;
-    // Wait for both queries; `allSpaces` is non-empty long before it is complete.
-    if (!spaces || !localSpacesData) return;
+    // Only `spaces` feeds `confluenceSpaces` — every entry from
+    // `localSpacesData` is forced to `source: 'local'` above — so waiting on the
+    // local-spaces query too would just delay this, and strand it entirely if
+    // that query failed.
+    if (!spaces) return;
 
     preselectSettled.current = true;
     if (confluenceSpaces.length === 0) return;
 
     const remembered = readLastConfluenceSpace();
-    const chosen = confluenceSpaces.find((s) => s.key === remembered) ?? confluenceSpaces[0]!;
+    const chosen = confluenceSpaces.find((s) => s.key === remembered)
+      ?? confluenceSpaces.find((s) => s.lastSynced)
+      ?? confluenceSpaces[0]!;
     setArticleType('confluence');
     setSpaceKey(chosen.key);
-  }, [spaces, localSpacesData, confluenceSpaces]);
+  }, [spaces, confluenceSpaces]);
 
   const handleCreate = async () => {
     if (!title.trim()) {
@@ -190,6 +200,11 @@ export function NewPagePage() {
   // Explain WHY create is disabled — but not while a create is in flight
   // (the button already says "Creating...").
   const showCreateHint = isCreateDisabled && !createMutation.isPending;
+  // With a space preselected (#1122), "select a space" is usually already done —
+  // saying so anyway sends the user hunting for a control that is fine.
+  const createHint = !spaceKey
+    ? (title.trim() ? 'Select a space first' : 'Enter a title and select a space first')
+    : 'Enter a title first';
 
   return (
     <div>
@@ -241,7 +256,7 @@ export function NewPagePage() {
                   sets pointer-events:none on :disabled, so a tooltip on the button
                   itself would never show while it is disabled — exactly when the
                   user needs to know why. */}
-              <span title={showCreateHint ? 'Enter a title and select a space first' : undefined}>
+              <span title={showCreateHint ? createHint : undefined}>
                 <button
                   onClick={handleCreate}
                   disabled={isCreateDisabled}
@@ -259,7 +274,7 @@ export function NewPagePage() {
               need the explanation as real, aria-linked text. */}
           {showCreateHint && (
             <p id="create-page-hint" className="text-right text-xs text-muted-foreground">
-              Enter a title and select a space first
+              {createHint}
             </p>
           )}
 

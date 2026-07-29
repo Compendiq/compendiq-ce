@@ -48,6 +48,11 @@ const DEFAULT_CONFLUENCE_SPACES = [
   { key: 'OPS', name: 'Operations', homepageId: null, lastSynced: '2026-03-01T00:00:00Z', pageCount: 5 },
 ];
 
+/** What `GET /api/spaces` appends for an RBAC-assigned space with nothing synced. */
+function unsyncedSpace(key: string) {
+  return { key, name: key, homepageId: null, lastSynced: null, pageCount: 0 };
+}
+
 vi.mock('../../shared/hooks/use-spaces', () => ({
   useSpaces: () => ({ data: spacesState.confluence }),
 }));
@@ -188,7 +193,7 @@ describe('NewPagePage', () => {
     expect(screen.getByRole('button', { name: /back to pages/i })).toBeInTheDocument();
   });
 
-  it('shows article type toggle defaulting to Local Article', () => {
+  it('renders both article type toggle buttons', () => {
     render(<NewPagePage />, { wrapper: createWrapper() });
     expect(screen.getByTestId('article-type-local')).toBeInTheDocument();
     expect(screen.getByTestId('article-type-confluence')).toBeInTheDocument();
@@ -317,6 +322,45 @@ describe('NewPagePage', () => {
     // Confluence unconfigured, or configured but nothing synced yet: there is
     // no Confluence space to preselect, so the form must stay exactly as it
     // was rather than landing on a type with an empty picker.
+    // `GET /api/spaces` appends RBAC-assigned-but-unsynced keys with
+    // `source: 'confluence'` and `lastSynced: null` (spaces.ts,
+    // `unsyncedSelections`), so "nothing synced" does NOT mean "no Confluence
+    // space". They are valid create targets — POST /api/pages writes straight
+    // to Confluence — but a space the user demonstrably works in is a better
+    // guess, so a synced one wins.
+    it('prefers a synced Confluence space over an assigned-but-unsynced one', async () => {
+      spacesState.confluence = [unsyncedSpace('AAA'), ...DEFAULT_CONFLUENCE_SPACES];
+
+      render(<NewPagePage />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect((screen.getByTestId('space-selector') as HTMLSelectElement).value).toBe('DEV');
+      });
+    });
+
+    it('falls back to an unsynced Confluence space when that is all there is', async () => {
+      spacesState.confluence = [unsyncedSpace('AAA'), unsyncedSpace('BBB')];
+
+      render(<NewPagePage />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('article-type-confluence')).toHaveAttribute('aria-pressed', 'true');
+      });
+      expect((screen.getByTestId('space-selector') as HTMLSelectElement).value).toBe('AAA');
+    });
+
+    // A remembered space still wins over both — the user chose it.
+    it('still honours a remembered space even when it is unsynced', async () => {
+      localStorage.setItem('compendiq:last-confluence-space', 'BBB');
+      spacesState.confluence = [unsyncedSpace('BBB'), ...DEFAULT_CONFLUENCE_SPACES];
+
+      render(<NewPagePage />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect((screen.getByTestId('space-selector') as HTMLSelectElement).value).toBe('BBB');
+      });
+    });
+
     it('stays on Local when there is no Confluence space', async () => {
       spacesState.confluence = [];
 
@@ -487,15 +531,34 @@ describe('NewPagePage', () => {
     });
   });
 
-  it('explains the disabled Create Page button via a hover hint', () => {
+  it('explains the disabled Create Page button via a hover hint', async () => {
     render(<NewPagePage />, { wrapper: createWrapper() });
+    await waitFor(() => {
+      expect((screen.getByTestId('space-selector') as HTMLSelectElement).value).toBe('DEV');
+    });
     const createBtn = screen.getByText('Create Page').closest('button')!;
     expect(createBtn).toBeDisabled();
     // nm-button-primary sets pointer-events:none on :disabled, which swallows
     // a title tooltip placed on the button itself — the wrapping span carries it.
     const hintCarrier = createBtn.closest('[title]');
     expect(hintCarrier).not.toBeNull();
-    expect(hintCarrier).toHaveAttribute('title', 'Enter a title and select a space first');
+    // A space is already selected (#1122), so naming it would send the user
+    // hunting for a control that is fine.
+    expect(hintCarrier).toHaveAttribute('title', 'Enter a title first');
+  });
+
+  it('still names the space when there is none selected', async () => {
+    spacesState.confluence = [];
+    render(<NewPagePage />, { wrapper: createWrapper() });
+    await waitFor(() => {
+      expect(screen.getByTestId('article-type-local')).toHaveAttribute('aria-pressed', 'true');
+    });
+
+    const createBtn = screen.getByText('Create Page').closest('button')!;
+    expect(createBtn.closest('[title]')).toHaveAttribute('title', 'Enter a title and select a space first');
+
+    fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'Titled' } });
+    expect(createBtn.closest('[title]')).toHaveAttribute('title', 'Select a space first');
   });
 
   it('drops the hover hint once the Create Page button is enabled', async () => {
@@ -508,15 +571,18 @@ describe('NewPagePage', () => {
     expect(screen.getByText('Create Page').closest('[title]')).toBeNull();
   });
 
-  it('shows the disabled-create hint as visible text wired via aria-describedby', () => {
+  it('shows the disabled-create hint as visible text wired via aria-describedby', async () => {
     // A title tooltip is mouse-only — keyboard, touch and screen-reader users
     // need the explanation too, so it must exist as real text in the DOM and
     // be linked to the button for assistive tech.
     render(<NewPagePage />, { wrapper: createWrapper() });
+    await waitFor(() => {
+      expect((screen.getByTestId('space-selector') as HTMLSelectElement).value).toBe('DEV');
+    });
     const createBtn = screen.getByText('Create Page').closest('button')!;
     expect(createBtn).toBeDisabled();
 
-    const hint = screen.getByText('Enter a title and select a space first', {
+    const hint = screen.getByText('Enter a title first', {
       selector: '#create-page-hint',
     });
     expect(hint).toBeInTheDocument();

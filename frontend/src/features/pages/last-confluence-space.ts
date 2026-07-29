@@ -10,7 +10,8 @@
  * A remembered key is only ever a *hint*. The caller must check it against the
  * spaces the current user can actually reach before using it — the value is
  * per-browser, not per-user, and a space can be unsynced or a role revoked
- * between visits.
+ * between visits. It is also cleared on logout, so the next user in the same
+ * tab is not shown a space key belonging to the previous one.
  */
 
 const STORAGE_KEY = 'compendiq:last-confluence-space';
@@ -31,5 +32,19 @@ export function rememberConfluenceSpace(spaceKey: string): void {
     localStorage.setItem(STORAGE_KEY, spaceKey);
   } catch {
     // Ignore: the preselection is a convenience, never a correctness concern.
+  }
+}
+
+/**
+ * Forget the remembered space. Called from the logout choke point: the key is
+ * per-browser, and while it can never grant access — the caller re-checks it
+ * against the current user's spaces — the key *name* is still the previous
+ * user's business.
+ */
+export function forgetLastConfluenceSpace(): void {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // Nothing stored, nothing to forget.
   }
 }

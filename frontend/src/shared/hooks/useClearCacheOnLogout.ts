@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '../../stores/auth-store';
+import { forgetLastConfluenceSpace } from '../../features/pages/last-confluence-space';
 
 /**
  * Wipe the in-memory TanStack Query cache whenever the session ends.
@@ -11,6 +12,10 @@ import { useAuthStore } from '../../stores/auth-store';
  * ['permissions', …]), so without an explicit clear the next user in the same
  * tab would read the previous user's cached pages, search results, and cached
  * `allowed` permission results (issue #885).
+ *
+ * It also drops the remembered New Page space (#1122): that lives in
+ * localStorage rather than the query cache, so `queryClient.clear()` would
+ * leave the previous user's space key behind.
  *
  * This is the single choke point for every clearAuth path — the logout button,
  * the api.ts token-expiry handlers, the cross-tab storage event, and a failed
@@ -26,6 +31,7 @@ export function useClearCacheOnLogout(): void {
   useEffect(() => {
     if (wasAuthenticated.current && !isAuthenticated) {
       queryClient.clear();
+      forgetLastConfluenceSpace();
     }
     wasAuthenticated.current = isAuthenticated;
   }, [isAuthenticated, queryClient]);
