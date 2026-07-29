@@ -8,6 +8,35 @@ export const ImprovementTypeSchema = z.enum([
   'completeness',
 ]);
 
+/**
+ * #1154: the image-staging endpoint accepts four raster formats. Like
+ * SUPPORTED_DOCUMENT_FORMATS below, this list is the single source of truth —
+ * the backend sniffing table and the upload UI's `accept` list both derive
+ * from it, so SVG's exclusion cannot drift between them. SVG is out for two
+ * independent reasons: vision encoders need raster, and it carries script and
+ * external-entity risk.
+ */
+export const SUPPORTED_IMAGE_FORMATS = ['png', 'jpeg', 'webp', 'gif'] as const;
+
+export const ImageFormatSchema = z.enum(SUPPORTED_IMAGE_FORMATS);
+
+/**
+ * Content-addressed staging id: the sha256 of the validated bytes, lowercase
+ * hex. The regex is a security control, not tidiness — the handle is
+ * interpolated into the Redis key `llm:img:<userId>:<sha256>`, so a bare
+ * z.string() would permit key injection.
+ */
+export const ImageHandleSchema = z.string().regex(/^[0-9a-f]{64}$/);
+
+export const PrepareImageResponseSchema = z.object({
+  /** Format the server *sniffed* from the bytes — never the client's Content-Type. */
+  format: ImageFormatSchema,
+  handle: ImageHandleSchema,
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+  fileSize: z.number().int().nonnegative(),
+});
+
 export const ImproveRequestSchema = z.object({
   content: z.string().min(1),
   type: ImprovementTypeSchema,
@@ -29,6 +58,7 @@ export const ImproveRequestSchema = z.object({
   thinking: z.boolean().optional(),
   searchWeb: z.boolean().optional(),
   searchQuery: z.string().max(500).optional(),
+  imageHandle: ImageHandleSchema.optional(), // #1154: staged image handle from POST /llm/prepare-image
 });
 
 export const GenerateRequestSchema = z.object({
@@ -49,6 +79,7 @@ export const GenerateRequestSchema = z.object({
   thinking: z.boolean().optional(),
   searchWeb: z.boolean().optional(),
   searchQuery: z.string().max(500).optional(),
+  imageHandle: ImageHandleSchema.optional(), // #1154: staged image handle from POST /llm/prepare-image
 });
 
 /**
@@ -174,3 +205,5 @@ export type OllamaModel = z.infer<typeof OllamaModelSchema>;
 export type DocumentFormat = z.infer<typeof DocumentFormatSchema>;
 export type ExtractDocumentResponse = z.infer<typeof ExtractDocumentResponseSchema>;
 export type EmbeddingStatus = z.infer<typeof EmbeddingStatusSchema>;
+export type ImageFormat = z.infer<typeof ImageFormatSchema>;
+export type PrepareImageResponse = z.infer<typeof PrepareImageResponseSchema>;
