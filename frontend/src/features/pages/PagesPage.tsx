@@ -18,6 +18,12 @@ import { KPICards } from './KPICards';
 import { BulkActionBar } from './BulkActionBar';
 import { bulkWireId } from '../../shared/hooks/use-bulk-page-actions';
 import { PinnedArticlesSection } from './PinnedArticlesSection';
+import {
+  readFilterState,
+  applyFilterPatch,
+  hasAdvancedFilters,
+  type PageFilterState,
+} from './pages-filter-params';
 import { cn } from '../../shared/lib/cn';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 import { ShortcutHint } from '../../shared/components/ShortcutHint';
@@ -205,25 +211,42 @@ const PageListItem = memo(function PageListItem({
 
 export function PagesPage() {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const isLight = useIsLightTheme();
-  const [spaceKey, setSpaceKey] = useState<string>('');
-  // Seed from `?search=` so a search can be linked to — the 404 page hands off
-  // the user's query this way, and it makes result URLs shareable. Read once
-  // on mount; typing afterwards owns the state and does not rewrite the URL.
-  const [search, setSearch] = useState(() => searchParams.get('search') ?? '');
-  const [author, setAuthor] = useState<string>('');
-  const [labels, setLabels] = useState<string>('');
-  const [freshness, setFreshness] = useState<string>('');
-  const [embeddingStatus, setEmbeddingStatus] = useState<string>('');
-  const [qualityFilter, setQualityFilter] = useState<string>('');
-  const [dateFrom, setDateFrom] = useState<string>('');
-  const [dateTo, setDateTo] = useState<string>('');
-  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
-  const [page, setPage] = useState(1);
-  const [sort, setSort] = useState<'title' | 'modified' | 'author' | 'quality' | 'relevance'>('modified');
-  const [sourceFilter, setSourceFilter] = useState<PageSource | ''>('');
-  const [searchMode, setSearchMode] = useState<'keyword' | 'semantic' | 'hybrid'>('keyword');
+
+  // Filter / search / sort / pagination state lives in the URL, not in
+  // component state (#1124). Opening an article unmounts this page; on the way
+  // back React remounts it, and `useState` seeds would come back empty while
+  // the URL does not. Routing it through the URL fixes browser back, in-app
+  // back and deep links at once, and makes a filtered view shareable — which
+  // is the part a Zustand store could not do.
+  const filters = useMemo(() => readFilterState(searchParams), [searchParams]);
+  const { space: spaceKey, author, labels, freshness, quality: qualityFilter,
+    from: dateFrom, to: dateTo, source: sourceFilter, sort, mode: searchMode, page } = filters;
+  const embeddingStatus = filters.embedding;
+
+  /**
+   * Write a filter change back to the URL.
+   *
+   * `replace: true` is load-bearing: pushing an entry per filter change would
+   * turn the Back button into "undo one filter", so returning to the article
+   * you came from would take a dozen presses. With replace, the only pushed
+   * entry between the overview and an article is the article itself — so one
+   * Back lands on the overview with its filters intact, which is the bug.
+   */
+  const setFilters = useCallback((patch: Partial<PageFilterState>) => {
+    setSearchParams((prev) => applyFilterPatch(prev, patch), { replace: true });
+  }, [setSearchParams]);
+
+  // The search box keeps its own state so typing never waits on a navigation:
+  // the URL carries the *settled* term, written once the user pauses. Seeded
+  // from the URL so a deep link (or a back-navigation) starts in sync.
+  const [searchInput, setSearchInput] = useState(filters.search);
+  const search = searchInput;
+
+  // Open the advanced panel when the URL arrives carrying one of its filters —
+  // otherwise the user lands on a short result set whose cause is hidden.
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(() => hasAdvancedFilters(filters));
 
   // Bulk selection. Held as a Set of page ids so toggling stays O(1) and the
   // memoised PageListItem only re-renders for rows whose own state changed.
@@ -231,18 +254,34 @@ export function PagesPage() {
   const lastToggledId = useRef<string | null>(null);
 
   // Debounce the search term before it reaches the keyword /pages query.
-  // Typing stays responsive because `search` still drives the input value,
+  // Typing stays responsive because `searchInput` drives the input value,
   // clear button, sort switch and semantic-mode gate synchronously; only the
   // network request waits for a 300ms pause (mirrors useSearch). Without this
   // every keystroke minted a new query key and fired a fresh, rate-limited
   // GET /pages?search=… (#874).
-  // Seeded from the same `?search=` param so a linked search fetches results
-  // on the first render instead of after an empty-list flash plus 300ms.
-  const [debouncedSearch, setDebouncedSearch] = useState(() => searchParams.get('search') ?? '');
+  //
+  // The URL now *is* the debounced term (#1124), which collapses what used to
+  // be two pieces of state into one and keeps a keystroke from writing history
+  // on every character. A deep-linked `?search=` therefore fetches on the first
+  // render instead of after an empty-list flash plus 300ms.
+  const debouncedSearch = filters.search;
   useEffect(() => {
-    const timer = setTimeout(() => setDebouncedSearch(search), 300);
+    if (searchInput === filters.search) return;
+    const timer = setTimeout(() => setFilters({ search: searchInput, page: 1 }), 300);
     return () => clearTimeout(timer);
-  }, [search]);
+  }, [searchInput, filters.search, setFilters]);
+
+  // Re-seed the box when the URL's term changes underneath us — a back/forward
+  // press or an in-app link that lands on `/?search=…` without unmounting this
+  // page. Adjusting state during render (rather than in an effect) is the React
+  // idiom for this: an effect would let one frame render the stale term, and
+  // the debounce above would then push it straight back into the URL, undoing
+  // the navigation the user just made.
+  const urlSearchRef = useRef(filters.search);
+  if (urlSearchRef.current !== filters.search) {
+    urlSearchRef.current = filters.search;
+    if (filters.search !== searchInput) setSearchInput(filters.search);
+  }
 
   const { data: settings } = useSettings();
   const { data: spaces } = useSpaces();
@@ -342,45 +381,39 @@ export function PagesPage() {
 
   const activeFilters = useMemo(() => {
     const filters: { key: string; label: string }[] = [];
+    // Keys are the URL param names so `clearFilter` can act on them directly.
     if (author) filters.push({ key: 'author', label: `Author: ${author}` });
     if (labels) filters.push({ key: 'labels', label: `Label: ${labels}` });
     if (freshness) filters.push({ key: 'freshness', label: `Freshness: ${freshness}` });
-    if (embeddingStatus) filters.push({ key: 'embeddingStatus', label: `Embedding: ${embeddingStatus}` });
-    if (qualityFilter) filters.push({ key: 'qualityFilter', label: `Quality: ${qualityFilter}` });
-    if (dateFrom) filters.push({ key: 'dateFrom', label: `From: ${dateFrom}` });
-    if (dateTo) filters.push({ key: 'dateTo', label: `To: ${dateTo}` });
-    if (sourceFilter) filters.push({ key: 'sourceFilter', label: `Source: ${SOURCE_LABELS[sourceFilter]}` });
+    if (embeddingStatus) filters.push({ key: 'embedding', label: `Embedding: ${embeddingStatus}` });
+    if (qualityFilter) filters.push({ key: 'quality', label: `Quality: ${qualityFilter}` });
+    if (dateFrom) filters.push({ key: 'from', label: `From: ${dateFrom}` });
+    if (dateTo) filters.push({ key: 'to', label: `To: ${dateTo}` });
+    if (sourceFilter) filters.push({ key: 'source', label: `Source: ${SOURCE_LABELS[sourceFilter]}` });
     return filters;
   }, [author, labels, freshness, embeddingStatus, qualityFilter, dateFrom, dateTo, sourceFilter]);
 
   const activeFilterCount = activeFilters.length;
 
+  // The pill keys are the URL param names, so a pill clears exactly the param
+  // it renders — no second mapping table to drift out of sync.
   const clearFilter = useCallback((key: string) => {
-    const setters: Record<string, (v: '') => void> = {
-      author: setAuthor,
-      labels: setLabels,
-      freshness: setFreshness,
-      embeddingStatus: setEmbeddingStatus,
-      qualityFilter: setQualityFilter,
-      dateFrom: setDateFrom,
-      dateTo: setDateTo,
-      sourceFilter: setSourceFilter,
-    };
-    setters[key]?.('');
-    setPage(1);
-  }, []);
+    setFilters({ [key]: '', page: 1 } as Partial<PageFilterState>);
+  }, [setFilters]);
 
   const clearAllFilters = useCallback(() => {
-    setAuthor('');
-    setLabels('');
-    setFreshness('');
-    setEmbeddingStatus('');
-    setQualityFilter('');
-    setDateFrom('');
-    setDateTo('');
-    setSourceFilter('');
-    setPage(1);
-  }, []);
+    setFilters({
+      author: '',
+      labels: '',
+      freshness: '',
+      embedding: '',
+      quality: '',
+      from: '',
+      to: '',
+      source: '',
+      page: 1,
+    });
+  }, [setFilters]);
 
   const navigateToPage = useCallback((id: string) => {
     navigate(`/pages/${id}`);
@@ -567,23 +600,27 @@ export function PagesPage() {
               value={search}
               onChange={(e) => {
                 const val = e.target.value;
-                setSearch(val);
-                setPage(1);
+                setSearchInput(val);
                 if (val.trim()) {
-                  setSort('relevance');
+                  // Only on the transition, so a URL write costs one navigation
+                  // per search rather than one per keystroke.
+                  if (sort !== 'relevance') setFilters({ sort: 'relevance', page: 1 });
                 } else {
-                  // Field emptied: reset the debounced term synchronously so the
-                  // pending 300ms fetch never fires the stale term, and drop the
+                  // Field emptied: clear the settled term synchronously so the
+                  // pending 300ms write never lands the stale one, and drop the
                   // relevance sort back to modified (#874).
-                  setDebouncedSearch('');
-                  if (sort === 'relevance') setSort('modified');
+                  setFilters({ search: '', page: 1, ...(sort === 'relevance' ? { sort: 'modified' } : {}) });
                 }
               }}
               className="nm-input pl-10 pr-10"
             />
             {search && (
               <button
-                onClick={() => { setSearch(''); setDebouncedSearch(''); setPage(1); setSearchMode('keyword'); if (sort === 'relevance') setSort('modified'); searchInputRef.current?.focus(); }}
+                onClick={() => {
+                  setSearchInput('');
+                  setFilters({ search: '', page: 1, mode: 'keyword', ...(sort === 'relevance' ? { sort: 'modified' } : {}) });
+                  searchInputRef.current?.focus();
+                }}
                 className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full p-0.5 text-muted-foreground hover:text-foreground"
                 data-testid="search-clear"
                 aria-label="Clear search"
@@ -599,7 +636,7 @@ export function PagesPage() {
                 <button
                   key={m}
                   data-testid={`search-mode-${m}`}
-                  onClick={() => { setSearchMode(m); setPage(1); }}
+                  onClick={() => setFilters({ mode: m, page: 1 })}
                   aria-pressed={searchMode === m}
                   className={cn(
                     'rounded-full px-3 py-1 text-xs font-medium transition-all capitalize',
@@ -618,7 +655,7 @@ export function PagesPage() {
 
           <select
             value={spaceKey}
-            onChange={(e) => { setSpaceKey(e.target.value); setPage(1); setForcePageList(false); }}
+            onChange={(e) => { setFilters({ space: e.target.value, page: 1 }); setForcePageList(false); }}
             className="nm-select-md w-40 shrink-0"
             aria-label="Filter by space"
           >
@@ -630,7 +667,7 @@ export function PagesPage() {
 
           <select
             value={sourceFilter}
-            onChange={(e) => { setSourceFilter(e.target.value as PageSource | ''); setPage(1); }}
+            onChange={(e) => setFilters({ source: e.target.value as PageSource | '', page: 1 })}
             className="nm-select-md w-32 shrink-0"
             data-testid="filter-source"
             aria-label="Filter by source"
@@ -643,7 +680,7 @@ export function PagesPage() {
 
           <select
             value={sort}
-            onChange={(e) => setSort(e.target.value as typeof sort)}
+            onChange={(e) => setFilters({ sort: e.target.value as typeof sort })}
             className="nm-select-md w-40 shrink-0"
             aria-label="Sort pages"
           >
@@ -688,7 +725,7 @@ export function PagesPage() {
               <select
                 id="filter-author-select"
                 value={author}
-                onChange={(e) => { setAuthor(e.target.value); setPage(1); }}
+                onChange={(e) => setFilters({ author: e.target.value, page: 1 })}
                 className="nm-select-md w-full"
                 data-testid="filter-author"
               >
@@ -705,7 +742,7 @@ export function PagesPage() {
               <select
                 id="filter-labels-select"
                 value={labels}
-                onChange={(e) => { setLabels(e.target.value); setPage(1); }}
+                onChange={(e) => setFilters({ labels: e.target.value, page: 1 })}
                 className="nm-select-md w-full"
                 data-testid="filter-labels"
               >
@@ -722,7 +759,7 @@ export function PagesPage() {
               <select
                 id="filter-freshness-select"
                 value={freshness}
-                onChange={(e) => { setFreshness(e.target.value); setPage(1); }}
+                onChange={(e) => setFilters({ freshness: e.target.value, page: 1 })}
                 className="nm-select-md w-full"
                 data-testid="filter-freshness"
               >
@@ -740,7 +777,7 @@ export function PagesPage() {
               <select
                 id="filter-embedding-select"
                 value={embeddingStatus}
-                onChange={(e) => { setEmbeddingStatus(e.target.value); setPage(1); }}
+                onChange={(e) => setFilters({ embedding: e.target.value, page: 1 })}
                 className="nm-select-md w-full"
                 data-testid="filter-embedding"
               >
@@ -756,7 +793,7 @@ export function PagesPage() {
               <select
                 id="filter-quality-select"
                 value={qualityFilter}
-                onChange={(e) => { setQualityFilter(e.target.value); setPage(1); }}
+                onChange={(e) => setFilters({ quality: e.target.value, page: 1 })}
                 className="nm-select-md w-full"
                 data-testid="filter-quality"
               >
@@ -775,7 +812,7 @@ export function PagesPage() {
                 id="filter-date-from-input"
                 type="date"
                 value={dateFrom}
-                onChange={(e) => { setDateFrom(e.target.value); setPage(1); }}
+                onChange={(e) => setFilters({ from: e.target.value, page: 1 })}
                 className="nm-select-md w-full"
                 data-testid="filter-date-from"
               />
@@ -786,7 +823,7 @@ export function PagesPage() {
                 id="filter-date-to-input"
                 type="date"
                 value={dateTo}
-                onChange={(e) => { setDateTo(e.target.value); setPage(1); }}
+                onChange={(e) => setFilters({ to: e.target.value, page: 1 })}
                 className="nm-select-md w-full"
                 data-testid="filter-date-to"
               />
@@ -977,7 +1014,7 @@ export function PagesPage() {
           {searchResults.totalPages > 1 && (
             <div className="flex items-center justify-center gap-4">
               <button
-                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                onClick={() => setFilters({ page: Math.max(1, page - 1) })}
                 disabled={page <= 1}
                 aria-label="Previous page"
                 className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm p-2 disabled:opacity-30"
@@ -988,7 +1025,7 @@ export function PagesPage() {
                 Page {page} of {searchResults.totalPages}
               </span>
               <button
-                onClick={() => setPage((p) => Math.min(searchResults.totalPages, p + 1))}
+                onClick={() => setFilters({ page: Math.min(searchResults.totalPages, page + 1) })}
                 disabled={page >= searchResults.totalPages}
                 aria-label="Next page"
                 className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm p-2 disabled:opacity-30"
@@ -1105,7 +1142,7 @@ export function PagesPage() {
           {pagesData && pagesData.totalPages > 1 && (
             <div className="flex items-center justify-center gap-4">
               <button
-                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                onClick={() => setFilters({ page: Math.max(1, page - 1) })}
                 disabled={page <= 1}
                 aria-label="Previous page"
                 className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm p-2 disabled:opacity-30"
@@ -1116,7 +1153,7 @@ export function PagesPage() {
                 Page {page} of {pagesData.totalPages}
               </span>
               <button
-                onClick={() => setPage((p) => Math.min(pagesData.totalPages, p + 1))}
+                onClick={() => setFilters({ page: Math.min(pagesData.totalPages, page + 1) })}
                 disabled={page >= pagesData.totalPages}
                 aria-label="Next page"
                 className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm p-2 disabled:opacity-30"

@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react';
-import { Routes, Route, Navigate, useSearchParams } from 'react-router-dom';
+import { Routes, Route, Navigate, useSearchParams, useLocation } from 'react-router-dom';
 import { LazyMotion, MotionConfig, domAnimation } from 'framer-motion';
 import { useAuthStore } from './stores/auth-store';
 import { useSessionInit } from './shared/hooks/useSessionInit';
@@ -139,6 +139,18 @@ function SetupRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+/**
+ * `/pages` is a legacy alias for the overview, which lives at `/`.
+ *
+ * The redirect has to carry the query string: the overview's filter, search,
+ * sort and page state lives there (#1124), so a bare `<Navigate to="/">` would
+ * quietly turn a shared `/pages?source=confluence` link into an unfiltered one.
+ */
+function PagesAliasRedirect() {
+  const { search } = useLocation();
+  return <Navigate to={{ pathname: '/', search }} replace />;
+}
+
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const { setupComplete, isLoading, error } = useSetupStatus();
@@ -188,7 +200,7 @@ export function App() {
                             <Route path="/" element={<PagesPage />} />
                             <Route
                               path="/pages"
-                              element={<Navigate to="/" replace />}
+                              element={<PagesAliasRedirect />}
                             />
                             <Route
                               path="/pages/new"
