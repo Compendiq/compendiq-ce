@@ -115,4 +115,20 @@ describe('probeVision', () => {
     mockChat.mockRejectedValue(new Error('chat HTTP 500'));
     expect((await probeVision(CFG, 'm')).vision).toBeNull();
   });
+
+  /**
+   * These 4xx statuses carry no information about image support: 429 is a
+   * rate limit, 401/403 are auth failures, 404 is a missing model or route.
+   * None of them mean "the provider understood the request and refused the
+   * image part" — only 400/415/422 do. Misclassifying these as a definitive
+   * `false` would permanently brand a rate-limited or misconfigured but
+   * vision-capable model as blind, since only `null` verdicts get re-probed.
+   */
+  it.each([429, 401, 403, 404])(
+    'returns vision:null (not false) on HTTP %i — not a content rejection',
+    async (status) => {
+      mockChat.mockRejectedValue(new Error(`chat HTTP ${status}`));
+      expect((await probeVision(CFG, 'm')).vision).toBeNull();
+    },
+  );
 });

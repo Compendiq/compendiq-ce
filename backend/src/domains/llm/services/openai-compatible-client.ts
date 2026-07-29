@@ -155,6 +155,10 @@ export interface StreamChatOptions {
    * field. Unlike `thinking`'s provider-specific extras, this field is part
    * of the OpenAI chat-completions spec that every host in `STRICT_HOSTS`
    * already accepts, so it is sent unconditionally — no strict-host gating.
+   *
+   * Honoured by `chat()` only, not `streamChat()` — the only current caller
+   * (the vision probe) uses `chat()`. Wire it into `streamChat()`'s body too
+   * if a streaming caller ever needs it; today it would silently no-op there.
    */
   maxTokens?: number;
 }
