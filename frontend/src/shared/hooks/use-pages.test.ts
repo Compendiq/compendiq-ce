@@ -263,12 +263,16 @@ describe('usePinPage', () => {
       result.current.mutate('page-2');
     });
 
-    // Check optimistic state: the new page should appear immediately
+    // Check optimistic state: the new page should appear immediately, and
+    // FIRST — the server returns `ORDER BY pinned_at DESC`, so a new pin is the
+    // newest item. Appending it put it last, which since #1130 means it lands
+    // past the dashboard's collapsed cut-off: the card the user just pinned
+    // would vanish until the refetch moved it to the top.
     await waitFor(() => {
       const data = queryClient.getQueryData<{ items: PinnedPage[]; total: number }>(['pages', 'pinned']);
       expect(data).toBeDefined();
       expect(data!.items).toHaveLength(2);
-      expect(data!.items[1].id).toBe('page-2');
+      expect(data!.items[0].id).toBe('page-2');
       expect(data!.total).toBe(2);
     });
   });

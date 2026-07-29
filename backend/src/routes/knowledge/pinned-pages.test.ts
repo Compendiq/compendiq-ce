@@ -204,6 +204,19 @@ describe('Pinned Pages API', () => {
       expect(body.total).toBe(0);
     });
 
+    // The row count is unbounded since #1130, so the excerpt has to be
+    // truncated by Postgres — otherwise every pinned article's full TOASTed
+    // body crosses the wire to be thrown away in JS.
+    it('should truncate the excerpt in SQL, not only in JS', async () => {
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+      await app.inject({ method: 'GET', url: '/api/pages/pinned' });
+
+      const sql = mockQueryFn.mock.calls[0][0] as string;
+      expect(sql).toContain('substring(cp.body_text, 1, 200)');
+      expect(sql).not.toMatch(/,\s*cp\.body_text\b/);
+    });
+
     it('should truncate excerpt to 200 characters', async () => {
       const longText = 'A'.repeat(500);
       mockQueryFn.mockResolvedValueOnce({
@@ -251,8 +264,9 @@ describe('Pinned Pages API', () => {
       // Verify access is gated by userCanAccessPage on the integer PK
       expect(userCanAccessPage).toHaveBeenCalledWith('test-user-id', 42);
 
-      // Verify the insert (second query) stores the integer PK
-      expect(mockQueryFn.mock.calls[1][1]).toEqual(['test-user-id', 42, 8]);
+      // Verify the insert (second query) stores the integer PK. Two params
+      // only — the third was the pin cap, removed in #1130.
+      expect(mockQueryFn.mock.calls[1][1]).toEqual(['test-user-id', 42]);
     });
 
     it('should return 404 when page does not exist', async () => {
@@ -275,10 +289,34 @@ describe('Pinned Pages API', () => {
       expect(response.statusCode).toBe(400);
     });
 
-    it('should return 400 when max pin limit is reached', async () => {
+    // #1130 removed the 8-pin cap. There is no count guard left to trip, so a
+    // user who already holds any number of pins can add another.
+    it('should pin without any cap, however many pins the user already holds', async () => {
       // already-pinned check (not pinned)
       mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-      // atomic insert returns 0 rows (count >= MAX_PINS in subquery)
+      // atomic insert (succeeded — no count guard to fail)
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/42/pin',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body).message).toBe('Page pinned');
+
+      const insertSql = mockQueryFn.mock.calls[1][0] as string;
+      expect(insertSql).not.toMatch(/COUNT\(\*\)/);
+      expect(insertSql).not.toContain('$3');
+    });
+
+    // rowCount 0 no longer means "cap reached" — with the guard gone the only
+    // way the insert affects no row is ON CONFLICT DO NOTHING, i.e. a
+    // concurrent request pinned the same page first. That is success, not 400.
+    it('should return 200 when a concurrent request already inserted the pin', async () => {
+      // already-pinned check (not pinned at the time we looked)
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      // ON CONFLICT DO NOTHING swallowed the insert
       mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
 
       const response = await app.inject({
@@ -286,9 +324,10 @@ describe('Pinned Pages API', () => {
         url: '/api/pages/42/pin',
       });
 
-      expect(response.statusCode).toBe(400);
+      expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
-      expect(body.error).toContain('Maximum of 8 pinned articles');
+      expect(body.message).toBe('Page pinned');
+      expect(body.pageId).toBe('42');
     });
 
     it('should be idempotent when pinning an already-pinned page', async () => {
@@ -307,8 +346,8 @@ describe('Pinned Pages API', () => {
       expect(mockQueryFn).toHaveBeenCalledTimes(1);
     });
 
-    it('should return 200 when re-pinning an already-pinned page at max capacity', async () => {
-      // already-pinned check (already pinned — early return before count check)
+    it('should return 200 when re-pinning an already-pinned page', async () => {
+      // already-pinned check (already pinned — early return)
       mockQueryFn.mockResolvedValueOnce({ rows: [{ page_id: 42 }], rowCount: 1 });
 
       const response = await app.inject({
@@ -337,7 +376,10 @@ describe('Pinned Pages API', () => {
       expect(response.statusCode).toBe(404);
     });
 
-    it('should use atomic INSERT with count subquery to prevent race conditions', async () => {
+    // The count guard is gone (#1130), but the insert must still be a single
+    // statement whose ON CONFLICT absorbs a concurrent duplicate — otherwise
+    // two simultaneous pins of the same page raise a unique violation.
+    it('should use a single INSERT ... ON CONFLICT DO NOTHING to absorb races', async () => {
       // already-pinned check (not pinned)
       mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
       // atomic insert
@@ -348,11 +390,10 @@ describe('Pinned Pages API', () => {
         url: '/api/pages/42/pin',
       });
 
-      // The second call should be the atomic INSERT with subquery count check
       const insertCall = mockQueryFn.mock.calls[1];
-      expect(insertCall[0]).toContain('SELECT $1, $2');
-      expect(insertCall[0]).toContain('WHERE (SELECT COUNT(*) FROM pinned_pages WHERE user_id = $1) < $3');
-      expect(insertCall[1]).toEqual(['test-user-id', 42, 8]);
+      expect(insertCall[0]).toContain('INSERT INTO pinned_pages');
+      expect(insertCall[0]).toContain('ON CONFLICT (user_id, page_id) DO NOTHING');
+      expect(insertCall[1]).toEqual(['test-user-id', 42]);
     });
   });
 
@@ -476,7 +517,7 @@ describe('Pinned Pages API', () => {
       expect(body.pageId).toBe('100');
 
       // Verify the insert (second query) stores the integer PK
-      expect(mockQueryFn.mock.calls[1][1]).toEqual(['test-user-id', 100, 8]);
+      expect(mockQueryFn.mock.calls[1][1]).toEqual(['test-user-id', 100]);
     });
 
     it('pins a standalone page (space_key NULL) via userCanAccessPage', async () => {
@@ -503,7 +544,7 @@ describe('Pinned Pages API', () => {
 
       // The insert (last query) stores the integer PK
       const lastCall = mockQueryFn.mock.calls[mockQueryFn.mock.calls.length - 1];
-      expect(lastCall[1]).toEqual(['test-user-id', 100, 8]);
+      expect(lastCall[1]).toEqual(['test-user-id', 100]);
     });
 
     it('should unpin a standalone page that has no confluence_id', async () => {

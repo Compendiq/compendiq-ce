@@ -8,7 +8,9 @@ const IdParamSchema = z.object({ id: z.string().min(1) });
 export async function pinnedPagesRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
 
-  const MAX_PINS = 8;
+  // There is deliberately no cap on how many articles a user may pin (#1130).
+  // The list is per-user, hand-curated and returned in one query; the dashboard
+  // section collapses past a handful rather than the server refusing the pin.
 
   // GET /api/pages/pinned - list pinned articles for the current user
   // pinned_pages.page_id is INTEGER FK → pages.id (migration 030)
@@ -25,8 +27,14 @@ export async function pinnedPagesRoutes(fastify: FastifyInstance) {
       last_modified_at: Date | null;
       body_text: string | null;
     }>(
+      // Truncate the excerpt in SQL, not in JS. The row count is unbounded
+      // since #1130, and `body_text` is a TOASTed full-article column — a user
+      // with 200 pins would make Postgres detoast and ship every article body
+      // just so `.slice(0, 200)` could throw all but a fraction of it away.
+      // Matches `search.ts`, which does the same for the same reason.
       `SELECT pp.page_id, pp.pin_order, pp.pinned_at,
-              cp.space_key, cp.title, cp.author, cp.last_modified_at, cp.body_text
+              cp.space_key, cp.title, cp.author, cp.last_modified_at,
+              substring(cp.body_text, 1, 200) AS body_text
        FROM pinned_pages pp
        JOIN pages cp ON cp.id = pp.page_id
        WHERE pp.user_id = $1
@@ -83,18 +91,17 @@ export async function pinnedPagesRoutes(fastify: FastifyInstance) {
       return { message: 'Page pinned', pageId: id };
     }
 
-    // Atomic insert with count check to prevent race conditions
-    const insertResult = await query(
+    // Single-statement insert. The already-pinned check above is a fast path,
+    // not a guard: two simultaneous pins of the same page both reach here, so
+    // ON CONFLICT is what keeps the second one from raising a unique
+    // violation. A rowCount of 0 therefore means "someone else pinned it a
+    // moment ago" — the same outcome the caller asked for, so it is a 200.
+    await query(
       `INSERT INTO pinned_pages (user_id, page_id, pin_order, pinned_at)
        SELECT $1, $2, COALESCE((SELECT MAX(pin_order) FROM pinned_pages WHERE user_id = $1), 0) + 1, NOW()
-       WHERE (SELECT COUNT(*) FROM pinned_pages WHERE user_id = $1) < $3
        ON CONFLICT (user_id, page_id) DO NOTHING`,
-      [userId, pageId, MAX_PINS],
+      [userId, pageId],
     );
-
-    if ((insertResult.rowCount ?? 0) === 0) {
-      throw fastify.httpErrors.badRequest(`Maximum of ${MAX_PINS} pinned articles allowed`);
-    }
 
     return { message: 'Page pinned', pageId: id };
   });
