@@ -161,9 +161,60 @@ vi.mock('./use-presence', () => ({
   usePresence: () => ({ viewers: [], selfIsEditing: false, setEditing: vi.fn() }),
 }));
 
+// Relocate (#1123). This file owns the *entry point* — which control renders
+// for which source, and whether the permission gate hides it. The dialog's own
+// behaviour (preview, acknowledgements, request bodies, error recovery) is
+// covered against a stubbed `fetch` in RelocateDialog.test.tsx, so the
+// component is stubbed here rather than dragged through this file's
+// hook-level mocks.
+let mockRelocateAllowed = true;
+vi.mock('../../shared/hooks/use-permission', () => ({
+  usePermission: (permission: string) => ({
+    allowed: permission === 'pages:relocate' ? mockRelocateAllowed : false,
+    loading: false,
+    error: null,
+  }),
+}));
+
+// The real RelocateDialog reads both space listings. This file has no global
+// fetch mock, so without these the hooks reach the network and resolve to
+// whatever a stray per-test `mockResolvedValueOnce` left behind.
+/**
+ * Minimal valid `GET /api/pages/:id/relocate/preview` body. The dialog is
+ * rendered for real (a stub cannot show that this page hands it the right
+ * `source`), so the endpoint it calls has to answer in shape.
+ */
+const RELOCATE_PREVIEW = {
+  pageId: 1,
+  title: 'Test Page',
+  source: 'standalone' as const,
+  spaceKey: null,
+  confluenceId: null,
+  target: 'confluence' as const,
+  childCount: 0,
+  subtreeEffect: null,
+  attachmentCount: 0,
+  localVersionCount: 0,
+  accessChange: {
+    from: 'Private article — only tester can read it',
+    to: 'Everyone with access to the chosen Confluence space',
+    gains: [],
+    loses: [],
+    truncated: false,
+  },
+  upstreamDeletion: null,
+};
+
+vi.mock('../../shared/hooks/use-spaces', () => ({
+  useSpaces: () => ({ data: [{ key: 'DEV', name: 'Developer Docs', source: 'confluence' }] }),
+}));
+
 vi.mock('../../shared/hooks/use-standalone', () => ({
   useSubmitFeedback: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useVerifyPage: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  // Needed by the real RelocateDialog, which this file renders rather than
+  // stubs — a stubbed child cannot show that this page hands it the right props.
+  useLocalSpaces: () => ({ data: [{ key: 'HOME', name: 'Home', source: 'local' }] }),
 }));
 
 let capturedShortcuts: Array<{ key: string; keys: string[]; mod?: boolean; alt?: boolean; shift?: boolean; description: string; category: string; action: () => void }> = [];
@@ -282,6 +333,7 @@ describe('PageViewPage', () => {
   beforeEach(() => {
     currentMockPage = mockPage;
     mockIsLoading = false;
+    mockRelocateAllowed = true;
     capturedShortcuts = [];
     mockNavigate.mockReset();
     mockUpdatePage.mockReset().mockResolvedValue(undefined);
@@ -290,7 +342,14 @@ describe('PageViewPage', () => {
     mockDeleteMutateAsync.mockReset().mockResolvedValue(undefined);
     mockDraftContent = null;
     vi.mocked(apiFetch).mockClear();
-    vi.mocked(apiFetch).mockResolvedValue({} as never);
+    // Route by URL rather than resolving `{}` for everything: the relocate
+    // dialog is rendered for real here, and an empty object is a *truthy*
+    // preview, so it renders and then dereferences `accessChange.from`.
+    vi.mocked(apiFetch).mockImplementation(async (url: string) =>
+      (typeof url === 'string' && url.includes('/relocate/preview')
+        ? RELOCATE_PREVIEW
+        : {}) as never,
+    );
     localStorage.clear();
     Element.prototype.scrollTo = vi.fn();
     useAiDockStore.setState({ open: false, seed: null });
@@ -1188,6 +1247,70 @@ describe('PageViewPage', () => {
       });
 
       scrollContainer.remove();
+    });
+  });
+
+  describe('relocate entry point (#1123)', () => {
+    it('offers "Move to Confluence" on a local article', () => {
+      currentMockPage = { ...mockPage, source: 'standalone', spaceKey: 'HOME', confluenceId: null as unknown as string };
+      render(<PageViewPage />, { wrapper: createWrapper() });
+
+      expect(screen.getByTestId('relocate-btn')).toHaveTextContent(/Move to Confluence/i);
+    });
+
+    it('offers "Move to local space" on a Confluence article', () => {
+      currentMockPage = { ...mockPage, source: 'confluence' };
+      render(<PageViewPage />, { wrapper: createWrapper() });
+
+      expect(screen.getByTestId('relocate-btn')).toHaveTextContent(/Move to local space/i);
+    });
+
+    // Hidden, not disabled: `pages:relocate` is seeded onto editor /
+    // space_admin by migration 086 and CE ships no UI for granting
+    // permissions, so a denied user has no in-product path to earning it.
+    it('renders no relocate control without the pages:relocate permission', () => {
+      mockRelocateAllowed = false;
+      currentMockPage = { ...mockPage, source: 'standalone' };
+      render(<PageViewPage />, { wrapper: createWrapper() });
+
+      expect(screen.queryByTestId('relocate-btn')).not.toBeInTheDocument();
+    });
+
+    it('opens the relocate dialog carrying the article’s own source', async () => {
+      currentMockPage = { ...mockPage, source: 'standalone' };
+      render(<PageViewPage />, { wrapper: createWrapper() });
+
+      // The real dialog, not a stand-in: CLAUDE.md puts the mock boundary at
+      // the network, and a stubbed child cannot show that this page hands it
+      // the right `source` — only that it passed *something*.
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('relocate-btn'));
+
+      await screen.findByRole('dialog');
+      // `source: 'standalone'` is what makes this the move-to-Confluence
+      // direction; the reverse dialog names an upstream deletion instead.
+      // Queried through `screen` each time rather than held as a node: Radix
+      // re-parents its portal across renders, so a captured reference goes
+      // stale and jsdom throws on the detached node.
+      await waitFor(() => {
+        expect(screen.getByRole('dialog')).toHaveTextContent(/move to confluence/i);
+      });
+
+      // Close before the test ends. Leaving a portal mounted makes RTL's
+      // cleanup race Radix's own teardown.
+      fireEvent.click(screen.getByTestId('relocate-cancel'));
+      await waitFor(() => {
+        expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      });
+    });
+
+    it('hides the relocate control while the editor is open', () => {
+      currentMockPage = { ...mockPage, source: 'standalone' };
+      render(<PageViewPage />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByText('Edit'));
+
+      expect(screen.queryByTestId('relocate-btn')).not.toBeInTheDocument();
     });
   });
 

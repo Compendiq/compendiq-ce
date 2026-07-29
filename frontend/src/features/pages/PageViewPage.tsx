@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, m } from 'framer-motion';
-import { FileText, X, Upload, ShieldCheck, Globe, Lock, ThumbsUp, ThumbsDown, AlertCircle, GitGraph } from 'lucide-react';
+import { FileText, X, Upload, Download, ShieldCheck, Globe, Lock, ThumbsUp, ThumbsDown, AlertCircle, GitGraph } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   usePage,
@@ -15,6 +15,7 @@ import {
   useDeletePage,
 } from '../../shared/hooks/use-pages';
 import { useSubmitFeedback, useVerifyPage } from '../../shared/hooks/use-standalone';
+import { usePermission } from '../../shared/hooks/use-permission';
 import { useAuthenticatedSrc } from '../../shared/hooks/use-authenticated-src';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { useKeyboardShortcuts, type ShortcutDefinition } from '../../shared/hooks/use-keyboard-shortcuts';
@@ -38,6 +39,7 @@ import { ShortcutHint } from '../../shared/components/ShortcutHint';
 import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
 import { usePresence } from './use-presence';
 import { PresenceAvatarStack } from './PresenceAvatarStack';
+import { RelocateDialog } from './RelocateDialog';
 
 function ImageLightbox({
   alt,
@@ -133,6 +135,13 @@ export function PageViewPage() {
   const unpinMutation = useUnpinPage();
   const deleteMutation_page = useDeletePage();
 
+  // #1123. A dedicated global permission, seeded onto editor / space_admin by
+  // migration 086. The control is hidden rather than disabled when denied: CE
+  // ships no UI for granting permissions, so a denied user has no in-product
+  // path to earning it, and the preview endpoint is gated on the same
+  // permission — a rendered control would 403 the moment it was used.
+  const { allowed: canRelocate } = usePermission('pages:relocate');
+
   const isPinned = pinnedData?.items.some((item) => item.id === id) ?? false;
 
   // Hide the helpfulness widget on standalone pages the current user authored
@@ -184,6 +193,8 @@ export function PageViewPage() {
   // Draft awaiting a restore decision (ConfirmDialog replaces native confirm()).
   // While non-null, edit mode is deferred until the user picks a side.
   const [pendingDraft, setPendingDraft] = useState<string | null>(null);
+  // Relocate between a local space and Confluence (#1123).
+  const [relocateOpen, setRelocateOpen] = useState(false);
 
   // Vim mode state — lifted here so we can pass it to the external toolbar
   const [vimEnabled, setVimEnabled] = useState(() =>
@@ -244,6 +255,7 @@ export function PageViewPage() {
     setEditorInstance(null);
     setConfirmDiscardOpen(false);
     setConfirmTrashOpen(false);
+    setRelocateOpen(false);
   }, [id]);
 
   useLayoutEffect(() => {
@@ -741,15 +753,33 @@ export function PageViewPage() {
             <PresenceAvatarStack viewers={presenceViewers} className="mr-1" />
             {editing ? null : (
               <>
-                {/* Publish to Confluence for standalone articles */}
-                {page.spaceKey === '__local__' && (
+                {/* Relocate between a local space and Confluence (#1123).
+                    Replaces the "Publish to Confluence coming soon" stub,
+                    which also gated on the retired `__local__` sentinel —
+                    standalone pages carry a real local space key (or null)
+                    now, so `source` is the only correct discriminator. */}
+                {canRelocate && (
                   <button
-                    onClick={() => toast.info('Publish to Confluence coming soon')}
-                    className="rounded-md px-2.5 py-1 text-xs text-blue-500 transition-colors hover:bg-blue-500/10"
-                    data-testid="publish-confluence-btn"
+                    onClick={() => setRelocateOpen(true)}
+                    className="rounded-md px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+                    data-testid="relocate-btn"
+                    title={
+                      page.source === 'standalone'
+                        ? 'Publish this article into a Confluence space'
+                        : 'Pull this page out of Confluence into a local space'
+                    }
                   >
-                    <Upload size={12} className="mr-1 inline" />
-                    Publish to Confluence
+                    {page.source === 'standalone' ? (
+                      <>
+                        <Upload size={12} className="mr-1 inline" />
+                        Move to Confluence
+                      </>
+                    ) : (
+                      <>
+                        <Download size={12} className="mr-1 inline" />
+                        Move to local space
+                      </>
+                    )}
                   </button>
                 )}
                 {/* Verify button */}
@@ -890,6 +920,19 @@ export function PageViewPage() {
           onSave={handleDrawioSave}
           onClose={handleDrawioClose}
           drawioUrl={drawioSettings?.drawioEmbedUrl}
+        />
+      )}
+
+      {/* #1123. Mounted only while open so the preview query — which is a
+          live projection of page state, not a cacheable read — never runs in
+          the background behind a closed dialog. */}
+      {relocateOpen && id && (
+        <RelocateDialog
+          open
+          pageId={id}
+          pageTitle={page.title}
+          source={page.source}
+          onClose={() => setRelocateOpen(false)}
         />
       )}
 
