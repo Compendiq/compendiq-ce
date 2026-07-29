@@ -364,8 +364,11 @@ export function RelocateDialog({ open, pageId, pageTitle, source, onClose }: Rel
 
   const { data: spaces } = useSpaces();
   const { data: localSpaces } = useLocalSpaces();
+  // `Array.isArray` rather than `?? []`: a failed or malformed `/spaces`
+  // response resolves to a non-array, and `.filter` on it takes the whole
+  // dialog down. Matches how NewPagePage guards the same data.
   const confluenceSpaces = useMemo(
-    () => (spaces ?? []).filter((space) => space.source === 'confluence'),
+    () => (Array.isArray(spaces) ? spaces : []).filter((space) => space.source === 'confluence'),
     [spaces],
   );
 
@@ -640,7 +643,7 @@ export function RelocateDialog({ open, pageId, pageTitle, source, onClose }: Rel
                           ? 'Choose a Confluence space…'
                           : 'No space — a personal article'}
                       </option>
-                      {(target === 'confluence' ? confluenceSpaces : (localSpaces ?? [])).map((space) => (
+                      {(target === 'confluence' ? confluenceSpaces : (Array.isArray(localSpaces) ? localSpaces : [])).map((space) => (
                         <option key={space.key} value={space.key}>
                           {space.name} ({space.key})
                         </option>

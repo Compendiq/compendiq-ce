@@ -176,6 +176,13 @@ vi.mock('../../shared/hooks/use-permission', () => ({
   }),
 }));
 
+// The real RelocateDialog reads both space listings. This file has no global
+// fetch mock, so without these the hooks reach the network and resolve to
+// whatever a stray per-test `mockResolvedValueOnce` left behind.
+vi.mock('../../shared/hooks/use-spaces', () => ({
+  useSpaces: () => ({ data: [{ key: 'DEV', name: 'Developer Docs', source: 'confluence' }] }),
+}));
+
 vi.mock('../../shared/hooks/use-standalone', () => ({
   useSubmitFeedback: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useVerifyPage: () => ({ mutateAsync: vi.fn(), isPending: false }),

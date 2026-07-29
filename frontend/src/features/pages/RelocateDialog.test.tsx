@@ -827,6 +827,27 @@ describe('RelocateDialog — preview failures (#1123 review)', () => {
     expect(screen.getByTestId('relocate-submit')).toBeDisabled();
   });
 
+  // A failed or malformed /spaces response used to take the whole dialog down
+  // with `(spaces ?? []).filter is not a function` — `??` does not guard a
+  // non-array. It surfaced only in CI, where the query resolved before the test
+  // ended.
+  it('survives a malformed space listing instead of crashing', async () => {
+    routes = [
+      { match: /\/api\/spaces\/local$/, respond: () => ({ body: { error: 'boom' } }) },
+      { match: /\/api\/spaces$/, respond: () => ({ body: { error: 'boom' } }) },
+      {
+        match: /\/relocate\/preview/,
+        respond: () => ({ body: standalonePreview({ localVersionCount: 0 }) }),
+      },
+    ];
+
+    renderDialog();
+
+    await awaitPreview();
+    expect(screen.getByTestId('relocate-space-select')).toBeInTheDocument();
+    expect(screen.getByTestId('relocate-submit')).toBeDisabled();
+  });
+
   // A cached `source` can be stale; the preview is the server's own answer.
   it('follows the server\'s target when it disagrees with the cached source', async () => {
     givenPreview(() => confluencePreview());
