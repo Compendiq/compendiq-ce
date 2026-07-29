@@ -60,6 +60,32 @@ describe('readFilterState', () => {
   it('keeps a valid page number', () => {
     expect(readFilterState(new URLSearchParams('page=7')).page).toBe(7);
   });
+
+  // `page` was the one value that reached the API unclamped.
+  it.each(['page=1000000', 'page=1e9', 'page=99999999999999999999'])('clamps %s to page 1', (q) => {
+    expect(readFilterState(new URLSearchParams(q)).page).toBe(1);
+  });
+
+  // A blank <input type="date"> and a 500 from a TIMESTAMPTZ comparison are
+  // both worse than falling back to "no date filter".
+  it.each([
+    'from=not-a-date',
+    'from=2025-13-01',
+    'from=2025-02-31',
+    'from=2025-1-1',
+    'from=2025-01-01T00:00:00Z',
+  ])('rejects %s', (q) => {
+    expect(readFilterState(new URLSearchParams(q)).from).toBe('');
+  });
+
+  it.each(['from=2025-01-01', 'from=2024-02-29'])('accepts %s', (q) => {
+    expect(readFilterState(new URLSearchParams(q)).from).not.toBe('');
+  });
+
+  it('validates `to` the same way as `from`', () => {
+    expect(readFilterState(new URLSearchParams('to=nope')).to).toBe('');
+    expect(readFilterState(new URLSearchParams('to=2025-02-01')).to).toBe('2025-02-01');
+  });
 });
 
 describe('applyFilterPatch', () => {
@@ -118,7 +144,7 @@ describe('hasAdvancedFilters', () => {
     expect(hasAdvancedFilters(FILTER_DEFAULTS)).toBe(false);
   });
 
-  it.each(['author=Alice', 'labels=howto', 'freshness=stale', 'embedding=done', 'quality=good', 'from=2025-01-01', 'to=2025-02-01', 'source=standalone'])(
+  it.each(['author=Alice', 'labels=howto', 'freshness=stale', 'embedding=done', 'quality=good', 'from=2025-01-01', 'to=2025-02-01'])(
     'is true for %s',
     (queryString) => {
       expect(hasAdvancedFilters(readFilterState(new URLSearchParams(queryString)))).toBe(true);
@@ -126,8 +152,10 @@ describe('hasAdvancedFilters', () => {
   );
 
   // Space, search, sort, mode and page live outside the advanced panel — they
-  // must not force it open.
-  it.each(['space=DEV', 'search=runbook', 'sort=title', 'mode=hybrid', 'page=2'])(
+  // must not force it open. Nor must `source`: its <select> sits in the
+  // always-visible top row, so opening the panel for it would reveal a panel
+  // that has nothing to do with the filter that is set.
+  it.each(['space=DEV', 'search=runbook', 'sort=title', 'mode=hybrid', 'page=2', 'source=standalone'])(
     'is false for %s',
     (queryString) => {
       expect(hasAdvancedFilters(readFilterState(new URLSearchParams(queryString)))).toBe(false);

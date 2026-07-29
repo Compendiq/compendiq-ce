@@ -146,7 +146,7 @@ function SetupRoute({ children }: { children: React.ReactNode }) {
  * sort and page state lives there (#1124), so a bare `<Navigate to="/">` would
  * quietly turn a shared `/pages?source=confluence` link into an unfiltered one.
  */
-function PagesAliasRedirect() {
+export function PagesAliasRedirect() {
   const { search } = useLocation();
   return <Navigate to={{ pathname: '/', search }} replace />;
 }

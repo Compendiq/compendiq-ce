@@ -63,15 +63,37 @@ export const ADVANCED_FILTER_KEYS = [
   'quality',
   'from',
   'to',
-  'source',
+  // `source` deliberately absent: its <select> lives in the always-visible top
+  // row, so a `?source=` link opening the advanced panel would reveal a panel
+  // that has nothing to do with the filter that is set.
 ] as const satisfies readonly (keyof PageFilterState)[];
 
 const SORT_KEYS: readonly SortKey[] = ['title', 'modified', 'author', 'quality', 'relevance'];
 const SEARCH_MODES: readonly SearchMode[] = ['keyword', 'semantic', 'hybrid'];
 
+/** Far past any real result set; only there to reject a nonsense URL. */
+const MAX_PAGE = 100_000;
+
 const FRESHNESS_VALUES = ['fresh', 'recent', 'aging', 'stale'] as const;
 const EMBEDDING_VALUES = ['pending', 'done'] as const;
 const QUALITY_VALUES = ['excellent', 'good', 'needs-work', 'poor'] as const;
+
+/** `YYYY-MM-DD`, the only form `<input type="date">` and the API both accept. */
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * A date the UI can render and the API can compare.
+ *
+ * An `<input type="date">` shows a blank field for anything else, and the value
+ * reaches a TIMESTAMPTZ comparison server-side — so a hand-edited or truncated
+ * link would produce an empty control and a 500 rather than a filtered list.
+ */
+function isoDate(raw: string | null): string {
+  if (!raw || !ISO_DATE.test(raw)) return '';
+  // Rejects 2025-02-31 and friends, which match the shape but are not dates.
+  const parsed = new Date(`${raw}T00:00:00Z`);
+  return Number.isNaN(parsed.getTime()) || !parsed.toISOString().startsWith(raw) ? '' : raw;
+}
 
 /** Falls back to `fallback` unless the raw value is one the UI can render. */
 function oneOf<T extends string>(raw: string | null, allowed: readonly T[], fallback: T): T {
@@ -84,7 +106,13 @@ function oneOf<T extends string>(raw: string | null, allowed: readonly T[], fall
  * A hand-edited or stale link is normal input here, not an error: an
  * unrecognised `sort`, `mode`, `source` or enum filter falls back to its
  * default rather than being handed to a `<select>` that has no such option
- * (which would silently render as blank) or to the API.
+ * (which would silently render as blank) or to the API. Dates are checked for
+ * shape and reality; `page` is clamped.
+ *
+ * `space`, `author` and `labels` are deliberately *not* validated here: their
+ * option lists come from `/spaces` and `/pages/filters` at runtime, so there is
+ * nothing static to check against. An unknown value there is harmless — the API
+ * returns an empty result set, which is what the URL asked for.
  */
 export function readFilterState(params: URLSearchParams): PageFilterState {
   const rawPage = Number.parseInt(params.get('page') ?? '', 10);
@@ -97,12 +125,17 @@ export function readFilterState(params: URLSearchParams): PageFilterState {
     freshness: oneOf(params.get('freshness'), FRESHNESS_VALUES, '' as never),
     embedding: oneOf(params.get('embedding'), EMBEDDING_VALUES, '' as never),
     quality: oneOf(params.get('quality'), QUALITY_VALUES, '' as never),
-    from: params.get('from') ?? FILTER_DEFAULTS.from,
-    to: params.get('to') ?? FILTER_DEFAULTS.to,
+    from: isoDate(params.get('from')),
+    to: isoDate(params.get('to')),
     source: oneOf(params.get('source'), PageSourceEnum.options, '' as PageSource | ''),
     sort: oneOf(params.get('sort'), SORT_KEYS, FILTER_DEFAULTS.sort),
     mode: oneOf(params.get('mode'), SEARCH_MODES, FILTER_DEFAULTS.mode),
-    page: Number.isFinite(rawPage) && rawPage >= 1 ? rawPage : FILTER_DEFAULTS.page,
+    // Upper bound as well as lower: `page` was the one value that reached the
+    // API unclamped, so `?page=1e9` produced an empty list rather than the
+    // default. The cap is far past any real result set.
+    page: Number.isSafeInteger(rawPage) && rawPage >= 1 && rawPage <= MAX_PAGE
+      ? rawPage
+      : FILTER_DEFAULTS.page,
   };
 }
 

@@ -1867,6 +1867,113 @@ describe('PagesPage filter persistence (#1124)', () => {
     expect(router.state.location.search).toContain('source=standalone');
   });
 
+  // `mode`, `page` and `space` moved into the URL with everything else but had
+  // no round-trip coverage of their own.
+  it('round-trips the search mode through the URL', async () => {
+    renderAt('/');
+    await screen.findByTestId('search-mode-semantic');
+
+    fireEvent.click(screen.getByTestId('search-mode-semantic'));
+
+    await waitFor(() => expect(probe()).toContain('mode=semantic'));
+  });
+
+  it('restores the search mode from the URL', async () => {
+    renderAt('/?mode=hybrid');
+    await waitFor(() => {
+      expect(screen.getByTestId('search-mode-hybrid')).toHaveAttribute('aria-pressed', 'true');
+    });
+  });
+
+  it('round-trips the space filter through the URL', async () => {
+    renderAt('/');
+    await waitFor(() => {
+      expect(screen.getByRole('option', { name: 'Development' })).toBeInTheDocument();
+    });
+
+    fireEvent.change(screen.getByLabelText('Filter by space'), { target: { value: 'DEV' } });
+
+    await waitFor(() => expect(probe()).toContain('space=DEV'));
+  });
+
+  it('writes the page number when the pagination control is used', async () => {
+    const json = (body: unknown) =>
+      new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
+    const items = makeManyPages(3).items;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      if (url.includes('/embeddings/status')) return json(mockEmbeddingStatusIdle);
+      if (url.includes('/pages/filters')) return json(mockFilterOptions);
+      if (url.includes('/spaces')) return json(mockSpaces);
+      if (url.includes('/sync/status')) return json({ status: 'idle' });
+      if (url.includes('/pages/pinned')) return json({ items: [], total: 0 });
+      if (url.includes('/settings')) return json({});
+      return json({ items, total: items.length, page: 1, limit: 3, totalPages: 3 });
+    });
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/']}>
+          <div data-scroll-container style={{ height: 800, overflow: 'auto' }}>
+            <LocationProbe />
+            <PagesPage />
+          </div>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    const next = await screen.findByLabelText('Next page');
+    fireEvent.click(next);
+
+    await waitFor(() => expect(probe()).toContain('page=2'));
+  });
+
+  // Holding an arrow key on a date segment fires change at OS key-repeat rate.
+  // Each of those used to be a history write, which browsers throttle.
+  describe('date filters', () => {
+    beforeEach(() => { vi.useFakeTimers(); });
+    afterEach(() => { vi.useRealTimers(); });
+
+    it('writes the settled date once, not once per adjustment', async () => {
+      renderAt('/');
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+
+      const input = screen.getByTestId('filter-date-from');
+      for (const value of ['2025-01-01', '2025-01-02', '2025-01-03']) {
+        fireEvent.change(input, { target: { value } });
+      }
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+      // Mid-flight the control shows the newest value; the URL has not moved.
+      expect((input as HTMLInputElement).value).toBe('2025-01-03');
+      expect(probe()).not.toContain('from=');
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+      expect(probe()).toContain('from=2025-01-03');
+    });
+
+    it('seeds the date inputs from a deep link', async () => {
+      renderAt('/?from=2025-01-01&to=2025-02-01');
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+      expect((screen.getByTestId('filter-date-from') as HTMLInputElement).value).toBe('2025-01-01');
+      expect((screen.getByTestId('filter-date-to') as HTMLInputElement).value).toBe('2025-02-01');
+    });
+
+    it('clears the date inputs when the filters are cleared', async () => {
+      renderAt('/?from=2025-01-01');
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+      fireEvent.click(screen.getByTestId('clear-all-pill-filters'));
+      await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+
+      expect((screen.getByTestId('filter-date-from') as HTMLInputElement).value).toBe('');
+      expect(probe()).toBe('/');
+    });
+  });
+
   describe('search term', () => {
     beforeEach(() => { vi.useFakeTimers(); });
     afterEach(() => { vi.useRealTimers(); });

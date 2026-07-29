@@ -235,9 +235,24 @@ export function PagesPage() {
    * entry between the overview and an article is the article itself — so one
    * Back lands on the overview with its filters intact, which is the bug.
    */
+  // React Router hands the updater `new URLSearchParams(searchParams)` — the
+  // *render-time* value, not the live query string. Two writes in one tick (the
+  // search debounce firing while a <select> onChange also writes) would
+  // therefore both start from the same base, and the second would silently drop
+  // the first's param. `pendingParams` carries the last value we produced so
+  // consecutive patches compose; the effect below releases it once the URL has
+  // caught up, so a back/forward press starts from the real thing again.
+  const pendingParams = useRef<URLSearchParams | null>(null);
   const setFilters = useCallback((patch: Partial<PageFilterState>) => {
-    setSearchParams((prev) => applyFilterPatch(prev, patch), { replace: true });
+    setSearchParams((prev) => {
+      const next = applyFilterPatch(pendingParams.current ?? prev, patch);
+      pendingParams.current = next;
+      return next;
+    }, { replace: true });
   }, [setSearchParams]);
+  useEffect(() => {
+    pendingParams.current = null;
+  }, [searchParams]);
 
   // The search box keeps its own state so typing never waits on a navigation:
   // the URL carries the *settled* term, written once the user pauses. Seeded
@@ -277,6 +292,33 @@ export function PagesPage() {
     }, 300);
     return () => clearTimeout(timer);
   }, [searchInput, filters.search, setFilters]);
+
+  // The date inputs get the same treatment as the search box, for the same
+  // reason: holding an arrow key adjusts a segment at OS key-repeat rate, and
+  // each of those was a `history.replaceState`. Browsers throttle that (Safari
+  // caps it at ~100 calls per 30s), so a few seconds of held arrow could stop
+  // the URL updating at all.
+  const [dateFromInput, setDateFromInput] = useState(dateFrom);
+  const [dateToInput, setDateToInput] = useState(dateTo);
+  useEffect(() => {
+    if (dateFromInput === filters.from) return;
+    const timer = setTimeout(() => setFilters({ from: dateFromInput, page: 1 }), 300);
+    return () => clearTimeout(timer);
+  }, [dateFromInput, filters.from, setFilters]);
+  useEffect(() => {
+    if (dateToInput === filters.to) return;
+    const timer = setTimeout(() => setFilters({ to: dateToInput, page: 1 }), 300);
+    return () => clearTimeout(timer);
+  }, [dateToInput, filters.to, setFilters]);
+  // Adopt an external change (back/forward, a deep link, or Clear filters),
+  // which is unambiguous here: the inputs are only ever written by the user or
+  // by us, and our own write leaves the two already equal.
+  const [previousUrlDates, setPreviousUrlDates] = useState({ from: dateFrom, to: dateTo });
+  if (previousUrlDates.from !== filters.from || previousUrlDates.to !== filters.to) {
+    setPreviousUrlDates({ from: filters.from, to: filters.to });
+    if (previousUrlDates.from !== filters.from && filters.from !== dateFromInput) setDateFromInput(filters.from);
+    if (previousUrlDates.to !== filters.to && filters.to !== dateToInput) setDateToInput(filters.to);
+  }
 
   // Re-seed the box when the URL's term changes underneath us — a back/forward
   // press or an in-app link that lands on `/?search=…` without unmounting this
@@ -830,8 +872,8 @@ export function PagesPage() {
               <input
                 id="filter-date-from-input"
                 type="date"
-                value={dateFrom}
-                onChange={(e) => setFilters({ from: e.target.value, page: 1 })}
+                value={dateFromInput}
+                onChange={(e) => setDateFromInput(e.target.value)}
                 className="nm-select-md w-full"
                 data-testid="filter-date-from"
               />
@@ -841,8 +883,8 @@ export function PagesPage() {
               <input
                 id="filter-date-to-input"
                 type="date"
-                value={dateTo}
-                onChange={(e) => setFilters({ to: e.target.value, page: 1 })}
+                value={dateToInput}
+                onChange={(e) => setDateToInput(e.target.value)}
                 className="nm-select-md w-full"
                 data-testid="filter-date-to"
               />
