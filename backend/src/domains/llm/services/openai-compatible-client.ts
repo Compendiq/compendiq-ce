@@ -150,6 +150,13 @@ export const __test_only__ = {
 
 export interface StreamChatOptions {
   thinking?: boolean;
+  /**
+   * Caps the reply length, mapped straight to the standard `max_tokens`
+   * field. Unlike `thinking`'s provider-specific extras, this field is part
+   * of the OpenAI chat-completions spec that every host in `STRICT_HOSTS`
+   * already accepts, so it is sent unconditionally — no strict-host gating.
+   */
+  maxTokens?: number;
 }
 
 export async function listModels(cfg: ProviderConfig): Promise<LlmModel[]> {
@@ -192,7 +199,11 @@ export async function chat(
         const res = await undiciFetch(`${cfg.baseUrl}/chat/completions`, {
           method: 'POST',
           headers: headers(cfg),
-          body: JSON.stringify({ model, messages, stream: false, ...thinkingExtras(cfg.baseUrl, model, opts?.thinking) }),
+          body: JSON.stringify({
+            model, messages, stream: false,
+            ...(opts?.maxTokens ? { max_tokens: opts.maxTokens } : {}),
+            ...thinkingExtras(cfg.baseUrl, model, opts?.thinking),
+          }),
           dispatcher: dispatcherFor(cfg),
           signal,
         });
