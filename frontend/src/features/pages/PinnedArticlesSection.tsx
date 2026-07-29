@@ -1,11 +1,11 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { m } from 'framer-motion';
 import { Pin, PinOff, Clock, User, ChevronDown, ChevronUp } from 'lucide-react';
 import { toast } from 'sonner';
 import { usePinnedPages, useUnpinPage } from '../../shared/hooks/use-pages';
 import { TiltCard } from '../../shared/components/effects/TiltCard';
-import { COLLAPSED_PIN_COUNT, entranceDelay } from './pinned-articles-layout';
+import { COLLAPSED_PIN_COUNT, entranceDelay, staggerPosition } from './pinned-articles-layout';
 
 export function PinnedArticlesSection() {
   const navigate = useNavigate();
@@ -14,6 +14,7 @@ export function PinnedArticlesSection() {
   // Ephemeral on purpose: the collapsed strip is the dashboard's default shape,
   // so every visit starts there and expanding is one keystroke away.
   const [expanded, setExpanded] = useState(false);
+  const sectionRef = useRef<HTMLElement>(null);
 
   // Intentionally return null while loading rather than showing a skeleton —
   // collapsed the section is at most two rows, so any layout shift is minimal
@@ -24,30 +25,61 @@ export function PinnedArticlesSection() {
 
   const total = pinnedData.items.length;
   const overflow = total - COLLAPSED_PIN_COUNT;
-  const visiblePins = expanded ? pinnedData.items : pinnedData.items.slice(0, COLLAPSED_PIN_COUNT);
+  // Derived, not the raw flag: unpinning back below the cut-off unmounts the
+  // toggle, and a latched `expanded` would then silently re-expand the section
+  // the moment the count rose again, with nothing on screen having asked for it.
+  const isExpanded = expanded && overflow > 0;
+  const visiblePins = isExpanded ? pinnedData.items : pinnedData.items.slice(0, COLLAPSED_PIN_COUNT);
 
   const handleUnpin = (e: React.MouseEvent, pageId: string, title: string) => {
     e.stopPropagation();
+    // The card carrying the focused button is about to unmount, which drops
+    // focus to <body> and sends a keyboard user back to the top of the
+    // document. Cheap to survive at eight cards; with the cap gone (#1130) it
+    // can be a very long way back. Hand focus to the next unpin button, or to
+    // the section itself when the last pin goes.
+    const buttons = [...(sectionRef.current?.querySelectorAll<HTMLButtonElement>('[data-unpin]') ?? [])];
+    const index = buttons.findIndex((b) => b.dataset.unpin === pageId);
+    const successor = buttons[index + 1] ?? buttons[index - 1] ?? null;
+
     unpinMutation.mutate(pageId, {
-      onSuccess: () => toast.success(`Unpinned "${title}"`),
+      onSuccess: () => {
+        toast.success(`Unpinned "${title}"`);
+        // The successor may itself have unmounted by now (a refetch reordered
+        // the list); falling back to the section keeps focus in place either way.
+        if (successor?.isConnected) successor.focus();
+        else sectionRef.current?.focus();
+      },
       onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to unpin'),
     });
   };
 
   return (
-    <div data-testid="pinned-articles-section">
+    <section
+      ref={sectionRef}
+      // Focus target of last resort after an unpin; -1 keeps it out of the tab
+      // order for everyone else.
+      tabIndex={-1}
+      aria-labelledby="pinned-pages-heading"
+      data-testid="pinned-articles-section"
+    >
       <div className="mb-3 flex items-center gap-2">
-        <Pin size={16} className="text-action" />
+        <Pin size={16} className="text-action" aria-hidden="true" />
         <h2 id="pinned-pages-heading" className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
           Pinned Pages
         </h2>
-        {/* Tabular figures so the count doesn't jitter as pins come and go. */}
+        {/* Tabular figures so the count doesn't jitter as pins come and go.
+            Full `text-muted-foreground`: at /70 this measured 3.4:1 on the card
+            surface, under the 4.5:1 floor for text this size. */}
         <span
-          className="font-mono text-xs tabular-nums text-muted-foreground/70"
+          className="font-mono text-xs tabular-nums text-muted-foreground"
           data-testid="pinned-count"
+          aria-hidden="true"
         >
           {total}
         </span>
+        {/* The badge alone reads as a naked number; give the count a sentence. */}
+        <span className="sr-only">{total} pinned</span>
       </div>
       <div
         id="pinned-pages-grid"
@@ -58,7 +90,7 @@ export function PinnedArticlesSection() {
             key={item.id}
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: entranceDelay(i) }}
+            transition={{ delay: entranceDelay(staggerPosition(i, isExpanded)) }}
           >
             <TiltCard className="card-stack" maxTilt={8} data-testid={`pinned-tilt-${item.id}`}>
               <div
@@ -74,6 +106,7 @@ export function PinnedArticlesSection() {
                 onClick={(e) => handleUnpin(e, item.id, item.title)}
                 className="absolute right-2 top-2 rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
                 aria-label={`Unpin ${item.title}`}
+                data-unpin={item.id}
                 data-testid={`unpin-btn-${item.id}`}
               >
                 <PinOff size={14} />
@@ -115,12 +148,12 @@ export function PinnedArticlesSection() {
         <div className="mt-3 flex justify-center">
           <button
             onClick={() => setExpanded((prev) => !prev)}
-            aria-expanded={expanded}
+            aria-expanded={isExpanded}
             aria-controls="pinned-pages-grid"
             className="nm-button-ghost text-sm"
             data-testid="pinned-expand-toggle"
           >
-            {expanded ? (
+            {isExpanded ? (
               <>
                 <ChevronUp size={14} /> Show fewer
               </>
@@ -132,6 +165,6 @@ export function PinnedArticlesSection() {
           </button>
         </div>
       )}
-    </div>
+    </section>
   );
 }

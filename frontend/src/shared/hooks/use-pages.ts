@@ -372,7 +372,12 @@ export function usePinPage() {
         old
           ? {
               ...old,
-              items: [...old.items, { id: pageId, spaceKey: '', title: '', author: null, lastModifiedAt: null, excerpt: '', pinnedAt: new Date().toISOString(), pinOrder: old.items.length + 1 }],
+              // Prepended, not appended: the server returns
+              // `ORDER BY pinned_at DESC`, so a new pin is the *first* item.
+              // Appending put it last, which since #1130 means it lands beyond
+              // the collapsed cut-off — the card vanishes until the refetch
+              // moves it to the top.
+              items: [{ id: pageId, spaceKey: '', title: '', author: null, lastModifiedAt: null, excerpt: '', pinnedAt: new Date().toISOString(), pinOrder: old.items.length + 1 }, ...old.items],
               total: old.total + 1,
             }
           : { items: [{ id: pageId, spaceKey: '', title: '', author: null, lastModifiedAt: null, excerpt: '', pinnedAt: new Date().toISOString(), pinOrder: 1 }], total: 1 },
