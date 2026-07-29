@@ -940,6 +940,18 @@ describe('Editor', () => {
       '<p>Outside paragraph</p>',
     ].join('');
 
+    // A cell holding a block atom and no textblock at all. `tableCell` content
+    // is `block+` and the image node is `group: 'block'`, so this is a legal
+    // shape — and the one the sync pipeline actually produces:
+    // content-converter's `image.replaceWith(img)` turns `<td><ac:image/></td>`
+    // into `<td><img/></td>` with no wrapping paragraph.
+    const ATOM_CELL_HTML = [
+      '<p>Lead paragraph</p>',
+      '<table><tbody>',
+      '<tr><td><img src="shot.png" alt="shot"></td><td><p>Next cell</p></td></tr>',
+      '</tbody></table>',
+    ].join('');
+
     async function renderEditorWithTable(editable = true) {
       let editor: EditorType | null = null;
       render(
@@ -1059,7 +1071,49 @@ describe('Editor', () => {
       expect(editor.state.selection.from).toBe(emptyCell);
     });
 
-    it('declines a click outside any table so ProseMirror\'s default runs', async () => {
+        // A cell with no textblock has no valid text position inside it, so
+    // `TextSelection.between` searches OUTWARD and lands in a neighbouring
+    // block. Returning `true` on that would suppress every fallback and
+    // teleport the caret out of the table — strictly worse than the
+    // prosemirror-tables CellSelection this handler replaces, which at least
+    // spans the cell and copies its content.
+    it('declines a cell that holds only a block atom, rather than selecting outside it', async () => {
+      let editor: EditorType | null = null;
+      render(<Editor content={ATOM_CELL_HTML} onEditorReady={(e) => { editor = e; }} />);
+      await waitFor(() => { expect(editor).not.toBeNull(); });
+      const ed = editor!;
+
+      // Locate the image-only cell and a position inside it.
+      let cellPos = -1;
+      let cellNode: ReturnType<typeof ed.state.doc.nodeAt> = null;
+      ed.state.doc.descendants((node, pos) => {
+        if (cellPos !== -1) return false;
+        if (node.type.name === 'tableCell' && node.firstChild?.type.name === 'image') {
+          cellPos = pos;
+          cellNode = node;
+          return false;
+        }
+        return true;
+      });
+      expect(cellPos).toBeGreaterThan(-1);
+
+      const contentStart = cellPos + 1;
+      const contentEnd = contentStart + cellNode!.content.size;
+
+      const handled = tripleClickAt(ed, contentStart);
+
+      // Either it declines (letting prosemirror-tables answer), or it selects
+      // within the cell. What it must never do is move the selection out.
+      const { from, to } = ed.state.selection;
+      if (handled) {
+        expect(from).toBeGreaterThanOrEqual(contentStart);
+        expect(to).toBeLessThanOrEqual(contentEnd);
+      } else {
+        expect(handled).toBe(false);
+      }
+    });
+
+it('declines a click outside any table so ProseMirror\'s default runs', async () => {
       const editor = await renderEditorWithTable();
       const before = editor.state.selection;
 
