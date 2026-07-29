@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vitest';
+import { readFileSync } from 'fs';
 import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 
@@ -9,13 +10,10 @@ vi.mock('../../core/services/content-converter.js', () => ({
   markdownToHtml: vi.fn().mockResolvedValue('<p>Hello world</p>'),
 }));
 
-// The route must not touch the database at all now. Importing this module
-// under a mock that throws is what proves it.
-vi.mock('../../core/db/postgres.js', () => ({
-  query: () => {
-    throw new Error('the preview route must not query the database');
-  },
-}));
+// No database mock: the route must not import `core/db/postgres.js` at all.
+// A mock here would be decorative — an unimported module's `query` can never
+// throw — so the invariant is asserted directly against the source instead
+// (see 'never touches the database' below).
 
 import { pagesImportRoutes, parseFrontMatter } from './pages-import.js';
 
@@ -70,16 +68,33 @@ describe('Pages import routes', () => {
 
     // The whole point of #1133: the old route hardcoded space_key='_standalone'
     // on insert, so a page imported while a Confluence space was selected was
-    // filed in the wrong place. The route no longer writes at all — the
-    // throwing `query` mock above fails this test if it ever does.
-    it('never writes a row, so it cannot file the page in the wrong space', async () => {
+    // filed in the wrong place. Asserted against the source because it is a
+    // statement about what the module *cannot* do — a runtime assertion would
+    // only cover the paths the tests happen to walk.
+    it('never touches the database, so it cannot file the page in any space', () => {
+      // Comments stripped: the file's docblock necessarily names the old
+      // behaviour it replaced, and that prose is not what is being asserted.
+      const code = readFileSync(new URL('./pages-import.ts', import.meta.url), 'utf8')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/\/\/.*$/gm, '');
+      expect(code).not.toContain('core/db/postgres.js');
+      expect(code).not.toMatch(/INSERT INTO/i);
+      expect(code).not.toContain('_standalone');
+    });
+
+    it('bounds a front-matter title and label set the same way request input is bounded', async () => {
       const response = await app.inject({
         method: 'POST',
         url: '/api/pages/import/preview',
-        payload: { markdown: '# Anything' },
+        payload: {
+          markdown: `---\ntitle: ${'T'.repeat(900)}\ntags: [${Array.from({ length: 60 }, (_, i) => 'l' + i).join(', ')}]\n---\nBody`,
+        },
       });
 
       expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.title).toHaveLength(500);
+      expect(body.labels).toHaveLength(50);
     });
 
     it('is no longer reachable at the old path', async () => {

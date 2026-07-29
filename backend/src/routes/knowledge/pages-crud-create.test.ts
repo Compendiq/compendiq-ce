@@ -279,6 +279,63 @@ describe('POST /api/pages - parentId validation', () => {
     expect(body.source).toBe('standalone');
   });
 
+  // Labels at creation (#1133). They used to be applied by a follow-up
+  // PUT /pages/:id/labels keyed on the id this route returns — which for a
+  // Confluence create is the Confluence content id, numeric, and therefore
+  // read by that route as a database primary key. The follow-up labelled a
+  // different page. Carrying them on the create removes the ambiguity.
+  it('stores labels supplied with a standalone create', async () => {
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'local' }] });
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 70, title: 'Labelled', version: 1 }] });
+    mockQueryFn.mockResolvedValueOnce({ rows: [] });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages',
+      payload: {
+        title: 'Labelled',
+        bodyHtml: '<p>Hello</p>',
+        spaceKey: 'LOCALSPACE',
+        labels: ['api', 'guide'],
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const insert = mockQueryFn.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO pages'));
+    expect(insert).toBeDefined();
+    expect(String(insert![0])).toContain('labels');
+    expect((insert![1] as unknown[]).at(-1)).toEqual(['api', 'guide']);
+  });
+
+  it('defaults to no labels when the create omits them', async () => {
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'local' }] });
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 71, title: 'Plain', version: 1 }] });
+    mockQueryFn.mockResolvedValueOnce({ rows: [] });
+
+    await app.inject({
+      method: 'POST',
+      url: '/api/pages',
+      payload: { title: 'Plain', bodyHtml: '<p>Hello</p>', spaceKey: 'LOCALSPACE' },
+    });
+
+    const insert = mockQueryFn.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO pages'));
+    expect((insert![1] as unknown[]).at(-1)).toEqual([]);
+  });
+
+  it('rejects more labels than the contract allows', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages',
+      payload: {
+        title: 'Too many',
+        bodyHtml: '<p>Hello</p>',
+        labels: Array.from({ length: 51 }, (_, i) => `label-${i}`),
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
+
   it('should auto-detect confluence when source is omitted and space is confluence', async () => {
     // Space lookup: space exists and is confluence
     mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'confluence' }] });

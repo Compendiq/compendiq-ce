@@ -14,18 +14,10 @@ vi.mock('react-router-dom', async () => {
 });
 
 const mockCreateMutateAsync = vi.fn();
-const mockUpdateLabelsMutateAsync = vi.fn().mockResolvedValue({ labels: [] });
-// Mutable so a test can model the window where the create has resolved but the
-// labels call is still in flight (#1133 review).
-const labelsMutationState = { isPending: false };
 vi.mock('../../shared/hooks/use-pages', () => ({
   useCreatePage: () => ({
     mutateAsync: mockCreateMutateAsync,
     isPending: false,
-  }),
-  useUpdatePageLabels: () => ({
-    mutateAsync: mockUpdateLabelsMutateAsync,
-    get isPending() { return labelsMutationState.isPending; },
   }),
   usePageTree: () => ({
     data: {
@@ -169,9 +161,6 @@ describe('NewPagePage', () => {
     mockSetContent.mockClear();
     mockUseTemplateMutateAsync.mockReset();
     mockImportMutateAsync.mockReset();
-    mockUpdateLabelsMutateAsync.mockReset();
-    mockUpdateLabelsMutateAsync.mockResolvedValue({ labels: [] });
-    labelsMutationState.isPending = false;
     templatesState.items.length = 0;
     editorHtml.current = '';
     spacesState.confluence = [...DEFAULT_CONFLUENCE_SPACES];
@@ -214,6 +203,24 @@ describe('NewPagePage', () => {
       importFile();
 
       await waitFor(() => expect(screen.getByTestId('title-input')).toHaveValue('Front-Matter Title'));
+    });
+
+    it('replaces a title an earlier import wrote when a second file is imported', async () => {
+      mockImportMutateAsync.mockResolvedValueOnce({
+        title: 'First File', bodyHtml: '<p>one</p>', labels: [],
+      });
+      render(<NewPagePage />, { wrapper: createWrapper() });
+
+      importFile('first.md');
+      await waitFor(() => expect(screen.getByTestId('title-input')).toHaveValue('First File'));
+
+      mockImportMutateAsync.mockResolvedValueOnce({
+        title: 'Second File', bodyHtml: '<p>two</p>', labels: [],
+      });
+      importFile('second.md');
+      await waitFor(() => expect(mockImportMutateAsync).toHaveBeenCalledTimes(2));
+
+      await waitFor(() => expect(screen.getByTestId('title-input')).toHaveValue('Second File'));
     });
 
     it('does not overwrite a title the user has already typed', async () => {
@@ -276,13 +283,17 @@ describe('NewPagePage', () => {
       });
     });
 
-    // POST /pages has no labels field, so front-matter labels would otherwise
-    // be silently dropped by the rework.
-    it('applies front-matter labels once the page exists', async () => {
+    // Labels ride along with the create. They used to be applied afterwards via
+    // PUT /pages/:id/labels, keyed on the id POST /pages returns — which for a
+    // Confluence create is the *Confluence content id*. That id is numeric, and
+    // the labels route reads a numeric id as a database primary key, so the
+    // follow-up labelled whatever local page held that pk, or nothing at all.
+    it('sends front-matter labels with the create, not as a follow-up call', async () => {
       mockImportMutateAsync.mockResolvedValue({
         title: 'note', bodyHtml: '<p>x</p>', labels: ['api', 'guide'],
       });
-      mockCreateMutateAsync.mockResolvedValueOnce({ id: 42, title: 'note', version: 1 });
+      // The shape a Confluence create really returns: a Confluence content id.
+      mockCreateMutateAsync.mockResolvedValueOnce({ id: '688130', title: 'note', version: 1 });
       render(<NewPagePage />, { wrapper: createWrapper() });
       await waitFor(() => {
         expect((screen.getByTestId('space-selector') as HTMLSelectElement).value).toBe('DEV');
@@ -293,27 +304,13 @@ describe('NewPagePage', () => {
       fireEvent.click(screen.getByText('Create Page'));
 
       await waitFor(() => {
-        expect(mockUpdateLabelsMutateAsync).toHaveBeenCalledWith({ id: '42', addLabels: ['api', 'guide'] });
+        expect(mockCreateMutateAsync).toHaveBeenCalledWith(
+          expect.objectContaining({ spaceKey: 'DEV', labels: ['api', 'guide'] }),
+        );
       });
     });
 
-    // The labels call is awaited between the create resolving and the navigate.
-    // If only `createMutation.isPending` gated the button, it would re-enable
-    // and revert from "Creating…" while the user is still on the form —
-    // a duplicate-create window.
-    it('keeps Create Page disabled while the labels call is still in flight', async () => {
-      labelsMutationState.isPending = true;
-      render(<NewPagePage />, { wrapper: createWrapper() });
-      await waitFor(() => {
-        expect((screen.getByTestId('space-selector') as HTMLSelectElement).value).toBe('DEV');
-      });
-      fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'My Page' } });
-
-      const btn = screen.getByText('Creating...').closest('button');
-      expect(btn).toBeDisabled();
-    });
-
-    it('does not call the labels API when the file declared none', async () => {
+    it('omits labels entirely when the file declared none', async () => {
       mockImportMutateAsync.mockResolvedValue({ title: 'note', bodyHtml: '<p>x</p>', labels: [] });
       mockCreateMutateAsync.mockResolvedValueOnce({ id: 42, title: 'note', version: 1 });
       render(<NewPagePage />, { wrapper: createWrapper() });
@@ -326,7 +323,35 @@ describe('NewPagePage', () => {
       fireEvent.click(screen.getByText('Create Page'));
 
       await waitFor(() => expect(mockCreateMutateAsync).toHaveBeenCalled());
-      expect(mockUpdateLabelsMutateAsync).not.toHaveBeenCalled();
+      expect(mockCreateMutateAsync.mock.calls[0][0]).not.toHaveProperty('labels');
+    });
+
+    // Applying a template replaces the imported body, so carrying the discarded
+    // file's front-matter labels onto the new page is wrong.
+    it('drops pending labels when a template replaces the imported body', async () => {
+      mockImportMutateAsync.mockResolvedValue({
+        title: 'note', bodyHtml: '<p>imported</p>', labels: ['api'],
+      });
+      templatesState.items.push({ id: 1, title: 'Meeting Notes', category: null });
+      mockUseTemplateMutateAsync.mockResolvedValueOnce({ bodyJson: null, bodyHtml: '<p>Template body</p>' });
+      mockCreateMutateAsync.mockResolvedValueOnce({ id: 42, title: 'note', version: 1 });
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await waitFor(() => {
+        expect((screen.getByTestId('space-selector') as HTMLSelectElement).value).toBe('DEV');
+      });
+
+      importFile();
+      await waitFor(() => expect(mockSetContent).toHaveBeenCalled());
+
+      fireEvent.click(screen.getByTestId('use-template-btn'));
+      fireEvent.click(screen.getByText('Meeting Notes'));
+      await waitFor(() => {
+        expect(screen.queryByTestId('template-gallery-modal')).not.toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByText('Create Page'));
+      await waitFor(() => expect(mockCreateMutateAsync).toHaveBeenCalled());
+      expect(mockCreateMutateAsync.mock.calls[0][0]).not.toHaveProperty('labels');
     });
 
     it('strips a .markdown extension as well as .md', async () => {

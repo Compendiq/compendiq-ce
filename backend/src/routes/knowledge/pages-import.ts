@@ -26,10 +26,15 @@ import { markdownToHtml } from '../../core/services/content-converter.js';
 import { z } from 'zod';
 import DOMPurify from 'isomorphic-dompurify';
 
+/** Shared by the request schema and the front-matter merge below. */
+const MAX_TITLE_LENGTH = 500;
+const MAX_LABEL_LENGTH = 100;
+const MAX_LABELS = 50;
+
 const ImportMarkdownSchema = z.object({
   markdown: z.string().min(1, 'markdown field required').max(1_000_000, 'Markdown too large (max ~1MB)'),
-  title: z.string().min(1).max(500).optional(),
-  labels: z.array(z.string().min(1).max(100)).max(50).optional(),
+  title: z.string().min(1).max(MAX_TITLE_LENGTH).optional(),
+  labels: z.array(z.string().min(1).max(MAX_LABEL_LENGTH)).max(MAX_LABELS).optional(),
 });
 
 export async function pagesImportRoutes(fastify: FastifyInstance) {
@@ -112,15 +117,23 @@ async function convertMarkdown(
 ): Promise<{ title: string; bodyHtml: string; labels: string[] }> {
   const { metadata, content } = parseFrontMatter(markdown);
 
-  const title = (typeof metadata.title === 'string' && metadata.title)
+  // Front-matter is untrusted input just like the request body, so it gets the
+  // same bounds the schema applies there — otherwise a crafted file returns a
+  // title or label set the route's own contract would have rejected, and
+  // `POST /api/pages` (title ≤500, ≤50 labels of ≤100) then 400s on a payload
+  // the user never typed.
+  const title = ((typeof metadata.title === 'string' && metadata.title)
     || defaultTitle
-    || 'Imported Article';
+    || 'Imported Article').slice(0, MAX_TITLE_LENGTH);
 
   // Merge labels from front-matter and request body (deduplicated)
   const fmLabels = Array.isArray(metadata.tags) ? metadata.tags
     : Array.isArray(metadata.labels) ? metadata.labels
     : [];
-  const labels = [...new Set([...fmLabels, ...(bodyLabels ?? [])])];
+  const labels = [...new Set([...fmLabels, ...(bodyLabels ?? [])])]
+    .map((label) => label.slice(0, MAX_LABEL_LENGTH))
+    .filter(Boolean)
+    .slice(0, MAX_LABELS);
 
   // Convert Markdown to HTML, then sanitize. The sanitize step still matters
   // even though nothing is stored: this HTML goes straight into the user's

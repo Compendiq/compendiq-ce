@@ -71,6 +71,16 @@ export const CreatePageSchema = z.object({
   pageType: PageTypeEnum.optional().default('page'),
   source: PageSourceEnum.optional(),
   visibility: PageVisibilityEnum.optional().default('shared'),
+  /**
+   * Labels to apply at creation (#1133). Carried here rather than applied by a
+   * follow-up `PUT /pages/:id/labels` because the id this route returns is
+   * ambiguous: for a Confluence create it is the *Confluence content id*, which
+   * is numeric, and the labels route reads a numeric id as a database primary
+   * key — so the follow-up would silently label a different page.
+   *
+   * Bounds mirror the Markdown-import route the front-matter comes from.
+   */
+  labels: z.array(z.string().min(1).max(100)).max(50).optional(),
 });
 
 export const UpdatePageSchema = z.object({

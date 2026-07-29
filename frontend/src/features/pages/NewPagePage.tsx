@@ -2,7 +2,7 @@ import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, Save, Upload, LayoutTemplate, Globe, Lock, X } from 'lucide-react';
 import * as Dialog from '@radix-ui/react-dialog';
-import { useCreatePage, useUpdatePageLabels } from '../../shared/hooks/use-pages';
+import { useCreatePage } from '../../shared/hooks/use-pages';
 import { useSpaces } from '../../shared/hooks/use-spaces';
 import { useTemplates, useUseTemplate, useImportMarkdown, useLocalSpaces } from '../../shared/hooks/use-standalone';
 import { Editor, EditorToolbar, TableContextToolbar, LayoutContextToolbar, ColumnContextToolbar, clearDraft } from '../../shared/components/article/Editor';
@@ -24,7 +24,6 @@ export function NewPagePage() {
   const { data: spaces } = useSpaces();
   const createMutation = useCreatePage();
   const importMarkdownMutation = useImportMarkdown();
-  const updateLabelsMutation = useUpdatePageLabels();
 
   const [title, setTitle] = useState('');
   const [spaceKey, setSpaceKey] = useState('');
@@ -41,6 +40,9 @@ export function NewPagePage() {
   // only be applied once the page exists, because `POST /pages` has no labels
   // field — so they wait here until the create returns an id.
   const [pendingLabels, setPendingLabels] = useState<string[]>([]);
+  // The title the last import wrote, so a second import can tell its own
+  // handiwork from something the user typed.
+  const importedTitleRef = useRef<string | null>(null);
 
   const { data: localSpacesData } = useLocalSpaces();
 
@@ -160,21 +162,16 @@ export function NewPagePage() {
         bodyHtml: bodyToSave,
         ...(parentId ? { parentId } : {}),
         ...(selectedSpace?.source === 'local' ? { visibility } : {}),
+        // Front-matter labels from an imported file (#1133). Sent with the
+        // create rather than applied afterwards: the id this route returns is
+        // the *Confluence content id* for a Confluence create, and it is
+        // numeric, so `PUT /pages/:id/labels` would read it as a database
+        // primary key and label a different page entirely.
+        ...(pendingLabels.length > 0 ? { labels: pendingLabels } : {}),
       } as Parameters<typeof createMutation.mutateAsync>[0]);
       // Only after a create actually succeeded — remembering a space the user
       // merely browsed to would make the next visit preselect a dead end.
       if (selectedSpace?.source === 'confluence') rememberConfluenceSpace(spaceKey);
-
-      // Front-matter labels from an imported file (#1133). Best-effort: the
-      // page is already created and correct, so a failure here is worth a
-      // warning but must not read as "the page wasn't saved".
-      if (pendingLabels.length > 0) {
-        try {
-          await updateLabelsMutation.mutateAsync({ id: String(result.id), addLabels: pendingLabels });
-        } catch {
-          toast.warning('Page created, but its imported labels could not be applied');
-        }
-      }
 
       clearDraft(NEW_PAGE_DRAFT_KEY);
       navigate(`/pages/${result.id}`);
@@ -214,8 +211,17 @@ export function NewPagePage() {
       setBodyHtml(preview.bodyHtml);
 
       // Front-matter title, else the filename — but never over something the
-      // user has already typed.
-      setTitle((current) => (current.trim() ? current : preview.title));
+      // user has already typed. A title a *previous import* wrote is not that,
+      // so importing a second file replaces it rather than leaving the new
+      // body under the old file's name.
+      // Read before the assignment below: `setTitle`'s updater runs later, so
+      // comparing against the ref inside it would compare against *this*
+      // import's title and never match.
+      const titleFromPreviousImport = importedTitleRef.current;
+      setTitle((current) => (
+        !current.trim() || current === titleFromPreviousImport ? preview.title : current
+      ));
+      importedTitleRef.current = preview.title;
       // Applied after the page exists; `POST /pages` has no labels field.
       setPendingLabels(preview.labels);
 
@@ -227,11 +233,10 @@ export function NewPagePage() {
     if (fileInputRef.current) fileInputRef.current.value = '';
   }, [importMarkdownMutation, editorInstance]);
 
-  // `create` covers both round trips. Between the create resolving and the
-  // navigate there is an awaited labels call (#1133); without counting it the
-  // button would re-enable and revert from "Creating…" while the user is still
-  // looking at the form, which is a duplicate-create waiting to happen.
-  const isCreating = createMutation.isPending || updateLabelsMutation.isPending;
+  // Labels ride along with the create (#1133), so there is exactly one request
+  // between the click and the navigate — no window in which the button
+  // re-enables while the user is still looking at the form.
+  const isCreating = createMutation.isPending;
 
   const isCreateDisabled = isCreating
     || !title.trim()
@@ -474,6 +479,8 @@ export function NewPagePage() {
             // localStorage draft is written; the body is read back from the
             // editor instance on create (#954).
             editorInstance?.commands.setContent(html, { emitUpdate: true });
+            // The imported body is gone, so its front-matter labels go with it.
+            setPendingLabels([]);
             // Seed fallback for the brief window before TipTap finishes
             // mounting (immediatelyRender: false), when editorInstance is still
             // null: the Editor picks this up as its initial content.
