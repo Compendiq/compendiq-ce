@@ -14,6 +14,18 @@ vi.mock('node:dns/promises', () => ({
   }),
 }));
 
+// #1154 — PUT /admin/llm-usecases fires a fire-and-forget vision probe after
+// save (see llm-usecases.ts). Left unmocked, that probe would make a real
+// undici fetch to the test's fake provider URLs (`http://a/v1`, `http://b/v1`)
+// on every PUT test, racing this file's own `afterAll`/`teardownTestDb` with
+// no guarantee the fetch fails before the pool closes. Mocking at the same
+// module boundary as model-capabilities.test.ts keeps the probe's DB writes
+// (loadProviderConfig read + persist) fast and deterministic instead of
+// depending on how quickly this environment's DNS resolution fails.
+vi.mock('../../domains/llm/services/vision-probe.js', () => ({
+  probeVision: vi.fn().mockResolvedValue({ vision: null }),
+}));
+
 import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../test-db-helper.js';
 import { query } from '../../core/db/postgres.js';
 import { buildApp } from '../../app.js';

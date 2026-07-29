@@ -81,6 +81,35 @@ function loadProviderFromRow(
   return cached.cfg;
 }
 
+/**
+ * #1154: load a single provider's config by id, for callers that already
+ * know the provider (the vision-capability store) rather than resolving a
+ * use-case. Same column aliases as the override query below, routed through
+ * the same cache so it doesn't duplicate `loadProviderFromRow`'s caching.
+ */
+export async function loadProviderConfig(
+  providerId: string,
+): Promise<ProviderConfig & { id: string; name: string; defaultModel: string | null }> {
+  const { rows } = await query<ResolveRow>(
+    `SELECT
+       NULL::uuid AS usecase_provider_id,
+       NULL::text AS usecase_model,
+       id            AS provider_id,
+       name          AS provider_name,
+       base_url      AS provider_base_url,
+       api_key       AS provider_api_key,
+       auth_type     AS provider_auth_type,
+       verify_ssl    AS provider_verify_ssl,
+       default_model AS provider_default_model,
+       is_default    AS provider_is_default
+     FROM llm_providers WHERE id = $1`,
+    [providerId],
+  );
+  const row = rows[0];
+  if (!row) throw new Error(`Provider ${providerId} not found.`);
+  return loadProviderFromRow(row);
+}
+
 export async function resolveUsecase(usecase: LlmUsecase): Promise<Resolved> {
   // Enterprise override: when org LLM policy is enabled, EE returns the
   // policy's (providerId, model). CE noop always returns null.

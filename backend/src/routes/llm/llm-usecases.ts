@@ -6,6 +6,8 @@ import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver
 import { bumpProviderCacheVersion } from '../../domains/llm/services/cache-bus.js';
 import { emitLlmAudit } from '../../domains/llm/services/llm-audit-hook.js';
 import { getRateLimits } from '../../core/services/rate-limit-service.js';
+import { refreshVisionCapability } from '../../domains/llm/services/model-capabilities.js';
+import { logger } from '../../core/utils/logger.js';
 
 const ADMIN_LIMIT = {
   config: { rateLimit: { max: async () => (await getRateLimits()).admin.max, timeWindow: '1 minute' } },
@@ -110,6 +112,13 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
         client.release();
       }
       await bumpProviderCacheVersion();
+      // #1154: refresh the capability verdict for the newly assigned
+      // provider+model so Settings shows it immediately. Fire-and-forget —
+      // the admin's save must not wait on an LLM round-trip, and the read
+      // path probes lazily if this hasn't landed yet.
+      void resolveUsecase('chat')
+        .then((r) => refreshVisionCapability(r.config.providerId, r.model))
+        .catch((err) => logger.warn({ err }, 'Post-save vision probe failed'));
       emitLlmAudit({
         event: 'llm_usecase_assignments_updated',
         userId: req.userId,
