@@ -1235,7 +1235,7 @@ git commit -m "feat(llm): vision capability probe with known-content image (#115
 - Create: `backend/src/domains/llm/services/model-capabilities.ts`
 - Create: `backend/src/domains/llm/services/model-capabilities.test.ts`
 - Modify: `backend/src/routes/llm/llm-usecases.ts` (the `PUT /admin/llm-usecases` handler at `:70`)
-- Modify: `backend/src/domains/llm/services/cache-bus.ts`
+- Modify: `backend/src/domains/llm/services/llm-provider-service.ts` (the update path)
 
 **Interfaces:**
 - Consumes: `probeVision` from Task 5; `resolveUsecase` from `llm-provider-resolver.js`; migration 087.
@@ -1503,9 +1503,29 @@ If only `loadProviderFromRow` is exported, add a `loadProviderConfig(providerId)
 Run: `cd backend && npx vitest run src/domains/llm/services/model-capabilities.test.ts`
 Expected: PASS, 10 tests.
 
-- [ ] **Step 6: Wire invalidation into the cache bus**
+- [ ] **Step 6: Wire invalidation into the provider update path**
 
-In `cache-bus.ts`, call `invalidateProviderCapabilities(providerId)` from `bumpProviderCacheVersion`, after the existing version bump. Import it lazily inside the function if a static import would create an import cycle.
+**Amended before execution (2026-07-29).** The first draft said to hook this into
+`bumpProviderCacheVersion` in `cache-bus.ts`. That is not implementable:
+`bumpProviderCacheVersion()` takes **no** `providerId` — it is a global bump
+(`cache-bus.ts:172`), so it cannot scope a delete to one provider.
+
+Wire it where the id is actually known: `domains/llm/services/llm-provider-service.ts`
+owns provider create/update/delete and calls `bumpProviderCacheVersion()` at
+`:91`, `:115`, `:138` and `:151`. In the **update** path, after the DB write and
+beside the existing bump:
+
+```ts
+  // #1154: a changed base_url or api_key can put an entirely different model
+  // behind the same name, so the cached capability verdicts for this provider
+  // are no longer trustworthy. Drop them and let the read path re-probe.
+  await invalidateProviderCapabilities(id);
+```
+
+The other two paths need nothing: **create** has no rows to invalidate, and
+**delete** is already handled by migration 087's `ON DELETE CASCADE`. Add a test
+asserting the delete path leaves no capability rows, so the CASCADE reliance is
+explicit rather than incidental.
 
 - [ ] **Step 7: Probe on admin save**
 
