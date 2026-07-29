@@ -78,3 +78,44 @@ export const SVG_BYTES = Buffer.from(
   '<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"/>',
   'utf8',
 );
+
+/**
+ * Genuine encoder output, captured as base64 rather than committed as binary
+ * files (repo policy forbids committing binaries). These exist because the
+ * builders above and image-validator.ts's parsers were written from the same
+ * spec — a shared wrong byte offset (WebP's 24-bit LE VP8X fields, JPEG's
+ * SOFn marker walk) would be invisible to hand-built fixtures, since both
+ * sides would agree on the same wrong number. Constants below are real
+ * ImageMagick 7.1.2-29 (Q16-HDRI) output, decoded from files it actually
+ * wrote, not assembled by hand — so they catch what the builders above can't.
+ *
+ * All five encode the same 40x30 canvas (deliberately non-square, so a
+ * transposed width/height would fail) — `xc:red` at this size keeps every
+ * constant well under 1 KB of source. The two WebP constants are separate
+ * because `magick` picks a different chunk layout (VP8 vs VP8L) depending on
+ * whether lossless encoding is requested, and the parser has to handle both.
+ *
+ * Regenerate with:
+ *   magick -size 40x30 xc:red /tmp/x.png
+ *   magick -size 40x30 xc:red /tmp/x.jpg
+ *   magick -size 40x30 xc:red /tmp/x.webp                        # VP8  (lossy)
+ *   magick -size 40x30 xc:red -define webp:lossless=true /tmp/x-lossless.webp  # VP8L
+ *   magick -size 40x30 xc:red /tmp/x.gif
+ * then `base64 -i /tmp/x.<ext>`.
+ */
+export const REAL_PNG_40x30_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAACgAAAAeAQMAAABkE86eAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAAGUExURf8AAP///0EdNBEAAAABYktHRAH/Ai3eAAAAB3RJTUUH6gcdFRUZImvuWQAAACV0RVh0ZGF0ZTpjcmVhdGUAMjAyNi0wNy0yOVQyMToyMToyNSswMDowMKZfzi0AAAAldEVYdGRhdGU6bW9kaWZ5ADIwMjYtMDctMjlUMjE6MjE6MjUrMDA6MDDXAnaRAAAAKHRFWHRkYXRlOnRpbWVzdGFtcAAyMDI2LTA3LTI5VDIxOjIxOjI1KzAwOjAwgBdXTgAAAAxJREFUCNdjYBh6AAAAtAABXnGQvwAAAABJRU5ErkJggg==';
+
+export const REAL_JPEG_40x30_BASE64 =
+  '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCAAeACgDAREAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAj/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFgEBAQEAAAAAAAAAAAAAAAAAAAcJ/8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEQMRAD8AnRDGqYAAAAAAAAAAAAAAAAAAD//Z';
+
+/** VP8 (lossy) — the chunk `magick` writes by default for a plain .webp. */
+export const REAL_WEBP_VP8_40x30_BASE64 =
+  'UklGRk4AAABXRUJQVlA4IEIAAABQAwCdASooAB4APpFGnkslo6KhpWgAsBIJZwDO3oAAK/fDcAD+7qY//2LOWwLx//7nA/7nA/7nA/jbB+29aoAAAAA=';
+
+/** VP8L (lossless) — a different chunk layout the parser must handle too. */
+export const REAL_WEBP_VP8L_40x30_BASE64 =
+  'UklGRhwAAABXRUJQVlA4TA8AAAAvJ0AHAAcQ/Y/+ByKi/wEA';
+
+export const REAL_GIF_40x30_BASE64 =
+  'R0lGODlhKAAeAPAAAP8AAAAAACH5BAAAAAAALAAAAAAoAB4AAAIhhI+py+0Po5y02ouz3rz7D4biSJbmiabqyrbuC8fyTHMFADs=';

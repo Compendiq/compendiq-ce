@@ -1,10 +1,4 @@
-import {
-  describe, it, expect, beforeAll, afterAll,
-} from 'vitest';
-import { execFileSync } from 'child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'fs';
-import { tmpdir } from 'os';
-import { join } from 'path';
+import { describe, it, expect } from 'vitest';
 import {
   sniffImageFormat,
   readImageDimensions,
@@ -14,6 +8,9 @@ import {
 } from './image-validator.js';
 import {
   buildPng, buildGif, buildWebpVp8x, buildJpeg, SVG_BYTES,
+  REAL_PNG_40x30_BASE64, REAL_JPEG_40x30_BASE64,
+  REAL_WEBP_VP8_40x30_BASE64, REAL_WEBP_VP8L_40x30_BASE64,
+  REAL_GIF_40x30_BASE64,
 } from './test-image-fixtures.js';
 
 describe('sniffImageFormat', () => {
@@ -131,61 +128,52 @@ describe('validateImage', () => {
  * WebP's 24-bit LE VP8X canvas fields, or JPEG's SOFn marker walk) would be
  * invisible to those tests: both sides would agree on the same wrong number.
  *
- * This suite closes that gap by running the parsers against bytes from a
- * real encoder (ImageMagick) instead of our own hand-built buffers. It's
- * generated on the fly in beforeAll rather than committed as binary fixtures,
- * and skipped outright when `magick` isn't on PATH so CI without ImageMagick
- * still passes.
+ * This suite closes that gap by running the parsers against genuine
+ * ImageMagick output (captured as base64 in test-image-fixtures.ts — see the
+ * comment there for provenance and regeneration steps) instead of our own
+ * hand-built buffers. These run unconditionally, with no `magick` dependency
+ * at test time, so they provide real regression coverage in CI.
  */
-function hasMagick(): boolean {
-  try {
-    execFileSync('magick', ['-version'], { stdio: 'ignore' });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-describe.skipIf(!hasMagick())('real encoder output (ImageMagick)', () => {
-  let dir: string;
-  const files = {} as Record<'png' | 'jpeg' | 'webp' | 'gif', Buffer>;
-
-  beforeAll(() => {
-    dir = mkdtempSync(join(tmpdir(), 'cq-image-validator-'));
-    const sources: Record<'png' | 'jpeg' | 'webp' | 'gif', string> = {
-      png: 'cq-real.png', jpeg: 'cq-real.jpg', webp: 'cq-real.webp', gif: 'cq-real.gif',
-    };
-    for (const [format, name] of Object.entries(sources) as Array<['png' | 'jpeg' | 'webp' | 'gif', string]>) {
-      const path = join(dir, name);
-      execFileSync('magick', ['-size', '800x600', 'xc:red', path]);
-      files[format] = readFileSync(path);
-    }
-  });
-
-  afterAll(() => {
-    rmSync(dir, { recursive: true, force: true });
-  });
+describe('real encoder output (captured, not hand-built)', () => {
+  const realFiles = {
+    png: Buffer.from(REAL_PNG_40x30_BASE64, 'base64'),
+    jpeg: Buffer.from(REAL_JPEG_40x30_BASE64, 'base64'),
+    webp: Buffer.from(REAL_WEBP_VP8_40x30_BASE64, 'base64'),
+    webpLossless: Buffer.from(REAL_WEBP_VP8L_40x30_BASE64, 'base64'),
+    gif: Buffer.from(REAL_GIF_40x30_BASE64, 'base64'),
+  } as const;
 
   it.each([
     ['png', 'png'],
     ['jpeg', 'jpeg'],
     ['webp', 'webp'],
+    ['webpLossless', 'webp'],
     ['gif', 'gif'],
-  ] as const)('sniffs a real %s file as %s', (key, expected) => {
-    expect(sniffImageFormat(files[key])).toBe(expected);
+  ] as const)('sniffs the real %s file as %s', (key, expected) => {
+    expect(sniffImageFormat(realFiles[key])).toBe(expected);
   });
 
-  it.each(['png', 'jpeg', 'webp', 'gif'] as const)(
-    'reads 800x600 from a real %s file',
-    (format) => {
-      expect(readImageDimensions(files[format], format)).toEqual({ width: 800, height: 600 });
+  it('captured the lossy WebP as a VP8 chunk, not VP8X or VP8L', () => {
+    expect(realFiles.webp.subarray(12, 16).toString('ascii')).toBe('VP8 ');
+  });
+
+  it('captured the lossless WebP as a VP8L chunk', () => {
+    expect(realFiles.webpLossless.subarray(12, 16).toString('ascii')).toBe('VP8L');
+  });
+
+  it.each(['png', 'jpeg', 'webp', 'webpLossless', 'gif'] as const)(
+    'reads 40x30 from the real %s file',
+    (key) => {
+      const format = sniffImageFormat(realFiles[key])!;
+      expect(readImageDimensions(realFiles[key], format)).toEqual({ width: 40, height: 30 });
     },
   );
 
   it('accepts every real file end-to-end through validateImage', () => {
-    for (const [format, buf] of Object.entries(files)) {
-      expect(validateImage(buf, `photo.${format}`)).toEqual({
-        format, width: 800, height: 600,
+    for (const [key, buf] of Object.entries(realFiles)) {
+      const format = sniffImageFormat(buf)!;
+      expect(validateImage(buf, `photo-${key}.${format}`)).toEqual({
+        format, width: 40, height: 30,
       });
     }
   });
