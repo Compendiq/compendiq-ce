@@ -2089,14 +2089,26 @@ git commit -m "feat(llm): POST /llm/prepare-image with per-user staged handles (
 
 **Files:**
 - Modify: `backend/src/domains/llm/services/llm-cache.ts:38-48`
+- Modify: `backend/src/routes/llm/_helpers.ts`
 - Modify: `backend/src/routes/llm/llm-generate.ts:44,133,148,150-152`
 - Modify: `backend/src/routes/llm/llm-improve.ts:48,168,176,222`
+- Create: `backend/src/routes/llm/resolve-image-part.test.ts`
 - Create: `backend/src/routes/llm/generate-with-image.test.ts`
+- Create: `backend/src/routes/llm/improve-with-image.test.ts`
 - Modify: `backend/src/domains/llm/services/llm-cache.test.ts`
 
 **Interfaces:**
 - Consumes: `loadStagedImage` (Task 8), `getVisionCapability` (Task 6), `ChatContentPart` (Task 2).
-- Produces: `buildLlmCacheKey(..., options?: { thinking?: boolean; imageHash?: string })`; both routes accept `imageHandle`.
+- Produces:
+  - `buildLlmCacheKey(..., options?: { thinking?: boolean; imageHash?: string })`
+  - `resolveImagePart(fastify, userId, imageHandle, providerId, model): Promise<{ part: ChatContentPart; hash: string }>` in `_helpers.ts`
+  - both routes accept `imageHandle`
+
+**Amended before execution (2026-07-29).** The first draft of this task inlined
+the same ~20-line gate-and-load block into both routes and copied the test file.
+That is duplication of a logic block, and it would let the 422 and 410 semantics
+drift between Generate and Improve. The gate now lives once, in `_helpers.ts`
+beside the other shared route helpers.
 
 - [ ] **Step 1: Write the failing cache-key test**
 
@@ -2165,6 +2177,164 @@ export function buildLlmCacheKey(
 
 Run: `cd backend && npx vitest run src/domains/llm/services/llm-cache.test.ts`
 Expected: PASS.
+
+- [ ] **Step 4a: Write the failing helper test**
+
+Create `backend/src/routes/llm/resolve-image-part.test.ts`:
+
+```ts
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+const mockGetVisionCapability = vi.fn();
+vi.mock('../../domains/llm/services/model-capabilities.js', () => ({
+  getVisionCapability: (...args: unknown[]) => mockGetVisionCapability(...args),
+}));
+
+const mockLoadStagedImage = vi.fn();
+vi.mock('../../core/services/image-staging.js', () => ({
+  loadStagedImage: (...args: unknown[]) => mockLoadStagedImage(...args),
+}));
+
+import { resolveImagePart } from './_helpers.js';
+
+const HANDLE = 'a'.repeat(64);
+
+/** Minimal stand-in for the httpErrors decorator the routes rely on. */
+class HttpError extends Error {
+  constructor(public status: number, message: string) { super(message); }
+}
+const fastify = {
+  httpErrors: {
+    unprocessableEntity: (m: string) => new HttpError(422, m),
+    gone: (m: string) => new HttpError(410, m),
+  },
+} as never;
+
+beforeEach(() => {
+  mockGetVisionCapability.mockReset().mockResolvedValue(true);
+  mockLoadStagedImage.mockReset().mockResolvedValue({
+    bytes: Buffer.from([0x89, 0x50, 0x4e, 0x47]), format: 'png',
+  });
+});
+
+describe('resolveImagePart', () => {
+  it('returns an image_url part with a data URI of the staged bytes', async () => {
+    const { part } = await resolveImagePart(fastify, 'u1', HANDLE, 'p1', 'qwen2.5vl');
+    expect(part.type).toBe('image_url');
+    expect((part as { image_url: { url: string } }).image_url.url)
+      .toBe(`data:image/png;base64,${Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString('base64')}`);
+  });
+
+  it('returns the handle as the cache hash', async () => {
+    const { hash } = await resolveImagePart(fastify, 'u1', HANDLE, 'p1', 'm');
+    expect(hash).toBe(HANDLE);
+  });
+
+  it('uses the staged format in the data URI, not the extension', async () => {
+    mockLoadStagedImage.mockResolvedValue({ bytes: Buffer.from([0xff]), format: 'webp' });
+    const { part } = await resolveImagePart(fastify, 'u1', HANDLE, 'p1', 'm');
+    expect((part as { image_url: { url: string } }).image_url.url).toMatch(/^data:image\/webp;/);
+  });
+
+  it('throws 422 when the model is text-only', async () => {
+    mockGetVisionCapability.mockResolvedValue(false);
+    await expect(resolveImagePart(fastify, 'u1', HANDLE, 'p1', 'llama3.1'))
+      .rejects.toMatchObject({ status: 422 });
+  });
+
+  /** Fail closed: unknown is refused, not attempted. */
+  it('throws 422 when capability is unknown', async () => {
+    mockGetVisionCapability.mockResolvedValue(null);
+    await expect(resolveImagePart(fastify, 'u1', HANDLE, 'p1', 'm'))
+      .rejects.toMatchObject({ status: 422 });
+  });
+
+  it('names the offending model in the 422 message', async () => {
+    mockGetVisionCapability.mockResolvedValue(false);
+    await expect(resolveImagePart(fastify, 'u1', HANDLE, 'p1', 'llama3.1'))
+      .rejects.toThrow(/llama3\.1/);
+  });
+
+  it('does not load the image when the gate refuses', async () => {
+    mockGetVisionCapability.mockResolvedValue(false);
+    await resolveImagePart(fastify, 'u1', HANDLE, 'p1', 'm').catch(() => {});
+    expect(mockLoadStagedImage).not.toHaveBeenCalled();
+  });
+
+  it('throws 410 when the handle has expired', async () => {
+    mockLoadStagedImage.mockResolvedValue(null);
+    await expect(resolveImagePart(fastify, 'u1', HANDLE, 'p1', 'm'))
+      .rejects.toMatchObject({ status: 410 });
+  });
+
+  it('scopes the staged lookup to the calling user', async () => {
+    await resolveImagePart(fastify, 'u7', HANDLE, 'p1', 'm');
+    expect(mockLoadStagedImage).toHaveBeenCalledWith('u7', HANDLE);
+  });
+});
+```
+
+- [ ] **Step 4b: Run it to verify it fails**
+
+Run: `cd backend && npx vitest run src/routes/llm/resolve-image-part.test.ts`
+Expected: FAIL — `resolveImagePart` is not exported from `./_helpers.js`.
+
+- [ ] **Step 4c: Implement the shared helper**
+
+Append to `backend/src/routes/llm/_helpers.ts`:
+
+```ts
+/**
+ * #1154: gate on vision capability, then load the staged image as a content
+ * part.
+ *
+ * Shared by /llm/generate and /llm/improve so the 422 and 410 semantics exist
+ * in exactly one place — an earlier draft inlined this in both routes, which
+ * would have let the two drift apart.
+ *
+ * Order matters: the capability check runs before the Redis lookup, so a
+ * refusal costs neither a load nor a provider round-trip.
+ */
+export async function resolveImagePart(
+  fastify: FastifyInstance,
+  userId: string,
+  imageHandle: string,
+  providerId: string,
+  model: string,
+): Promise<{ part: ChatContentPart; hash: string }> {
+  const vision = await getVisionCapability(providerId, model);
+  if (vision !== true) {
+    throw fastify.httpErrors.unprocessableEntity(
+      `The model assigned to chat (${model}) cannot accept images. ` +
+      'Assign a vision-capable model in Settings → LLM.',
+    );
+  }
+
+  const staged = await loadStagedImage(userId, imageHandle);
+  if (!staged) {
+    throw fastify.httpErrors.gone('The staged image has expired. Attach it again.');
+  }
+
+  return {
+    part: {
+      type: 'image_url',
+      image_url: {
+        url: `data:image/${staged.format};base64,${staged.bytes.toString('base64')}`,
+      },
+    },
+    // The handle *is* the sha256 of the bytes, so it doubles as the cache
+    // input. If handles ever stop being content-addressed, hash the bytes here.
+    hash: imageHandle,
+  };
+}
+```
+
+Add the imports it needs: `FastifyInstance` from `fastify`, `ChatContentPart` from `../../domains/llm/services/prompts.js`, `getVisionCapability` from `../../domains/llm/services/model-capabilities.js`, `loadStagedImage` from `../../core/services/image-staging.js`.
+
+- [ ] **Step 4d: Run the test to verify it passes**
+
+Run: `cd backend && npx vitest run src/routes/llm/resolve-image-part.test.ts`
+Expected: PASS, 9 tests.
 
 - [ ] **Step 5: Write the failing route test**
 
@@ -2269,24 +2439,11 @@ Destructure `imageHandle` at `:44`. After the `resolveUsecase('chat')` call at `
     let imagePart: ChatContentPart | undefined;
     let imageHash: string | undefined;
     if (imageHandle) {
-      const vision = await getVisionCapability(chatConfig.providerId, resolvedModel);
-      if (vision !== true) {
-        throw fastify.httpErrors.unprocessableEntity(
-          `The model assigned to chat (${resolvedModel}) cannot accept images. ` +
-          'Assign a vision-capable model in Settings → LLM.',
-        );
-      }
-      const staged = await loadStagedImage(userId, imageHandle);
-      if (!staged) {
-        throw fastify.httpErrors.gone('The staged image has expired. Attach it again.');
-      }
-      imagePart = {
-        type: 'image_url',
-        image_url: {
-          url: `data:image/${staged.format};base64,${staged.bytes.toString('base64')}`,
-        },
-      };
-      imageHash = imageHandle;
+      const resolved = await resolveImagePart(
+        fastify, userId, imageHandle, chatConfig.providerId, resolvedModel,
+      );
+      imagePart = resolved.part;
+      imageHash = resolved.hash;
     }
 ```
 
@@ -2304,16 +2461,58 @@ Pass `imageHash` into the cache key at `:141`, and build the messages at `:148-1
     ];
 ```
 
-Add `ChatContentPart`, `ChatMessage`, `getVisionCapability` and `loadStagedImage` to the imports.
+Add `ChatContentPart` and `ChatMessage` from `prompts.js`, and `resolveImagePart` from `./_helpers.js`, to the imports.
 
 - [ ] **Step 8: Run the test to verify it passes**
 
 Run: `cd backend && npx vitest run src/routes/llm/generate-with-image.test.ts`
 Expected: PASS, 9 tests.
 
-- [ ] **Step 9: Apply the same change to `llm-improve.ts`**
+- [ ] **Step 9: Wire `llm-improve.ts` through the same helper**
 
-Destructure `imageHandle` at `:48`; insert the identical gate-and-load block after `:168`; pass `imageHash` into the cache key at `:176`; build `improveMessages` at `:222` with the same conditional array. Then copy `generate-with-image.test.ts` to `improve-with-image.test.ts`, repointing the URL to `/llm/improve` and the body to `{ content: 'x', type: 'clarity', imageHandle: HANDLE }`.
+Destructure `imageHandle` at `:48`; call `resolveImagePart` after `:168` exactly as
+Generate does; pass `imageHash` into the cache key at `:176`; build
+`improveMessages` at `:222` with the same conditional array.
+
+Then create `improve-with-image.test.ts`. It covers **only the wiring** — the gate
+and expiry semantics are already tested once in `resolve-image-part.test.ts` and
+must not be re-asserted here. Four cases, on the existing improve test harness:
+
+```ts
+describe('POST /llm/improve with an image (#1154)', () => {
+  it('sends the image as a content part on the user message', async () => {
+    await inject({ content: 'x', type: 'clarity', imageHandle: HANDLE });
+    const user = mockStreamChat.mock.calls[0]![2]
+      .find((m: { role: string }) => m.role === 'user');
+    expect(user.content.some((p: { type: string }) => p.type === 'image_url')).toBe(true);
+  });
+
+  it('sends a bare string when no image is attached', async () => {
+    await inject({ content: 'x', type: 'clarity' });
+    const user = mockStreamChat.mock.calls[0]![2]
+      .find((m: { role: string }) => m.role === 'user');
+    expect(typeof user.content).toBe('string');
+  });
+
+  it('propagates the helper refusal as a 422', async () => {
+    mockGetVisionCapability.mockResolvedValue(false);
+    const res = await inject({ content: 'x', type: 'clarity', imageHandle: HANDLE });
+    expect(res.statusCode).toBe(422);
+  });
+
+  it('folds the image into the cache key', async () => {
+    await inject({ content: 'x', type: 'clarity', imageHandle: HANDLE });
+    const withImage = mockCheckCacheWithLock.mock.calls[0]![1];
+    mockCheckCacheWithLock.mockClear();
+    await inject({ content: 'x', type: 'clarity' });
+    expect(mockCheckCacheWithLock.mock.calls[0]![1]).not.toBe(withImage);
+  });
+});
+```
+
+If the improve harness does not already spy on the cache lookup, drop the fourth
+case rather than restructuring the harness — `llm-cache.test.ts` already proves
+the key diverges.
 
 - [ ] **Step 10: Run both image route suites**
 
