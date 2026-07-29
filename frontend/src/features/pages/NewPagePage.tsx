@@ -9,6 +9,7 @@ import { Editor, EditorToolbar, TableContextToolbar, LayoutContextToolbar, Colum
 import { FeatureErrorBoundary } from '../../shared/components/feedback/FeatureErrorBoundary';
 import { LocationPicker } from '../../shared/components/LocationPicker';
 import type { LocationSelection } from '../../shared/components/LocationPicker';
+import { readLastConfluenceSpace, rememberConfluenceSpace } from './last-confluence-space';
 import type { Editor as EditorType } from '@tiptap/core';
 import { cn } from '../../shared/lib/cn';
 import { toast } from 'sonner';
@@ -54,21 +55,69 @@ export function NewPagePage() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Once the user has touched Type or Space, the preselection below must stay
+  // out of the way even if the spaces query resolves late.
+  const preselectSettled = useRef(false);
+
   const handleSpaceChange = useCallback((newSpaceKey: string) => {
+    preselectSettled.current = true;
     setSpaceKey(newSpaceKey);
     setParentId(undefined); // Reset parent when space changes
+  }, []);
+
+  // Reset spaceKey and parentId when switching article types, to avoid sending
+  // a selection made in one context to the wrong context. This is deliberately
+  // a handler and not an effect on `articleType`: an effect also fires on mount
+  // and would immediately wipe the preselection below.
+  const handleArticleTypeChange = useCallback((next: ArticleType) => {
+    preselectSettled.current = true;
+    setArticleType(next);
+    setSpaceKey('');
+    setParentId(undefined);
   }, []);
 
   const handleLocationSelect = useCallback((selection: LocationSelection) => {
     setParentId(selection.parentId);
   }, []);
 
-  // Reset spaceKey and parentId when switching article types to avoid sending
-  // a selection made in one context to the wrong context
+  const confluenceSpaces = useMemo(
+    () => allSpaces.filter((s) => s.source === 'confluence'),
+    [allSpaces],
+  );
+
+  /**
+   * Preselect a Confluence space once the space lists have loaded (#1122).
+   * Most articles are authored in Confluence, so starting on "Local" with an
+   * empty picker made the common case two clicks longer than the rare one.
+   *
+   * Every edge case resolves through the same list, which is why there is no
+   * separate probe for any of them:
+   *
+   * - **Confluence not configured / nothing synced** — no space carries
+   *   `source: 'confluence'`, so nothing is preselected and the form stays on
+   *   Local exactly as before.
+   * - **No permission to write there** — `GET /api/spaces` already returns only
+   *   RBAC-accessible spaces, and `POST /api/pages` gates a Confluence create on
+   *   that same `getUserAccessibleSpaces` check. Preselecting from this list
+   *   therefore cannot preselect a space the app would reject. (Confluence's own
+   *   PAT permissions can still refuse, but that is strictly narrower than what
+   *   any client-side check could predict, and it already surfaces on create.)
+   * - **Which of several** — the space the user last created in, if they can
+   *   still reach it; otherwise the first, which the API returns sorted by name.
+   */
   useEffect(() => {
-    setSpaceKey('');
-    setParentId(undefined);
-  }, [articleType]);
+    if (preselectSettled.current) return;
+    // Wait for both queries; `allSpaces` is non-empty long before it is complete.
+    if (!spaces || !localSpacesData) return;
+
+    preselectSettled.current = true;
+    if (confluenceSpaces.length === 0) return;
+
+    const remembered = readLastConfluenceSpace();
+    const chosen = confluenceSpaces.find((s) => s.key === remembered) ?? confluenceSpaces[0]!;
+    setArticleType('confluence');
+    setSpaceKey(chosen.key);
+  }, [spaces, localSpacesData, confluenceSpaces]);
 
   const handleCreate = async () => {
     if (!title.trim()) {
@@ -90,6 +139,9 @@ export function NewPagePage() {
         ...(parentId ? { parentId } : {}),
         ...(selectedSpace?.source === 'local' ? { visibility } : {}),
       } as Parameters<typeof createMutation.mutateAsync>[0]);
+      // Only after a create actually succeeded — remembering a space the user
+      // merely browsed to would make the next visit preselect a dead end.
+      if (selectedSpace?.source === 'confluence') rememberConfluenceSpace(spaceKey);
       clearDraft(NEW_PAGE_DRAFT_KEY);
       navigate(`/pages/${result.id}`);
       toast.success('Page created');
@@ -211,7 +263,7 @@ export function NewPagePage() {
             <span className="text-xs font-medium text-muted-foreground">Type</span>
             <div className="flex gap-1" data-testid="article-type-toggle">
               <button
-                onClick={() => setArticleType('local')}
+                onClick={() => handleArticleTypeChange('local')}
                 aria-pressed={articleType === 'local'}
                 className={cn(
                   'flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors',
@@ -224,7 +276,7 @@ export function NewPagePage() {
                 Local
               </button>
               <button
-                onClick={() => setArticleType('confluence')}
+                onClick={() => handleArticleTypeChange('confluence')}
                 aria-pressed={articleType === 'confluence'}
                 className={cn(
                   'flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors',
