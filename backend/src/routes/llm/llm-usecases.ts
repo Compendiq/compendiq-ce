@@ -1,12 +1,12 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { LlmUsecaseSchema, UpdateUsecaseAssignmentsInputSchema, type LlmUsecase } from '@compendiq/contracts';
+import { LlmUsecaseSchema, UpdateUsecaseAssignmentsInputSchema, UsecaseDefaultSchema, type LlmUsecase } from '@compendiq/contracts';
 import { query, getPool } from '../../core/db/postgres.js';
 import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
 import { bumpProviderCacheVersion } from '../../domains/llm/services/cache-bus.js';
 import { emitLlmAudit } from '../../domains/llm/services/llm-audit-hook.js';
 import { getRateLimits } from '../../core/services/rate-limit-service.js';
-import { refreshVisionCapability } from '../../domains/llm/services/model-capabilities.js';
+import { getVisionCapability, refreshVisionCapability } from '../../domains/llm/services/model-capabilities.js';
 import { logger } from '../../core/utils/logger.js';
 
 const ADMIN_LIMIT = {
@@ -26,12 +26,16 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
     const { usecase } = z.object({ usecase: LlmUsecaseSchema }).parse(req.query);
     try {
       const resolved = await resolveUsecase(usecase);
-      return {
+      // #1154: read-only — never probes on this path, so AiContext's
+      // mount-time fetch is not gated on an LLM round-trip.
+      const vision = await getVisionCapability(resolved.config.providerId, resolved.model);
+      return UsecaseDefaultSchema.parse({
         usecase,
         providerId: resolved.config.providerId,
         providerName: resolved.config.name,
         model: resolved.model,
-      };
+        vision,
+      });
     } catch {
       return reply.code(404).send({
         error: `No provider resolved for use case "${usecase}". Configure one in Settings → LLM.`,

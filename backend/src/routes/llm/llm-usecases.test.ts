@@ -26,10 +26,18 @@ vi.mock('../../domains/llm/services/vision-probe.js', () => ({
   probeVision: vi.fn().mockResolvedValue({ vision: null }),
 }));
 
+const mockGetVisionCapability = vi.fn().mockResolvedValue(null);
+vi.mock('../../domains/llm/services/model-capabilities.js', () => ({
+  getVisionCapability: (...args: unknown[]) => mockGetVisionCapability(...args),
+  refreshVisionCapability: vi.fn(),
+  invalidateProviderCapabilities: vi.fn(),
+}));
+
 import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../test-db-helper.js';
 import { query } from '../../core/db/postgres.js';
 import { buildApp } from '../../app.js';
 import { generateAccessToken } from '../../core/plugins/auth.js';
+import { UsecaseDefaultSchema } from '@compendiq/contracts';
 
 // Local helper — mirrors llm-providers.test.ts.
 async function createAdminAndLogin(): Promise<{ token: string; userId: string }> {
@@ -202,5 +210,98 @@ describe.skipIf(!dbAvailable)('GET /api/llm/usecase-default', () => {
     });
     expect(r.statusCode).toBe(404);
     expect(r.json().error).toMatch(/Settings → LLM/);
+  });
+
+  describe('GET /llm/usecase-default vision field (#1154)', () => {
+    it('returns the cached capability verdict', async () => {
+      // First set up a provider
+      const p = await app.inject({
+        method: 'POST',
+        url: '/api/admin/llm-providers',
+        headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+        payload: JSON.stringify({
+          name: 'Vision Provider',
+          baseUrl: 'http://vision/v1',
+          authType: 'none',
+          verifySsl: true,
+          defaultModel: 'vision-model',
+        }),
+      });
+      const providerId: string = p.json().id;
+      await app.inject({
+        method: 'POST',
+        url: `/api/admin/llm-providers/${providerId}/set-default`,
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+
+      mockGetVisionCapability.mockResolvedValue(true);
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/llm/usecase-default?usecase=chat',
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().vision).toBe(true);
+    });
+
+    it('passes null through rather than coercing it to false', async () => {
+      // First set up a provider
+      const p = await app.inject({
+        method: 'POST',
+        url: '/api/admin/llm-providers',
+        headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+        payload: JSON.stringify({
+          name: 'Null Provider',
+          baseUrl: 'http://null/v1',
+          authType: 'none',
+          verifySsl: true,
+          defaultModel: 'null-model',
+        }),
+      });
+      const providerId: string = p.json().id;
+      await app.inject({
+        method: 'POST',
+        url: `/api/admin/llm-providers/${providerId}/set-default`,
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+
+      mockGetVisionCapability.mockResolvedValue(null);
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/llm/usecase-default?usecase=chat',
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+      expect(res.json().vision).toBeNull();
+    });
+
+    it('validates the response against UsecaseDefaultSchema', async () => {
+      // First set up a provider
+      const p = await app.inject({
+        method: 'POST',
+        url: '/api/admin/llm-providers',
+        headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+        payload: JSON.stringify({
+          name: 'Validation Provider',
+          baseUrl: 'http://validate/v1',
+          authType: 'none',
+          verifySsl: true,
+          defaultModel: 'validate-model',
+        }),
+      });
+      const providerId: string = p.json().id;
+      await app.inject({
+        method: 'POST',
+        url: `/api/admin/llm-providers/${providerId}/set-default`,
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+
+      mockGetVisionCapability.mockResolvedValue(false);
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/llm/usecase-default?usecase=chat',
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+      expect(() => UsecaseDefaultSchema.parse(res.json())).not.toThrow();
+    });
   });
 });
