@@ -109,12 +109,69 @@ delete endpoint.
 
 ### Contracts
 
-Per `CLAUDE.md`, every API boundary validates with Zod schemas from
-`@compendiq/contracts`. This adds `PrepareImageResponseSchema`
-(`{ handle, format, width, height, fileSize }`) and extends the existing
-generate and improve input schemas with an optional `imageHandle: z.string()`.
-`ChatContentPart` stays backend-internal — it is a provider wire shape, not an
-API boundary.
+`CLAUDE.md` requires Zod schemas from `@compendiq/contracts` on every API
+boundary. This feature touches three, across the package's two contract files.
+
+**`packages/contracts/src/schemas/llm.ts`** — request and response shapes. The
+document path established `SUPPORTED_DOCUMENT_FORMATS` (`:59`) as a single
+source of truth that both the backend sniffing table and the upload UI's
+`accept` list derive from. Images follow that pattern exactly:
+
+```ts
+export const SUPPORTED_IMAGE_FORMATS = ['png', 'jpeg', 'webp', 'gif'] as const;
+
+export const ImageFormatSchema = z.enum(SUPPORTED_IMAGE_FORMATS);
+
+/** Content-addressed staging id: the sha256 of the validated bytes, hex. */
+export const ImageHandleSchema = z.string().regex(/^[0-9a-f]{64}$/);
+
+export const PrepareImageResponseSchema = z.object({
+  /** Format the server *sniffed* from the bytes — never the client's Content-Type. */
+  format: ImageFormatSchema,
+  handle: ImageHandleSchema,
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+  fileSize: z.number().int().nonnegative(),
+});
+
+export type ImageFormat = z.infer<typeof ImageFormatSchema>;
+export type PrepareImageResponse = z.infer<typeof PrepareImageResponseSchema>;
+```
+
+SVG is absent from `SUPPORTED_IMAGE_FORMATS` by construction, so the enum itself
+is what keeps it out of both the sniffing table and the UI `accept` list — the
+exclusion cannot drift between the two.
+
+**The handle is validated by shape, not merely by type.** It is interpolated
+into a Redis key (`llm:img:<userId>:<sha256>`), so a bare `z.string()` would
+permit key injection. `ImageHandleSchema`'s regex is a security control, not
+tidiness.
+
+`GenerateRequestSchema` (`:34`) and `ImproveRequestSchema` (`:11`) each gain one
+field:
+
+```ts
+imageHandle: ImageHandleSchema.optional(),
+```
+
+**`packages/contracts/src/llm.ts`** — `UsecaseDefaultSchema` (`:80`) already
+types the `/llm/usecase-default` response that `AiContext.tsx:535` consumes. It
+gains the capability tri-state:
+
+```ts
+vision: z.boolean().nullable(),
+```
+
+`.nullable()` rather than `.optional()`: `null` is a meaningful verdict
+("probed, couldn't tell") that the composer renders with different copy from
+`false`, so it must not be collapsible with "field absent".
+
+`ChatContentPart` stays backend-internal in `prompts.ts`. It is a provider wire
+shape rather than an API boundary, and placing it in contracts would imply the
+frontend constructs one — it never does; it sends a handle.
+
+Route-side, `/llm/prepare-image` returns `PrepareImageResponseSchema.parse(...)`
+exactly as `extract-document.ts` returns `ExtractDocumentResponseSchema.parse(...)`.
 
 ### Flow
 
@@ -230,18 +287,24 @@ unless `vision === true`. Fail closed: `null` is refused, not attempted.
 
 `llm-generate.ts:133`, `llm-improve.ts:168` and `llm-ask.ts:203` all resolve
 `chat` and pass `resolvedModel` to `streamChat`; the request-body `model` is
-destructured and logged as `bodyModel` but never reaches the provider. It *is*
-persisted, into `llm_conversations.model` (`llm-ask.ts:262`) and
-`llm_improvements.model` (`llm-improve.ts:199`) — so those rows name a model
-that did not produce the output.
+destructured, logged as `bodyModel`, and never reaches the provider.
 
-Since gating reads the resolved model, this spec makes the record agree: both
-inserts persist `resolvedModel`. One authoritative answer to "which model did
-this", matching what the gate reads.
+**That much is deliberate, not a defect.** All six LLM request schemas carry the
+same comment — `// #929: optional — resolved server-side per ADR-021, body value
+ignored` (`schemas/llm.ts:14,37,78,89,101,109`). Server-side resolution *is* the
+ADR-021 design, and gating inherits it for free: capability is a property of the
+assignment, not of anything a client sends.
 
-**Filed separately, out of scope here:** the AI pane's model dropdown
-(`AiContext.tsx:84,832` exposes `setModel`) lets a user pick a model the backend
-will not honour. Making it real is a behaviour change beyond this issue.
+What is inconsistent is that the ignored value is nonetheless **persisted** —
+into `llm_conversations.model` (`llm-ask.ts:262`) and `llm_improvements.model`
+(`llm-improve.ts:199`) — so those rows name a model that did not produce the
+output. Since gating reads the resolved model, this spec makes the record agree:
+both inserts persist `resolvedModel`. One authoritative answer to "which model
+did this", matching what the gate reads.
+
+**Filed separately:** the AI pane still presents a model dropdown
+(`AiContext.tsx:84,832` exposes `setModel`) whose selection #929 rendered
+inoperative. Removing it or making it real is a UI decision beyond this issue.
 
 ## Validation and limits
 
@@ -335,6 +398,16 @@ boundary.
 - `contentToText` over a mixed array, asserting the audit payload reports a
   character count rather than a part count.
 - Expired handle → 410.
+
+**Contracts** (`packages/contracts/src/llm.test.ts` and
+`schemas/llm.test.ts` alongside the existing `LlmUsecaseSchema` cases)
+
+- `ImageHandleSchema` rejects a non-hex string, a wrong-length string, and
+  anything containing `:` or `*` — the Redis key-injection guard.
+- `SUPPORTED_IMAGE_FORMATS` excludes `svg`, so the sniffing table and the UI
+  `accept` list cannot drift apart on it.
+- `UsecaseDefaultSchema` accepts `vision` of `true`, `false` and `null`, and
+  rejects the field being absent.
 
 **Frontend**
 
