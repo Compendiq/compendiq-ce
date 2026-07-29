@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, RouterProvider, createMemoryRouter, useLocation } from 'react-router-dom';
 import { PagesPage } from './PagesPage';
 
 function createWrapper() {
@@ -241,29 +241,42 @@ function mockFetchWithPinnedPages(pinnedResponse: typeof mockPinnedResponse | ty
   });
 }
 
-describe('PagesPage', () => {
-  // Mock element dimensions so @tanstack/react-virtual can compute visible items in jsdom
+/**
+ * Mock element dimensions so @tanstack/react-virtual can compute visible items
+ * in jsdom, which reports every rect as 0x0. Without it the virtual list
+ * renders zero rows and any assertion about a page row silently fails.
+ *
+ * Returns the restore function; call it in afterEach.
+ */
+function installVirtualizerRectShim(): () => void {
   const originalGetBCR = Element.prototype.getBoundingClientRect;
+
+  Element.prototype.getBoundingClientRect = function () {
+    // Give the scroll container a usable height for the virtualizer
+    if (this.hasAttribute?.('data-scroll-container')) {
+      return { top: 0, left: 0, bottom: 800, right: 1024, width: 1024, height: 800, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+    }
+    // For virtual list items measured by the virtualizer
+    if (this.hasAttribute?.('data-index')) {
+      return { top: 0, left: 0, bottom: 80, right: 1024, width: 1024, height: 80, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+    }
+    return originalGetBCR.call(this);
+  };
+
+  return () => { Element.prototype.getBoundingClientRect = originalGetBCR; };
+}
+
+describe('PagesPage', () => {
+  let restoreRects: () => void;
 
   beforeEach(() => {
     mockFetchWithEmbeddingStatus(mockEmbeddingStatusIdle);
-
-    // Give the scroll container a usable height for the virtualizer
-    Element.prototype.getBoundingClientRect = function () {
-      if (this.hasAttribute?.('data-scroll-container')) {
-        return { top: 0, left: 0, bottom: 800, right: 1024, width: 1024, height: 800, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
-      }
-      // For virtual list items measured by the virtualizer
-      if (this.hasAttribute?.('data-index')) {
-        return { top: 0, left: 0, bottom: 80, right: 1024, width: 1024, height: 80, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
-      }
-      return originalGetBCR.call(this);
-    };
+    restoreRects = installVirtualizerRectShim();
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
-    Element.prototype.getBoundingClientRect = originalGetBCR;
+    restoreRects();
   });
 
   it('renders KPI cards at the top of the page', () => {
@@ -717,7 +730,7 @@ describe('PagesPage', () => {
     fireEvent.change(screen.getByTestId('filter-embedding'), { target: { value: 'pending' } });
 
     expect(screen.getByTestId('filter-pill-freshness')).toHaveTextContent('Freshness: fresh');
-    expect(screen.getByTestId('filter-pill-embeddingStatus')).toHaveTextContent('Embedding: pending');
+    expect(screen.getByTestId('filter-pill-embedding')).toHaveTextContent('Embedding: pending');
   });
 
   it('removes individual filter when pill is clicked', () => {
@@ -731,7 +744,7 @@ describe('PagesPage', () => {
 
     // Freshness pill gone, embedding pill remains
     expect(screen.queryByTestId('filter-pill-freshness')).not.toBeInTheDocument();
-    expect(screen.getByTestId('filter-pill-embeddingStatus')).toBeInTheDocument();
+    expect(screen.getByTestId('filter-pill-embedding')).toBeInTheDocument();
 
     // Freshness select reset to empty
     expect((screen.getByTestId('filter-freshness') as HTMLSelectElement).value).toBe('');
@@ -749,7 +762,7 @@ describe('PagesPage', () => {
 
     expect(screen.queryByTestId('active-filter-pills')).not.toBeInTheDocument();
     expect(screen.queryByTestId('filter-pill-freshness')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('filter-pill-embeddingStatus')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('filter-pill-embedding')).not.toBeInTheDocument();
   });
 
   // --- Advanced filters ignored in semantic/hybrid search (#945) ---
@@ -961,7 +974,7 @@ describe('PagesPage', () => {
       const select = screen.getByTestId('filter-source') as HTMLSelectElement;
       fireEvent.change(select, { target: { value: 'standalone' } });
 
-      const pill = screen.getByTestId('filter-pill-sourceFilter');
+      const pill = screen.getByTestId('filter-pill-source');
       expect(pill).toHaveTextContent('Source: Local');
       expect(pill).not.toHaveTextContent('standalone');
     });
@@ -1647,6 +1660,357 @@ describe('PagesPage', () => {
       // already renders as a date — two renderings of one field.
       await screen.findByText('Test Page');
       expect(screen.queryByTestId('badge-recent')).not.toBeInTheDocument();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Filter persistence across navigation (#1124)
+//
+// Filter, search, sort and pagination state used to be `useState`. Opening an
+// article unmounts PagesPage; coming back re-mounts it with those seeds empty,
+// so the user's filter was silently gone. The state now lives in the URL, which
+// survives that round trip — and makes a filtered view linkable, which is the
+// part a store could not do.
+// ---------------------------------------------------------------------------
+
+describe('PagesPage filter persistence (#1124)', () => {
+  let restoreRects: () => void;
+
+  beforeEach(() => {
+    restoreRects = installVirtualizerRectShim();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    restoreRects();
+  });
+
+  /** Renders the current query string so assertions can read the real URL. */
+  function LocationProbe() {
+    const location = useLocation();
+    return <span data-testid="location-probe">{location.pathname + location.search}</span>;
+  }
+
+  function probe() {
+    return screen.getByTestId('location-probe').textContent ?? '';
+  }
+
+  function renderAt(initialEntry: string) {
+    mockFetchWithEmbeddingStatus(mockEmbeddingStatusIdle);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={[initialEntry]}>
+          <div data-scroll-container style={{ height: 800, overflow: 'auto' }}>
+            <LocationProbe />
+            <PagesPage />
+          </div>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  it('restores every filter from the URL on mount', async () => {
+    renderAt(
+      '/?space=DEV&source=standalone&author=Alice&labels=howto&freshness=stale' +
+        '&embedding=pending&quality=poor&from=2025-01-01&to=2025-02-01&sort=title&page=2',
+    );
+
+    await screen.findByTestId('advanced-filters-panel');
+    // The space <option>s arrive with the /spaces query; a <select> whose value
+    // has no matching <option> yet reads back as ''.
+    await waitFor(() =>
+      expect((screen.getByLabelText('Filter by space') as HTMLSelectElement).value).toBe('DEV'),
+    );
+    expect((screen.getByTestId('filter-source') as HTMLSelectElement).value).toBe('standalone');
+    expect((screen.getByLabelText('Sort pages') as HTMLSelectElement).value).toBe('title');
+    expect((screen.getByTestId('filter-author') as HTMLSelectElement).value).toBe('Alice');
+    expect((screen.getByTestId('filter-labels') as HTMLSelectElement).value).toBe('howto');
+    expect((screen.getByTestId('filter-freshness') as HTMLSelectElement).value).toBe('stale');
+    expect((screen.getByTestId('filter-embedding') as HTMLSelectElement).value).toBe('pending');
+    expect((screen.getByTestId('filter-quality') as HTMLSelectElement).value).toBe('poor');
+    expect((screen.getByTestId('filter-date-from') as HTMLInputElement).value).toBe('2025-01-01');
+    expect((screen.getByTestId('filter-date-to') as HTMLInputElement).value).toBe('2025-02-01');
+  });
+
+  it('sends the restored page number to the API', async () => {
+    const fetchSpy = mockFetchWithEmbeddingStatus(mockEmbeddingStatusIdle);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/?page=3']}>
+          <div data-scroll-container style={{ height: 800, overflow: 'auto' }}><PagesPage /></div>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      const listCalls = fetchSpy.mock.calls
+        .map(([a]) => (typeof a === 'string' ? a : (a as Request).url))
+        .filter((u) => /\/pages\?/.test(u));
+      expect(listCalls.some((u) => new URL(u, 'http://x').searchParams.get('page') === '3')).toBe(true);
+    });
+  });
+
+  it('opens the advanced panel when the URL carries one of its filters', async () => {
+    renderAt('/?author=Alice');
+    expect(await screen.findByTestId('advanced-filters-panel')).toBeInTheDocument();
+  });
+
+  it('leaves the advanced panel closed for space / search / sort alone', async () => {
+    renderAt('/?space=DEV&search=runbook&sort=title');
+    await screen.findByLabelText('Filter by space');
+    expect(screen.queryByTestId('advanced-filters-panel')).not.toBeInTheDocument();
+  });
+
+  it('writes a filter selection into the URL', async () => {
+    renderAt('/');
+    await screen.findByTestId('filter-source');
+
+    fireEvent.change(screen.getByTestId('filter-source'), { target: { value: 'standalone' } });
+
+    await waitFor(() => expect(probe()).toContain('source=standalone'));
+  });
+
+  it('drops the param from the URL when the filter is cleared', async () => {
+    renderAt('/?freshness=stale');
+    await screen.findByTestId('filter-pill-freshness');
+
+    fireEvent.click(screen.getByTestId('filter-pill-freshness'));
+
+    await waitFor(() => expect(probe()).not.toContain('freshness'));
+    // …and the URL is clean rather than carrying `freshness=`.
+    expect(probe()).toBe('/');
+  });
+
+  it('clear-all empties the query string', async () => {
+    renderAt('/?author=Alice&freshness=stale&source=standalone');
+    await screen.findByTestId('clear-all-pill-filters');
+
+    fireEvent.click(screen.getByTestId('clear-all-pill-filters'));
+
+    await waitFor(() => expect(probe()).toBe('/'));
+  });
+
+  it('returns to page 1 when a filter changes', async () => {
+    renderAt('/?page=4');
+    await screen.findByTestId('filter-source');
+
+    fireEvent.change(screen.getByTestId('filter-source'), { target: { value: 'confluence' } });
+
+    await waitFor(() => expect(probe()).toContain('source=confluence'));
+    expect(probe()).not.toContain('page=');
+  });
+
+  // The whole point of `replace: true`. If each filter change pushed an entry,
+  // Back would undo one filter at a time and never reach the page the user
+  // actually came from.
+  it('replaces history on a filter change instead of pushing', async () => {
+    mockFetchWithEmbeddingStatus(mockEmbeddingStatusIdle);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const router = createMemoryRouter(
+      [
+        { path: '/elsewhere', element: <div>elsewhere</div> },
+        { path: '/', element: <div data-scroll-container style={{ height: 800, overflow: 'auto' }}><PagesPage /></div> },
+      ],
+      { initialEntries: ['/elsewhere', '/'], initialIndex: 1 },
+    );
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>,
+    );
+    await screen.findByTestId('filter-source');
+
+    fireEvent.change(screen.getByTestId('filter-source'), { target: { value: 'standalone' } });
+    await waitFor(() => expect(router.state.location.search).toContain('source=standalone'));
+    fireEvent.change(screen.getByLabelText('Sort pages'), { target: { value: 'title' } });
+    await waitFor(() => expect(router.state.location.search).toContain('sort=title'));
+
+    // Two filter changes, still one entry deep: one Back leaves the overview.
+    await act(async () => { await router.navigate(-1); });
+    expect(router.state.location.pathname).toBe('/elsewhere');
+  });
+
+  // The reported bug, end to end.
+  it('keeps the filter when an article is opened and the user navigates back', async () => {
+    mockFetchWithEmbeddingStatus(mockEmbeddingStatusIdle);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const router = createMemoryRouter(
+      [
+        { path: '/', element: <div data-scroll-container style={{ height: 800, overflow: 'auto' }}><PagesPage /></div> },
+        { path: '/pages/:id', element: <div>article view</div> },
+      ],
+      { initialEntries: ['/'] },
+    );
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>,
+    );
+    await screen.findByText('Test Page');
+
+    fireEvent.change(screen.getByTestId('filter-source'), { target: { value: 'standalone' } });
+    await waitFor(() => expect(router.state.location.search).toContain('source=standalone'));
+
+    // Open an article — this is the navigation that used to wipe the filter.
+    fireEvent.click(await screen.findByText('Test Page'));
+    await screen.findByText('article view');
+
+    await act(async () => { await router.navigate(-1); });
+
+    const restored = await screen.findByTestId('filter-source');
+    expect((restored as HTMLSelectElement).value).toBe('standalone');
+    expect(router.state.location.search).toContain('source=standalone');
+  });
+
+  // `mode`, `page` and `space` moved into the URL with everything else but had
+  // no round-trip coverage of their own.
+  it('round-trips the search mode through the URL', async () => {
+    renderAt('/');
+    await screen.findByTestId('search-mode-semantic');
+
+    fireEvent.click(screen.getByTestId('search-mode-semantic'));
+
+    await waitFor(() => expect(probe()).toContain('mode=semantic'));
+  });
+
+  it('restores the search mode from the URL', async () => {
+    renderAt('/?mode=hybrid');
+    await waitFor(() => {
+      expect(screen.getByTestId('search-mode-hybrid')).toHaveAttribute('aria-pressed', 'true');
+    });
+  });
+
+  it('round-trips the space filter through the URL', async () => {
+    renderAt('/');
+    await waitFor(() => {
+      expect(screen.getByRole('option', { name: 'Development' })).toBeInTheDocument();
+    });
+
+    fireEvent.change(screen.getByLabelText('Filter by space'), { target: { value: 'DEV' } });
+
+    await waitFor(() => expect(probe()).toContain('space=DEV'));
+  });
+
+  it('writes the page number when the pagination control is used', async () => {
+    const json = (body: unknown) =>
+      new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
+    const items = makeManyPages(3).items;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      if (url.includes('/embeddings/status')) return json(mockEmbeddingStatusIdle);
+      if (url.includes('/pages/filters')) return json(mockFilterOptions);
+      if (url.includes('/spaces')) return json(mockSpaces);
+      if (url.includes('/sync/status')) return json({ status: 'idle' });
+      if (url.includes('/pages/pinned')) return json({ items: [], total: 0 });
+      if (url.includes('/settings')) return json({});
+      return json({ items, total: items.length, page: 1, limit: 3, totalPages: 3 });
+    });
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/']}>
+          <div data-scroll-container style={{ height: 800, overflow: 'auto' }}>
+            <LocationProbe />
+            <PagesPage />
+          </div>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    const next = await screen.findByLabelText('Next page');
+    fireEvent.click(next);
+
+    await waitFor(() => expect(probe()).toContain('page=2'));
+  });
+
+  // Holding an arrow key on a date segment fires change at OS key-repeat rate.
+  // Each of those used to be a history write, which browsers throttle.
+  describe('date filters', () => {
+    beforeEach(() => { vi.useFakeTimers(); });
+    afterEach(() => { vi.useRealTimers(); });
+
+    it('writes the settled date once, not once per adjustment', async () => {
+      renderAt('/');
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+
+      const input = screen.getByTestId('filter-date-from');
+      for (const value of ['2025-01-01', '2025-01-02', '2025-01-03']) {
+        fireEvent.change(input, { target: { value } });
+      }
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+      // Mid-flight the control shows the newest value; the URL has not moved.
+      expect((input as HTMLInputElement).value).toBe('2025-01-03');
+      expect(probe()).not.toContain('from=');
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+      expect(probe()).toContain('from=2025-01-03');
+    });
+
+    it('seeds the date inputs from a deep link', async () => {
+      renderAt('/?from=2025-01-01&to=2025-02-01');
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+      expect((screen.getByTestId('filter-date-from') as HTMLInputElement).value).toBe('2025-01-01');
+      expect((screen.getByTestId('filter-date-to') as HTMLInputElement).value).toBe('2025-02-01');
+    });
+
+    it('clears the date inputs when the filters are cleared', async () => {
+      renderAt('/?from=2025-01-01');
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+      fireEvent.click(screen.getByTestId('clear-all-pill-filters'));
+      await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+
+      expect((screen.getByTestId('filter-date-from') as HTMLInputElement).value).toBe('');
+      expect(probe()).toBe('/');
+    });
+  });
+
+  describe('search term', () => {
+    beforeEach(() => { vi.useFakeTimers(); });
+    afterEach(() => { vi.useRealTimers(); });
+
+    it('writes only the settled term to the URL, not every keystroke', async () => {
+      renderAt('/');
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+      const input = screen.getByPlaceholderText('Search pages...');
+      fireEvent.change(input, { target: { value: 'k' } });
+      fireEvent.change(input, { target: { value: 'ku' } });
+      fireEvent.change(input, { target: { value: 'kub' } });
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+      // Mid-flight the box shows the term but the URL has not caught up.
+      expect((input as HTMLInputElement).value).toBe('kub');
+      expect(probe()).not.toContain('search=kub');
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+      expect(probe()).toContain('search=kub');
+    });
+
+    it('seeds the box from a deep-linked search term', async () => {
+      renderAt('/?search=runbook');
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+      expect((screen.getByPlaceholderText('Search pages...') as HTMLInputElement).value).toBe('runbook');
+    });
+
+    it('removes the term from the URL when the search is cleared', async () => {
+      renderAt('/?search=runbook');
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+      fireEvent.click(screen.getByTestId('search-clear'));
+      await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+
+      expect(probe()).not.toContain('search=');
     });
   });
 });
