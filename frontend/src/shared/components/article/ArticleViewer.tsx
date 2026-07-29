@@ -37,6 +37,7 @@ import { fetchAuthenticatedBlob } from '../../hooks/use-authenticated-src';
 import { cn } from '../../lib/cn';
 import { useIsLightTheme } from '../../hooks/use-is-light-theme';
 import type { TocHeading } from './TableOfContents';
+import { handleTableCellTripleClick } from './table-cell-selection';
 
 // Configure DOMPurify to preserve Confluence-specific attributes
 DOMPurify.addHook('uponSanitizeAttribute', (_node, data) => {
@@ -169,6 +170,11 @@ export function ArticleViewer({
         role: 'document',
         'aria-readonly': 'true',
       },
+      // #1135 — same whole-cell triple-click as the editor. A non-editable
+      // ProseMirror view still routes mousedown through the shared handler
+      // path and still syncs a dispatched selection to the DOM, so this is a
+      // real selection the user can copy, not a no-op.
+      handleTripleClick: handleTableCellTripleClick,
     },
     onCreate: () => {
       // Record the content the editor was created with — `useEditor` already

@@ -65,6 +65,7 @@ import type { Editor as EditorType } from '@tiptap/react';
 import { VimExtension, type VimState } from './vim-extension';
 import { VimModeIndicator } from './VimModeIndicator';
 import { EditorBubbleMenu } from './EditorBubbleMenu';
+import { handleTableCellTripleClick } from './table-cell-selection';
 
 const ConfluenceImage = Image.extend({
   addAttributes() {
@@ -1517,6 +1518,8 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       })] : []),
     ],
     editorProps: {
+      // #1135 — triple-click selects the whole cell, not one paragraph.
+      handleTripleClick: handleTableCellTripleClick,
       handlePaste(_view, event) {
         const items = Array.from(event.clipboardData?.items ?? []);
         const imageItem = items.find((i) => i.type.startsWith('image/'));
