@@ -3,6 +3,7 @@ import {
   readFilterState,
   applyFilterPatch,
   hasAdvancedFilters,
+  shouldAdoptUrlSearch,
   FILTER_DEFAULTS,
 } from './pages-filter-params';
 
@@ -132,4 +133,46 @@ describe('hasAdvancedFilters', () => {
       expect(hasAdvancedFilters(readFilterState(new URLSearchParams(queryString)))).toBe(false);
     },
   );
+});
+
+describe('shouldAdoptUrlSearch', () => {
+  const base = { urlSearch: '', previousUrlSearch: '', boxValue: '', lastWritten: '' };
+
+  it('adopts an external change — back/forward, or a link carrying ?search=', () => {
+    expect(shouldAdoptUrlSearch({
+      ...base, urlSearch: 'runbook', previousUrlSearch: '', boxValue: 'kube', lastWritten: 'kube',
+    })).toBe(true);
+  });
+
+  // The race this exists for. The debounce writes "kub"; React Router commits
+  // that inside a transition, so the commit can land after the user has typed
+  // "x". Adopting "kub" there would delete that character from the box AND
+  // from the URL, because the box is what the next debounce writes.
+  it('ignores our own write arriving after the user typed another character', () => {
+    expect(shouldAdoptUrlSearch({
+      urlSearch: 'kub', previousUrlSearch: '', boxValue: 'kubx', lastWritten: 'kub',
+    })).toBe(false);
+  });
+
+  it('does nothing when the URL has not moved', () => {
+    expect(shouldAdoptUrlSearch({
+      ...base, urlSearch: 'kube', previousUrlSearch: 'kube', boxValue: 'kubernetes',
+    })).toBe(false);
+  });
+
+  it('does nothing when the box already holds the URL term', () => {
+    expect(shouldAdoptUrlSearch({
+      ...base, urlSearch: 'kube', previousUrlSearch: '', boxValue: 'kube',
+    })).toBe(false);
+  });
+
+  // An external navigation back to a term we happen to have written before is
+  // indistinguishable from our own write catching up, so it is treated as
+  // ours. Costing at most one stale box until the next keystroke is the right
+  // trade against dropping a character on every fast typist.
+  it('treats a URL term equal to our last write as ours, even if the box differs', () => {
+    expect(shouldAdoptUrlSearch({
+      urlSearch: 'kub', previousUrlSearch: 'other', boxValue: 'something else', lastWritten: 'kub',
+    })).toBe(false);
+  });
 });

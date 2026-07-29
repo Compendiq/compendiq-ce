@@ -22,6 +22,7 @@ import {
   readFilterState,
   applyFilterPatch,
   hasAdvancedFilters,
+  shouldAdoptUrlSearch,
   type PageFilterState,
 } from './pages-filter-params';
 import { cn } from '../../shared/lib/cn';
@@ -265,9 +266,15 @@ export function PagesPage() {
   // on every character. A deep-linked `?search=` therefore fetches on the first
   // render instead of after an empty-list flash plus 300ms.
   const debouncedSearch = filters.search;
+  // What this component last pushed into the URL. Compared against on re-seed
+  // so our own write, arriving late, cannot overwrite newer typing.
+  const lastWrittenSearch = useRef(filters.search);
   useEffect(() => {
     if (searchInput === filters.search) return;
-    const timer = setTimeout(() => setFilters({ search: searchInput, page: 1 }), 300);
+    const timer = setTimeout(() => {
+      lastWrittenSearch.current = searchInput;
+      setFilters({ search: searchInput, page: 1 });
+    }, 300);
     return () => clearTimeout(timer);
   }, [searchInput, filters.search, setFilters]);
 
@@ -277,10 +284,22 @@ export function PagesPage() {
   // idiom for this: an effect would let one frame render the stale term, and
   // the debounce above would then push it straight back into the URL, undoing
   // the navigation the user just made.
-  const urlSearchRef = useRef(filters.search);
-  if (urlSearchRef.current !== filters.search) {
-    urlSearchRef.current = filters.search;
-    if (filters.search !== searchInput) setSearchInput(filters.search);
+  //
+  // Previous-value held as state, not a ref: React Router commits inside a
+  // transition, and a render that gets discarded would leave a ref mutated
+  // while the state it guards was rolled back. `shouldAdoptUrlSearch` owns the
+  // decision itself — see its comment for why our own writes are excluded.
+  const [previousUrlSearch, setPreviousUrlSearch] = useState(filters.search);
+  if (previousUrlSearch !== filters.search) {
+    setPreviousUrlSearch(filters.search);
+    if (shouldAdoptUrlSearch({
+      urlSearch: filters.search,
+      previousUrlSearch,
+      boxValue: searchInput,
+      lastWritten: lastWrittenSearch.current,
+    })) {
+      setSearchInput(filters.search);
+    }
   }
 
   const { data: settings } = useSettings();

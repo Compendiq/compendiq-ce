@@ -136,3 +136,36 @@ export function applyFilterPatch(
 export function hasAdvancedFilters(state: PageFilterState): boolean {
   return ADVANCED_FILTER_KEYS.some((key) => state[key] !== FILTER_DEFAULTS[key]);
 }
+
+/**
+ * Should the search box adopt the term now in the URL?
+ *
+ * The box owns its own state so typing never waits on a navigation, and a
+ * debounce writes the settled term to the URL. That leaves two sources for one
+ * value, so something has to decide which wins when they disagree.
+ *
+ * Only an **external** change wins — back/forward, or a link landing on
+ * `/?search=…`. A value this component itself wrote must not: React Router
+ * commits a `setSearchParams` inside a transition, so the commit can land after
+ * the user has typed another character, and adopting it would silently delete
+ * that character from both the box and the URL.
+ */
+export function shouldAdoptUrlSearch(args: {
+  /** The term in the URL now. */
+  urlSearch: string;
+  /** The term in the URL on the previous render. */
+  previousUrlSearch: string;
+  /** What the box currently holds. */
+  boxValue: string;
+  /** The last term this component's debounce wrote to the URL. */
+  lastWritten: string;
+}): boolean {
+  const { urlSearch, previousUrlSearch, boxValue, lastWritten } = args;
+  // Nothing moved.
+  if (urlSearch === previousUrlSearch) return false;
+  // Already in sync.
+  if (urlSearch === boxValue) return false;
+  // Our own write catching up — the box has since moved on, and it is right.
+  if (urlSearch === lastWritten) return false;
+  return true;
+}
