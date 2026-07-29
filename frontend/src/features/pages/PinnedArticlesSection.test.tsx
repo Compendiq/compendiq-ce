@@ -2,7 +2,8 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
-import { PinnedArticlesSection, MAX_VISIBLE_PINS } from './PinnedArticlesSection';
+import { PinnedArticlesSection } from './PinnedArticlesSection';
+import { COLLAPSED_PIN_COUNT, entranceDelay } from './pinned-articles-layout';
 
 function createWrapper() {
   const queryClient = new QueryClient({
@@ -163,39 +164,111 @@ describe('PinnedArticlesSection', () => {
     });
   });
 
-  it('renders at most MAX_VISIBLE_PINS (8) cards when API returns more', async () => {
-    const manyPins = {
-      items: Array.from({ length: 12 }, (_, i) => ({
+  // ── Unbounded pins (#1130) ───────────────────────────────────────────────
+  // The server-side cap is gone, so the section has to stay a dashboard strip
+  // rather than a wall of cards. It collapses to COLLAPSED_PIN_COUNT and hands
+  // the rest over on request.
+
+  function manyPinsResponse(count: number) {
+    return {
+      items: Array.from({ length: count }, (_, i) => ({
         id: `pin-${i + 1}`,
         spaceKey: 'DEV',
         title: `Pinned Article ${i + 1}`,
         author: 'Alice',
         lastModifiedAt: '2025-05-20T00:00:00Z',
         excerpt: `Excerpt for article ${i + 1}`,
-        pinnedAt: new Date(Date.now() - i * 60_000).toISOString(),
+        pinnedAt: new Date(Date.UTC(2025, 5, 1) - i * 60_000).toISOString(),
         pinOrder: i,
       })),
-      total: 12,
+      total: count,
     };
+  }
 
+  function mockPins(count: number) {
     fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
-      return new Response(JSON.stringify(manyPins), {
+      return new Response(JSON.stringify(manyPinsResponse(count)), {
         headers: { 'Content-Type': 'application/json' },
       });
     });
+  }
+
+  it('collapses to COLLAPSED_PIN_COUNT cards when the user has more', async () => {
+    mockPins(30);
 
     render(<PinnedArticlesSection />, { wrapper: createWrapper() });
-
     await screen.findByTestId('pinned-articles-section');
 
-    // Only the first 8 should be rendered
-    for (let i = 1; i <= MAX_VISIBLE_PINS; i++) {
+    for (let i = 1; i <= COLLAPSED_PIN_COUNT; i++) {
       expect(screen.getByTestId(`pinned-card-pin-${i}`)).toBeInTheDocument();
     }
-
-    // Items beyond MAX_VISIBLE_PINS should NOT be rendered
-    for (let i = MAX_VISIBLE_PINS + 1; i <= 12; i++) {
+    // The rest are out of the DOM, not merely hidden — they must not be tab
+    // stops or reachable by a screen reader while collapsed.
+    for (let i = COLLAPSED_PIN_COUNT + 1; i <= 30; i++) {
       expect(screen.queryByTestId(`pinned-card-pin-${i}`)).not.toBeInTheDocument();
     }
+  });
+
+  it('expands to every pin when the toggle is used, and collapses again', async () => {
+    mockPins(30);
+
+    render(<PinnedArticlesSection />, { wrapper: createWrapper() });
+    await screen.findByTestId('pinned-articles-section');
+
+    const toggle = screen.getByTestId('pinned-expand-toggle');
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    // The label names how many are hidden, so the count is never a guess.
+    expect(toggle).toHaveTextContent('22 more');
+
+    fireEvent.click(toggle);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('pinned-card-pin-30')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('pinned-expand-toggle')).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByTestId('pinned-expand-toggle')).toHaveTextContent('Show fewer');
+
+    fireEvent.click(screen.getByTestId('pinned-expand-toggle'));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('pinned-card-pin-30')).not.toBeInTheDocument();
+    });
+  });
+
+  it('renders every pin and no toggle when at or below the collapsed count', async () => {
+    mockPins(COLLAPSED_PIN_COUNT);
+
+    render(<PinnedArticlesSection />, { wrapper: createWrapper() });
+    await screen.findByTestId('pinned-articles-section');
+
+    for (let i = 1; i <= COLLAPSED_PIN_COUNT; i++) {
+      expect(screen.getByTestId(`pinned-card-pin-${i}`)).toBeInTheDocument();
+    }
+    expect(screen.queryByTestId('pinned-expand-toggle')).not.toBeInTheDocument();
+  });
+
+  it('states the total in the section heading', async () => {
+    mockPins(30);
+
+    render(<PinnedArticlesSection />, { wrapper: createWrapper() });
+    await screen.findByTestId('pinned-articles-section');
+
+    expect(screen.getByTestId('pinned-count')).toHaveTextContent('30');
+  });
+
+  it('caps the entrance stagger so a long list does not trickle in', async () => {
+    // 100 pins × 0.05s would put the last card 5 seconds out. The delay has to
+    // plateau, or "Show all" looks broken on a large list.
+    mockPins(100);
+
+    render(<PinnedArticlesSection />, { wrapper: createWrapper() });
+    await screen.findByTestId('pinned-articles-section');
+    fireEvent.click(screen.getByTestId('pinned-expand-toggle'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('pinned-card-pin-100')).toBeInTheDocument();
+    });
+    expect(entranceDelay(99)).toBeLessThanOrEqual(0.5);
+    expect(entranceDelay(0)).toBeLessThan(entranceDelay(3));
   });
 });

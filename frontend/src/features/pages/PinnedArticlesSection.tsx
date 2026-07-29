@@ -1,26 +1,30 @@
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { m } from 'framer-motion';
-import { Pin, PinOff, Clock, User } from 'lucide-react';
+import { Pin, PinOff, Clock, User, ChevronDown, ChevronUp } from 'lucide-react';
 import { toast } from 'sonner';
 import { usePinnedPages, useUnpinPage } from '../../shared/hooks/use-pages';
 import { TiltCard } from '../../shared/components/effects/TiltCard';
-
-/** Maximum number of pinned articles displayed in the section (issue spec: 8). */
-export const MAX_VISIBLE_PINS = 8;
+import { COLLAPSED_PIN_COUNT, entranceDelay } from './pinned-articles-layout';
 
 export function PinnedArticlesSection() {
   const navigate = useNavigate();
   const { data: pinnedData } = usePinnedPages();
   const unpinMutation = useUnpinPage();
+  // Ephemeral on purpose: the collapsed strip is the dashboard's default shape,
+  // so every visit starts there and expanding is one keystroke away.
+  const [expanded, setExpanded] = useState(false);
 
   // Intentionally return null while loading rather than showing a skeleton —
-  // the section is small (max 8 cards) so any layout shift is minimal and
-  // a skeleton flash would be more distracting than the brief shift.
+  // collapsed the section is at most two rows, so any layout shift is minimal
+  // and a skeleton flash would be more distracting than the brief shift.
   if (!pinnedData || pinnedData.items.length === 0) {
     return null;
   }
 
-  const visiblePins = pinnedData.items.slice(0, MAX_VISIBLE_PINS);
+  const total = pinnedData.items.length;
+  const overflow = total - COLLAPSED_PIN_COUNT;
+  const visiblePins = expanded ? pinnedData.items : pinnedData.items.slice(0, COLLAPSED_PIN_COUNT);
 
   const handleUnpin = (e: React.MouseEvent, pageId: string, title: string) => {
     e.stopPropagation();
@@ -34,17 +38,27 @@ export function PinnedArticlesSection() {
     <div data-testid="pinned-articles-section">
       <div className="mb-3 flex items-center gap-2">
         <Pin size={16} className="text-action" />
-        <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+        <h2 id="pinned-pages-heading" className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
           Pinned Pages
         </h2>
+        {/* Tabular figures so the count doesn't jitter as pins come and go. */}
+        <span
+          className="font-mono text-xs tabular-nums text-muted-foreground/70"
+          data-testid="pinned-count"
+        >
+          {total}
+        </span>
       </div>
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+      <div
+        id="pinned-pages-grid"
+        className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
+      >
         {visiblePins.map((item, i) => (
           <m.div
             key={item.id}
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: i * 0.05 }}
+            transition={{ delay: entranceDelay(i) }}
           >
             <TiltCard className="card-stack" maxTilt={8} data-testid={`pinned-tilt-${item.id}`}>
               <div
@@ -96,6 +110,28 @@ export function PinnedArticlesSection() {
           </m.div>
         ))}
       </div>
+
+      {overflow > 0 && (
+        <div className="mt-3 flex justify-center">
+          <button
+            onClick={() => setExpanded((prev) => !prev)}
+            aria-expanded={expanded}
+            aria-controls="pinned-pages-grid"
+            className="nm-button-ghost text-sm"
+            data-testid="pinned-expand-toggle"
+          >
+            {expanded ? (
+              <>
+                <ChevronUp size={14} /> Show fewer
+              </>
+            ) : (
+              <>
+                <ChevronDown size={14} /> Show {overflow} more
+              </>
+            )}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
