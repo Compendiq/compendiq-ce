@@ -6,6 +6,8 @@ import {
 } from '../../../core/services/circuit-breaker.js';
 import { logger } from '../../../core/utils/logger.js';
 import { withSpan } from '../../../telemetry.js';
+import type { ChatMessage } from './prompts.js';
+export type { ChatMessage, ChatContentPart } from './prompts.js';
 
 export interface ProviderConfig {
   providerId: string;
@@ -17,7 +19,6 @@ export interface ProviderConfig {
 
 interface LlmModel { name: string; }
 interface HealthResult { connected: boolean; error?: string; }
-export interface ChatMessage { role: 'system' | 'user' | 'assistant'; content: string; }
 interface StreamChunk { content: string; done: boolean; }
 
 const dispatchers = new Map<string, Agent>();

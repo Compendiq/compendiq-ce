@@ -6,9 +6,38 @@
  * transport code.
  */
 
+/**
+ * #1154: one content part of a multimodal message, in the OpenAI-compatible
+ * shape that Ollama's `/v1` shim also accepts (ADR-021: the shim is not a
+ * separate protocol). Backend-internal — it is a provider wire shape, not an
+ * API boundary, so it does not belong in @compendiq/contracts.
+ */
+export type ChatContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } };
+
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
-  content: string;
+  /**
+   * A bare string for every text-only call site — which is all of them except
+   * the image path in llm-generate / llm-improve.
+   */
+  content: string | ChatContentPart[];
+}
+
+/**
+ * Flatten message content to its text for token estimation and audit payloads.
+ *
+ * Necessary because `.length` exists on both `string` and `Array`, so
+ * `msg.content.length` compiles unchanged under the union above while
+ * silently becoming a part count. Image parts contribute nothing.
+ */
+export function contentToText(content: string | ChatContentPart[]): string {
+  if (typeof content === 'string') return content;
+  return content
+    .filter((p): p is Extract<ChatContentPart, { type: 'text' }> => p.type === 'text')
+    .map((p) => p.text)
+    .join('\n');
 }
 
 export const LANGUAGE_PRESERVATION_INSTRUCTION = `IMPORTANT: Keep the text in its ORIGINAL language. If the text is in German, respond in German. If in English, respond in English. Never translate — only improve the text while preserving its language.`;
