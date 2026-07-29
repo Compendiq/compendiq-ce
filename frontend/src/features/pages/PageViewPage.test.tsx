@@ -161,6 +161,26 @@ vi.mock('./use-presence', () => ({
   usePresence: () => ({ viewers: [], selfIsEditing: false, setEditing: vi.fn() }),
 }));
 
+// Relocate (#1123). This file owns the *entry point* — which control renders
+// for which source, and whether the permission gate hides it. The dialog's own
+// behaviour (preview, acknowledgements, request bodies, error recovery) is
+// covered against a stubbed `fetch` in RelocateDialog.test.tsx, so the
+// component is stubbed here rather than dragged through this file's
+// hook-level mocks.
+let mockRelocateAllowed = true;
+vi.mock('../../shared/hooks/use-permission', () => ({
+  usePermission: (permission: string) => ({
+    allowed: permission === 'pages:relocate' ? mockRelocateAllowed : false,
+    loading: false,
+    error: null,
+  }),
+}));
+
+vi.mock('./RelocateDialog', () => ({
+  RelocateDialog: ({ open, source }: { open: boolean; source: string }) =>
+    open ? <div data-testid="relocate-dialog" data-source={source} /> : null,
+}));
+
 vi.mock('../../shared/hooks/use-standalone', () => ({
   useSubmitFeedback: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useVerifyPage: () => ({ mutateAsync: vi.fn(), isPending: false }),
@@ -282,6 +302,7 @@ describe('PageViewPage', () => {
   beforeEach(() => {
     currentMockPage = mockPage;
     mockIsLoading = false;
+    mockRelocateAllowed = true;
     capturedShortcuts = [];
     mockNavigate.mockReset();
     mockUpdatePage.mockReset().mockResolvedValue(undefined);
@@ -1188,6 +1209,53 @@ describe('PageViewPage', () => {
       });
 
       scrollContainer.remove();
+    });
+  });
+
+  describe('relocate entry point (#1123)', () => {
+    it('offers "Move to Confluence" on a local article', () => {
+      currentMockPage = { ...mockPage, source: 'standalone', spaceKey: 'HOME', confluenceId: null as unknown as string };
+      render(<PageViewPage />, { wrapper: createWrapper() });
+
+      expect(screen.getByTestId('relocate-btn')).toHaveTextContent(/Move to Confluence/i);
+    });
+
+    it('offers "Move to local space" on a Confluence article', () => {
+      currentMockPage = { ...mockPage, source: 'confluence' };
+      render(<PageViewPage />, { wrapper: createWrapper() });
+
+      expect(screen.getByTestId('relocate-btn')).toHaveTextContent(/Move to local space/i);
+    });
+
+    // Hidden, not disabled: `pages:relocate` is seeded onto editor /
+    // space_admin by migration 086 and CE ships no UI for granting
+    // permissions, so a denied user has no in-product path to earning it.
+    it('renders no relocate control without the pages:relocate permission', () => {
+      mockRelocateAllowed = false;
+      currentMockPage = { ...mockPage, source: 'standalone' };
+      render(<PageViewPage />, { wrapper: createWrapper() });
+
+      expect(screen.queryByTestId('relocate-btn')).not.toBeInTheDocument();
+    });
+
+    it('opens the relocate dialog carrying the article’s own source', async () => {
+      currentMockPage = { ...mockPage, source: 'standalone' };
+      render(<PageViewPage />, { wrapper: createWrapper() });
+
+      expect(screen.queryByTestId('relocate-dialog')).not.toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('relocate-btn'));
+
+      await waitFor(() => expect(screen.getByTestId('relocate-dialog')).toBeInTheDocument());
+      expect(screen.getByTestId('relocate-dialog')).toHaveAttribute('data-source', 'standalone');
+    });
+
+    it('hides the relocate control while the editor is open', () => {
+      currentMockPage = { ...mockPage, source: 'standalone' };
+      render(<PageViewPage />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByText('Edit'));
+
+      expect(screen.queryByTestId('relocate-btn')).not.toBeInTheDocument();
     });
   });
 

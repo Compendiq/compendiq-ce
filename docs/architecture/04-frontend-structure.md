@@ -22,7 +22,7 @@ flowchart TB
     subgraph features["features/ (domain UI)"]
         direction LR
         fAuth["auth/<br/>OidcCallbackPage (EE route)"]
-        fPages["pages/<br/>list · view · new · trash · pinned<br/>bulk actions · 404 catch-all"]
+        fPages["pages/<br/>list · view · new · trash · pinned<br/>bulk actions · 404 catch-all<br/>RelocateDialog (#1123)"]
         fSpaces["spaces/<br/>settings · new"]
         fAI["ai/<br/>AiAssistantPage (/ai — no-document home)<br/>dock/ AiDock · DockPanel · AiDockSheet · DockDiffCard (#1126)<br/>column beside /pages/:id, sheet over it below md"]
         fGraph["graph/"]
@@ -111,6 +111,43 @@ flowchart LR
 - `/ai` keeps only the Ask and Generate tabs. The four document actions are
   dock chips; their mode screens still render for `?mode=…` deep links (which
   `SidebarTreeView` and old bookmarks still produce), but nothing offers them.
+
+## Relocating an article across the Confluence boundary (#1123)
+
+`RelocateDialog` (`features/pages/`) is the only surface that moves a page
+between `source: 'standalone'` and `source: 'confluence'`. Its entry point is a
+single control in the article action strip, gated on
+`usePermission('pages:relocate')` and **hidden** when denied — CE ships no UI
+for granting permissions, so a denied user has no in-product path to earning
+one, and the preview endpoint is gated on the same permission.
+
+```mermaid
+sequenceDiagram
+    participant D as RelocateDialog
+    participant Q as useRelocatePreview
+    participant API as /api/pages/:id/relocate
+
+    D->>Q: open (no destination)
+    Q->>API: GET …/preview
+    API-->>Q: counts + generic access prose, empty principal lists
+    D->>Q: user picks spaceKey / visibility
+    Q->>API: GET …/preview?spaceKey=… | ?visibility=…
+    API-->>Q: accessChange naming real principals (capped, `truncated`)
+    D->>API: POST …/relocate  (echoes localVersionCount /<br/>confirmDeleteConfluencePage; 409 on a stale echo)
+```
+
+- The preview is a **dependent query** keyed on the destination, not a manual
+  refetch. Only the → Confluence direction sends `spaceKey`: the route
+  authorises a caller-supplied space key against the user's role-assigned
+  *Confluence* spaces (it feeds a membership enumeration), so a local space key
+  would 403 for a non-admin.
+- Changing the destination **clears the acknowledgements**, and so does the
+  409 "reload preview" recovery — a still-ticked box would otherwise re-confirm
+  a roster or a version count the user never saw.
+- Backend contract and transactional guarantees:
+  [`03-backend-domains.md`](./03-backend-domains.md),
+  `backend/src/domains/knowledge/services/page-relocate-service.ts`. Design of
+  record: `docs/superpowers/specs/2026-07-29-relocate-dialog-design.md`.
 
 ## Enterprise gating
 
