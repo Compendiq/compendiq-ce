@@ -89,4 +89,23 @@ describe('useClearCacheOnLogout', () => {
       items: [{ title: 'SECRET' }],
     });
   });
+
+  // The remembered New Page space lives in localStorage, not the query cache,
+  // so `queryClient.clear()` would leave the previous user's space key behind
+  // for whoever logs in next in the same tab (#1122).
+  it('forgets the remembered Confluence space on logout', () => {
+    localStorage.setItem('compendiq:last-confluence-space', 'DEV');
+
+    act(() => {
+      useAuthStore.getState().setAuth('tok', { id: '1', username: 'a', role: 'admin' });
+    });
+    renderProbe(new QueryClient());
+    expect(localStorage.getItem('compendiq:last-confluence-space')).toBe('DEV');
+
+    act(() => {
+      useAuthStore.getState().clearAuth();
+    });
+
+    expect(localStorage.getItem('compendiq:last-confluence-space')).toBeNull();
+  });
 });
