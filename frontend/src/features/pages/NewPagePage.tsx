@@ -227,12 +227,18 @@ export function NewPagePage() {
     if (fileInputRef.current) fileInputRef.current.value = '';
   }, [importMarkdownMutation, editorInstance]);
 
-  const isCreateDisabled = createMutation.isPending
+  // `create` covers both round trips. Between the create resolving and the
+  // navigate there is an awaited labels call (#1133); without counting it the
+  // button would re-enable and revert from "Creating…" while the user is still
+  // looking at the form, which is a duplicate-create waiting to happen.
+  const isCreating = createMutation.isPending || updateLabelsMutation.isPending;
+
+  const isCreateDisabled = isCreating
     || !title.trim()
     || !spaceKey;
   // Explain WHY create is disabled — but not while a create is in flight
   // (the button already says "Creating...").
-  const showCreateHint = isCreateDisabled && !createMutation.isPending;
+  const showCreateHint = isCreateDisabled && !isCreating;
   // With a space preselected (#1122), "select a space" is usually already done —
   // saying so anyway sends the user hunting for a control that is fine.
   const createHint = !spaceKey
@@ -296,7 +302,7 @@ export function NewPagePage() {
                   aria-describedby={showCreateHint ? 'create-page-hint' : undefined}
                   className="nm-button-primary"
                 >
-                  <Save size={14} /> {createMutation.isPending ? 'Creating...' : 'Create Page'}
+                  <Save size={14} /> {isCreating ? 'Creating...' : 'Create Page'}
                 </button>
               </span>
             </div>

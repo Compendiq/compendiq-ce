@@ -15,6 +15,9 @@ vi.mock('react-router-dom', async () => {
 
 const mockCreateMutateAsync = vi.fn();
 const mockUpdateLabelsMutateAsync = vi.fn().mockResolvedValue({ labels: [] });
+// Mutable so a test can model the window where the create has resolved but the
+// labels call is still in flight (#1133 review).
+const labelsMutationState = { isPending: false };
 vi.mock('../../shared/hooks/use-pages', () => ({
   useCreatePage: () => ({
     mutateAsync: mockCreateMutateAsync,
@@ -22,7 +25,7 @@ vi.mock('../../shared/hooks/use-pages', () => ({
   }),
   useUpdatePageLabels: () => ({
     mutateAsync: mockUpdateLabelsMutateAsync,
-    isPending: false,
+    get isPending() { return labelsMutationState.isPending; },
   }),
   usePageTree: () => ({
     data: {
@@ -168,6 +171,7 @@ describe('NewPagePage', () => {
     mockImportMutateAsync.mockReset();
     mockUpdateLabelsMutateAsync.mockReset();
     mockUpdateLabelsMutateAsync.mockResolvedValue({ labels: [] });
+    labelsMutationState.isPending = false;
     templatesState.items.length = 0;
     editorHtml.current = '';
     spacesState.confluence = [...DEFAULT_CONFLUENCE_SPACES];
@@ -291,6 +295,22 @@ describe('NewPagePage', () => {
       await waitFor(() => {
         expect(mockUpdateLabelsMutateAsync).toHaveBeenCalledWith({ id: '42', addLabels: ['api', 'guide'] });
       });
+    });
+
+    // The labels call is awaited between the create resolving and the navigate.
+    // If only `createMutation.isPending` gated the button, it would re-enable
+    // and revert from "Creating…" while the user is still on the form —
+    // a duplicate-create window.
+    it('keeps Create Page disabled while the labels call is still in flight', async () => {
+      labelsMutationState.isPending = true;
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await waitFor(() => {
+        expect((screen.getByTestId('space-selector') as HTMLSelectElement).value).toBe('DEV');
+      });
+      fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'My Page' } });
+
+      const btn = screen.getByText('Creating...').closest('button');
+      expect(btn).toBeDisabled();
     });
 
     it('does not call the labels API when the file declared none', async () => {
