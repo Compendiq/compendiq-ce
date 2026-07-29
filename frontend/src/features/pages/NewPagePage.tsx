@@ -2,7 +2,7 @@ import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, Save, Upload, LayoutTemplate, Globe, Lock, X } from 'lucide-react';
 import * as Dialog from '@radix-ui/react-dialog';
-import { useCreatePage } from '../../shared/hooks/use-pages';
+import { useCreatePage, useUpdatePageLabels } from '../../shared/hooks/use-pages';
 import { useSpaces } from '../../shared/hooks/use-spaces';
 import { useTemplates, useUseTemplate, useImportMarkdown, useLocalSpaces } from '../../shared/hooks/use-standalone';
 import { Editor, EditorToolbar, TableContextToolbar, LayoutContextToolbar, ColumnContextToolbar, clearDraft } from '../../shared/components/article/Editor';
@@ -24,6 +24,7 @@ export function NewPagePage() {
   const { data: spaces } = useSpaces();
   const createMutation = useCreatePage();
   const importMarkdownMutation = useImportMarkdown();
+  const updateLabelsMutation = useUpdatePageLabels();
 
   const [title, setTitle] = useState('');
   const [spaceKey, setSpaceKey] = useState('');
@@ -36,6 +37,10 @@ export function NewPagePage() {
   const [visibility, setVisibility] = useState<Visibility>('private');
   const [showTemplateGallery, setShowTemplateGallery] = useState(false);
   const [editorInstance, setEditorInstance] = useState<EditorType | null>(null);
+  // Labels declared in an imported file's YAML front-matter (#1133). They can
+  // only be applied once the page exists, because `POST /pages` has no labels
+  // field — so they wait here until the create returns an id.
+  const [pendingLabels, setPendingLabels] = useState<string[]>([]);
 
   const { data: localSpacesData } = useLocalSpaces();
 
@@ -159,6 +164,18 @@ export function NewPagePage() {
       // Only after a create actually succeeded — remembering a space the user
       // merely browsed to would make the next visit preselect a dead end.
       if (selectedSpace?.source === 'confluence') rememberConfluenceSpace(spaceKey);
+
+      // Front-matter labels from an imported file (#1133). Best-effort: the
+      // page is already created and correct, so a failure here is worth a
+      // warning but must not read as "the page wasn't saved".
+      if (pendingLabels.length > 0) {
+        try {
+          await updateLabelsMutation.mutateAsync({ id: String(result.id), addLabels: pendingLabels });
+        } catch {
+          toast.warning('Page created, but its imported labels could not be applied');
+        }
+      }
+
       clearDraft(NEW_PAGE_DRAFT_KEY);
       navigate(`/pages/${result.id}`);
       toast.success('Page created');
@@ -167,32 +184,48 @@ export function NewPagePage() {
     }
   };
 
+  /**
+   * Load an uploaded Markdown file into the editor — the same shape as "Use
+   * Template", and for the same reason (#1133).
+   *
+   * This used to POST the Markdown to a route that created the page outright,
+   * always under the hardcoded `_standalone` space, then navigate straight to
+   * the read-only view. So picking a Confluence space and then importing filed
+   * the page somewhere else, and the user never saw it before it was saved.
+   * Now nothing is persisted here: the converted body lands in the editor and
+   * `handleCreate` performs the save with the space, parent and visibility the
+   * form is showing.
+   */
   const handleImportMarkdown = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
     try {
       const markdown = await file.text();
-      const fileTitle = file.name.replace(/\.md$/, '');
-      const result = await importMarkdownMutation.mutateAsync({
-        markdown,
-        title: fileTitle,
-      });
-      // The backend returns a batch envelope; the created page's id is the
-      // synthetic standalone-<uuid> confluence id in articles[0].
-      const newId = result.articles[0]?.id;
-      if (newId) {
-        navigate(`/pages/${newId}`);
-        toast.success('Markdown imported successfully');
-      } else {
-        toast.error('Import did not return a page');
-      }
+      const fileTitle = file.name.replace(/\.(md|markdown)$/i, '');
+      const preview = await importMarkdownMutation.mutateAsync({ markdown, title: fileTitle });
+
+      // Push into the live TipTap instance — the Editor never re-reads its
+      // `content` prop after mount, so setContent is how this becomes visible.
+      // `emitUpdate` fires onUpdate so the localStorage draft is written, and
+      // `setBodyHtml` seeds the brief window before TipTap has mounted. Both
+      // mirror the template flow exactly (#954).
+      editorInstance?.commands.setContent(preview.bodyHtml, { emitUpdate: true });
+      setBodyHtml(preview.bodyHtml);
+
+      // Front-matter title, else the filename — but never over something the
+      // user has already typed.
+      setTitle((current) => (current.trim() ? current : preview.title));
+      // Applied after the page exists; `POST /pages` has no labels field.
+      setPendingLabels(preview.labels);
+
+      toast.success('Markdown loaded — review it, then press Create Page');
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to import markdown');
     }
     // Reset file input so the same file can be re-selected
     if (fileInputRef.current) fileInputRef.current.value = '';
-  }, [importMarkdownMutation, navigate]);
+  }, [importMarkdownMutation, editorInstance]);
 
   const isCreateDisabled = createMutation.isPending
     || !title.trim()

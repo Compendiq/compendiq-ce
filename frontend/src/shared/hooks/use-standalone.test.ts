@@ -234,26 +234,32 @@ describe('use-standalone hooks', () => {
   // ---- Import/Export ----
 
   describe('useImportMarkdown', () => {
-    it('posts to /pages/import and returns the batch envelope (id from articles[0])', async () => {
-      // The backend registers POST /api/pages/import (not /pages/import/markdown)
-      // and returns { imported, total, articles:[{ id: 'standalone-<uuid>', ... }] }.
-      const mock = mockFetch({
-        imported: 1,
-        total: 1,
-        articles: [{ id: 'standalone-abc', title: 'Hello', success: true }],
-      });
+    it('posts to the preview route and returns the converted article (#1133)', async () => {
+      const mock = mockFetch({ title: 'Hello', bodyHtml: '<h1>Hello</h1>', labels: ['guide'] });
       const { result } = renderHook(() => useImportMarkdown(), { wrapper: createWrapper() });
+
       const data = await result.current.mutateAsync({ markdown: '# Hello', title: 'Hello' });
+
       const [url, opts] = mock.mock.calls[0] as [string, RequestInit];
-      expect(url).toContain('/pages/import');
-      expect(url).not.toContain('/pages/import/markdown');
+      expect(url).toContain('/pages/import/preview');
       expect(opts.method).toBe('POST');
-      // spaceKey is ignored by the backend (standalone always lands in _standalone),
-      // so it must not be sent.
+      // The route converts and returns; it no longer creates anything, so there
+      // is no batch envelope and no synthetic standalone-<uuid> to navigate to.
+      expect(data).toEqual({ title: 'Hello', bodyHtml: '<h1>Hello</h1>', labels: ['guide'] });
+      expect(data).not.toHaveProperty('articles');
+    });
+
+    // The space comes from the New Page form and reaches the server on
+    // POST /pages, not here — a preview writes nothing, so it has no space.
+    it('does not send a spaceKey', async () => {
+      const mock = mockFetch({ title: 'Hello', bodyHtml: '<p>x</p>', labels: [] });
+      const { result } = renderHook(() => useImportMarkdown(), { wrapper: createWrapper() });
+
+      await result.current.mutateAsync({ markdown: '# Hello', title: 'Hello' });
+
+      const [, opts] = mock.mock.calls[0] as [string, RequestInit];
       const body = JSON.parse(opts.body as string) as Record<string, unknown>;
       expect(body.spaceKey).toBeUndefined();
-      // The created page id is the synthetic confluence id from articles[0].
-      expect(data.articles[0]!.id).toBe('standalone-abc');
     });
   });
 

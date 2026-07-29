@@ -2,31 +2,20 @@ import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vites
 import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 
-// Mock database
-const mockQuery = vi.fn();
-vi.mock('../../core/db/postgres.js', () => ({
-  query: (...args: unknown[]) => mockQuery(...args),
-}));
-
-// Mock content-converter
+// Mock content-converter. `markdownToHtml` is the only pipeline entry point
+// this route still touches — the DB, audit and randomUUID mocks went with the
+// insert it no longer performs (#1133).
 vi.mock('../../core/services/content-converter.js', () => ({
   markdownToHtml: vi.fn().mockResolvedValue('<p>Hello world</p>'),
-  htmlToText: vi.fn().mockReturnValue('Hello world'),
 }));
 
-// Mock audit service
-vi.mock('../../core/services/audit-service.js', () => ({
-  logAuditEvent: vi.fn().mockResolvedValue(undefined),
+// The route must not touch the database at all now. Importing this module
+// under a mock that throws is what proves it.
+vi.mock('../../core/db/postgres.js', () => ({
+  query: () => {
+    throw new Error('the preview route must not query the database');
+  },
 }));
-
-// Mock crypto.randomUUID for deterministic tests
-vi.mock('crypto', async () => {
-  const actual = await vi.importActual<typeof import('crypto')>('crypto');
-  return {
-    ...actual,
-    randomUUID: vi.fn().mockReturnValue('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'),
-  };
-});
 
 import { pagesImportRoutes, parseFrontMatter } from './pages-import.js';
 
@@ -55,13 +44,11 @@ describe('Pages import routes', () => {
     vi.clearAllMocks();
   });
 
-  describe('POST /api/pages/import', () => {
-    it('should import a simple markdown article', async () => {
-      mockQuery.mockResolvedValueOnce({ rows: [{ id: 1 }] });
-
+  describe('POST /api/pages/import/preview', () => {
+    it('returns the converted article without persisting anything', async () => {
       const response = await app.inject({
         method: 'POST',
-        url: '/api/pages/import',
+        url: '/api/pages/import/preview',
         payload: {
           markdown: '# Hello\n\nThis is a test article.',
           title: 'Test Article',
@@ -70,26 +57,44 @@ describe('Pages import routes', () => {
 
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
-      expect(body.imported).toBe(1);
-      expect(body.total).toBe(1);
-      expect(body.articles).toHaveLength(1);
-      expect(body.articles[0].title).toBe('Test Article');
-      expect(body.articles[0].success).toBe(true);
-      expect(body.articles[0].id).toMatch(/^standalone-/);
+      expect(body).toEqual({
+        title: 'Test Article',
+        bodyHtml: '<p>Hello world</p>',
+        labels: [],
+      });
+      // No id, because nothing was created. The old envelope handed back a
+      // synthetic `standalone-<uuid>` and the caller navigated straight to it.
+      expect(body).not.toHaveProperty('id');
+      expect(body).not.toHaveProperty('articles');
+    });
 
-      // Verify database insert was called with correct params
-      expect(mockQuery).toHaveBeenCalledOnce();
-      const [sql, params] = mockQuery.mock.calls[0];
-      expect(sql).toContain('INSERT INTO pages');
-      expect(sql).toContain("'standalone'");
-      expect(params[0]).toMatch(/^standalone-/);  // confluence_id
-      expect(params[1]).toBe('Test Article');       // title
-      expect(params[5]).toBe('test-user-id');       // created_by_user_id
+    // The whole point of #1133: the old route hardcoded space_key='_standalone'
+    // on insert, so a page imported while a Confluence space was selected was
+    // filed in the wrong place. The route no longer writes at all — the
+    // throwing `query` mock above fails this test if it ever does.
+    it('never writes a row, so it cannot file the page in the wrong space', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/import/preview',
+        payload: { markdown: '# Anything' },
+      });
+
+      expect(response.statusCode).toBe(200);
+    });
+
+    it('is no longer reachable at the old path', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/import',
+        payload: { markdown: '# Hello' },
+      });
+
+      // 404, not a 200 that silently created nothing — a client still calling
+      // the old route has to find out.
+      expect(response.statusCode).toBe(404);
     });
 
     it('should extract title from YAML front-matter', async () => {
-      mockQuery.mockResolvedValueOnce({ rows: [{ id: 2 }] });
-
       const markdown = `---
 title: Front-Matter Title
 tags: [api, guide]
@@ -100,22 +105,17 @@ Some body text.`;
 
       const response = await app.inject({
         method: 'POST',
-        url: '/api/pages/import',
+        url: '/api/pages/import/preview',
         payload: { markdown },
       });
 
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
-      expect(body.articles[0].title).toBe('Front-Matter Title');
-
-      // Tags should be passed as labels
-      const [, params] = mockQuery.mock.calls[0];
-      expect(params[4]).toEqual(['api', 'guide']); // labels
+      expect(body.title).toBe('Front-Matter Title');
+      expect(body.labels).toEqual(['api', 'guide']);
     });
 
     it('should merge front-matter tags with request body labels', async () => {
-      mockQuery.mockResolvedValueOnce({ rows: [{ id: 3 }] });
-
       const markdown = `---
 title: Merged Labels Test
 tags: [api, guide]
@@ -124,7 +124,7 @@ Content`;
 
       const response = await app.inject({
         method: 'POST',
-        url: '/api/pages/import',
+        url: '/api/pages/import/preview',
         payload: {
           markdown,
           labels: ['guide', 'howto'],  // 'guide' overlaps with front-matter
@@ -132,17 +132,16 @@ Content`;
       });
 
       expect(response.statusCode).toBe(200);
-
-      const [, params] = mockQuery.mock.calls[0];
+      const body = JSON.parse(response.body);
       // Should be deduplicated: api, guide, howto
-      expect(params[4]).toEqual(expect.arrayContaining(['api', 'guide', 'howto']));
-      expect(params[4]).toHaveLength(3);
+      expect(body.labels).toEqual(expect.arrayContaining(['api', 'guide', 'howto']));
+      expect(body.labels).toHaveLength(3);
     });
 
     it('should return 400 when markdown field is missing', async () => {
       const response = await app.inject({
         method: 'POST',
-        url: '/api/pages/import',
+        url: '/api/pages/import/preview',
         payload: { title: 'No markdown' },
       });
 
@@ -152,7 +151,7 @@ Content`;
     it('should return 400 when markdown is empty string', async () => {
       const response = await app.inject({
         method: 'POST',
-        url: '/api/pages/import',
+        url: '/api/pages/import/preview',
         payload: { markdown: '' },
       });
 
@@ -160,17 +159,14 @@ Content`;
     });
 
     it('should use "Imported Article" as default title when none provided', async () => {
-      mockQuery.mockResolvedValueOnce({ rows: [{ id: 4 }] });
-
       const response = await app.inject({
         method: 'POST',
-        url: '/api/pages/import',
+        url: '/api/pages/import/preview',
         payload: { markdown: 'Just some text without title' },
       });
 
       expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
-      expect(body.articles[0].title).toBe('Imported Article');
+      expect(JSON.parse(response.body).title).toBe('Imported Article');
     });
   });
 });

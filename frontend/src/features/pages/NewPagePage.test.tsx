@@ -14,9 +14,14 @@ vi.mock('react-router-dom', async () => {
 });
 
 const mockCreateMutateAsync = vi.fn();
+const mockUpdateLabelsMutateAsync = vi.fn().mockResolvedValue({ labels: [] });
 vi.mock('../../shared/hooks/use-pages', () => ({
   useCreatePage: () => ({
     mutateAsync: mockCreateMutateAsync,
+    isPending: false,
+  }),
+  useUpdatePageLabels: () => ({
+    mutateAsync: mockUpdateLabelsMutateAsync,
     isPending: false,
   }),
   usePageTree: () => ({
@@ -161,24 +166,172 @@ describe('NewPagePage', () => {
     mockSetContent.mockClear();
     mockUseTemplateMutateAsync.mockReset();
     mockImportMutateAsync.mockReset();
+    mockUpdateLabelsMutateAsync.mockReset();
+    mockUpdateLabelsMutateAsync.mockResolvedValue({ labels: [] });
     templatesState.items.length = 0;
     editorHtml.current = '';
     spacesState.confluence = [...DEFAULT_CONFLUENCE_SPACES];
     localStorage.clear();
   });
 
-  it('navigates to the imported page using articles[0].id from the import envelope', async () => {
-    mockImportMutateAsync.mockResolvedValue({
-      imported: 1,
-      total: 1,
-      articles: [{ id: 'standalone-xyz', title: 'note', success: true }],
+  // ── Import Markdown loads the editor instead of saving (#1133) ────────────
+  // It used to POST to a route that created the page outright, always under the
+  // hardcoded `_standalone` space, then navigate to the read-only view — so the
+  // space picked in this very form was ignored and the user never saw the
+  // content before it was saved.
+
+  describe('import markdown (#1133)', () => {
+    function importFile(name = 'note.md') {
+      const input = screen.getByTestId('import-markdown-input');
+      fireEvent.change(input, { target: { files: [new File(['# hi'], name, { type: 'text/markdown' })] } });
+    }
+
+    it('loads the converted body into the editor and saves nothing', async () => {
+      mockImportMutateAsync.mockResolvedValue({
+        title: 'note', bodyHtml: '<h1>hi</h1>', labels: [],
+      });
+      render(<NewPagePage />, { wrapper: createWrapper() });
+
+      importFile();
+
+      await waitFor(() => expect(mockSetContent).toHaveBeenCalledWith('<h1>hi</h1>', { emitUpdate: true }));
+      // No page was created, so there is nowhere to navigate to — the user
+      // stays in the form to review and choose where it goes.
+      expect(mockNavigate).not.toHaveBeenCalled();
+      expect(mockCreateMutateAsync).not.toHaveBeenCalled();
     });
-    render(<NewPagePage />, { wrapper: createWrapper() });
-    const input = screen.getByTestId('import-markdown-input');
-    const file = new File(['# hi'], 'note.md', { type: 'text/markdown' });
-    fireEvent.change(input, { target: { files: [file] } });
-    // Real bug: the old code read result.id (undefined) → navigated to /pages/undefined.
-    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('/pages/standalone-xyz'));
+
+    it('fills the title from the import when the field is empty', async () => {
+      mockImportMutateAsync.mockResolvedValue({
+        title: 'Front-Matter Title', bodyHtml: '<p>x</p>', labels: [],
+      });
+      render(<NewPagePage />, { wrapper: createWrapper() });
+
+      importFile();
+
+      await waitFor(() => expect(screen.getByTestId('title-input')).toHaveValue('Front-Matter Title'));
+    });
+
+    it('does not overwrite a title the user has already typed', async () => {
+      mockImportMutateAsync.mockResolvedValue({
+        title: 'Front-Matter Title', bodyHtml: '<p>x</p>', labels: [],
+      });
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'My own title' } });
+
+      importFile();
+
+      await waitFor(() => expect(mockImportMutateAsync).toHaveBeenCalled());
+      expect(screen.getByTestId('title-input')).toHaveValue('My own title');
+    });
+
+    // The bug, stated as a test: the create that follows an import must carry
+    // the space the form is showing, not '_standalone'.
+    it('creates the imported page in the selected Confluence space', async () => {
+      mockImportMutateAsync.mockResolvedValue({
+        title: 'note', bodyHtml: '<h1>hi</h1>', labels: [],
+      });
+      mockCreateMutateAsync.mockResolvedValueOnce({ id: 'new-id', title: 'note', version: 1 });
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await waitFor(() => {
+        expect((screen.getByTestId('space-selector') as HTMLSelectElement).value).toBe('DEV');
+      });
+
+      importFile();
+      await waitFor(() => expect(mockSetContent).toHaveBeenCalled());
+
+      fireEvent.click(screen.getByText('Create Page'));
+
+      await waitFor(() => {
+        expect(mockCreateMutateAsync).toHaveBeenCalledWith(
+          expect.objectContaining({ spaceKey: 'DEV', title: 'note', bodyHtml: '<h1>hi</h1>' }),
+        );
+      });
+      expect(mockCreateMutateAsync).not.toHaveBeenCalledWith(
+        expect.objectContaining({ spaceKey: '_standalone' }),
+      );
+    });
+
+    it('creates the imported page in a selected local space, with its visibility', async () => {
+      mockImportMutateAsync.mockResolvedValue({
+        title: 'note', bodyHtml: '<h1>hi</h1>', labels: [],
+      });
+      mockCreateMutateAsync.mockResolvedValueOnce({ id: 'new-id', title: 'note', version: 1 });
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await selectLocalSpace('notes');
+
+      importFile();
+      await waitFor(() => expect(mockSetContent).toHaveBeenCalled());
+
+      fireEvent.click(screen.getByText('Create Page'));
+
+      await waitFor(() => {
+        expect(mockCreateMutateAsync).toHaveBeenCalledWith(
+          expect.objectContaining({ spaceKey: 'notes', visibility: 'private' }),
+        );
+      });
+    });
+
+    // POST /pages has no labels field, so front-matter labels would otherwise
+    // be silently dropped by the rework.
+    it('applies front-matter labels once the page exists', async () => {
+      mockImportMutateAsync.mockResolvedValue({
+        title: 'note', bodyHtml: '<p>x</p>', labels: ['api', 'guide'],
+      });
+      mockCreateMutateAsync.mockResolvedValueOnce({ id: 42, title: 'note', version: 1 });
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await waitFor(() => {
+        expect((screen.getByTestId('space-selector') as HTMLSelectElement).value).toBe('DEV');
+      });
+
+      importFile();
+      await waitFor(() => expect(mockSetContent).toHaveBeenCalled());
+      fireEvent.click(screen.getByText('Create Page'));
+
+      await waitFor(() => {
+        expect(mockUpdateLabelsMutateAsync).toHaveBeenCalledWith({ id: '42', addLabels: ['api', 'guide'] });
+      });
+    });
+
+    it('does not call the labels API when the file declared none', async () => {
+      mockImportMutateAsync.mockResolvedValue({ title: 'note', bodyHtml: '<p>x</p>', labels: [] });
+      mockCreateMutateAsync.mockResolvedValueOnce({ id: 42, title: 'note', version: 1 });
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await waitFor(() => {
+        expect((screen.getByTestId('space-selector') as HTMLSelectElement).value).toBe('DEV');
+      });
+
+      importFile();
+      await waitFor(() => expect(mockSetContent).toHaveBeenCalled());
+      fireEvent.click(screen.getByText('Create Page'));
+
+      await waitFor(() => expect(mockCreateMutateAsync).toHaveBeenCalled());
+      expect(mockUpdateLabelsMutateAsync).not.toHaveBeenCalled();
+    });
+
+    it('strips a .markdown extension as well as .md', async () => {
+      mockImportMutateAsync.mockResolvedValue({ title: 'note', bodyHtml: '<p>x</p>', labels: [] });
+      render(<NewPagePage />, { wrapper: createWrapper() });
+
+      importFile('release-notes.markdown');
+
+      await waitFor(() => {
+        expect(mockImportMutateAsync).toHaveBeenCalledWith(
+          expect.objectContaining({ title: 'release-notes' }),
+        );
+      });
+    });
+
+    it('reports a failed conversion without touching the editor', async () => {
+      mockImportMutateAsync.mockRejectedValue(new Error('Markdown too large (max ~1MB)'));
+      render(<NewPagePage />, { wrapper: createWrapper() });
+
+      importFile();
+
+      await waitFor(() => expect(mockImportMutateAsync).toHaveBeenCalled());
+      expect(mockSetContent).not.toHaveBeenCalled();
+      expect(mockNavigate).not.toHaveBeenCalled();
+    });
   });
 
   it('renders the New Page title and form fields', () => {
