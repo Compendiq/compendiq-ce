@@ -387,10 +387,36 @@ describe('NewPagePage', () => {
     });
   });
 
-  it('does not show location picker when no space is selected', () => {
+  it('does not show location picker when no space is selected', async () => {
+    // Reach the no-space state honestly. Clicking the already-pressed
+    // Confluence toggle would also clear it, but only because of a bug — see
+    // the idempotence test below.
+    spacesState.confluence = [];
     render(<NewPagePage />, { wrapper: createWrapper() });
-    fireEvent.click(screen.getByTestId('article-type-confluence'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('article-type-local')).toHaveAttribute('aria-pressed', 'true');
+    });
+    expect((screen.getByTestId('space-selector') as HTMLSelectElement).value).toBe('');
     expect(screen.queryByTestId('location-picker-section')).not.toBeInTheDocument();
+  });
+
+  // Moving the reset out of `useEffect(..., [articleType])` into the click
+  // handler dropped an implicit condition: React bails out of
+  // `setArticleType(sameValue)`, so the effect never re-ran for a click on the
+  // already-pressed button. Without an explicit guard the handler throws away
+  // a space and parent the user has already chosen.
+  it('clicking the already-active type toggle keeps the selected space', async () => {
+    render(<NewPagePage />, { wrapper: createWrapper() });
+    await waitFor(() => {
+      expect((screen.getByTestId('space-selector') as HTMLSelectElement).value).toBe('DEV');
+    });
+    expect(screen.getByTestId('location-picker-section')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('article-type-confluence'));
+
+    expect((screen.getByTestId('space-selector') as HTMLSelectElement).value).toBe('DEV');
+    expect(screen.getByTestId('location-picker-section')).toBeInTheDocument();
   });
 
   it('does not show location picker for local articles until a space is selected', async () => {

@@ -69,12 +69,19 @@ export function NewPagePage() {
   // a selection made in one context to the wrong context. This is deliberately
   // a handler and not an effect on `articleType`: an effect also fires on mount
   // and would immediately wipe the preselection below.
+  //
+  // The `next === articleType` guard restores what the effect gave for free.
+  // React bails out of `setArticleType(sameValue)` and the effect's dependency
+  // never changed, so clicking the already-pressed toggle used to be a no-op;
+  // without the guard it would now throw away the space and parent the user
+  // had chosen.
   const handleArticleTypeChange = useCallback((next: ArticleType) => {
     preselectSettled.current = true;
+    if (next === articleType) return;
     setArticleType(next);
     setSpaceKey('');
     setParentId(undefined);
-  }, []);
+  }, [articleType]);
 
   const handleLocationSelect = useCallback((selection: LocationSelection) => {
     setParentId(selection.parentId);
