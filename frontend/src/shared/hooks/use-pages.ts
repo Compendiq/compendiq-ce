@@ -350,7 +350,11 @@ export function usePinnedPages() {
   return useQuery<PinnedPagesResponse>({
     queryKey: ['pages', 'pinned'],
     queryFn: () => apiFetch('/pages/pinned'),
-    staleTime: 60_000, // lightweight query (max 8 items) — avoid refetching on every mount
+    // A hand-curated per-user list with SQL-truncated excerpts, so it stays
+    // cheap even unbounded (#1130 removed the 8-pin cap) — but there is no
+    // ceiling on the row count any more, so cache it rather than refetching on
+    // every mount.
+    staleTime: 60_000,
   });
 }
 

@@ -204,6 +204,19 @@ describe('Pinned Pages API', () => {
       expect(body.total).toBe(0);
     });
 
+    // The row count is unbounded since #1130, so the excerpt has to be
+    // truncated by Postgres — otherwise every pinned article's full TOASTed
+    // body crosses the wire to be thrown away in JS.
+    it('should truncate the excerpt in SQL, not only in JS', async () => {
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+      await app.inject({ method: 'GET', url: '/api/pages/pinned' });
+
+      const sql = mockQueryFn.mock.calls[0][0] as string;
+      expect(sql).toContain('substring(cp.body_text, 1, 200)');
+      expect(sql).not.toMatch(/,\s*cp\.body_text\b/);
+    });
+
     it('should truncate excerpt to 200 characters', async () => {
       const longText = 'A'.repeat(500);
       mockQueryFn.mockResolvedValueOnce({

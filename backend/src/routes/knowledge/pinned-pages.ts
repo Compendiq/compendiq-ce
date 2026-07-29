@@ -27,8 +27,14 @@ export async function pinnedPagesRoutes(fastify: FastifyInstance) {
       last_modified_at: Date | null;
       body_text: string | null;
     }>(
+      // Truncate the excerpt in SQL, not in JS. The row count is unbounded
+      // since #1130, and `body_text` is a TOASTed full-article column — a user
+      // with 200 pins would make Postgres detoast and ship every article body
+      // just so `.slice(0, 200)` could throw all but a fraction of it away.
+      // Matches `search.ts`, which does the same for the same reason.
       `SELECT pp.page_id, pp.pin_order, pp.pinned_at,
-              cp.space_key, cp.title, cp.author, cp.last_modified_at, cp.body_text
+              cp.space_key, cp.title, cp.author, cp.last_modified_at,
+              substring(cp.body_text, 1, 200) AS body_text
        FROM pinned_pages pp
        JOIN pages cp ON cp.id = pp.page_id
        WHERE pp.user_id = $1
