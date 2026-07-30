@@ -1,6 +1,9 @@
 import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
-import { SystemPromptKey, STRUCTURE_PRESERVATION_INSTRUCTION } from '../../domains/llm/services/prompts.js';
+import {
+  SystemPromptKey, STRUCTURE_PRESERVATION_INSTRUCTION, contentToText,
+  type ChatContentPart, type ChatMessage,
+} from '../../domains/llm/services/prompts.js';
 import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
 import { streamChat } from '../../domains/llm/services/openai-compatible-client.js';
 import { LlmCache, buildLlmCacheKey } from '../../domains/llm/services/llm-cache.js';
@@ -19,6 +22,7 @@ import {
   streamSSE,
   sanitizeLlmInput,
   buildOutputPostProcessor,
+  resolveImagePart,
   LLM_STREAM_RATE_LIMIT,
   MAX_INPUT_LENGTH,
   MAX_DOCUMENT_TEXT_FOR_LLM,
@@ -45,7 +49,7 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
     try {
     const auditStart = Date.now();
     const body = ImproveRequestSchema.parse(request.body);
-    const { content, type, model, includeSubPages, instruction, referenceText } = body;
+    const { content, type, model, includeSubPages, instruction, referenceText, imageHandle } = body;
     const userId = request.userId;
 
     if (content.length > MAX_INPUT_LENGTH) {
@@ -171,8 +175,20 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
       'Resolved chat usecase assignment',
     );
 
+    // #1154: gate and load before the cache lookup, so the key can include
+    // the image and a refusal never costs a provider round-trip.
+    let imagePart: ChatContentPart | undefined;
+    let imageHash: string | undefined;
+    if (imageHandle) {
+      const resolved = await resolveImagePart(
+        fastify, userId, imageHandle, chatConfig.providerId, resolvedModel,
+      );
+      imagePart = resolved.part;
+      imageHash = resolved.hash;
+    }
+
     // Check LLM cache with stampede protection
-    const cacheKey = buildLlmCacheKey(resolvedModel, systemPrompt, improveContent, chatConfig.providerId, { thinking: body.thinking });
+    const cacheKey = buildLlmCacheKey(resolvedModel, systemPrompt, improveContent, chatConfig.providerId, { thinking: body.thinking, imageHash });
     const { cached, lockAcquired } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
       // Echo back the markdown the model was given (#704) so the frontend can
@@ -214,9 +230,14 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
       }));
     }
 
-    const improveMessages = [
-      { role: 'system' as const, content: systemPrompt },
-      { role: 'user' as const, content: improveContent },
+    const improveMessages: ChatMessage[] = [
+      { role: 'system', content: systemPrompt },
+      {
+        role: 'user',
+        content: imagePart
+          ? [{ type: 'text', text: improveContent }, imagePart]
+          : improveContent,
+      },
     ];
 
     try {
@@ -253,9 +274,9 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
         action: 'improve',
         model: resolvedModel,
         provider: chatConfig.providerId,
-        inputTokens: estimateTokens(improveMessages.map(m => m.content).join('')),
+        inputTokens: estimateTokens(improveMessages.map(m => contentToText(m.content)).join('')),
         outputTokens: estimateTokens(accumulated),
-        inputMessages: improveMessages.map(m => ({ role: m.role, contentLength: m.content.length })),
+        inputMessages: improveMessages.map(m => ({ role: m.role, contentLength: contentToText(m.content).length })),
         retrievedChunkIds: [],
         durationMs: Date.now() - auditStart,
         status: 'success',
@@ -268,9 +289,9 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
         action: 'improve',
         model: resolvedModel,
         provider: chatConfig.providerId,
-        inputTokens: estimateTokens(improveMessages.map(m => m.content).join('')),
+        inputTokens: estimateTokens(improveMessages.map(m => contentToText(m.content)).join('')),
         outputTokens: 0,
-        inputMessages: improveMessages.map(m => ({ role: m.role, contentLength: m.content.length })),
+        inputMessages: improveMessages.map(m => ({ role: m.role, contentLength: contentToText(m.content).length })),
         retrievedChunkIds: [],
         durationMs: Date.now() - auditStart,
         status: 'error',

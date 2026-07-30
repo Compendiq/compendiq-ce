@@ -1,4 +1,4 @@
-import { FastifyReply } from 'fastify';
+import { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { query } from '../../core/db/postgres.js';
 import { logger } from '../../core/utils/logger.js';
@@ -6,12 +6,15 @@ import { sanitizeLlmInput } from '../../core/utils/sanitize-llm-input.js';
 import {
   getSystemPrompt, SystemPromptKey,
   LANGUAGE_PRESERVATION_INSTRUCTION,
+  type ChatContentPart,
 } from '../../domains/llm/services/prompts.js';
 import { LlmCache, type CachedLlmResponse } from '../../domains/llm/services/llm-cache.js';
 import { getAiGuardrails, getAiOutputRules, SWISS_SPELLING_INSTRUCTION } from '../../core/services/ai-safety-service.js';
 import { sanitizeLlmOutput, type OutputSanitizeResult } from '../../core/utils/sanitize-llm-output.js';
 import { assembleSubPageContext, getMultiPagePromptSuffix } from '../../domains/confluence/services/subpage-context.js';
 import { htmlToMarkdown, protectMedia } from '../../core/services/content-converter.js';
+import { getVisionCapability } from '../../domains/llm/services/model-capabilities.js';
+import { loadStagedImage } from '../../core/services/image-staging.js';
 
 export { sanitizeLlmInput };
 
@@ -334,4 +337,48 @@ export async function buildOutputPostProcessor(
       ...rules,
       verifiedSources,
     });
+}
+
+/**
+ * #1154: gate on vision capability, then load the staged image as a content
+ * part.
+ *
+ * Shared by /llm/generate and /llm/improve so the 422 and 410 semantics exist
+ * in exactly one place — an earlier draft inlined this in both routes, which
+ * would have let the two drift apart.
+ *
+ * Order matters: the capability check runs before the Redis lookup, so a
+ * refusal costs neither a load nor a provider round-trip.
+ */
+export async function resolveImagePart(
+  fastify: FastifyInstance,
+  userId: string,
+  imageHandle: string,
+  providerId: string,
+  model: string,
+): Promise<{ part: ChatContentPart; hash: string }> {
+  const vision = await getVisionCapability(providerId, model);
+  if (vision !== true) {
+    throw fastify.httpErrors.unprocessableEntity(
+      `The model assigned to chat (${model}) cannot accept images. ` +
+      'Assign a vision-capable model in Settings → LLM.',
+    );
+  }
+
+  const staged = await loadStagedImage(userId, imageHandle);
+  if (!staged) {
+    throw fastify.httpErrors.gone('The staged image has expired. Attach it again.');
+  }
+
+  return {
+    part: {
+      type: 'image_url',
+      image_url: {
+        url: `data:image/${staged.format};base64,${staged.bytes.toString('base64')}`,
+      },
+    },
+    // The handle *is* the sha256 of the bytes, so it doubles as the cache
+    // input. If handles ever stop being content-addressed, hash the bytes here.
+    hash: imageHandle,
+  };
 }

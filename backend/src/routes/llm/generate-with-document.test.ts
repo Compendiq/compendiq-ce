@@ -9,6 +9,10 @@ const mockGetSystemPrompt = vi.fn().mockImplementation((key: string) => `System 
 vi.mock('../../domains/llm/services/prompts.js', () => ({
   getSystemPrompt: (...args: unknown[]) => mockGetSystemPrompt(...args),
   LANGUAGE_PRESERVATION_INSTRUCTION: '',
+  // #1154: these tests never attach an image, so content is always a bare
+  // string — the real implementation's array-flattening path is unexercised
+  // here and covered by generate-with-image.test.ts instead.
+  contentToText: (content: unknown) => content as string,
 }));
 
 // Mock llm-provider-resolver (resolveUsecase)

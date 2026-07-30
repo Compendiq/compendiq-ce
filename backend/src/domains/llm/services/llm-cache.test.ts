@@ -343,3 +343,32 @@ describe('LlmCache', () => {
     });
   });
 });
+
+describe('buildLlmCacheKey imageHash (#1154)', () => {
+  /**
+   * Without the image in the key, two different images sharing one prompt
+   * collide and the second request is served the first image's answer.
+   */
+  it('produces different keys for different images with one prompt', () => {
+    const a = buildLlmCacheKey('m', 'sys', 'user', 'p', { imageHash: 'a'.repeat(64) });
+    const b = buildLlmCacheKey('m', 'sys', 'user', 'p', { imageHash: 'b'.repeat(64) });
+    expect(a).not.toBe(b);
+  });
+
+  it('differs from the same prompt with no image', () => {
+    const withImage = buildLlmCacheKey('m', 'sys', 'user', 'p', { imageHash: 'a'.repeat(64) });
+    const without = buildLlmCacheKey('m', 'sys', 'user', 'p');
+    expect(withImage).not.toBe(without);
+  });
+
+  it('is stable for the same image', () => {
+    const opts = { imageHash: 'a'.repeat(64) };
+    expect(buildLlmCacheKey('m', 'sys', 'user', 'p', opts))
+      .toBe(buildLlmCacheKey('m', 'sys', 'user', 'p', opts));
+  });
+
+  it('leaves existing text-only keys unchanged', () => {
+    expect(buildLlmCacheKey('m', 'sys', 'user', 'p'))
+      .toBe(buildLlmCacheKey('m', 'sys', 'user', 'p', {}));
+  });
+});

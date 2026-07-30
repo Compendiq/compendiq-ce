@@ -38,6 +38,9 @@ const mockGetSystemPrompt = vi.fn().mockReturnValue('sys prompt');
 vi.mock('../../domains/llm/services/prompts.js', () => ({
   getSystemPrompt: (...args: unknown[]) => mockGetSystemPrompt(...args),
   LANGUAGE_PRESERVATION_INSTRUCTION: '',
+  // #1154: none of these routes attach an image in this suite, so content is
+  // always a bare string.
+  contentToText: (content: unknown) => content as string,
 }));
 
 vi.mock('../../domains/llm/services/llm-provider-resolver.js', () => ({
