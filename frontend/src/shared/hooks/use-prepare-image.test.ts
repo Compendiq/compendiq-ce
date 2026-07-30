@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 
 vi.mock('../lib/downscale-image', () => ({
@@ -32,10 +32,23 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+/**
+ * `URL` is spied, never replaced. `vi.stubGlobal('URL', { ...URL, … })` looks
+ * equivalent and is not: spreading a *class* copies neither its statics nor its
+ * construct behaviour, so the global becomes a plain object and `new URL(...)`
+ * throws "URL is not a constructor" for the rest of the file — landing in
+ * whichever test happens to be running when something builds one.
+ */
 beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(OK), { status: 200 })));
-  vi.stubGlobal('URL', { ...URL, createObjectURL: vi.fn(() => 'blob:preview'), revokeObjectURL: vi.fn() });
+  vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:preview');
+  vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
   mockRefresh.mockReset();
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe('usePrepareImage', () => {
@@ -99,6 +112,44 @@ describe('usePrepareImage', () => {
     await act(async () => {
       staged.resolve(new Response(JSON.stringify(OK), { status: 200 }));
       await call;
+    });
+    expect(result.current.isPreparing).toBe(false);
+  });
+
+  /**
+   * The reason the flag is a depth counter rather than a boolean.
+   *
+   * `useAttachments` gates its drop and paste handlers on `disabled` alone —
+   * never on `isBusy` — so a second image can be dropped while the first is
+   * still staging. With a boolean the first call's `finally` clears the flag
+   * mid-flight: the trigger re-enables, Send unblocks, and the request goes out
+   * with no handle while the second image is still being staged. That is #940's
+   * defect exactly, which is why `use-extract-document` was converted to a
+   * counter on this branch and why its twin cannot stay a boolean.
+   */
+  it('stays preparing until the last of two overlapping calls settles', async () => {
+    const first = deferred<Response>();
+    const second = deferred<Response>();
+    vi.stubGlobal('fetch', vi.fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise));
+
+    const { result } = renderHook(() => usePrepareImage());
+    let a!: Promise<unknown>;
+    let b!: Promise<unknown>;
+    await act(async () => { a = result.current.prepareImage(PNG()); });
+    await act(async () => { b = result.current.prepareImage(PNG()); });
+    expect(result.current.isPreparing).toBe(true);
+
+    await act(async () => {
+      first.resolve(new Response(JSON.stringify(OK), { status: 200 }));
+      await a;
+    });
+    expect(result.current.isPreparing, 'the second call is still in flight').toBe(true);
+
+    await act(async () => {
+      second.resolve(new Response(JSON.stringify(OK), { status: 200 }));
+      await b;
     });
     expect(result.current.isPreparing).toBe(false);
   });

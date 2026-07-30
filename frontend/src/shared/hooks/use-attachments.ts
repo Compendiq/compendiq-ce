@@ -106,19 +106,30 @@ export function useAttachments(options: UseAttachmentsOptions = {}) {
   // drag that never actually left (mirrors DocumentUploadZone.tsx).
   const dragDepthRef = useRef(0);
 
+  // Removing invalidates whatever is in flight, not just what is on screen.
+  // Bumping the request id is what makes "clear" mean cancel: `pickFile`'s
+  // guard then sees a stale id, discards the result and revokes its own object
+  // URL. Without it the only trigger was a *new* pick, so clearing during
+  // staging left the result free to arrive and re-attach itself afterwards —
+  // and `clearAll` runs from `DockPanel`'s page-change effect, so that
+  // resurrected image would land on a document the user had already left.
   const removeImage = useCallback(() => {
+    prepareRequestIdRef.current += 1;
     setImage((current) => {
       if (current) URL.revokeObjectURL(current.previewUrl);
       return null;
     });
   }, []);
 
-  const removeDocument = useCallback(() => setDocument(null), []);
+  const removeDocument = useCallback(() => {
+    extractRequestIdRef.current += 1;
+    setDocument(null);
+  }, []);
 
   const clearAll = useCallback(() => {
     removeImage();
-    setDocument(null);
-  }, [removeImage]);
+    removeDocument();
+  }, [removeImage, removeDocument]);
 
   useEffect(() => () => {
     if (imageRef.current) URL.revokeObjectURL(imageRef.current.previewUrl);

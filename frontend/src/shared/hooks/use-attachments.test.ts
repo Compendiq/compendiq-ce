@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import { SUPPORTED_DOCUMENT_FORMATS } from '@compendiq/contracts';
 import type { PreparedImage } from './use-prepare-image';
@@ -39,11 +39,24 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+/**
+ * Spied, never replaced. `vi.stubGlobal('URL', { ...URL, … })` looks equivalent
+ * and is not: spreading a *class* copies neither its statics nor its construct
+ * behaviour, so the global becomes a plain object and `new URL(...)` throws
+ * "URL is not a constructor" for the rest of the file — in whichever test
+ * happens to be running when something on the path builds one.
+ */
 beforeEach(() => {
   mockToastError.mockReset();
   mockExtract.mockClear();
   mockPrepare.mockClear();
-  vi.stubGlobal('URL', { ...URL, createObjectURL: vi.fn(() => 'blob:preview'), revokeObjectURL: vi.fn() });
+  vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:preview');
+  vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe('useAttachments routing', () => {
@@ -264,8 +277,7 @@ describe('useAttachments document gates', () => {
 
 describe('useAttachments object URL lifecycle', () => {
   it('revokes the preview URL when the image is removed', async () => {
-    const revoke = vi.fn();
-    vi.stubGlobal('URL', { ...URL, createObjectURL: vi.fn(() => 'blob:preview'), revokeObjectURL: revoke });
+    const revoke = vi.mocked(URL.revokeObjectURL);
     const { result } = renderHook(() => useAttachments({ imageEnabled: true }));
     await act(async () => { await result.current.pickFile(file('shot.png', 'image/png')); });
     act(() => { result.current.removeImage(); });
@@ -280,8 +292,7 @@ describe('useAttachments object URL lifecycle', () => {
    * than merely leaving an attachment behind.
    */
   it('clears both slots and revokes the preview URL', async () => {
-    const revoke = vi.fn();
-    vi.stubGlobal('URL', { ...URL, createObjectURL: vi.fn(() => 'blob:preview'), revokeObjectURL: revoke });
+    const revoke = vi.mocked(URL.revokeObjectURL);
     const { result } = renderHook(() => useAttachments({ imageEnabled: true }));
     await act(async () => { await result.current.pickFile(file('spec.pdf', 'application/pdf')); });
     await act(async () => { await result.current.pickFile(file('shot.png', 'image/png')); });
@@ -296,8 +307,7 @@ describe('useAttachments object URL lifecycle', () => {
   });
 
   it('revokes the preview URL on unmount', async () => {
-    const revoke = vi.fn();
-    vi.stubGlobal('URL', { ...URL, createObjectURL: vi.fn(() => 'blob:preview'), revokeObjectURL: revoke });
+    const revoke = vi.mocked(URL.revokeObjectURL);
     const { result, unmount } = renderHook(() => useAttachments({ imageEnabled: true }));
     await act(async () => { await result.current.pickFile(file('shot.png', 'image/png')); });
     unmount();
@@ -307,8 +317,7 @@ describe('useAttachments object URL lifecycle', () => {
   /** The leak that ships silently: the unmount test above can't catch a
    *  regression here, because it only ever attaches one image. */
   it('revokes the first image preview when a second image replaces it', async () => {
-    const revoke = vi.fn();
-    vi.stubGlobal('URL', { ...URL, createObjectURL: vi.fn(() => 'blob:preview'), revokeObjectURL: revoke });
+    const revoke = vi.mocked(URL.revokeObjectURL);
     mockPrepare
       .mockResolvedValueOnce({
         handle: 'a'.repeat(64), format: 'webp', width: 800, height: 600, fileSize: 1234, previewUrl: 'blob:first',
@@ -328,8 +337,7 @@ describe('useAttachments object URL lifecycle', () => {
   /** Two fast picks: a late-resolving earlier call must not clobber a newer
    *  image, and its own (now-orphaned) previewUrl must not leak. */
   it('keeps the newer image and revokes a stale image that resolves after it', async () => {
-    const revoke = vi.fn();
-    vi.stubGlobal('URL', { ...URL, createObjectURL: vi.fn(() => 'blob:preview'), revokeObjectURL: revoke });
+    const revoke = vi.mocked(URL.revokeObjectURL);
     const first = deferred<PreparedImage>();
     const second = deferred<PreparedImage>();
     mockPrepare.mockImplementationOnce(() => first.promise).mockImplementationOnce(() => second.promise);
@@ -359,9 +367,85 @@ describe('useAttachments object URL lifecycle', () => {
     expect(revoke).toHaveBeenCalledWith('blob:first');
   });
 
+  /**
+   * Clearing has to cancel what is in flight, not just what is on screen.
+   *
+   * Until this, the request id was bumped only by a *new* pick, so a removal
+   * during staging left the result free to arrive afterwards and attach itself.
+   * `DockPanel` calls `clearAll()` from a `useEffect` on `pageId` with no busy
+   * gate, so that image would land on the article the user had already
+   * navigated away from — the "attachment silently follows the user to another
+   * document" behaviour #1126 set out to remove.
+   */
+  it('discards an image removed while it was still staging', async () => {
+    const revoke = vi.mocked(URL.revokeObjectURL);
+    const pending = deferred<PreparedImage>();
+    mockPrepare.mockImplementationOnce(() => pending.promise);
+
+    const { result } = renderHook(() => useAttachments({ imageEnabled: true }));
+    let pick!: Promise<void>;
+    act(() => { pick = result.current.pickFile(file('shot.png', 'image/png')); });
+
+    act(() => { result.current.removeImage(); });
+
+    await act(async () => {
+      pending.resolve({
+        handle: 'a'.repeat(64), format: 'webp', width: 1, height: 1, fileSize: 1,
+        previewUrl: 'blob:cancelled',
+      });
+      await pick;
+    });
+
+    expect(result.current.image, 'a removed image must not come back').toBeNull();
+    expect(revoke, "the orphaned preview URL is this hook's to revoke")
+      .toHaveBeenCalledWith('blob:cancelled');
+  });
+
+  /** Same defect via the page-change path, which goes through `clearAll`. */
+  it('discards an image cleared while it was still staging', async () => {
+    const revoke = vi.mocked(URL.revokeObjectURL);
+    const pending = deferred<PreparedImage>();
+    mockPrepare.mockImplementationOnce(() => pending.promise);
+
+    const { result } = renderHook(() => useAttachments({ imageEnabled: true }));
+    let pick!: Promise<void>;
+    act(() => { pick = result.current.pickFile(file('shot.png', 'image/png')); });
+
+    act(() => { result.current.clearAll(); });
+
+    await act(async () => {
+      pending.resolve({
+        handle: 'a'.repeat(64), format: 'webp', width: 1, height: 1, fileSize: 1,
+        previewUrl: 'blob:cancelled',
+      });
+      await pick;
+    });
+
+    expect(result.current.image).toBeNull();
+    expect(revoke).toHaveBeenCalledWith('blob:cancelled');
+  });
+
+  /** The document slot has the same shape, minus the object URL. */
+  it('discards a document cleared while it was still extracting', async () => {
+    const pending = deferred<{ text: string; format: string; fileSize: number }>();
+    mockExtract.mockImplementationOnce(() => pending.promise);
+
+    const { result } = renderHook(() => useAttachments({ imageEnabled: true }));
+    let pick!: Promise<void>;
+    act(() => { pick = result.current.pickFile(file('spec.pdf', 'application/pdf')); });
+
+    act(() => { result.current.clearAll(); });
+
+    await act(async () => {
+      pending.resolve({ text: 'late', format: 'pdf', fileSize: 10 });
+      await pick;
+    });
+
+    expect(result.current.document).toBeNull();
+  });
+
   it('revokes the previewUrl of a prepareImage call that resolves after unmount', async () => {
-    const revoke = vi.fn();
-    vi.stubGlobal('URL', { ...URL, createObjectURL: vi.fn(() => 'blob:preview'), revokeObjectURL: revoke });
+    const revoke = vi.mocked(URL.revokeObjectURL);
     const pending = deferred<PreparedImage>();
     mockPrepare.mockImplementationOnce(() => pending.promise);
 
