@@ -26,6 +26,13 @@ function jsonResponse(body: unknown): Response {
   });
 }
 
+/** A promise plus its resolver, for overlapping two in-flight extractions. */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => { resolve = res; });
+  return { promise, resolve };
+}
+
 describe('useExtractDocument', () => {
   beforeEach(() => {
     storeState = {
@@ -115,6 +122,70 @@ describe('useExtractDocument', () => {
     );
     const retryHeaders = fetchSpy.mock.calls[2][1]?.headers as Record<string, string>;
     expect(retryHeaders.Authorization).toBe('Bearer new-token');
+  });
+
+  /**
+   * A shared composer drop target accepts a second file while the first is
+   * still in flight (#1154), so `isExtracting` is a depth counter rather than a
+   * boolean. With a boolean the first upload to finish would clear the flag
+   * while the second was still running — re-enabling the paperclip and the dock's
+   * Improve chip mid-extraction, which is the invariant #940 exists to protect.
+   */
+  it('stays busy until the last of two overlapping extractions settles', async () => {
+    const first = deferred<Response>();
+    const second = deferred<Response>();
+    vi.spyOn(globalThis, 'fetch')
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise);
+
+    const { result } = renderHook(() => useExtractDocument());
+
+    let firstCall!: Promise<unknown>;
+    let secondCall!: Promise<unknown>;
+    await act(async () => { firstCall = result.current.extractDocument(file()); });
+    await act(async () => { secondCall = result.current.extractDocument(file('b.pdf')); });
+    expect(result.current.isExtracting).toBe(true);
+
+    // The first finishing must NOT clear the flag — the second is still running.
+    await act(async () => {
+      first.resolve(jsonResponse({ format: 'pdf', text: 'first' }));
+      await firstCall;
+    });
+    expect(result.current.isExtracting).toBe(true);
+
+    await act(async () => {
+      second.resolve(jsonResponse({ format: 'pdf', text: 'second' }));
+      await secondCall;
+    });
+    expect(result.current.isExtracting).toBe(false);
+  });
+
+  /** A failure must release its own slot, or the surface stays disabled forever. */
+  it('stops being busy when an overlapping extraction rejects', async () => {
+    const first = deferred<Response>();
+    const second = deferred<Response>();
+    vi.spyOn(globalThis, 'fetch')
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise);
+
+    const { result } = renderHook(() => useExtractDocument());
+
+    let firstCall!: Promise<unknown>;
+    let secondCall!: Promise<unknown>;
+    await act(async () => { firstCall = result.current.extractDocument(file()); });
+    await act(async () => { secondCall = result.current.extractDocument(file('b.pdf')); });
+
+    await act(async () => {
+      first.resolve(new Response('nope', { status: 500 }));
+      await expect(firstCall).rejects.toThrow();
+    });
+    expect(result.current.isExtracting).toBe(true);
+
+    await act(async () => {
+      second.resolve(jsonResponse({ format: 'pdf', text: 'second' }));
+      await secondCall;
+    });
+    expect(result.current.isExtracting).toBe(false);
   });
 
   it('clears auth and throws when the refresh fails on 401', async () => {

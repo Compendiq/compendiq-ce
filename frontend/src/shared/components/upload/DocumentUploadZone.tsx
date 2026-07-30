@@ -31,7 +31,11 @@ interface DocumentFormatMeta {
   label: string;
   /** Accepted filename extensions, without the dot. */
   extensions: readonly string[];
-  /** MIME types browsers actually report. Advisory only — see `isAccepted`. */
+  /**
+   * MIME types browsers actually report. They only ever widen the `accept`
+   * attribute — nothing here decides whether a file is acceptable, and the
+   * gate that eventually does (`useAttachments`) matches on extension.
+   */
   mimeTypes: readonly string[];
 }
 

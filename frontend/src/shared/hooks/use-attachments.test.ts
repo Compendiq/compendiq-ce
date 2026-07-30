@@ -189,6 +189,56 @@ describe('useAttachments document gates', () => {
     expect(mockToastError).not.toHaveBeenCalled();
   });
 
+  /**
+   * The document twin of the image path's stale-result guard. The shared drop
+   * target accepts a second file while the first is still extracting, so a slow
+   * earlier request must lose rather than clobber the newer document.
+   */
+  it('keeps the newer document and discards an earlier extraction that resolves after it', async () => {
+    const first = deferred<{ text: string; format: string }>();
+    const second = deferred<{ text: string; format: string }>();
+    mockExtract
+      .mockImplementationOnce(() => first.promise as ReturnType<typeof mockExtract>)
+      .mockImplementationOnce(() => second.promise as ReturnType<typeof mockExtract>);
+
+    const { result } = renderHook(() => useAttachments({ imageEnabled: true }));
+
+    let firstPick!: Promise<void>;
+    let secondPick!: Promise<void>;
+    act(() => { firstPick = result.current.pickFile(file('one.pdf', 'application/pdf')); });
+    act(() => { secondPick = result.current.pickFile(file('two.pdf', 'application/pdf')); });
+
+    await act(async () => {
+      second.resolve({ text: 'second doc', format: 'pdf' });
+      await secondPick;
+    });
+    expect(result.current.document).toMatchObject({ filename: 'two.pdf' });
+
+    await act(async () => {
+      first.resolve({ text: 'first doc', format: 'pdf' });
+      await firstPick;
+    });
+    expect(result.current.document).toMatchObject({ filename: 'two.pdf' });
+    expect(result.current.document?.result.text).toBe('second doc');
+  });
+
+  /*
+   * There is deliberately NO "does not set state after unmount" test for the
+   * document path, and it should not be added.
+   *
+   * The image path's equivalent test is meaningful because an orphaned
+   * `prepareImage` result leaks an object URL, so the guard has an observable
+   * consequence (`revokeObjectURL`) to assert on. A discarded extraction is just
+   * text: `setDocument` after unmount is a silent no-op in React 18/19, and
+   * `renderHook`'s `result.current` is frozen at the last render either way. A
+   * test asserting `document === null` after unmount therefore passes whether or
+   * not the `mountedRef` guard exists — verified by removing the guard and
+   * watching it still pass. The guard stays (it is correct, symmetric with the
+   * image path, and becomes load-bearing the moment this slot gains a side
+   * effect), but a test that cannot fail is worse than no test: it reads as
+   * coverage.
+   */
+
   it('surfaces the extraction error and attaches nothing', async () => {
     mockExtract.mockRejectedValueOnce(new Error('PDF contains no extractable text'));
 

@@ -16,13 +16,22 @@ export type ExtractDocumentResult = ExtractDocumentResponse;
  * Hold **one instance per upload surface** and pass both `extractDocument` and
  * `isExtracting` down: two instances give you two `isExtracting` flags, and the
  * one the spinner reads is not the one the upload flips (#940).
+ *
+ * `isExtracting` is derived from a **depth counter**, not a boolean, because two
+ * extractions can overlap — a shared composer drop target accepts a second file
+ * while the first is still in flight (#1154). With a boolean, the first upload
+ * to finish would clear the flag while the second was still running, re-enabling
+ * the trigger and the Improve chip mid-extraction and letting the user send with
+ * the wrong document attached. That is the invariant #940 exists to protect, so
+ * the flag stays true until the *last* in-flight extraction settles. The public
+ * shape is unchanged: consumers still read a plain boolean.
  */
 export function useExtractDocument() {
-  const [isExtracting, setIsExtracting] = useState(false);
+  const [pendingCount, setPendingCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   const extractDocument = useCallback(async (file: File): Promise<ExtractDocumentResult> => {
-    setIsExtracting(true);
+    setPendingCount((count) => count + 1);
     setError(null);
 
     try {
@@ -67,9 +76,9 @@ export function useExtractDocument() {
       setError(message);
       throw err;
     } finally {
-      setIsExtracting(false);
+      setPendingCount((count) => Math.max(0, count - 1));
     }
   }, []);
 
-  return { extractDocument, isExtracting, error };
+  return { extractDocument, isExtracting: pendingCount > 0, error };
 }

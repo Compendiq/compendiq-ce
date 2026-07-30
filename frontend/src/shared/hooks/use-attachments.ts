@@ -11,13 +11,18 @@ import { ImageDecodeError, refusedImageReason } from '../lib/downscale-image';
  * The reason this exists rather than each surface holding its own state: with two
  * slots across three surfaces there would be six pieces of hand-rolled state and
  * three copies of the drop routing. More importantly, a shared drop target has to
- * decide *once* whether a dropped file is a document or an image — if both zones
- * listened, a PNG dropped on the composer would be offered to the document zone,
- * whose `isAccepted()` check is deliberately loose, and which of them won would be
- * emergent rather than designed.
+ * decide *once* whether a dropped file is a document or an image. If both zones
+ * listened, a PNG dropped on the composer would reach whichever of them the event
+ * happened to hit first, and each zone knows only its own half — so which one won
+ * would be emergent rather than designed.
  *
- * So this hook owns the shared drop target and the paste listener, and the zones
- * are presentational.
+ * So the acceptance rules live here, in one place that sees both halves:
+ * `looksLikeImage` first, then the document branch's extension match. The zones
+ * own no rules at all — they report the file they were given and render what they
+ * are handed.
+ *
+ * This hook owns the shared drop target and the paste listener too, for the same
+ * reason: both are places a file arrives without either zone being involved.
  */
 
 export interface AttachedDocument {
@@ -94,6 +99,7 @@ export function useAttachments(options: UseAttachmentsOptions = {}) {
     return () => { mountedRef.current = false; };
   }, []);
   const prepareRequestIdRef = useRef(0);
+  const extractRequestIdRef = useRef(0);
 
   // Counted, not toggled: `dragleave` fires every time the pointer crosses into
   // a child, so a composer full of children would flicker the hint off under a
@@ -174,8 +180,15 @@ export function useAttachments(options: UseAttachmentsOptions = {}) {
       return;
     }
 
+    // Same two guards the image path uses, and for the same reasons: the shared
+    // drop target accepts a second file while the first is still extracting, so
+    // a slow earlier request must not clobber a newer document, and neither may
+    // write state after the surface has gone. No object URL to revoke on the
+    // losing path here — a discarded extraction is just text.
+    const requestId = ++extractRequestIdRef.current;
     try {
       const result = await extractDocument(file);
+      if (!mountedRef.current || requestId !== extractRequestIdRef.current) return;
       setDocument({ result, filename: file.name });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Document extraction failed');
