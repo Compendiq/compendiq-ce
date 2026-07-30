@@ -4,7 +4,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { GenerateModeInput } from './GenerateMode';
-import { AiProvider } from '../AiContext';
+import { AiProvider, useAiContext } from '../AiContext';
 import { useAuthStore } from '../../../stores/auth-store';
 import { ApiError } from '../../../shared/lib/api';
 
@@ -85,7 +85,7 @@ function renderGenerateMode({ vision }: { vision: boolean | null }) {
   });
 
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<GenerateModeInput />, {
+  return render(<><GenerateModeInput /><ModelProbe /></>, {
     wrapper: ({ children }: { children: React.ReactNode }) => (
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={['/ai?mode=generate']}>
@@ -114,13 +114,23 @@ function sendButton(): HTMLButtonElement {
   return screen.getByRole('button', { name: 'Send message' }) as HTMLButtonElement;
 }
 
+/**
+ * Reports the resolved chat model. Send is disabled until one exists, so
+ * without waiting on it a "send is disabled" assertion would pass for the
+ * wrong reason — which an early draft of this file did. Reading it off the
+ * context is the only unambiguous signal; the composer renders the model's
+ * name only on some of the states under test. Contributes no button, so
+ * `sendButton()` is unaffected.
+ */
+function ModelProbe() {
+  const { model } = useAiContext();
+  return <span data-testid="model-probe">{model}</span>;
+}
+
 /** Wait until the model has resolved, or every send assertion is about that instead. */
 async function settle() {
   await waitFor(() => {
-    expect(screen.getByTestId('image-attach-trigger')).toHaveAttribute(
-      'title',
-      expect.stringMatching(/llama3|Attach an image/),
-    );
+    expect(screen.getByTestId('model-probe')).toHaveTextContent('llama3');
   });
 }
 
@@ -227,6 +237,29 @@ describe('GenerateMode image attach (#1154)', () => {
     await settle();
 
     expect(screen.getByTestId('image-attach-trigger')).toBeDisabled();
+  });
+
+  /**
+   * Disabling the trigger only closes the click path. A drop or a paste never
+   * touches it, so the capability gate has to live in the intake router as
+   * well — `imageEnabled` — or a text-only model would be handed a staged
+   * image the backend then refuses with a 422.
+   */
+  it('refuses an image dropped on a text-only model', async () => {
+    renderGenerateMode({ vision: false });
+    await settle();
+
+    await act(async () => {
+      fireEvent.drop(screen.getByTestId('document-upload-zone'), {
+        dataTransfer: { files: [PNG()] },
+      });
+    });
+
+    expect(mockPrepareImage).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('image-attach-card')).not.toBeInTheDocument();
+    expect(toastErrorMock).toHaveBeenCalledWith(
+      "llama3 can't read images — assign a vision-capable model in Settings → LLM.",
+    );
   });
 
   it('enables the image trigger when the model is vision-capable', async () => {
