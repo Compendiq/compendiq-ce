@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { ImageAttachZone, imageDisabledReason } from './ImageAttachZone';
 
 const base = {
@@ -67,5 +67,43 @@ describe('ImageAttachZone', () => {
   it('disables the trigger while preparing', () => {
     render(<ImageAttachZone {...base} vision={true} isPreparing />);
     expect(screen.getByTestId('image-attach-trigger')).toBeDisabled();
+  });
+
+  it('disables the trigger when explicitly disabled', () => {
+    render(<ImageAttachZone {...base} vision={true} disabled />);
+    expect(screen.getByTestId('image-attach-trigger')).toBeDisabled();
+  });
+
+  it('calls onPick with the selected file', async () => {
+    const onPick = vi.fn();
+    render(<ImageAttachZone {...base} vision={true} onPick={onPick} />);
+    const file = new File(['x'], 'shot.png', { type: 'image/png' });
+    fireEvent.change(screen.getByTestId('image-attach-file-input'), { target: { files: [file] } });
+    expect(onPick).toHaveBeenCalledWith(file);
+  });
+
+  it('resets the input so the same file can be picked twice', async () => {
+    // jsdom enforces the real DOM restriction that a file input's `.value` can
+    // only ever be programmatically read back as '' (assigning anything else
+    // throws), so asserting `input.value === ''` after the change can never
+    // fail here — it holds whether or not the component resets anything.
+    // Spying on the native setter observes the actual assignment instead.
+    const setter = vi.spyOn(window.HTMLInputElement.prototype, 'value', 'set');
+    const onPick = vi.fn();
+    render(<ImageAttachZone {...base} vision={true} onPick={onPick} />);
+    const input = screen.getByTestId('image-attach-file-input') as HTMLInputElement;
+    const file = new File(['x'], 'shot.png', { type: 'image/png' });
+    fireEvent.change(input, { target: { files: [file] } });
+    expect(setter).toHaveBeenCalledWith('');
+  });
+
+  it('calls onRemove when the remove control is clicked', async () => {
+    const onRemove = vi.fn();
+    render(<ImageAttachZone {...base} vision={true} onRemove={onRemove} image={{
+      handle: 'a'.repeat(64), format: 'webp', width: 1568, height: 882,
+      fileSize: 240_000, previewUrl: 'blob:preview',
+    }} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Remove image' }));
+    expect(onRemove).toHaveBeenCalledTimes(1);
   });
 });
