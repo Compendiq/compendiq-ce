@@ -58,22 +58,35 @@ function replyNamesBandsInOrder(reply: string): boolean {
  * capability, not just about the request failing.
  *
  * Deliberately narrower than the 4xx class. `chat()` throws
- * `` `chat HTTP ${status}` `` for any non-ok response, so a naive "any 4xx"
- * check also catches 429 (rate limited), 401/403 (auth failure), 404 (model
- * or route not found) and 413 (payload too large) — none of which say
- * anything about image support. Since Task 6 caches a `false` verdict
- * permanently and only re-probes `null`, misclassifying one of those as
- * definitive would permanently brand a rate-limited, misconfigured, or
- * merely-too-large-a-payload but vision-capable model as blind. Resist
- * "simplifying" this back to `/HTTP 4\d\d/` — that regression is exactly
- * what this set exists to prevent.
+ * `` `chat HTTP ${status}: <body>` `` for any non-ok response, so a naive
+ * "any 4xx" check also catches 429 (rate limited), 401/403 (auth failure), 404
+ * (model or route not found) and 413 (payload too large) — none of which say
+ * anything about image support. Since a `false` verdict is cached for up to
+ * `CAPABILITY_MAX_AGE_DAYS` and only `null` is re-probed sooner,
+ * misclassifying one of those as definitive would brand a rate-limited,
+ * misconfigured, or merely-too-large-a-payload but vision-capable model as
+ * blind for a month. Resist "simplifying" this back to `/HTTP 4\d\d/` — that
+ * regression is exactly what this set exists to prevent.
  */
-const IMAGE_REJECTION_STATUSES: ReadonlySet<number> = new Set([400, 415, 422]);
+const UNCONDITIONAL_REJECTION_STATUSES: ReadonlySet<number> = new Set([415, 422]);
+
+/**
+ * 400 is the ambiguous one, and the status alone is not enough. Providers
+ * answer 400 for an unsupported parameter (`max_tokens` vs
+ * `max_completion_tokens`), an over-long context, or a malformed role — all
+ * from a fully vision-capable model. Only a 400 whose body actually talks
+ * about the image counts as a verdict; anything else falls through to `null`
+ * so it gets re-probed instead of cached as blind.
+ */
+const IMAGE_REJECTION_BODY =
+  /\b(image|image_url|vision|multi-?modal|modalit(?:y|ies)|content[ _-]?part|visual)\b/i;
 
 function isDefinitiveRejection(message: string): boolean {
   const match = /HTTP (\d{3})/.exec(message);
   if (!match) return false;
-  return IMAGE_REJECTION_STATUSES.has(Number(match[1]));
+  const status = Number(match[1]);
+  if (UNCONDITIONAL_REJECTION_STATUSES.has(status)) return true;
+  return status === 400 && IMAGE_REJECTION_BODY.test(message);
 }
 
 export async function probeVision(
@@ -94,7 +107,15 @@ export async function probeVision(
   try {
     // Routed through chat(), so the probe inherits the queue and the
     // per-provider breaker rather than bypassing backpressure.
-    const reply = await chat(cfg, model, messages, { maxTokens: 16 });
+    // 64, not 16: the matcher deliberately tolerates filler ("The three
+    // horizontal bands from top to bottom are yellow, purple, and green."),
+    // and 16 tokens cuts that sentence before `green` — turning a correct
+    // answer into a cached `false`. A reasoning model can also spend a tight
+    // budget entirely on thinking tokens and return empty content, which maps
+    // to the same wrong verdict. Not larger because the system prompt and the
+    // "three words and nothing else" instruction are what keep the reply
+    // short; this is only a runaway guard.
+    const reply = await chat(cfg, model, messages, { maxTokens: 64 });
     const vision = replyNamesBandsInOrder(reply);
     logger.debug(
       { providerId: cfg.providerId, model, vision, reply: reply.slice(0, 120) },
@@ -103,11 +124,19 @@ export async function probeVision(
     return { vision };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    // The message now carries a slice of the provider's error body. It is the
+    // whole point of the 400 branch above, but it is still third-party text —
+    // log a short prefix, and keep the fuller version to the `probe_error`
+    // column an admin has to go looking for.
+    const logged = message.slice(0, 200);
     if (isDefinitiveRejection(message)) {
-      logger.debug({ providerId: cfg.providerId, model, message }, 'Vision probe refused');
+      logger.debug({ providerId: cfg.providerId, model, message: logged }, 'Vision probe refused');
       return { vision: false, error: message };
     }
-    logger.warn({ providerId: cfg.providerId, model, message }, 'Vision probe inconclusive');
+    logger.warn(
+      { providerId: cfg.providerId, model, message: logged },
+      'Vision probe inconclusive',
+    );
     return { vision: null, error: message };
   }
 }

@@ -438,6 +438,66 @@ describe('openai-compatible-client — generateEmbedding surfaces HTTP error bod
   });
 });
 
+// ─── #1154: chat() must surface the error body, not just the status ─────────
+// The vision probe caches a `false` verdict for up to 30 days off a 400, and
+// "does not accept image content" / "unsupported parameter `max_tokens`" /
+// "context length exceeded" are all 400s. Only the body separates them.
+describe('openai-compatible-client — chat surfaces the HTTP error body (#1154)', () => {
+  let errSrv: Server;
+  let errBase: string;
+  let longBody: string;
+  beforeAll(async () => {
+    longBody = 'x'.repeat(2000);
+    errSrv = createServer((req, res) => {
+      if (req.url === '/v1/chat/completions') {
+        let body = '';
+        req.on('data', (c) => (body += c));
+        req.on('end', () => {
+          if (JSON.parse(body).model === 'long-error') {
+            res.writeHead(400, { 'Content-Type': 'text/plain' });
+            res.end(longBody);
+            return;
+          }
+          if (JSON.parse(body).model === 'empty-error') {
+            res.writeHead(400); res.end();
+            return;
+          }
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            error: { message: "Unsupported parameter: 'max_tokens' is not supported with this model." },
+          }));
+        });
+        return;
+      }
+      res.writeHead(404); res.end();
+    });
+    await new Promise<void>((r) => errSrv.listen(0, r));
+    const { port } = errSrv.address() as AddressInfo;
+    errBase = `http://127.0.0.1:${port}/v1`;
+  });
+  afterAll(() => new Promise<void>((r) => errSrv.close(() => r())));
+
+  it('includes the status and the body in the thrown error', async () => {
+    await expect(
+      chat({ ...cfg, providerId: 'chat-err-1154', baseUrl: errBase }, 'm1', [{ role: 'user', content: 'hi' }]),
+    ).rejects.toThrow(/chat HTTP 400.*Unsupported parameter/s);
+  });
+
+  it('truncates a long body rather than carrying it whole', async () => {
+    const err = await chat(
+      { ...cfg, providerId: 'chat-err-long-1154', baseUrl: errBase }, 'long-error', [{ role: 'user', content: 'hi' }],
+    ).catch((e: Error) => e);
+    expect((err as Error).message.length).toBeLessThan(600);
+    expect((err as Error).message).toMatch(/^chat HTTP 400: x+$/);
+  });
+
+  it('omits the separator entirely when the body is empty', async () => {
+    await expect(
+      chat({ ...cfg, providerId: 'chat-err-empty-1154', baseUrl: errBase }, 'empty-error', [{ role: 'user', content: 'hi' }]),
+    ).rejects.toThrow(/^chat HTTP 400$/);
+  });
+});
+
 // ─── Queue wrapping ─────────────────────────────────────────────────────────
 // Intentionally observing the llm-queue's `totalProcessed` counter rather than
 // the concurrency-serialization approach from the spec: `llm-queue.ts`

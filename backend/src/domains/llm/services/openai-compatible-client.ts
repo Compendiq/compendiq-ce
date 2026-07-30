@@ -189,6 +189,26 @@ export async function checkHealth(cfg: ProviderConfig): Promise<HealthResult> {
   }
 }
 
+/** Cap on how much of a provider's error body travels in the thrown message. */
+const ERROR_BODY_MAX_CHARS = 500;
+
+/**
+ * A bare `chat HTTP 400` cannot be acted on: "this model does not accept image
+ * content", "unsupported parameter `max_tokens`", "context length exceeded" and
+ * "malformed role" are all 400s, and #1154's vision probe caches a `false`
+ * verdict for up to 30 days on the strength of that status. The body is what
+ * distinguishes them, so a truncated slice of it rides along in the message.
+ *
+ * Truncated, never logged wholesale, and only ever a provider's own error text
+ * — the request payload (which carries the prompt, and for #1154 the image) is
+ * not echoed back here, and the Authorization header never appears in a body.
+ */
+async function errorDetail(res: { text(): Promise<string> }): Promise<string> {
+  const body = await res.text().catch(() => '');
+  const trimmed = body.trim().slice(0, ERROR_BODY_MAX_CHARS);
+  return trimmed ? `: ${trimmed}` : '';
+}
+
 export async function chat(
   cfg: ProviderConfig, model: string, messages: ChatMessage[], opts?: StreamChatOptions,
 ): Promise<string> {
@@ -211,7 +231,7 @@ export async function chat(
           dispatcher: dispatcherFor(cfg),
           signal,
         });
-        if (!res.ok) throw new Error(`chat HTTP ${res.status}`);
+        if (!res.ok) throw new Error(`chat HTTP ${res.status}${await errorDetail(res)}`);
         const body = await res.json() as { choices: Array<{ message: { content: string } }> };
         return body.choices[0]?.message.content ?? '';
       }),
