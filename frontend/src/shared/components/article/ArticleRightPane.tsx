@@ -193,7 +193,18 @@ const OutlineNodeItem = memo(function OutlineNodeItem({
 
 // ---------- ArticleRightPane ----------
 
-export function ArticleRightPane() {
+export type InspectorView = 'outline' | 'details';
+
+export interface InspectorViewRequest {
+  view: InspectorView;
+  requestId: number;
+}
+
+export function ArticleRightPane({
+  inspectorViewRequest,
+}: {
+  inspectorViewRequest?: InspectorViewRequest | null;
+} = {}) {
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -276,7 +287,7 @@ export function ArticleRightPane() {
   const [readingProgress, setReadingProgress] = useState(0);
   const [isResizing, setIsResizing] = useState(false);
   const [confirmTrashOpen, setConfirmTrashOpen] = useState(false);
-  const [activeInspectorView, setActiveInspectorView] = useState<'outline' | 'details'>(() =>
+  const [activeInspectorView, setActiveInspectorView] = useState<InspectorView>(() =>
     headings.length > 0 ? 'outline' : 'details',
   );
   const inspectorViewTouchedRef = useRef(false);
@@ -309,6 +320,14 @@ export function ArticleRightPane() {
       setActiveInspectorView('outline');
     }
   }, [headings.length, id]);
+
+  // Layout presets are explicit user commands, so they take precedence over
+  // the content-derived default and mark the view as intentionally chosen.
+  useEffect(() => {
+    if (!inspectorViewRequest) return;
+    inspectorViewTouchedRef.current = true;
+    setActiveInspectorView(inspectorViewRequest.view);
+  }, [inspectorViewRequest]);
 
   // Persist collapsed section IDs
   useEffect(() => {
@@ -436,6 +455,22 @@ export function ArticleRightPane() {
 
       document.addEventListener('mousemove', onMouseMove);
       document.addEventListener('mouseup', onMouseUp);
+    },
+    [width, setWidth],
+  );
+
+  const handleResizeKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>) => {
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        setWidth(width + 16);
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        setWidth(width - 16);
+      } else if (e.key === 'Home') {
+        e.preventDefault();
+        setWidth(280);
+      }
     },
     [width, setWidth],
   );
@@ -970,35 +1005,6 @@ export function ArticleRightPane() {
             <span className="truncate">AI Improve</span>
           </button>
 
-          {id && aiAutoTagAvailable && (
-            <AutoTagger
-              pageId={id}
-              currentLabels={page?.labels ?? []}
-              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
-            />
-          )}
-
-          {id && (
-            <VersionHistory
-              pageId={id}
-              renderTrigger={(historyOpen) => (
-                <button
-                  type="button"
-                  className={cn(
-                    'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
-                    historyOpen
-                      ? 'nav-selection font-medium'
-                      : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
-                  )}
-                  title="Version history"
-                >
-                  <History size={15} className="shrink-0 opacity-70" />
-                  <span className="truncate">Version history</span>
-                </button>
-              )}
-            />
-          )}
-
           <button
             onClick={handleExportPdf}
             disabled={exportPdf.isPending}
@@ -1027,78 +1033,126 @@ export function ArticleRightPane() {
             <span className="truncate">{isPinned ? 'Pinned' : 'Pin'}</span>
           </button>
 
-          <div className="px-1 pb-1 pt-3 text-[11px] font-semibold text-muted-foreground">
-            Source &amp; analysis
-          </div>
-
-          {settings?.confluenceUrl && page.confluenceId && (
-            <a
-              href={`${settings.confluenceUrl.replace(/\/+$/, "")}/pages/viewpage.action?pageId=${encodeURIComponent(page.confluenceId)}`}
-              target="_blank"
-              rel="noreferrer"
-              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
-            >
-              <ExternalLink size={15} className="shrink-0 opacity-70" />
-              <span className="truncate">Open in Confluence</span>
-            </a>
-          )}
-
-          {/* Re-sync from Confluence — only for Confluence-sourced articles.
-              Locally-authored pages have no upstream to pull from. */}
-          {page.confluenceId && (
-            <button
-              onClick={handleResync}
-              disabled={resyncMutation.isPending}
-              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground disabled:opacity-50"
-              title="Re-sync from Confluence"
-              data-testid="article-resync-btn"
-            >
-              <RefreshCw
-                size={15}
-                className={cn('shrink-0 opacity-70', resyncMutation.isPending && 'animate-spin')}
+          <details className="group mt-2 border-t border-border/55 pt-2">
+            <summary className="flex h-8 cursor-pointer list-none items-center gap-2 rounded-lg px-2 text-xs font-medium text-muted-foreground transition-colors marker:content-none hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
+              <ChevronRight
+                size={13}
+                className="shrink-0 transition-transform group-open:rotate-90"
+                aria-hidden="true"
               />
-              <span className="truncate">Re-sync</span>
+              <span className="flex-1">More actions</span>
+              <span className="text-[11px] font-normal opacity-70">Source &amp; maintenance</span>
+            </summary>
+            <div className="mt-1 space-y-0.5">
+              {id && aiAutoTagAvailable && (
+                <AutoTagger
+                  pageId={id}
+                  currentLabels={page?.labels ?? []}
+                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
+                />
+              )}
+
+              {id && (
+                <VersionHistory
+                  pageId={id}
+                  renderTrigger={(historyOpen) => (
+                    <button
+                      type="button"
+                      className={cn(
+                        'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
+                        historyOpen
+                          ? 'nav-selection font-medium'
+                          : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
+                      )}
+                      title="Version history"
+                    >
+                      <History size={15} className="shrink-0 opacity-70" />
+                      <span className="truncate">Version history</span>
+                    </button>
+                  )}
+                />
+              )}
+
+              {settings?.confluenceUrl && page.confluenceId && (
+                <a
+                  href={`${settings.confluenceUrl.replace(/\/+$/, "")}/pages/viewpage.action?pageId=${encodeURIComponent(page.confluenceId)}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
+                >
+                  <ExternalLink size={15} className="shrink-0 opacity-70" />
+                  <span className="truncate">Open in Confluence</span>
+                </a>
+              )}
+
+              {/* Re-sync from Confluence — only for Confluence-sourced articles.
+                  Locally-authored pages have no upstream to pull from. */}
+              {page.confluenceId && (
+                <button
+                  onClick={handleResync}
+                  disabled={resyncMutation.isPending}
+                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground disabled:opacity-50"
+                  title="Re-sync from Confluence"
+                  data-testid="article-resync-btn"
+                >
+                  <RefreshCw
+                    size={15}
+                    className={cn('shrink-0 opacity-70', resyncMutation.isPending && 'animate-spin')}
+                  />
+                  <span className="truncate">Re-sync</span>
+                </button>
+              )}
+
+              <button
+                onClick={handleReembed}
+                disabled={reembedMutation.isPending}
+                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground disabled:opacity-50"
+                title="Re-embed for RAG"
+                data-testid="article-reembed-btn"
+              >
+                {reembedMutation.isPending ? (
+                  <Loader2 size={15} className="shrink-0 animate-spin opacity-70" />
+                ) : (
+                  <Cpu size={15} className="shrink-0 opacity-70" />
+                )}
+                <span className="truncate">Re-embed</span>
+              </button>
+
+              <button
+                onClick={handleRequality}
+                disabled={requalityMutation.isPending}
+                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground disabled:opacity-50"
+                title="Re-check quality"
+                data-testid="article-requality-btn"
+              >
+                {requalityMutation.isPending ? (
+                  <Loader2 size={15} className="shrink-0 animate-spin opacity-70" />
+                ) : (
+                  <Gauge size={15} className="shrink-0 opacity-70" />
+                )}
+                <span className="truncate">Re-check Quality</span>
+              </button>
+            </div>
+          </details>
+
+          <details className="group mt-1">
+            <summary className="flex h-8 cursor-pointer list-none items-center gap-2 rounded-lg px-2 text-xs font-medium text-muted-foreground transition-colors marker:content-none hover:bg-destructive/8 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
+              <ChevronRight
+                size={13}
+                className="shrink-0 transition-transform group-open:rotate-90"
+                aria-hidden="true"
+              />
+              Danger zone
+            </summary>
+            <button
+              onClick={handleDelete}
+              className="mt-0.5 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-destructive/80 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 hover:bg-destructive/8 hover:text-destructive"
+              title={`Delete (${formatKeysForPlatform(getShortcutHint('delete-page') ?? '', detectMac())})`}
+            >
+              <Trash2 size={15} className="shrink-0 opacity-70" />
+              <span className="truncate">Delete</span>
             </button>
-          )}
-
-          <button
-            onClick={handleReembed}
-            disabled={reembedMutation.isPending}
-            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground disabled:opacity-50"
-            title="Re-embed for RAG"
-            data-testid="article-reembed-btn"
-          >
-            {reembedMutation.isPending ? (
-              <Loader2 size={15} className="shrink-0 animate-spin opacity-70" />
-            ) : (
-              <Cpu size={15} className="shrink-0 opacity-70" />
-            )}
-            <span className="truncate">Re-embed</span>
-          </button>
-
-          <button
-            onClick={handleRequality}
-            disabled={requalityMutation.isPending}
-            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground disabled:opacity-50"
-            title="Re-check quality"
-            data-testid="article-requality-btn"
-          >
-            {requalityMutation.isPending ? (
-              <Loader2 size={15} className="shrink-0 animate-spin opacity-70" />
-            ) : (
-              <Gauge size={15} className="shrink-0 opacity-70" />
-            )}
-            <span className="truncate">Re-check Quality</span>
-          </button>
-
-          <button
-            onClick={handleDelete}
-            className="mt-2 flex w-full items-center gap-2 border-t border-border/55 px-2.5 pb-2 pt-3 text-sm text-destructive/80 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 hover:text-destructive"
-            title={`Delete (${formatKeysForPlatform(getShortcutHint('delete-page') ?? '', detectMac())})`}
-          >
-            <Trash2 size={15} className="shrink-0 opacity-70" />
-            <span className="truncate">Delete</span>
-          </button>
+          </details>
         </div>
       )}
 
@@ -1238,12 +1292,35 @@ export function ArticleRightPane() {
         role="separator"
         aria-label="Resize page sidebar"
         aria-orientation="vertical"
+        aria-valuemin={200}
+        aria-valuemax={500}
+        aria-valuenow={width}
+        tabIndex={0}
         onMouseDown={handleResizeStart}
+        onDoubleClick={() => setWidth(280)}
+        onKeyDown={handleResizeKeyDown}
         className={cn(
-          'absolute left-0 top-2 bottom-2 w-1 cursor-col-resize rounded-full transition-colors hover:bg-action/40',
-          isResizing && 'bg-action/60',
+          'group absolute bottom-0 left-0 top-0 z-10 flex w-2 cursor-col-resize items-center justify-start outline-none',
+          'focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60',
         )}
-      />
+        title="Drag to resize · Double-click to reset"
+      >
+        <span
+          className={cn(
+            'h-full w-px bg-transparent transition-colors group-hover:bg-action/45 group-focus-visible:bg-action/55',
+            isResizing && 'bg-action/70',
+          )}
+          aria-hidden="true"
+        />
+        {isResizing && (
+          <span
+            className="panel-context pointer-events-none absolute left-3 top-3 rounded-md px-1.5 py-1 text-[11px] font-medium tabular-nums text-foreground"
+            aria-hidden="true"
+          >
+            {width}px
+          </span>
+        )}
+      </div>
     </m.aside>
     {confirmTrashDialog}
     </>

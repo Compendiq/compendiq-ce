@@ -11,12 +11,13 @@ import {
   Plus,
   Globe,
   HardDrive,
+  Pin,
   Settings,
 } from 'lucide-react';
 import { m, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { ShortcutHint } from '../ShortcutHint';
 import { MainNavStripExpanded, MainNavStripCollapsed } from './MainNavStrip';
-import { usePageTree, useCreatePage } from '../../hooks/use-pages';
+import { usePageTree, useCreatePage, usePinnedPages } from '../../hooks/use-pages';
 import { useSpaces } from '../../hooks/use-spaces';
 import { useLocalSpaces, useReorderPage } from '../../hooks/use-standalone';
 import { useClickOutside } from '../../hooks/use-click-outside';
@@ -240,7 +241,19 @@ interface SpaceOption {
   homepageId?: string | null;
 }
 
-export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}) {
+interface SidebarTreeViewProps {
+  onNavigate?: () => void;
+  /** Ephemeral shell pressure: compact the rail without overwriting the saved preference. */
+  forceCollapsed?: boolean;
+  /** Lets a user explicitly reopen a temporarily compacted rail. */
+  onForceExpand?: () => void;
+}
+
+export function SidebarTreeView({
+  onNavigate,
+  forceCollapsed = false,
+  onForceExpand,
+}: SidebarTreeViewProps = {}) {
   const location = useLocation();
   const navigate = useNavigate();
   const treeSidebarCollapsed = useUiStore((s) => s.treeSidebarCollapsed);
@@ -267,6 +280,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
 
   const { data: confluenceSpaces } = useSpaces();
   const { data: localSpacesData } = useLocalSpaces();
+  const { data: pinnedData } = usePinnedPages();
   const { data: treeData, isLoading } = usePageTree({
     spaceKey: treeSidebarSpaceKey,
   });
@@ -310,6 +324,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
 
   const [spaceDropdownOpen, setSpaceDropdownOpen] = useState(false);
+  const [pinnedSectionCollapsed, setPinnedSectionCollapsed] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const [showNewFolderInput, setShowNewFolderInput] = useState(false);
@@ -377,6 +392,22 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
 
       document.addEventListener('mousemove', onMouseMove);
       document.addEventListener('mouseup', onMouseUp);
+    },
+    [treeSidebarWidth, setTreeSidebarWidth],
+  );
+
+  const handleResizeKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>) => {
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        setTreeSidebarWidth(treeSidebarWidth - 16);
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        setTreeSidebarWidth(treeSidebarWidth + 16);
+      } else if (e.key === 'Home') {
+        e.preventDefault();
+        setTreeSidebarWidth(256);
+      }
     },
     [treeSidebarWidth, setTreeSidebarWidth],
   );
@@ -473,7 +504,9 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
   }, []);
 
   // Collapsed rail -- nav icons + expand toggle
-  if (treeSidebarCollapsed) {
+  const collapsed = treeSidebarCollapsed || forceCollapsed;
+
+  if (collapsed) {
     return (
       <AnimatePresence mode="wait">
         <m.div
@@ -486,7 +519,13 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
         >
           {/* Expand toggle */}
           <button
-            onClick={toggleTreeSidebar}
+            onClick={() => {
+              if (forceCollapsed && !treeSidebarCollapsed) {
+                onForceExpand?.();
+              } else {
+                toggleTreeSidebar();
+              }
+            }}
             className="mt-2 flex items-center gap-0.5 rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
             aria-label="Expand sidebar"
             title="Expand sidebar (,)"
@@ -676,6 +715,74 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
         </div>
       </div>
 
+      {/* A compact navigation shortcut; the Pages dashboard remains the rich
+          pinned overview with excerpts and management controls. */}
+      {pinnedData && pinnedData.items.length > 0 && (
+        <section className="shrink-0 border-t border-border/45 px-2 py-2" aria-labelledby="sidebar-pinned-heading">
+          <button
+            type="button"
+            onClick={() => setPinnedSectionCollapsed((value) => !value)}
+            aria-expanded={!pinnedSectionCollapsed}
+            aria-controls="sidebar-pinned-list"
+            className="flex h-7 w-full items-center gap-2 rounded-lg px-1.5 text-left text-[11px] font-semibold text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
+          >
+            <Pin size={12} className="shrink-0 text-action" aria-hidden="true" />
+            <span id="sidebar-pinned-heading" className="flex-1">Pinned</span>
+            <span className="tabular-nums font-normal">{pinnedData.total}</span>
+            <ChevronDown
+              size={12}
+              className={cn('transition-transform', pinnedSectionCollapsed && '-rotate-90')}
+              aria-hidden="true"
+            />
+          </button>
+          {!pinnedSectionCollapsed && (
+            <div id="sidebar-pinned-list" className="mt-1 space-y-0.5">
+              {pinnedData.items.slice(0, 4).map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => {
+                    if (isAiRoute) {
+                      navigate(`/ai?pageId=${item.id}`, { replace: true });
+                    } else {
+                      navigate(`/pages/${item.id}`);
+                    }
+                    onNavigate?.();
+                  }}
+                  className={cn(
+                    'group flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
+                    activePageId === item.id
+                      ? 'nav-selection font-medium'
+                      : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
+                  )}
+                  data-testid={`sidebar-pinned-${item.id}`}
+                >
+                  <Pin
+                    size={12}
+                    className={cn('shrink-0 opacity-65', activePageId === item.id && 'fill-current opacity-100')}
+                    aria-hidden="true"
+                  />
+                  <span className="min-w-0 flex-1 truncate">{item.title}</span>
+                  <span className="max-w-14 shrink-0 truncate text-[11px] opacity-65">{item.spaceKey}</span>
+                </button>
+              ))}
+              {pinnedData.items.length > 4 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigate('/');
+                    onNavigate?.();
+                  }}
+                  className="flex h-7 w-full items-center rounded-lg px-2 text-[11px] font-medium text-action transition-colors hover:bg-[var(--glass-pill-hover)]"
+                >
+                  View all {pinnedData.total} pinned pages
+                </button>
+              )}
+            </div>
+          )}
+        </section>
+      )}
+
       {/* Page collection toolbar — actions are scoped to the tree below. */}
       <div className="flex h-9 shrink-0 items-center justify-between border-y border-border/55 px-3">
         <span className="text-xs font-semibold text-foreground/85">Pages</span>
@@ -814,12 +921,35 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
         role="separator"
         aria-label="Resize tree sidebar"
         aria-orientation="vertical"
+        aria-valuemin={180}
+        aria-valuemax={600}
+        aria-valuenow={treeSidebarWidth}
+        tabIndex={0}
         onMouseDown={handleResizeStart}
+        onDoubleClick={() => setTreeSidebarWidth(256)}
+        onKeyDown={handleResizeKeyDown}
         className={cn(
-          'absolute right-0 top-2 bottom-2 w-1 cursor-col-resize rounded-full transition-colors hover:bg-action/40',
-          isResizing && 'bg-action/60',
+          'group absolute bottom-0 right-0 top-0 z-10 flex w-2 cursor-col-resize items-center justify-end outline-none',
+          'focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60',
         )}
-      />
+        title="Drag to resize · Double-click to reset"
+      >
+        <span
+          className={cn(
+            'h-full w-px bg-transparent transition-colors group-hover:bg-action/45 group-focus-visible:bg-action/55',
+            isResizing && 'bg-action/70',
+          )}
+          aria-hidden="true"
+        />
+        {isResizing && (
+          <span
+            className="panel-context pointer-events-none absolute right-3 top-3 rounded-md px-1.5 py-1 text-[11px] font-medium tabular-nums text-foreground"
+            aria-hidden="true"
+          >
+            {treeSidebarWidth}px
+          </span>
+        )}
+      </div>
     </m.aside>
   );
 }

@@ -48,6 +48,16 @@ const defaultTreeData = {
 };
 
 let mockTreeData = { ...defaultTreeData };
+let mockPinnedData = { items: [] as Array<{
+  id: string;
+  spaceKey: string;
+  title: string;
+  author: string | null;
+  lastModifiedAt: string | null;
+  excerpt: string;
+  pinnedAt: string;
+  pinOrder: number;
+}>, total: 0 };
 
 const mockSpaces = [
   { key: 'DEV', name: 'Development', homepageId: 'root-1', lastSynced: '2026-03-01T00:00:00Z', pageCount: 4, source: 'confluence' as const },
@@ -62,6 +72,7 @@ const mockCreatePageMutateAsync = vi.fn();
 vi.mock('../../hooks/use-pages', () => ({
   usePageTree: () => ({ data: mockTreeData, isLoading: false }),
   useCreatePage: () => ({ mutateAsync: mockCreatePageMutateAsync, isPending: false }),
+  usePinnedPages: () => ({ data: mockPinnedData }),
 }));
 
 vi.mock('../../hooks/use-spaces', () => ({
@@ -92,9 +103,11 @@ describe('SidebarTreeView', () => {
   beforeEach(() => {
     mockNavigate.mockClear();
     mockTreeData = { ...defaultTreeData };
+    mockPinnedData = { items: [], total: 0 };
     useUiStore.setState({
       treeSidebarCollapsed: false,
       treeSidebarSpaceKey: undefined,
+      treeSidebarWidth: 256,
     });
   });
 
@@ -386,7 +399,9 @@ describe('SidebarTreeView', () => {
 
   it('renders resize handle', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
-    expect(screen.getByRole('separator', { name: 'Resize tree sidebar' })).toBeInTheDocument();
+    const handle = screen.getByRole('separator', { name: 'Resize tree sidebar' });
+    expect(handle).toHaveAttribute('aria-valuenow', '256');
+    expect(handle).toHaveAttribute('tabindex', '0');
   });
 
   it('applies persisted width from store', () => {
@@ -432,10 +447,64 @@ describe('SidebarTreeView', () => {
     expect(useUiStore.getState().treeSidebarWidth).toBe(600);
   });
 
+  it('supports keyboard resizing and double-click reset', () => {
+    useUiStore.setState({ treeSidebarWidth: 320 });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const handle = screen.getByRole('separator', { name: 'Resize tree sidebar' });
+
+    fireEvent.keyDown(handle, { key: 'ArrowRight' });
+    expect(useUiStore.getState().treeSidebarWidth).toBe(336);
+
+    fireEvent.keyDown(handle, { key: 'ArrowLeft' });
+    expect(useUiStore.getState().treeSidebarWidth).toBe(320);
+
+    fireEvent.doubleClick(handle);
+    expect(useUiStore.getState().treeSidebarWidth).toBe(256);
+  });
+
   it('does not render resize handle when collapsed', () => {
     useUiStore.setState({ treeSidebarCollapsed: true });
     render(<SidebarTreeView />, { wrapper: createWrapper() });
     expect(screen.queryByRole('separator', { name: 'Resize tree sidebar' })).not.toBeInTheDocument();
+  });
+
+  it('lets users override an ephemeral forced collapse without changing their saved preference', () => {
+    const onForceExpand = vi.fn();
+    render(
+      <SidebarTreeView forceCollapsed onForceExpand={onForceExpand} />,
+      { wrapper: createWrapper() },
+    );
+
+    expect(screen.queryByRole('separator', { name: 'Resize tree sidebar' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText('Expand sidebar'));
+    expect(onForceExpand).toHaveBeenCalledOnce();
+    expect(useUiStore.getState().treeSidebarCollapsed).toBe(false);
+  });
+
+  it('renders up to four compact pinned shortcuts and links overflow to the Pages overview', () => {
+    mockPinnedData = {
+      total: 5,
+      items: Array.from({ length: 5 }, (_, index) => ({
+        id: `pin-${index + 1}`,
+        spaceKey: 'DEV',
+        title: `Pinned page ${index + 1}`,
+        author: null,
+        lastModifiedAt: null,
+        excerpt: '',
+        pinnedAt: '2026-03-01T00:00:00Z',
+        pinOrder: index + 1,
+      })),
+    };
+
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+
+    expect(screen.getByTestId('sidebar-pinned-pin-1')).toBeInTheDocument();
+    expect(screen.getByTestId('sidebar-pinned-pin-4')).toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar-pinned-pin-5')).not.toBeInTheDocument();
+    expect(screen.getByText('View all 5 pinned pages')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('sidebar-pinned-pin-1'));
+    expect(mockNavigate).toHaveBeenCalledWith('/pages/pin-1');
   });
 
   it('uses document icons for all pages, including parents with children (no folder icons)', () => {
