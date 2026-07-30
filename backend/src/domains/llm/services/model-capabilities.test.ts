@@ -35,13 +35,20 @@ describe.skipIf(!dbAvailable)('model capabilities', () => {
     return rows[0]!.id;
   }
 
-  it('probes and persists on a cache miss', async () => {
+  it('schedules a probe on cache miss and persists the result', async () => {
     const id = await seedProvider();
     mockProbeVision.mockResolvedValue({ vision: true });
 
-    expect(await getVisionCapability(id, 'qwen2.5vl')).toBe(true);
+    // On cache miss, getVisionCapability returns null immediately (no cached value)
+    // but schedules a background probe
+    expect(await getVisionCapability(id, 'qwen2.5vl')).toBeNull();
+
+    // Give the background refresh a moment to start and complete
+    await new Promise(resolve => setTimeout(resolve, 100));
+
     expect(mockProbeVision).toHaveBeenCalledTimes(1);
 
+    // The probe result should now be persisted
     const { rows } = await query<{ vision: boolean }>(
       `SELECT vision FROM llm_model_capabilities WHERE provider_id=$1 AND model='qwen2.5vl'`,
       [id],
@@ -49,23 +56,38 @@ describe.skipIf(!dbAvailable)('model capabilities', () => {
     expect(rows[0]!.vision).toBe(true);
   });
 
-  it('reads a fresh row without probing again', async () => {
+  it('reads a fresh cached row without probing again', async () => {
     const id = await seedProvider();
-    mockProbeVision.mockResolvedValue({ vision: false });
+    // Pre-seed a fresh row with a definite verdict
+    await query(
+      `INSERT INTO llm_model_capabilities (provider_id, model, vision, probed_at)
+       VALUES ($1,'llama3.1',false, NOW())`,
+      [id],
+    );
+    mockProbeVision.mockResolvedValue({ vision: true }); // Different value to verify cache
 
-    await getVisionCapability(id, 'llama3.1');
-    await getVisionCapability(id, 'llama3.1');
+    // Reading a fresh cached row should not probe
+    expect(await getVisionCapability(id, 'llama3.1')).toBe(false);
+    expect(await getVisionCapability(id, 'llama3.1')).toBe(false);
 
-    expect(mockProbeVision).toHaveBeenCalledTimes(1);
+    expect(mockProbeVision).toHaveBeenCalledTimes(0);
   });
 
   it('caches a false verdict rather than re-probing it', async () => {
     const id = await seedProvider();
-    mockProbeVision.mockResolvedValue({ vision: false });
+    // Pre-seed a fresh row with vision=false
+    await query(
+      `INSERT INTO llm_model_capabilities (provider_id, model, vision, probed_at)
+       VALUES ($1,'llama3.1',false, NOW())`,
+      [id],
+    );
+    mockProbeVision.mockResolvedValue({ vision: true }); // Try to return different value
 
+    // Should return cached false, not call probeVision
     expect(await getVisionCapability(id, 'llama3.1')).toBe(false);
     mockProbeVision.mockResolvedValue({ vision: true });
     expect(await getVisionCapability(id, 'llama3.1')).toBe(false);
+    expect(mockProbeVision).toHaveBeenCalledTimes(0);
   });
 
   it('schedules (but does not await) a background refresh when verdict is NULL', async () => {
@@ -74,6 +96,9 @@ describe.skipIf(!dbAvailable)('model capabilities', () => {
 
     // First call: returns NULL immediately, schedules refresh in background
     expect(await getVisionCapability(id, 'm')).toBeNull();
+
+    // Give the background refresh a moment to start
+    await new Promise(resolve => setTimeout(resolve, 50));
     expect(mockProbeVision).toHaveBeenCalledTimes(1);
 
     // A second immediate call should NOT call probeVision again (deduplication of in-flight refreshes)
@@ -84,7 +109,14 @@ describe.skipIf(!dbAvailable)('model capabilities', () => {
   it('persists the probe error alongside a NULL verdict', async () => {
     const id = await seedProvider();
     mockProbeVision.mockResolvedValue({ vision: null, error: 'connect ECONNREFUSED' });
-    await getVisionCapability(id, 'm');
+
+    // Cache miss schedules background probe
+    expect(await getVisionCapability(id, 'm')).toBeNull();
+
+    // Wait for background refresh to complete
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    expect(mockProbeVision).toHaveBeenCalledTimes(1);
 
     const { rows } = await query<{ probe_error: string }>(
       `SELECT probe_error FROM llm_model_capabilities WHERE provider_id=$1`,
@@ -105,10 +137,12 @@ describe.skipIf(!dbAvailable)('model capabilities', () => {
     // Returns the stale row (true) immediately without blocking
     expect(await getVisionCapability(id, 'm')).toBe(true);
 
-    // A refresh was scheduled (probeVision was called), but we got the old value
-    // A second call should not schedule another refresh due to deduplication
-    expect(await getVisionCapability(id, 'm')).toBe(true);
+    // Give the background refresh a moment to complete
+    await new Promise(resolve => setTimeout(resolve, 100));
     expect(mockProbeVision).toHaveBeenCalledTimes(1);
+
+    // After the refresh completes, the cache is updated to the new value
+    expect(await getVisionCapability(id, 'm')).toBe(false);
   });
 
   it('applies a cooldown to prevent repeatedly scheduling refreshes for NULL verdicts', async () => {
@@ -132,27 +166,42 @@ describe.skipIf(!dbAvailable)('model capabilities', () => {
 
   it('keeps verdicts independent per model on one provider', async () => {
     const id = await seedProvider();
-    mockProbeVision.mockResolvedValueOnce({ vision: true });
-    mockProbeVision.mockResolvedValueOnce({ vision: false });
+    // Pre-seed two different models with different verdicts
+    await query(
+      `INSERT INTO llm_model_capabilities (provider_id, model, vision, probed_at)
+       VALUES ($1,'qwen2.5vl',true, NOW()), ($1,'llama3.1',false, NOW())`,
+      [id],
+    );
 
+    // Both should return their cached verdicts
     expect(await getVisionCapability(id, 'qwen2.5vl')).toBe(true);
     expect(await getVisionCapability(id, 'llama3.1')).toBe(false);
+    expect(mockProbeVision).toHaveBeenCalledTimes(0);
   });
 
   it('refreshVisionCapability probes even when a fresh row exists', async () => {
     const id = await seedProvider();
-    mockProbeVision.mockResolvedValue({ vision: false });
-    await getVisionCapability(id, 'm');
+    // Pre-seed a fresh row
+    await query(
+      `INSERT INTO llm_model_capabilities (provider_id, model, vision, probed_at)
+       VALUES ($1,'m',false, NOW())`,
+      [id],
+    );
 
     mockProbeVision.mockResolvedValue({ vision: true });
+    // refreshVisionCapability should probe and return new value, overwriting the cache
     expect(await refreshVisionCapability(id, 'm')).toBe(true);
+    expect(mockProbeVision).toHaveBeenCalledTimes(1);
   });
 
   it('invalidateProviderCapabilities drops every row for that provider', async () => {
     const id = await seedProvider();
-    mockProbeVision.mockResolvedValue({ vision: true });
-    await getVisionCapability(id, 'a');
-    await getVisionCapability(id, 'b');
+    // Pre-seed some rows
+    await query(
+      `INSERT INTO llm_model_capabilities (provider_id, model, vision, probed_at)
+       VALUES ($1,'a',true, NOW()), ($1,'b',false, NOW())`,
+      [id],
+    );
 
     await invalidateProviderCapabilities(id);
 

@@ -103,7 +103,8 @@ export async function getVisionCapability(
 
   // Decide whether to schedule a background refresh based on the cooldown.
   const key = `${providerId}:${model}`;
-  const needsRefresh = !row || row.vision === null || row.stale || isOutsideCooldown(row.probed_at);
+  // Refresh if: no row, stale row, or NULL verdict outside cooldown window
+  const needsRefresh = !row || row.stale || (row.vision === null && isOutsideCooldown(row.probed_at));
 
   if (needsRefresh && !inFlightRefreshes.has(key)) {
     // Schedule the refresh as a background task (fire-and-forget).
