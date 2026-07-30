@@ -6,11 +6,16 @@ vi.mock('../../domains/llm/services/model-capabilities.js', () => ({
 }));
 
 const mockLoadStagedImage = vi.fn();
-vi.mock('../../core/services/image-staging.js', () => ({
-  loadStagedImage: (...args: unknown[]) => mockLoadStagedImage(...args),
-}));
+vi.mock('../../core/services/image-staging.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../core/services/image-staging.js')>();
+  return {
+    ...actual,
+    loadStagedImage: (...args: unknown[]) => mockLoadStagedImage(...args),
+  };
+});
 
 import { resolveImagePart } from './_helpers.js';
+import { ImageStagingUnavailableError } from '../../core/services/image-staging.js';
 
 const HANDLE = 'a'.repeat(64);
 
@@ -22,6 +27,7 @@ const fastify = {
   httpErrors: {
     unprocessableEntity: (m: string) => new HttpError(422, m),
     gone: (m: string) => new HttpError(410, m),
+    serviceUnavailable: (m: string) => new HttpError(503, m),
   },
 } as never;
 
@@ -64,6 +70,22 @@ describe('resolveImagePart', () => {
       .rejects.toMatchObject({ status: 422 });
   });
 
+  /**
+   * `null` is "not established", not "established as no". Reusing the
+   * text-only wording would assert something the server never checked.
+   */
+  it('distinguishes an unconfirmed model from a known text-only one', async () => {
+    mockGetVisionCapability.mockResolvedValue(null);
+    const unknown = await resolveImagePart(fastify, 'u1', HANDLE, 'p1', 'm').catch((e: Error) => e);
+    mockGetVisionCapability.mockResolvedValue(false);
+    const textOnly = await resolveImagePart(fastify, 'u1', HANDLE, 'p1', 'm').catch((e: Error) => e);
+
+    expect((unknown as Error).message).not.toBe((textOnly as Error).message);
+    expect((unknown as Error).message).toMatch(/not been confirmed/i);
+    expect((unknown as Error).message).not.toMatch(/cannot accept images/i);
+    expect((textOnly as Error).message).toMatch(/cannot accept images/i);
+  });
+
   it('names the offending model in the 422 message', async () => {
     mockGetVisionCapability.mockResolvedValue(false);
     await expect(resolveImagePart(fastify, 'u1', HANDLE, 'p1', 'llama3.1'))
@@ -80,6 +102,22 @@ describe('resolveImagePart', () => {
     mockLoadStagedImage.mockResolvedValue(null);
     await expect(resolveImagePart(fastify, 'u1', HANDLE, 'p1', 'm'))
       .rejects.toMatchObject({ status: 410 });
+  });
+
+  /**
+   * Redis being down is not an expiry — a 410 would tell the user to
+   * re-attach, and the re-attach would 503 on the staging route anyway.
+   */
+  it('throws 503, not 410, when the staging store is unreachable', async () => {
+    mockLoadStagedImage.mockRejectedValue(new ImageStagingUnavailableError());
+    await expect(resolveImagePart(fastify, 'u1', HANDLE, 'p1', 'm'))
+      .rejects.toMatchObject({ status: 503 });
+  });
+
+  it('does not swallow an unexpected staging error', async () => {
+    mockLoadStagedImage.mockRejectedValue(new Error('boom'));
+    await expect(resolveImagePart(fastify, 'u1', HANDLE, 'p1', 'm'))
+      .rejects.toThrow('boom');
   });
 
   it('scopes the staged lookup to the calling user', async () => {

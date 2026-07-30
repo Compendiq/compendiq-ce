@@ -117,9 +117,13 @@ vi.mock('../../domains/llm/services/model-capabilities.js', () => ({
 }));
 
 const mockLoadStagedImage = vi.fn();
-vi.mock('../../core/services/image-staging.js', () => ({
-  loadStagedImage: (...args: unknown[]) => mockLoadStagedImage(...args),
-}));
+vi.mock('../../core/services/image-staging.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../core/services/image-staging.js')>();
+  return {
+    ...actual,
+    loadStagedImage: (...args: unknown[]) => mockLoadStagedImage(...args),
+  };
+});
 
 import { llmImproveRoutes } from './llm-improve.js';
 

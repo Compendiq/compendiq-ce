@@ -14,7 +14,10 @@ import { sanitizeLlmOutput, type OutputSanitizeResult } from '../../core/utils/s
 import { assembleSubPageContext, getMultiPagePromptSuffix } from '../../domains/confluence/services/subpage-context.js';
 import { htmlToMarkdown, protectMedia } from '../../core/services/content-converter.js';
 import { getVisionCapability } from '../../domains/llm/services/model-capabilities.js';
-import { loadStagedImage } from '../../core/services/image-staging.js';
+import {
+  loadStagedImage,
+  ImageStagingUnavailableError,
+} from '../../core/services/image-staging.js';
 
 export { sanitizeLlmInput };
 
@@ -358,14 +361,37 @@ export async function resolveImagePart(
   model: string,
 ): Promise<{ part: ChatContentPart; hash: string }> {
   const vision = await getVisionCapability(providerId, model);
-  if (vision !== true) {
+  if (vision === false) {
     throw fastify.httpErrors.unprocessableEntity(
       `The model assigned to chat (${model}) cannot accept images. ` +
       'Assign a vision-capable model in Settings → LLM.',
     );
   }
+  if (vision !== true) {
+    // `null` is "not established yet", not "established as no" — saying it
+    // cannot accept images would assert something the server has not checked.
+    // Still refused: fail closed, but tell the truth about why.
+    throw fastify.httpErrors.unprocessableEntity(
+      `Image support for the model assigned to chat (${model}) has not been ` +
+      'confirmed yet. Try again shortly, or assign a known vision-capable ' +
+      'model in Settings → LLM.',
+    );
+  }
 
-  const staged = await loadStagedImage(userId, imageHandle);
+  let staged;
+  try {
+    staged = await loadStagedImage(userId, imageHandle);
+  } catch (err) {
+    // A read against an unreachable Redis is not an expiry. "Attach it again"
+    // would send the user into a re-upload that also fails — the staging route
+    // already answers 503 for the same condition on the write side.
+    if (err instanceof ImageStagingUnavailableError) {
+      throw fastify.httpErrors.serviceUnavailable(
+        'Image staging is temporarily unavailable. Try again in a moment.',
+      );
+    }
+    throw err;
+  }
   if (!staged) {
     throw fastify.httpErrors.gone('The staged image has expired. Attach it again.');
   }
