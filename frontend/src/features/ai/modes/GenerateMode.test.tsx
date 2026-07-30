@@ -615,17 +615,58 @@ describe('GenerateMode', () => {
       expect(screen.getByTestId('document-upload-zone')).toBeInTheDocument();
     });
 
-    it('rejects an unsupported file type client-side and names all six', async () => {
+    // The fixture was `diagram.png` until #1154. A PNG is no longer an
+    // unsupported *document* — Generate accepts images now, so `useAttachments`
+    // routes it to the image branch before the document format check is
+    // reached, and refusing it with a document format list would tell the user
+    // something false about what this screen accepts. The next test covers the
+    // PNG; this one keeps the format list pinned with a file that really is
+    // unsupported.
+    it('rejects an unsupported file type client-side and names every accepted format', async () => {
       render(<GenerateModeInput />, { wrapper: createWrapper() });
-      upload({ filename: 'diagram.png', mime: 'image/png' });
+      upload({ filename: 'archive.zip', mime: 'application/zip' });
 
       await waitFor(() => {
         expect(toastErrorMock).toHaveBeenCalledWith(
-          'Only PDF, DOCX, MD, TXT, RTF and ODT files are accepted',
+          'Unsupported file. Documents: PDF, DOCX, MD, TXT, RTF, ODT. Images: PNG, JPEG, WEBP, GIF.',
         );
       });
 
       expect(mockExtractDocument).not.toHaveBeenCalled();
+    });
+
+    it('refuses a PNG with the vision reason, not the document format list', async () => {
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/llm/usecase-default?usecase=chat') {
+          return Promise.resolve({
+            usecase: 'chat', providerId: 'p1', providerName: 'Local', model: 'llama3', vision: false,
+          });
+        }
+        if (path.startsWith('/ollama/models')) return Promise.resolve([{ name: 'llama3' }]);
+        return Promise.resolve([]);
+      });
+
+      render(<GenerateModeInput />, { wrapper: createWrapper() });
+      // The refusal interpolates the resolved model, so it has to have resolved
+      // before the file is picked — an enabled send button is that signal.
+      fireEvent.change(
+        screen.getByPlaceholderText('Describe the page to generate...'),
+        { target: { value: 'anything' } },
+      );
+      await waitFor(() => {
+        expect(getSendButton()).not.toBeDisabled();
+      });
+
+      upload({ filename: 'diagram.png', mime: 'image/png' });
+
+      await waitFor(() => {
+        expect(toastErrorMock).toHaveBeenCalledWith(
+          "llama3 can't read images — assign a vision-capable model in Settings → LLM.",
+        );
+      });
+
+      expect(mockExtractDocument).not.toHaveBeenCalled();
+      expect(screen.queryByTestId('image-attach-card')).not.toBeInTheDocument();
     });
 
     it('changes placeholder text when a document is uploaded', async () => {

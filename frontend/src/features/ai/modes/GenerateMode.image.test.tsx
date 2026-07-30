@@ -255,11 +255,15 @@ describe('GenerateMode image attach (#1154)', () => {
       });
     });
 
+    // The refusal happens in a microtask inside the drop handler's `void
+    // pickFile(...)`, so wait for it rather than assuming a flush boundary.
+    await waitFor(() => {
+      expect(toastErrorMock).toHaveBeenCalledWith(
+        "llama3 can't read images — assign a vision-capable model in Settings → LLM.",
+      );
+    });
     expect(mockPrepareImage).not.toHaveBeenCalled();
     expect(screen.queryByTestId('image-attach-card')).not.toBeInTheDocument();
-    expect(toastErrorMock).toHaveBeenCalledWith(
-      "llama3 can't read images — assign a vision-capable model in Settings → LLM.",
-    );
   });
 
   it('enables the image trigger when the model is vision-capable', async () => {
@@ -377,6 +381,44 @@ describe('GenerateMode drop target (#1154)', () => {
     await act(async () => {
       fireEvent.drop(screen.getByTestId('document-upload-zone'), {
         dataTransfer: { files: [PNG()] },
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('image-attach-card')).toBeInTheDocument();
+    });
+    expect(mockPrepareImage).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * The paste listener moved to the outer block, so it now sees pastes into the
+   * textarea. It must let plain text through untouched — an image item is the
+   * only thing it may claim, and claiming a text paste would stop the character
+   * from ever reaching the field the user is typing in.
+   */
+  it('lets a plain-text paste reach the textarea untouched', async () => {
+    renderGenerateMode({ vision: true });
+    await settle();
+
+    const notPrevented = fireEvent.paste(promptInput(), {
+      clipboardData: { items: [{ kind: 'string', type: 'text/plain' }], files: [] },
+    });
+
+    expect(notPrevented).toBe(true);
+    expect(mockPrepareImage).not.toHaveBeenCalled();
+    expect(mockExtractDocument).not.toHaveBeenCalled();
+  });
+
+  it('stages an image pasted into the textarea', async () => {
+    renderGenerateMode({ vision: true });
+    await settle();
+
+    await act(async () => {
+      fireEvent.paste(promptInput(), {
+        clipboardData: {
+          items: [{ kind: 'file', type: 'image/png', getAsFile: () => PNG() }],
+          files: [PNG()],
+        },
       });
     });
 
