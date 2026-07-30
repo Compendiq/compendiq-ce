@@ -130,7 +130,12 @@ the LLM prompt on any route (`ask`, `improve`, `analyze-quality`, `summarize`).
 
 ```
 POST /api/llm/prepare-image        multipart; magic-byte sniff, dimension check
-  -> Redis  llm:img:<userId>:<sha256>   TTL 900s (not consumed on read)
+  -> Redis  llm:img:<userId>:<sha256>   TTL 900s; raw bytes behind a
+                                        `<format>\n` header, not base64.
+                                        Not consumed on read, but a new
+                                        upload evicts the user's previous
+                                        one (one staged image per user —
+                                        Redis is shared and noeviction).
   -> { handle, format, width, height, fileSize }
 
 POST /api/llm/generate | /api/llm/improve   { ..., imageHandle }

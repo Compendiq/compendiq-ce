@@ -104,8 +104,24 @@ image and text parts that this iteration does not need to answer.
 
 **The handle is not consumed on use.** Referencing it leaves the Redis entry in
 place until its TTL expires, so a regenerate or a retry within 15 minutes works
-without re-uploading. Expiry is the only removal path; there is no explicit
-delete endpoint.
+without re-uploading. There is no explicit delete endpoint.
+
+**One staged image per user, and raw bytes on the wire.** Staging a new image
+evicts that user's previous one — `pruneOlderStagedImages` runs a
+`SCAN`-and-delete over `llm:img:<userId>:*` right after the write. This is
+not a nicety: the deployed Redis is shared with BullMQ, the LLM response cache
+and the embedding locks, and runs `--maxmemory 256mb --maxmemory-policy
+noeviction` — a full instance rejects **writes**, so unbounded staging is an
+application-wide job-enqueue outage, not merely wasted memory. At 10 MB per
+image and the `llmEmbedding` rate limit, an uncapped namespace reaches that
+ceiling in a few minutes of deliberate uploading. Since the design already
+commits to exactly one image per request and the composer shows a single
+preview, a depth of 1 costs nothing the feature promises. For the same reason
+the value is the raw bytes behind a short ASCII format header
+(`<format>\n<bytes>`), not base64 inside JSON: ~25% less memory and none of the
+encode/decode/re-encode passes over up to 10 MB. A stored value that does not
+parse — a legacy JSON entry, a truncated write — reads as a **miss** (410
+"attach it again"), never a 500.
 
 ### Contracts
 
