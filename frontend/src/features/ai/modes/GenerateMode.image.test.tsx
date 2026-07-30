@@ -7,7 +7,7 @@ import { GenerateModeInput } from './GenerateMode';
 import { AiProvider, useAiContext } from '../AiContext';
 import { useAuthStore } from '../../../stores/auth-store';
 import { ApiError } from '../../../shared/lib/api';
-import { expectExplicitComposerOrder } from '../../../test-utils';
+import { expectComposerFocusOrder } from '../../../test-utils';
 
 Element.prototype.scrollIntoView = vi.fn();
 
@@ -514,29 +514,31 @@ describe('GenerateMode drop target (#1154)', () => {
 });
 
 /**
- * The ordering convention is load-bearing on all three composer surfaces, not
- * just the dock's (#1154). Generate's box holds one zone rather than two — the
- * document zone is the standing dashed dropzone above it — but the rule is the
- * same: `ImageAttachZone` emits a full-width card and a small trigger as one
- * fragment, so every sibling needs an explicit order or it renders ahead of
- * the card at `order: 0`.
+ * Generate's box holds one zone rather than two — the document zone is the
+ * standing dashed dropzone above it, outside the composer — so it never had the
+ * interleaving the dock and Improve did. It is pinned anyway (#1154): a
+ * convention that holds on two of three surfaces is one someone will violate on
+ * the third, and this is the surface where a second zone would most plausibly
+ * be added later.
  */
-describe('Generate composer ordering (#1154)', () => {
+describe('Generate composer focus order (#1154)', () => {
   function composerBox(): HTMLElement {
     return promptInput().closest('.nm-composer') as HTMLElement;
   }
 
-  it('orders every composer child explicitly: card, trigger, field, send', async () => {
+  it('reaches every control in reading order: card, its trigger, field, send', async () => {
     renderGenerateMode({ vision: true });
     await settle();
     await attachImage();
 
-    // The textarea and the send button carry no testid on this surface; the
-    // helper's every-child sweep is what covers them.
-    expectExplicitComposerOrder(composerBox(), {
-      'image-attach-card': 1,
-      'image-attach-trigger': 2,
-    });
+    // The field and the send button carry no testid on this surface, so they
+    // are matched by tag — positionally, which is exactly what is being pinned.
+    expectComposerFocusOrder(composerBox(), [
+      'image-attach-remove',
+      'image-attach-trigger',
+      'textarea',
+      'button',
+    ]);
   });
 });
 

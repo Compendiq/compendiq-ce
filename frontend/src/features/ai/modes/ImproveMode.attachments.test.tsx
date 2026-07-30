@@ -7,7 +7,7 @@ import { ImproveModeInput } from './ImproveMode';
 import { AiProvider, useAiContext } from '../AiContext';
 import { useAuthStore } from '../../../stores/auth-store';
 import { ApiError } from '../../../shared/lib/api';
-import { expectExplicitComposerOrder } from '../../../test-utils';
+import { expectComposerFocusOrder } from '../../../test-utils';
 
 Element.prototype.scrollIntoView = vi.fn();
 
@@ -468,48 +468,51 @@ describe('ImproveMode lapsed image handle (#1154)', () => {
 });
 
 /**
- * The ordering convention is load-bearing on all three composer surfaces, not
+ * The reading-order property is load-bearing on all three composer surfaces, not
  * just the dock's (#1154). Improve's box holds both zones and the instruction
  * field, and no send button — the Improve button sits outside it.
  */
-describe('Improve composer ordering (#1154)', () => {
+describe('Improve composer focus order (#1154)', () => {
   function composerBox(): HTMLElement {
     return instructionInput().closest('.nm-composer') as HTMLElement;
   }
 
-  it('orders every composer child explicitly: cards, triggers, field', async () => {
+  it('reaches every control in reading order: each card, then its own trigger', async () => {
     renderImproveMode({ chatVision: true });
     await settle();
     await attachDocument();
     await attachImage();
 
-    expectExplicitComposerOrder(composerBox(), {
-      'document-attachment-card': 1,
-      'image-attach-card': 1,
-      'document-attach-button': 2,
-      'image-attach-trigger': 2,
-    });
+    expectComposerFocusOrder(composerBox(), [
+      'document-remove-button',
+      'document-attach-button',
+      'image-attach-remove',
+      'image-attach-trigger',
+      'textarea',
+    ]);
   });
 
   /**
-   * The drop hint replaces the document card while a drag is over the
-   * composer, so it is a child the sweep above can never see — losing its
-   * `order-1` would drop it to `order: 0`, ahead of the image card, mid-drag.
+   * The drop hint replaces the document card mid-drag and carries nothing
+   * focusable, so the sweep above can never reach it. What has to hold for it is
+   * structural: it belongs to the document zone's row, beside that zone's own
+   * trigger, so mid-drag the composer still reads as rows.
    */
-  it('orders the drop hint, which only exists mid-drag', async () => {
+  it('keeps the mid-drag drop hint in the document zone\'s own row', async () => {
     renderImproveMode({ chatVision: true });
     await settle();
     await attachImage();
 
     await act(async () => { fireEvent.dragEnter(composerBox()); });
-    expect(screen.getByTestId('document-drop-hint')).toBeInTheDocument();
+    const hint = screen.getByTestId('document-drop-hint');
 
-    expectExplicitComposerOrder(composerBox(), {
-      'document-drop-hint': 1,
-      'image-attach-card': 1,
-      'document-attach-button': 2,
-      'image-attach-trigger': 2,
-    });
+    const docRow = screen.getByTestId('document-row');
+    const imageRow = screen.getByTestId('image-attach-row');
+    expect(hint.parentElement).toBe(docRow);
+    expect(screen.getByTestId('document-attach-button').parentElement).toBe(docRow);
+
+    const rows = Array.from(composerBox().children);
+    expect(rows.indexOf(docRow)).toBeLessThan(rows.indexOf(imageRow));
   });
 });
 

@@ -22,7 +22,7 @@ import { AiDock } from './AiDock';
 import { ApiError } from '../../../shared/lib/api';
 import { useAiDockStore } from '../../../stores/ai-dock-store';
 import { useUiStore } from '../../../stores/ui-store';
-import { expectExplicitComposerOrder } from '../../../test-utils';
+import { expectComposerFocusOrder } from '../../../test-utils';
 
 Element.prototype.scrollIntoView = vi.fn();
 
@@ -400,52 +400,52 @@ describe('dock image attach (#1154)', () => {
 // ---------------------------------------------------------------------------
 
 /**
- * The two zones each emit a full-width card and a trigger as one fragment, so in
- * document order a card lands between the two triggers and strands one alone on
- * a wrap line. Explicit `order-*` on every flex child is what prevents that —
- * and a child added later without one defaults to `order: 0` and jumps ahead of
- * the cards, which is exactly what this test is here to catch.
+ * The dock is the surface where this mattered most: it is the only composer
+ * holding both zones *and* a send button, so before #1154's per-zone rows Tab
+ * ran doc-remove → doc-trigger → image-remove → image-trigger while the eye read
+ * both cards and then both triggers, crossing rows twice (WCAG 2.4.3).
  */
-describe('dock composer ordering (#1154)', () => {
-  it('orders every composer child explicitly: cards, triggers, field, send', async () => {
+describe('dock composer focus order (#1154)', () => {
+  it('reaches every control in reading order: each card, then its own trigger', async () => {
     renderDock({ chatVision: true });
     await openAndSettle();
     await attachDocument();
     await attachImage();
 
-    expectExplicitComposerOrder(composerBox(), {
-      'ai-dock-doc-attachment-card': 1,
-      'ai-dock-image-card': 1,
-      'ai-dock-doc-attach-button': 2,
-      'ai-dock-image-trigger': 2,
-      'ai-dock-input': 3,
-      'ai-dock-send': 4,
-    });
+    expectComposerFocusOrder(composerBox(), [
+      'ai-dock-doc-remove-button',
+      'ai-dock-doc-attach-button',
+      'ai-dock-image-remove',
+      'ai-dock-image-trigger',
+      'ai-dock-input',
+      'ai-dock-send',
+    ]);
   });
 
   /**
-   * The drop hint replaces the document card while a drag is over the
-   * composer, so it is a composer child that exists in no other scenario — and
-   * the sweep above, which only sees what its own render produced, can never
-   * reach it. Losing its `order-1` would drop the hint to `order: 0`, ahead of
-   * the image card, mid-drag.
+   * The drop hint replaces the document card while a drag is over the composer,
+   * so it is a state no other test reaches — and it carries nothing focusable,
+   * which puts it out of reach of the focus-order sweep above. What has to hold
+   * for it is structural: the hint belongs to the document zone's row, beside
+   * that zone's own trigger, so mid-drag the composer still reads as rows. A
+   * hint that escaped its row would restore the interleaving #1154 removed.
    */
-  it('orders the drop hint, which only exists mid-drag', async () => {
+  it('keeps the mid-drag drop hint in the document zone\'s own row', async () => {
     renderDock({ chatVision: true });
     await openAndSettle();
     await attachImage();
 
     await act(async () => { fireEvent.dragEnter(composerBox()); });
-    expect(screen.getByTestId('ai-dock-doc-drop-hint')).toBeInTheDocument();
+    const hint = screen.getByTestId('ai-dock-doc-drop-hint');
 
-    expectExplicitComposerOrder(composerBox(), {
-      'ai-dock-doc-drop-hint': 1,
-      'ai-dock-image-card': 1,
-      'ai-dock-doc-attach-button': 2,
-      'ai-dock-image-trigger': 2,
-      'ai-dock-input': 3,
-      'ai-dock-send': 4,
-    });
+    const docRow = screen.getByTestId('ai-dock-doc-row');
+    const imageRow = screen.getByTestId('ai-dock-image-row');
+    expect(hint.parentElement).toBe(docRow);
+    expect(screen.getByTestId('ai-dock-doc-attach-button').parentElement).toBe(docRow);
+
+    // ...and that row is read before the image's, as the markup has it.
+    const rows = Array.from(composerBox().children);
+    expect(rows.indexOf(docRow)).toBeLessThan(rows.indexOf(imageRow));
   });
 });
 

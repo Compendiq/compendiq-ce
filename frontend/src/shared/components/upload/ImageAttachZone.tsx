@@ -3,6 +3,7 @@ import { Image as ImageIcon, Loader2, X } from 'lucide-react';
 import { SUPPORTED_IMAGE_FORMATS } from '@compendiq/contracts';
 import type { PreparedImage } from '../../hooks/use-prepare-image';
 import { cn } from '../../lib/cn';
+import { composerRowClass } from './composer-row';
 
 /**
  * #1154: the image half of the composer's attach affordance.
@@ -13,34 +14,11 @@ import { cn } from '../../lib/cn';
  * text-only model never learns image input exists or that switching models
  * unlocks it. It is disabled with a reason instead.
  *
- * **Composer ordering.** This renders a fragment of two flex items — a
- * full-width card and a small trigger — so inside a `flex-wrap` composer the
- * card would sit between the host's other children in document order and strand
- * a trigger alone on a wrap line. The fragment therefore carries its own
- * `order-*`: `order-1` for the card, `order-2` for the trigger, matching
- * `DocumentUploadZone`'s composer variant so two zones interleave correctly.
- * A host must give its own children explicit orders from `order-3` up —
- * anything left without one defaults to `order: 0` and jumps ahead of the
- * cards. (Outside a flex container `order` is simply inert.)
- *
- * **Known limitation — focus order (WCAG 2.4.3).** `order` moves boxes, not
- * the tab sequence, so on a composer holding both zones Tab runs
- * doc-remove → doc-trigger → image-remove → image-trigger while the eye reads
- * doc card, image card, then the two triggers. Focus therefore crosses rows
- * rather than following them.
- *
- * It is recorded rather than fixed, deliberately. Nothing inside either zone
- * can repair it: a fragment of two flex items cannot be reordered from the
- * host, and reversing the fragment (trigger before card) only swaps which pair
- * ping-pongs. The one real fix is for the host to render the cards and the
- * triggers as two separate groups, which means splitting both zones into two
- * components and rewiring all three surfaces — a design change, not a
- * cleanup, and not a regression this branch introduced (the same order held
- * under the previous selector-based approach). What bounds the cost in the
- * meantime: there are at most four controls, each carries an explicit
- * accessible name ("Remove image", "Attach an image", …), and `tabindex` is
- * never used to paper over it — a positive `tabindex` would trade this for a
- * worse problem across the whole page.
+ * **Composer layout.** This contributes exactly one flex item: a row holding the
+ * card and this zone's own trigger together, per {@link composerRowClass}. That
+ * shape is what makes tab order match reading order (WCAG 2.4.3) — see that
+ * function for why the earlier `order-*` convention could not, and why no
+ * `order-*` may come back to a composer.
  */
 
 /** `.png,.jpg,…` plus MIME types, so both native pickers behave. */
@@ -96,7 +74,7 @@ export function ImageAttachZone({
   const blocked = disabled || isPreparing || reason !== undefined;
 
   return (
-    <>
+    <div className={composerRowClass(image !== null)} data-testid={`${testIdPrefix}-row`}>
       <input
         ref={inputRef}
         type="file"
@@ -112,7 +90,7 @@ export function ImageAttachZone({
 
       {image && (
         <div
-          className="nm-card order-1 flex w-full items-center gap-2 rounded-lg p-2"
+          className="nm-card flex min-w-0 flex-1 items-center gap-2 rounded-lg p-2"
           data-testid={`${testIdPrefix}-card`}
         >
           <img
@@ -147,13 +125,13 @@ export function ImageAttachZone({
         title={reason ?? 'Attach an image'}
         aria-label="Attach an image"
         className={cn(
-          'nm-card-hover order-2 self-end rounded-lg border border-border-interactive p-2',
+          'nm-card-hover shrink-0 rounded-lg border border-border-interactive p-2',
           'disabled:opacity-50',
         )}
         data-testid={`${testIdPrefix}-trigger`}
       >
         {isPreparing ? <Loader2 size={16} className="animate-spin" /> : <ImageIcon size={16} />}
       </button>
-    </>
+    </div>
   );
 }

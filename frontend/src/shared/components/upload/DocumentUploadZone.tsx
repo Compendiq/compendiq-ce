@@ -3,6 +3,7 @@ import { AlertTriangle, FileText, Loader2, Paperclip, Upload, X } from 'lucide-r
 import { SUPPORTED_DOCUMENT_FORMATS, type DocumentFormat } from '@compendiq/contracts';
 import type { ExtractDocumentResult } from '../../hooks/use-extract-document';
 import { cn } from '../../lib/cn';
+import { composerRowClass } from './composer-row';
 
 /**
  * Shared document-upload affordance (#1131).
@@ -124,18 +125,15 @@ export interface DocumentUploadZoneProps {
   disabled?: boolean;
   /**
    * `dropzone` (default) is a standing full-width dashed target with a preview
-   * card. `composer` is a paperclip button plus a compact attachment card, and
-   * renders as a **fragment** meant to sit inside an `nm-composer` that has
-   * `flex-wrap` — its full-width rows then stack above the textarea.
+   * card. `composer` is a paperclip button plus a compact attachment card,
+   * meant to sit inside an `nm-composer` that has `flex-wrap`.
    *
-   * The `composer` fragment carries its own `order-*` (card/drop hint
-   * `order-1`, trigger `order-2`) because two flex items emitted as one
-   * fragment cannot be positioned by the host in document order: a full-width
-   * card between two triggers strands one alone on a wrap line. Hosts order
-   * their own children from `order-3` up. See `ImageAttachZone`, which uses the
-   * same two slots so the zones interleave rather than fight — and which
-   * records the focus-order limitation this reordering carries with it
-   * (WCAG 2.4.3), since it applies to both zones equally.
+   * The `composer` variant contributes exactly one flex item: a row holding the
+   * card (or drop hint) and this zone's own trigger together, per
+   * {@link composerRowClass}. `ImageAttachZone` takes the same shape, so two
+   * zones stack as two rows instead of interleaving. That structure is what
+   * makes tab order match reading order (WCAG 2.4.3) — see `composerRowClass`
+   * for why the `order-*` convention it replaced could not.
    */
   variant?: 'dropzone' | 'composer';
   /** Accessible name and tooltip for the `composer` trigger. */
@@ -286,12 +284,15 @@ export function DocumentUploadZone({
 
   if (variant === 'composer') {
     return (
-      <>
+      <div
+        className={composerRowClass(isDragOver || Boolean(extracted && filename))}
+        data-testid={`${testIdPrefix}-row`}
+      >
         {fileInput}
 
         {isDragOver ? (
           <div
-            className="order-1 flex w-full items-center justify-center gap-2 rounded-md border border-dashed border-primary bg-primary/10 px-2 py-2 text-xs font-medium text-primary-ink"
+            className="flex min-w-0 flex-1 items-center justify-center gap-2 rounded-md border border-dashed border-primary bg-primary/10 px-2 py-2 text-xs font-medium text-primary-ink"
             data-testid={`${testIdPrefix}-drop-hint`}
           >
             <Upload size={13} aria-hidden />
@@ -299,7 +300,7 @@ export function DocumentUploadZone({
           </div>
         ) : extracted && filename ? (
           <div
-            className="order-1 flex w-full items-start gap-2 rounded-md border border-border bg-background/40 px-2 py-1.5"
+            className="flex min-w-0 flex-1 items-start gap-2 rounded-md border border-border bg-background/40 px-2 py-1.5"
             data-testid={`${testIdPrefix}-attachment-card`}
           >
             <FileText size={14} className="mt-0.5 shrink-0 text-muted-foreground" aria-hidden />
@@ -332,9 +333,10 @@ export function DocumentUploadZone({
           title={triggerLabel ?? `Attach a ${noun}`}
           className={cn(
             // The transparent border is load-bearing: it makes this exactly as
-            // tall as the bordered send button beside it, so two self-end icons
-            // on the composer's last line share one optical centre.
-            'order-2 flex shrink-0 self-end items-center rounded-md border border-transparent px-2 py-2',
+            // tall as the bordered send button, so when this row holds nothing
+            // but the trigger the two icons share the composer's last line and
+            // one optical centre. (The row owns `self-end`, not the button.)
+            'flex shrink-0 items-center rounded-md border border-transparent px-2 py-2',
             'text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground',
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
             'disabled:pointer-events-none disabled:opacity-50',
@@ -346,7 +348,7 @@ export function DocumentUploadZone({
             ? <Loader2 size={16} className="animate-spin" aria-hidden />
             : <Paperclip size={16} aria-hidden />}
         </button>
-      </>
+      </div>
     );
   }
 

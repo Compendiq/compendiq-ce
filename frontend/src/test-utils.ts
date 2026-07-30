@@ -63,46 +63,61 @@ export function extractBlock(source: string, openingLine: string): string {
 }
 
 /**
- * #1154: assert an AI composer orders **every** flex child explicitly.
+ * #1154: assert an AI composer's controls are reachable in reading order
+ * (WCAG 2.4.3).
  *
- * `DocumentUploadZone` (composer variant) and `ImageAttachZone` each emit a
- * full-width card and a small trigger as one fragment, so in document order a
- * card lands between the two triggers and strands one alone on a wrap line.
- * Explicit `order-*` on every child is what prevents that — and a child added
- * later without one defaults to `order: 0` and jumps ahead of the cards.
+ * Sequential focus navigation follows **document order**; it ignores `order`,
+ * and `display: contents` does not escape it either. So the property worth
+ * pinning is that each zone's card sits immediately before that zone's own
+ * trigger in the markup, which is what the per-zone row structure buys.
  *
- * The convention is load-bearing on all three composer surfaces (the dock,
- * `/ai` Generate, `/ai` Improve), so the guard lives here rather than in one
- * of the three suites: a fourth surface, or a fourth child on an existing one,
- * should not be able to reintroduce the defect just by being tested elsewhere.
+ * **Both halves are load-bearing, and the second is the one that bites.** jsdom
+ * performs no layout, so a DOM sequence alone cannot tell a correct composer
+ * from the pre-#1154 one — the markup order was already this; it was `order-*`
+ * that moved the boxes away from it. Asserting that no child carries an
+ * `order-*` is therefore what makes the sequence *mean* the visual order: with
+ * no reordering in play, document order is the rendered order. Drop that half
+ * and this test would pass on the very defect it exists to catch.
+ *
+ * Controls are compared whether or not they are `disabled` — a disabled control
+ * is skipped by Tab but does not change the order of the rest, and which
+ * controls are disabled varies with vision capability and prompt emptiness.
+ *
+ * The convention holds on all three composer surfaces (the dock, `/ai` Generate,
+ * `/ai` Improve), so the guard lives here rather than in one of the three
+ * suites: a fourth surface should not be able to reintroduce the defect just by
+ * being tested elsewhere.
  *
  * @param box       the `.nm-composer` element itself
- * @param expected  `data-testid` → the `order-N` that testid must carry.
- *                  Children with no testid (Generate's textarea and send
- *                  button) are still covered by the every-child sweep.
+ * @param expected  every control the composer contains, in the order it should
+ *                  be reached. Each entry is a `data-testid`, or a bare tag name
+ *                  (`'textarea'`, `'button'`) for the controls that carry no
+ *                  testid — Generate's field and send button.
  */
-export function expectExplicitComposerOrder(
-  box: HTMLElement,
-  expected: Record<string, number>,
-): void {
-  const orderClass = /(?:^|\s)order-(\d+)(?:\s|$)/;
+export function expectComposerFocusOrder(box: HTMLElement, expected: string[]): void {
+  const FOCUSABLE = 'button, textarea, input, select, a[href], [tabindex]';
 
-  // Hidden file inputs are `display: none`, so they are not flex items and
-  // carry no order of their own.
-  const children = Array.from(box.children).filter((el) => !el.classList.contains('hidden'));
-  expect(children.length, 'composer rendered no visible flex children').toBeGreaterThan(0);
-  for (const el of children) {
-    expect(
-      el.className,
-      `composer child <${el.tagName.toLowerCase()}> has no order-* class: "${el.className}"`,
-    ).toMatch(orderClass);
-  }
+  const controls = Array.from(box.querySelectorAll<HTMLElement>(FOCUSABLE))
+    // Hidden file inputs are `display: none` — not focusable, and no part of
+    // the tab sequence. jsdom computes no styles from Tailwind classes, so the
+    // class is the only signal available here.
+    .filter((el) => !el.classList.contains('hidden'))
+    .filter((el) => el.getAttribute('tabindex') !== '-1');
 
-  for (const [testId, order] of Object.entries(expected)) {
-    const el = box.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
-    expect(el, `expected [data-testid="${testId}"] among the composer's children`).not.toBeNull();
-    const match = orderClass.exec(el!.className);
-    expect(match, `expected an order-* class on ${testId}, got "${el!.className}"`).not.toBeNull();
-    expect(Number(match![1]), `order of ${testId}`).toBe(order);
-  }
+  expect(controls.length, 'composer rendered no focusable controls').toBeGreaterThan(0);
+  expect(
+    controls.map((el) => el.getAttribute('data-testid') ?? el.tagName.toLowerCase()),
+    'composer controls in document order, i.e. the order Tab reaches them',
+  ).toEqual(expected);
+
+  // `className` on an SVG element is an SVGAnimatedString, not a string, and
+  // lucide renders SVGs throughout — read the attribute instead.
+  const reordered = [box, ...box.querySelectorAll<HTMLElement>('*')].filter((el) =>
+    /(?:^|\s)order-(?:\d+|first|last|none)(?:\s|$)/.test(el.getAttribute('class') ?? ''),
+  );
+  expect(
+    reordered.map((el) => `<${el.tagName.toLowerCase()} class="${el.getAttribute('class')}">`),
+    'no composer element may carry order-*: it moves boxes without moving the ' +
+      'tab sequence, which is the WCAG 2.4.3 defect #1154 removed',
+  ).toEqual([]);
 }

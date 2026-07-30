@@ -272,13 +272,12 @@ export function ImproveModeInput() {
       {/* The instruction field and both attach triggers share one box, so an
           attachment reads as part of what the Improve button is about to send.
 
-          `flex-wrap` lets the full-width rows the two zones render — the
-          attachment cards, the drop hint — stack above the trigger row. Each
-          zone brings its own `order-1` card and `order-2` trigger (a fragment
-          of two flex items cannot be positioned from out here), so this box
-          only orders the one child it owns. Anything added below must carry an
-          explicit order too: no class means `order: 0`, i.e. ahead of the
-          cards. */}
+          `flex-wrap` lets each zone's row — its card or drop hint plus its own
+          trigger — stack above the instruction field. Document order is the
+          only order here: no `order-*` on any child, because that is what keeps
+          the tab sequence matching what the eye reads (WCAG 2.4.3 — see
+          `composerRowClass`). Anything added below lands where its markup sits,
+          so put it where it should be read. */}
       <div className="nm-composer flex-wrap">
         <DocumentUploadZone
           variant="composer"
@@ -314,7 +313,7 @@ export function ImproveModeInput() {
           // hook owns the height — a drag handle would fight it. min-w-0 so the
           // textarea's intrinsic `cols` width can't push the box wider than a
           // narrow viewport.
-          className="order-3 min-w-0 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
+          className="min-w-0 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
         />
       </div>
       {mcpEnabled && (

@@ -289,9 +289,10 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
         {/* An advisory, not a refusal: the backend accepts both, and only the
             resolved model knows whether they fit. Amber is the attention colour
             under ADR-010 v0.5 and this is exactly that. It sits above the
-            composer, not inside it, because a paragraph among the composer's
-            flex children would need an order of its own and would default to
-            `order: 0` — ahead of the very cards it is describing. */}
+            composer, not inside it: it is about the pair of attachments rather
+            than either one, so it belongs beside neither zone's row — and a
+            full-width paragraph among those rows would push the field away from
+            the cards it describes. */}
         {reference && image && (
           <p
             className="mb-2 flex items-center gap-1.5 text-xs text-warning"
@@ -302,14 +303,14 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
           </p>
         )}
 
-        {/* flex-wrap so the zones' full-width rows — the attachment cards, the
-            drop hint — stack above the prompt inside the same box. An
-            attachment belongs to what you are about to send, so it lives in the
-            thing you send from, not in a band above it.
-            Each zone brings its own `order-1` card and `order-2` trigger, so
-            the two children this box owns take the slots after them. Anything
-            added here needs an explicit order as well: no class means
-            `order: 0`, which renders it ahead of the cards. */}
+        {/* flex-wrap so each zone's row — its card or drop hint plus its own
+            trigger — stacks above the prompt inside the same box. An attachment
+            belongs to what you are about to send, so it lives in the thing you
+            send from, not in a band above it.
+            Document order is the only order here: no `order-*` on any child,
+            because that is what keeps the tab sequence matching what the eye
+            reads (WCAG 2.4.3 — see `composerRowClass`). Anything added below
+            lands where its markup sits, so put it where it should be read. */}
         <div className="nm-composer flex-wrap" ref={composerBoxRef}>
           <DocumentUploadZone
             variant="composer"
@@ -350,14 +351,14 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
             aria-label="Ask the assistant about this page"
             // The composer wrapper owns the inset surface, border and focus
             // ring; resize-none because the auto-grow hook owns the height.
-            className="order-3 min-w-0 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
+            className="min-w-0 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
             data-testid="ai-dock-input"
           />
           <button
             onClick={() => void ask()}
             disabled={isStreaming || !input.trim() || !model}
             aria-label={isStreaming ? 'Sending…' : 'Send message'}
-            className="order-4 flex shrink-0 self-end items-center rounded-md border border-primary bg-primary px-2.5 py-1.5 text-sm font-medium text-primary-foreground transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:opacity-50"
+            className="flex shrink-0 self-end items-center rounded-md border border-primary bg-primary px-2.5 py-1.5 text-sm font-medium text-primary-foreground transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:opacity-50"
             data-testid="ai-dock-send"
           >
             {isStreaming ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
