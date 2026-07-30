@@ -112,12 +112,18 @@ generic upload-handling, the same layer `content-converter.ts` and
 `document-extractor.ts` already occupy. `domains/llm/services/vision-probe.ts`
 (sends a known-content image, judges the reply) and `model-capabilities.ts`
 (persists/reads the verdict) live in `llm` because probing *is* an LLM
-concern; they import `core`'s staging/validator modules but not the reverse,
-so the existing `llm → core` boundary rule covers them without a new rule.
-`routes/llm/prepare-image.ts` and the `resolveImagePart` gate shared by
-`routes/llm/llm-generate.ts` / `llm-improve.ts` (in `routes/llm/_helpers.ts`)
-compose both layers the same way every other `routes/llm` file does — no new
-arrow, and in particular no `llm → confluence` edge.
+concern. Neither imports the two `core` image modules — that composition
+happens one layer up, in `routes/llm`. Their only imports outside `domains/llm`
+itself are `core/db/postgres.ts` and `core/utils/logger.ts`, well inside the
+existing `llm → core` rule, so no new rule is needed.
+
+`routes/llm/prepare-image.ts` composes the two `core` image modules alone
+(validate, then stage). `resolveImagePart`, shared by `routes/llm/llm-generate.ts`
+/ `llm-improve.ts` (defined in `routes/llm/_helpers.ts`), is what actually joins
+`core` (`image-staging.ts`'s `loadStagedImage`) with `llm`
+(`model-capabilities.ts`'s `getVisionCapability`) — the same `core` + `llm`
+composition every other `routes/llm` file already does — so no new arrow, and
+in particular no `llm → confluence` edge.
 
 ## Background workers
 
