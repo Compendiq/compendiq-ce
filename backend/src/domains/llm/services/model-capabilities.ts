@@ -82,9 +82,14 @@ export async function refreshVisionCapability(
  *
  * Schedules a background refresh if:
  * - No row exists
- * - The verdict is NULL (undetermined)
  * - The row is stale (older than CAPABILITY_MAX_AGE_DAYS)
- * - The last probe is outside the cooldown window (CAPABILITY_PROBE_COOLDOWN_MINUTES)
+ * - The verdict is NULL (undetermined) *and* the last probe is outside the
+ *   cooldown window (CAPABILITY_PROBE_COOLDOWN_MINUTES)
+ *
+ * The cooldown is not an independent trigger — it only rate-limits the NULL
+ * case. A fresh, definite verdict is never re-probed just because the cooldown
+ * elapsed; that would fire a probe on effectively every request. Do not
+ * "restore" the code to a reading of this list that makes it one.
  *
  * The refresh is deduplicated across concurrent callers and logs failures rather
  * than throwing, so a cold cache or a permanently-NULL verdict never blocks the
@@ -125,6 +130,20 @@ export async function getVisionCapability(
 
   // Return the cached verdict (possibly NULL) immediately without waiting.
   return row?.vision ?? null;
+}
+
+/**
+ * TEST ONLY — await every background refresh `getVisionCapability` has
+ * scheduled. Production code must never call this: the read path is
+ * deliberately fire-and-forget, and awaiting it would reintroduce the
+ * LLM round-trip on the request path that this module exists to avoid.
+ *
+ * Tests need it because the alternative is sleeping a fixed number of
+ * milliseconds and hoping two Postgres round-trips finish first, which fails
+ * outright on a loaded CI runner rather than flaking.
+ */
+export async function __flushRefreshesForTests(): Promise<void> {
+  await Promise.all([...inFlightRefreshes.values()]);
 }
 
 /**

@@ -21,9 +21,10 @@ vi.mock('node:dns/promises', () => ({
 // and deterministic, avoiding real undici fetches to the test's fake provider
 // URLs (`http://a/v1`, `http://b/v1`).
 const mockGetVisionCapability = vi.fn().mockResolvedValue(null);
+const mockRefreshVisionCapability = vi.fn().mockResolvedValue(null);
 vi.mock('../../domains/llm/services/model-capabilities.js', () => ({
   getVisionCapability: (...args: unknown[]) => mockGetVisionCapability(...args),
-  refreshVisionCapability: vi.fn(),
+  refreshVisionCapability: (...args: unknown[]) => mockRefreshVisionCapability(...args),
   invalidateProviderCapabilities: vi.fn(),
 }));
 
@@ -126,6 +127,42 @@ describe.skipIf(!dbAvailable)('GET /api/admin/llm-usecases', () => {
       model: 'gpt-4o-mini',
       resolved: { providerId: b.json().id, providerName: 'B', model: 'gpt-4o-mini' },
     });
+  });
+
+  /**
+   * #1154: the post-save probe is a real outbound chat completion. Only the
+   * `chat` assignment ever resolves to a model that will be shown an image, so
+   * saving anything else must not fire one.
+   */
+  it('fires the post-save vision probe only when the save touched chat', async () => {
+    const a = await app.inject({
+      method: 'POST', url: '/api/admin/llm-providers',
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+      payload: JSON.stringify({ name: 'A', baseUrl: 'http://a/v1', authType: 'none', verifySsl: true, defaultModel: 'mA' }),
+    });
+    const providerId: string = a.json().id;
+    await app.inject({
+      method: 'POST', url: `/api/admin/llm-providers/${providerId}/set-default`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+
+    const put = (payload: Record<string, unknown>) => app.inject({
+      method: 'PUT', url: '/api/admin/llm-usecases',
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+      payload: JSON.stringify(payload),
+    });
+
+    mockRefreshVisionCapability.mockClear();
+
+    expect((await put({ summary: { providerId, model: 'mA' } })).statusCode).toBe(200);
+    expect((await put({ embedding: { providerId, model: 'bge-m3' } })).statusCode).toBe(200);
+    expect(mockRefreshVisionCapability).not.toHaveBeenCalled();
+
+    expect((await put({ chat: { providerId, model: 'qwen2.5vl' } })).statusCode).toBe(200);
+    // Fire-and-forget, so poll rather than sleep — vi.waitFor only fails when
+    // the call genuinely never happens, not when the runner is slow.
+    await vi.waitFor(() => expect(mockRefreshVisionCapability).toHaveBeenCalledTimes(1));
+    expect(mockRefreshVisionCapability).toHaveBeenCalledWith(providerId, 'qwen2.5vl');
   });
 });
 
@@ -297,6 +334,46 @@ describe.skipIf(!dbAvailable)('GET /api/llm/usecase-default', () => {
       });
       expect(() => UsecaseDefaultSchema.parse(res.json())).not.toThrow();
     });
+
+    /**
+     * `getVisionCapability` schedules a real chat-completion probe on a cache
+     * miss. Asking it about `embedding` would fire one at an embeddings
+     * endpoint and cache a meaningless verdict — and this route is reachable
+     * by any authenticated user with any use case in the query string.
+     */
+    it.each(['summary', 'quality', 'auto_tag', 'embedding'])(
+      'does not consult the capability store for usecase=%s',
+      async (usecase) => {
+        const p = await app.inject({
+          method: 'POST',
+          url: '/api/admin/llm-providers',
+          headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+          payload: JSON.stringify({
+            name: 'Non-chat Provider',
+            baseUrl: 'http://nonchat/v1',
+            authType: 'none',
+            verifySsl: true,
+            defaultModel: 'bge-m3',
+          }),
+        });
+        await app.inject({
+          method: 'POST',
+          url: `/api/admin/llm-providers/${p.json().id}/set-default`,
+          headers: { authorization: `Bearer ${adminToken}` },
+        });
+
+        mockGetVisionCapability.mockClear().mockResolvedValue(true);
+        const res = await app.inject({
+          method: 'GET',
+          url: `/api/llm/usecase-default?usecase=${usecase}`,
+          headers: { authorization: `Bearer ${adminToken}` },
+        });
+
+        expect(res.statusCode).toBe(200);
+        expect(res.json().vision).toBeNull();
+        expect(mockGetVisionCapability).not.toHaveBeenCalled();
+      },
+    );
 
     it('does not return the provider-not-configured 404 if schema validation fails', async () => {
       // Set up a provider so resolveUsecase succeeds

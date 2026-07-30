@@ -15,6 +15,7 @@ import {
   getVisionCapability,
   refreshVisionCapability,
   invalidateProviderCapabilities,
+  __flushRefreshesForTests,
 } from './model-capabilities.js';
 
 const dbAvailable = await isDbAvailable();
@@ -43,8 +44,9 @@ describe.skipIf(!dbAvailable)('model capabilities', () => {
     // but schedules a background probe
     expect(await getVisionCapability(id, 'qwen2.5vl')).toBeNull();
 
-    // Give the background refresh a moment to start and complete
-    await new Promise(resolve => setTimeout(resolve, 100));
+    // Deterministic: await the scheduled refresh itself rather than racing
+    // two Postgres round-trips against a fixed sleep.
+    await __flushRefreshesForTests();
 
     expect(mockProbeVision).toHaveBeenCalledTimes(1);
 
@@ -97,8 +99,7 @@ describe.skipIf(!dbAvailable)('model capabilities', () => {
     // First call: returns NULL immediately, schedules refresh in background
     expect(await getVisionCapability(id, 'm')).toBeNull();
 
-    // Give the background refresh a moment to start
-    await new Promise(resolve => setTimeout(resolve, 50));
+    await __flushRefreshesForTests();
     expect(mockProbeVision).toHaveBeenCalledTimes(1);
 
     // A second immediate call should NOT call probeVision again (deduplication of in-flight refreshes)
@@ -113,8 +114,7 @@ describe.skipIf(!dbAvailable)('model capabilities', () => {
     // Cache miss schedules background probe
     expect(await getVisionCapability(id, 'm')).toBeNull();
 
-    // Wait for background refresh to complete
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await __flushRefreshesForTests();
 
     expect(mockProbeVision).toHaveBeenCalledTimes(1);
 
@@ -137,8 +137,7 @@ describe.skipIf(!dbAvailable)('model capabilities', () => {
     // Returns the stale row (true) immediately without blocking
     expect(await getVisionCapability(id, 'm')).toBe(true);
 
-    // Give the background refresh a moment to complete
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await __flushRefreshesForTests();
     expect(mockProbeVision).toHaveBeenCalledTimes(1);
 
     // After the refresh completes, the cache is updated to the new value
