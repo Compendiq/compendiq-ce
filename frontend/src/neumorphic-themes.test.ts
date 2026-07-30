@@ -32,6 +32,9 @@ const lightHeaderBlock = extractBlock(css, '[data-theme-type="light"] .app-heade
 const lightSidebarBlock = extractBlock(css, '[data-theme-type="light"] .app-sidebar {');
 const lightSearchBlock = extractBlock(css, '[data-theme-type="light"] .app-search {');
 const lightSelectionBlock = extractBlock(css, '[data-theme-type="light"] .nav-selection {');
+const panelContextBlock = extractBlock(css, '@utility panel-context {');
+const lightPanelContextBlock = extractBlock(css, '[data-theme-type="light"] .panel-context {');
+const lightPanelTabBlock = extractBlock(css, '[data-theme-type="light"] .panel-tab-active {');
 
 /** Read the first colour stop of a `--token: linear-gradient(…)` declaration. */
 function gradientTop(block: string, name: string): string {
@@ -412,6 +415,16 @@ describe('Light mode has its own shell composition', () => {
   it('uses a quieter selection dose than the dark shell', () => {
     expect(lightSelectionBlock).toMatch(/var\(--color-primary\)[^;]*\/ 0\.09/);
     expect(lightSelectionBlock).toMatch(/outline-color:/);
+  });
+
+  it('keeps the workspace selector visibly interactive in both themes', () => {
+    expect(panelContextBlock).toMatch(/border:\s*1px solid var\(--color-border-interactive\)/);
+    expect(lightPanelContextBlock).toMatch(/var\(--color-card\) 94%/);
+  });
+
+  it('lifts the active inspector tab above the paper rail', () => {
+    expect(lightPanelTabBlock).toMatch(/background:\s*var\(--color-card\)/);
+    expect(lightPanelTabBlock).toMatch(/box-shadow:/);
   });
 });
 

@@ -163,11 +163,27 @@ describe('ArticleRightPane', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
     expect(screen.getByTestId('article-right-pane')).toBeInTheDocument();
-    expect(screen.getByText('Properties')).toBeInTheDocument();
+    expect(screen.getByText('Page context')).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Details' })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByText('AI Improve')).toBeInTheDocument();
     expect(screen.getByText('Pin')).toBeInTheDocument();
     expect(screen.getByText('Open in Confluence')).toBeInTheDocument();
     expect(screen.getByText('Delete')).toBeInTheDocument();
+  });
+
+  it('opens on the outline when the page has document structure', () => {
+    useArticleViewStore.setState({
+      headings: [{ id: 'intro', text: 'Introduction', level: 1 }],
+    });
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    expect(screen.getByRole('tab', { name: /Outline/ })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByText('Introduction')).toBeInTheDocument();
+    expect(screen.queryByTestId('article-actions')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Details' }));
+    expect(screen.getByTestId('article-actions')).toBeInTheDocument();
   });
 
   it('collapses to a slim rail when the collapse button is clicked', () => {
@@ -483,13 +499,14 @@ describe('ArticleRightPane', () => {
 
     expect(screen.getByText('Introduction')).toBeInTheDocument();
     expect(screen.getByText('Usage')).toBeInTheDocument();
-    expect(screen.getByText('2 sections')).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /Outline/ })).toHaveTextContent('2');
   });
 
   it('shows empty message when there are no headings', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    expect(screen.getByText('No headings on this page.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: 'Outline' }));
+    expect(screen.getByText('No outline yet')).toBeInTheDocument();
   });
 
   // #880: outline rows were clickable <div>s with focus-visible classes but no
@@ -530,7 +547,7 @@ describe('ArticleRightPane', () => {
       expect(scrollToSpy).toHaveBeenCalled();
       // setActiveId(headingId) ran → the row gets the active treatment.
       const activeRow = screen.getByText('Introduction').closest('[role="treeitem"]')!;
-      expect(activeRow.className).toContain('nm-pill-active');
+      expect(activeRow.className).toContain('nav-selection');
     });
 
     it('prevents the default page-scroll on Space', () => {

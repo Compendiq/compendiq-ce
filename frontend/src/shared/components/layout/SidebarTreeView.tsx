@@ -518,66 +518,57 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
         isResizing && 'select-none',
       )}
     >
-      {/* Nav tabs — main app navigation + collapse toggle */}
-      <div className="flex shrink-0 items-center gap-0.5 px-2 pt-2 pb-1">
-        <MainNavStripExpanded onNavigate={onNavigate} />
-        <button
-          onClick={toggleTreeSidebar}
-          className="flex shrink-0 items-center gap-0.5 rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
-          aria-label="Collapse sidebar"
-          title="Collapse sidebar (,)"
-        >
-          <PanelLeftClose size={14} />
-          <ShortcutHint shortcutId="toggle-sidebar" />
-        </button>
+      {/* Global destinations remain visually separate from workspace content. */}
+      <div className="panel-toolbar flex shrink-0 items-center gap-1 border-b px-2 py-2">
+          <MainNavStripExpanded onNavigate={onNavigate} />
+          <button
+            onClick={toggleTreeSidebar}
+            className="flex shrink-0 items-center gap-0.5 rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
+            aria-label="Collapse sidebar"
+            title="Collapse sidebar (,)"
+          >
+            <PanelLeftClose size={14} />
+            <ShortcutHint shortcutId="toggle-sidebar" />
+          </button>
       </div>
 
-      {/* Sidebar header — title + actions */}
-      <div className="flex h-8 shrink-0 items-center justify-between px-3">
-        <span className="text-xs font-semibold text-muted-foreground">Pages</span>
-        <div className="flex items-center gap-1">
-          <button
-            onClick={() => {
-              setShowNewFolderInput((v) => !v);
-              setNewFolderName('');
-            }}
-            className="rounded-lg p-1 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
-            aria-label="New Folder"
-            title="Create new folder"
-          >
-            <FolderPlus size={14} />
-          </button>
+      {/* Workspace context — the selector is the panel's orientation anchor. */}
+      <div className="shrink-0 px-2 pb-2 pt-3">
+        <div className="mb-1.5 flex items-center justify-between px-1">
+          <span className="text-[11px] font-semibold text-muted-foreground">Workspace</span>
           <button
             onClick={() => navigate('/spaces/new')}
-            className="rounded-lg p-1 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
+            className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
             aria-label="New Space"
             title="Create new space"
           >
             <Plus size={14} />
           </button>
         </div>
-      </div>
-
-      {/* Space selector dropdown */}
-      <div className="px-2 pb-2">
         <div ref={spaceDropdownRef} className="relative">
           <button
             onClick={() => setSpaceDropdownOpen(!spaceDropdownOpen)}
             data-testid="space-selector-toggle"
-            className="flex w-full items-center justify-between rounded-lg bg-foreground/5 px-2.5 py-1.5 text-xs text-foreground hover:bg-foreground/8 transition-colors"
+            className="panel-context group flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left transition-colors hover:border-primary/55"
+            aria-expanded={spaceDropdownOpen}
           >
-            <span className="flex items-center gap-1.5 truncate">
-              {selectedSpaceOption ? (
-                <>
-                  {selectedSpaceOption.source === 'local'
-                    ? <HardDrive size={10} className="shrink-0 text-action/70" />
-                    : <Globe size={10} className="shrink-0 text-muted-foreground/70" />
-                  }
-                  {selectedSpaceOption.name} ({selectedSpaceOption.key})
-                </>
-              ) : 'All Spaces'}
+            <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary-ink">
+              {selectedSpaceOption?.source === 'local'
+                ? <HardDrive size={14} />
+                : <Globe size={14} />
+              }
             </span>
-            <ChevronsUpDown size={12} className="shrink-0 text-muted-foreground" />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-xs font-medium text-foreground">
+                {selectedSpaceOption?.name ?? 'All Spaces'}
+              </span>
+              <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
+                {selectedSpaceOption
+                  ? `${selectedSpaceOption.source === 'local' ? 'Local' : 'Confluence'} · ${selectedSpaceOption.key}`
+                  : 'Browse every connected workspace'}
+              </span>
+            </span>
+            <ChevronsUpDown size={13} className="shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" />
           </button>
           {spaceDropdownOpen && (
             <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-64 overflow-y-auto rounded-xl nm-sidebar p-1">
@@ -685,8 +676,22 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
         </div>
       </div>
 
-      {/* Divider */}
-      <div className="mx-3 h-px bg-[var(--glass-sidebar-divider)]" />
+      {/* Page collection toolbar — actions are scoped to the tree below. */}
+      <div className="flex h-9 shrink-0 items-center justify-between border-y border-border/55 px-3">
+        <span className="text-xs font-semibold text-foreground/85">Pages</span>
+        <button
+          onClick={() => {
+            setShowNewFolderInput((v) => !v);
+            setNewFolderName('');
+          }}
+          className="flex items-center gap-1.5 rounded-md px-1.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
+          aria-label="New Folder"
+          title="Create new folder"
+        >
+          <FolderPlus size={13} />
+          Folder
+        </button>
+      </div>
 
       {/* New Folder inline input */}
       {showNewFolderInput && (
@@ -795,9 +800,9 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
         )}
       </div>
 
-      {/* Footer stats */}
+      {/* Stable footer keeps the current scope visible beneath long trees. */}
       {treeData && (
-        <div className="px-3 py-1.5">
+        <div className="panel-toolbar border-t px-3 py-2">
           <span className="text-[11px] text-muted-foreground">
             {treeData.total} {treeData.total === 1 ? 'page' : 'pages'}{treeSidebarSpaceKey ? ` in ${treeSidebarSpaceKey}` : ''}
           </span>

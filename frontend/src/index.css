@@ -483,6 +483,26 @@ h1, h2, h3, h4, h5, h6,
   border-color: var(--color-border);
 }
 
+/* Panel composition primitives. Sidebars share the same chassis, but their
+   internal hierarchy comes from quiet chrome, a single context control, and
+   section rhythm rather than a stack of card-like containers. */
+@utility panel-toolbar {
+  background: color-mix(in oklab, var(--color-card) 48%, transparent);
+  border-color: var(--color-border);
+}
+
+@utility panel-context {
+  background: color-mix(in oklab, var(--color-card) 72%, var(--color-background));
+  border: 1px solid var(--color-border-interactive);
+  box-shadow: inset 0 1px 0 oklch(1 0 0 / 0.035);
+}
+
+@utility panel-tab-active {
+  color: var(--color-primary-ink);
+  background: color-mix(in oklab, var(--color-card) 82%, var(--color-primary) 18%);
+  box-shadow: var(--nm-shadow-flat);
+}
+
 /* A selected destination is a quiet steel field, not an inverted slab.
    The 1px edge remains visible in forced-colors mode, while the icon and
    label retain a non-color cue through weight and position. */
@@ -531,6 +551,20 @@ h1, h2, h3, h4, h5, h6,
 [data-theme-type="light"] .app-sidebar {
   background: color-mix(in oklab, var(--color-background) 84%, var(--color-muted));
   border-color: var(--color-border);
+}
+
+[data-theme-type="light"] .panel-toolbar {
+  background: color-mix(in oklab, var(--color-card) 66%, var(--color-background));
+}
+
+[data-theme-type="light"] .panel-context {
+  background: color-mix(in oklab, var(--color-card) 94%, var(--color-background));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+[data-theme-type="light"] .panel-tab-active {
+  background: var(--color-card);
+  box-shadow: 0 1px 3px rgba(23, 36, 34, 0.08);
 }
 
 [data-theme-type="light"] .app-search {

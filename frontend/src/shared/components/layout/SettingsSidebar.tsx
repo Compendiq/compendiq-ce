@@ -72,7 +72,7 @@ export function SettingsSidebar({ onNavigate }: { onNavigate?: () => void } = {}
       transition={reduceEffects ? { duration: 0 } : sidebarSpring}
       className="app-sidebar relative flex flex-col border-r overflow-hidden"
     >
-      <div className="flex shrink-0 items-center gap-0.5 px-2 pt-2 pb-1">
+      <div className="panel-toolbar flex shrink-0 items-center gap-1 border-b px-2 py-2">
         <MainNavStripExpanded onNavigate={onNavigate} />
         <button
           onClick={toggleTreeSidebar}
