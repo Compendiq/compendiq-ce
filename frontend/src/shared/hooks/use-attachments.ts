@@ -42,6 +42,18 @@ export interface UseAttachmentsOptions {
 // HEIC-specific, actionable one `downscaleImage` throws.
 const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'heic', 'heif'] as const;
 
+/**
+ * Mirrors the server's multipart cap in `routes/llm/extract-document.ts`, so a
+ * doomed POST is never sent.
+ *
+ * Lives here rather than in `DocumentUploadZone` (#1154) for the same reason the
+ * format check does: this hook is the only place that knows a file is a document
+ * at all. Images are bounded separately and far higher — see
+ * `MAX_SOURCE_IMAGE_BYTES`, which caps the *source* of a decode rather than an
+ * upload.
+ */
+export const MAX_DOCUMENT_BYTES = 20 * 1024 * 1024;
+
 function looksLikeImage(file: File): boolean {
   if (file.type.startsWith('image/')) return true;
   const name = file.name.toLowerCase();
@@ -155,6 +167,10 @@ export function useAttachments(options: UseAttachmentsOptions = {}) {
       || name.endsWith('.markdown') || name.endsWith('.text');
     if (!isDocument) {
       toast.error(unsupportedMessage());
+      return;
+    }
+    if (file.size > MAX_DOCUMENT_BYTES) {
+      toast.error('File exceeds 20 MB limit');
       return;
     }
 

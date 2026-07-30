@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
+import { SUPPORTED_DOCUMENT_FORMATS } from '@compendiq/contracts';
 import type { PreparedImage } from './use-prepare-image';
 
 const mockToastError = vi.fn();
@@ -18,10 +19,17 @@ vi.mock('./use-prepare-image', () => ({
   usePrepareImage: () => ({ prepareImage: mockPrepare, isPreparing: false, error: null }),
 }));
 
-import { useAttachments } from './use-attachments';
+import { useAttachments, MAX_DOCUMENT_BYTES } from './use-attachments';
 
 function file(name: string, type: string): File {
   return new File(['x'], name, { type });
+}
+
+/** A file that reports a size without allocating one. */
+function sizedFile(name: string, type: string, size: number): File {
+  const f = file(name, type);
+  Object.defineProperty(f, 'size', { value: size });
+  return f;
 }
 
 /** A promise plus its resolver, for controlling `prepareImage` resolution order. */
@@ -115,6 +123,80 @@ describe('useAttachments routing', () => {
     expect(mockPrepare).not.toHaveBeenCalled();
     expect(mockToastError).toHaveBeenCalledWith("llama3.1 can't read images");
     expect(mockToastError).not.toHaveBeenCalledWith(expect.stringMatching(/SVG/));
+  });
+});
+
+/**
+ * The document gates, which lived in `DocumentUploadZone` until #1154 made it
+ * presentational. They moved here rather than being dropped: this hook is the
+ * only place that knows a file is a document rather than an image, so it is the
+ * only place that can decide whether the document rules apply at all.
+ */
+describe('useAttachments document gates', () => {
+  /**
+   * Every supported extension, with an *empty* MIME type — which is what Chrome
+   * reports for `.md` (and often `.rtf`) on some platforms. Acceptance is by
+   * extension precisely so those files are not rejected for a MIME the browser
+   * declined to guess.
+   */
+  it.each(SUPPORTED_DOCUMENT_FORMATS)('accepts a .%s by extension alone', async (format) => {
+    const { result } = renderHook(() => useAttachments({ imageEnabled: true }));
+    await act(async () => { await result.current.pickFile(file(`notes.${format}`, '')); });
+
+    expect(mockExtract).toHaveBeenCalledTimes(1);
+    expect(mockToastError).not.toHaveBeenCalled();
+    expect(result.current.document).toMatchObject({ filename: `notes.${format}` });
+  });
+
+  /** The two long-form aliases the picker also offers. */
+  it.each(['markdown', 'text'])('accepts the .%s alias', async (ext) => {
+    const { result } = renderHook(() => useAttachments({ imageEnabled: true }));
+    await act(async () => { await result.current.pickFile(file(`notes.${ext}`, '')); });
+
+    expect(mockExtract).toHaveBeenCalledTimes(1);
+  });
+
+  it('names every supported document format when it refuses a file', async () => {
+    const { result } = renderHook(() => useAttachments({ imageEnabled: true }));
+    await act(async () => { await result.current.pickFile(file('archive.zip', 'application/zip')); });
+
+    const message = mockToastError.mock.calls[0]![0] as string;
+    for (const format of SUPPORTED_DOCUMENT_FORMATS) {
+      expect(message).toContain(format.toUpperCase());
+    }
+    expect(mockExtract).not.toHaveBeenCalled();
+  });
+
+  /** Mirrors the server's multipart cap, so a doomed POST is never sent. */
+  it('refuses a document over 20 MB without contacting the server', async () => {
+    const { result } = renderHook(() => useAttachments({ imageEnabled: true }));
+    await act(async () => {
+      await result.current.pickFile(sizedFile('huge.pdf', 'application/pdf', MAX_DOCUMENT_BYTES + 1));
+    });
+
+    expect(mockToastError).toHaveBeenCalledWith('File exceeds 20 MB limit');
+    expect(mockExtract).not.toHaveBeenCalled();
+    expect(result.current.document).toBeNull();
+  });
+
+  it('accepts a document exactly on the 20 MB limit', async () => {
+    const { result } = renderHook(() => useAttachments({ imageEnabled: true }));
+    await act(async () => {
+      await result.current.pickFile(sizedFile('big.pdf', 'application/pdf', MAX_DOCUMENT_BYTES));
+    });
+
+    expect(mockExtract).toHaveBeenCalledTimes(1);
+    expect(mockToastError).not.toHaveBeenCalled();
+  });
+
+  it('surfaces the extraction error and attaches nothing', async () => {
+    mockExtract.mockRejectedValueOnce(new Error('PDF contains no extractable text'));
+
+    const { result } = renderHook(() => useAttachments({ imageEnabled: true }));
+    await act(async () => { await result.current.pickFile(file('report.pdf', 'application/pdf')); });
+
+    expect(mockToastError).toHaveBeenCalledWith('PDF contains no extractable text');
+    expect(result.current.document).toBeNull();
   });
 });
 
