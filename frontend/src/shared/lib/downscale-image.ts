@@ -22,6 +22,13 @@
  */
 export const MAX_SOURCE_IMAGE_BYTES = 30 * 1024 * 1024;
 
+/**
+ * Ceiling on DECODED pixels, as opposed to `MAX_SOURCE_IMAGE_BYTES`'s ceiling on
+ * compressed bytes. 40 MP is roughly 160 MB of RGBA — comfortably above an 8K
+ * screenshot (7680x4320 = 33 MP) and far below the pathological cases.
+ */
+export const MAX_SOURCE_PIXELS = 40_000_000;
+
 /** Longest-edge cap. Roughly where most vision encoders stop gaining detail. */
 export const MAX_IMAGE_EDGE = 1568;
 
@@ -56,10 +63,13 @@ export function fitWithin(w: number, h: number, edge: number): { width: number; 
 const REFUSED_MIME = new Set(['image/svg+xml']);
 
 async function decode(file: File): Promise<ImageBitmap> {
-  // `createImageBitmap` with the resize options decodes AND scales in one pass,
-  // so the full-size bitmap is never materialised. Where the overload is
-  // unsupported the browser ignores the options, which is still correct — just
-  // less memory-efficient — so there is no separate fallback branch to take.
+  // No resize options: `resizeWidth`/`resizeHeight` need to know which edge is
+  // longest, which needs the intrinsic dimensions, which needs a decode. So the
+  // full-size bitmap IS materialised here, and `MAX_SOURCE_IMAGE_BYTES` does not
+  // prevent that — it bounds compressed bytes, and compression ratios are
+  // unbounded. `MAX_SOURCE_PIXELS` in the caller is the backstop; the residual
+  // risk is a spike between this decode and that check, accepted because it is
+  // the user's own file in their own tab.
   try {
     return await createImageBitmap(file);
   } catch {
@@ -87,6 +97,19 @@ export async function downscaleImage(
   }
 
   const bitmap = await decode(file);
+
+  // Checked after decoding because nothing here can know the dimensions before
+  // decoding — see the note on `decode()`. This does not prevent the decode's own
+  // allocation; it prevents the canvas from allocating a second buffer on top of
+  // it, and turns a pathological image into a clear message instead of a hang.
+  if (bitmap.width * bitmap.height > MAX_SOURCE_PIXELS) {
+    bitmap.close?.();
+    throw new ImageDecodeError(
+      'tooLarge',
+      `That image is ${bitmap.width}x${bitmap.height}, which is too large to process. Resize it and try again.`,
+    );
+  }
+
   const { width, height } = fitWithin(bitmap.width, bitmap.height, MAX_IMAGE_EDGE);
 
   const canvas = document.createElement('canvas');

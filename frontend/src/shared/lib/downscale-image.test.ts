@@ -112,4 +112,17 @@ describe('downscaleImage', () => {
     await expect(downscaleImage(imageFile('p.heic', 'image/heic')))
       .rejects.toThrow(/HEIC/);
   });
+
+  it('refuses an image whose decoded pixel count exceeds the ceiling', async () => {
+    stubBitmap(20000, 20000);
+    await expect(downscaleImage(imageFile('bomb.png', 'image/png')))
+      .rejects.toMatchObject({ reason: 'tooLarge' });
+    expect(toBlobArgs).toBeNull();   // never reached the canvas
+  });
+
+  it('accepts an 8K screenshot, which is under the pixel ceiling', async () => {
+    stubBitmap(7680, 4320);
+    const result = await downscaleImage(imageFile('8k.png', 'image/png'));
+    expect(result).toMatchObject({ width: 1568, height: 882 });
+  });
 });
