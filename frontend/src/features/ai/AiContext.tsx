@@ -670,15 +670,31 @@ export function AiProvider({ children }: { children: ReactNode }) {
       onContent?: (accumulated: string) => void;
       onComplete?: (accumulated: string, sources?: Source[], meta?: StreamMeta) => void;
       /**
-       * First refusal on a thrown request error (#1154). Return `true` to say
-       * "I have explained this myself" — runStream then neither toasts nor
-       * leaves an error bubble behind, and removes the placeholder assistant
-       * turn so the failed send leaves no trace in the thread.
+       * First refusal on a thrown request error (#1154).
        *
-       * This exists because runStream never rethrows: it catches everything and
-       * renders it inline, so a caller that has to *undo* something on a
-       * specific status (Generate rolling back a lapsed image handle on 410)
-       * has no other way to see the error at all.
+       * This exists because runStream **never rethrows**: it catches
+       * everything and renders it inline, so a caller that must *undo*
+       * something on a specific status — Generate rolling back a lapsed image
+       * handle on a 410 — otherwise has no way to see the error at all. A
+       * `try`/`catch` around `await runStream(...)` is dead code.
+       *
+       * Return `false` (or nothing) for anything you did not handle and the
+       * existing behaviour applies unchanged, which is why every current caller
+       * can omit this prop entirely.
+       *
+       * **Returning `true` claims the error: you own the whole rollback.**
+       * runStream then skips both its toast and `failLastMessage`, because you
+       * have already explained the failure in context. Note what that implies:
+       * `failLastMessage` is what normally turns the placeholder assistant
+       * message into the visible error bubble, so skipping it would strand an
+       * empty bubble under a turn that produced nothing — which reads as "the
+       * model returned nothing" rather than "something went wrong". runStream
+       * therefore removes that placeholder itself; a caller could not, since
+       * `assistantMsgId` never leaves this function.
+       *
+       * Everything else you did before the send is yours to undo: any user turn
+       * you seeded by hand, the input you cleared, any attachment state the
+       * request consumed. See `GenerateMode.tsx`'s 410 branch for the shape.
        */
       onError?: (err: unknown) => boolean;
       userMessage?: string;
