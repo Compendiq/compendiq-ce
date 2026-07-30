@@ -257,7 +257,13 @@ describe('AiDock — reference document (#1131)', () => {
     await waitFor(() => expect(screen.getByTestId('ai-dock-chip-improve')).not.toBeDisabled());
   });
 
-  it('refuses an unsupported file before it reaches the server', async () => {
+  /**
+   * #1154 changed which refusal this is, not whether there is one. A PNG is no
+   * longer "not a document" — it is an image the dock cannot use yet, because
+   * the resolved chat model has not been probed as vision-capable. The refusal
+   * still happens client-side, before any upload.
+   */
+  it('refuses an image while the model has no vision capability, before it reaches the server', async () => {
     renderDock();
     await openAndSettle();
 
@@ -266,10 +272,32 @@ describe('AiDock — reference document (#1131)', () => {
     });
 
     await waitFor(() => {
+      expect(toastErrorMock).toHaveBeenCalledWith('Images cannot be attached right now.');
+    });
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('ai-dock-doc-attachment-card')).not.toBeInTheDocument();
+  });
+
+  /** A file that is neither a document nor an image still gets the one
+   *  "we don't take that" message, naming both accepted sets. */
+  it('refuses an unsupported file before it reaches the server', async () => {
+    renderDock();
+    await openAndSettle();
+
+    fireEvent.change(screen.getByTestId('ai-dock-doc-file-input'), {
+      target: { files: [new File(['x'], 'archive.zip', { type: 'application/zip' })] },
+    });
+
+    await waitFor(() => {
       expect(toastErrorMock).toHaveBeenCalledWith(
-        'Only PDF, DOCX, MD, TXT, RTF and ODT files are accepted',
+        expect.stringContaining('Unsupported file.'),
       );
     });
+    const message = toastErrorMock.mock.calls[0]![0] as string;
+    expect(message).toContain('PDF');
+    expect(message).toContain('DOCX');
+    expect(message).toContain('ODT');
+    expect(message).toContain('PNG');
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 

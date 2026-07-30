@@ -1,10 +1,12 @@
 /**
- * The shared document-upload affordance (#1131).
+ * The shared document-upload affordance (#1131, presentational since #1154).
  *
- * Rendered for real with a stubbed `extract` — the network boundary is the
- * hook, and it is tested separately in `use-extract-document.test.ts`. What
- * matters here is everything the component decides on its own: which files it
- * lets through, what it says when it refuses one, and what each variant shows.
+ * What this component decides was deliberately narrowed: it no longer inspects
+ * a file, extracts it, or refuses it. It picks one and reports it upward. So
+ * what matters here is the reporting contract and what each variant renders —
+ * the gates that used to live here are now `useAttachments`' job, and the cases
+ * that covered them moved to `use-attachments.test.ts` (format acceptance, the
+ * refusal message, the 20 MB ceiling, and the extraction-error toast).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
@@ -18,7 +20,7 @@ vi.mock('sonner', () => ({
   toast: { error: (...args: unknown[]) => toastErrorMock(...args), success: vi.fn() },
 }));
 
-const extractMock = vi.fn<(file: File) => Promise<ExtractDocumentResult>>();
+const onPickMock = vi.fn<(file: File) => void>();
 
 function result(over: Partial<ExtractDocumentResult> = {}): ExtractDocumentResult {
   return {
@@ -31,25 +33,29 @@ function result(over: Partial<ExtractDocumentResult> = {}): ExtractDocumentResul
   };
 }
 
-/** Renders with parent-owned attachment state, the way both real callers do. */
+/** What the harness's stand-in parent attaches on the next pick. */
+let nextResult: ExtractDocumentResult = result();
+
+/**
+ * Renders with parent-owned attachment state, the way both real callers do.
+ *
+ * The parent stands in for `useAttachments`: it takes whatever file the
+ * component reports and attaches it unconditionally. That is the point — the
+ * component is not consulted about acceptability any more.
+ */
 function Harness(props: Partial<DocumentUploadZoneProps>) {
-  const [extracted, setExtracted] = useState<ExtractDocumentResult | null>(null);
-  const [filename, setFilename] = useState<string | null>(null);
+  const [attached, setAttached] = useState<{ result: ExtractDocumentResult; filename: string } | null>(null);
   return (
     <div data-testid="outer">
       <DocumentUploadZone
-        extract={extractMock}
+        onPick={(file) => {
+          onPickMock(file);
+          setAttached({ result: nextResult, filename: file.name });
+        }}
         isExtracting={false}
-        onExtracted={(r, name) => {
-          setExtracted(r);
-          setFilename(name);
-        }}
-        extracted={extracted}
-        filename={filename}
-        onRemove={() => {
-          setExtracted(null);
-          setFilename(null);
-        }}
+        extracted={attached?.result ?? null}
+        filename={attached?.filename ?? null}
+        onRemove={() => setAttached(null)}
         {...props}
       />
     </div>
@@ -77,15 +83,39 @@ const SAMPLE: Record<DocumentFormat, File> = {
 describe('DocumentUploadZone', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    extractMock.mockResolvedValue(result());
+    nextResult = result();
   });
 
-  describe('accepted formats', () => {
-    it.each(SUPPORTED_DOCUMENT_FORMATS)('uploads a %s when all formats are offered', async (format) => {
+  describe('reporting the picked file', () => {
+    it.each(SUPPORTED_DOCUMENT_FORMATS)('hands a picked %s straight to onPick', (format) => {
       render(<Harness />);
       pick(SAMPLE[format]);
 
-      await waitFor(() => expect(extractMock).toHaveBeenCalledWith(SAMPLE[format]));
+      expect(onPickMock).toHaveBeenCalledWith(SAMPLE[format]);
+    });
+
+    /**
+     * The refactor's whole reason for existing (#1154). This component used to
+     * refuse a PNG with "Only PDF, DOCX… are accepted"; on a shared composer
+     * drop target that would silently swallow every attached image. It must now
+     * report the file and let `useAttachments` route it.
+     */
+    it('reports a file it does not offer, rather than refusing it', () => {
+      const png = new File(['x'], 'diagram.png', { type: 'image/png' });
+      render(<Harness />);
+      pick(png);
+
+      expect(onPickMock).toHaveBeenCalledWith(png);
+      expect(toastErrorMock).not.toHaveBeenCalled();
+    });
+
+    /** Same, for a narrowed surface: `formats` is copy and a picker filter now. */
+    it('reports a file outside its own formats list without complaining', () => {
+      render(<Harness formats={['pdf']} />);
+      pick(SAMPLE.txt);
+
+      expect(onPickMock).toHaveBeenCalledWith(SAMPLE.txt);
+      expect(toastErrorMock).not.toHaveBeenCalled();
     });
 
     it('offers every extension and MIME type in the accept attribute', () => {
@@ -99,62 +129,15 @@ describe('DocumentUploadZone', () => {
       expect(accept).toContain('application/vnd.oasis.opendocument.text');
     });
 
-    it('names every offered format when it refuses a file', async () => {
-      render(<Harness />);
-      pick(new File(['x'], 'photo.png', { type: 'image/png' }));
-
-      await waitFor(() => {
-        expect(toastErrorMock).toHaveBeenCalledWith(
-          'Only PDF, DOCX, MD, TXT, RTF and ODT files are accepted',
-        );
-      });
-      expect(extractMock).not.toHaveBeenCalled();
-    });
-
-    // The prop that keeps Generate PDF-only while the endpoint behind it is not.
-    it('restricts to the formats it is given, and says so', async () => {
+    /** The `accept` list still narrows what the picker offers, even though it
+     *  no longer refuses anything that gets through it. */
+    it('narrows the accept attribute to the formats it is given', () => {
       render(<Harness formats={['pdf']} />);
-      pick(SAMPLE.txt);
+      const accept = screen.getByTestId('document-file-input').getAttribute('accept') ?? '';
 
-      await waitFor(() => {
-        expect(toastErrorMock).toHaveBeenCalledWith('Only PDF files are accepted');
-      });
-      expect(extractMock).not.toHaveBeenCalled();
-
-      pick(SAMPLE.pdf);
-      await waitFor(() => expect(extractMock).toHaveBeenCalledWith(SAMPLE.pdf));
-    });
-
-    it('accepts a file whose extension matches even when the browser reports no MIME type', async () => {
-      render(<Harness formats={['md']} />);
-      pick(SAMPLE.md);
-
-      await waitFor(() => expect(extractMock).toHaveBeenCalled());
-    });
-
-    it('refuses a file over 20 MB without contacting the server', async () => {
-      const huge = new File(['x'], 'huge.pdf', { type: 'application/pdf' });
-      Object.defineProperty(huge, 'size', { value: 21 * 1024 * 1024 });
-
-      render(<Harness formats={['pdf']} />);
-      pick(huge);
-
-      await waitFor(() => {
-        expect(toastErrorMock).toHaveBeenCalledWith('File exceeds 20 MB limit');
-      });
-      expect(extractMock).not.toHaveBeenCalled();
-    });
-
-    it('surfaces the extraction error', async () => {
-      extractMock.mockRejectedValue(new Error('PDF contains no extractable text'));
-
-      render(<Harness formats={['pdf']} />);
-      pick(SAMPLE.pdf);
-
-      await waitFor(() => {
-        expect(toastErrorMock).toHaveBeenCalledWith('PDF contains no extractable text');
-      });
-      expect(screen.queryByTestId('document-preview-card')).not.toBeInTheDocument();
+      expect(accept).toContain('.pdf');
+      expect(accept).not.toContain('.docx');
+      expect(accept).not.toContain('.odt');
     });
   });
 
@@ -175,7 +158,7 @@ describe('DocumentUploadZone', () => {
       expect(screen.getByText('5 pages')).toBeInTheDocument();
       unmount();
 
-      extractMock.mockResolvedValue(result({ format: 'docx', totalPages: undefined }));
+      nextResult = result({ format: 'docx', totalPages: undefined });
       render(<Harness />);
       pick(SAMPLE.docx);
       await waitFor(() => expect(screen.getByTestId('document-preview-card')).toBeInTheDocument());
@@ -183,7 +166,7 @@ describe('DocumentUploadZone', () => {
     });
 
     it('warns once the text passes the backend truncation threshold', async () => {
-      extractMock.mockResolvedValue(result({ text: 'x'.repeat(80_001) }));
+      nextResult = result({ text: 'x'.repeat(80_001) });
 
       render(<Harness />);
       pick(SAMPLE.pdf);
@@ -193,6 +176,14 @@ describe('DocumentUploadZone', () => {
       });
     });
 
+    it('shows no truncation warning for a document under the threshold', async () => {
+      render(<Harness />);
+      pick(SAMPLE.pdf);
+
+      await screen.findByTestId('document-preview-card');
+      expect(screen.queryByTestId('document-truncation-warning')).not.toBeInTheDocument();
+    });
+
     it('accepts a dropped file and clears it again', async () => {
       render(<Harness formats={['pdf']} />);
 
@@ -200,11 +191,34 @@ describe('DocumentUploadZone', () => {
       fireEvent.dragEnter(zone);
       fireEvent.drop(zone, { dataTransfer: { files: [SAMPLE.pdf] } });
 
+      expect(onPickMock).toHaveBeenCalledWith(SAMPLE.pdf);
       await waitFor(() => expect(screen.getByTestId('document-preview-card')).toBeInTheDocument());
 
       fireEvent.click(screen.getByRole('button', { name: 'Remove PDF' }));
       expect(screen.queryByTestId('document-preview-card')).not.toBeInTheDocument();
       expect(screen.getByTestId('document-upload-zone')).toBeInTheDocument();
+    });
+
+    /**
+     * This variant IS its own drop target, so it keeps the counted drag state:
+     * `dragleave` fires every time the pointer crosses into a child, and
+     * toggling instead of counting would flicker the highlight off mid-drag.
+     */
+    it('holds its own drag highlight until the drag really leaves', () => {
+      render(<Harness formats={['pdf']} />);
+      const zone = screen.getByTestId('document-upload-zone');
+
+      expect(zone.className).not.toContain('border-primary');
+
+      fireEvent.dragEnter(zone);
+      fireEvent.dragEnter(zone);
+      expect(screen.getByTestId('document-upload-zone').className).toContain('border-primary');
+
+      fireEvent.dragLeave(zone);
+      expect(screen.getByTestId('document-upload-zone').className).toContain('border-primary');
+
+      fireEvent.dragLeave(zone);
+      expect(screen.getByTestId('document-upload-zone').className).not.toContain('border-primary');
     });
 
     it('prefixes every test id so a surface can keep its own names', () => {
@@ -232,7 +246,7 @@ describe('DocumentUploadZone', () => {
     });
 
     it('reports the format, the size and what the document is for', async () => {
-      extractMock.mockResolvedValue(result({ format: 'docx', totalPages: undefined, fileSize: 12_800 }));
+      nextResult = result({ format: 'docx', totalPages: undefined, fileSize: 12_800 });
 
       render(<Harness variant="composer" usageHint="reference for Improve" />);
       pick(SAMPLE.docx);
@@ -258,54 +272,48 @@ describe('DocumentUploadZone', () => {
       expect(screen.getByTestId('document-attach-button')).toBeDisabled();
     });
 
-    it('offers the whole composer as a drop target when given one', async () => {
-      function Wrapper() {
-        const [box, setBox] = useState<HTMLDivElement | null>(null);
-        return (
-          <div ref={setBox} data-testid="composer-box">
-            {/* A plain object ref, which is what a real `useRef` hands over. */}
-            <Harness variant="composer" dropTargetRef={{ current: box }} />
-            <textarea aria-label="prompt" />
-          </div>
-        );
-      }
-      render(<Wrapper />);
+    /**
+     * The parent owns the composer drop target (#1154), so it owns the drag
+     * state too — this component's own state only ever sees a drag over the
+     * 28px paperclip, which is not what the user is aiming at.
+     */
+    it('shows the drop hint when the parent reports a drag over the composer', () => {
+      const { rerender } = render(<Harness variant="composer" isDragOver={false} />);
+      expect(screen.queryByTestId('document-drop-hint')).not.toBeInTheDocument();
 
-      const box = screen.getByTestId('composer-box');
-      fireEvent.dragEnter(box);
-      expect(await screen.findByTestId('document-drop-hint')).toBeInTheDocument();
+      rerender(<Harness variant="composer" isDragOver />);
+      expect(screen.getByTestId('document-drop-hint')).toBeInTheDocument();
+    });
 
-      fireEvent.drop(box, { dataTransfer: { files: [SAMPLE.docx] } });
-      await waitFor(() => expect(extractMock).toHaveBeenCalledTimes(1));
+    /** The parent's answer wins: a drag over the trigger alone must not be able
+     *  to contradict a parent that says no drag is in progress. */
+    it('lets the parent state override its own', () => {
+      render(<Harness variant="composer" isDragOver={false} />);
+      fireEvent.dragEnter(screen.getByTestId('document-attach-button'));
+
       expect(screen.queryByTestId('document-drop-hint')).not.toBeInTheDocument();
     });
 
-    it('keeps the hint up while the pointer crosses the composer’s children', async () => {
-      function Wrapper() {
-        const [box, setBox] = useState<HTMLDivElement | null>(null);
-        return (
-          <div ref={setBox} data-testid="composer-box">
-            <Harness variant="composer" dropTargetRef={{ current: box }} />
-            <textarea aria-label="prompt" />
-          </div>
-        );
-      }
-      render(<Wrapper />);
+    /** With no parent state — any caller that does not own a drop target — it
+     *  still falls back to its own. */
+    it('falls back to its own drag state when the parent supplies none', () => {
+      render(<Harness variant="composer" />);
+      fireEvent.dragEnter(screen.getByTestId('document-attach-button'));
 
-      const box = screen.getByTestId('composer-box');
-      const child = screen.getByLabelText('prompt');
+      expect(screen.getByTestId('document-drop-hint')).toBeInTheDocument();
+    });
 
-      fireEvent.dragEnter(box);
-      // Crossing into a child: the child's dragenter bubbles up while the
-      // previous target's dragleave fires. Net zero — the hint must survive.
-      fireEvent.dragEnter(child);
-      fireEvent.dragLeave(box);
-      expect(await screen.findByTestId('document-drop-hint')).toBeInTheDocument();
-
-      fireEvent.dragLeave(child);
-      await waitFor(() => {
-        expect(screen.queryByTestId('document-drop-hint')).not.toBeInTheDocument();
+    /** The trigger keeps handling drops itself now that no ancestor prop can
+     *  switch them off — a file let go directly on the paperclip must land, and
+     *  exactly once. */
+    it('accepts a file dropped on the trigger itself', () => {
+      render(<Harness variant="composer" />);
+      fireEvent.drop(screen.getByTestId('document-attach-button'), {
+        dataTransfer: { files: [SAMPLE.docx] },
       });
+
+      expect(onPickMock).toHaveBeenCalledTimes(1);
+      expect(onPickMock).toHaveBeenCalledWith(SAMPLE.docx);
     });
   });
 });

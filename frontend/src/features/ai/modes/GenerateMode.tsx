@@ -5,7 +5,9 @@ import { useAiContext, nextMessageId } from '../AiContext';
 import { useSpaces } from '../../../shared/hooks/use-spaces';
 import { useLocalSpaces } from '../../../shared/hooks/use-standalone';
 import { usePages, useCreatePage, type PageFilters } from '../../../shared/hooks/use-pages';
+import { SUPPORTED_DOCUMENT_FORMATS } from '@compendiq/contracts';
 import { useExtractDocument, type ExtractDocumentResult } from '../../../shared/hooks/use-extract-document';
+import { MAX_DOCUMENT_BYTES } from '../../../shared/hooks/use-attachments';
 import { DocumentUploadZone } from '../../../shared/components/upload/DocumentUploadZone';
 import { useAutoGrowTextarea } from '../../../shared/hooks/use-auto-grow-textarea';
 import { PROMPT_MAX_LENGTH } from './prompt-limits';
@@ -17,6 +19,12 @@ import { cn } from '../../../shared/lib/cn';
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** "PDF, DOCX, MD, TXT, RTF and ODT" — copy, not a machine list. */
+const DOCUMENT_FORMAT_LIST = (() => {
+  const labels = SUPPORTED_DOCUMENT_FORMATS.map((f) => f.toUpperCase());
+  return `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`;
+})();
 
 /** Extract a title suggestion from the first markdown heading in the content. */
 function extractTitleFromMarkdown(md: string): string {
@@ -350,10 +358,34 @@ export function GenerateModeInput() {
   const [documentData, setDocumentData] = useState<ExtractDocumentResult | null>(null);
   const [documentFilename, setDocumentFilename] = useState<string | null>(null);
 
-  const handleDocumentExtracted = useCallback((result: ExtractDocumentResult, filename: string) => {
-    setDocumentData(result);
-    setDocumentFilename(filename);
-  }, []);
+  // #1154 made `DocumentUploadZone` presentational: it reports the picked file
+  // and the caller decides what to do with it. Generate keeps the gates the
+  // component used to apply — the same two checks, the same copy, the same
+  // single `useExtractDocument` instance (#940) — so this surface is unchanged
+  // while the dock moves ahead. It is superseded by `useAttachments`, which
+  // already owns both gates; this block goes when Generate adopts it.
+  const handleDocumentPick = useCallback((file: File) => {
+    void (async () => {
+      const name = file.name.toLowerCase();
+      const accepted = SUPPORTED_DOCUMENT_FORMATS.some((f) => name.endsWith(`.${f}`))
+        || name.endsWith('.markdown') || name.endsWith('.text');
+      if (!accepted) {
+        toast.error(`Only ${DOCUMENT_FORMAT_LIST} files are accepted`);
+        return;
+      }
+      if (file.size > MAX_DOCUMENT_BYTES) {
+        toast.error('File exceeds 20 MB limit');
+        return;
+      }
+      try {
+        const result = await extractDocument(file);
+        setDocumentData(result);
+        setDocumentFilename(file.name);
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : 'document extraction failed');
+      }
+    })();
+  }, [extractDocument]);
 
   const handleDocumentRemove = useCallback(() => {
     setDocumentData(null);
@@ -440,8 +472,7 @@ export function GenerateModeInput() {
             (#1132), and the zone derives its accept list and every string it
             renders from that default. */}
         <DocumentUploadZone
-          extract={extractDocument}
-          onExtracted={handleDocumentExtracted}
+          onPick={handleDocumentPick}
           extracted={documentData}
           filename={documentFilename}
           onRemove={handleDocumentRemove}

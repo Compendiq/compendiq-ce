@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { AlertTriangle, Loader2, PanelRightClose, Send, Sparkles, X } from 'lucide-react';
 import { useAiContext, type Message } from '../AiContext';
 import { StreamingMessage } from '../StreamingMessage';
@@ -7,7 +7,7 @@ import { DiagramPreview } from '../modes';
 import { AIThinkingBlob } from '../../../shared/components/feedback/AIThinkingBlob';
 import { TypingIndicator } from '../../../shared/components/feedback/TypingIndicator';
 import { useAutoGrowTextarea } from '../../../shared/hooks/use-auto-grow-textarea';
-import { useExtractDocument, type ExtractDocumentResult } from '../../../shared/hooks/use-extract-document';
+import { useAttachments } from '../../../shared/hooks/use-attachments';
 import { DocumentUploadZone } from '../../../shared/components/upload/DocumentUploadZone';
 import { PROMPT_MAX_LENGTH } from '../modes/prompt-limits';
 import { useAiDockStore } from '../../../stores/ai-dock-store';
@@ -33,14 +33,22 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
     streamingContent, input, setInput, modelsError, refetchModels, model,
   } = useAiContext();
 
-  // Reference document attached in the composer (#1131). Dock-local rather than
-  // AiContext state: it is material for the *next* action, not part of the
-  // conversation, and nothing outside this panel reads it.
-  const { extractDocument, isExtracting } = useExtractDocument();
-  const [reference, setReference] = useState<
-    { result: ExtractDocumentResult; filename: string } | null
-  >(null);
+  // Reference material attached in the composer (#1131, #1154). Dock-local
+  // rather than AiContext state: it is material for the *next* action, not part
+  // of the conversation, and nothing outside this panel reads it.
+  //
+  // `useAttachments` owns the composer as a shared drop target, so a file can be
+  // let go anywhere on the prompt box rather than onto a 28px paperclip, and one
+  // router decides document-vs-image rather than each zone guessing. Images are
+  // still refused here: `imageEnabled` stays at its default until the dock knows
+  // whether the resolved chat model has probed as vision-capable (#1154).
   const composerBoxRef = useRef<HTMLDivElement>(null);
+  const {
+    document: reference, isExtracting, pickFile, removeDocument, clearAll, isDragOver,
+  } = useAttachments({
+    dropTargetRef: composerBoxRef,
+    disabled: isStreaming,
+  });
 
   const { ask, runChip } = useDockActions({ referenceText: reference?.result.text });
 
@@ -49,13 +57,12 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
   // user to a different document is exactly the kind of surprise #1126 set out
   // to remove, so it is dropped at the boundary instead.
   useEffect(() => {
-    setReference(null);
-  }, [pageId]);
+    clearAll();
+  }, [pageId, clearAll]);
 
-  const handleExtracted = useCallback((result: ExtractDocumentResult, filename: string) => {
-    setReference({ result, filename });
-  }, []);
-  const handleRemoveReference = useCallback(() => setReference(null), []);
+  const handlePick = useCallback((file: File) => {
+    void pickFile(file);
+  }, [pickFile]);
 
   const seed = useAiDockStore((s) => s.seed);
   const seedPageId = useAiDockStore((s) => s.seedPageId);
@@ -273,16 +280,15 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
         <div className="nm-composer flex-wrap" ref={composerBoxRef}>
           <DocumentUploadZone
             variant="composer"
-            extract={extractDocument}
+            onPick={handlePick}
             isExtracting={isExtracting}
-            onExtracted={handleExtracted}
             extracted={reference?.result ?? null}
             filename={reference?.filename ?? null}
-            onRemove={handleRemoveReference}
+            onRemove={removeDocument}
             disabled={isStreaming}
             triggerLabel="Attach a document as reference for Improve"
             usageHint="reference for Improve"
-            dropTargetRef={composerBoxRef}
+            isDragOver={isDragOver}
             testIdPrefix="ai-dock-doc"
           />
           <textarea
