@@ -102,7 +102,10 @@ describe.skipIf(!dbAvailable)('model capabilities', () => {
     await __flushRefreshesForTests();
     expect(mockProbeVision).toHaveBeenCalledTimes(1);
 
-    // A second immediate call should NOT call probeVision again (deduplication of in-flight refreshes)
+    // A second immediate call must not probe again. By now the refresh has
+    // flushed, so it is the cooldown on the freshly-written NULL row doing the
+    // work here — not in-flight de-duplication, which only covers the window
+    // before the first probe resolves.
     expect(await getVisionCapability(id, 'm')).toBeNull();
     expect(mockProbeVision).toHaveBeenCalledTimes(1); // Still 1, not 2
   });

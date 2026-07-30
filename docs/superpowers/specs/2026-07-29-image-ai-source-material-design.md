@@ -230,11 +230,17 @@ is therefore **probed**.
 A committed base64 constant: a ~64×96 PNG of three horizontal colour bands drawn
 from a six-colour palette (red, green, blue, yellow, orange, purple). The probe
 issues a non-streaming `chat()` carrying that image and a prompt constraining
-the reply to those six words, top band first, with `max_tokens` ≈ 16.
+the reply to those six words, top band first, with `max_tokens` = 64 — large
+enough for the full sentence the matcher deliberately tolerates ("…are yellow,
+purple, and green."), which a 16-token cap would truncate before the last band
+and turn into a cached `false`.
 
 | Provider response | Verdict | Reasoning |
 | --- | --- | --- |
-| 4xx rejecting the image part | `false` | Definitive: the model refused multimodal input |
+| HTTP 415 | `false` | Unsupported Media Type has no reading that is not about the content we sent |
+| HTTP 400 or 422, body mentions the image | `false` | Definitive: the model refused multimodal input |
+| HTTP 400 or 422, body says anything else | `null` | Both are also the generic answer to a malformed request — 422 is pydantic's default for *any* body-validation failure, including a field the probe itself sends |
+| Any other 4xx (401/403/404/413/429) | `null` | Says nothing about image support |
 | 200, reply names all three bands in order | `true` | The model demonstrably read pixels |
 | 200, reply does not match | `false` | Accepted the part and ignored it |
 | Network error, timeout, breaker open | `null` | Unknown — a transient outage must not permanently mark a capable model blind |
@@ -480,18 +486,21 @@ exhaustion fails *writes* app-wide rather than degrading a cache. Raising
 `--maxmemory` or lowering `MAX_IMAGE_BYTES` is an operational decision and was
 deliberately left to the operator.
 
-**Two concurrent uploads by one user can leave that user with none.** If each
-prune's `SCAN` runs before the other's `DEL`, both handles are deleted and both
-subsequently 410. It never corrupts an entry and never crosses users; the cost is
-a spurious "attach it again". Judged not worth a lock, given the design's
-one-image-per-request commitment.
+**Two concurrent uploads by one user are resolved by repair, not by a lock.**
+If each prune's `SCAN` runs before the other's `DEL`, both handles would be
+deleted and both would subsequently 410 — punishing the caller who did nothing
+wrong. `stageImage` therefore re-checks its own key after pruning (one `EXISTS`)
+and rewrites it if a concurrent prune took it. The worst case is now both entries
+surviving: a bounded overshoot of exactly one entry that expires on its own,
+chosen over a lock because it costs one round-trip and cannot deadlock.
 
-**The 400-body matcher errs in both directions, cheaply.** `\bimage\b` does not
-match "does not support **images**", so such a rejection falls through to `null`
-and is simply re-probed — wrong in the harmless direction. Conversely, a provider
-that echoes `image_url` back in an unrelated validation error could be read as a
-definitive rejection and cache `false`; that is bounded by the 30-day staleness
-re-probe and is visible in `probe_error`.
+**The body matcher errs toward `null`, cheaply.** It matches `image`, `images`,
+`image_url`, `vision`, `visual`, `multimodal`, `modality`/`modalities` and
+`content part`; a rejection phrased outside that vocabulary falls through to
+`null` and is simply re-probed — wrong in the harmless direction. Conversely, a
+provider that echoes `image_url` back in an unrelated validation error could be
+read as a definitive rejection and cache `false`; that is bounded by the 30-day
+staleness re-probe and is visible in `probe_error`.
 
 **`probe_error` is written and never read.** When a verdict is wrong, that column
 is the only evidence, and today it is reachable only via `psql`. The Settings →
