@@ -1,12 +1,23 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../../../test-db-helper.js';
-import { query } from '../../postgres.js';
+import { query, runMigrations } from '../../postgres.js';
 
 const dbAvailable = await isDbAvailable();
 
 describe.skipIf(!dbAvailable)('Migration 054 — multi LLM providers', () => {
   beforeAll(async () => { await setupTestDb(); });
-  afterAll(async () => { await teardownTestDb(); });
+  afterAll(async () => {
+    // Several cases below `DROP TABLE IF EXISTS llm_providers CASCADE` to
+    // simulate the pre-054 world. That CASCADE also removes migration 087's
+    // FK on llm_model_capabilities, and the runner will not rebuild it
+    // because `_migrations` still lists 087 as applied — which silently
+    // breaks every later CASCADE assertion against this shared test DB.
+    // Force 087 to re-run so the constraint is back before the pool closes.
+    await query(`DROP TABLE IF EXISTS llm_model_capabilities CASCADE`);
+    await query(`DELETE FROM _migrations WHERE name = '087_llm_model_capabilities.sql'`);
+    await runMigrations();
+    await teardownTestDb();
+  });
   beforeEach(async () => { await truncateAllTables(); });
 
   async function seedLegacy(rows: Record<string, string>) {
