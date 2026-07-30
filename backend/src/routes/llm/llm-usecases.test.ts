@@ -321,7 +321,7 @@ describe.skipIf(!dbAvailable)('GET /api/llm/usecase-default', () => {
 
       // Mock getVisionCapability to return an invalid value that will fail schema validation.
       // This simulates a bug in the getter, not a missing provider.
-      mockGetVisionCapability.mockResolvedValue('not-a-boolean' as any);
+      mockGetVisionCapability.mockResolvedValue('not-a-boolean');
 
       // The error should propagate as a 500 (schema validation error), not as the
       // provider-not-configured 404 message.

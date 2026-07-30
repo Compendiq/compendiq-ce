@@ -232,6 +232,15 @@ erDiagram
         timestamptz updated_at
     }
 
+    llm_providers ||--o{ llm_model_capabilities : "probed for (CASCADE)"
+    llm_model_capabilities {
+        uuid provider_id PK,FK "ON DELETE CASCADE (#1154)"
+        text model PK
+        bool vision "NULL = probed, undetermined"
+        timestamptz probed_at
+        text probe_error "nullable"
+    }
+
     users ||--o{ llm_audit_log : "may originate"
     llm_audit_log {
         bigint id PK
@@ -300,6 +309,18 @@ erDiagram
   provider's `default_model`; the whole row may be absent to inherit the
   default provider + its default model. The resolver caches this lookup
   and invalidates on provider writes via `llm-cache-bus.ts`.
+- **`llm_model_capabilities`** (migration 087, #1154) records a probed
+  `vision` verdict per `(provider_id, model)` — never per provider, since one
+  host commonly serves both a vision-capable and a text-only model. Unlike
+  `llm_usecase_assignments`' `ON DELETE RESTRICT`, its FK to `llm_providers`
+  is `ON DELETE CASCADE`: capability is derived data that should vanish with
+  its provider, not user configuration that should block a delete. `vision`
+  is nullable and `NULL` is a distinct, meaningful state ("probed, couldn't
+  tell") from `FALSE` ("definitively rejected the image") — see ADR-021's
+  `#1154` amendment for the full verdict table. `getVisionCapability`
+  (`domains/llm/services/model-capabilities.ts`) reads this table without
+  ever blocking on a probe; `refreshVisionCapability` writes it, called from
+  the admin save path and re-probe actions.
 - **`audit_log`** captures auth events, license changes, RBAC mutations,
   and high-value LLM calls (prompt-injection flags, failed sanitization).
 - **User FK policies on hard delete** (migration 062): `audit_log.user_id`,

@@ -130,6 +130,18 @@ by **magic-byte sniffing**, never the client's `Content-Type` — a mismatch aga
 extension is a 415. Zip containers (docx/odt) are bounded by `ZIP_LIMITS` and, for docx,
 repacked stored before `mammoth` sees them, because mammoth's own inflater is unbounded.
 
+**Images as AI source material** (#1154) enter the same way but stay bytes, not text: they
+never join the Markdown/HTML pipeline above. `POST /api/llm/prepare-image` sniffs the format
+by magic bytes (png/jpeg/webp/gif — **SVG is never accepted**, both because vision encoders
+need raster and because SVG carries script/XXE risk) and stages the validated bytes in Redis
+under a per-user, content-addressed handle (`llm:img:<userId>:<sha256>`, 15-minute TTL). Generate
+and Improve accept that handle and are refused with a 422 unless the resolved `chat` model
+has separately probed as vision-capable (`llm_model_capabilities`, migration 087) — capability
+is probed with a known-content image, never declared, because neither the OpenAI-compatible
+`/v1/models` response nor Ollama's off-limits native `/api/show` exposes it. `sanitizeLlmInput`
+cannot inspect pixels, so prompt injection rendered as an image is an accepted, documented
+risk (ADR-021's `#1154` amendment) — not something this path mitigates.
+
 ## Versioning
 
 SemVer, pre-1.0. Single source of truth: **root `package.json` `"version"`**. Backend reads at startup (`core/utils/version.ts` → `APP_VERSION`); frontend injects `__APP_VERSION__` via Vite `define`; mcp-docs reads its own.
