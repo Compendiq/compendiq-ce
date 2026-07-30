@@ -256,20 +256,47 @@ should vanish with its provider rather than block the delete.
 ### When it runs
 
 On `PUT /admin/llm-usecases` and on provider create/update, for the affected
-`provider+model` only. Re-probed lazily when the row is missing, when
-`vision IS NULL`, or when `probed_at` is older than 30 days. Provider config
-changes already call `bumpProviderCacheVersion`; that same path deletes the
-provider's capability rows, because a changed `base_url` or key can put a
-different model behind the same name. The probe runs through `enqueue` and the
-per-provider circuit breaker like every other outbound call, so it cannot
-stampede or bypass backpressure.
+`provider+model` only — blocking there is fine, an admin save is not a hot path.
+
+**The read path never blocks on a probe.** This was a contradiction in an earlier
+draft of this document, caught in review during Task 7: one section promised the
+read was pure-cache while another described lazy re-probing, and the read path is
+exactly what calls the accessor. Resolved in favour of the pure-cache read:
+
+`getVisionCapability` returns the stored verdict immediately — `null` when there
+is no row — and when the row is missing, `NULL`, or older than
+`CAPABILITY_MAX_AGE_DAYS`, it *schedules* a probe rather than awaiting one. The
+caller gets a tri-state answer with no LLM round-trip in the request. Because the
+UI already renders `null` as "couldn't determine — retry", a cold cache degrades
+gracefully and self-heals on the next fetch.
+
+Two bounds keep the background refresh from becoming an amplifier, both of which
+review found necessary:
+
+- **In-flight de-duplication**, keyed on `provider+model`, so concurrent mounts
+  share one probe instead of stampeding.
+- **A probe cooldown** (`CAPABILITY_PROBE_COOLDOWN_MINUTES`), so a model that
+  keeps answering ambiguously — and therefore stays `null` forever — is re-probed
+  at most once per cooldown window rather than on every single read. Without this,
+  a permanently-`null` model would fire an LLM call on every mount indefinitely.
+
+Provider updates drop that provider's capability rows (see below), because a
+changed `base_url` or key can put a different model behind the same name. Every
+probe runs through `enqueue` and the per-provider circuit breaker like any other
+outbound call, so it cannot bypass backpressure.
 
 ## Gating
 
 `GET /llm/usecase-default` (`routes/llm/llm-usecases.ts:23`) gains
-`vision: boolean | null`, read directly from `llm_model_capabilities`. No probe
-runs on the request path, so `AiContext`'s mount-time query
-(`AiContext.tsx:536`) stays fast.
+`vision: boolean | null`, read from `llm_model_capabilities`. No probe is
+awaited on the request path — see "When it runs" above — so `AiContext`'s
+mount-time query (`AiContext.tsx:536`) is never gated on an LLM round-trip.
+
+The handler's existing `try`/`catch` returns a 404 meaning "no provider is
+configured for this use case". That `catch` must stay scoped to
+`resolveUsecase`: widening it over the response `parse` would report a schema
+or contract break as "configure a provider in Settings → LLM", pointing an
+operator at the wrong problem and masking the real bug.
 
 The composer enables image input only on `vision === true`. Both other states
 disable it with distinct copy:
