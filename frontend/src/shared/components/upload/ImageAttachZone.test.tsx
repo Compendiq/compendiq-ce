@@ -36,6 +36,27 @@ describe('imageDisabledReason', () => {
   it('gives false and null different text', () => {
     expect(imageDisabledReason(false, 'm')).not.toBe(imageDisabledReason(null, 'm'));
   });
+
+  /**
+   * `model` is `''` until the models query resolves — the state every surface
+   * paints first — so this is the message most users see most often. It used
+   * to interpolate the empty string: "Image support for  isn't confirmed yet".
+   */
+  it.each([[null], [false]] as const)(
+    'names no model, and leaves no hole, before one has resolved (vision %s)',
+    (vision) => {
+      const reason = imageDisabledReason(vision, '')!;
+      expect(reason).not.toMatch(/ {2}/);
+      expect(reason).not.toMatch(/for +isn't|^ |can't read images/i);
+      expect(reason).toMatch(/chat model/i);
+    },
+  );
+
+  /** A resolved model still gets the verdict-specific copy. */
+  it('keeps the per-verdict copy once a model has resolved', () => {
+    expect(imageDisabledReason(false, 'llama3.1')).toMatch(/llama3\.1 can't read images/);
+    expect(imageDisabledReason(null, 'llama3.1')).toMatch(/Image support for llama3\.1/);
+  });
 });
 
 describe('ImageAttachZone', () => {

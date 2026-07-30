@@ -160,6 +160,40 @@ describe('useExtractDocument', () => {
     expect(result.current.isExtracting).toBe(false);
   });
 
+  /**
+   * `error` describes the newest extraction only. Overlap made the alternative
+   * incoherent: starting the second call already cleared the first's message,
+   * so letting a stale failure write its own back would resurrect the error of
+   * a request the user had replaced. Both callers still see their own rejection.
+   */
+  it('does not let a superseded extraction write its failure into error', async () => {
+    const first = deferred<Response>();
+    const second = deferred<Response>();
+    vi.spyOn(globalThis, 'fetch')
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise);
+
+    const { result } = renderHook(() => useExtractDocument());
+
+    let firstCall!: Promise<unknown>;
+    let secondCall!: Promise<unknown>;
+    await act(async () => { firstCall = result.current.extractDocument(file()); });
+    await act(async () => { secondCall = result.current.extractDocument(file('b.pdf')); });
+
+    await act(async () => {
+      second.resolve(jsonResponse({ format: 'pdf', text: 'second' }));
+      await secondCall;
+    });
+    await act(async () => {
+      first.resolve(new Response(JSON.stringify({ message: 'stale failure' }), {
+        status: 500, headers: { 'Content-Type': 'application/json' },
+      }));
+      await expect(firstCall).rejects.toThrow('stale failure');
+    });
+
+    expect(result.current.error).toBeNull();
+  });
+
   /** A failure must release its own slot, or the surface stays disabled forever. */
   it('stops being busy when an overlapping extraction rejects', async () => {
     const first = deferred<Response>();

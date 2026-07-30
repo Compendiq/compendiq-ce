@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { readFileSync } from 'fs';
+import { resolve } from 'path';
 import { render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { LlmProvider, UsecaseAssignments } from '@compendiq/contracts';
@@ -91,5 +93,27 @@ describe('UsecaseAssignmentsSection vision badge (#1154)', () => {
     await waitFor(() => expect(screen.getByTestId('vision-badge')).toBeInTheDocument());
     const calls = mockApiFetch.mock.calls.filter(([p]) => String(p).includes('usecase-default'));
     expect(calls).toHaveLength(1);
+  });
+
+  /**
+   * Two observers of one query key do not each keep their own stale time — the
+   * cache entry takes the configuration of whichever observer is active — so a
+   * divergence here would let this badge decide refetch scheduling for the chat
+   * pane whenever `AiContext`'s observer unmounts first. Asserted against the
+   * sources because the effect is a scheduling decision inside react-query,
+   * with no rendered consequence to hang an assertion on.
+   */
+  it('configures the shared chat-default query the same way AiContext does', () => {
+    const files = [
+      resolve(__dirname, 'UsecaseAssignmentsSection.tsx'),
+      resolve(__dirname, '../../ai/AiContext.tsx'),
+    ];
+
+    for (const file of files) {
+      const source = readFileSync(file, 'utf-8');
+      const block = /queryKey: \['llm', 'usecase-default', 'chat'\][\s\S]*?\n {2}\}\);/.exec(source);
+      expect(block, `no chat usecase-default query found in ${file}`).not.toBeNull();
+      expect(block![0], `stale time diverges in ${file}`).toContain('staleTime: 30_000');
+    }
   });
 });

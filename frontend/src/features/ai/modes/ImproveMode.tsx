@@ -163,6 +163,12 @@ export function ImproveModeInput() {
     imageDisabledReason: imageDisabledReason(chatVision, model),
     disabled: isStreaming,
   });
+  // Destructured for the improve callback's dependency array: `useAttachments`
+  // returns a fresh object literal every render, so a `useCallback` depending
+  // on `attachments` itself was rebuilt on every render and memoized nothing.
+  const {
+    document: attachedDocument, image: attachedImage, isBusy, removeImage,
+  } = attachments;
 
   // Check if MCP docs sidecar is available (for web search toggle)
   const { data: mcpSettings } = useQuery<{ enabled: boolean }>({
@@ -178,7 +184,7 @@ export function ImproveModeInput() {
     // round-trip is still in flight — otherwise the request would go without
     // the attachment that is being prepared for it (#940, widened to both
     // slots by #1154).
-    if (isStreaming || attachments.isBusy) return;
+    if (isStreaming || isBusy) return;
     if (!page) {
       toast.error('No page selected. Open a page first, then click "AI Improve".');
       return;
@@ -199,8 +205,8 @@ export function ImproveModeInput() {
       // Both stay their own fields rather than being folded into `instruction`:
       // the backend sanitizes and bounds them separately, and a document folded
       // into the instruction would speak with a directive's authority.
-      ...(attachments.document && { referenceText: attachments.document.result.text }),
-      ...(attachments.image && { imageHandle: attachments.image.handle }),
+      ...(attachedDocument && { referenceText: attachedDocument.result.text }),
+      ...(attachedImage && { imageHandle: attachedImage.handle }),
     };
     if (instruction.trim()) {
       body.instruction = instruction.trim();
@@ -225,7 +231,7 @@ export function ImproveModeInput() {
         // the instruction, so there is nothing else of ours to put back.
         onError: (err) => {
           if (!(err instanceof ApiError) || err.statusCode !== 410) return false;
-          attachments.removeImage();
+          removeImage();
           toast.error('The image expired — attach it again.');
           return true;
         },
@@ -241,7 +247,12 @@ export function ImproveModeInput() {
         },
       },
     );
-  }, [page, model, improvementType, pageId, isStreaming, includeSubPages, thinkingMode, instruction, searchWeb, attachments, runStream, setShowDiffView, setImprovedContent, setOriginalMarkdown, setLayoutTokensLost]);
+  }, [
+    page, model, improvementType, pageId, isStreaming, includeSubPages, thinkingMode, instruction,
+    searchWeb, runStream, setShowDiffView, setImprovedContent, setOriginalMarkdown,
+    setLayoutTokensLost,
+    isBusy, attachedDocument, attachedImage, removeImage,
+  ]);
 
   return (
     <div ref={surfaceRef} className="mt-3 flex flex-col gap-3 border-t border-border/40 pt-3">

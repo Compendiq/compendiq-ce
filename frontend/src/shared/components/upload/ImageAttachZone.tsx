@@ -22,6 +22,25 @@ import { cn } from '../../lib/cn';
  * A host must give its own children explicit orders from `order-3` up —
  * anything left without one defaults to `order: 0` and jumps ahead of the
  * cards. (Outside a flex container `order` is simply inert.)
+ *
+ * **Known limitation — focus order (WCAG 2.4.3).** `order` moves boxes, not
+ * the tab sequence, so on a composer holding both zones Tab runs
+ * doc-remove → doc-trigger → image-remove → image-trigger while the eye reads
+ * doc card, image card, then the two triggers. Focus therefore crosses rows
+ * rather than following them.
+ *
+ * It is recorded rather than fixed, deliberately. Nothing inside either zone
+ * can repair it: a fragment of two flex items cannot be reordered from the
+ * host, and reversing the fragment (trigger before card) only swaps which pair
+ * ping-pongs. The one real fix is for the host to render the cards and the
+ * triggers as two separate groups, which means splitting both zones into two
+ * components and rewiring all three surfaces — a design change, not a
+ * cleanup, and not a regression this branch introduced (the same order held
+ * under the previous selector-based approach). What bounds the cost in the
+ * meantime: there are at most four controls, each carries an explicit
+ * accessible name ("Remove image", "Attach an image", …), and `tabindex` is
+ * never used to paper over it — a positive `tabindex` would trade this for a
+ * worse problem across the whole page.
  */
 
 /** `.png,.jpg,…` plus MIME types, so both native pickers behave. */
@@ -37,10 +56,20 @@ const ACCEPT = [
  * established capability, and telling the user the model "cannot accept images"
  * would assert something it never checked — the same distinction the backend's
  * own 422 messages make.
+ *
+ * The three states are therefore four messages, because "no model yet" is not
+ * the same claim as "this model's support is unconfirmed": `model` is `''`
+ * until the models query resolves, which is every first paint on every
+ * surface. Interpolating it there rendered "Image support for  isn't confirmed
+ * yet" — a sentence with a hole in it, shown to every user before anything
+ * useful is — so the empty case gets copy that is true of it.
  */
 // eslint-disable-next-line react-refresh/only-export-components
 export function imageDisabledReason(vision: boolean | null, model: string): string | undefined {
   if (vision === true) return undefined;
+  if (!model) {
+    return 'Waiting for the chat model — images can be attached once it loads.';
+  }
   if (vision === false) {
     return `${model} can't read images — assign a vision-capable model in Settings → LLM.`;
   }

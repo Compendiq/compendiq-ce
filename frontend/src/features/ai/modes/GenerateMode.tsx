@@ -361,12 +361,18 @@ export function GenerateModeInput() {
     imageDisabledReason: imageDisabledReason(chatVision, model),
     disabled: isStreaming,
   });
+  // Destructured for the send callback's dependency array: `useAttachments`
+  // returns a fresh object literal every render, so a `useCallback` depending
+  // on `attachments` itself was rebuilt on every render and memoized nothing.
+  const {
+    document: attachedDocument, image: attachedImage, isBusy, removeImage,
+  } = attachments;
 
   const handleGenerate = useCallback(async () => {
     // Block generation while an extraction or an image staging round-trip is in
     // flight — otherwise the prompt would be sent without the attachment that
     // is still being prepared (#940, widened to both slots by #1154).
-    if (!input.trim() || isStreaming || attachments.isBusy) return;
+    if (!input.trim() || isStreaming || isBusy) return;
     if (!model) {
       toast.error('No model available. Check your LLM provider settings.');
       return;
@@ -377,8 +383,8 @@ export function GenerateModeInput() {
 
     // The filename already carries the format, so naming it twice ("Generate
     // from DOCX (notes.docx)") would only be noise.
-    const displayMessage = attachments.document
-      ? `Generate from ${attachments.document.filename}: ${prompt}`
+    const displayMessage = attachedDocument
+      ? `Generate from ${attachedDocument.filename}: ${prompt}`
       : `Generate: ${prompt}`;
     // Append, not replace (#1126) — matching runStream's seeded turn and Ask.
     // Generate is the one mode that still builds its own user turn by hand, and
@@ -390,11 +396,11 @@ export function GenerateModeInput() {
     setShowSavePanel(false);
 
     const body: Record<string, unknown> = { prompt, model };
-    if (attachments.document) {
-      body.documentText = attachments.document.result.text;
+    if (attachedDocument) {
+      body.documentText = attachedDocument.result.text;
     }
-    if (attachments.image) {
-      body.imageHandle = attachments.image.handle;
+    if (attachedImage) {
+      body.imageHandle = attachedImage.handle;
     }
     if (searchWeb) {
       body.searchWeb = true;
@@ -418,14 +424,17 @@ export function GenerateModeInput() {
       // box so it does not have to be retyped.
       onError: (err) => {
         if (!(err instanceof ApiError) || err.statusCode !== 410) return false;
-        attachments.removeImage();
+        removeImage();
         setInput(prompt);
         setMessages((prev) => prev.filter((m) => m.id !== userMessageId));
         toast.error('The image expired — attach it again.');
         return true;
       },
     });
-  }, [input, model, isStreaming, attachments, searchWeb, thinkingMode, setInput, setMessages, runStream]);
+  }, [
+    input, model, isStreaming, searchWeb, thinkingMode, setInput, setMessages, runStream,
+    isBusy, attachedDocument, attachedImage, removeImage,
+  ]);
 
   const handleSubmit = () => handleGenerate();
 

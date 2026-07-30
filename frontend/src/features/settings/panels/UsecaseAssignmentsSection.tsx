@@ -30,10 +30,17 @@ export function UsecaseAssignmentsSection({ assignments, providers, onChange }: 
   // invalidates the ['llm', 'usecase-default'] prefix on assignment changes.
   // Deliberately scoped to `chat` only: badging every ModelPicker option
   // would fire one vision probe per model on mount.
+  //
+  // `staleTime` matches AiContext's observer on the same key. Two observers of
+  // one key do not each get their own stale time — the cache entry takes the
+  // configuration of whichever observer is active — so leaving it at the
+  // default here would mean the badge's options silently decide refetch
+  // scheduling for the chat pane whenever AiContext's instance unmounts first.
   const { data: chatDefault } = useQuery<UsecaseDefault>({
     queryKey: ['llm', 'usecase-default', 'chat'],
     queryFn: () => apiFetch('/llm/usecase-default?usecase=chat'),
     retry: false,
+    staleTime: 30_000,
   });
   return (
     <div className="border-border/50 space-y-2 rounded-md border p-4">
