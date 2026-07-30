@@ -1,4 +1,5 @@
 import { chat, type ProviderConfig } from './openai-compatible-client.js';
+import { LlmHttpError } from './llm-http-error.js';
 import type { ChatMessage } from './prompts.js';
 import { logger } from '../../../core/utils/logger.js';
 
@@ -53,40 +54,74 @@ function replyNamesBandsInOrder(reply: string): boolean {
 }
 
 /**
- * HTTP statuses that mean "the provider understood the request and refused
- * the *image part* specifically" — i.e. the response is informative about
- * capability, not just about the request failing.
+ * The one status that means "the provider understood the request and refused
+ * the *media*" on its own. 415 is Unsupported Media Type — there is no reading
+ * of it that is about anything but the content we sent.
  *
- * Deliberately narrower than the 4xx class. `chat()` throws
- * `` `chat HTTP ${status}: <body>` `` for any non-ok response, so a naive
- * "any 4xx" check also catches 429 (rate limited), 401/403 (auth failure), 404
- * (model or route not found) and 413 (payload too large) — none of which say
- * anything about image support. Since a `false` verdict is cached for up to
- * `CAPABILITY_MAX_AGE_DAYS` and only `null` is re-probed sooner,
- * misclassifying one of those as definitive would brand a rate-limited,
- * misconfigured, or merely-too-large-a-payload but vision-capable model as
- * blind for a month. Resist "simplifying" this back to `/HTTP 4\d\d/` — that
- * regression is exactly what this set exists to prevent.
+ * Deliberately narrower than the 4xx class: a naive "any 4xx" check also
+ * catches 429 (rate limited), 401/403 (auth failure), 404 (model or route not
+ * found) and 413 (payload too large) — none of which say anything about image
+ * support. Since a `false` verdict is cached for up to
+ * `CAPABILITY_MAX_AGE_DAYS` and only `null` is re-probed sooner, misclassifying
+ * one of those would brand a rate-limited, misconfigured, or
+ * merely-too-large-a-payload but vision-capable model as blind for a month.
+ * Resist "simplifying" this to `status >= 400 && status < 500` — that
+ * regression is exactly what this narrowing exists to prevent.
  */
-const UNCONDITIONAL_REJECTION_STATUSES: ReadonlySet<number> = new Set([415, 422]);
+const UNCONDITIONAL_REJECTION_STATUSES: ReadonlySet<number> = new Set([415]);
 
 /**
- * 400 is the ambiguous one, and the status alone is not enough. Providers
- * answer 400 for an unsupported parameter (`max_tokens` vs
- * `max_completion_tokens`), an over-long context, or a malformed role — all
- * from a fully vision-capable model. Only a 400 whose body actually talks
- * about the image counts as a verdict; anything else falls through to `null`
- * so it gets re-probed instead of cached as blind.
+ * Statuses that *can* mean "refused the image part" but need the body to say
+ * so, because both are also the generic answer to a malformed request.
+ *
+ * - **400** is the obvious one: providers answer it for an unsupported
+ *   parameter (`max_tokens` vs `max_completion_tokens`), an over-long context,
+ *   or a malformed role — all from a fully vision-capable model.
+ * - **422** looks more specific than it is. Every FastAPI-based
+ *   OpenAI-compatible server (vLLM, LocalAI, llama-cpp-python) returns 422 for
+ *   *any* request-body validation failure, because that is pydantic's default.
+ *   `chat()` sends `max_tokens` unconditionally and `thinkingExtras` adds
+ *   provider-specific fields on top, so a 422 about a field this probe itself
+ *   introduced is entirely reachable — and treating it as definitive would
+ *   cache `vision=false` on a capable model for a month. That is the same trap
+ *   the 400 rule already avoids, so 422 gets the same treatment.
+ *
+ * Anything whose body does not talk about the image falls through to `null`,
+ * so it is re-probed instead of cached as blind.
+ */
+const BODY_CONDITIONAL_REJECTION_STATUSES: ReadonlySet<number> = new Set([400, 422]);
+
+/**
+ * `images?` and `image_url` rather than a bare `\bimage\b`: "this model does not
+ * support images" is at least as common a phrasing as the singular, and `\b`
+ * after `image` refuses the trailing `s`.
  */
 const IMAGE_REJECTION_BODY =
-  /\b(image|image_url|vision|multi-?modal|modalit(?:y|ies)|content[ _-]?part|visual)\b/i;
+  /\b(images?|image_url|vision|multi-?modal|modalit(?:y|ies)|content[ _-]?part|visual)\b/i;
 
-function isDefinitiveRejection(message: string): boolean {
-  const match = /HTTP (\d{3})/.exec(message);
-  if (!match) return false;
-  const status = Number(match[1]);
-  if (UNCONDITIONAL_REJECTION_STATUSES.has(status)) return true;
-  return status === 400 && IMAGE_REJECTION_BODY.test(message);
+/**
+ * Reads the typed status and body off `LlmHttpError` rather than parsing them
+ * back out of `message`. Anything that is not an HTTP failure — a network
+ * error, an open breaker, an abort — is not a capability verdict at all.
+ */
+function isDefinitiveRejection(err: unknown): boolean {
+  if (!(err instanceof LlmHttpError)) return false;
+  if (UNCONDITIONAL_REJECTION_STATUSES.has(err.status)) return true;
+  return BODY_CONDITIONAL_REJECTION_STATUSES.has(err.status)
+    && IMAGE_REJECTION_BODY.test(err.detail);
+}
+
+/**
+ * What lands in `llm_model_capabilities.probe_error`. The provider's body is
+ * included here — an admin diagnosing a wrong verdict needs it — but it is
+ * assembled at this boundary rather than living in `err.message`, which
+ * `pages-tags.ts` surfaces to callers.
+ */
+function describeProbeFailure(err: unknown): string {
+  if (err instanceof LlmHttpError) {
+    return err.detail ? `${err.message}: ${err.detail}` : err.message;
+  }
+  return err instanceof Error ? err.message : String(err);
 }
 
 export async function probeVision(
@@ -123,13 +158,13 @@ export async function probeVision(
     );
     return { vision };
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    // The message now carries a slice of the provider's error body. It is the
-    // whole point of the 400 branch above, but it is still third-party text —
-    // log a short prefix, and keep the fuller version to the `probe_error`
-    // column an admin has to go looking for.
+    // `describeProbeFailure` folds in a slice of the provider's error body — it
+    // is the whole point of the body-conditional branch above, but it is still
+    // third-party text, so log a short prefix and keep the fuller version to
+    // the `probe_error` column an admin has to go looking for.
+    const message = describeProbeFailure(err);
     const logged = message.slice(0, 200);
-    if (isDefinitiveRejection(message)) {
+    if (isDefinitiveRejection(err)) {
       logger.debug({ providerId: cfg.providerId, model, message: logged }, 'Vision probe refused');
       return { vision: false, error: message };
     }

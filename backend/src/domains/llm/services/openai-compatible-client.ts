@@ -7,7 +7,9 @@ import {
 import { logger } from '../../../core/utils/logger.js';
 import { withSpan } from '../../../telemetry.js';
 import type { ChatMessage } from './prompts.js';
+import { LlmHttpError, ERROR_BODY_MAX_CHARS } from './llm-http-error.js';
 export type { ChatMessage, ChatContentPart } from './prompts.js';
+export { LlmHttpError } from './llm-http-error.js';
 
 export interface ProviderConfig {
   providerId: string;
@@ -189,24 +191,17 @@ export async function checkHealth(cfg: ProviderConfig): Promise<HealthResult> {
   }
 }
 
-/** Cap on how much of a provider's error body travels in the thrown message. */
-const ERROR_BODY_MAX_CHARS = 500;
-
 /**
- * A bare `chat HTTP 400` cannot be acted on: "this model does not accept image
- * content", "unsupported parameter `max_tokens`", "context length exceeded" and
- * "malformed role" are all 400s, and #1154's vision probe caches a `false`
- * verdict for up to 30 days on the strength of that status. The body is what
- * distinguishes them, so a truncated slice of it rides along in the message.
- *
- * Truncated, never logged wholesale, and only ever a provider's own error text
- * — the request payload (which carries the prompt, and for #1154 the image) is
- * not echoed back here, and the Authorization header never appears in a body.
+ * A bare status cannot be acted on: "this model does not accept image content",
+ * "unsupported parameter `max_tokens`", "context length exceeded" and "malformed
+ * role" are all 400s, and #1154's vision probe caches a `false` verdict for up
+ * to 30 days on the strength of that status. The body is what distinguishes
+ * them, so a truncated slice of it is retained — on `LlmHttpError.detail`, not
+ * in the message, because the message reaches clients (see `llm-http-error.ts`).
  */
 async function errorDetail(res: { text(): Promise<string> }): Promise<string> {
   const body = await res.text().catch(() => '');
-  const trimmed = body.trim().slice(0, ERROR_BODY_MAX_CHARS);
-  return trimmed ? `: ${trimmed}` : '';
+  return body.trim().slice(0, ERROR_BODY_MAX_CHARS);
 }
 
 export async function chat(
@@ -231,7 +226,7 @@ export async function chat(
           dispatcher: dispatcherFor(cfg),
           signal,
         });
-        if (!res.ok) throw new Error(`chat HTTP ${res.status}${await errorDetail(res)}`);
+        if (!res.ok) throw new LlmHttpError('chat', res.status, await errorDetail(res));
         const body = await res.json() as { choices: Array<{ message: { content: string } }> };
         return body.choices[0]?.message.content ?? '';
       }),

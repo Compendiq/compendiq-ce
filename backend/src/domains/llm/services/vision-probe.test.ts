@@ -10,6 +10,15 @@ vi.mock('../../../core/utils/logger.js', () => ({
 }));
 
 import { probeVision, PROBE_IMAGE_BASE64, PROBE_BANDS } from './vision-probe.js';
+import { LlmHttpError } from './llm-http-error.js';
+
+/**
+ * `LlmHttpError` deliberately lives outside `openai-compatible-client.ts` (which
+ * this suite mocks) so the class survives mocking — an `instanceof` against a
+ * dropped export answers `false` silently, which here would look like a
+ * plausible `null` verdict rather than a broken test.
+ */
+const httpError = (status: number, detail = '') => new LlmHttpError('chat', status, detail);
 
 const CFG = {
   providerId: 'p1', baseUrl: 'http://x/v1', apiKey: null,
@@ -97,38 +106,42 @@ describe('probeVision', () => {
   });
 
   it('returns vision:false when the provider rejects the image part', async () => {
-    mockChat.mockRejectedValue(new Error(
-      'chat HTTP 400: {"error":{"message":"Invalid content type image_url for this model"}}',
+    mockChat.mockRejectedValue(httpError(
+      400, '{"error":{"message":"Invalid content type image_url for this model"}}',
     ));
     const result = await probeVision(CFG, 'm');
     expect(result.vision).toBe(false);
     expect(result.error).toMatch(/400/);
   });
 
-  it.each([415, 422])('treats HTTP %i as a definitive text-only verdict', async (status) => {
-    mockChat.mockRejectedValue(new Error(`chat HTTP ${status}`));
+  /** 415 is Unsupported Media Type — no reading of it is about anything else. */
+  it('treats HTTP 415 as a definitive text-only verdict without a body', async () => {
+    mockChat.mockRejectedValue(httpError(415));
     expect((await probeVision(CFG, 'm')).vision).toBe(false);
   });
 
-  /**
-   * 415 and 422 are unambiguous enough on their own — the provider understood
-   * the request and refused the media. No body required.
-   */
-  it.each([415, 422])(
-    'treats HTTP %i as definitive even with an unrelated body',
+  it('treats HTTP 415 as definitive even with an unrelated body', async () => {
+    mockChat.mockRejectedValue(httpError(415, 'something else entirely'));
+    expect((await probeVision(CFG, 'm')).vision).toBe(false);
+  });
+
+  it.each([400, 422])(
+    'treats HTTP %i whose body indicates image rejection as false',
     async (status) => {
-      mockChat.mockRejectedValue(new Error(`chat HTTP ${status}: something else entirely`));
+      mockChat.mockRejectedValue(httpError(status, 'image content is not supported by this model'));
       expect((await probeVision(CFG, 'm')).vision).toBe(false);
     },
   );
 
   it.each([
     ['image content is not supported by this model'],
+    // Plural phrasing: `\bimage\b` alone would miss this and fall through to null.
+    ['This model does not support images'],
     ['This model does not support vision inputs'],
     ['multimodal input is disabled'],
     ['Invalid value for content part: image_url'],
   ])('treats a 400 whose body indicates image rejection as false: %s', async (body) => {
-    mockChat.mockRejectedValue(new Error(`chat HTTP 400: ${body}`));
+    mockChat.mockRejectedValue(httpError(400, body));
     expect((await probeVision(CFG, 'm')).vision).toBe(false);
   });
 
@@ -143,8 +156,41 @@ describe('probeVision', () => {
     ['Invalid value for role: developer'],
     [''],
   ])('returns vision:null for a 400 that is not about the image: %s', async (body) => {
-    mockChat.mockRejectedValue(new Error(body ? `chat HTTP 400: ${body}` : 'chat HTTP 400'));
+    mockChat.mockRejectedValue(httpError(400, body));
     expect((await probeVision(CFG, 'm')).vision).toBeNull();
+  });
+
+  /**
+   * 422 is pydantic's default for ANY request-body validation failure, so every
+   * FastAPI-based OpenAI-compatible server (vLLM, LocalAI, llama-cpp-python)
+   * answers 422 for an unrecognised field — including `max_tokens`, which this
+   * probe itself sends. Treating a bare 422 as definitive would cache
+   * `vision=false` on a capable model for `CAPABILITY_MAX_AGE_DAYS`.
+   */
+  it.each([
+    ['', 'no body at all'],
+    ['{"detail":[{"loc":["body","max_tokens"],"msg":"extra fields not permitted"}]}', 'an unknown-field rejection'],
+    ['{"detail":[{"loc":["body","messages",0,"role"],"msg":"unexpected value"}]}', 'a role validation error'],
+  ])('returns vision:null for a 422 with %s (%s)', async (body) => {
+    mockChat.mockRejectedValue(httpError(422, body));
+    expect((await probeVision(CFG, 'm')).vision).toBeNull();
+  });
+
+  /**
+   * The classification reads `LlmHttpError.status`, not the message text. A
+   * plain Error that merely happens to contain "HTTP 415" — a wrapped or
+   * re-thrown error, a provider echoing a status in prose — is not a verdict.
+   */
+  it('does not treat a status-shaped string in a plain Error as a verdict', async () => {
+    mockChat.mockRejectedValue(new Error('upstream proxy said chat HTTP 415'));
+    expect((await probeVision(CFG, 'm')).vision).toBeNull();
+  });
+
+  /** The body reaches `probe_error` for an admin, even though it never reaches `message`. */
+  it('carries the provider body into the persisted probe error', async () => {
+    mockChat.mockRejectedValue(httpError(400, 'vision is not enabled for this deployment'));
+    const result = await probeVision(CFG, 'm');
+    expect(result.error).toContain('vision is not enabled for this deployment');
   });
 
   /** A transient outage must not permanently mark a capable model blind. */
@@ -161,22 +207,32 @@ describe('probeVision', () => {
   });
 
   it('returns vision:null on HTTP 500', async () => {
-    mockChat.mockRejectedValue(new Error('chat HTTP 500'));
+    mockChat.mockRejectedValue(httpError(500));
     expect((await probeVision(CFG, 'm')).vision).toBeNull();
   });
 
   /**
    * These 4xx statuses carry no information about image support: 429 is a
-   * rate limit, 401/403 are auth failures, 404 is a missing model or route.
-   * None of them mean "the provider understood the request and refused the
-   * image part" — only 400/415/422 do. Misclassifying these as a definitive
-   * `false` would permanently brand a rate-limited or misconfigured but
-   * vision-capable model as blind, since only `null` verdicts get re-probed.
+   * rate limit, 401/403 are auth failures, 404 is a missing model or route,
+   * 413 is an oversized payload. None of them mean "the provider understood the
+   * request and refused the image part" — only 415, or 400/422 with a body that
+   * says so, do. Misclassifying these as a definitive `false` would permanently
+   * brand a rate-limited or misconfigured but vision-capable model as blind,
+   * since only `null` verdicts get re-probed.
    */
-  it.each([429, 401, 403, 404])(
+  it.each([429, 401, 403, 404, 413])(
     'returns vision:null (not false) on HTTP %i — not a content rejection',
     async (status) => {
-      mockChat.mockRejectedValue(new Error(`chat HTTP ${status}`));
+      mockChat.mockRejectedValue(httpError(status));
+      expect((await probeVision(CFG, 'm')).vision).toBeNull();
+    },
+  );
+
+  /** Even an image-shaped body cannot make one of those a verdict. */
+  it.each([429, 401, 403, 404, 413])(
+    'returns vision:null on HTTP %i even when the body mentions the image',
+    async (status) => {
+      mockChat.mockRejectedValue(httpError(status, 'image_url content part rejected'));
       expect((await probeVision(CFG, 'm')).vision).toBeNull();
     },
   );

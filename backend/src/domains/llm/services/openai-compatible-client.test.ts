@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { checkHealth, listModels, chat, streamChat, generateEmbedding, invalidateBreaker, __test_only__, type ProviderConfig } from './openai-compatible-client.js';
+import { checkHealth, listModels, chat, streamChat, generateEmbedding, invalidateBreaker, __test_only__, LlmHttpError, type ProviderConfig } from './openai-compatible-client.js';
 
 let srv: Server;
 let baseUrl: string;
@@ -477,24 +477,43 @@ describe('openai-compatible-client — chat surfaces the HTTP error body (#1154)
   });
   afterAll(() => new Promise<void>((r) => errSrv.close(() => r())));
 
-  it('includes the status and the body in the thrown error', async () => {
-    await expect(
-      chat({ ...cfg, providerId: 'chat-err-1154', baseUrl: errBase }, 'm1', [{ role: 'user', content: 'hi' }]),
-    ).rejects.toThrow(/chat HTTP 400.*Unsupported parameter/s);
+  it('throws LlmHttpError carrying the status and the body as fields', async () => {
+    const err = await chat(
+      { ...cfg, providerId: 'chat-err-1154', baseUrl: errBase }, 'm1', [{ role: 'user', content: 'hi' }],
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(LlmHttpError);
+    expect((err as LlmHttpError).status).toBe(400);
+    expect((err as LlmHttpError).detail).toMatch(/Unsupported parameter/);
+  });
+
+  /**
+   * The body is third-party text and `message` is client-visible —
+   * `routes/knowledge/pages-tags.ts` answers `502 "Auto-tagging failed:
+   * <message>"`. Keeping the body off `message` is what stops a provider's raw
+   * error from reaching an authenticated user; it travels on `detail` instead.
+   */
+  it('keeps the provider body out of the message', async () => {
+    const err = await chat(
+      { ...cfg, providerId: 'chat-err-msg-1154', baseUrl: errBase }, 'm1', [{ role: 'user', content: 'hi' }],
+    ).catch((e: unknown) => e);
+    expect((err as Error).message).toBe('chat HTTP 400');
+    expect((err as Error).message).not.toMatch(/Unsupported parameter/);
   });
 
   it('truncates a long body rather than carrying it whole', async () => {
     const err = await chat(
       { ...cfg, providerId: 'chat-err-long-1154', baseUrl: errBase }, 'long-error', [{ role: 'user', content: 'hi' }],
-    ).catch((e: Error) => e);
-    expect((err as Error).message.length).toBeLessThan(600);
-    expect((err as Error).message).toMatch(/^chat HTTP 400: x+$/);
+    ).catch((e: unknown) => e);
+    expect((err as LlmHttpError).detail.length).toBeLessThanOrEqual(500);
+    expect((err as LlmHttpError).detail).toMatch(/^x+$/);
   });
 
-  it('omits the separator entirely when the body is empty', async () => {
-    await expect(
-      chat({ ...cfg, providerId: 'chat-err-empty-1154', baseUrl: errBase }, 'empty-error', [{ role: 'user', content: 'hi' }]),
-    ).rejects.toThrow(/^chat HTTP 400$/);
+  it('leaves detail empty when the provider sends no body', async () => {
+    const err = await chat(
+      { ...cfg, providerId: 'chat-err-empty-1154', baseUrl: errBase }, 'empty-error', [{ role: 'user', content: 'hi' }],
+    ).catch((e: unknown) => e);
+    expect((err as LlmHttpError).detail).toBe('');
+    expect((err as Error).message).toBe('chat HTTP 400');
   });
 });
 
