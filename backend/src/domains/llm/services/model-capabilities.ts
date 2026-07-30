@@ -117,7 +117,7 @@ export async function getVisionCapability(
       })
       .finally(() => {
         inFlightRefreshes.delete(key);
-      });
+      }) as Promise<void>;
 
     inFlightRefreshes.set(key, refreshPromise);
   }
