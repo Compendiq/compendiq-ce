@@ -351,7 +351,7 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
             aria-label="Ask the assistant about this page"
             // The composer wrapper owns the inset surface, border and focus
             // ring; resize-none because the auto-grow hook owns the height.
-            className="min-w-0 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
+            className="min-w-0 grow basis-40 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
             data-testid="ai-dock-input"
           />
           <button

@@ -29,6 +29,24 @@
  * wide `/ai` composer is a different look, not a different defect — left-to-right
  * reading order is still document order.
  *
+ * **The host's field must keep a real flex-basis, or this row collapses it.**
+ * Each composer's textarea is `min-w-0 grow basis-40`, deliberately not the
+ * `flex-1` it used to be. `flex-1` is `flex: 1 1 0%`, and with `min-w-0` removing
+ * the automatic minimum, the field's hypothetical main size is only its padding —
+ * so it contributes ~16px to line collection, and a `basis-64` row stops forcing
+ * the wrap that a `w-full` row used to force. Measured in a browser at a 372px
+ * dock, that left a **33px** prompt: too narrow to read what you are typing.
+ * Revert any of the three fields to `flex-1` and the collapse comes back.
+ * (`AskMode`'s composers keep `flex-1` correctly — they hold no zone and do not
+ * wrap.)
+ *
+ * Measured with the real classes across 320–640px, the dock being clamped to
+ * [340, 640] by `ui-store`: empty stays one line at every width, and the field is
+ * 200–340px in every attached state. Known limitation at 320px — below the dock's
+ * own floor, so the mobile sheet only — an image with no document strands the
+ * paperclip on its own line. Chasing that would mean shrinking the row basis on
+ * every surface to serve a width the dock cannot be set to.
+ *
  * @param hasAttachment whether the zone is showing a card or a drop hint. With
  *                      nothing to show the row is just the trigger, and hugs the
  *                      composer's last line beside the send button as before.

@@ -83,6 +83,11 @@ export function extractBlock(source: string, openingLine: string): string {
  * is skipped by Tab but does not change the order of the rest, and which
  * controls are disabled varies with vision capability and prompt emptiness.
  *
+ * The `order-*` half matches **classes**, so an inline `style={{ order: 2 }}`
+ * slips past it. That is a bounded limit rather than a hole: this codebase orders
+ * with utilities, and the check exists to stop the convention growing back by
+ * habit — not to defeat someone set on reordering a composer by other means.
+ *
  * The convention holds on all three composer surfaces (the dock, `/ai` Generate,
  * `/ai` Improve), so the guard lives here rather than in one of the three
  * suites: a fourth surface should not be able to reintroduce the defect just by

@@ -313,7 +313,7 @@ export function ImproveModeInput() {
           // hook owns the height — a drag handle would fight it. min-w-0 so the
           // textarea's intrinsic `cols` width can't push the box wider than a
           // narrow viewport.
-          className="min-w-0 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
+          className="min-w-0 grow basis-40 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
         />
       </div>
       {mcpEnabled && (
