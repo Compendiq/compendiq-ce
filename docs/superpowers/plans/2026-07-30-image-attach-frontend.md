@@ -2141,12 +2141,16 @@ and Task 7 Step 8 covers the conditional-placeholder rewiring that the
 this work — the existing suites query by placeholder and role, and changing that
 is a separate concern.
 
-**One deviation from the spec, recorded deliberately.** The spec said
-`downscaleImage` would fall back to `<img>` + `drawImage` where the
-`createImageBitmap` resize overload is unsupported. Task 1 drops the separate
-fallback: browsers ignore unknown options on `createImageBitmap` rather than
-throwing, so the single path is correct everywhere and merely less
-memory-efficient on older engines — and `fitWithin` + `drawImage` already do the
-scaling regardless. A second code path would be untestable in jsdom and dead in
-every supported browser. Task 1's test for "fallback triggers" is replaced by the
-HEIC decode-failure test, which exercises the real error path.
+**Task 1's decode path — corrected during execution (fix round 1).** The spec
+originally specified `createImageBitmap(file, { resizeWidth, resizeHeight,
+resizeQuality })` with an `<img>` + `drawImage` fallback, claiming the full-size
+bitmap is never materialised. **Neither part survived review.** The resize options
+are not implementable — they need to know which edge is longest, which needs the
+intrinsic dimensions, which needs a decode — and the fallback was dead code.
+
+The shipped design is `createImageBitmap(file)` (full-size decode) followed by a
+`MAX_SOURCE_PIXELS = 40_000_000` ceiling checked before any canvas work.
+`MAX_SOURCE_IMAGE_BYTES` bounds compressed bytes; `MAX_SOURCE_PIXELS` bounds
+decoded pixels; neither prevents the decode's own peak allocation, and the spec
+now records that as an accepted residual risk with header parsing named as the
+proper fix if it ever bites. **Do not reintroduce the resize options.**

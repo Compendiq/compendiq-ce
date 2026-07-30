@@ -233,12 +233,38 @@ staging is not consumed on read.
 Always-normalize means every image is decoded, which turns a careless file into a
 memory problem: a 20000×20000 PNG is tens of KB compressed and ~1.6 GB decoded.
 
-`downscaleImage` therefore prefers
-`createImageBitmap(file, { resizeWidth, resizeHeight, resizeQuality: 'high' })`,
-which decodes **and** scales in one pass and never materialises the full-size
-bitmap. Where that overload is unsupported it falls back to `<img>` + `drawImage`.
-Intrinsic dimensions come from the bitmap, so the fit-don't-enlarge arithmetic
-runs before any drawing.
+**Corrected 2026-07-30, during Task 1 review.** An earlier draft of this section
+specified `createImageBitmap(file, { resizeWidth, resizeHeight, resizeQuality })`
+and claimed it "decodes and scales in one pass and never materialises the
+full-size bitmap". **That is not implementable.** `resizeWidth`/`resizeHeight`
+require knowing which edge is longest, which requires the intrinsic dimensions,
+which requires decoding first. Passing `resizeWidth` alone preserves aspect ratio
+but would enlarge small images and leaves the other axis uncapped. Do not
+reintroduce it.
+
+What actually happens: `createImageBitmap(file)` decodes at full size, and the
+fit-don't-enlarge arithmetic then runs against `bitmap.width`/`bitmap.height`
+before the canvas draw.
+
+Two ceilings guard this, and they bound different things:
+
+| Constant | Bounds | Blind to |
+| --- | --- | --- |
+| `MAX_SOURCE_IMAGE_BYTES` (30 MB) | compressed bytes, before any decode | compression ratio — a near-solid-colour 20000×20000 PNG is tens of KB |
+| `MAX_SOURCE_PIXELS` (40 MP) | decoded pixels, immediately after decode | the decode's own peak allocation |
+
+40 MP sits above an 8K screenshot (7680×4320 = 33 MP) and far below the
+pathological cases. The pixel check cannot prevent the decode's own allocation —
+nothing can, short of parsing dimensions out of the file header, which is
+`backend/src/core/services/image-validator.ts`'s job and is not duplicated here.
+What it does prevent is the canvas allocating a second buffer on top of the
+first, and it turns a pathological image into a clear message rather than a hang.
+
+**Residual risk, accepted:** a file that is small compressed and enormous decoded
+spikes memory between the decode and the pixel check. It is the user's own file
+in their own tab, and the blast radius is one browser tab. Porting the backend's
+header parser to the frontend would close it properly and is the obvious upgrade
+if this ever bites.
 
 Both paths are gated by an explicit ceiling on the *input* file, exported from the
 same module:
