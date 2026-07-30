@@ -98,7 +98,7 @@ export function PinnedArticlesSection() {
                 tabIndex={0}
                 onClick={() => navigate(`/pages/${item.id}`)}
                 onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') navigate(`/pages/${item.id}`); }}
-                className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm transition-all hover:border-primary/50 group relative flex w-full cursor-pointer flex-col gap-2 p-4 text-left"
+                className="group relative flex w-full cursor-pointer flex-col gap-2 rounded-xl border border-border/55 bg-card/80 p-4 text-left transition-colors hover:border-primary/45 hover:bg-card"
                 data-testid={`pinned-card-${item.id}`}
               >
               {/* Unpin button */}
@@ -117,7 +117,7 @@ export function PinnedArticlesSection() {
 
               {/* Metadata row */}
               <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                <span className="rounded bg-[#ececea] px-1.5 py-0.5 text-[#4a4a48] dark:bg-[#2a2925] dark:text-[#c5bea9]">
+                <span className="rounded bg-muted px-1.5 py-0.5 text-muted-foreground">
                   {item.spaceKey}
                 </span>
                 {item.author && (

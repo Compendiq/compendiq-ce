@@ -837,8 +837,8 @@ describe('PageViewPage', () => {
       render(<PageViewPage />, { wrapper: createWrapper() });
       const badge = screen.getByTestId('badge-draft');
       expect(badge.className).not.toMatch(/orange|amber|primary|warning|yellow/);
-      expect(badge.className).toMatch(/bg-\[#ececea\]/);
-      expect(badge.className).toMatch(/text-\[#4a4a48\]/);
+      expect(badge.className).toContain('bg-muted');
+      expect(badge.className).toContain('text-muted-foreground');
     } finally {
       currentMockPage = mockPage;
     }
@@ -1315,4 +1315,3 @@ describe('PageViewPage', () => {
   });
 
 });
-
