@@ -82,6 +82,12 @@ export const UsecaseDefaultSchema = z.object({
   providerId: z.string().uuid(),
   providerName: z.string(),
   model: z.string(),
+  /**
+   * #1154: whether the resolved model accepts image input. `null` means
+   * probed-but-undetermined, which the UI renders differently from `false`
+   * — hence nullable rather than optional.
+   */
+  vision: z.boolean().nullable(),
 });
 export type UsecaseDefault = z.infer<typeof UsecaseDefaultSchema>;
 

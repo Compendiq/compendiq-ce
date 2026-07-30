@@ -40,11 +40,16 @@ export function buildLlmCacheKey(
   systemPrompt: string,
   userContent: string,
   provider?: string,
-  options?: { thinking?: boolean },
+  options?: { thinking?: boolean; imageHash?: string },
 ): string {
   const providerSuffix = provider ? `provider:${provider}` : '';
   const thinkingSuffix = options?.thinking ? 'think:1' : '';
-  return KEY_PREFIX + hashLlmInputs(model, systemPrompt, userContent, providerSuffix, thinkingSuffix);
+  // #1154: without this, two different images sharing a prompt collide and
+  // the second caller is served the first image's answer.
+  const imageSuffix = options?.imageHash ? `img:${options.imageHash}` : '';
+  return KEY_PREFIX + hashLlmInputs(
+    model, systemPrompt, userContent, providerSuffix, thinkingSuffix, imageSuffix,
+  );
 }
 
 /**

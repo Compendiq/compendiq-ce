@@ -6,6 +6,10 @@ import {
 } from '../../../core/services/circuit-breaker.js';
 import { logger } from '../../../core/utils/logger.js';
 import { withSpan } from '../../../telemetry.js';
+import type { ChatMessage } from './prompts.js';
+import { LlmHttpError, ERROR_BODY_MAX_CHARS } from './llm-http-error.js';
+export type { ChatMessage, ChatContentPart } from './prompts.js';
+export { LlmHttpError } from './llm-http-error.js';
 
 export interface ProviderConfig {
   providerId: string;
@@ -17,7 +21,6 @@ export interface ProviderConfig {
 
 interface LlmModel { name: string; }
 interface HealthResult { connected: boolean; error?: string; }
-export interface ChatMessage { role: 'system' | 'user' | 'assistant'; content: string; }
 interface StreamChunk { content: string; done: boolean; }
 
 const dispatchers = new Map<string, Agent>();
@@ -149,6 +152,17 @@ export const __test_only__ = {
 
 export interface StreamChatOptions {
   thinking?: boolean;
+  /**
+   * Caps the reply length, mapped straight to the standard `max_tokens`
+   * field. Unlike `thinking`'s provider-specific extras, this field is part
+   * of the OpenAI chat-completions spec that every host in `STRICT_HOSTS`
+   * already accepts, so it is sent unconditionally — no strict-host gating.
+   *
+   * Honoured by `chat()` only, not `streamChat()` — the only current caller
+   * (the vision probe) uses `chat()`. Wire it into `streamChat()`'s body too
+   * if a streaming caller ever needs it; today it would silently no-op there.
+   */
+  maxTokens?: number;
 }
 
 export async function listModels(cfg: ProviderConfig): Promise<LlmModel[]> {
@@ -177,6 +191,19 @@ export async function checkHealth(cfg: ProviderConfig): Promise<HealthResult> {
   }
 }
 
+/**
+ * A bare status cannot be acted on: "this model does not accept image content",
+ * "unsupported parameter `max_tokens`", "context length exceeded" and "malformed
+ * role" are all 400s, and #1154's vision probe caches a `false` verdict for up
+ * to 30 days on the strength of that status. The body is what distinguishes
+ * them, so a truncated slice of it is retained — on `LlmHttpError.detail`, not
+ * in the message, because the message reaches clients (see `llm-http-error.ts`).
+ */
+async function errorDetail(res: { text(): Promise<string> }): Promise<string> {
+  const body = await res.text().catch(() => '');
+  return body.trim().slice(0, ERROR_BODY_MAX_CHARS);
+}
+
 export async function chat(
   cfg: ProviderConfig, model: string, messages: ChatMessage[], opts?: StreamChatOptions,
 ): Promise<string> {
@@ -191,11 +218,15 @@ export async function chat(
         const res = await undiciFetch(`${cfg.baseUrl}/chat/completions`, {
           method: 'POST',
           headers: headers(cfg),
-          body: JSON.stringify({ model, messages, stream: false, ...thinkingExtras(cfg.baseUrl, model, opts?.thinking) }),
+          body: JSON.stringify({
+            model, messages, stream: false,
+            ...(opts?.maxTokens ? { max_tokens: opts.maxTokens } : {}),
+            ...thinkingExtras(cfg.baseUrl, model, opts?.thinking),
+          }),
           dispatcher: dispatcherFor(cfg),
           signal,
         });
-        if (!res.ok) throw new Error(`chat HTTP ${res.status}`);
+        if (!res.ok) throw new LlmHttpError('chat', res.status, await errorDetail(res));
         const body = await res.json() as { choices: Array<{ message: { content: string } }> };
         return body.choices[0]?.message.content ?? '';
       }),

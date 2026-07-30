@@ -12,14 +12,14 @@ flowchart LR
         direction TB
         rF["foundation<br/>health, auth, settings,<br/>admin, admin-embedding-locks,<br/>rbac, notifications, setup"]
         rC["confluence<br/>spaces, sync, attachments"]
-        rL["llm<br/>llm-ask (SSE), improve, generate,<br/>summarize, diagram, conversations,<br/>embeddings, models, admin, pdf"]
+        rL["llm<br/>llm-ask (SSE), improve, generate,<br/>summarize, diagram, conversations,<br/>embeddings, models, admin, pdf,<br/>prepare-image"]
         rK["knowledge<br/>pages CRUD, relocate, versions, tags,<br/>embeddings, duplicates, pinned,<br/>templates, comments, search,<br/>analytics, export/import"]
     end
 
     subgraph domains["domains/"]
         direction TB
         dC["<b>confluence</b><br/>confluence-client<br/>sync-service<br/>attachment-handler<br/>subpage-context<br/>sync-overview-service"]
-        dL["<b>llm</b><br/>openai-compatible-client<br/>llm-provider-service<br/>llm-provider-resolver<br/>llm-provider-bootstrap<br/>embedding-service<br/>rag-service<br/>llm-cache + cache-bus"]
+        dL["<b>llm</b><br/>openai-compatible-client<br/>llm-provider-service<br/>llm-provider-resolver<br/>llm-provider-bootstrap<br/>embedding-service<br/>rag-service<br/>llm-cache + cache-bus<br/>vision-probe<br/>model-capabilities"]
         dK["<b>knowledge</b><br/>auto-tagger<br/>quality-worker<br/>summary-worker<br/>version-tracker<br/>duplicate-detector<br/>page-relocate-service"]
     end
 
@@ -27,7 +27,7 @@ flowchart LR
         direction TB
         cDB["db/ — pg pool, migrations"]
         cPlug["plugins/ — auth, correlation-id, redis"]
-        cSvc["services/ — redis-cache, audit,<br/>error-tracker, content-converter,<br/>circuit-breaker, image-references,<br/>rbac, notifications, pdf,<br/>admin-settings, version-snapshot,<br/>sse-stream-limiter, queue-service,<br/>data-retention, rate-limit,<br/>ssrf-allowlist-bus, admin-user-service"]
+        cSvc["services/ — redis-cache, audit,<br/>error-tracker, content-converter,<br/>circuit-breaker, image-references,<br/>rbac, notifications, pdf,<br/>admin-settings, version-snapshot,<br/>sse-stream-limiter, queue-service,<br/>data-retention, rate-limit,<br/>ssrf-allowlist-bus, admin-user-service,<br/>image-validator, image-staging"]
         cUtil["utils/ — crypto (AES-GCM),<br/>logger (pino), sanitize-llm-input,<br/>ssrf-guard, tls-config, llm-config"]
         cEnt["enterprise/ — types, noop,<br/>loader, features"]
     end
@@ -102,6 +102,28 @@ flowchart LR
 
 Adding a new import across these lines without updating the ESLint config is
 a build failure — update the config *and* this diagram together.
+
+## Image input (#1154)
+
+`core/services/image-validator.ts` (magic-byte sniffing, dimension ceilings)
+and `core/services/image-staging.ts` (per-user Redis staging, content-addressed
+by sha256) live in `core` because neither depends on an LLM concept — they are
+generic upload-handling, the same layer `content-converter.ts` and
+`document-extractor.ts` already occupy. `domains/llm/services/vision-probe.ts`
+(sends a known-content image, judges the reply) and `model-capabilities.ts`
+(persists/reads the verdict) live in `llm` because probing *is* an LLM
+concern. Neither imports the two `core` image modules — that composition
+happens one layer up, in `routes/llm`. Their only imports outside `domains/llm`
+itself are `core/db/postgres.ts` and `core/utils/logger.ts`, well inside the
+existing `llm → core` rule, so no new rule is needed.
+
+`routes/llm/prepare-image.ts` composes the two `core` image modules alone
+(validate, then stage). `resolveImagePart`, shared by `routes/llm/llm-generate.ts`
+/ `llm-improve.ts` (defined in `routes/llm/_helpers.ts`), is what actually joins
+`core` (`image-staging.ts`'s `loadStagedImage`) with `llm`
+(`model-capabilities.ts`'s `getVisionCapability`) — the same `core` + `llm`
+composition every other `routes/llm` file already does — so no new arrow, and
+in particular no `llm → confluence` edge.
 
 ## Background workers
 

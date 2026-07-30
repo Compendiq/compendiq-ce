@@ -14,10 +14,25 @@ vi.mock('node:dns/promises', () => ({
   }),
 }));
 
+// #1154 — Mock model-capabilities to prevent real LLM probes during tests.
+// GET /llm/usecase-default calls getVisionCapability (which schedules background
+// refreshes, never blocking). PUT /admin/llm-usecases fires a fire-and-forget
+// refreshVisionCapability after save. Both are mocked here to keep tests fast
+// and deterministic, avoiding real undici fetches to the test's fake provider
+// URLs (`http://a/v1`, `http://b/v1`).
+const mockGetVisionCapability = vi.fn().mockResolvedValue(null);
+const mockRefreshVisionCapability = vi.fn().mockResolvedValue(null);
+vi.mock('../../domains/llm/services/model-capabilities.js', () => ({
+  getVisionCapability: (...args: unknown[]) => mockGetVisionCapability(...args),
+  refreshVisionCapability: (...args: unknown[]) => mockRefreshVisionCapability(...args),
+  invalidateProviderCapabilities: vi.fn(),
+}));
+
 import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../test-db-helper.js';
 import { query } from '../../core/db/postgres.js';
 import { buildApp } from '../../app.js';
 import { generateAccessToken } from '../../core/plugins/auth.js';
+import { UsecaseDefaultSchema } from '@compendiq/contracts';
 
 // Local helper — mirrors llm-providers.test.ts.
 async function createAdminAndLogin(): Promise<{ token: string; userId: string }> {
@@ -113,6 +128,42 @@ describe.skipIf(!dbAvailable)('GET /api/admin/llm-usecases', () => {
       resolved: { providerId: b.json().id, providerName: 'B', model: 'gpt-4o-mini' },
     });
   });
+
+  /**
+   * #1154: the post-save probe is a real outbound chat completion. Only the
+   * `chat` assignment ever resolves to a model that will be shown an image, so
+   * saving anything else must not fire one.
+   */
+  it('fires the post-save vision probe only when the save touched chat', async () => {
+    const a = await app.inject({
+      method: 'POST', url: '/api/admin/llm-providers',
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+      payload: JSON.stringify({ name: 'A', baseUrl: 'http://a/v1', authType: 'none', verifySsl: true, defaultModel: 'mA' }),
+    });
+    const providerId: string = a.json().id;
+    await app.inject({
+      method: 'POST', url: `/api/admin/llm-providers/${providerId}/set-default`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+
+    const put = (payload: Record<string, unknown>) => app.inject({
+      method: 'PUT', url: '/api/admin/llm-usecases',
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+      payload: JSON.stringify(payload),
+    });
+
+    mockRefreshVisionCapability.mockClear();
+
+    expect((await put({ summary: { providerId, model: 'mA' } })).statusCode).toBe(200);
+    expect((await put({ embedding: { providerId, model: 'bge-m3' } })).statusCode).toBe(200);
+    expect(mockRefreshVisionCapability).not.toHaveBeenCalled();
+
+    expect((await put({ chat: { providerId, model: 'qwen2.5vl' } })).statusCode).toBe(200);
+    // Fire-and-forget, so poll rather than sleep — vi.waitFor only fails when
+    // the call genuinely never happens, not when the runner is slow.
+    await vi.waitFor(() => expect(mockRefreshVisionCapability).toHaveBeenCalledTimes(1));
+    expect(mockRefreshVisionCapability).toHaveBeenCalledWith(providerId, 'qwen2.5vl');
+  });
 });
 
 describe.skipIf(!dbAvailable)('GET /api/llm/usecase-default', () => {
@@ -190,5 +241,175 @@ describe.skipIf(!dbAvailable)('GET /api/llm/usecase-default', () => {
     });
     expect(r.statusCode).toBe(404);
     expect(r.json().error).toMatch(/Settings → LLM/);
+  });
+
+  describe('GET /llm/usecase-default vision field (#1154)', () => {
+    it('returns the cached capability verdict', async () => {
+      // First set up a provider
+      const p = await app.inject({
+        method: 'POST',
+        url: '/api/admin/llm-providers',
+        headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+        payload: JSON.stringify({
+          name: 'Vision Provider',
+          baseUrl: 'http://vision/v1',
+          authType: 'none',
+          verifySsl: true,
+          defaultModel: 'vision-model',
+        }),
+      });
+      const providerId: string = p.json().id;
+      await app.inject({
+        method: 'POST',
+        url: `/api/admin/llm-providers/${providerId}/set-default`,
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+
+      mockGetVisionCapability.mockResolvedValue(true);
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/llm/usecase-default?usecase=chat',
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().vision).toBe(true);
+    });
+
+    it('passes null through rather than coercing it to false', async () => {
+      // First set up a provider
+      const p = await app.inject({
+        method: 'POST',
+        url: '/api/admin/llm-providers',
+        headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+        payload: JSON.stringify({
+          name: 'Null Provider',
+          baseUrl: 'http://null/v1',
+          authType: 'none',
+          verifySsl: true,
+          defaultModel: 'null-model',
+        }),
+      });
+      const providerId: string = p.json().id;
+      await app.inject({
+        method: 'POST',
+        url: `/api/admin/llm-providers/${providerId}/set-default`,
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+
+      mockGetVisionCapability.mockResolvedValue(null);
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/llm/usecase-default?usecase=chat',
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+      expect(res.json().vision).toBeNull();
+    });
+
+    it('validates the response against UsecaseDefaultSchema', async () => {
+      // First set up a provider
+      const p = await app.inject({
+        method: 'POST',
+        url: '/api/admin/llm-providers',
+        headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+        payload: JSON.stringify({
+          name: 'Validation Provider',
+          baseUrl: 'http://validate/v1',
+          authType: 'none',
+          verifySsl: true,
+          defaultModel: 'validate-model',
+        }),
+      });
+      const providerId: string = p.json().id;
+      await app.inject({
+        method: 'POST',
+        url: `/api/admin/llm-providers/${providerId}/set-default`,
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+
+      mockGetVisionCapability.mockResolvedValue(false);
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/llm/usecase-default?usecase=chat',
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+      expect(() => UsecaseDefaultSchema.parse(res.json())).not.toThrow();
+    });
+
+    /**
+     * `getVisionCapability` schedules a real chat-completion probe on a cache
+     * miss. Asking it about `embedding` would fire one at an embeddings
+     * endpoint and cache a meaningless verdict — and this route is reachable
+     * by any authenticated user with any use case in the query string.
+     */
+    it.each(['summary', 'quality', 'auto_tag', 'embedding'])(
+      'does not consult the capability store for usecase=%s',
+      async (usecase) => {
+        const p = await app.inject({
+          method: 'POST',
+          url: '/api/admin/llm-providers',
+          headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+          payload: JSON.stringify({
+            name: 'Non-chat Provider',
+            baseUrl: 'http://nonchat/v1',
+            authType: 'none',
+            verifySsl: true,
+            defaultModel: 'bge-m3',
+          }),
+        });
+        await app.inject({
+          method: 'POST',
+          url: `/api/admin/llm-providers/${p.json().id}/set-default`,
+          headers: { authorization: `Bearer ${adminToken}` },
+        });
+
+        mockGetVisionCapability.mockClear().mockResolvedValue(true);
+        const res = await app.inject({
+          method: 'GET',
+          url: `/api/llm/usecase-default?usecase=${usecase}`,
+          headers: { authorization: `Bearer ${adminToken}` },
+        });
+
+        expect(res.statusCode).toBe(200);
+        expect(res.json().vision).toBeNull();
+        expect(mockGetVisionCapability).not.toHaveBeenCalled();
+      },
+    );
+
+    it('does not return the provider-not-configured 404 if schema validation fails', async () => {
+      // Set up a provider so resolveUsecase succeeds
+      const p = await app.inject({
+        method: 'POST',
+        url: '/api/admin/llm-providers',
+        headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+        payload: JSON.stringify({
+          name: 'Schema Test Provider',
+          baseUrl: 'http://schema-test/v1',
+          authType: 'none',
+          verifySsl: true,
+          defaultModel: 'schema-model',
+        }),
+      });
+      const providerId: string = p.json().id;
+      await app.inject({
+        method: 'POST',
+        url: `/api/admin/llm-providers/${providerId}/set-default`,
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+
+      // Mock getVisionCapability to return an invalid value that will fail schema validation.
+      // This simulates a bug in the getter, not a missing provider.
+      mockGetVisionCapability.mockResolvedValue('not-a-boolean');
+
+      // The error should propagate as a 500 (schema validation error), not as the
+      // provider-not-configured 404 message.
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/llm/usecase-default?usecase=chat',
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+      // Schema validation error triggers a 500, not the 404 "Configure one in Settings → LLM"
+      expect(res.statusCode).not.toBe(404);
+      expect(res.json().error).not.toMatch(/Settings → LLM/);
+    });
   });
 });

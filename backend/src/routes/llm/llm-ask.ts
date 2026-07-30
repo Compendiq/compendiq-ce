@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
 import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
 import { streamChat, type ChatMessage } from '../../domains/llm/services/openai-compatible-client.js';
+import { contentToText } from '../../domains/llm/services/prompts.js';
 import { hybridSearch, buildRagContext } from '../../domains/llm/services/rag-service.js';
 import { LlmCache, buildRagCacheKey } from '../../domains/llm/services/llm-cache.js';
 import { CircuitBreakerOpenError } from '../../core/services/circuit-breaker.js';
@@ -334,9 +335,12 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
             action: 'ask',
             model: resolvedModel,
             provider: chatConfig.providerId,
-            inputTokens: estimateTokens(messages.map(m => m.content).join('')),
+            inputTokens: estimateTokens(messages.map(m => contentToText(m.content)).join('')),
             outputTokens: estimateTokens(fullAnswer),
-            inputMessages: messages.map(m => ({ role: m.role, contentLength: m.content.length })),
+            inputMessages: messages.map(m => ({
+              role: m.role,
+              contentLength: contentToText(m.content).length,
+            })),
             retrievedChunkIds: searchResults.map(r => String(r.pageId)),
             durationMs: Date.now() - auditStart,
             status: 'success',
@@ -361,9 +365,12 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
             action: 'ask',
             model: resolvedModel,
             provider: chatConfig.providerId,
-            inputTokens: estimateTokens(messages.map(m => m.content).join('')),
+            inputTokens: estimateTokens(messages.map(m => contentToText(m.content)).join('')),
             outputTokens: 0,
-            inputMessages: messages.map(m => ({ role: m.role, contentLength: m.content.length })),
+            inputMessages: messages.map(m => ({
+              role: m.role,
+              contentLength: contentToText(m.content).length,
+            })),
             retrievedChunkIds: searchResults.map(r => String(r.pageId)),
             durationMs: Date.now() - auditStart,
             status: 'error',

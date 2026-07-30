@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { checkHealth, listModels, chat, streamChat, generateEmbedding, invalidateBreaker, __test_only__, type ProviderConfig } from './openai-compatible-client.js';
+import { checkHealth, listModels, chat, streamChat, generateEmbedding, invalidateBreaker, __test_only__, LlmHttpError, type ProviderConfig } from './openai-compatible-client.js';
 
 let srv: Server;
 let baseUrl: string;
@@ -435,6 +435,85 @@ describe('openai-compatible-client — generateEmbedding surfaces HTTP error bod
     }
     const { getProviderBreaker } = await import('../../../core/services/circuit-breaker.js');
     expect(getProviderBreaker(providerId).getStatus().state).toBe('CLOSED');
+  });
+});
+
+// ─── #1154: chat() must surface the error body, not just the status ─────────
+// The vision probe caches a `false` verdict for up to 30 days off a 400, and
+// "does not accept image content" / "unsupported parameter `max_tokens`" /
+// "context length exceeded" are all 400s. Only the body separates them.
+describe('openai-compatible-client — chat surfaces the HTTP error body (#1154)', () => {
+  let errSrv: Server;
+  let errBase: string;
+  let longBody: string;
+  beforeAll(async () => {
+    longBody = 'x'.repeat(2000);
+    errSrv = createServer((req, res) => {
+      if (req.url === '/v1/chat/completions') {
+        let body = '';
+        req.on('data', (c) => (body += c));
+        req.on('end', () => {
+          if (JSON.parse(body).model === 'long-error') {
+            res.writeHead(400, { 'Content-Type': 'text/plain' });
+            res.end(longBody);
+            return;
+          }
+          if (JSON.parse(body).model === 'empty-error') {
+            res.writeHead(400); res.end();
+            return;
+          }
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            error: { message: "Unsupported parameter: 'max_tokens' is not supported with this model." },
+          }));
+        });
+        return;
+      }
+      res.writeHead(404); res.end();
+    });
+    await new Promise<void>((r) => errSrv.listen(0, r));
+    const { port } = errSrv.address() as AddressInfo;
+    errBase = `http://127.0.0.1:${port}/v1`;
+  });
+  afterAll(() => new Promise<void>((r) => errSrv.close(() => r())));
+
+  it('throws LlmHttpError carrying the status and the body as fields', async () => {
+    const err = await chat(
+      { ...cfg, providerId: 'chat-err-1154', baseUrl: errBase }, 'm1', [{ role: 'user', content: 'hi' }],
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(LlmHttpError);
+    expect((err as LlmHttpError).status).toBe(400);
+    expect((err as LlmHttpError).detail).toMatch(/Unsupported parameter/);
+  });
+
+  /**
+   * The body is third-party text and `message` is client-visible —
+   * `routes/knowledge/pages-tags.ts` answers `502 "Auto-tagging failed:
+   * <message>"`. Keeping the body off `message` is what stops a provider's raw
+   * error from reaching an authenticated user; it travels on `detail` instead.
+   */
+  it('keeps the provider body out of the message', async () => {
+    const err = await chat(
+      { ...cfg, providerId: 'chat-err-msg-1154', baseUrl: errBase }, 'm1', [{ role: 'user', content: 'hi' }],
+    ).catch((e: unknown) => e);
+    expect((err as Error).message).toBe('chat HTTP 400');
+    expect((err as Error).message).not.toMatch(/Unsupported parameter/);
+  });
+
+  it('truncates a long body rather than carrying it whole', async () => {
+    const err = await chat(
+      { ...cfg, providerId: 'chat-err-long-1154', baseUrl: errBase }, 'long-error', [{ role: 'user', content: 'hi' }],
+    ).catch((e: unknown) => e);
+    expect((err as LlmHttpError).detail.length).toBeLessThanOrEqual(500);
+    expect((err as LlmHttpError).detail).toMatch(/^x+$/);
+  });
+
+  it('leaves detail empty when the provider sends no body', async () => {
+    const err = await chat(
+      { ...cfg, providerId: 'chat-err-empty-1154', baseUrl: errBase }, 'empty-error', [{ role: 'user', content: 'hi' }],
+    ).catch((e: unknown) => e);
+    expect((err as LlmHttpError).detail).toBe('');
+    expect((err as Error).message).toBe('chat HTTP 400');
   });
 });
 

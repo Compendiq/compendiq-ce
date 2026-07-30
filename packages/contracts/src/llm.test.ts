@@ -3,6 +3,7 @@ import {
   LlmUsecaseSchema,
   LlmProviderInputSchema,
   UsecaseAssignmentsSchema,
+  UsecaseDefaultSchema,
 } from './llm.js';
 import {
   AskRequestSchema,
@@ -89,5 +90,29 @@ describe('UsecaseAssignmentsSchema', () => {
       embedding: { providerId: null, model: null, resolved: { providerId: p1, providerName: 'X', model: 'm' } },
     });
     expect(parsed.embedding).toBeDefined();
+  });
+});
+
+describe('UsecaseDefaultSchema vision tri-state (#1154)', () => {
+  const base = {
+    usecase: 'chat' as const,
+    // NOTE: brief used '...0000000001', but zod v4's z.string().uuid() only
+    // special-cases the all-zero nil UUID, not a trailing-1 variant of it, so
+    // that literal fails validation for reasons unrelated to `vision`.
+    // Substituting a properly-formed v4 UUID, matching the convention already
+    // used above in UsecaseAssignmentsSchema's tests.
+    providerId: '00000000-0000-4000-8000-000000000001',
+    providerName: 'local',
+    model: 'qwen2.5vl',
+  };
+
+  it.each([true, false, null])('accepts vision: %j', (vision) => {
+    expect(() => UsecaseDefaultSchema.parse({ ...base, vision })).not.toThrow();
+  });
+
+  // null is a real verdict ("probed, couldn't tell") that the composer renders
+  // with different copy from false, so it must not collapse with "absent".
+  it('rejects vision being absent', () => {
+    expect(() => UsecaseDefaultSchema.parse(base)).toThrow();
   });
 });

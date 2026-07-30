@@ -150,7 +150,11 @@ export type AuditAction =
   // rotates the per-instance health-API bearer token. Deliberate admin
   // action — not counted in `errorRate24h` (see ERROR_AUDIT_ACTIONS in
   // routes/foundation/health-api.ts).
-  | 'HEALTH_API_TOKEN_ROTATED';
+  | 'HEALTH_API_TOKEN_ROTATED'
+  // #1154: image staging for AI source material. Emitted by
+  // POST /llm/prepare-image on a successful stage; metadata carries filename,
+  // format, dimensions and size — never the bytes themselves.
+  | 'IMAGE_PREPARED';
 
 interface AuditLogEntry {
   id: string;

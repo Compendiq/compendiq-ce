@@ -123,6 +123,47 @@ spaces once and applies `visiblePagesPredicate` plus `deleted_at IS NULL` to
 every descendant query, so cross-space or soft-deleted sub-pages never reach
 the LLM prompt on any route (`ask`, `improve`, `analyze-quality`, `summarize`).
 
+## Image input flow (#1154)
+
+`/api/llm/ask` does not accept an image — only `/api/llm/generate` and
+`/api/llm/improve` do, via an `imageHandle` staged ahead of time:
+
+```
+POST /api/llm/prepare-image        multipart; magic-byte sniff, dimension check
+  -> Redis  llm:img:<userId>:<sha256>   TTL 900s; raw bytes behind a
+                                        `<format>\n` header, not base64.
+                                        Not consumed on read, but a new
+                                        upload evicts the user's previous
+                                        one (one staged image per user —
+                                        Redis is shared and noeviction).
+  -> { handle, format, width, height, fileSize }
+
+POST /api/llm/generate | /api/llm/improve   { ..., imageHandle }
+  -> resolveUsecase('chat')          -> { config, resolvedModel }
+  -> getVisionCapability(providerId, resolvedModel)
+       true            -> continue
+       false | null    -> 422 (fail closed — a client-side gate is never trusted)
+  -> loadStagedImage(userId, imageHandle)
+       hit             -> continue, handle stays in Redis (regenerate-safe)
+       miss/expired    -> 410
+  -> buildLlmCacheKey(..., { imageHash: imageHandle })
+  -> streamChat(cfg, resolvedModel, [
+       { role: 'system', content: systemPrompt },              // string, unchanged
+       { role: 'user',   content: [ { type: 'text', ... },
+                                     { type: 'image_url', ... } ] }   // array, #1154
+     ])
+```
+
+The capability gate and the staging load are both centralised in
+`resolveImagePart` (`routes/llm/_helpers.ts`) so `/llm/generate` and
+`/llm/improve` cannot drift on the 422/410 semantics. `getVisionCapability`
+never blocks this request path on an LLM round-trip — it returns the stored
+verdict and only schedules a background re-probe (see ADR-021's `#1154`
+amendment and `06-data-model.md`'s `llm_model_capabilities` entry). Because
+the handle is the sha256 of the validated bytes, it doubles as the
+`imageHash` cache-key input without a separate hashing step — two different
+images with the same prompt produce two distinct cache keys.
+
 ## Retrieval details
 
 - **Vector search** uses pgvector's `<=>` cosine distance against an HNSW
@@ -165,11 +206,12 @@ All of these go through the same provider resolver and sanitization layer:
 | Route | Purpose |
 |-------|---------|
 | `POST /api/llm/ask` | RAG Q&A (this diagram) |
-| `POST /api/llm/improve` | Improve an existing article; optional `referenceText` carries an attached document (#1131) |
-| `POST /api/llm/generate` | Generate a new article; optional `documentText` carries an attached document (`pdfText` until #1132) |
+| `POST /api/llm/improve` | Improve an existing article; optional `referenceText` carries an attached document (#1131), optional `imageHandle` carries a staged image (#1154, see below) |
+| `POST /api/llm/generate` | Generate a new article; optional `documentText` carries an attached document (`pdfText` until #1132), optional `imageHandle` carries a staged image (#1154, see below) |
 | `POST /api/llm/summarize` | Summarize a page |
 | `POST /api/llm/generate-diagram` | Generate a Mermaid diagram from prose |
 | `POST /api/llm/extract-document` | Uploaded document → text extraction, sanitized (pdf · docx · odt · rtf · md · txt — see `11-content-pipeline.md`). The only path — the `POST /api/llm/extract-pdf` alias was retired with the #1131 UI PR |
+| `POST /api/llm/prepare-image` | Stages an uploaded image (png/jpeg/webp/gif; SVG refused) in Redis for `generate`/`improve` to consume (#1154, see below) |
 
 ## Key files
 
