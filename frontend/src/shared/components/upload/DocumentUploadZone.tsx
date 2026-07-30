@@ -134,12 +134,19 @@ export interface DocumentUploadZoneProps {
   /** `composer` only: one line naming what consumes the document. */
   usageHint?: string;
   /**
-   * #1154: drag-over state for the `composer` variant, supplied by the parent's
-   * `useAttachments`, which owns the shared composer drop target. When provided
-   * it wins over this component's internal state — the internal one only ever
-   * reflects a drag over the trigger itself, a ~28px paperclip, which is not the
-   * affordance the user is aiming at. The `dropzone` variant passes nothing and
-   * keeps using its own state, because there it IS the drop target.
+   * #1154: drag state supplied by the parent's `useAttachments`, which owns a
+   * shared drop target spanning the whole composer.
+   *
+   * Supplying it means **the parent owns the drop**, not merely the highlight:
+   * this component then attaches no drag or drop listeners of its own. It has
+   * to be all-or-nothing. `useAttachments` listens natively on an ancestor
+   * while React delegates to its root container, so on one bubbling drop the
+   * ancestor fires *first* and this component's handler second — two intakes of
+   * one file, which `stopPropagation` cannot undo after the fact. A test in
+   * `GenerateMode.image.test.tsx` pins the extraction count at one.
+   *
+   * Omit it and the component keeps its own state and its own listeners, which
+   * is what a standalone `dropzone` needs — there it IS the drop target.
    */
   isDragOver?: boolean;
   /** Prefix for every `data-testid` this renders. */
@@ -206,11 +213,11 @@ export function DocumentUploadZone({
     if (file) handleFile(file);
   }, [endDrag, handleFile]);
 
-  // Always attached now. The ancestor-widening job belongs to `useAttachments`,
-  // so the double-handling the old `dropTargetRef` branch guarded against — one
-  // bubbling drop seen by both a native ancestor listener and this element's
-  // React handler — cannot occur.
-  const dragProps = {
+  // Attached only when this component owns the drop. A parent that passes
+  // `isDragOver` has a `useAttachments` drop target on an ancestor, and that
+  // listener already sees this element's drops — see the prop's doc for why
+  // both listening means the file is taken in twice.
+  const dragProps = isDragOverProp !== undefined ? {} : {
     onDragEnter: enterDrag,
     onDragLeave: leaveDrag,
     // Without preventDefault the browser navigates to the dropped file.

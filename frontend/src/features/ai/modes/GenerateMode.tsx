@@ -1,17 +1,16 @@
-import { useState, useCallback, useMemo } from 'react';
-import { Send, Loader2, Save, Search, ChevronDown, X, FolderOpen, Globe } from 'lucide-react';
+import { useState, useCallback, useMemo, useRef } from 'react';
+import { AlertTriangle, Send, Loader2, Save, Search, ChevronDown, X, FolderOpen, Globe } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { useAiContext, nextMessageId } from '../AiContext';
 import { useSpaces } from '../../../shared/hooks/use-spaces';
 import { useLocalSpaces } from '../../../shared/hooks/use-standalone';
 import { usePages, useCreatePage, type PageFilters } from '../../../shared/hooks/use-pages';
-import { SUPPORTED_DOCUMENT_FORMATS } from '@compendiq/contracts';
-import { useExtractDocument, type ExtractDocumentResult } from '../../../shared/hooks/use-extract-document';
-import { MAX_DOCUMENT_BYTES } from '../../../shared/hooks/use-attachments';
+import { useAttachments } from '../../../shared/hooks/use-attachments';
 import { DocumentUploadZone } from '../../../shared/components/upload/DocumentUploadZone';
+import { ImageAttachZone, imageDisabledReason } from '../../../shared/components/upload/ImageAttachZone';
 import { useAutoGrowTextarea } from '../../../shared/hooks/use-auto-grow-textarea';
 import { PROMPT_MAX_LENGTH } from './prompt-limits';
-import { apiFetch } from '../../../shared/lib/api';
+import { apiFetch, ApiError } from '../../../shared/lib/api';
 import { improveMarkdownToHtml } from '../../../shared/components/article/improve-markdown';
 import { toast } from 'sonner';
 import { cn } from '../../../shared/lib/cn';
@@ -19,12 +18,6 @@ import { cn } from '../../../shared/lib/cn';
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/** "PDF, DOCX, MD, TXT, RTF and ODT" — copy, not a machine list. */
-const DOCUMENT_FORMAT_LIST = (() => {
-  const labels = SUPPORTED_DOCUMENT_FORMATS.map((f) => f.toUpperCase());
-  return `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`;
-})();
 
 /** Extract a title suggestion from the first markdown heading in the content. */
 function extractTitleFromMarkdown(md: string): string {
@@ -331,12 +324,14 @@ export function GenerateSavePanel({
 
 /**
  * Generate mode: free-text prompt to create a new article via LLM streaming.
- * Optionally upload a document — PDF, DOCX, MD, TXT, RTF or ODT (#1132) — to
- * use as source material.
+ * Optionally attach source material — a document (PDF, DOCX, MD, TXT, RTF or
+ * ODT, #1132) and/or an image (#1154).
  * After generation completes, shows a save panel to publish to Confluence.
  */
 export function GenerateModeInput() {
-  const { input, setInput, isStreaming, model, thinkingMode, setMessages, runStream } = useAiContext();
+  const {
+    input, setInput, isStreaming, model, thinkingMode, setMessages, runStream, chatVision,
+  } = useAiContext();
   const [generatedContent, setGeneratedContent] = useState('');
   const [showSavePanel, setShowSavePanel] = useState(false);
   const [searchWeb, setSearchWeb] = useState(false);
@@ -350,52 +345,28 @@ export function GenerateModeInput() {
   });
   const mcpEnabled = mcpSettings?.enabled ?? false;
 
-  // Document upload state — a single useExtractDocument instance shared with
-  // the upload zone so that `isExtracting` reflects the same extraction the
-  // zone runs (#940). Two separate instances left the spinner/disabled state
-  // stuck.
-  const { extractDocument, isExtracting } = useExtractDocument();
-  const [documentData, setDocumentData] = useState<ExtractDocumentResult | null>(null);
-  const [documentFilename, setDocumentFilename] = useState<string | null>(null);
-
-  // #1154 made `DocumentUploadZone` presentational: it reports the picked file
-  // and the caller decides what to do with it. Generate keeps the gates the
-  // component used to apply — the same two checks, the same copy, the same
-  // single `useExtractDocument` instance (#940) — so this surface is unchanged
-  // while the dock moves ahead. It is superseded by `useAttachments`, which
-  // already owns both gates; this block goes when Generate adopts it.
-  const handleDocumentPick = useCallback((file: File) => {
-    void (async () => {
-      const name = file.name.toLowerCase();
-      const accepted = SUPPORTED_DOCUMENT_FORMATS.some((f) => name.endsWith(`.${f}`))
-        || name.endsWith('.markdown') || name.endsWith('.text');
-      if (!accepted) {
-        toast.error(`Only ${DOCUMENT_FORMAT_LIST} files are accepted`);
-        return;
-      }
-      if (file.size > MAX_DOCUMENT_BYTES) {
-        toast.error('File exceeds 20 MB limit');
-        return;
-      }
-      try {
-        const result = await extractDocument(file);
-        setDocumentData(result);
-        setDocumentFilename(file.name);
-      } catch (err) {
-        toast.error(err instanceof Error ? err.message : 'document extraction failed');
-      }
-    })();
-  }, [extractDocument]);
-
-  const handleDocumentRemove = useCallback(() => {
-    setDocumentData(null);
-    setDocumentFilename(null);
-  }, []);
+  // Both attachment slots, all intake routing, the shared drop target and paste
+  // live in `useAttachments` (#1154). It owns the single `useExtractDocument`
+  // instance the zone's spinner reads (#940), the format and 20 MB gates the
+  // component used to apply, and — new here — the image half.
+  //
+  // The ref goes on the whole Generate block rather than just the prompt box:
+  // the dashed dropzone, the web-search toggle and the composer are one surface
+  // to a user with a file in hand, and a drop that lands on the gap between
+  // them should attach rather than navigate the tab away.
+  const surfaceRef = useRef<HTMLDivElement>(null);
+  const attachments = useAttachments({
+    dropTargetRef: surfaceRef,
+    imageEnabled: chatVision === true,
+    imageDisabledReason: imageDisabledReason(chatVision, model),
+    disabled: isStreaming,
+  });
 
   const handleGenerate = useCallback(async () => {
-    // Block generation while an extraction is in flight — otherwise the prompt
-    // would be sent without the documentText still being extracted (#940).
-    if (!input.trim() || isStreaming || isExtracting) return;
+    // Block generation while an extraction or an image staging round-trip is in
+    // flight — otherwise the prompt would be sent without the attachment that
+    // is still being prepared (#940, widened to both slots by #1154).
+    if (!input.trim() || isStreaming || attachments.isBusy) return;
     if (!model) {
       toast.error('No model available. Check your LLM provider settings.');
       return;
@@ -406,19 +377,24 @@ export function GenerateModeInput() {
 
     // The filename already carries the format, so naming it twice ("Generate
     // from DOCX (notes.docx)") would only be noise.
-    const displayMessage = documentData
-      ? `Generate from ${documentFilename}: ${prompt}`
+    const displayMessage = attachments.document
+      ? `Generate from ${attachments.document.filename}: ${prompt}`
       : `Generate: ${prompt}`;
     // Append, not replace (#1126) — matching runStream's seeded turn and Ask.
     // Generate is the one mode that still builds its own user turn by hand, and
     // it was the last remaining way for a submit to discard the thread it lands in.
-    setMessages((prev) => [...prev, { id: nextMessageId(), role: 'user', content: displayMessage }]);
+    // The id is held so the 410 path below can take the turn back out again.
+    const userMessageId = nextMessageId();
+    setMessages((prev) => [...prev, { id: userMessageId, role: 'user', content: displayMessage }]);
     setGeneratedContent('');
     setShowSavePanel(false);
 
     const body: Record<string, unknown> = { prompt, model };
-    if (documentData) {
-      body.documentText = documentData.text;
+    if (attachments.document) {
+      body.documentText = attachments.document.result.text;
+    }
+    if (attachments.image) {
+      body.imageHandle = attachments.image.handle;
     }
     if (searchWeb) {
       body.searchWeb = true;
@@ -434,8 +410,22 @@ export function GenerateModeInput() {
           setShowSavePanel(true);
         }
       },
+      // A 410 means the 15-minute staging TTL lapsed between attaching the
+      // image and sending (`routes/llm/_helpers.ts` → `httpErrors.gone`).
+      // Nothing was generated, so the whole send is rolled back rather than
+      // left as a dead turn with an error under it: the image slot is cleared
+      // because that handle is gone for good, and the prompt goes back in the
+      // box so it does not have to be retyped.
+      onError: (err) => {
+        if (!(err instanceof ApiError) || err.statusCode !== 410) return false;
+        attachments.removeImage();
+        setInput(prompt);
+        setMessages((prev) => prev.filter((m) => m.id !== userMessageId));
+        toast.error('The image expired — attach it again.');
+        return true;
+      },
     });
-  }, [input, model, isStreaming, isExtracting, documentData, documentFilename, searchWeb, thinkingMode, setInput, setMessages, runStream]);
+  }, [input, model, isStreaming, attachments, searchWeb, thinkingMode, setInput, setMessages, runStream]);
 
   const handleSubmit = () => handleGenerate();
 
@@ -462,21 +452,28 @@ export function GenerateModeInput() {
           onSaved={() => {
             setShowSavePanel(false);
             setGeneratedContent('');
-            handleDocumentRemove();
+            attachments.clearAll();
           }}
         />
       )}
 
-      <div className="mt-3 space-y-3 border-t border-border/40 pt-3">
+      <div ref={surfaceRef} className="mt-3 space-y-3 border-t border-border/40 pt-3">
         {/* No `formats` prop: Generate offers everything the extractor supports
             (#1132), and the zone derives its accept list and every string it
-            renders from that default. */}
+            renders from that default.
+
+            `isDragOver` hands the zone the hook's drag state — and with it the
+            drop target itself. The zone's own listeners sat on a button that
+            goes `pointer-events-none` while extracting, so a file dropped mid
+            extraction reached no handler at all and the browser navigated the
+            tab to it, taking the typed prompt with it. */}
         <DocumentUploadZone
-          onPick={handleDocumentPick}
-          extracted={documentData}
-          filename={documentFilename}
-          onRemove={handleDocumentRemove}
-          isExtracting={isExtracting}
+          onPick={attachments.pickFile}
+          extracted={attachments.document?.result ?? null}
+          filename={attachments.document?.filename ?? null}
+          onRemove={attachments.removeDocument}
+          isExtracting={attachments.isExtracting}
+          isDragOver={attachments.isDragOver}
           disabled={isStreaming}
         />
 
@@ -494,7 +491,32 @@ export function GenerateModeInput() {
           </label>
         )}
 
-        <div className="nm-composer">
+        {/* An advisory, not a refusal: the backend accepts both, and only the
+            resolved model knows whether they fit. Amber is the attention
+            colour under ADR-010 v0.5 and this is exactly that. It sits above
+            the composer so it reads between the two attachments it is about. */}
+        {attachments.document && attachments.image && (
+          <p
+            className="flex items-center gap-1.5 text-xs text-warning"
+            data-testid="attachment-context-warning"
+          >
+            <AlertTriangle size={12} className="shrink-0" aria-hidden />
+            Both attachments will be sent — a small model may not fit them.
+          </p>
+        )}
+
+        {/* flex-wrap so ImageAttachZone's full-width preview card stacks above
+            the prompt row inside the same box, the way the dock's does. */}
+        <div className="nm-composer flex-wrap">
+          <ImageAttachZone
+            vision={chatVision}
+            model={model}
+            image={attachments.image}
+            onPick={attachments.pickFile}
+            onRemove={attachments.removeImage}
+            isPreparing={attachments.isPreparing}
+            disabled={isStreaming}
+          />
           <textarea
             ref={promptRef}
             value={input}
@@ -502,8 +524,9 @@ export function GenerateModeInput() {
             onKeyDown={handleKeyDown}
             // "this document" rather than the format's name: the six labels
             // live in DocumentUploadZone's FORMAT_META and copying them here
-            // would give the same string two owners.
-            placeholder={documentData ? 'Instructions for generating from this document...' : 'Describe the page to generate...'}
+            // would give the same string two owners. An attached *image* keeps
+            // the default: "from this document" would be a lie about a PNG.
+            placeholder={attachments.document ? 'Instructions for generating from this document...' : 'Describe the page to generate...'}
             maxLength={PROMPT_MAX_LENGTH}
             rows={1}
             disabled={isStreaming}
@@ -516,7 +539,7 @@ export function GenerateModeInput() {
           />
           <button
             onClick={handleSubmit}
-            disabled={isStreaming || isExtracting || !input.trim() || !model}
+            disabled={isStreaming || attachments.isBusy || !input.trim() || !model}
             aria-label={isStreaming ? 'Sending...' : 'Send message'}
             // self-end keeps Send on the last line of a grown prompt instead of
             // floating it in the middle of the text block.

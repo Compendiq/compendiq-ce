@@ -168,6 +168,7 @@ interface AiContextValue {
       onBeforeStream?: () => void;
       onContent?: (accumulated: string) => void;
       onComplete?: (accumulated: string, sources?: Source[], meta?: StreamMeta) => void;
+      onError?: (err: unknown) => boolean;
       userMessage?: string;
     },
   ) => Promise<void>;
@@ -668,6 +669,18 @@ export function AiProvider({ children }: { children: ReactNode }) {
       onBeforeStream?: () => void;
       onContent?: (accumulated: string) => void;
       onComplete?: (accumulated: string, sources?: Source[], meta?: StreamMeta) => void;
+      /**
+       * First refusal on a thrown request error (#1154). Return `true` to say
+       * "I have explained this myself" — runStream then neither toasts nor
+       * leaves an error bubble behind, and removes the placeholder assistant
+       * turn so the failed send leaves no trace in the thread.
+       *
+       * This exists because runStream never rethrows: it catches everything and
+       * renders it inline, so a caller that has to *undo* something on a
+       * specific status (Generate rolling back a lapsed image handle on 410)
+       * has no other way to see the error at all.
+       */
+      onError?: (err: unknown) => boolean;
       userMessage?: string;
     },
   ) => {
@@ -793,6 +806,13 @@ export function AiProvider({ children }: { children: ReactNode }) {
         // Keep whatever was streamed before the abort (matches the previous
         // per-chunk-commit behavior).
         commitToMessages();
+        return;
+      }
+      // The caller may claim the error (#1154). It has then already told the
+      // user what happened, so the placeholder assistant turn is withdrawn
+      // rather than turned into a second, redundant explanation.
+      if (opts?.onError?.(err)) {
+        setMessages((prev) => prev.filter((m) => m.id !== assistantMsgId));
         return;
       }
       // Surface the failure INLINE: replace the placeholder assistant message
