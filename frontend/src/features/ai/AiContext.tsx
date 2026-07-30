@@ -87,6 +87,12 @@ interface AiContextValue {
    * surface a retry affordance instead of spinning forever. */
   modelsError: boolean;
   refetchModels: () => void;
+  /**
+   * #1154: whether the resolved chat model accepts images. `null` means
+   * probed-but-undetermined, which the composer renders differently from
+   * `false` — the query at :535 has always fetched this and discarded it.
+   */
+  chatVision: boolean | null;
 
   // Streaming state
   input: string;
@@ -833,6 +839,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
     models,
     modelsError: modelsQuery.isError,
     refetchModels: modelsQuery.refetch,
+    chatVision: chatDefault?.vision ?? null,
     input,
     setInput,
     isStreaming,
