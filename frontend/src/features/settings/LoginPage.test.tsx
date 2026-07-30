@@ -16,17 +16,23 @@ vi.mock('sonner', () => ({
 
 type OidcOpt = Record<string, unknown> | 'reject';
 type RegOpt = { allowRegistration: boolean } | 'reject';
+type LoginVariantOpt = 'local-loop' | 'change-desk' | 'reject';
 
 /**
  * URL-keyed apiFetch mock. LoginPage fires two independent probes on mount
  * (`/auth/oidc/config` and `/auth/registration-policy`), so a call-order-based
  * `mockResolvedValueOnce` is brittle — key the resolution on the URL instead.
  */
-function mockApi(opts: { oidc?: OidcOpt; registration?: RegOpt } = {}) {
+function mockApi(opts: { oidc?: OidcOpt; registration?: RegOpt; loginVariant?: LoginVariantOpt } = {}) {
   const oidc = opts.oidc ?? { enabled: false, issuer: null, name: null, enterpriseRequired: false };
   const registration = opts.registration ?? { allowRegistration: false };
+  const loginVariant = opts.loginVariant ?? 'local-loop';
   vi.mocked(apiFetch).mockImplementation(async (url: string) => {
     const u = String(url);
+    if (u.includes('/auth/login-page-config')) {
+      if (loginVariant === 'reject') throw new Error('no login config');
+      return { variant: loginVariant } as never;
+    }
     if (u.includes('/auth/oidc/config')) {
       if (oidc === 'reject') throw new Error('no oidc');
       return oidc as never;
@@ -100,6 +106,48 @@ describe('LoginPage', () => {
     expect(screen.queryByTestId('sso-login-btn')).not.toBeInTheDocument();
   });
 
+  describe('configurable presentation', () => {
+    it('uses Local Loop by default', () => {
+      mockApi();
+      renderLoginPage();
+
+      expect(screen.getByRole('heading', { name: 'See the whole knowledge loop.' })).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: 'One visible path' })).toBeInTheDocument();
+    });
+
+    it('switches to Change Desk through the query-string preview override', () => {
+      mockApi();
+      renderLoginPage('/login?loginVariant=change-desk');
+
+      expect(screen.getByRole('heading', { name: 'Make the page worth finding.' })).toBeInTheDocument();
+      expect(screen.getByText('Illustrative workflow preview')).toBeInTheDocument();
+      expect(screen.queryByRole('heading', { name: 'See the whole knowledge loop.' })).not.toBeInTheDocument();
+    });
+
+    it('uses the deployment-wide runtime setting when there is no preview override', async () => {
+      mockApi({ loginVariant: 'change-desk' });
+      renderLoginPage();
+
+      expect(
+        await screen.findByRole('heading', { name: 'Make the page worth finding.' }),
+      ).toBeInTheDocument();
+    });
+
+    it('keeps the build default when the runtime setting cannot be loaded', () => {
+      mockApi({ loginVariant: 'reject' });
+      renderLoginPage();
+
+      expect(screen.getByRole('heading', { name: 'See the whole knowledge loop.' })).toBeInTheDocument();
+    });
+
+    it('falls back safely when the preview override is unknown', () => {
+      mockApi();
+      renderLoginPage('/login?loginVariant=not-a-real-variant');
+
+      expect(screen.getByRole('heading', { name: 'See the whole knowledge loop.' })).toBeInTheDocument();
+    });
+  });
+
   it('shows a mapped error toast when redirected back with a known OIDC error code', async () => {
     const { toast } = await import('sonner');
     mockApi({ oidc: { enabled: false, issuer: null, name: null, enterpriseRequired: true } });
@@ -170,11 +218,15 @@ describe('LoginPage', () => {
       // Login mode: neither the confirm field nor the hint is rendered.
       expect(screen.queryByLabelText('Confirm password')).not.toBeInTheDocument();
       expect(screen.queryByText('At least 8 characters')).not.toBeInTheDocument();
+      expect(screen.getByLabelText('Username')).not.toHaveAttribute('minlength');
+      expect(screen.getByLabelText('Password')).not.toHaveAttribute('minlength');
 
       await switchToRegister();
 
       expect(screen.getByLabelText('Confirm password')).toBeInTheDocument();
       expect(screen.getByText('At least 8 characters')).toBeInTheDocument();
+      expect(screen.getByLabelText('Username')).toHaveAttribute('minlength', '3');
+      expect(screen.getByLabelText('Password')).toHaveAttribute('minlength', '8');
     });
 
     it('blocks submit and shows an error when the passwords do not match', async () => {

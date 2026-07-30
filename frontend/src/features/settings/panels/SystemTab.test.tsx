@@ -1,9 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { SystemTab } from './SystemTab';
 import { useAuthStore } from '../../../stores/auth-store';
+
+vi.mock('sonner', () => ({
+  toast: { error: vi.fn(), success: vi.fn() },
+}));
 
 function createWrapper() {
   const queryClient = new QueryClient({
@@ -36,18 +40,25 @@ describe('SystemTab', () => {
   });
 
   it('sends the admin access token to /api/health and renders the backend commit (#1052)', async () => {
-    fetchMock.mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          status: 'ok',
-          commit: 'abc1234',
-          ceCommit: 'ce999',
-          builtAt: '2026-01-01T00:00:00Z',
-          edition: 'community',
-        }),
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/health')) {
+        return new Response(
+          JSON.stringify({
+            status: 'ok',
+            commit: 'abc1234',
+            ceCommit: 'ce999',
+            builtAt: '2026-01-01T00:00:00Z',
+            edition: 'community',
+          }),
+          { headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      return new Response(
+        JSON.stringify({ variant: 'local-loop' }),
         { headers: { 'Content-Type': 'application/json' } },
-      ),
-    );
+      );
+    });
 
     render(<SystemTab />, { wrapper: createWrapper() });
 
@@ -67,5 +78,48 @@ describe('SystemTab', () => {
       expect(screen.getByTestId('backend-commit')).toHaveTextContent('abc1234');
     });
     expect(screen.getByTestId('backend-ce-commit')).toHaveTextContent('ce999');
+  });
+
+  it('loads the current design and persists a Change Desk selection', async () => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/api/health')) {
+        return new Response(
+          JSON.stringify({ status: 'ok', edition: 'community' }),
+          { headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      if (url.includes('/api/admin/login-page-config') && init?.method === 'PUT') {
+        return new Response(
+          JSON.stringify({ variant: 'change-desk' }),
+          { headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      return new Response(
+        JSON.stringify({ variant: 'local-loop' }),
+        { headers: { 'Content-Type': 'application/json' } },
+      );
+    });
+
+    render(<SystemTab />, { wrapper: createWrapper() });
+
+    const localLoop = await screen.findByRole('radio', { name: /Local Loop/i });
+    expect(localLoop).toBeChecked();
+    expect(screen.getByTestId('apply-login-page-variant')).toBeDisabled();
+
+    fireEvent.click(screen.getByRole('radio', { name: /Change Desk/i }));
+    fireEvent.click(screen.getByTestId('apply-login-page-variant'));
+
+    await waitFor(() => {
+      const updateCall = fetchMock.mock.calls.find(
+        ([input, init]) =>
+          String(input).includes('/api/admin/login-page-config') &&
+          (init as RequestInit | undefined)?.method === 'PUT',
+      );
+      expect(updateCall).toBeDefined();
+      expect(JSON.parse((updateCall![1] as RequestInit).body as string)).toEqual({
+        variant: 'change-desk',
+      });
+    });
   });
 });

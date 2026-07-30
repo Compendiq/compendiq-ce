@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { RegistrationPolicySchema } from './auth.js';
+import { LoginPageConfigSchema, LoginPageVariantSchema, RegistrationPolicySchema } from './auth.js';
 
 describe('RegistrationPolicySchema (issue #1051)', () => {
   it('accepts { allowRegistration: true }', () => {
@@ -18,5 +18,16 @@ describe('RegistrationPolicySchema (issue #1051)', () => {
 
   it('rejects a non-boolean allowRegistration', () => {
     expect(() => RegistrationPolicySchema.parse({ allowRegistration: 'yes' })).toThrow();
+  });
+});
+
+describe('LoginPageConfigSchema', () => {
+  it.each(['local-loop', 'change-desk'] as const)('accepts %s', (variant) => {
+    expect(LoginPageVariantSchema.parse(variant)).toBe(variant);
+    expect(LoginPageConfigSchema.parse({ variant })).toEqual({ variant });
+  });
+
+  it('rejects unknown variants', () => {
+    expect(() => LoginPageConfigSchema.parse({ variant: 'other' })).toThrow();
   });
 });

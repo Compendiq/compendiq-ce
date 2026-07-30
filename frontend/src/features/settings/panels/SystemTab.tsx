@@ -1,6 +1,14 @@
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  LoginPageConfigSchema,
+  type LoginPageConfig,
+  type LoginPageVariant,
+} from '@compendiq/contracts';
+import { toast } from 'sonner';
 import { useAuthStore } from '../../../stores/auth-store';
+import { apiFetch } from '../../../shared/lib/api';
 
 interface HealthResponse {
   status?: string;
@@ -31,10 +39,47 @@ function useBackendBuildInfo() {
   });
 }
 
+function useLoginPageConfig() {
+  return useQuery<LoginPageConfig>({
+    queryKey: ['login-page-config'],
+    queryFn: async () => LoginPageConfigSchema.parse(await apiFetch('/auth/login-page-config')),
+    staleTime: 30_000,
+  });
+}
+
 export function SystemTab() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { data: backendBuild } = useBackendBuildInfo();
+  const {
+    data: loginPageConfig,
+    isLoading: loginPageConfigLoading,
+    isError: loginPageConfigError,
+    refetch: refetchLoginPageConfig,
+  } = useLoginPageConfig();
+  const [selectedLoginVariant, setSelectedLoginVariant] = useState<LoginPageVariant>('local-loop');
+
+  useEffect(() => {
+    if (loginPageConfig) setSelectedLoginVariant(loginPageConfig.variant);
+  }, [loginPageConfig]);
+
+  const updateLoginPageConfig = useMutation({
+    mutationFn: async (variant: LoginPageVariant) =>
+      LoginPageConfigSchema.parse(
+        await apiFetch('/admin/login-page-config', {
+          method: 'PUT',
+          body: JSON.stringify({ variant }),
+        }),
+      ),
+    onSuccess: (config) => {
+      queryClient.setQueryData(['login-page-config'], config);
+      setSelectedLoginVariant(config.variant);
+      toast.success('Login page design updated');
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : 'Could not update the login page design');
+    },
+  });
 
   function handleRerunSetup() {
     // Invalidate setup status cache so the wizard re-checks
@@ -48,6 +93,106 @@ export function SystemTab() {
 
   return (
     <div className="space-y-6">
+      <section aria-labelledby="login-experience-heading">
+        <h3 id="login-experience-heading" className="text-base font-semibold">
+          Login experience
+        </h3>
+        <p id="login-experience-description" className="mt-1 max-w-[70ch] text-sm leading-6 text-muted-foreground">
+          Choose the landing-page story visitors see before signing in. This changes presentation only; credentials,
+          registration, and SSO continue to use the same authentication flow.
+        </p>
+
+        {loginPageConfigLoading ? (
+          <div className="mt-4 grid gap-3 sm:grid-cols-2" aria-label="Loading login page designs">
+            <div className="h-24 animate-pulse rounded-lg bg-muted" />
+            <div className="h-24 animate-pulse rounded-lg bg-muted" />
+          </div>
+        ) : loginPageConfigError ? (
+          <div className="mt-4 flex flex-wrap items-center gap-3 text-sm" role="alert">
+            <span className="text-destructive">Couldn’t load the current login page design.</span>
+            <button
+              type="button"
+              onClick={() => void refetchLoginPageConfig()}
+              className="nm-button-ghost px-3 py-1.5 text-sm"
+            >
+              Try again
+            </button>
+          </div>
+        ) : (
+          <>
+            <fieldset
+              className="mt-4 grid gap-3 sm:grid-cols-2"
+              aria-describedby="login-experience-description"
+            >
+              <legend className="sr-only">Login page design</legend>
+              <label
+                className={`flex cursor-pointer gap-3 rounded-lg border p-4 transition-colors ${
+                  selectedLoginVariant === 'local-loop'
+                    ? 'border-primary bg-primary/10'
+                    : 'border-border-interactive bg-card hover:border-primary'
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="login-page-variant"
+                  value="local-loop"
+                  checked={selectedLoginVariant === 'local-loop'}
+                  onChange={() => setSelectedLoginVariant('local-loop')}
+                  className="mt-0.5 size-4 shrink-0 accent-primary"
+                />
+                <span>
+                  <span className="block text-sm font-semibold text-foreground">Local Loop</span>
+                  <span className="mt-1 block text-sm leading-5 text-muted-foreground">
+                    Explains the path from connected knowledge to a sourced answer.
+                  </span>
+                </span>
+              </label>
+
+              <label
+                className={`flex cursor-pointer gap-3 rounded-lg border p-4 transition-colors ${
+                  selectedLoginVariant === 'change-desk'
+                    ? 'border-primary bg-primary/10'
+                    : 'border-border-interactive bg-card hover:border-primary'
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="login-page-variant"
+                  value="change-desk"
+                  checked={selectedLoginVariant === 'change-desk'}
+                  onChange={() => setSelectedLoginVariant('change-desk')}
+                  className="mt-0.5 size-4 shrink-0 accent-primary"
+                />
+                <span>
+                  <span className="block text-sm font-semibold text-foreground">Change Desk</span>
+                  <span className="mt-1 block text-sm leading-5 text-muted-foreground">
+                    Shows how source material can become a clearer working page.
+                  </span>
+                </span>
+              </label>
+            </fieldset>
+
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={() => updateLoginPageConfig.mutate(selectedLoginVariant)}
+                disabled={
+                  updateLoginPageConfig.isPending ||
+                  selectedLoginVariant === loginPageConfig?.variant
+                }
+                className="nm-button-primary px-4 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-60"
+                data-testid="apply-login-page-variant"
+              >
+                {updateLoginPageConfig.isPending ? 'Applying…' : 'Apply login design'}
+              </button>
+              <span className="text-xs text-muted-foreground">
+                Applies to all visitors on their next login-page load.
+              </span>
+            </div>
+          </>
+        )}
+      </section>
+
       <div>
         <h3 className="text-base font-semibold">Setup Wizard</h3>
         <p className="mt-1 text-sm text-muted-foreground">

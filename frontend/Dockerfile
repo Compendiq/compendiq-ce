@@ -15,6 +15,8 @@ RUN \
 FROM node:24-alpine AS builder
 
 ARG VITE_API_URL=""
+ARG VITE_LOGIN_VARIANT="local-loop"
+ARG VITE_LOGIN_VARIANT_PICKER="false"
 
 WORKDIR /app
 COPY package.json package-lock.json ./
@@ -37,6 +39,8 @@ COPY frontend/src/ frontend/src/
 # in the EE flow. Read by vite.config.ts and injected as __BUILD_INFO__.
 COPY build-info.json ./build-info.json
 ENV VITE_API_URL=$VITE_API_URL
+ENV VITE_LOGIN_VARIANT=$VITE_LOGIN_VARIANT
+ENV VITE_LOGIN_VARIANT_PICKER=$VITE_LOGIN_VARIANT_PICKER
 RUN npm run build -w frontend
 
 # Tools stage — grab wget for healthcheck

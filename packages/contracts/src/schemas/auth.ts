@@ -36,6 +36,19 @@ export const RegistrationPolicySchema = z.object({
 });
 export type RegistrationPolicy = z.infer<typeof RegistrationPolicySchema>;
 
+/**
+ * Public login-page presentation config. The selected layout is deployment
+ * presentation only; it never changes authentication, registration, or SSO
+ * behavior.
+ */
+export const LoginPageVariantSchema = z.enum(['local-loop', 'change-desk']);
+export type LoginPageVariant = z.infer<typeof LoginPageVariantSchema>;
+
+export const LoginPageConfigSchema = z.object({
+  variant: LoginPageVariantSchema,
+});
+export type LoginPageConfig = z.infer<typeof LoginPageConfigSchema>;
+
 export type RegisterInput = z.infer<typeof RegisterSchema>;
 export type LoginInput = z.infer<typeof LoginSchema>;
 export type AuthResponse = z.infer<typeof AuthResponseSchema>;
