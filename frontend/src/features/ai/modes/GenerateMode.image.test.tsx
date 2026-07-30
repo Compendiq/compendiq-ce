@@ -7,6 +7,7 @@ import { GenerateModeInput } from './GenerateMode';
 import { AiProvider, useAiContext } from '../AiContext';
 import { useAuthStore } from '../../../stores/auth-store';
 import { ApiError } from '../../../shared/lib/api';
+import { expectExplicitComposerOrder } from '../../../test-utils';
 
 Element.prototype.scrollIntoView = vi.fn();
 
@@ -52,7 +53,10 @@ vi.mock('../../../shared/hooks/use-pages', async (importOriginal) => {
   return { ...actual, usePage: () => ({ data: undefined }), useEmbeddingStatus: () => ({ data: undefined }) };
 });
 
-vi.mock('../../../shared/hooks/use-spaces', () => ({ useSpaces: () => ({ data: [] }) }));
+// Mutable so the save-panel test can offer a space to select — the save button
+// stays disabled without one, and the panel is where `clearAll` is wired.
+const mockSpaces = { value: [] as Array<{ key: string; name: string; source: 'confluence' }> };
+vi.mock('../../../shared/hooks/use-spaces', () => ({ useSpaces: () => ({ data: mockSpaces.value }) }));
 vi.mock('../../../shared/hooks/use-standalone', () => ({ useLocalSpaces: () => ({ data: [] }) }));
 
 const toastErrorMock = vi.fn();
@@ -183,6 +187,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockIsExtracting.value = false;
   mockIsPreparing.value = false;
+  mockSpaces.value = [];
   mockPrepareImage.mockResolvedValue({
     handle: HANDLE, format: 'webp', width: 800, height: 600, fileSize: 40_000,
     previewUrl: 'blob:preview',
@@ -501,5 +506,84 @@ describe('GenerateMode drop target (#1154)', () => {
     await waitFor(() => {
       expect(screen.getByTestId('document-preview-card')).toBeInTheDocument();
     });
+  });
+});
+
+/**
+ * The ordering convention is load-bearing on all three composer surfaces, not
+ * just the dock's (#1154). Generate's box holds one zone rather than two — the
+ * document zone is the standing dashed dropzone above it — but the rule is the
+ * same: `ImageAttachZone` emits a full-width card and a small trigger as one
+ * fragment, so every sibling needs an explicit order or it renders ahead of
+ * the card at `order: 0`.
+ */
+describe('Generate composer ordering (#1154)', () => {
+  function composerBox(): HTMLElement {
+    return promptInput().closest('.nm-composer') as HTMLElement;
+  }
+
+  it('orders every composer child explicitly: card, trigger, field, send', async () => {
+    renderGenerateMode({ vision: true });
+    await settle();
+    await attachImage();
+
+    // The textarea and the send button carry no testid on this surface; the
+    // helper's every-child sweep is what covers them.
+    expectExplicitComposerOrder(composerBox(), {
+      'image-attach-card': 1,
+      'image-attach-trigger': 2,
+    });
+  });
+});
+
+/**
+ * What happens to the attachments after a send is a design decision, not an
+ * accident, and the two `/ai` surfaces deliberately differ: Generate treats
+ * the source material as spent once the generated page has been *saved*, while
+ * Improve keeps it (see `ImproveMode.attachments.test.tsx`). Neither was
+ * pinned by a test, so either could have flipped unnoticed.
+ */
+describe('Generate attachment lifetime (#1154)', () => {
+  it('keeps both attachments after a successful generation, before saving', async () => {
+    renderGenerateMode({ vision: true });
+    await settle();
+    await attachDocument();
+    await attachImage();
+
+    streamSSEMock.mockImplementation(async function* () {
+      yield { content: '# Runbook' };
+      yield { done: true };
+    });
+    await submit('write it up');
+
+    await waitFor(() => expect(screen.getByTestId('generate-save-panel')).toBeInTheDocument());
+    expect(screen.getByTestId('image-attach-card')).toBeInTheDocument();
+    expect(screen.getByTestId('document-preview-card')).toBeInTheDocument();
+  });
+
+  it('clears both attachments once the generated page is saved', async () => {
+    mockSpaces.value = [{ key: 'DOC', name: 'Docs', source: 'confluence' }];
+    renderGenerateMode({ vision: true });
+    await settle();
+    await attachDocument();
+    await attachImage();
+
+    streamSSEMock.mockImplementation(async function* () {
+      yield { content: '# Runbook' };
+      yield { done: true };
+    });
+    await submit('write it up');
+    await waitFor(() => expect(screen.getByTestId('generate-save-panel')).toBeInTheDocument());
+
+    // The title is seeded from the first heading; only the space is missing.
+    await act(async () => {
+      fireEvent.change(screen.getByTestId('generate-space-select'), { target: { value: 'DOC' } });
+    });
+    await act(async () => { fireEvent.click(screen.getByTestId('generate-save-button')); });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('image-attach-card')).not.toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('document-preview-card')).not.toBeInTheDocument();
   });
 });

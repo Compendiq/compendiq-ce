@@ -6,6 +6,7 @@ import { LazyMotion, domAnimation } from 'framer-motion';
 import { GenerateModeInput, GenerateSavePanel, GENERATE_EMPTY_TITLE, GENERATE_EMPTY_SUBTITLE } from './GenerateMode';
 import { AiProvider, useAiContext } from '../AiContext';
 import { useAuthStore } from '../../../stores/auth-store';
+import { MAX_DOCUMENT_BYTES } from '../../../shared/hooks/use-attachments';
 
 Element.prototype.scrollIntoView = vi.fn();
 
@@ -347,11 +348,14 @@ describe('GenerateMode', () => {
       { format: 'odt', filename: 'draft.odt', mime: 'application/vnd.oasis.opendocument.text', label: 'ODT' },
     ] as const;
 
-    function upload({ filename, mime }: { filename: string; mime: string }) {
+    function upload(
+      { filename, mime, size }: { filename: string; mime: string; size?: number },
+    ) {
       const fileInput = screen.getByTestId('document-file-input');
-      fireEvent.change(fileInput, {
-        target: { files: [new File(['dummy bytes'], filename, { type: mime })] },
-      });
+      const file = new File(['dummy bytes'], filename, { type: mime });
+      // A file that reports a size without allocating one.
+      if (size !== undefined) Object.defineProperty(file, 'size', { value: size });
+      fireEvent.change(fileInput, { target: { files: [file] } });
     }
 
     it('renders the upload zone with format-neutral copy', () => {
@@ -601,18 +605,42 @@ describe('GenerateMode', () => {
     });
 
     it('shows error toast when extraction fails', async () => {
-      mockExtractDocument.mockRejectedValue(new Error('File exceeds 20 MB limit'));
+      // A server-side failure, not the size limit: mocking `extractDocument`
+      // to reject with the size message would never reach the real gate in
+      // `useAttachments`, which refuses an oversized file before the hook is
+      // called at all — see the next test.
+      mockExtractDocument.mockRejectedValue(new Error('Document extraction failed: 500'));
 
       render(<GenerateModeInput />, { wrapper: createWrapper() });
-      upload({ filename: 'huge.odt', mime: 'application/vnd.oasis.opendocument.text' });
+      upload({ filename: 'notes.odt', mime: 'application/vnd.oasis.opendocument.text' });
 
       await waitFor(() => {
-        expect(toastErrorMock).toHaveBeenCalledWith('File exceeds 20 MB limit');
+        expect(toastErrorMock).toHaveBeenCalledWith('Document extraction failed: 500');
       });
 
       // Upload zone should still be visible (no preview card)
       expect(screen.queryByTestId('document-preview-card')).not.toBeInTheDocument();
       expect(screen.getByTestId('document-upload-zone')).toBeInTheDocument();
+    });
+
+    /**
+     * The real 20 MB gate, which mirrors the server's multipart cap so a doomed
+     * POST is never sent. The `extractDocument` mock deliberately stays on its
+     * happy path here: the point is that it is never reached.
+     */
+    it('refuses an oversized document without contacting the server', async () => {
+      render(<GenerateModeInput />, { wrapper: createWrapper() });
+      upload({
+        filename: 'huge.odt',
+        mime: 'application/vnd.oasis.opendocument.text',
+        size: MAX_DOCUMENT_BYTES + 1,
+      });
+
+      await waitFor(() => {
+        expect(toastErrorMock).toHaveBeenCalledWith('File exceeds 20 MB limit');
+      });
+      expect(mockExtractDocument).not.toHaveBeenCalled();
+      expect(screen.queryByTestId('document-preview-card')).not.toBeInTheDocument();
     });
 
     // The fixture was `diagram.png` until #1154. A PNG is no longer an

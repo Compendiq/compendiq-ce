@@ -22,6 +22,7 @@ import { AiDock } from './AiDock';
 import { ApiError } from '../../../shared/lib/api';
 import { useAiDockStore } from '../../../stores/ai-dock-store';
 import { useUiStore } from '../../../stores/ui-store';
+import { expectExplicitComposerOrder } from '../../../test-utils';
 
 Element.prototype.scrollIntoView = vi.fn();
 
@@ -406,36 +407,45 @@ describe('dock image attach (#1154)', () => {
  * the cards, which is exactly what this test is here to catch.
  */
 describe('dock composer ordering (#1154)', () => {
-  function orderOf(testId: string): number {
-    const el = screen.getByTestId(testId);
-    const match = /(?:^|\s)order-(\d+)(?:\s|$)/.exec(el.className);
-    expect(match, `expected an order-* class on ${testId}, got "${el.className}"`).not.toBeNull();
-    return Number(match![1]);
-  }
-
   it('orders every composer child explicitly: cards, triggers, field, send', async () => {
     renderDock({ chatVision: true });
     await openAndSettle();
     await attachDocument();
     await attachImage();
 
-    // Hidden file inputs are `display: none`, so they are not flex items and
-    // carry no order of their own.
-    const children = Array.from(composerBox().children)
-      .filter((el) => !el.classList.contains('hidden'));
-    for (const el of children) {
-      expect(
-        el.className,
-        `composer child <${el.tagName.toLowerCase()}> has no order-* class: "${el.className}"`,
-      ).toMatch(/(?:^|\s)order-\d+(?:\s|$)/);
-    }
+    expectExplicitComposerOrder(composerBox(), {
+      'ai-dock-doc-attachment-card': 1,
+      'image-attach-card': 1,
+      'ai-dock-doc-attach-button': 2,
+      'image-attach-trigger': 2,
+      'ai-dock-input': 3,
+      'ai-dock-send': 4,
+    });
+  });
 
-    expect(orderOf('ai-dock-doc-attachment-card')).toBe(1);
-    expect(orderOf('image-attach-card')).toBe(1);
-    expect(orderOf('ai-dock-doc-attach-button')).toBe(2);
-    expect(orderOf('image-attach-trigger')).toBe(2);
-    expect(orderOf('ai-dock-input')).toBe(3);
-    expect(orderOf('ai-dock-send')).toBe(4);
+  /**
+   * The drop hint replaces the document card while a drag is over the
+   * composer, so it is a composer child that exists in no other scenario — and
+   * the sweep above, which only sees what its own render produced, can never
+   * reach it. Losing its `order-1` would drop the hint to `order: 0`, ahead of
+   * the image card, mid-drag.
+   */
+  it('orders the drop hint, which only exists mid-drag', async () => {
+    renderDock({ chatVision: true });
+    await openAndSettle();
+    await attachImage();
+
+    await act(async () => { fireEvent.dragEnter(composerBox()); });
+    expect(screen.getByTestId('ai-dock-doc-drop-hint')).toBeInTheDocument();
+
+    expectExplicitComposerOrder(composerBox(), {
+      'ai-dock-doc-drop-hint': 1,
+      'image-attach-card': 1,
+      'ai-dock-doc-attach-button': 2,
+      'image-attach-trigger': 2,
+      'ai-dock-input': 3,
+      'ai-dock-send': 4,
+    });
   });
 });
 

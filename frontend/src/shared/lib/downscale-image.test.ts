@@ -117,7 +117,22 @@ describe('downscaleImage', () => {
     stubBitmap(20000, 20000);
     await expect(downscaleImage(imageFile('bomb.png', 'image/png')))
       .rejects.toMatchObject({ reason: 'tooLarge' });
-    expect(toBlobArgs).toBeNull();   // never reached the canvas
+    // `toBlobArgs` staying null only proves the *encode* never ran. The point
+    // of refusing here is that no second buffer is allocated at all, so assert
+    // the canvas was never even created — `stubCanvas` spies `createElement`,
+    // which is the allocation itself.
+    expect(toBlobArgs).toBeNull();
+    expect(document.createElement).not.toHaveBeenCalled();
+  });
+
+  /** Same contract for the two refusals that precede the decode. */
+  it('allocates no canvas for a refused SVG or an oversized source file', async () => {
+    stubBitmap(100, 100);
+    await expect(downscaleImage(imageFile('d.svg', 'image/svg+xml'))).rejects.toThrow();
+    await expect(
+      downscaleImage(imageFile('huge.png', 'image/png', MAX_SOURCE_IMAGE_BYTES + 1)),
+    ).rejects.toThrow();
+    expect(document.createElement).not.toHaveBeenCalled();
   });
 
   it('accepts an 8K screenshot, which is under the pixel ceiling', async () => {

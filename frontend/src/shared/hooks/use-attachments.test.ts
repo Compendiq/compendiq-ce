@@ -103,6 +103,18 @@ describe('useAttachments routing', () => {
     expect(result.current.document).not.toBeNull();
   });
 
+  /**
+   * Every caller passes `imageDisabledReason` today, so the hook's own fallback
+   * string is reachable only if one stops — which is exactly when a silent
+   * refusal would be worst. Without this, the fallback is asserted nowhere.
+   */
+  it('falls back to its own reason when the caller supplies none', async () => {
+    const { result } = renderHook(() => useAttachments({ imageEnabled: false }));
+    await act(async () => { await result.current.pickFile(file('shot.png', 'image/png')); });
+    expect(mockPrepare).not.toHaveBeenCalled();
+    expect(mockToastError).toHaveBeenCalledWith('Images cannot be attached right now.');
+  });
+
   /** HEIC's browser-reported MIME is unreliable (often `''`), so the extension
    *  fallback in `looksLikeImage` is what keeps it off the document branch and
    *  its generic "Unsupported file" message. */
@@ -259,6 +271,28 @@ describe('useAttachments object URL lifecycle', () => {
     act(() => { result.current.removeImage(); });
     expect(revoke).toHaveBeenCalledWith('blob:preview');
     expect(result.current.image).toBeNull();
+  });
+
+  /**
+   * `clearAll` is what the dock calls on a page change and what Generate calls
+   * once a generated page is saved. Until #1154 it had one slot to clear; the
+   * image slot also owns an object URL, so forgetting it there leaks rather
+   * than merely leaving an attachment behind.
+   */
+  it('clears both slots and revokes the preview URL', async () => {
+    const revoke = vi.fn();
+    vi.stubGlobal('URL', { ...URL, createObjectURL: vi.fn(() => 'blob:preview'), revokeObjectURL: revoke });
+    const { result } = renderHook(() => useAttachments({ imageEnabled: true }));
+    await act(async () => { await result.current.pickFile(file('spec.pdf', 'application/pdf')); });
+    await act(async () => { await result.current.pickFile(file('shot.png', 'image/png')); });
+    expect(result.current.document).not.toBeNull();
+    expect(result.current.image).not.toBeNull();
+
+    act(() => { result.current.clearAll(); });
+
+    expect(result.current.document).toBeNull();
+    expect(result.current.image).toBeNull();
+    expect(revoke).toHaveBeenCalledWith('blob:preview');
   });
 
   it('revokes the preview URL on unmount', async () => {

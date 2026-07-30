@@ -7,6 +7,7 @@ import { ImproveModeInput } from './ImproveMode';
 import { AiProvider, useAiContext } from '../AiContext';
 import { useAuthStore } from '../../../stores/auth-store';
 import { ApiError } from '../../../shared/lib/api';
+import { expectExplicitComposerOrder } from '../../../test-utils';
 
 Element.prototype.scrollIntoView = vi.fn();
 
@@ -463,5 +464,82 @@ describe('ImproveMode lapsed image handle (#1154)', () => {
       expect(toastErrorMock).toHaveBeenCalledWith('LLM connection lost');
     });
     expect(screen.getByTestId('image-attach-card')).toBeInTheDocument();
+  });
+});
+
+/**
+ * The ordering convention is load-bearing on all three composer surfaces, not
+ * just the dock's (#1154). Improve's box holds both zones and the instruction
+ * field, and no send button — the Improve button sits outside it.
+ */
+describe('Improve composer ordering (#1154)', () => {
+  function composerBox(): HTMLElement {
+    return instructionInput().closest('.nm-composer') as HTMLElement;
+  }
+
+  it('orders every composer child explicitly: cards, triggers, field', async () => {
+    renderImproveMode({ chatVision: true });
+    await settle();
+    await attachDocument();
+    await attachImage();
+
+    expectExplicitComposerOrder(composerBox(), {
+      'document-attachment-card': 1,
+      'image-attach-card': 1,
+      'document-attach-button': 2,
+      'image-attach-trigger': 2,
+    });
+  });
+
+  /**
+   * The drop hint replaces the document card while a drag is over the
+   * composer, so it is a child the sweep above can never see — losing its
+   * `order-1` would drop it to `order: 0`, ahead of the image card, mid-drag.
+   */
+  it('orders the drop hint, which only exists mid-drag', async () => {
+    renderImproveMode({ chatVision: true });
+    await settle();
+    await attachImage();
+
+    await act(async () => { fireEvent.dragEnter(composerBox()); });
+    expect(screen.getByTestId('document-drop-hint')).toBeInTheDocument();
+
+    expectExplicitComposerOrder(composerBox(), {
+      'document-drop-hint': 1,
+      'image-attach-card': 1,
+      'document-attach-button': 2,
+      'image-attach-trigger': 2,
+    });
+  });
+});
+
+/**
+ * Improve deliberately diverges from Generate here: Generate treats its source
+ * material as spent once the generated page is saved and calls `clearAll`,
+ * while Improve keeps both slots so the same reference can drive a second pass
+ * at a different improvement type. Nothing pinned either half, so either could
+ * have flipped unnoticed — Generate's is pinned in `GenerateMode.image.test.tsx`.
+ */
+describe('Improve attachment lifetime (#1154)', () => {
+  it('keeps both attachments after a successful improve', async () => {
+    renderImproveMode({ chatVision: true });
+    await settle();
+    await attachDocument();
+    await attachImage();
+
+    streamSSEMock.mockImplementation(async function* () {
+      yield { content: 'Improved copy' };
+      yield { done: true };
+    });
+    await submitImprove('tighten the intro');
+
+    await waitFor(() => {
+      expect(lastBody()).toMatchObject({ imageHandle: HANDLE });
+    });
+    expect(screen.getByTestId('image-attach-card')).toBeInTheDocument();
+    expect(screen.getByTestId('document-attachment-card')).toBeInTheDocument();
+    // The instruction is kept for the same reason — a second pass usually
+    // wants the same one.
+    expect(instructionInput()).toHaveValue('tighten the intro');
   });
 });
