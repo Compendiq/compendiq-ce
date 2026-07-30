@@ -142,6 +142,28 @@ is probed with a known-content image, never declared, because neither the OpenAI
 cannot inspect pixels, so prompt injection rendered as an image is an accepted, documented
 risk (ADR-021's `#1154` amendment) — not something this path mitigates.
 
+**The frontend half normalises before it stages.** `shared/lib/downscale-image.ts`
+re-encodes **every** attached image — not only oversized ones — to **WebP within a 1568px
+longest edge**, so the server never sees anything else and most of its rejections
+(format, dimensions, payload size) are unreachable. `shared/hooks/use-attachments.ts` owns
+both attachment slots on all three AI composers (`/ai` Generate, `/ai` Improve, the dock):
+it routes every intake path — click, drop, paste — decides in **one** place whether a file
+is a document or an image, owns the shared composer drop target, and holds the 20 MB
+document gate. The upload zones gate nothing; they report the file they were handed and
+render what they are given. Two rules follow from that: **SVG is refused client-side**,
+never rasterized around the server's sniff; and passing **`isDragOver`** to
+`DocumentUploadZone` is what declares "the parent owns the drop target", after which the
+component attaches no drag handlers of its own — omit it while the hook is listening and
+every drop fires twice.
+
+The **`vision` tri-state must never collapse to a boolean**: `false` means probed and
+refused, `null` means never established (an inconclusive probe — rate limit, auth hiccup,
+open breaker), and they render different text (`VisionBadge`: "Text-only" vs
+"Unconfirmed"). Only `true` enables attachment. Each zone emits **one row carrying its own
+card and its own trigger** (`composerRowClass`), because `order-*` moves boxes without
+moving the tab sequence (WCAG 2.4.3) — don't reintroduce `order-*` anywhere in a composer;
+`expectComposerFocusOrder` fails on it.
+
 ## Versioning
 
 SemVer, pre-1.0. Single source of truth: **root `package.json` `"version"`**. Backend reads at startup (`core/utils/version.ts` → `APP_VERSION`); frontend injects `__APP_VERSION__` via Vite `define`; mcp-docs reads its own.
