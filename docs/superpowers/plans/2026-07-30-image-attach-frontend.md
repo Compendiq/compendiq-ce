@@ -1262,9 +1262,15 @@ Expected: PASS (10 tests).
 
 - [ ] **Step 5: Confirm the gradient-surface guard is satisfied**
 
-Run: `cd frontend && npx vitest run src/index.css.test.ts src/neumorphic-themes.test.ts`
-Expected: PASS. If a `hover:bg-*` guard fires, the new component used a
-background-colour hover on a card surface — switch it to `nm-card-hover`.
+Run: `cd frontend && npx vitest run src/neumorphic-themes.test.ts`
+Expected: PASS. That suite is the one that walks the `.tsx` sources for
+`hover:bg-*` on a card surface *and* computes the WCAG contrast ratios. If it
+fires, the new component used a background-colour hover on a card surface —
+switch it to `nm-card-hover`.
+
+`border-border-interactive` is the correct Tailwind class for the 1px
+interactive edge (8 existing usages); `--color-border-interactive` is the token
+behind it.
 
 - [ ] **Step 6: Lint, typecheck, commit**
 
