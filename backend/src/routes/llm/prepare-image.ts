@@ -15,6 +15,10 @@ import {
 
 const PREPARE_IMAGE_PATH = '/llm/prepare-image';
 
+/** Derived from the constant so the message cannot drift from the limit. */
+const TOO_LARGE_MESSAGE =
+  `Image exceeds the ${Math.round(MAX_IMAGE_BYTES / (1024 * 1024))} MB limit`;
+
 /**
  * Stages an uploaded image for use as LLM source material (#1154).
  *
@@ -40,10 +44,10 @@ export async function prepareImageRoutes(fastify: FastifyInstance) {
     try {
       buffer = await data.toBuffer();
     } catch {
-      throw fastify.httpErrors.payloadTooLarge('Image exceeds 10 MB limit');
+      throw fastify.httpErrors.payloadTooLarge(TOO_LARGE_MESSAGE);
     }
     if (data.file.truncated) {
-      throw fastify.httpErrors.payloadTooLarge('Image exceeds 10 MB limit');
+      throw fastify.httpErrors.payloadTooLarge(TOO_LARGE_MESSAGE);
     }
 
     // The validator decides the format from the bytes; `data.mimetype` is

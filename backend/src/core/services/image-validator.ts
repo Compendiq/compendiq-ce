@@ -118,6 +118,17 @@ export function validateImage(
   buf: Buffer,
   filename: string | undefined,
 ): { format: ImageFormat; width: number; height: number } {
+  // Defence in depth. `prepare-image.ts` caps the multipart stream at the same
+  // constant and answers 413 before this runs, so reaching here means either a
+  // new caller or a limit that stopped being applied — and staging the bytes is
+  // what puts them in a shared `noeviction` Redis.
+  if (buf.length > MAX_IMAGE_BYTES) {
+    throw new ImageValidationError(
+      'unprocessable',
+      `Image is ${buf.length} bytes; the maximum is ${MAX_IMAGE_BYTES}.`,
+    );
+  }
+
   const format = sniffImageFormat(buf);
   if (!format) {
     throw new ImageValidationError(

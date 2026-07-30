@@ -17,6 +17,7 @@ const mockRedis = {
     const prefix = opts.MATCH.replace(/\*$/, '');
     return { cursor: 0, keys: [...store.keys()].filter((k) => k.startsWith(prefix)) };
   }),
+  exists: vi.fn(async (k: string) => (store.has(k) ? 1 : 0)),
   withTypeMapping: vi.fn(() => mockRedis),
 };
 let redisAvailable = true;
@@ -42,6 +43,7 @@ beforeEach(() => {
   mockRedis.set.mockClear();
   mockRedis.del.mockClear();
   mockRedis.scan.mockClear();
+  mockRedis.exists.mockClear();
   redisAvailable = true;
 });
 
@@ -185,8 +187,50 @@ describe('malformed stored values', () => {
     ['leading terminator', Buffer.from('\npng', 'ascii')],
     ['header longer than any format name', Buffer.concat([Buffer.alloc(64, 0x61), Buffer.from('\n')])],
     ['legacy base64-in-JSON value', Buffer.from(JSON.stringify({ format: 'png', base64: 'AAAA' }))],
+    // Otherwise this resolves to `data:image/png;base64,` — a valid-looking
+    // empty image handed to the provider.
+    ['a valid header with no bytes behind it', Buffer.from('png\n', 'ascii')],
   ])('treats %s as a miss', async (_label, value) => {
     store.set('llm:img:u1:deadbeef', value);
     await expect(loadStagedImage('u1', 'deadbeef')).resolves.toBeNull();
+  });
+});
+
+/**
+ * Two uploads racing for one user each prune with a different `keepKey`, so
+ * without the post-prune repair each deletes what the other just wrote and
+ * BOTH callers get a handle that 410s — punishing the one who did nothing
+ * wrong.
+ */
+describe('concurrent uploads from one user', () => {
+  it('leaves both handles resolvable rather than deleting both', async () => {
+    const [a, b] = await Promise.all([
+      stageImage('u1', buildPng(8, 8), 'png'),
+      stageImage('u1', buildPng(16, 16), 'png'),
+    ]);
+
+    expect(await loadStagedImage('u1', a)).not.toBeNull();
+    expect(await loadStagedImage('u1', b)).not.toBeNull();
+  });
+
+  it('restores an entry a concurrent prune deleted', async () => {
+    const png = buildPng(8, 8);
+    // Simulate the loser of the race: the prune wipes everything, including the
+    // key this call just wrote.
+    mockRedis.scan.mockImplementationOnce(async () => {
+      store.clear();
+      return { cursor: 0, keys: [] };
+    });
+
+    const handle = await stageImage('u1', png, 'png');
+    const loaded = await loadStagedImage('u1', handle);
+    expect(loaded).not.toBeNull();
+    expect(loaded!.bytes.equals(png)).toBe(true);
+  });
+
+  it('still returns the handle when the survival check itself fails', async () => {
+    mockRedis.exists.mockRejectedValueOnce(new Error('READONLY'));
+    const handle = await stageImage('u1', buildPng(8, 8), 'png');
+    expect(handle).toMatch(/^[0-9a-f]{64}$/);
   });
 });

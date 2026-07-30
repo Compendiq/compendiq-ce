@@ -25,6 +25,8 @@ import { logger } from '../utils/logger.js';
  *      the ceiling is `users x MAX_IMAGE_BYTES`, not `uploads x
  *      MAX_IMAGE_BYTES`. The design commits to exactly one image per request
  *      and the composer shows a single preview, so a depth of 1 costs nothing.
+ *      Two uploads racing for one user can transiently leave two entries (see
+ *      the repair in `stageImage`) — bounded overshoot, not unbounded growth.
  *   2. The bytes are stored raw, not base64 inside JSON — ~25% less memory and
  *      no encode/decode/re-encode passes over up to 10 MB per request.
  */
@@ -69,7 +71,13 @@ function decodeStoredImage(stored: Buffer): { bytes: Buffer; format: ImageFormat
   const format = stored.subarray(0, terminator).toString('ascii');
   if (!(SUPPORTED_IMAGE_FORMATS as readonly string[]).includes(format)) return null;
 
-  return { bytes: stored.subarray(terminator + 1), format: format as ImageFormat };
+  // A header with nothing behind it is as unusable as no header at all — it
+  // would resolve to `data:image/png;base64,` and be sent to the provider as a
+  // valid-looking empty image. Treat it as the miss it is.
+  const bytes = stored.subarray(terminator + 1);
+  if (bytes.length === 0) return null;
+
+  return { bytes, format: format as ImageFormat };
 }
 
 /**
@@ -110,12 +118,26 @@ export async function stageImage(
 
   const handle = createHash('sha256').update(bytes).digest('hex');
   const key = keyFor(userId, handle);
-  await redis.set(key, encodeStoredImage(bytes, format), {
-    EX: STAGED_IMAGE_TTL_SECONDS,
-  });
+  const value = encodeStoredImage(bytes, format);
+  await redis.set(key, value, { EX: STAGED_IMAGE_TTL_SECONDS });
 
   // After the write, so a prune failure can never leave the user with nothing.
   await pruneOlderStagedImages(userId, key);
+
+  // Two uploads racing for one user each prune with a *different* `keepKey`, so
+  // each can delete what the other just wrote and both handles would 410 —
+  // failing the one caller who did nothing wrong. Detecting it costs one
+  // EXISTS; repairing it costs one SET. Repaired unconditionally rather than in
+  // a loop: the worst case is both images surviving, which overshoots the
+  // depth-1 cap by exactly one entry and expires on its own.
+  try {
+    if (!(await redis.exists(key))) {
+      logger.debug({ userId }, 'Staged image was pruned by a concurrent upload; restoring');
+      await redis.set(key, value, { EX: STAGED_IMAGE_TTL_SECONDS });
+    }
+  } catch (err) {
+    logger.warn({ err, userId }, 'Could not confirm the staged image survived pruning');
+  }
 
   return handle;
 }

@@ -26,14 +26,17 @@ import { prepareImageRoutes } from './prepare-image.js';
 import { createMultipartPayload } from '../../core/services/test-document-fixtures.js';
 import { buildPng, buildJpeg, SVG_BYTES } from '../../core/services/test-image-fixtures.js';
 import { ImageStagingUnavailableError } from '../../core/services/image-staging.js';
+import { MAX_IMAGE_BYTES } from '../../core/services/image-validator.js';
 
 const HANDLE = 'a'.repeat(64);
 
 async function startApp() {
   const app = Fastify({ logger: false });
   await app.register(sensible);
+  // Mirrors app.ts's global registration, which is deliberately looser than the
+  // image route's own per-request limit (the document path shares this plugin).
   await app.register(multipart, {
-    limits: { fileSize: 10 * 1024 * 1024, files: 1, fields: 0 },
+    limits: { fileSize: 20 * 1024 * 1024, files: 1, fields: 0 },
   });
   app.decorate('authenticate', async () => {});
   app.decorateRequest('userId', '');
@@ -107,6 +110,19 @@ describe('POST /llm/prepare-image', () => {
       payload: '', headers: { 'content-type': 'multipart/form-data; boundary=x' },
     });
     expect(res.statusCode).toBe(400);
+  });
+
+  /**
+   * The multipart stream is capped at `MAX_IMAGE_BYTES`, so an oversized upload
+   * is truncated rather than buffered whole — the point being that the process
+   * never holds more than the ceiling regardless of what the client sends.
+   */
+  it('returns 413 for an upload over the byte ceiling and never stages it', async () => {
+    const app = await startApp();
+    const oversized = Buffer.concat([buildPng(8, 8), Buffer.alloc(MAX_IMAGE_BYTES + 1024, 0x00)]);
+    const res = await post(app, 'huge.png', oversized);
+    expect(res.statusCode).toBe(413);
+    expect(mockStageImage).not.toHaveBeenCalled();
   });
 
   it('returns 503 when staging is unavailable', async () => {

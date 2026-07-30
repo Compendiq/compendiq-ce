@@ -5,6 +5,7 @@ import {
   validateImage,
   ImageValidationError,
   MAX_IMAGE_DIMENSION,
+  MAX_IMAGE_BYTES,
 } from './image-validator.js';
 import {
   buildPng, buildGif, buildWebpVp8x, buildJpeg, SVG_BYTES,
@@ -96,6 +97,30 @@ describe('validateImage', () => {
   it('treats .jpeg and .jpg as the same format', () => {
     expect(validateImage(buildJpeg(8, 8), 'a.jpeg').format).toBe('jpeg');
     expect(validateImage(buildJpeg(8, 8), 'a.jpg').format).toBe('jpeg');
+  });
+
+  /**
+   * Defence in depth: the route's multipart limit answers 413 first, so this
+   * only fires for a new caller or a limit that stopped being applied — and
+   * staging is what puts the bytes in a shared `noeviction` Redis.
+   */
+  it('rejects a buffer over the byte ceiling', () => {
+    const png = buildPng(8, 8);
+    const oversized = Buffer.concat([png, Buffer.alloc(MAX_IMAGE_BYTES, 0x00)]);
+    try {
+      validateImage(oversized, 'huge.png');
+      expect.unreachable('should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ImageValidationError);
+      expect((err as ImageValidationError).kind).toBe('unprocessable');
+    }
+  });
+
+  it('accepts a buffer exactly at the byte ceiling', () => {
+    const png = buildPng(8, 8);
+    const atLimit = Buffer.concat([png, Buffer.alloc(MAX_IMAGE_BYTES - png.length, 0x00)]);
+    expect(atLimit.length).toBe(MAX_IMAGE_BYTES);
+    expect(validateImage(atLimit, 'big.png').format).toBe('png');
   });
 
   /**
