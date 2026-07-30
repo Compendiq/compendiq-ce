@@ -329,6 +329,29 @@ describe('ImproveMode attachments (#1154, #1131 gap-fill)', () => {
     expect(mockExtractDocument).toHaveBeenCalledTimes(1);
   });
 
+  /**
+   * One drop, one extraction. `useAttachments` listens natively on the block
+   * while React delegates to its root, so if the zone kept its own handlers the
+   * ancestor would fire first and `stopPropagation` could not deduplicate after
+   * the fact — passing `isDragOver` is what makes the zone stop listening.
+   * Dropping on the trigger itself is the case where both would see the event.
+   */
+  it('extracts exactly once for a file dropped on the attach trigger', async () => {
+    renderImproveMode({ chatVision: true });
+    await settle();
+
+    await act(async () => {
+      fireEvent.drop(screen.getByTestId('document-attach-button'), {
+        dataTransfer: { files: [PDF()] },
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('document-attachment-card')).toBeInTheDocument();
+    });
+    expect(mockExtractDocument).toHaveBeenCalledTimes(1);
+  });
+
   it('stages an image pasted into the instruction field', async () => {
     renderImproveMode({ chatVision: true });
     await settle();
