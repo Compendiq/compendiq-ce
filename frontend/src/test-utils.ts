@@ -117,8 +117,13 @@ export function expectComposerFocusOrder(box: HTMLElement, expected: string[]): 
 
   // `className` on an SVG element is an SVGAnimatedString, not a string, and
   // lucide renders SVGs throughout — read the attribute instead.
+  //
+  // Variants count: `md:order-2` reorders the boxes at exactly the widths these
+  // composers are used at, while leaving the tab sequence where it was — the
+  // defect verbatim. Matching only the bare utility let the whole responsive
+  // family straight back in.
   const reordered = [box, ...box.querySelectorAll<HTMLElement>('*')].filter((el) =>
-    /(?:^|\s)order-(?:\d+|first|last|none)(?:\s|$)/.test(el.getAttribute('class') ?? ''),
+    /(?:^|\s)(?:[a-z-]+:)*order-(?:\d+|first|last|none)(?:\s|$)/.test(el.getAttribute('class') ?? ''),
   );
   expect(
     reordered.map((el) => `<${el.tagName.toLowerCase()} class="${el.getAttribute('class')}">`),

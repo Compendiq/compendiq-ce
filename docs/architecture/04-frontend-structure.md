@@ -151,9 +151,30 @@ flowchart TB
   server contract.
 - Attaching an image requires `AiContext`'s **`chatVision`** to be exactly
   `true`. It is a tri-state (`true` / `false` / `null`) and must not be collapsed
-  to a boolean: `false` is "probed and refused", `null` is "never established",
-  and `VisionBadge` (`shared/components/badges/`, also shown on the Settings →
-  LLM chat assignment) renders them as different words.
+  to a boolean: `false` is "probed and refused", `null` is "not established" —
+  which is usually *not probed yet*, since `getVisionCapability` is a cache read
+  that schedules a refresh and returns `null` on the spot — and `VisionBadge`
+  (`shared/components/badges/`, also shown on the Settings → LLM chat assignment)
+  renders them as different words. No copy may claim a probe ran.
+- The verdict is about the **chat use-case default**, never the model dropdown.
+  `/llm/generate` and `/llm/improve` both gate on `resolveUsecase('chat')` and
+  ignore the body's `model`, so refusal copy interpolates `AiContext`'s
+  **`chatVisionModel`** — and `ImageAttachZone` names the prop `visionModel` to
+  keep it apart from `model`. On `/ai` the two differ on screen the moment the
+  user changes the dropdown.
+- **In the dock, neither attachment reaches Send.** `ask()` posts to `/llm/ask`,
+  which accepts no `referenceText` and no `imageHandle` — wiring either in would
+  be a 400, not a feature. Only the Improve chip consumes them, so both zones say
+  so in their trigger label and on their card (`triggerLabel` / `usageHint`).
+  Improve also re-checks `isBusy` **inside** `runChip` rather than only on the
+  chip's `disabled`: `DockDiffCard`'s "Re-run Improve" and the seed effect both
+  reach it directly.
+- Both `isExtracting` and `isPreparing` are **depth counters**, not booleans. The
+  shared drop target accepts a second file mid-flight, and a boolean would clear
+  on the first `finally` — re-enabling the trigger and unblocking Send while the
+  second attachment was still being prepared (#940). Removing or clearing a slot
+  also bumps its request id, so an in-flight result that lands afterwards is
+  discarded rather than re-attaching itself to whatever page the user moved to.
 - Each zone contributes **one flex row holding its own card and trigger**
   (`composer-row.ts`). `order-*` moves boxes without moving the tab sequence, so
   the reordering convention that predated this is gone from the zones and all

@@ -154,6 +154,13 @@ export interface DocumentUploadZoneProps {
    *
    * Omit it and the component keeps its own state and its own listeners, which
    * is what a standalone `dropzone` needs — there it IS the drop target.
+   *
+   * **No shipped surface omits it today** (#1154). Generate passes it on the
+   * `dropzone` variant too, so the internal `dragDepth`/`enterDrag`/`leaveDrag`/
+   * `handleDrop` path is exercised only by this component's own tests. It is
+   * kept deliberately: this is a shared component, and a standalone dropzone
+   * with no `useAttachments` above it is the configuration it was built for. It
+   * is a supported fallback, not a live dependency of anything on screen.
    */
   isDragOver?: boolean;
   /** Prefix for every `data-testid` this renders. */
@@ -190,12 +197,6 @@ export function DocumentUploadZone({
   const only = formats.length === 1 ? formats[0] : undefined;
   const noun = only ? FORMAT_META[only].label : 'document';
 
-  // No format or size gate here any more — both moved to `useAttachments`, which
-  // is the only place that knows whether a file is a document or an image.
-  const handleFile = useCallback((file: File) => {
-    onPick(file);
-  }, [onPick]);
-
   // Drag state is counted, not toggled: `dragleave` fires every time the
   // pointer crosses into a child, so a composer full of children would flicker
   // the hint off under a drag that never actually left.
@@ -217,8 +218,10 @@ export function DocumentUploadZone({
     e.preventDefault();
     endDrag();
     const file = e.dataTransfer.files[0];
-    if (file) handleFile(file);
-  }, [endDrag, handleFile]);
+    // Straight to the parent's router: this component decides nothing about
+    // which files are acceptable (#1154).
+    if (file) onPick(file);
+  }, [endDrag, onPick]);
 
   // Attached only when this component owns the drop. A parent that passes
   // `isDragOver` has a `useAttachments` drop target on an ancestor, and that
@@ -242,7 +245,7 @@ export function DocumentUploadZone({
       className="hidden"
       onChange={(e) => {
         const file = e.target.files?.[0];
-        if (file) handleFile(file);
+        if (file) onPick(file);
         // Reset so re-selecting the same file triggers onChange
         e.target.value = '';
       }}
