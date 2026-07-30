@@ -68,14 +68,17 @@ describe.skipIf(!dbAvailable)('model capabilities', () => {
     expect(await getVisionCapability(id, 'llama3.1')).toBe(false);
   });
 
-  it('re-probes a NULL verdict, since unknown is not an answer', async () => {
+  it('schedules (but does not await) a background refresh when verdict is NULL', async () => {
     const id = await seedProvider();
     mockProbeVision.mockResolvedValue({ vision: null, error: 'ECONNREFUSED' });
 
+    // First call: returns NULL immediately, schedules refresh in background
     expect(await getVisionCapability(id, 'm')).toBeNull();
-    mockProbeVision.mockResolvedValue({ vision: true });
-    expect(await getVisionCapability(id, 'm')).toBe(true);
-    expect(mockProbeVision).toHaveBeenCalledTimes(2);
+    expect(mockProbeVision).toHaveBeenCalledTimes(1);
+
+    // A second immediate call should NOT call probeVision again (deduplication of in-flight refreshes)
+    expect(await getVisionCapability(id, 'm')).toBeNull();
+    expect(mockProbeVision).toHaveBeenCalledTimes(1); // Still 1, not 2
   });
 
   it('persists the probe error alongside a NULL verdict', async () => {
@@ -90,7 +93,7 @@ describe.skipIf(!dbAvailable)('model capabilities', () => {
     expect(rows[0]!.probe_error).toBe('connect ECONNREFUSED');
   });
 
-  it('re-probes a row older than the max age', async () => {
+  it('returns the stale row immediately and schedules a background refresh', async () => {
     const id = await seedProvider();
     await query(
       `INSERT INTO llm_model_capabilities (provider_id, model, vision, probed_at)
@@ -99,8 +102,32 @@ describe.skipIf(!dbAvailable)('model capabilities', () => {
     );
     mockProbeVision.mockResolvedValue({ vision: false });
 
-    expect(await getVisionCapability(id, 'm')).toBe(false);
+    // Returns the stale row (true) immediately without blocking
+    expect(await getVisionCapability(id, 'm')).toBe(true);
+
+    // A refresh was scheduled (probeVision was called), but we got the old value
+    // A second call should not schedule another refresh due to deduplication
+    expect(await getVisionCapability(id, 'm')).toBe(true);
     expect(mockProbeVision).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies a cooldown to prevent repeatedly scheduling refreshes for NULL verdicts', async () => {
+    const id = await seedProvider();
+    // Insert a NULL row with a recent timestamp (within cooldown)
+    await query(
+      `INSERT INTO llm_model_capabilities (provider_id, model, vision, probed_at)
+       VALUES ($1,'m',NULL, NOW())`,
+      [id],
+    );
+    mockProbeVision.mockResolvedValue({ vision: null, error: 'still unknown' });
+
+    // First call should not schedule a refresh because we're inside the cooldown window
+    expect(await getVisionCapability(id, 'm')).toBeNull();
+    expect(mockProbeVision).toHaveBeenCalledTimes(0);
+
+    // Verify that a second call also respects the cooldown
+    expect(await getVisionCapability(id, 'm')).toBeNull();
+    expect(mockProbeVision).toHaveBeenCalledTimes(0);
   });
 
   it('keeps verdicts independent per model on one provider', async () => {

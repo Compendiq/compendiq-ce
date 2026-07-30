@@ -14,18 +14,12 @@ vi.mock('node:dns/promises', () => ({
   }),
 }));
 
-// #1154 — PUT /admin/llm-usecases fires a fire-and-forget vision probe after
-// save (see llm-usecases.ts). Left unmocked, that probe would make a real
-// undici fetch to the test's fake provider URLs (`http://a/v1`, `http://b/v1`)
-// on every PUT test, racing this file's own `afterAll`/`teardownTestDb` with
-// no guarantee the fetch fails before the pool closes. Mocking at the same
-// module boundary as model-capabilities.test.ts keeps the probe's DB writes
-// (loadProviderConfig read + persist) fast and deterministic instead of
-// depending on how quickly this environment's DNS resolution fails.
-vi.mock('../../domains/llm/services/vision-probe.js', () => ({
-  probeVision: vi.fn().mockResolvedValue({ vision: null }),
-}));
-
+// #1154 — Mock model-capabilities to prevent real LLM probes during tests.
+// GET /llm/usecase-default calls getVisionCapability (which schedules background
+// refreshes, never blocking). PUT /admin/llm-usecases fires a fire-and-forget
+// refreshVisionCapability after save. Both are mocked here to keep tests fast
+// and deterministic, avoiding real undici fetches to the test's fake provider
+// URLs (`http://a/v1`, `http://b/v1`).
 const mockGetVisionCapability = vi.fn().mockResolvedValue(null);
 vi.mock('../../domains/llm/services/model-capabilities.js', () => ({
   getVisionCapability: (...args: unknown[]) => mockGetVisionCapability(...args),
@@ -302,6 +296,43 @@ describe.skipIf(!dbAvailable)('GET /api/llm/usecase-default', () => {
         headers: { authorization: `Bearer ${adminToken}` },
       });
       expect(() => UsecaseDefaultSchema.parse(res.json())).not.toThrow();
+    });
+
+    it('does not return the provider-not-configured 404 if schema validation fails', async () => {
+      // Set up a provider so resolveUsecase succeeds
+      const p = await app.inject({
+        method: 'POST',
+        url: '/api/admin/llm-providers',
+        headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+        payload: JSON.stringify({
+          name: 'Schema Test Provider',
+          baseUrl: 'http://schema-test/v1',
+          authType: 'none',
+          verifySsl: true,
+          defaultModel: 'schema-model',
+        }),
+      });
+      const providerId: string = p.json().id;
+      await app.inject({
+        method: 'POST',
+        url: `/api/admin/llm-providers/${providerId}/set-default`,
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+
+      // Mock getVisionCapability to return an invalid value that will fail schema validation.
+      // This simulates a bug in the getter, not a missing provider.
+      mockGetVisionCapability.mockResolvedValue('not-a-boolean' as any);
+
+      // The error should propagate as a 500 (schema validation error), not as the
+      // provider-not-configured 404 message.
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/llm/usecase-default?usecase=chat',
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+      // Schema validation error triggers a 500, not the 404 "Configure one in Settings → LLM"
+      expect(res.statusCode).not.toBe(404);
+      expect(res.json().error).not.toMatch(/Settings → LLM/);
     });
   });
 });
