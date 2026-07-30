@@ -18,6 +18,18 @@ export interface DockActionOptions {
    */
   imageHandle?: string;
   /**
+   * True while either attachment slot is still being prepared — the panel's
+   * `isBusy`. Improve is the one action that reads an attachment, so it is the
+   * one action that has to wait for it.
+   *
+   * The chip's own `disabled` is not enough. `runChip` is also reached from
+   * `DockDiffCard`'s "Re-run Improve", which carries no disabled state, and
+   * from the seed effect — so the guard has to live in the handler, where every
+   * caller passes through it. `/ai`'s Generate and Improve already re-check
+   * their `isBusy` inside their handlers for the same reason (#940).
+   */
+  isBusy?: boolean;
+  /**
    * Drop the staged image because the server no longer has it (410). The handle
    * is owned by the panel's `useAttachments`, not by this hook, so the rollback
    * has to ask for it — see the 410 branch below for the rest of the undo.
@@ -35,7 +47,7 @@ export interface DockActionOptions {
  * into four chips without moving any data.
  */
 export function useDockActions({
-  referenceText, imageHandle, onImageExpired,
+  referenceText, imageHandle, isBusy = false, onImageExpired,
 }: DockActionOptions = {}) {
   const {
     page, pageId, model, includeSubPages, thinkingMode, isStreaming, conversationId,
@@ -87,6 +99,15 @@ export function useDockActions({
 
     switch (id) {
       case 'improve': {
+        // Wait out an in-flight attachment. The chip is disabled for this, but
+        // "Re-run Improve" on a stale diff card is not, and it lands here — so
+        // without this the request would go with `imageHandle` undefined while
+        // the image card is still on screen, which is #940's exact shape. Said
+        // rather than silently dropped: nothing else on screen explains it.
+        if (isBusy) {
+          toast.error('Still attaching — try again in a moment.');
+          return;
+        }
         // Capture the version the model is about to be shown. If the document
         // moves before the diff is applied, that mismatch is what turns Apply
         // into an offer to re-run instead of a silent overwrite.
@@ -181,7 +202,7 @@ export function useDockActions({
     }
   }, [
     page, pageId, canRun, input, improvementType, diagramType, thinkingMode, model,
-    includeSubPages, referenceText, imageHandle, onImageExpired, runStream, setInput,
+    includeSubPages, referenceText, imageHandle, isBusy, onImageExpired, runStream, setInput,
     setShowDiffView, setImprovedContent, setOriginalMarkdown, setLayoutTokensLost,
     setDiffBaseVersion, setDiagramCode,
   ]);

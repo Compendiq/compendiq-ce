@@ -280,7 +280,8 @@ describe('AiDock — reference document (#1131)', () => {
 
     await waitFor(() => {
       expect(toastErrorMock).toHaveBeenCalledWith(
-        "Image support for llama3 isn't confirmed yet — try again shortly.",
+        "Image support for the model assigned to chat (llama3) isn't "
+        + 'confirmed yet — try again shortly.',
       );
     });
     expect(globalThis.fetch).not.toHaveBeenCalled();

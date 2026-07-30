@@ -3,9 +3,16 @@ import { cn } from '../../lib/cn';
 /**
  * #1154: whether the model assigned to `chat` accepts image input.
  *
- * Three states, not two. `null` means the server probed and could not tell
- * (a rate limit, an auth hiccup, an open breaker), which is not the same claim
- * as "this model is text-only" — see ADR-021's #1154 amendment.
+ * Three states, not two. `null` means capability is **not established**, which
+ * is not the same claim as "this model is text-only" — see ADR-021's #1154
+ * amendment.
+ *
+ * It covers two situations, and the copy must not pick one: the model has not
+ * been probed *yet*, or a probe ran and could not tell (a rate limit, an auth
+ * hiccup, an open breaker). Not-yet is the dominant one and the only one a user
+ * normally sees — `getVisionCapability` is a pure cache read, so a model with no
+ * row schedules a background refresh and returns `null` immediately, which is
+ * every first paint for an unseen model.
  *
  * Steel and slate rather than green/amber: ADR-010 reserves amber for
  * warning/attention, and a capability verdict is information, not a warning.
@@ -31,8 +38,8 @@ const CONFIG: Record<'yes' | 'no' | 'unknown', VisionStateConfig> = {
   unknown: {
     label: 'Unconfirmed',
     title:
-      'Image support has not been established yet — the probe was inconclusive. '
-      + 'Image attachments are refused until it succeeds.',
+      'Image support has not been established yet. '
+      + 'Image attachments are refused until a probe confirms it.',
     badgeClass: 'bg-muted text-muted-foreground',
   },
 };

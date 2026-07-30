@@ -331,6 +331,7 @@ export function GenerateSavePanel({
 export function GenerateModeInput() {
   const {
     input, setInput, isStreaming, model, thinkingMode, setMessages, runStream, chatVision,
+    chatVisionModel,
   } = useAiContext();
   const [generatedContent, setGeneratedContent] = useState('');
   const [showSavePanel, setShowSavePanel] = useState(false);
@@ -358,7 +359,7 @@ export function GenerateModeInput() {
   const attachments = useAttachments({
     dropTargetRef: surfaceRef,
     imageEnabled: chatVision === true,
-    imageDisabledReason: imageDisabledReason(chatVision, model),
+    imageDisabledReason: imageDisabledReason(chatVision, chatVisionModel),
     disabled: isStreaming,
   });
   // Destructured for the send callback's dependency array: `useAttachments`
@@ -422,7 +423,12 @@ export function GenerateModeInput() {
       // left as a dead turn with an error under it: the image slot is cleared
       // because that handle is gone for good, and the prompt goes back in the
       // box so it does not have to be retyped.
+      // Guarded on the image the way the dock's handler is: only the image
+      // path can produce a 410 today, and a 410 from anywhere else is somebody
+      // else's error — it keeps its normal inline treatment rather than being
+      // explained away with an image message that would not be true.
       onError: (err) => {
+        if (!attachedImage) return false;
         if (!(err instanceof ApiError) || err.statusCode !== 410) return false;
         removeImage();
         setInput(prompt);
@@ -523,7 +529,7 @@ export function GenerateModeInput() {
         <div className="nm-composer flex-wrap">
           <ImageAttachZone
             vision={chatVision}
-            model={model}
+            visionModel={chatVisionModel}
             image={attachments.image}
             onPick={attachments.pickFile}
             onRemove={attachments.removeImage}

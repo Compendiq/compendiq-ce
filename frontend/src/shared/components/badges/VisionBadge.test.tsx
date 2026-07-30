@@ -25,6 +25,19 @@ describe('VisionBadge', () => {
     expect(screen.getByTestId('vision-badge')).toHaveAttribute('title', expect.any(String));
   });
 
+  /**
+   * `null` is dominated by "not probed yet", not by a failed probe:
+   * `getVisionCapability` is a pure cache read, so an unseen model schedules a
+   * background refresh and returns `null` on the spot. Copy that says a probe
+   * ran and was inconclusive describes the rarer case as if it were the only
+   * one, and asserts a check the user's model may never have had.
+   */
+  it('does not claim a probe ran when capability is merely unestablished', () => {
+    render(<VisionBadge vision={null} />);
+    expect(screen.getByTestId('vision-badge').getAttribute('title'))
+      .not.toMatch(/probe was inconclusive|probed and could not/i);
+  });
+
   /** ADR-010: amber is reserved for warning/attention. A verdict is not a warning. */
   it('does not use the amber warning colour', () => {
     render(<VisionBadge vision={false} />);

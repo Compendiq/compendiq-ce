@@ -32,6 +32,7 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
   const {
     page, pageId, messages, messagesEndRef, isStreaming, isThinking, thinkingElapsed,
     streamingContent, input, setInput, modelsError, refetchModels, model, chatVision,
+    chatVisionModel,
   } = useAiContext();
 
   // Source material attached in the composer (#1131, #1154). Dock-local rather
@@ -49,7 +50,7 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
   const attachments = useAttachments({
     dropTargetRef: composerBoxRef,
     imageEnabled: chatVision === true,
-    imageDisabledReason: imageDisabledReason(chatVision, model),
+    imageDisabledReason: imageDisabledReason(chatVision, chatVisionModel),
     disabled: isStreaming,
   });
   const {
@@ -60,6 +61,7 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
   const { ask, runChip } = useDockActions({
     referenceText: reference?.result.text,
     imageHandle: image?.handle,
+    isBusy,
     onImageExpired: removeImage,
   });
 
@@ -328,15 +330,24 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
           {/* Prefixed like the document zone above it: within one composer the
               two halves should be selectable the same way, and the dock is the
               one surface where a zone can sit beside an unrelated one. `/ai`'s
-              two modes keep the components' defaults. */}
+              two modes keep the components' defaults.
+
+              Both zones name Improve, because in this composer neither
+              attachment reaches Send: `ask()` posts to `/llm/ask`, which takes
+              a reference text and an image handle from nobody — wiring either
+              in would be a 400, not a feature. So the honesty is in the copy,
+              on the trigger and again on the card, the way #1131 already
+              handled the identical asymmetry for the document half. */}
           <ImageAttachZone
             vision={chatVision}
-            model={model}
+            visionModel={chatVisionModel}
             image={image}
             onPick={handlePick}
             onRemove={removeImage}
             isPreparing={isPreparing}
             disabled={isStreaming}
+            triggerLabel="Attach an image as reference for Improve"
+            usageHint="reference for Improve"
             testIdPrefix="ai-dock-image"
           />
           <textarea

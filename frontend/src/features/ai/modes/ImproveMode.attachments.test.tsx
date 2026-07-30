@@ -77,7 +77,7 @@ vi.mock('sonner', () => ({
 
 /**
  * `chatVision` is not a prop — it is `chatDefault?.vision` off the
- * `/llm/usecase-default?usecase=chat` query (AiContext.tsx:904), so the only
+ * `/llm/usecase-default?usecase=chat` query (see `chatVision` in AiContext), so the only
  * honest way to set it is through the API mock.
  */
 function renderImproveMode({ chatVision }: { chatVision: boolean | null }) {
@@ -198,7 +198,10 @@ beforeEach(() => {
     format: 'pdf', text: 'Extracted pdf text', fileSize: 5000, preview: 'Extracted pdf text',
   });
   streamSSEMock.mockImplementation(async function* () { yield { done: true }; });
-  vi.stubGlobal('URL', { ...URL, createObjectURL: vi.fn(() => 'blob:preview'), revokeObjectURL: vi.fn() });
+  // Spied, not replaced: spreading a class copies neither statics nor construct
+  // behaviour, so a `{ ...URL }` stub makes `new URL(...)` throw for the whole file.
+  vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:preview');
+  vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
   useAuthStore.getState().setAuth('test-token', { id: '1', username: 'testuser', role: 'user' });
 });
 
@@ -309,7 +312,8 @@ describe('ImproveMode attachments (#1154, #1131 gap-fill)', () => {
 
     await waitFor(() => {
       expect(toastErrorMock).toHaveBeenCalledWith(
-        "llama3 can't read images — assign a vision-capable model in Settings → LLM.",
+        "The model assigned to chat (llama3) can't read images — "
+        + 'assign a vision-capable model in Settings → LLM.',
       );
     });
     expect(mockPrepareImage).not.toHaveBeenCalled();

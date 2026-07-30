@@ -143,6 +143,7 @@ export function ImproveModeInput() {
     isStreaming, page, isPageLoading, model, pageId, includeSubPages, thinkingMode, runStream,
     improvementType, setShowDiffView, setImprovedContent, setOriginalMarkdown, setLayoutTokensLost,
     chatVision,
+    chatVisionModel,
   } = useAiContext();
   const [instruction, setInstruction] = useState('');
   const [searchWeb, setSearchWeb] = useState(false);
@@ -160,7 +161,7 @@ export function ImproveModeInput() {
   const attachments = useAttachments({
     dropTargetRef: surfaceRef,
     imageEnabled: chatVision === true,
-    imageDisabledReason: imageDisabledReason(chatVision, model),
+    imageDisabledReason: imageDisabledReason(chatVision, chatVisionModel),
     disabled: isStreaming,
   });
   // Destructured for the improve callback's dependency array: `useAttachments`
@@ -229,7 +230,11 @@ export function ImproveModeInput() {
         // this mode seeds no turn of its own (it passes `userMessage`, so
         // runStream owns and withdraws both rows it added) and it never clears
         // the instruction, so there is nothing else of ours to put back.
+        // Guarded on the image the way the dock's handler is: only the image
+        // path can produce a 410 today, and a 410 from anywhere else is
+        // somebody else's error, which keeps its normal inline treatment.
         onError: (err) => {
+          if (!attachedImage) return false;
           if (!(err instanceof ApiError) || err.statusCode !== 410) return false;
           removeImage();
           toast.error('The image expired — attach it again.');
@@ -293,7 +298,7 @@ export function ImproveModeInput() {
         />
         <ImageAttachZone
           vision={chatVision}
-          model={model}
+          visionModel={chatVisionModel}
           image={attachments.image}
           onPick={attachments.pickFile}
           onRemove={attachments.removeImage}

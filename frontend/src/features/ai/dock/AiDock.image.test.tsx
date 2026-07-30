@@ -9,7 +9,7 @@
  *   (`downscale-image.test.ts` covers that half). `use-extract-document` is
  *   mocked alongside it so both slots are controlled the same way.
  * - `chatVision` is not a prop: it is `chatDefault?.vision` off the
- *   `/llm/usecase-default?usecase=chat` query (AiContext.tsx:904), so the only
+ *   `/llm/usecase-default?usecase=chat` query (see `chatVision` in AiContext), so the only
  *   honest way to set it is through the API mock.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -182,7 +182,10 @@ beforeEach(() => {
     preview: 'The service must retry three times.',
   });
   streamSSEMock.mockImplementation(() => sse({ content: 'ok' }, { final: true, done: true }));
-  vi.stubGlobal('URL', { ...URL, createObjectURL: vi.fn(() => 'blob:preview'), revokeObjectURL: vi.fn() });
+  // Spied, not replaced: spreading a class copies neither statics nor construct
+  // behaviour, so a `{ ...URL }` stub makes `new URL(...)` throw for the whole file.
+  vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:preview');
+  vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
   useAiDockStore.setState({ open: false, seed: null, seedPageId: null });
   useUiStore.setState({ aiDockWidth: 420 });
   window.innerWidth = 1400;
@@ -348,7 +351,8 @@ describe('dock image attach (#1154)', () => {
 
     await waitFor(() => {
       expect(toastErrorMock).toHaveBeenCalledWith(
-        "llama3 can't read images — assign a vision-capable model in Settings → LLM.",
+        "The model assigned to chat (llama3) can't read images — "
+        + 'assign a vision-capable model in Settings → LLM.',
       );
     });
     expect(mockPrepareImage).not.toHaveBeenCalled();
@@ -511,6 +515,47 @@ describe('dock lapsed image handle (#1154)', () => {
 
     await waitFor(() => expect(threadText()).toContain('LLM connection lost'));
     expect(screen.getByTestId('ai-dock-image-card')).toBeInTheDocument();
+  });
+
+  /**
+   * `runChip` is reached from three places and only one of them — the chip
+   * itself — is disabled while an attachment is staging. The seed effect and
+   * `DockDiffCard`'s "Re-run Improve" both call it directly, so the wait has to
+   * live inside the handler or Improve goes out with `imageHandle` undefined
+   * while the image card is still on screen. That is #940's shape, and it is why
+   * `/ai`'s Generate and Improve re-check `isBusy` inside their handlers too.
+   */
+  it('refuses a seeded Improve while an attachment is still being prepared', async () => {
+    mockIsPreparing.value = true;
+    renderDock({ chatVision: true });
+    act(() => { useAiDockStore.getState().openDock('improve'); });
+    await waitFor(() => expect(screen.getByTestId('ai-dock-send')).toBeInTheDocument());
+    // The seed is consumed before the action runs, so this is the signal that
+    // the effect fired and `runChip` was actually entered.
+    await waitFor(() => expect(useAiDockStore.getState().seed).toBeNull());
+
+    expect(streamSSEMock.mock.calls.find((c) => c[0] === '/llm/improve')).toBeUndefined();
+    expect(toastErrorMock).toHaveBeenCalledWith(expect.stringMatching(/still attaching/i));
+  });
+
+  /**
+   * In this composer Send does not carry the image: `ask()` posts to `/llm/ask`,
+   * which accepts no image handle at all, so only the Improve chip uses one.
+   * Wiring it into `ask()` would be a 400, not a feature — so the honesty has to
+   * be in the copy, on the trigger and again on the card, exactly as #1131
+   * already handled the identical asymmetry for the document half. Without it
+   * the user attaches, types, sends, and gets an answer that never saw the
+   * picture, with the card still sitting there.
+   */
+  it('names Improve on the image trigger and on the card', async () => {
+    renderDock({ chatVision: true });
+    await openAndSettle();
+
+    expect(screen.getByTestId('ai-dock-image-trigger'))
+      .toHaveAttribute('aria-label', 'Attach an image as reference for Improve');
+
+    await attachImage();
+    expect(screen.getByTestId('ai-dock-image-card')).toHaveTextContent(/reference for Improve/);
   });
 
   /**

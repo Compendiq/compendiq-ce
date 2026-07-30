@@ -89,10 +89,23 @@ interface AiContextValue {
   refetchModels: () => void;
   /**
    * #1154: whether the resolved chat model accepts images. `null` means
-   * probed-but-undetermined, which the composer renders differently from
-   * `false` — the query at :535 has always fetched this and discarded it.
+   * capability is not established — not probed yet, or probed inconclusively —
+   * which the composer renders differently from `false`. The chat use-case
+   * default query below has always fetched this and discarded it.
    */
   chatVision: boolean | null;
+  /**
+   * #1154: the model `chatVision` is about, i.e. the chat use-case default.
+   *
+   * Distinct from `model`, and they diverge: `model` is what `/ai`'s dropdown
+   * has selected, while `/llm/generate` and `/llm/improve` both gate images on
+   * `resolveUsecase('chat')` and ignore the body's `model` outright. Copy that
+   * explains a refusal has to name this one, or it attributes the server's
+   * verdict to a model the verdict is not about.
+   *
+   * `''` until the query resolves, exactly like `model`.
+   */
+  chatVisionModel: string;
 
   // Streaming state
   input: string;
@@ -902,6 +915,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
     modelsError: modelsQuery.isError,
     refetchModels: modelsQuery.refetch,
     chatVision: chatDefault?.vision ?? null,
+    chatVisionModel: chatDefault?.model ?? '',
     input,
     setInput,
     isStreaming,

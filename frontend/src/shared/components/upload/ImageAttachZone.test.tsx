@@ -3,7 +3,7 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { ImageAttachZone, imageDisabledReason } from './ImageAttachZone';
 
 const base = {
-  model: 'llama3.1',
+  visionModel: 'llama3.1',
   image: null,
   onPick: vi.fn(),
   onRemove: vi.fn(),
@@ -54,8 +54,10 @@ describe('imageDisabledReason', () => {
 
   /** A resolved model still gets the verdict-specific copy. */
   it('keeps the per-verdict copy once a model has resolved', () => {
-    expect(imageDisabledReason(false, 'llama3.1')).toMatch(/llama3\.1 can't read images/);
-    expect(imageDisabledReason(null, 'llama3.1')).toMatch(/Image support for llama3\.1/);
+    expect(imageDisabledReason(false, 'llama3.1'))
+      .toMatch(/chat \(llama3\.1\) can't read images/);
+    expect(imageDisabledReason(null, 'llama3.1'))
+      .toMatch(/Image support for the model assigned to chat \(llama3\.1\)/);
   });
 });
 
@@ -126,5 +128,40 @@ describe('ImageAttachZone', () => {
     }} />);
     fireEvent.click(screen.getByRole('button', { name: 'Remove image' }));
     expect(onRemove).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * `disabled` means a stream is in flight. Detaching then would revoke the
+   * object URL out from under a request already carrying the handle — which is
+   * why `DocumentUploadZone` gates its own remove button the same way.
+   */
+  it('blocks the remove control while disabled', () => {
+    render(<ImageAttachZone {...base} vision={true} disabled image={{
+      handle: 'a'.repeat(64), format: 'webp', width: 1568, height: 882,
+      fileSize: 240_000, previewUrl: 'blob:preview',
+    }} />);
+    expect(screen.getByRole('button', { name: 'Remove image' })).toBeDisabled();
+  });
+
+  /**
+   * A surface where the image feeds one action rather than the next message has
+   * to say so, on the trigger and again on the card — see the dock, whose Send
+   * posts to `/llm/ask` and carries no image at all.
+   */
+  it('takes a caller-supplied trigger label and usage hint', () => {
+    render(<ImageAttachZone
+      {...base}
+      vision={true}
+      triggerLabel="Attach an image as reference for Improve"
+      usageHint="reference for Improve"
+      image={{
+        handle: 'a'.repeat(64), format: 'webp', width: 1568, height: 882,
+        fileSize: 240_000, previewUrl: 'blob:preview',
+      }}
+    />);
+    const trigger = screen.getByTestId('image-attach-trigger');
+    expect(trigger).toHaveAttribute('aria-label', 'Attach an image as reference for Improve');
+    expect(trigger).toHaveAttribute('title', 'Attach an image as reference for Improve');
+    expect(screen.getByTestId('image-attach-card')).toHaveTextContent(/reference for Improve/);
   });
 });
