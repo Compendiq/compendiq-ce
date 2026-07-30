@@ -1558,7 +1558,7 @@ Wrap the `runStream` call:
     } catch (err) {
       // 410 = the 15-minute staging TTL lapsed. Drop the image and say so, but
       // leave the prompt text alone so nothing has to be retyped.
-      if (err instanceof ApiError && err.status === 410) {
+      if (err instanceof ApiError && err.statusCode === 410) {
         attachments.removeImage();
         toast.error('The image expired — attach it again.');
         return;

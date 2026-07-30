@@ -213,9 +213,25 @@ staging is not consumed on read.
 
 ### Lifecycle
 
-- **Expiry.** `sse.ts:43-47` throws `ApiError` carrying the HTTP status, so on
-  `status === 410` the hook clears the image slot and toasts "The image expired —
-  attach it again", **leaving the prompt text intact** so nothing is retyped.
+- **Expiry.** **Corrected during Task 7.** Two things this section originally got
+  wrong. First, `ApiError`'s field is **`statusCode`**, not `status`
+  (`api.ts:5-13`) — `err.status === 410` is `undefined === 410` and never fires.
+  Second, and more fundamental: `runStream` **swallows every error**
+  (`AiContext.tsx:791-816` catches, toasts, calls `failLastMessage`, and ends in
+  `finally` with no rethrow), so a `try/catch` around `runStream` is unreachable
+  code.
+
+  The shipped mechanism is an additive `onError?: (err: unknown) => boolean` on
+  `runStream`'s options. Returning `true` claims the error: `runStream` skips its
+  toast and its inline error bubble because the caller has explained it in
+  context. Every existing caller passes nothing and is unchanged — which is why
+  this was chosen over making `runStream` rethrow, an option that would have
+  turned every current caller into an unhandled rejection.
+
+  On `statusCode === 410` the caller clears the image slot, **restores** the
+  prompt text, and toasts "The image expired — attach it again". Note *restores*,
+  not *preserves*: `handleGenerate` has already run `setInput('')` by then, so
+  leaving the input alone would lose what the user typed.
 - **Capability regressed mid-session.** On `422` the slot is kept but disabled and
   the server's message is surfaced verbatim — the server is authoritative, and its
   wording already distinguishes "cannot accept images" from "not confirmed yet".
