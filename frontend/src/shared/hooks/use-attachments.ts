@@ -3,7 +3,7 @@ import { toast } from 'sonner';
 import { SUPPORTED_DOCUMENT_FORMATS, SUPPORTED_IMAGE_FORMATS } from '@compendiq/contracts';
 import { useExtractDocument, type ExtractDocumentResult } from './use-extract-document';
 import { usePrepareImage, type PreparedImage } from './use-prepare-image';
-import { ImageDecodeError } from '../lib/downscale-image';
+import { ImageDecodeError, refusedImageReason } from '../lib/downscale-image';
 
 /**
  * #1154: one owner for both attachment slots on the AI composer surfaces.
@@ -36,7 +36,11 @@ export interface UseAttachmentsOptions {
   disabled?: boolean;
 }
 
-const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'gif'] as const;
+// HEIC/HEIF included even though the browser MIME for them is unreliable (often
+// `''`): without the extension fallback they'd fall through to the document
+// branch and get the generic "Unsupported file" message instead of the
+// HEIC-specific, actionable one `downscaleImage` throws.
+const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'heic', 'heif'] as const;
 
 function looksLikeImage(file: File): boolean {
   if (file.type.startsWith('image/')) return true;
@@ -56,6 +60,7 @@ export function useAttachments(options: UseAttachmentsOptions = {}) {
 
   const [document_, setDocument] = useState<AttachedDocument | null>(null);
   const [image, setImage] = useState<PreparedImage | null>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
 
   const { extractDocument, isExtracting } = useExtractDocument();
   const { prepareImage, isPreparing } = usePrepareImage();
@@ -64,6 +69,24 @@ export function useAttachments(options: UseAttachmentsOptions = {}) {
   // on it, or every new attachment would revoke the URL it just created.
   const imageRef = useRef<PreparedImage | null>(null);
   imageRef.current = image;
+
+  // Guards two races around the async `prepareImage` call: (a) the component
+  // unmounts while it's in flight, and (b) a second pick starts and resolves
+  // before an earlier one does. Without these, either can set state after it
+  // stopped being valid — an unmount write, or an old image silently
+  // clobbering a newer one — and in both cases the losing `previewUrl` would
+  // never be revoked because it was never stored.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+  const prepareRequestIdRef = useRef(0);
+
+  // Counted, not toggled: `dragleave` fires every time the pointer crosses into
+  // a child, so a composer full of children would flicker the hint off under a
+  // drag that never actually left (mirrors DocumentUploadZone.tsx).
+  const dragDepthRef = useRef(0);
 
   const removeImage = useCallback(() => {
     setImage((current) => {
@@ -91,16 +114,27 @@ export function useAttachments(options: UseAttachmentsOptions = {}) {
         toast.error(imageDisabledReason ?? 'Images cannot be attached right now.');
         return;
       }
-      // Rejected here, ahead of `prepareImage`: `downscaleImage` (inside
-      // `usePrepareImage`) refuses SVG too, but that path isn't reachable from a
-      // handle alone — it needs an actual decode attempt — so the same refusal is
-      // duplicated at the door for an immediate, decode-free message.
-      if (file.type === 'image/svg+xml') {
-        toast.error('SVG images are not accepted. Export it as PNG first.');
+      // Refused here, ahead of `prepareImage`, using the same reason function
+      // `downscaleImage` uses internally so there is exactly one copy of the
+      // message. Refusing at the door — rather than letting the real decode
+      // reject it — avoids a pointless `isPreparing` flicker for a file that
+      // never had a chance, and keeps the refusal visible in this routing
+      // layer, where a reader debugging "why didn't my SVG attach" is looking.
+      const refusal = refusedImageReason(file);
+      if (refusal) {
+        toast.error(refusal);
         return;
       }
+      const requestId = ++prepareRequestIdRef.current;
       try {
         const prepared = await prepareImage(file);
+        if (!mountedRef.current || requestId !== prepareRequestIdRef.current) {
+          // Unmounted, or superseded by a newer pick that started before this
+          // one resolved. Either way this result lost and is never stored, so
+          // its object URL must be revoked here or it leaks.
+          URL.revokeObjectURL(prepared.previewUrl);
+          return;
+        }
         // Replace rather than accumulate: one image per request by design.
         setImage((previous) => {
           if (previous) URL.revokeObjectURL(previous.previewUrl);
@@ -134,18 +168,38 @@ export function useAttachments(options: UseAttachmentsOptions = {}) {
 
   // Shared drop target + paste. Native listeners rather than React props, because
   // the element belongs to the caller's tree.
+  //
+  // Registered even while `disabled` (the only thing that skips registration is
+  // having no target at all): a drop event must always be preventDefault'd, or
+  // the browser runs its default action and navigates the tab to the dropped
+  // file — destroying whatever the user had typed — regardless of whether the
+  // hook is currently willing to act on it (mirrors the same note in
+  // DocumentUploadZone.tsx). `disabled` therefore gates only whether `pickFile`
+  // is called, never whether the event is swallowed.
   useEffect(() => {
     const target = dropTargetRef?.current;
-    if (!target || disabled) return;
+    if (!target) return;
 
+    const onDragEnter = () => {
+      dragDepthRef.current += 1;
+      setIsDragOver(true);
+    };
+    const onDragLeave = () => {
+      dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+      if (dragDepthRef.current === 0) setIsDragOver(false);
+    };
     const onDragOver = (e: DragEvent) => e.preventDefault();
     const onDrop = (e: DragEvent) => {
+      e.preventDefault();
+      dragDepthRef.current = 0;
+      setIsDragOver(false);
+      if (disabled) return;
       const file = e.dataTransfer?.files[0];
       if (!file) return;
-      e.preventDefault();
       void pickFile(file);
     };
     const onPaste = (e: Event) => {
+      if (disabled) return;
       const clipboard = (e as ClipboardEvent).clipboardData;
       const items = Array.from(clipboard?.items ?? []);
       const imageItem = items.find((i) => i.type.startsWith('image/'));
@@ -156,10 +210,14 @@ export function useAttachments(options: UseAttachmentsOptions = {}) {
       void pickFile(file);
     };
 
+    target.addEventListener('dragenter', onDragEnter);
+    target.addEventListener('dragleave', onDragLeave);
     target.addEventListener('dragover', onDragOver);
     target.addEventListener('drop', onDrop);
     target.addEventListener('paste', onPaste);
     return () => {
+      target.removeEventListener('dragenter', onDragEnter);
+      target.removeEventListener('dragleave', onDragLeave);
       target.removeEventListener('dragover', onDragOver);
       target.removeEventListener('drop', onDrop);
       target.removeEventListener('paste', onPaste);
@@ -176,5 +234,6 @@ export function useAttachments(options: UseAttachmentsOptions = {}) {
     isBusy: isExtracting || isPreparing,
     isExtracting,
     isPreparing,
+    isDragOver,
   };
 }

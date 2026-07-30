@@ -62,6 +62,18 @@ export function fitWithin(w: number, h: number, edge: number): { width: number; 
 /** SVG is refused rather than rasterized — see the design of record. */
 const REFUSED_MIME = new Set(['image/svg+xml']);
 
+export const SVG_REFUSAL_MESSAGE = 'SVG images are not accepted. Export it as PNG first.';
+
+/**
+ * The reason this file is refused before any decode is attempted, or `null` if
+ * it is acceptable. Exported so callers that want to reject at the door — before
+ * paying for a decode attempt or flipping a loading flag — use the same message
+ * `downscaleImage` throws internally, rather than a second copy of the string.
+ */
+export function refusedImageReason(file: File): string | null {
+  return REFUSED_MIME.has(file.type) ? SVG_REFUSAL_MESSAGE : null;
+}
+
 async function decode(file: File): Promise<ImageBitmap> {
   // No resize options: `resizeWidth`/`resizeHeight` need to know which edge is
   // longest, which needs the intrinsic dimensions, which needs a decode. So the
@@ -83,11 +95,9 @@ async function decode(file: File): Promise<ImageBitmap> {
 export async function downscaleImage(
   file: File,
 ): Promise<{ blob: Blob; width: number; height: number }> {
-  if (REFUSED_MIME.has(file.type)) {
-    throw new ImageDecodeError(
-      'unsupported',
-      'SVG images are not accepted. Export it as PNG first.',
-    );
+  const refusal = refusedImageReason(file);
+  if (refusal) {
+    throw new ImageDecodeError('unsupported', refusal);
   }
   if (file.size > MAX_SOURCE_IMAGE_BYTES) {
     throw new ImageDecodeError(
