@@ -2555,6 +2555,19 @@ git commit -m "feat(llm): accept a staged image in generate and improve (#1154)"
 
 ### Task 10: Persist the model that actually ran
 
+> **RESOLVED AS A NO-OP (2026-07-30). This task's premise was false — do not
+> implement it.** Both inserts already pass `resolvedModel`, and always did on
+> this branch. Verified against `dev` itself: `git show
+> dev:backend/src/routes/llm/llm-ask.ts` and `…/llm-improve.ts` both bind
+> `resolvedModel`, and `git diff dev...HEAD` shows neither line was touched here.
+> The behaviour predates this work (`0387931`, `009c6aa7`). Existing tests already
+> assert it — `llm-ask.test.ts` sends `model: 'ignored-body-model'` and asserts the
+> INSERT receives the resolved model; `improve-page-id.test.ts` does the same.
+> No code change was made and no test was added: a test that cannot first be
+> observed to fail is not TDD, and manufacturing a red phase would have been
+> fabricated evidence. The steps below are retained only as the record of what was
+> wrongly specified.
+
 **Files:**
 - Modify: `backend/src/routes/llm/llm-ask.ts:262`
 - Modify: `backend/src/routes/llm/llm-improve.ts:199`

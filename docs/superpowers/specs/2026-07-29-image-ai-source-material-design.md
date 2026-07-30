@@ -322,12 +322,20 @@ ignored` (`schemas/llm.ts:14,37,78,89,101,109`). Server-side resolution *is* the
 ADR-021 design, and gating inherits it for free: capability is a property of the
 assignment, not of anything a client sends.
 
-What is inconsistent is that the ignored value is nonetheless **persisted** —
-into `llm_conversations.model` (`llm-ask.ts:262`) and `llm_improvements.model`
-(`llm-improve.ts:199`) — so those rows name a model that did not produce the
-output. Since gating reads the resolved model, this spec makes the record agree:
-both inserts persist `resolvedModel`. One authoritative answer to "which model
-did this", matching what the gate reads.
+**Correction (2026-07-30, during execution).** An earlier draft of this section
+claimed the ignored body value was nonetheless *persisted*, leaving
+`llm_conversations.model` and `llm_improvements.model` naming a model that never
+ran, and specified a fix. That claim was false. Both inserts already pass
+`resolvedModel` and always have on this branch — verified against `dev` itself
+(`llm-ask.ts` and `llm-improve.ts` in `git show dev:…`), with `git diff
+dev...HEAD` showing neither line touched. The behaviour predates this work
+(commits `0387931` and `009c6aa7`), and existing tests already assert it:
+`llm-ask.test.ts` sends `model: 'ignored-body-model'` and asserts the INSERT
+receives the resolved model, and `improve-page-id.test.ts` does the same.
+
+So the record is already consistent: one authoritative answer to "which model did
+this", and it matches what the vision gate reads. No change was needed, and none
+was made.
 
 **Filed separately:** the AI pane still presents a model dropdown
 (`AiContext.tsx:84,832` exposes `setModel`) whose selection #929 rendered
@@ -395,8 +403,7 @@ and widen it; add `contentToText` and fix the four `llm-ask.ts` audit
 expressions; migration 087; the probe service; capability wiring into admin save
 and cache-bus invalidation; `vision` on `/llm/usecase-default`;
 `POST /llm/prepare-image`; the contracts additions above; `imageHandle` on
-generate/improve with the 422 gate and the cache-key change; persist
-`resolvedModel` into `llm_conversations.model` and `llm_improvements.model`;
+generate/improve with the 422 gate and the cache-key change;
 ADR-021 amendment plus `06-data-model.md` (new table),
 `03-backend-domains.md` (new service) and `09-flow-rag-chat.md`.
 
