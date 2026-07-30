@@ -9,6 +9,7 @@ import { TypingIndicator } from '../../../shared/components/feedback/TypingIndic
 import { useAutoGrowTextarea } from '../../../shared/hooks/use-auto-grow-textarea';
 import { useAttachments } from '../../../shared/hooks/use-attachments';
 import { DocumentUploadZone } from '../../../shared/components/upload/DocumentUploadZone';
+import { ImageAttachZone, imageDisabledReason } from '../../../shared/components/upload/ImageAttachZone';
 import { PROMPT_MAX_LENGTH } from '../modes/prompt-limits';
 import { useAiDockStore } from '../../../stores/ai-dock-store';
 import { DOCK_CHIPS } from './dock-chips';
@@ -30,32 +31,42 @@ import { useDockActions } from './use-dock-actions';
 export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void; variant?: 'column' | 'sheet' }) {
   const {
     page, pageId, messages, messagesEndRef, isStreaming, isThinking, thinkingElapsed,
-    streamingContent, input, setInput, modelsError, refetchModels, model,
+    streamingContent, input, setInput, modelsError, refetchModels, model, chatVision,
   } = useAiContext();
 
-  // Reference material attached in the composer (#1131, #1154). Dock-local
-  // rather than AiContext state: it is material for the *next* action, not part
-  // of the conversation, and nothing outside this panel reads it.
+  // Source material attached in the composer (#1131, #1154). Dock-local rather
+  // than AiContext state: it is material for the *next* action, not part of the
+  // conversation, and nothing outside this panel reads it.
   //
   // `useAttachments` owns the composer as a shared drop target, so a file can be
   // let go anywhere on the prompt box rather than onto a 28px paperclip, and one
-  // router decides document-vs-image rather than each zone guessing. Images are
-  // still refused here: `imageEnabled` stays at its default until the dock knows
-  // whether the resolved chat model has probed as vision-capable (#1154).
+  // router decides document-vs-image rather than each zone guessing. The image
+  // half opens only once the resolved chat model has probed as vision-capable:
+  // `chatVision` is tri-state, and anything other than a confirmed `true` keeps
+  // intake shut — with the reason the user is shown coming from the same
+  // function the trigger's tooltip uses.
   const composerBoxRef = useRef<HTMLDivElement>(null);
-  const {
-    document: reference, isExtracting, pickFile, removeDocument, clearAll, isDragOver,
-  } = useAttachments({
+  const attachments = useAttachments({
     dropTargetRef: composerBoxRef,
+    imageEnabled: chatVision === true,
+    imageDisabledReason: imageDisabledReason(chatVision, model),
     disabled: isStreaming,
   });
+  const {
+    document: reference, image, pickFile, removeDocument, removeImage, clearAll, isDragOver,
+    isExtracting, isPreparing, isBusy,
+  } = attachments;
 
-  const { ask, runChip } = useDockActions({ referenceText: reference?.result.text });
+  const { ask, runChip } = useDockActions({
+    referenceText: reference?.result.text,
+    imageHandle: image?.handle,
+    onImageExpired: removeImage,
+  });
 
-  // A document attached while reading one page is not background for the next
-  // one. Threads are retained per page; an attachment silently following the
-  // user to a different document is exactly the kind of surprise #1126 set out
-  // to remove, so it is dropped at the boundary instead.
+  // A document or image attached while reading one page is not background for
+  // the next one. Threads are retained per page; an attachment silently
+  // following the user to a different document is exactly the kind of surprise
+  // #1126 set out to remove, so both slots are dropped at the boundary instead.
   useEffect(() => {
     clearAll();
   }, [pageId, clearAll]);
@@ -259,10 +270,12 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
                 key={id}
                 type="button"
                 onClick={() => void runChip(id)}
-                // Improve alone waits out an in-flight extraction: firing it
-                // now would send the request without the reference text that is
-                // still being extracted (#940's lesson, in the other surface).
-                disabled={isStreaming || !page || !model || (id === 'improve' && isExtracting)}
+                // Improve alone waits out an in-flight attachment: firing it now
+                // would send the request without the reference text still being
+                // extracted or the image still being staged (#940's lesson,
+                // widened to both slots by #1154). The other three read no
+                // attachment, so they stay live.
+                disabled={isStreaming || !page || !model || (id === 'improve' && isBusy)}
                 title={hint}
                 className="flex h-7 items-center gap-1.5 rounded-md border border-border-interactive px-2.5 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:opacity-50"
                 data-testid={`ai-dock-chip-${id}`}
@@ -273,10 +286,30 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
           )}
         </div>
 
-        {/* flex-wrap so the upload component's full-width rows — the attached
-            document, the drop hint — stack above the prompt inside the same
-            box. An attachment belongs to what you are about to send, so it
-            lives in the thing you send from, not in a band above it. */}
+        {/* An advisory, not a refusal: the backend accepts both, and only the
+            resolved model knows whether they fit. Amber is the attention colour
+            under ADR-010 v0.5 and this is exactly that. It sits above the
+            composer, not inside it, because a paragraph among the composer's
+            flex children would need an order of its own and would default to
+            `order: 0` — ahead of the very cards it is describing. */}
+        {reference && image && (
+          <p
+            className="mb-2 flex items-center gap-1.5 text-xs text-warning"
+            data-testid="ai-dock-attachment-context-warning"
+          >
+            <AlertTriangle size={12} className="shrink-0" aria-hidden />
+            Both attachments will be sent — a small model may not fit them.
+          </p>
+        )}
+
+        {/* flex-wrap so the zones' full-width rows — the attachment cards, the
+            drop hint — stack above the prompt inside the same box. An
+            attachment belongs to what you are about to send, so it lives in the
+            thing you send from, not in a band above it.
+            Each zone brings its own `order-1` card and `order-2` trigger, so
+            the two children this box owns take the slots after them. Anything
+            added here needs an explicit order as well: no class means
+            `order: 0`, which renders it ahead of the cards. */}
         <div className="nm-composer flex-wrap" ref={composerBoxRef}>
           <DocumentUploadZone
             variant="composer"
@@ -291,6 +324,15 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
             isDragOver={isDragOver}
             testIdPrefix="ai-dock-doc"
           />
+          <ImageAttachZone
+            vision={chatVision}
+            model={model}
+            image={image}
+            onPick={handlePick}
+            onRemove={removeImage}
+            isPreparing={isPreparing}
+            disabled={isStreaming}
+          />
           <textarea
             ref={composerRef}
             value={input}
@@ -303,14 +345,14 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
             aria-label="Ask the assistant about this page"
             // The composer wrapper owns the inset surface, border and focus
             // ring; resize-none because the auto-grow hook owns the height.
-            className="min-w-0 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
+            className="order-3 min-w-0 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
             data-testid="ai-dock-input"
           />
           <button
             onClick={() => void ask()}
             disabled={isStreaming || !input.trim() || !model}
             aria-label={isStreaming ? 'Sending…' : 'Send message'}
-            className="flex shrink-0 self-end items-center rounded-md border border-primary bg-primary px-2.5 py-1.5 text-sm font-medium text-primary-foreground transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:opacity-50"
+            className="order-4 flex shrink-0 self-end items-center rounded-md border border-primary bg-primary px-2.5 py-1.5 text-sm font-medium text-primary-foreground transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:opacity-50"
             data-testid="ai-dock-send"
           >
             {isStreaming ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}

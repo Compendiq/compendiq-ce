@@ -127,6 +127,13 @@ export interface DocumentUploadZoneProps {
    * card. `composer` is a paperclip button plus a compact attachment card, and
    * renders as a **fragment** meant to sit inside an `nm-composer` that has
    * `flex-wrap` — its full-width rows then stack above the textarea.
+   *
+   * The `composer` fragment carries its own `order-*` (card/drop hint
+   * `order-1`, trigger `order-2`) because two flex items emitted as one
+   * fragment cannot be positioned by the host in document order: a full-width
+   * card between two triggers strands one alone on a wrap line. Hosts order
+   * their own children from `order-3` up. See `ImageAttachZone`, which uses the
+   * same two slots so the zones interleave rather than fight.
    */
   variant?: 'dropzone' | 'composer';
   /** Accessible name and tooltip for the `composer` trigger. */
@@ -282,7 +289,7 @@ export function DocumentUploadZone({
 
         {isDragOver ? (
           <div
-            className="flex w-full items-center justify-center gap-2 rounded-md border border-dashed border-primary bg-primary/10 px-2 py-2 text-xs font-medium text-primary-ink"
+            className="order-1 flex w-full items-center justify-center gap-2 rounded-md border border-dashed border-primary bg-primary/10 px-2 py-2 text-xs font-medium text-primary-ink"
             data-testid={`${testIdPrefix}-drop-hint`}
           >
             <Upload size={13} aria-hidden />
@@ -290,7 +297,7 @@ export function DocumentUploadZone({
           </div>
         ) : extracted && filename ? (
           <div
-            className="flex w-full items-start gap-2 rounded-md border border-border bg-background/40 px-2 py-1.5"
+            className="order-1 flex w-full items-start gap-2 rounded-md border border-border bg-background/40 px-2 py-1.5"
             data-testid={`${testIdPrefix}-attachment-card`}
           >
             <FileText size={14} className="mt-0.5 shrink-0 text-muted-foreground" aria-hidden />
@@ -325,7 +332,7 @@ export function DocumentUploadZone({
             // The transparent border is load-bearing: it makes this exactly as
             // tall as the bordered send button beside it, so two self-end icons
             // on the composer's last line share one optical centre.
-            'flex shrink-0 self-end items-center rounded-md border border-transparent px-2 py-2',
+            'order-2 flex shrink-0 self-end items-center rounded-md border border-transparent px-2 py-2',
             'text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground',
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
             'disabled:pointer-events-none disabled:opacity-50',

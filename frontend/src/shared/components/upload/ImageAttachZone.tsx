@@ -12,6 +12,16 @@ import { cn } from '../../lib/cn';
  * accept images, so the capability is discoverable: hiding it means a user on a
  * text-only model never learns image input exists or that switching models
  * unlocks it. It is disabled with a reason instead.
+ *
+ * **Composer ordering.** This renders a fragment of two flex items — a
+ * full-width card and a small trigger — so inside a `flex-wrap` composer the
+ * card would sit between the host's other children in document order and strand
+ * a trigger alone on a wrap line. The fragment therefore carries its own
+ * `order-*`: `order-1` for the card, `order-2` for the trigger, matching
+ * `DocumentUploadZone`'s composer variant so two zones interleave correctly.
+ * A host must give its own children explicit orders from `order-3` up —
+ * anything left without one defaults to `order: 0` and jumps ahead of the
+ * cards. (Outside a flex container `order` is simply inert.)
  */
 
 /** `.png,.jpg,…` plus MIME types, so both native pickers behave. */
@@ -73,7 +83,7 @@ export function ImageAttachZone({
 
       {image && (
         <div
-          className="nm-card flex w-full items-center gap-2 rounded-lg p-2"
+          className="nm-card order-1 flex w-full items-center gap-2 rounded-lg p-2"
           data-testid={`${testIdPrefix}-card`}
         >
           <img
@@ -108,7 +118,7 @@ export function ImageAttachZone({
         title={reason ?? 'Attach an image'}
         aria-label="Attach an image"
         className={cn(
-          'nm-card-hover self-end rounded-lg border border-border-interactive p-2',
+          'nm-card-hover order-2 self-end rounded-lg border border-border-interactive p-2',
           'disabled:opacity-50',
         )}
         data-testid={`${testIdPrefix}-trigger`}

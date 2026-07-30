@@ -262,6 +262,13 @@ describe('AiDock — reference document (#1131)', () => {
    * longer "not a document" — it is an image the dock cannot use yet, because
    * the resolved chat model has not been probed as vision-capable. The refusal
    * still happens client-side, before any upload.
+   *
+   * This fixture's `/llm/usecase-default` response carries no `vision` field,
+   * so `chatVision` is `null` — capability unestablished, not denied — and the
+   * message is the tri-state "not confirmed" one rather than a claim the model
+   * cannot read images. (It was the generic fallback until the dock started
+   * supplying `imageDisabledReason`; the fallback now only covers a caller that
+   * passes none.)
    */
   it('refuses an image while the model has no vision capability, before it reaches the server', async () => {
     renderDock();
@@ -272,7 +279,9 @@ describe('AiDock — reference document (#1131)', () => {
     });
 
     await waitFor(() => {
-      expect(toastErrorMock).toHaveBeenCalledWith('Images cannot be attached right now.');
+      expect(toastErrorMock).toHaveBeenCalledWith(
+        "Image support for llama3 isn't confirmed yet — try again shortly.",
+      );
     });
     expect(globalThis.fetch).not.toHaveBeenCalled();
     expect(screen.queryByTestId('ai-dock-doc-attachment-card')).not.toBeInTheDocument();

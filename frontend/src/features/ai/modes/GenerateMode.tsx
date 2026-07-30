@@ -506,7 +506,10 @@ export function GenerateModeInput() {
         )}
 
         {/* flex-wrap so ImageAttachZone's full-width preview card stacks above
-            the prompt row inside the same box, the way the dock's does. */}
+            the prompt row inside the same box, the way the dock's does. The
+            zone brings its own `order-1` card and `order-2` trigger, so the two
+            children this box owns take the slots after them — without those,
+            both would default to `order: 0` and render ahead of the card. */}
         <div className="nm-composer flex-wrap">
           <ImageAttachZone
             vision={chatVision}
@@ -535,7 +538,7 @@ export function GenerateModeInput() {
             // auto-grow hook owns the height — a drag handle would fight it.
             // min-w-0 so a textarea's intrinsic `cols` width can't push the
             // composer wider than a narrow viewport.
-            className="min-w-0 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
+            className="order-3 min-w-0 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
           />
           <button
             onClick={handleSubmit}
@@ -543,7 +546,7 @@ export function GenerateModeInput() {
             aria-label={isStreaming ? 'Sending...' : 'Send message'}
             // self-end keeps Send on the last line of a grown prompt instead of
             // floating it in the middle of the text block.
-            className="shrink-0 self-end flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50"
+            className="order-4 shrink-0 self-end flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50"
           >
             {isStreaming ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
           </button>

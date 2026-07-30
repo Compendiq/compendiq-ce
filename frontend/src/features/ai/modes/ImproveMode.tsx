@@ -262,12 +262,13 @@ export function ImproveModeInput() {
           attachment reads as part of what the Improve button is about to send.
 
           `flex-wrap` lets the full-width rows the two zones render — the
-          attachment cards, the drop hint — stack above the trigger row. The
-          `order` utilities are what keep that stack coherent: both zones emit
-          their card and their trigger as one fragment, so in document order a
-          card would land between the two triggers and strand one of them alone
-          on a line. Cards first (order-1), then both triggers, then the field. */}
-      <div className="nm-composer flex-wrap [&>div]:order-1 [&>button]:order-2 [&>textarea]:order-3">
+          attachment cards, the drop hint — stack above the trigger row. Each
+          zone brings its own `order-1` card and `order-2` trigger (a fragment
+          of two flex items cannot be positioned from out here), so this box
+          only orders the one child it owns. Anything added below must carry an
+          explicit order too: no class means `order: 0`, i.e. ahead of the
+          cards. */}
+      <div className="nm-composer flex-wrap">
         <DocumentUploadZone
           variant="composer"
           onPick={attachments.pickFile}
@@ -302,7 +303,7 @@ export function ImproveModeInput() {
           // hook owns the height — a drag handle would fight it. min-w-0 so the
           // textarea's intrinsic `cols` width can't push the box wider than a
           // narrow viewport.
-          className="min-w-0 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
+          className="order-3 min-w-0 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
         />
       </div>
       {mcpEnabled && (
