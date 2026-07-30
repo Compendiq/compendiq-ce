@@ -42,6 +42,7 @@ import { llmUsecaseRoutes } from './routes/llm/llm-usecases.js';
 import { llmEmbeddingReembedRoutes } from './routes/llm/llm-embedding-reembed.js';
 import { llmEmbeddingProbeRoutes } from './routes/llm/llm-embedding-probe.js';
 import { extractDocumentRoutes } from './routes/llm/extract-document.js';
+import { prepareImageRoutes } from './routes/llm/prepare-image.js';
 // Knowledge routes
 import { pagesCrudRoutes } from './routes/knowledge/pages-crud.js';
 import { pagesRelocateRoutes } from './routes/knowledge/pages-relocate.js';
@@ -467,6 +468,7 @@ export async function buildApp() {
   await app.register(llmEmbeddingReembedRoutes, { prefix: '/api' });
   await app.register(llmEmbeddingProbeRoutes, { prefix: '/api' });
   await app.register(extractDocumentRoutes, { prefix: '/api' });
+  await app.register(prepareImageRoutes, { prefix: '/api' });
 
   // Knowledge routes
   await app.register(pagesCrudRoutes, { prefix: '/api' });
