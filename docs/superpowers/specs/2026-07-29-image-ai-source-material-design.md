@@ -466,6 +466,43 @@ boundary.
 - Preview renders and the remove affordance clears the staged handle.
 - Downscale fires above the threshold and is skipped below it.
 
+## Known residual risks
+
+Surfaced by the whole-branch review and its fix wave, and verified to be real.
+None blocks the backend PR; all are recorded so nobody rediscovers them as
+mysteries.
+
+**Redis capacity is mitigated, not bounded.** The per-user cap moves the ceiling
+from *uploads × 10 MB* to *users × 10 MB*. A deployment where ~26 or more people
+stage an image inside the same 15-minute window can still fill the shipped
+`--maxmemory 256mb`, and that Redis is `noeviction` and shared with BullMQ, so
+exhaustion fails *writes* app-wide rather than degrading a cache. Raising
+`--maxmemory` or lowering `MAX_IMAGE_BYTES` is an operational decision and was
+deliberately left to the operator.
+
+**Two concurrent uploads by one user can leave that user with none.** If each
+prune's `SCAN` runs before the other's `DEL`, both handles are deleted and both
+subsequently 410. It never corrupts an entry and never crosses users; the cost is
+a spurious "attach it again". Judged not worth a lock, given the design's
+one-image-per-request commitment.
+
+**The 400-body matcher errs in both directions, cheaply.** `\bimage\b` does not
+match "does not support **images**", so such a rejection falls through to `null`
+and is simply re-probed — wrong in the harmless direction. Conversely, a provider
+that echoes `image_url` back in an unrelated validation error could be read as a
+definitive rejection and cache `false`; that is bounded by the 30-day staleness
+re-probe and is visible in `probe_error`.
+
+**`probe_error` is written and never read.** When a verdict is wrong, that column
+is the only evidence, and today it is reachable only via `psql`. The Settings →
+LLM capability badge in PR 2 should surface it.
+
+**The 054 test's FK restoration hard-codes `087_llm_model_capabilities.sql`.** It
+is correct and complete today — 054 and 087 are the only migrations referencing
+`llm_providers` — but the next migration that adds an FK to that table
+reintroduces the same contamination, presenting identically: green on a fresh
+database, red on the second run, blamed on whichever PR is in flight.
+
 ## Out of scope
 
 - The decorative model dropdown (filed separately).
