@@ -405,12 +405,16 @@ describe('GenerateMode drop target (#1154)', () => {
    * is registered even while busy precisely so this cannot happen.
    */
   it('swallows a drop that lands while an extraction is in flight', async () => {
+    // Sets the scenario rather than the outcome: the hook registers its
+    // listener regardless of this flag. What it does change is the dashed
+    // zone's button, which goes `pointer-events-none` while extracting — which
+    // is why the drop below is aimed at the prompt field instead. Both are
+    // descendants of the surface the hook listens on, and the event bubbles.
     mockIsExtracting.value = true;
     renderGenerateMode({ vision: true });
     await settle();
 
-    const zone = screen.getByTestId('document-upload-zone').closest('div')!.parentElement!;
-    const notPrevented = fireEvent.drop(zone, { dataTransfer: { files: [PDF()] } });
+    const notPrevented = fireEvent.drop(promptInput(), { dataTransfer: { files: [PDF()] } });
 
     // fireEvent returns false when a handler called preventDefault. `true` here
     // means the browser would have navigated away from the composer.

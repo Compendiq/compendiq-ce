@@ -11,7 +11,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { useState } from 'react';
-import { SUPPORTED_DOCUMENT_FORMATS, type DocumentFormat } from '@compendiq/contracts';
+import { type DocumentFormat } from '@compendiq/contracts';
 import { DocumentUploadZone, type DocumentUploadZoneProps } from './DocumentUploadZone';
 import type { ExtractDocumentResult } from '../../hooks/use-extract-document';
 
@@ -87,11 +87,19 @@ describe('DocumentUploadZone', () => {
   });
 
   describe('reporting the picked file', () => {
-    it.each(SUPPORTED_DOCUMENT_FORMATS)('hands a picked %s straight to onPick', (format) => {
+    /**
+     * One format, not six. Since #1154 this component does not inspect the
+     * file at all — it reports whatever it was handed — so six fixtures
+     * exercised one code path six times and read as coverage of an acceptance
+     * rule that no longer lives here. Every supported extension (with the
+     * empty MIME type Chrome reports for `.md`) is parametrised in
+     * `use-attachments.test.ts`, which is where acceptance is now decided.
+     */
+    it('hands a picked file straight to onPick', () => {
       render(<Harness />);
-      pick(SAMPLE[format]);
+      pick(SAMPLE.pdf);
 
-      expect(onPickMock).toHaveBeenCalledWith(SAMPLE[format]);
+      expect(onPickMock).toHaveBeenCalledWith(SAMPLE.pdf);
     });
 
     /**

@@ -168,6 +168,19 @@ export function useAttachments(options: UseAttachmentsOptions = {}) {
       return;
     }
 
+    // Documents are matched by extension only, unlike `looksLikeImage`, which
+    // consults the MIME type first. That is not an oversight: browsers report
+    // `''` for `.md` and often `.rtf`, so a MIME-first rule would reject the
+    // formats most likely to be dropped here.
+    //
+    // The narrowing it does cost — an extension-less file with a correct
+    // `application/pdf` MIME used to be accepted by the component's old
+    // extension-OR-MIME check and is now refused — is knowingly accepted. The
+    // MIME table that would restore it lives in `DocumentUploadZone`'s
+    // `FORMAT_META`, and giving this hook a second copy would put the same
+    // data under two owners, which is the defect the #1154 refactor set out to
+    // remove. The user is told what is accepted and can rename the file; the
+    // server re-sniffs the bytes either way.
     const name = file.name.toLowerCase();
     const isDocument = SUPPORTED_DOCUMENT_FORMATS.some((f) => name.endsWith(`.${f}`))
       || name.endsWith('.markdown') || name.endsWith('.text');

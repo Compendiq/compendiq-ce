@@ -138,7 +138,7 @@ async function openAndSettle() {
 
 async function attachImage() {
   await act(async () => {
-    fireEvent.change(screen.getByTestId('image-attach-file-input'), { target: { files: [PNG()] } });
+    fireEvent.change(screen.getByTestId('ai-dock-image-file-input'), { target: { files: [PNG()] } });
   });
 }
 
@@ -257,7 +257,7 @@ describe('dock image attach (#1154)', () => {
       });
     });
 
-    await waitFor(() => expect(screen.getByTestId('image-attach-card')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('ai-dock-image-card')).toBeInTheDocument());
     expect(mockPrepareImage).toHaveBeenCalledTimes(1);
   });
 
@@ -269,7 +269,7 @@ describe('dock image attach (#1154)', () => {
       fireEvent.drop(composerBox(), { dataTransfer: { files: [PNG()] } });
     });
 
-    await waitFor(() => expect(screen.getByTestId('image-attach-card')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('ai-dock-image-card')).toBeInTheDocument());
     expect(mockPrepareImage).toHaveBeenCalledTimes(1);
   });
 
@@ -290,7 +290,7 @@ describe('dock image attach (#1154)', () => {
       });
     });
 
-    await waitFor(() => expect(screen.getByTestId('image-attach-card')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('ai-dock-image-card')).toBeInTheDocument());
     expect(mockPrepareImage).toHaveBeenCalledTimes(1);
   });
 
@@ -299,12 +299,12 @@ describe('dock image attach (#1154)', () => {
     renderDock({ chatVision: true });
     await openAndSettle();
     await attachImage();
-    expect(screen.getByTestId('image-attach-card')).toBeInTheDocument();
+    expect(screen.getByTestId('ai-dock-image-card')).toBeInTheDocument();
 
     await act(async () => { fireEvent.click(screen.getByTestId('go')); });
 
     await waitFor(() => {
-      expect(screen.queryByTestId('image-attach-card')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('ai-dock-image-card')).not.toBeInTheDocument();
     });
   });
 
@@ -312,8 +312,8 @@ describe('dock image attach (#1154)', () => {
     renderDock({ chatVision: false });
     await openAndSettle();
 
-    expect(screen.getByTestId('image-attach-trigger')).toBeDisabled();
-    expect(screen.getByTestId('image-attach-trigger'))
+    expect(screen.getByTestId('ai-dock-image-trigger')).toBeDisabled();
+    expect(screen.getByTestId('ai-dock-image-trigger'))
       .toHaveAttribute('title', expect.stringMatching(/can't read images/i));
   });
 
@@ -321,8 +321,8 @@ describe('dock image attach (#1154)', () => {
     renderDock({ chatVision: null });
     await openAndSettle();
 
-    expect(screen.getByTestId('image-attach-trigger')).toBeDisabled();
-    expect(screen.getByTestId('image-attach-trigger'))
+    expect(screen.getByTestId('ai-dock-image-trigger')).toBeDisabled();
+    expect(screen.getByTestId('ai-dock-image-trigger'))
       .toHaveAttribute('title', expect.stringMatching(/isn't confirmed/i));
   });
 
@@ -330,7 +330,7 @@ describe('dock image attach (#1154)', () => {
     renderDock({ chatVision: true });
     await openAndSettle();
 
-    expect(screen.getByTestId('image-attach-trigger')).not.toBeDisabled();
+    expect(screen.getByTestId('ai-dock-image-trigger')).not.toBeDisabled();
   });
 
   /**
@@ -415,9 +415,9 @@ describe('dock composer ordering (#1154)', () => {
 
     expectExplicitComposerOrder(composerBox(), {
       'ai-dock-doc-attachment-card': 1,
-      'image-attach-card': 1,
+      'ai-dock-image-card': 1,
       'ai-dock-doc-attach-button': 2,
-      'image-attach-trigger': 2,
+      'ai-dock-image-trigger': 2,
       'ai-dock-input': 3,
       'ai-dock-send': 4,
     });
@@ -440,9 +440,9 @@ describe('dock composer ordering (#1154)', () => {
 
     expectExplicitComposerOrder(composerBox(), {
       'ai-dock-doc-drop-hint': 1,
-      'image-attach-card': 1,
+      'ai-dock-image-card': 1,
       'ai-dock-doc-attach-button': 2,
-      'image-attach-trigger': 2,
+      'ai-dock-image-trigger': 2,
       'ai-dock-input': 3,
       'ai-dock-send': 4,
     });
@@ -475,7 +475,7 @@ describe('dock lapsed image handle (#1154)', () => {
     await clickChip('improve');
 
     await waitFor(() => {
-      expect(screen.queryByTestId('image-attach-card')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('ai-dock-image-card')).not.toBeInTheDocument();
     });
     expect(screen.getByTestId('ai-dock-input')).toHaveValue('tighten the intro');
     expect(toastErrorMock).toHaveBeenCalledWith('The image expired — attach it again.');
@@ -510,7 +510,7 @@ describe('dock lapsed image handle (#1154)', () => {
     await clickChip('improve');
 
     await waitFor(() => expect(threadText()).toContain('LLM connection lost'));
-    expect(screen.getByTestId('image-attach-card')).toBeInTheDocument();
+    expect(screen.getByTestId('ai-dock-image-card')).toBeInTheDocument();
   });
 
   /**

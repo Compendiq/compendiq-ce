@@ -324,6 +324,10 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
             isDragOver={isDragOver}
             testIdPrefix="ai-dock-doc"
           />
+          {/* Prefixed like the document zone above it: within one composer the
+              two halves should be selectable the same way, and the dock is the
+              one surface where a zone can sit beside an unrelated one. `/ai`'s
+              two modes keep the components' defaults. */}
           <ImageAttachZone
             vision={chatVision}
             model={model}
@@ -332,6 +336,7 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
             onRemove={removeImage}
             isPreparing={isPreparing}
             disabled={isStreaming}
+            testIdPrefix="ai-dock-image"
           />
           <textarea
             ref={composerRef}

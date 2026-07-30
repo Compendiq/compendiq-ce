@@ -133,7 +133,9 @@ export interface DocumentUploadZoneProps {
    * fragment cannot be positioned by the host in document order: a full-width
    * card between two triggers strands one alone on a wrap line. Hosts order
    * their own children from `order-3` up. See `ImageAttachZone`, which uses the
-   * same two slots so the zones interleave rather than fight.
+   * same two slots so the zones interleave rather than fight — and which
+   * records the focus-order limitation this reordering carries with it
+   * (WCAG 2.4.3), since it applies to both zones equally.
    */
   variant?: 'dropzone' | 'composer';
   /** Accessible name and tooltip for the `composer` trigger. */
