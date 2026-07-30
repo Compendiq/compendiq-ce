@@ -385,9 +385,9 @@ describe('Both themes declare a complete, symmetric token set', () => {
 
   // The retired recipe tinted the light shadow warm brown (rgb 50/42/20) to sit
   // under a honey accent. On a cool palette that reads as a stain.
-  it('uses the cool slate shadow tint, not the retired warm brown', () => {
+  it('uses the mineral ink shadow tint, not the retired warm brown', () => {
     expect(lightSharedBlock).not.toMatch(/rgba\(\s*50,\s*42,\s*20/);
-    expect(lightSharedBlock).toMatch(/rgba\(\s*23,\s*28,\s*44/);
+    expect(lightSharedBlock).toMatch(/rgba\(\s*23,\s*36,\s*34/);
   });
 });
 

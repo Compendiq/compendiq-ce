@@ -40,21 +40,21 @@ export const THEMES: ThemeMeta[] = [
   {
     id: 'slate-steel',
     label: 'Slate Steel',
-    description: 'Navy slate surfaces with a steel accent — neumorphic dark',
+    description: 'Deep mineral ink with a crisp steel accent',
     category: 'dark',
     // Hex values must match the actual rendered surfaces in index.css — the
     // picker chip is the only way users see the surface color before applying
     // the theme. `bg` is the flat --color-background rather than the lightest
     // stop of --surface-backdrop: the chip is too small to read a gradient,
     // and the flat value is what the majority of the viewport settles to.
-    preview: { bg: '#0e1220', card: '#151b2c', primary: '#6ea8ff', accent: '#e8ecf5' },
+    preview: { bg: '#0b1417', card: '#112126', primary: '#74aefc', accent: '#e8f1f2' },
   },
   {
     id: 'frost-steel',
     label: 'Frost Steel',
-    description: 'Cool near-white with a steel accent — neumorphic light',
+    description: 'Soft sage paper with a grounded steel accent',
     category: 'light',
-    preview: { bg: '#f4f6fa', card: '#ffffff', primary: '#2f6bd8', accent: '#171c2c' },
+    preview: { bg: '#f3f6f1', card: '#fffdfa', primary: '#2b63b7', accent: '#172422' },
   },
 ];
 

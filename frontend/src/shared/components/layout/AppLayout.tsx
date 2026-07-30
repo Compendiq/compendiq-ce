@@ -268,8 +268,8 @@ export function AppLayout({ children }: { children: ReactNode }) {
       <CommandPalette />
       <KeyboardShortcutsModal />
 
-      {/* Top navigation bar — full-width flat strip with bottom border. */}
-      <header className="relative z-10 flex h-[55px] shrink-0 items-center bg-background border-b border-border px-4">
+      {/* Top navigation bar — a denser mineral surface over the app canvas. */}
+      <header className="app-header relative z-10 flex h-[58px] shrink-0 items-center border-b px-4">
         {/* Mobile hamburger — opens sidebar slide-over */}
         <button
           onClick={() => setMobileSidebarOpen((v) => !v)}
@@ -297,7 +297,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
             onClick={openCommandPalette}
             aria-label="Search knowledge base"
             aria-expanded={isCommandPaletteOpen}
-            className="pointer-events-auto flex w-full max-w-xl items-center gap-2 rounded-lg border border-border/50 bg-foreground/5 px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-foreground/10 hover:border-border"
+            className="app-search pointer-events-auto flex h-9 w-full max-w-xl items-center gap-2 rounded-lg px-3 text-sm"
           >
             <Search size={16} className="shrink-0" />
             <span className="truncate">Search pages, commands...</span>
@@ -312,7 +312,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
           onClick={openCommandPalette}
           aria-label="Search"
           aria-expanded={isCommandPaletteOpen}
-          className="ml-auto mr-2 flex items-center rounded-md bg-foreground/5 p-1.5 text-muted-foreground transition-colors hover:bg-foreground/10 sm:hidden"
+          className="app-search ml-auto mr-2 flex items-center rounded-md p-1.5 sm:hidden"
         >
           <Search size={16} />
         </button>
@@ -379,7 +379,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
         {/* Main content area + optional right sidebar */}
         <div className="flex flex-1 overflow-hidden">
           <main className="flex flex-1 flex-col overflow-hidden">
-            <div ref={scrollContainerRef} data-scroll-container className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pt-4 pb-4 [scrollbar-gutter:stable_both-edges]">
+            <div ref={scrollContainerRef} data-scroll-container className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pb-5 pt-5 sm:px-6 [scrollbar-gutter:stable_both-edges]">
               <PageTransition>
                 {/* flex flex-1 flex-col so pages that opt in (e.g. /ai) can use
                     flex-1 on a child to fill the available scroll height

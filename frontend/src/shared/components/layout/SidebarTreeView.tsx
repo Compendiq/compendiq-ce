@@ -159,7 +159,7 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
         className={cn(
           'group flex items-center gap-1.5 rounded-[10px] h-9 pr-2 text-sm cursor-pointer transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
           isActive
-            ? 'bg-action text-action-foreground font-medium scale-[1.01]'
+            ? 'nav-selection font-medium'
             : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
         )}
         style={{ paddingLeft: `${level * 16 + 10}px` }}
@@ -185,7 +185,7 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
         ) : (
           <span className="w-[20px] shrink-0" />
         )}
-        <FileText size={15} className={cn('shrink-0', isActive ? 'text-action-foreground/80' : 'text-muted-foreground/70')} />
+        <FileText size={15} className={cn('shrink-0', isActive ? 'text-primary-ink' : 'text-muted-foreground/70')} />
         {/* #767: pin the weight explicitly (conditional, never both classes)
             so titles can't inherit or synthesize a heavier weight while the
             variable font loads or the row sits on a composited layer. */}
@@ -482,7 +482,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
           animate={{ width: 40, opacity: 1 }}
           exit={{ width: 0, opacity: 0 }}
           transition={reduceEffects ? { duration: 0 } : sidebarSpring}
-          className="flex flex-col items-center bg-background border-r border-border overflow-hidden"
+          className="app-sidebar flex flex-col items-center border-r overflow-hidden"
         >
           {/* Expand toggle */}
           <button
@@ -514,7 +514,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
       animate={{ width: treeSidebarWidth, opacity: 1 }}
       transition={reduceEffects || isResizing ? { duration: 0 } : sidebarSpring}
       className={cn(
-        'relative flex flex-col bg-background border-r border-border overflow-hidden',
+        'app-sidebar relative flex flex-col border-r overflow-hidden',
         isResizing && 'select-none',
       )}
     >

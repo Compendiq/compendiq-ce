@@ -107,21 +107,19 @@ describe('SidebarTreeView', () => {
     expect(screen.getByRole('link', { name: /AI/ })).toBeInTheDocument();
   });
 
-  it('active nav tab uses ink-action treatment, not amber text', () => {
+  it('active nav tab uses the quiet steel selection treatment', () => {
     // location.pathname === '/' => Pages tab is active.
     render(<SidebarTreeView />, { wrapper: createWrapper('/') });
     const pagesLink = screen.getByRole('link', { name: /Pages/ });
-    expect(pagesLink.className).toContain('bg-action');
-    expect(pagesLink.className).toContain('text-action-foreground');
-    expect(pagesLink.className).not.toContain('text-primary');
+    expect(pagesLink.className).toContain('nav-selection');
+    expect(pagesLink.className).not.toContain('bg-action');
   });
 
-  it('active AI tab keeps an amber icon as the AI signal even though pill is ink', () => {
+  it('active AI tab keeps its icon in the selection ink', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper('/ai') });
     const aiLink = screen.getByRole('link', { name: /AI/ });
-    // At least one descendant element carries text-primary (the amber icon).
-    const amberDescendant = aiLink.querySelector('[class*="text-primary"]');
-    expect(amberDescendant).not.toBeNull();
+    const selectedIcon = aiLink.querySelector('[class*="text-primary-ink"]');
+    expect(selectedIcon).not.toBeNull();
   });
 
   it('inactive AI tab icon does not use amber (would fail 3:1 against light glass)', () => {
@@ -290,8 +288,7 @@ describe('SidebarTreeView', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper('/ai?pageId=child-1') });
     const installRef = screen.getByText('Installation');
     const row = installRef.parentElement!;
-    expect(row.className).toContain('bg-action');
-    expect(row.className).toContain('text-action-foreground');
+    expect(row.className).toContain('nav-selection');
   });
 
   // #767: tree titles intermittently rendered faux-bold (synthesized weight

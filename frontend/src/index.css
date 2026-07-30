@@ -21,14 +21,13 @@
 @import "@fontsource-variable/jetbrains-mono/index.css";
 
 /* ============================================
-   Compendiq — Slate Steel (dark) + Frost Steel (light)
+   Compendiq — Mineral Steel (dark + light)
 
-   A cool slate-and-steel system ported from the lifecycle-management console
-   (`apps/web/src/styles.css`, "Mission Bento"). Near-monochrome blue-gray
-   surfaces carry the interface; steel (#6EA8FF dark / #2F6BD8 light) is the
-   single brand + interaction accent; amber is held back for warning and
-   attention only; violet marks AI. Dark is primary, light is a fully designed
-   sibling in the same hue family.
+   A mineral slate-and-steel system. Deep blue-green ink carries the dark
+   workspace; softly warmed sage paper carries the light workspace. Steel
+   remains the single brand + interaction accent, amber is held back for
+   warning and attention, and violet marks AI. Dark is primary; light is a
+   fully designed sibling rather than a mechanical inversion.
 
    Supersedes the Graphite Honey / Honey Linen pair (neutral graphite + honey
    #F9C74F). Compendiq's neumorphic depth model is kept — the `nm-*` recipes
@@ -137,44 +136,44 @@ h1, h2, h3, h4, h5, h6,
 }
 
 @theme {
-  /* Default theme: Slate Steel — navy slate surfaces with a steel accent
-     (neumorphic dark). Ported from lifecycle-management's dark tokens.
+  /* Default theme: Slate Steel — mineral ink surfaces with a steel accent
+     (neumorphic dark).
      Every value below is verified against the AA floors noted inline. */
-  --color-background: #0e1220;          /* deep navy slate — the chassis */
-  --color-foreground: #e8ecf5;          /* cool near-white, 15.76:1 on bg */
-  --color-card: #151b2c;                /* instrument pane, one step up */
-  --color-card-foreground: #e8ecf5;
-  --color-card-elevated: #1a2136;       /* hover / raised pane */
+  --color-background: #0b1417;          /* blue-green mineral ink — the chassis */
+  --color-foreground: #e8f1f2;          /* cool near-white, 16.24:1 on bg */
+  --color-card: #112126;                /* instrument pane, one step up */
+  --color-card-foreground: #e8f1f2;
+  --color-card-elevated: #172b31;       /* hover / raised pane */
   /* Steel — the single brand AND interaction accent: brand mark, primary
      CTAs, links, active states, focus ring. One calm analytical hue carries
      both identity and every actionable affordance, so "is this clickable?"
      never depends on telling two similar accents apart. */
-  --color-primary: #6ea8ff;
-  --color-primary-foreground: #171c2c;  /* 7.03:1 ink on the steel fill */
-  --color-primary-gradient-start: #8ebeff;
-  --color-primary-gradient-end: #4d86dd; /* 4.66:1 with the ink above */
-  --color-primary-glow: rgba(110, 168, 255, 0.35);
+  --color-primary: #74aefc;
+  --color-primary-foreground: #0b1725;  /* 7.91:1 ink on the steel fill */
+  --color-primary-gradient-start: #94c2ff;
+  --color-primary-gradient-end: #4e87dc; /* 5.00:1 with the ink above */
+  --color-primary-glow: rgba(116, 174, 252, 0.32);
   /* Steel clears AA as text on every dark surface unaided (7.73:1 on bg,
      6.62:1 on the elevated pane), so unlike the old honey — which needed a
      lightened sibling to be legible — ink and fill are the same value. */
-  --color-primary-ink: #6ea8ff;
+  --color-primary-ink: #74aefc;
   /* Action ink — the neutral affordance for non-accent buttons. Light ink on
      navy, mirroring lifecycle-management's default Button (foreground fill /
      background text). Leaves steel free to mean "primary action". */
-  --color-action: #e8ecf5;             /* matches --color-foreground */
-  --color-action-foreground: #0e1220;  /* 15.76:1 */
+  --color-action: #e8f1f2;             /* matches --color-foreground */
+  --color-action-foreground: #0b1417;  /* 16.24:1 */
   --color-action-hover: #ffffff;       /* pure white lift on hover */
-  --color-secondary: #1a2136;
-  --color-secondary-foreground: #c7d0e4;
-  --color-muted: #1a2136;
+  --color-secondary: #182c32;
+  --color-secondary-foreground: #c8d6da;
+  --color-muted: #182c32;
   /* 6.06:1 on --color-background and 5.19:1 on the elevated pane — the
      sidebar's counts, hints and secondary labels all inherit this, so it is
      measured against the *worst* surface it lands on, not the darkest. */
-  --color-muted-foreground: #8b93a7;
-  --color-accent: #1a2136;
-  --color-accent-foreground: #e8ecf5;
-  --color-destructive: #ff6b6b;
-  --color-destructive-foreground: #171c2c;  /* 6.11:1 ink on the red fill */
+  --color-muted-foreground: #91a7ad;
+  --color-accent: #1a3036;
+  --color-accent-foreground: #e8f1f2;
+  --color-destructive: #ff7575;
+  --color-destructive-foreground: #211010;
   /* Two border weights with different jobs:
      --color-border      hairline separators, table cells, prose rules. Quiet
                          by design; it draws structure, not boundaries.
@@ -186,28 +185,28 @@ h1, h2, h3, h4, h5, h6,
                          forced-colors mode throws away — this border is what
                          survives. (The retired honey palette used one 1.60:1
                          border for both jobs and did not meet 1.4.11.) */
-  --color-border: #232b40;
-  --color-border-interactive: #617099;
-  --color-ring: #6ea8ff;
-  --color-success: #3dd68c;
+  --color-border: #22383e;
+  --color-border-interactive: #668189;
+  --color-ring: #74aefc;
+  --color-success: #5ed39b;
   /* Amber is NOT the brand here — it is reserved for warning and attention,
      which is what makes it readable as a signal when it appears. */
-  --color-warning: #ffc53d;
+  --color-warning: #f3c969;
   /* Deliberately the same value as --color-primary: steel is the system's one
      blue, so "informational" and "interactive" share a hue. Keep info for
      passive notices only — an info-coloured element that is NOT clickable is
      fine, but never use it to mark something that is. */
-  --color-info: #6ea8ff;
+  --color-info: #77a8ff;
 
   /* Status colors. Steel carries "embedding" (it is the system's one blue);
      violet is reserved for AI so it never collides with an interactive
      affordance. All ≥4.5:1 on both --color-background and --color-card. */
-  --color-status-connected: #3dd68c;    /* green  */
-  --color-status-syncing: #ffc53d;      /* amber  */
-  --color-status-embedding: #6ea8ff;    /* steel  */
-  --color-status-ai: #c084fc;           /* violet */
-  --color-status-disconnected: #ff6b6b; /* red    */
-  --color-status-inactive: #7c86a0;     /* slate, 5.13:1 on bg */
+  --color-status-connected: #5ed39b;
+  --color-status-syncing: #f3c969;
+  --color-status-embedding: #77a8ff;
+  --color-status-ai: #c69af4;
+  --color-status-disconnected: #ff7575;
+  --color-status-inactive: #8ba19b;
 
   /* Brand typography — self-hosted via @fontsource (privacy-safe).
      Tailwind 4 exposes these as font-display / font-sans / font-mono. */
@@ -217,13 +216,13 @@ h1, h2, h3, h4, h5, h6,
 
   /* Code colors — matched against --color-code-bg #10162a, which sits a step
      BELOW --color-card so a code block reads as recessed, not stacked. */
-  --color-code-bg: #10162a;
-  --color-code-keyword: #c084fc;   /* violet, 6.79:1 */
-  --color-code-string: #3dd68c;    /* green,  9.57:1 */
-  --color-code-function: #6ea8ff;  /* steel,  7.44:1 */
-  --color-code-comment: #7c86a0;   /* slate,  4.93:1 */
-  --color-code-number: #ffc53d;    /* amber, 11.37:1 */
-  --color-code-type: #2dd4bf;      /* teal,   9.64:1 */
+  --color-code-bg: #0b191b;
+  --color-code-keyword: #c69af4;
+  --color-code-string: #5ed39b;
+  --color-code-function: #74aefc;
+  --color-code-comment: #8ba19b;
+  --color-code-number: #f3c969;
+  --color-code-type: #5ed9cb;
   --color-code-meta: #f472b6;      /* pink,   6.78:1 */
 
   /* Neumorphic shadow tokens — Slate Steel.
@@ -236,9 +235,9 @@ h1, h2, h3, h4, h5, h6,
   --nm-shadow-out: rgba(0, 0, 0, 0.30);
   --nm-shadow-out-strong: rgba(0, 0, 0, 0.38);
   --nm-shadow-out-hover: rgba(0, 0, 0, 0.42);
-  --nm-highlight: rgba(120, 150, 210, 0.10);
-  --nm-highlight-strong: rgba(130, 160, 220, 0.14);
-  --nm-highlight-hover: rgba(140, 172, 235, 0.17);
+  --nm-highlight: rgba(116, 160, 170, 0.10);
+  --nm-highlight-strong: rgba(128, 176, 186, 0.14);
+  --nm-highlight-hover: rgba(138, 190, 201, 0.17);
   --nm-shadow-in: rgba(0, 0, 0, 0.38);
 
   /* Gradient-lit chassis (dark). The backdrop is a wide radial hung above the
@@ -256,9 +255,9 @@ h1, h2, h3, h4, h5, h6,
      `nm-card`, and the elevation would live only in the shadow. Its lightest
      stop #1c243b is the worst surface in the dark theme — body copy 13.00:1,
      muted 5.00:1, --color-border-interactive 3.14:1. */
-  --surface-backdrop: radial-gradient(1200px 500px at 50% -220px, #141b31 0%, #0e1220 60%);
-  --surface-card: linear-gradient(180deg, #171e31, #131928);
-  --surface-card-elevated: linear-gradient(180deg, #1c243b, #181f32);
+  --surface-backdrop: radial-gradient(1200px 520px at 50% -220px, #153139 0%, #0b1417 62%);
+  --surface-card: linear-gradient(180deg, #14272c, #0f1e22);
+  --surface-card-elevated: linear-gradient(180deg, #1b3339, #152a2f);
 
   --radius-xl: 1.25rem;
   --radius-lg: 0.75rem;
@@ -288,13 +287,13 @@ h1, h2, h3, h4, h5, h6,
   /* Violet, matching --color-code-keyword. Deliberately NOT amber (which now
      means warning) and NOT steel (which means "you can click this") — inline
      code is neither, so it gets the system's one remaining free hue. */
-  --inline-code-color: #c084fc;
+  --inline-code-color: #c69af4;
 
   /* Dropdown chevron — dark-theme default. The stroke colour is the
-     dark-theme muted-foreground hex (#8b93a7, URL-escaped to %238b93a7).
+     dark-theme muted-foreground hex (#91a7ad, URL-escaped to %2391a7ad).
      Light theme overrides this in the [data-theme-type="light"] block. */
-  --nm-select-chevron-12: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238b93a7' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
-  --nm-select-chevron-14: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%238b93a7' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  --nm-select-chevron-12: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2391a7ad' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  --nm-select-chevron-14: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%2391a7ad' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
 }
 
 /* ===========================
@@ -323,17 +322,16 @@ h1, h2, h3, h4, h5, h6,
   --glass-pill-hover: oklch(0 0 0 / 0.03);
 
   /* Neumorphic shadow tokens — Frost Steel recipe.
-     Cool slate shadow (rgb 23/28/44 — the light theme's own --color-foreground)
-     so depth pulls toward the palette's blue-gray rather than the warm brown
-     the linen theme used; pure-white highlight, since the surfaces underneath
-     are white or near-white and any tint would read as a stain. */
-  --nm-shadow-out: rgba(23, 28, 44, 0.05);
-  --nm-shadow-out-strong: rgba(23, 28, 44, 0.09);
-  --nm-shadow-out-hover: rgba(23, 28, 44, 0.11);
+     Mineral ink shadow (rgb 23/36/34 — the light theme foreground) keeps
+     depth inside the same blue-green family; pure-white highlights remain
+     clean against the softly warmed paper surfaces. */
+  --nm-shadow-out: rgba(23, 36, 34, 0.05);
+  --nm-shadow-out-strong: rgba(23, 36, 34, 0.09);
+  --nm-shadow-out-hover: rgba(23, 36, 34, 0.11);
   --nm-highlight: rgba(255, 255, 255, 0.75);
   --nm-highlight-strong: rgba(255, 255, 255, 0.85);
   --nm-highlight-hover: rgba(255, 255, 255, 0.90);
-  --nm-shadow-in: rgba(23, 28, 44, 0.09);
+  --nm-shadow-in: rgba(23, 36, 34, 0.09);
 
   /* Gradient-lit chassis (light). The same construction as dark — a wide
      radial hung above the viewport — but inverted in direction: it lifts
@@ -345,89 +343,89 @@ h1, h2, h3, h4, h5, h6,
      so an elevated pane cannot get brighter — it gets *flatter*. Holding
      nearer to white through the whole pane is what reads as "closer to the
      viewer" here, the same way the deeper gradient reads as recessed. */
-  --surface-backdrop: radial-gradient(1200px 500px at 50% -220px, #ffffff 0%, #f4f6fa 60%);
-  --surface-card: linear-gradient(180deg, #ffffff, #fafbfe);
-  --surface-card-elevated: linear-gradient(180deg, #ffffff, #fdfdff);
+  --surface-backdrop: radial-gradient(1200px 520px at 50% -220px, #ffffff 0%, #f3f6f1 62%);
+  --surface-card: linear-gradient(180deg, #fffdfa, #fafcf8);
+  --surface-card-elevated: linear-gradient(180deg, #ffffff, #fdfefb);
 
-  /* Dropdown chevron — cool slate stroke (#5a6478, URL-escaped to %235a6478),
+  /* Dropdown chevron — mineral slate stroke (#5b6e69, URL-escaped to %235b6e69),
      matching the light theme's --color-muted-foreground. The :root default is
      the dark-theme value and washes out on a near-white surface. */
-  --nm-select-chevron-12: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%235a6478' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
-  --nm-select-chevron-14: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%235a6478' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  --nm-select-chevron-12: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%235b6e69' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  --nm-select-chevron-14: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%235b6e69' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
 }
 
-/* ---- Theme: Frost Steel — cool near-white with a steel accent (neumorphic
-   light) ---- The designed light sibling of Slate Steel, in the same blue-gray
+/* ---- Theme: Frost Steel — mineral paper with a steel accent (neumorphic
+   light) ---- The designed light sibling of Slate Steel, in the same blue-green
    hue family: every surface, ink and status hue is the light-theme counterpart
    of the dark token above it, not an independent palette. Ported from
    lifecycle-management's `:root` (light) tokens. */
 [data-theme="frost-steel"] {
-  --color-background: #f4f6fa;          /* cool near-white, faintly blue */
-  --color-foreground: #171c2c;          /* deep navy ink, 15.67:1 on bg */
-  --color-card: #ffffff;                /* pure white pane */
-  --color-card-foreground: #171c2c;
+  --color-background: #f3f6f1;          /* soft sage paper */
+  --color-foreground: #172422;          /* mineral ink, 14.68:1 on bg */
+  --color-card: #fffdfa;                /* subtly warm paper pane */
+  --color-card-foreground: #172422;
   --color-card-elevated: #ffffff;
-  --color-primary: #2f6bd8;             /* steel — the light-theme sibling */
-  --color-primary-foreground: #ffffff;  /* 4.98:1 white on the steel fill */
-  --color-primary-gradient-start: #4b81e4;
-  --color-primary-gradient-end: #2557b0;
-  --color-primary-glow: rgba(47, 107, 216, 0.30);
+  --color-primary: #2b63b7;             /* steel — the light-theme sibling */
+  --color-primary-foreground: #ffffff;  /* 5.88:1 white on the steel fill */
+  --color-primary-gradient-start: #467aca;
+  --color-primary-gradient-end: #214b91;
+  --color-primary-glow: rgba(43, 99, 183, 0.26);
   /* Unlike dark — where fill and ink are one value — the light theme keeps a
      darkened sibling for TEXT. --color-primary at 4.60:1 on the background
      technically clears AA but with almost no headroom; this lands at 6.2:1.
      Use it for links, eyebrow labels, and anywhere steel is a text color;
      keep --color-primary for fills (buttons, pills, borders). */
-  --color-primary-ink: #2857b3;
+  --color-primary-ink: #2959a4;
   /* Action ink — the neutral affordance for non-accent buttons. Deep navy on
      frost, mirroring dark's inverted pair; leaves steel free for "primary". */
-  --color-action: #171c2c;             /* matches --color-foreground */
-  --color-action-foreground: #ffffff;  /* 16.95:1 */
-  --color-action-hover: #2a3450;       /* slightly lifted ink on hover */
-  --color-secondary: #edf1f8;
-  --color-secondary-foreground: #3a455e;
-  --color-muted: #edf1f8;
+  --color-action: #172422;             /* matches --color-foreground */
+  --color-action-foreground: #ffffff;
+  --color-action-hover: #2b3c38;
+  --color-secondary: #e8eee8;
+  --color-secondary-foreground: #30453f;
+  --color-muted: #e8eee8;
   /* 5.50:1 on --color-background and 5.95:1 on white — measured against the
      background, which is the worse of the two and the surface the sidebar
      actually uses. */
-  --color-muted-foreground: #5a6478;
-  --color-accent: #edf1f8;
-  --color-accent-foreground: #171c2c;
-  --color-destructive: #c0343c;
-  --color-destructive-foreground: #ffffff;  /* 5.53:1 on the red fill */
+  --color-muted-foreground: #5b6e69;
+  --color-accent: #e0eae5;
+  --color-accent-foreground: #172422;
+  --color-destructive: #b73535;
+  --color-destructive-foreground: #ffffff;
   /* Same two-weight split as dark: a quiet hairline for structure, and an
      interactive edge that clears 1.4.11's 3:1 (3.48:1 on bg / 3.77:1 on the
      white pane) for anything operable. */
-  --color-border: #dce2ee;
-  --color-border-interactive: #76849f;
-  --color-ring: #2f6bd8;
-  --color-success: #176b45;
-  --color-warning: #865c0c;             /* amber, darkened for AA — 5.47:1 */
-  --color-info: #2f6bd8;
+  --color-border: #d6dfd9;
+  --color-border-interactive: #71817c;
+  --color-ring: #2b63b7;
+  --color-success: #18754a;
+  --color-warning: #8a5a00;
+  --color-info: #315ea8;
 
   /* Status colors — the light-theme counterparts, all ≥4.5:1 on background
      and card. Same role assignment as dark: steel = embedding, violet = AI. */
-  --color-status-connected: #176b45;
-  --color-status-syncing: #865c0c;
-  --color-status-embedding: #2f6bd8;
-  --color-status-ai: #6d28d9;
-  --color-status-disconnected: #c0343c;
-  --color-status-inactive: #5a6478;
+  --color-status-connected: #18754a;
+  --color-status-syncing: #8a5a00;
+  --color-status-embedding: #315ea8;
+  --color-status-ai: #7041a8;
+  --color-status-disconnected: #b73535;
+  --color-status-inactive: #60736d;
 
   /* Code colors — matched against --color-code-bg #eef2f9, a cool tint of the
      background so a code block reads as recessed against the white pane. */
-  --color-code-bg: #eef2f9;
-  --color-code-keyword: #6d28d9;   /* violet, 6.33:1 */
-  --color-code-string: #176b45;    /* green,  5.80:1 */
-  --color-code-function: #2857b3;  /* steel,  6.02:1 */
-  --color-code-comment: #5a6478;   /* slate,  5.30:1 */
-  --color-code-number: #865c0c;    /* amber,  5.27:1 */
-  --color-code-type: #0f766e;      /* teal,   4.87:1 */
+  --color-code-bg: #edf2ee;
+  --color-code-keyword: #7041a8;
+  --color-code-string: #18754a;
+  --color-code-function: #2959a4;
+  --color-code-comment: #5b6e69;
+  --color-code-number: #8a5a00;
+  --color-code-type: #0b6b63;
   --color-code-meta: #a3195b;      /* pink,   6.57:1 */
 
   /* Inherits --nm-* and the gradient chassis from the
      [data-theme-type="light"] block above; no overrides. */
 
-  --inline-code-color: #6d28d9;
+  --inline-code-color: #7041a8;
 }
 
 /* ---- Light-theme warning-text remap ----
@@ -435,8 +433,8 @@ h1, h2, h3, h4, h5, h6,
    `text-amber-100..400` / `text-yellow-300..400` shades. Those were tuned for
    the dark theme — on Frost Steel's near-white surface they're effectively
    invisible (contrast < 1.5:1). Rather than editing every callsite, remap
-   those text classes to the AA-pass `--color-warning` (#865c0c, 5.47:1 vs
-   #f4f6fa). Same colour the design system already uses for warning panels in
+   those text classes to the AA-pass `--color-warning` (#8a5a00, 5.80:1 vs
+   #f3f6f1). Same colour the design system already uses for warning panels in
    Tiptap/prose blocks. Backgrounds and borders stay as-is — only text.
 
    These callsites stay literal amber on purpose: under the steel system amber
@@ -470,6 +468,56 @@ h1, h2, h3, h4, h5, h6,
    background-image — so it lives here as a named utility. */
 @utility app-backdrop {
   background: var(--surface-backdrop);
+}
+
+/* Shell surfaces carry the palette without competing with content. The
+   header is slightly denser than the canvas; sidebars are one tonal step
+   deeper, creating stable wayfinding without glass or a heavy shadow. */
+@utility app-header {
+  background: color-mix(in oklab, var(--color-card) 88%, var(--color-background));
+  border-color: var(--color-border);
+  box-shadow: 0 1px 0 oklch(from var(--color-foreground) l c h / 0.035);
+}
+
+@utility app-sidebar {
+  background: color-mix(in oklab, var(--color-card) 62%, var(--color-background));
+  border-color: var(--color-border);
+}
+
+/* A selected destination is a quiet steel field, not an inverted slab.
+   The 1px edge remains visible in forced-colors mode, while the icon and
+   label retain a non-color cue through weight and position. */
+@utility nav-selection {
+  color: var(--color-primary-ink);
+  background: oklch(from var(--color-primary) l c h / 0.12);
+  outline: 1px solid oklch(from var(--color-primary) l c h / 0.28);
+  outline-offset: -1px;
+  box-shadow: inset 0 1px 0 oklch(1 0 0 / 0.06);
+}
+
+@utility app-search {
+  color: var(--color-muted-foreground);
+  background: color-mix(in oklab, var(--color-card) 74%, transparent);
+  border: 1px solid var(--color-border);
+  box-shadow: inset 0 1px 2px oklch(0 0 0 / 0.08);
+  transition:
+    color 160ms ease-out,
+    border-color 160ms ease-out,
+    background-color 160ms ease-out,
+    box-shadow 160ms ease-out;
+
+  &:hover {
+    color: var(--color-foreground);
+    background: var(--color-card);
+    border-color: oklch(from var(--color-primary) l c h / 0.48);
+  }
+
+  &:focus-visible {
+    color: var(--color-foreground);
+    border-color: var(--color-primary);
+    outline: 2px solid oklch(from var(--color-primary) l c h / 0.42);
+    outline-offset: 2px;
+  }
 }
 
 /* Scroll edge fade mask — applied to scrollable sidebar content areas. */

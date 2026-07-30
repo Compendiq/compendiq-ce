@@ -60,7 +60,7 @@ export function MainNavStripExpanded({ onNavigate }: MainNavStripProps) {
             className={cn(
               'flex flex-1 items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs transition-all duration-200 active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
               active
-                ? 'bg-action text-action-foreground font-medium'
+                ? 'nav-selection font-medium'
                 : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
             )}
           >
@@ -68,11 +68,9 @@ export function MainNavStripExpanded({ onNavigate }: MainNavStripProps) {
               size={14}
               className={cn(
                 active && 'drop-shadow-[0_1px_2px_oklch(0_0_0_/_0.25)]',
-                // AI tab keeps amber on its icon as the AI signal when
-                // active (pill is ink, ~7:1+ contrast). When inactive the
-                // icon must inherit muted-foreground — amber on light glass
-                // is 1.47:1, a WCAG failure.
-                active && path === '/ai' && 'text-primary',
+                // AI uses the same active-navigation steel as its label here;
+                // violet remains reserved for generated content and status.
+                active && path === '/ai' && 'text-primary-ink',
               )}
             />
             {label}
@@ -104,7 +102,7 @@ export function MainNavStripCollapsed({ onNavigate }: MainNavStripProps) {
             className={cn(
               'rounded-lg p-1.5 transition-all duration-200 active:scale-[0.95]',
               active
-                ? 'bg-action text-action-foreground'
+                ? 'nav-selection'
                 : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
             )}
             title={`${label} (${shortcut})`}
@@ -114,7 +112,7 @@ export function MainNavStripCollapsed({ onNavigate }: MainNavStripProps) {
               size={16}
               className={cn(
                 active && 'drop-shadow-[0_1px_2px_oklch(0_0_0_/_0.25)]',
-                active && path === '/ai' && 'text-primary',
+                active && path === '/ai' && 'text-primary-ink',
               )}
             />
           </Link>
