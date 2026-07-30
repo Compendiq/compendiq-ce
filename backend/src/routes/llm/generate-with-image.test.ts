@@ -9,6 +9,18 @@ const mockGetSystemPrompt = vi.fn().mockImplementation((key: string) => `System 
 vi.mock('../../domains/llm/services/prompts.js', () => ({
   getSystemPrompt: (...args: unknown[]) => mockGetSystemPrompt(...args),
   LANGUAGE_PRESERVATION_INSTRUCTION: '',
+  // #1154: REQUIRED, even though nothing here asserts on it. The route calls
+  // `contentToText` when building its audit payload; omitting it from this mock
+  // makes that expression throw *after* streamSSE has hijacked and ended the
+  // reply, so the error is swallowed, `inject` still resolves 200, and every
+  // test below passes while the whole tail of the handler — audit, cache write,
+  // lock release — silently never runs. The real implementation flattens the
+  // content-part array; here content is always a bare string.
+  contentToText: (content: unknown) =>
+    (typeof content === 'string'
+      ? content
+      : (content as Array<{ type: string; text?: string }>)
+          .filter((p) => p.type === 'text').map((p) => p.text).join('\n')),
 }));
 
 // Mock llm-provider-resolver (resolveUsecase)
@@ -60,6 +72,7 @@ vi.mock('../../domains/llm/services/embedding-service.js', () => ({
 
 const mockGetCachedResponse = vi.fn().mockResolvedValue(null);
 const mockSetCachedResponse = vi.fn();
+const mockBuildLlmCacheKey = vi.fn().mockReturnValue('test-cache-key');
 
 vi.mock('../../domains/llm/services/llm-cache.js', () => {
   class MockLlmCache {
@@ -72,7 +85,7 @@ vi.mock('../../domains/llm/services/llm-cache.js', () => {
   }
   return {
     LlmCache: MockLlmCache,
-    buildLlmCacheKey: vi.fn().mockReturnValue('test-cache-key'),
+    buildLlmCacheKey: (...args: unknown[]) => mockBuildLlmCacheKey(...args),
     buildRagCacheKey: vi.fn(),
   };
 });
@@ -161,6 +174,7 @@ describe('POST /llm/generate with an image (#1154)', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockBuildLlmCacheKey.mockReturnValue('test-cache-key');
     mockGetCachedResponse.mockResolvedValue(null);
     mockSanitizeLlmInput.mockImplementation((input: string) => ({ sanitized: input, warnings: [] }));
     mockFetchWebSources.mockResolvedValue({ sources: [], injectionWarnings: [] });
@@ -242,5 +256,48 @@ describe('POST /llm/generate with an image (#1154)', () => {
   it('does not check capability when no image is attached', async () => {
     await inject({ prompt: 'x' });
     expect(mockGetVisionCapability).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Two different images behind one prompt must not collide in the response
+   * cache. `llm-cache.test.ts` proves the key function separates them; this
+   * proves the route actually hands it the hash.
+   */
+  it('folds the image hash into the cache key', async () => {
+    await inject({ prompt: 'x', imageHandle: HANDLE });
+    expect(mockBuildLlmCacheKey).toHaveBeenCalledWith(
+      'm', expect.any(String), expect.any(String), 'p1',
+      expect.objectContaining({ imageHash: HANDLE }),
+    );
+  });
+
+  it('leaves the image hash out of the cache key when no image is attached', async () => {
+    await inject({ prompt: 'x' });
+    expect(mockBuildLlmCacheKey).toHaveBeenCalledWith(
+      'm', expect.any(String), expect.any(String), 'p1',
+      expect.objectContaining({ imageHash: undefined }),
+    );
+  });
+
+  /**
+   * Guards the whole tail of the handler. Everything above asserts on state
+   * captured *before* streaming, so a throw between `streamSSE` and the end of
+   * the handler is invisible to them: the reply is already hijacked and ended,
+   * so `inject` still resolves 200. That is exactly what an incomplete
+   * `prompts.js` mock used to cause here — see the note on that mock.
+   */
+  it('reaches the audit call on the image path', async () => {
+    await inject({ prompt: 'x', imageHandle: HANDLE });
+    expect(mockEmitLlmAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'generate', status: 'success' }),
+    );
+  });
+
+  /** Image parts contribute no text, so the audit must not count them as content. */
+  it('audits the text length, not the content-part count', async () => {
+    await inject({ prompt: 'describe this', imageHandle: HANDLE });
+    const { inputMessages } = mockEmitLlmAudit.mock.calls[0]![0];
+    const user = inputMessages.find((m: { role: string }) => m.role === 'user');
+    expect(user.contentLength).toBeGreaterThan(2);
   });
 });
