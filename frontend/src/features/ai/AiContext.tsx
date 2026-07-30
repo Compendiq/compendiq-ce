@@ -682,19 +682,34 @@ export function AiProvider({ children }: { children: ReactNode }) {
        * existing behaviour applies unchanged, which is why every current caller
        * can omit this prop entirely.
        *
-       * **Returning `true` claims the error: you own the whole rollback.**
-       * runStream then skips both its toast and `failLastMessage`, because you
-       * have already explained the failure in context. Note what that implies:
-       * `failLastMessage` is what normally turns the placeholder assistant
-       * message into the visible error bubble, so skipping it would strand an
-       * empty bubble under a turn that produced nothing — which reads as "the
-       * model returned nothing" rather than "something went wrong". runStream
-       * therefore removes that placeholder itself; a caller could not, since
-       * `assistantMsgId` never leaves this function.
+       * **Returning `true` claims the error and rolls the send back.** runStream
+       * skips both its toast and `failLastMessage`, because you have already
+       * explained the failure in context, and then removes **both messages it
+       * added itself**:
        *
-       * Everything else you did before the send is yours to undo: any user turn
-       * you seeded by hand, the input you cleared, any attachment state the
-       * request consumed. See `GenerateMode.tsx`'s 410 branch for the shape.
+       * - the `userMessage` turn, when you passed one (Improve, Summarize,
+       *   Quality and Diagram all do);
+       * - the placeholder assistant message.
+       *
+       * Both are removed here rather than by you because neither id leaves this
+       * function. And both must go: `failLastMessage` is what normally turns
+       * the placeholder into the visible error bubble, so skipping it would
+       * otherwise strand an empty bubble — which reads as "the model returned
+       * nothing" rather than "something went wrong" — and dropping only the
+       * placeholder would strand the seeded turn above it with nothing under
+       * it, the same defect one row up.
+       *
+       * **What is still yours to undo:** a user turn you appended *yourself*
+       * before calling (Generate does this, so it removes its own), the input
+       * you cleared, and any attachment state the request consumed. See
+       * `GenerateMode.tsx`'s 410 branch for the shape.
+       *
+       * Two traps:
+       * - Your `setMessages` calls must use the **functional** form. A stale
+       *   closure over `messages` will resurrect the very rows removed here.
+       * - This runs inside runStream's `catch`, so an exception thrown from
+       *   here **escapes runStream** and rejects the returned promise. Do not
+       *   let it throw; the `finally` still runs, but nothing else does.
        */
       onError?: (err: unknown) => boolean;
       userMessage?: string;
@@ -712,8 +727,14 @@ export function AiProvider({ children }: { children: ReactNode }) {
     // while each of those was a *mode* you switched into (the switch felt like a
     // reset anyway); it is not survivable now that all four are chips seeding one
     // continuous conversation in the dock. Ask already appended (AskMode:83).
-    if (opts?.userMessage) {
-      setMessages((prev) => [...prev, { id: nextMessageId(), role: 'user', content: opts.userMessage! }]);
+    // The id is allocated here rather than inside the updater so `onError` can
+    // withdraw this turn: a caller never sees it and so could not remove it
+    // itself. Eager allocation also makes the id stable if React invokes the
+    // updater more than once, which matches `assistantMsgId` below.
+    const seededUserMessage = opts?.userMessage;
+    const seededUserMsgId = seededUserMessage ? nextMessageId() : null;
+    if (seededUserMessage && seededUserMsgId) {
+      setMessages((prev) => [...prev, { id: seededUserMsgId, role: 'user', content: seededUserMessage }]);
     }
 
     opts?.onBeforeStream?.();
@@ -825,10 +846,15 @@ export function AiProvider({ children }: { children: ReactNode }) {
         return;
       }
       // The caller may claim the error (#1154). It has then already told the
-      // user what happened, so the placeholder assistant turn is withdrawn
-      // rather than turned into a second, redundant explanation.
+      // user what happened, so both messages runStream added are withdrawn
+      // rather than turned into a second, redundant explanation: the seeded
+      // user turn and the placeholder that would otherwise sit under it empty.
+      // `seededUserMsgId` is null when the caller seeded its own turn, and no
+      // message carries a null id, so that case filters nothing.
       if (opts?.onError?.(err)) {
-        setMessages((prev) => prev.filter((m) => m.id !== assistantMsgId));
+        setMessages((prev) => prev.filter(
+          (m) => m.id !== assistantMsgId && m.id !== seededUserMsgId,
+        ));
         return;
       }
       // Surface the failure INLINE: replace the placeholder assistant message

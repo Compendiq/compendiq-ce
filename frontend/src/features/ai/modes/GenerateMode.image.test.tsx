@@ -85,7 +85,7 @@ function renderGenerateMode({ vision }: { vision: boolean | null }) {
   });
 
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<><GenerateModeInput /><ModelProbe /></>, {
+  return render(<><GenerateModeInput /><ModelProbe /><MessagesProbe /></>, {
     wrapper: ({ children }: { children: React.ReactNode }) => (
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={['/ai?mode=generate']}>
@@ -125,6 +125,27 @@ function sendButton(): HTMLButtonElement {
 function ModelProbe() {
   const { model } = useAiContext();
   return <span data-testid="model-probe">{model}</span>;
+}
+
+/**
+ * The composer does not render the thread, so a turn it appends is otherwise
+ * invisible to the DOM — and a 410 is supposed to leave *none* behind. One row
+ * per message, `role:content`, so an empty list is an empty thread.
+ * Contributes no button, so `sendButton()` is unaffected.
+ */
+function MessagesProbe() {
+  const { messages } = useAiContext();
+  return (
+    <ul data-testid="messages-probe">
+      {messages.map((m) => <li key={m.id} data-role={m.role}>{m.role}:{m.content}</li>)}
+    </ul>
+  );
+}
+
+function messageRows(): string[] {
+  return Array.from(
+    screen.getByTestId('messages-probe').querySelectorAll('li'),
+  ).map((li) => li.textContent ?? '');
 }
 
 /** Wait until the model has resolved, or every send assertion is about that instead. */
@@ -313,6 +334,45 @@ describe('GenerateMode lapsed image handle (#1154)', () => {
     });
     expect(promptInput()).toHaveValue('describe this');
     expect(toastErrorMock).toHaveBeenCalledWith('The image expired — attach it again.');
+  });
+
+  /**
+   * The rollback has to be total. Generate seeds its own user turn by hand, so
+   * it removes that one; runStream removes the empty assistant placeholder it
+   * added. Leave either and the thread keeps a dead row for a send that
+   * produced nothing — and the prompt is back in the composer, so the user is
+   * about to send it again and get a duplicate.
+   */
+  it('leaves no message behind after a 410', async () => {
+    renderGenerateMode({ vision: true });
+    await settle();
+    await attachImage();
+
+    streamSSEMock.mockImplementation(() => {
+      throw new ApiError(410, 'The staged image has expired. Attach it again.');
+    });
+    await submit('describe this');
+
+    await waitFor(() => {
+      expect(toastErrorMock).toHaveBeenCalledWith('The image expired — attach it again.');
+    });
+    expect(messageRows()).toEqual([]);
+  });
+
+  /** The contrast case: an unclaimed error keeps the turn and explains itself. */
+  it('keeps the turn and shows an inline error on a non-410', async () => {
+    renderGenerateMode({ vision: true });
+    await settle();
+
+    streamSSEMock.mockImplementation(() => { throw new ApiError(500, 'LLM connection lost'); });
+    await submit('describe this');
+
+    await waitFor(() => {
+      expect(messageRows()).toEqual([
+        'user:Generate: describe this',
+        'assistant:LLM connection lost',
+      ]);
+    });
   });
 
   /** Any other failure keeps its normal inline treatment — no slot is cleared. */
