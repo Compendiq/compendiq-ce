@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
-import type { LlmProvider, LlmUsecase, UsecaseAssignments } from '@compendiq/contracts';
+import type { LlmProvider, LlmUsecase, UsecaseAssignments, UsecaseDefault } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
+import { VisionBadge } from '../../../shared/components/badges/VisionBadge';
 
 const USECASE_LABELS: Record<LlmUsecase, string> = {
   chat: 'Chat',
@@ -23,6 +24,17 @@ export function UsecaseAssignmentsSection({ assignments, providers, onChange }: 
   function update(u: LlmUsecase, patch: Partial<UsecaseAssignments[LlmUsecase]>) {
     onChange({ ...assignments, [u]: { ...assignments[u], ...patch } });
   }
+  // #1154: reads the already-resolved chat verdict rather than probing —
+  // same queryKey AiContext.tsx uses for the chat input pane, so this shares
+  // that cache entry (no extra request) and LlmTab's save handler already
+  // invalidates the ['llm', 'usecase-default'] prefix on assignment changes.
+  // Deliberately scoped to `chat` only: badging every ModelPicker option
+  // would fire one vision probe per model on mount.
+  const { data: chatDefault } = useQuery<UsecaseDefault>({
+    queryKey: ['llm', 'usecase-default', 'chat'],
+    queryFn: () => apiFetch('/llm/usecase-default?usecase=chat'),
+    retry: false,
+  });
   return (
     <div className="border-border/50 space-y-2 rounded-md border p-4">
       <h3 className="text-sm font-semibold">Use case assignments</h3>
@@ -30,7 +42,11 @@ export function UsecaseAssignmentsSection({ assignments, providers, onChange }: 
         const row = assignments[u];
         const effectiveProviderId = row.providerId ?? row.resolved.providerId;
         return (
-          <div key={u} className="grid grid-cols-[140px_180px_1fr_auto] items-center gap-2">
+          <div
+            key={u}
+            data-testid={`usecase-row-${u}`}
+            className="grid grid-cols-[140px_180px_1fr_auto] items-center gap-2"
+          >
             <span className="flex items-center gap-1 text-sm font-medium">
               {USECASE_LABELS[u]}
               {u === 'embedding' && (
@@ -59,8 +75,9 @@ export function UsecaseAssignmentsSection({ assignments, providers, onChange }: 
               testId={`usecase-${u}-model`}
               inheritLabel="Inherit provider's model"
             />
-            <span className="text-muted-foreground text-xs">
+            <span className="flex items-center gap-2 text-muted-foreground text-xs">
               → {row.resolved.providerName} / {row.resolved.model || '(none)'}
+              {u === 'chat' && chatDefault && <VisionBadge vision={chatDefault.vision} />}
             </span>
           </div>
         );
