@@ -82,8 +82,8 @@ const PageListItem = memo(function PageListItem({
     >
       <div
         className={cn(
-          'rounded-xl border bg-card/50 backdrop-blur-sm transition-all hover:border-primary/50 flex w-full items-center gap-3 p-4 text-left',
-          selected ? 'border-action/60 bg-action/[0.04]' : 'border-border/40',
+          'flex w-full items-center gap-3 rounded-xl border bg-card/70 p-4 text-left transition-colors hover:border-primary/45 hover:bg-card',
+          selected ? 'border-primary/50 bg-primary/[0.07]' : 'border-border/55',
         )}
         data-testid={`article-hover-${pageItem.id}`}
       >
@@ -96,7 +96,7 @@ const PageListItem = memo(function PageListItem({
             onClick={(e) => onToggleSelect(pageItem.id, e.shiftKey)}
             onChange={() => { /* click handler owns this; keeps React controlled */ }}
             aria-label={`Select ${pageItem.title}`}
-            className="size-4 shrink-0 cursor-pointer accent-[var(--color-action)]"
+            className="size-4 shrink-0 cursor-pointer accent-[var(--color-primary)]"
             data-testid={`page-select-${pageItem.id}`}
           />
         )}
@@ -110,7 +110,7 @@ const PageListItem = memo(function PageListItem({
               {/* Source badge */}
               {pageItem.source === 'standalone' ? (
                 <span
-                  className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#e7f2e8] px-2 py-0.5 text-[11px] font-medium text-[#1f5a2a] dark:bg-[#1a2a1d] dark:text-[#9ad4a8]"
+                  className="inline-flex shrink-0 items-center gap-1 rounded-full border border-success/20 bg-success/10 px-2 py-0.5 text-[11px] font-medium text-success"
                   data-testid="badge-local"
                   data-source-badge={pageItem.id}
                 >
@@ -118,7 +118,7 @@ const PageListItem = memo(function PageListItem({
                 </span>
               ) : (
                 <span
-                  className="inline-flex shrink-0 items-center gap-1 rounded-full bg-blue-500/15 px-2 py-0.5 text-[11px] font-medium text-blue-500"
+                  className="inline-flex shrink-0 items-center gap-1 rounded-full border border-info/20 bg-info/10 px-2 py-0.5 text-[11px] font-medium text-info"
                   data-testid="badge-confluence"
                   data-source-badge={pageItem.id}
                 >
@@ -129,7 +129,7 @@ const PageListItem = memo(function PageListItem({
               {pageItem.source === 'standalone' && (
                 (pageItem.visibility === 'shared') ? (
                   <span
-                    className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#e6effb] px-2 py-0.5 text-[11px] font-medium text-[#1c3e72] dark:bg-[#162236] dark:text-[#a4c2eb]"
+                    className="inline-flex shrink-0 items-center gap-1 rounded-full border border-info/20 bg-info/10 px-2 py-0.5 text-[11px] font-medium text-info"
                     data-testid="badge-shared"
                     data-visibility-badge={pageItem.id}
                   >
@@ -138,7 +138,7 @@ const PageListItem = memo(function PageListItem({
                 ) : (
                   // Private = neutral gray. Was amber, but privacy carries no AI semantic.
                   <span
-                    className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#ececea] px-2 py-0.5 text-[11px] font-medium text-[#4a4a48] dark:bg-[#2a2925] dark:text-[#c5bea9]"
+                    className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border/60 bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
                     data-testid="badge-private"
                     data-visibility-badge={pageItem.id}
                   >
@@ -178,7 +178,7 @@ const PageListItem = memo(function PageListItem({
               {pageItem.labels.slice(0, 3).map((label) => (
                 <span
                   key={label}
-                  className="rounded bg-[#ececea] px-2 py-0.5 text-xs text-[#4a4a48] dark:bg-[#2a2925] dark:text-[#c5bea9]"
+                  className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground"
                   data-testid="label-chip"
                 >
                   {label}

@@ -1107,13 +1107,13 @@ describe('PagesPage', () => {
       });
     }
 
-    it('Local badge uses sage tint (AA-pass), not emerald-500', async () => {
+    it('Local badge uses the semantic success treatment', async () => {
       mockPagesWithStandalone('private');
       render(<PagesPage />, { wrapper: createWrapper() });
       const badge = await screen.findByTestId('badge-local');
       expect(badge).toHaveTextContent('Local');
-      expect(badge.className).toMatch(/bg-\[#e7f2e8\]/);
-      expect(badge.className).toMatch(/text-\[#1f5a2a\]/);
+      expect(badge.className).toContain('bg-success/10');
+      expect(badge.className).toContain('text-success');
       expect(badge.className).not.toMatch(/emerald-500|amber|warning|yellow/);
     });
 
@@ -1123,17 +1123,17 @@ describe('PagesPage', () => {
       const badge = await screen.findByTestId('badge-private');
       expect(badge).toHaveTextContent('Private');
       expect(badge.className).not.toMatch(/amber|warning|yellow|primary/);
-      expect(badge.className).toMatch(/bg-\[#ececea\]/);
-      expect(badge.className).toMatch(/text-\[#4a4a48\]/);
+      expect(badge.className).toContain('bg-muted');
+      expect(badge.className).toContain('text-muted-foreground');
     });
 
-    it('Shared badge uses cool-blue tinted pill (AA-pass), not sky-500', async () => {
+    it('Shared badge uses the semantic information treatment', async () => {
       mockPagesWithStandalone('shared');
       render(<PagesPage />, { wrapper: createWrapper() });
       const badge = await screen.findByTestId('badge-shared');
       expect(badge).toHaveTextContent('Shared');
-      expect(badge.className).toMatch(/bg-\[#e6effb\]/);
-      expect(badge.className).toMatch(/text-\[#1c3e72\]/);
+      expect(badge.className).toContain('bg-info/10');
+      expect(badge.className).toContain('text-info');
       expect(badge.className).not.toMatch(/sky-500|amber|warning|yellow/);
     });
   });

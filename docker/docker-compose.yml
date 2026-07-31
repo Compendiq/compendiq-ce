@@ -23,6 +23,9 @@ services:
     build:
       context: ..
       dockerfile: frontend/Dockerfile
+      args:
+        VITE_LOGIN_VARIANT: ${LOGIN_PAGE_VARIANT:-local-loop}
+        VITE_LOGIN_VARIANT_PICKER: ${LOGIN_PAGE_VARIANT_PICKER:-false}
     ports:
       - "${FRONTEND_PORT:-8081}:8081"
     depends_on:

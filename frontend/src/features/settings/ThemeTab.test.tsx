@@ -47,10 +47,10 @@ describe('ThemeTab', () => {
     expect(screen.getByText('Slate Steel')).toBeInTheDocument();
     expect(screen.getByText('Frost Steel')).toBeInTheDocument();
     expect(
-      screen.getByText('Navy slate surfaces with a steel accent — neumorphic dark'),
+      screen.getByText('Deep mineral ink with a crisp steel accent'),
     ).toBeInTheDocument();
     expect(
-      screen.getByText('Cool near-white with a steel accent — neumorphic light'),
+      screen.getByText('Soft sage paper with a grounded steel accent'),
     ).toBeInTheDocument();
   });
 

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { StrictMode } from 'react';
 import { render, screen, fireEvent, act, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
@@ -14,17 +14,37 @@ import * as keyboardShortcutsModule from '../../hooks/use-keyboard-shortcuts';
 // Mock SidebarTreeView to isolate AppLayout tests. It renders a couple of
 // focusable controls so the mobile slide-over focus-trap can be exercised.
 vi.mock('./SidebarTreeView', () => ({
-  SidebarTreeView: ({ onNavigate: _onNavigate }: { onNavigate?: () => void }) => (
-    <nav data-testid="sidebar-tree-view">
+  SidebarTreeView: ({
+    onNavigate: _onNavigate,
+    forceCollapsed,
+    onForceExpand,
+  }: {
+    onNavigate?: () => void;
+    forceCollapsed?: boolean;
+    onForceExpand?: () => void;
+  }) => (
+    <nav data-testid="sidebar-tree-view" data-force-collapsed={forceCollapsed ? 'true' : 'false'}>
       <a href="/pages/first">First page</a>
       <a href="/pages/second">Second page</a>
       <button type="button">Sidebar action</button>
+      {onForceExpand && <button type="button" onClick={onForceExpand}>Override compact sidebar</button>}
     </nav>
   ),
 }));
 
 vi.mock('../article/ArticleRightPane', () => ({
-  ArticleRightPane: () => <div data-testid="article-right-pane">Article Right Pane</div>,
+  ArticleRightPane: ({
+    inspectorViewRequest,
+  }: {
+    inspectorViewRequest?: { view: string; requestId: number } | null;
+  }) => (
+    <div
+      data-testid="article-right-pane"
+      data-inspector-view={inspectorViewRequest?.view ?? ''}
+    >
+      Article Right Pane
+    </div>
+  ),
 }));
 
 vi.mock('./CommandPalette', () => ({
@@ -43,6 +63,17 @@ vi.mock('../banners/ConfluencePatBanner', () => ({
 
 vi.mock('./ThemeToggle', () => ({
   ThemeToggle: () => <div data-testid="theme-toggle" />,
+}));
+
+// AppLayout only needs the breakpoint decision in these tests. Keep it
+// synchronous so shortcut-hook spies are not invalidated by a post-mount
+// media-query subscription update; the hook itself has dedicated tests.
+vi.mock('../../hooks/use-media-query', () => ({
+  useMediaQuery: () => window.innerWidth >= 768 && window.innerWidth <= 1439,
+  useIsMobileLayout: () => window.innerWidth < 768,
+  useIsDockWideLayout: () => window.innerWidth >= 1100,
+  MD_QUERY: '(min-width: 768px)',
+  DOCK_WIDE_QUERY: '(min-width: 1100px)',
 }));
 
 function createWrapper(initialPath = '/') {
@@ -67,10 +98,18 @@ describe('AppLayout', () => {
     vi.clearAllMocks();
     useCommandPaletteStore.setState({ isOpen: false });
     useAiDockStore.setState({ open: false, seed: null });
-    useUiStore.setState({ articleSidebarCollapsed: false });
+    useUiStore.setState({
+      treeSidebarCollapsed: false,
+      articleSidebarCollapsed: false,
+    });
+    window.innerWidth = 1024;
     // jsdom does not implement Element.scrollTo — stub it so the scroll-reset
     // useEffect in AppLayout does not throw
     Element.prototype.scrollTo = vi.fn();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it('renders header without nav pills (nav moved to sidebar)', () => {
@@ -320,6 +359,59 @@ describe('AppLayout', () => {
     expect(screen.getByTestId('article-right-pane')).toBeInTheDocument();
   });
 
+  it('shows article layout presets only while reading a page', () => {
+    const { unmount } = render(
+      <AppLayout>
+        <div>article</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/pages/123') },
+    );
+    expect(screen.getByRole('button', { name: 'Layout presets' })).toBeInTheDocument();
+    unmount();
+
+    render(
+      <AppLayout>
+        <div>dashboard</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/') },
+    );
+    expect(screen.queryByRole('button', { name: 'Layout presets' })).not.toBeInTheDocument();
+  });
+
+  it('applies the Editing layout preset and requests the Details inspector', async () => {
+    render(
+      <AppLayout>
+        <div>article</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/pages/123') },
+    );
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Layout presets' }), { button: 0 });
+    fireEvent.click(await screen.findByText('Editing'));
+
+    expect(useUiStore.getState().treeSidebarCollapsed).toBe(false);
+    expect(useUiStore.getState().articleSidebarCollapsed).toBe(false);
+    expect(useAiDockStore.getState().open).toBe(false);
+    expect(screen.getByTestId('article-right-pane')).toHaveAttribute('data-inspector-view', 'details');
+  });
+
+  it('temporarily compacts the tree beside an expanded inspector at intermediate widths', () => {
+    window.innerWidth = 900;
+    render(
+      <AppLayout>
+        <div>article</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/pages/123') },
+    );
+
+    const sidebar = screen.getByTestId('sidebar-tree-view');
+    expect(sidebar).toHaveAttribute('data-force-collapsed', 'true');
+    expect(useUiStore.getState().treeSidebarCollapsed).toBe(false);
+
+    fireEvent.click(screen.getByText('Override compact sidebar'));
+    expect(sidebar).toHaveAttribute('data-force-collapsed', 'false');
+  });
+
   it('hides article right pane on non-article routes', () => {
     render(
       <AppLayout>
@@ -457,11 +549,10 @@ describe('AppLayout', () => {
   describe('the `.` shortcut with the AI dock open', () => {
     function captureShortcuts(path: string) {
       let captured: keyboardShortcutsModule.ShortcutDefinition[] = [];
-      const spy = vi.spyOn(keyboardShortcutsModule, 'useKeyboardShortcuts').mockImplementation((shortcuts) => {
+      vi.spyOn(keyboardShortcutsModule, 'useKeyboardShortcuts').mockImplementation((shortcuts) => {
         captured = shortcuts;
       });
       render(<AppLayout><div>content</div></AppLayout>, { wrapper: createWrapper(path) });
-      spy.mockRestore();
       return () => captured.find((s) => s.key === '.')!;
     }
 

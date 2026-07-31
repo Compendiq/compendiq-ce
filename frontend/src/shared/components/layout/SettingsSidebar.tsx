@@ -46,7 +46,7 @@ export function SettingsSidebar({ onNavigate }: { onNavigate?: () => void } = {}
         initial={reduceEffects ? false : { width: 0, opacity: 0 }}
         animate={{ width: 40, opacity: 1 }}
         transition={reduceEffects ? { duration: 0 } : sidebarSpring}
-        className="flex flex-col items-center bg-background border-r border-border overflow-hidden"
+        className="app-sidebar flex flex-col items-center border-r overflow-hidden"
       >
         <button
           onClick={toggleTreeSidebar}
@@ -70,9 +70,9 @@ export function SettingsSidebar({ onNavigate }: { onNavigate?: () => void } = {}
       initial={reduceEffects ? false : { width: 0, opacity: 0 }}
       animate={{ width: treeSidebarWidth, opacity: 1 }}
       transition={reduceEffects ? { duration: 0 } : sidebarSpring}
-      className="relative flex flex-col bg-background border-r border-border overflow-hidden"
+      className="app-sidebar relative flex flex-col border-r overflow-hidden"
     >
-      <div className="flex shrink-0 items-center gap-0.5 px-2 pt-2 pb-1">
+      <div className="panel-toolbar flex shrink-0 items-center gap-1 border-b px-2 py-2">
         <MainNavStripExpanded onNavigate={onNavigate} />
         <button
           onClick={toggleTreeSidebar}
@@ -127,7 +127,7 @@ export function SettingsSidebar({ onNavigate }: { onNavigate?: () => void } = {}
                           cn(
                             'group/nav relative block rounded-md px-2.5 py-1.5 text-sm motion-safe:transition-colors motion-safe:duration-150',
                             isActive
-                              ? 'bg-foreground/[0.07] text-foreground font-medium'
+                              ? 'nav-selection font-medium'
                               : 'text-muted-foreground hover:bg-foreground/[0.04] hover:text-foreground/80',
                           )
                         }

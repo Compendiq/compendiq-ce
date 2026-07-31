@@ -16,6 +16,7 @@ import redisPlugin from './core/plugins/redis.js';
 import { healthRoutes } from './routes/foundation/health.js';
 import { healthApiRoutes, healthApiAdminRoutes } from './routes/foundation/health-api.js';
 import { authRoutes } from './routes/foundation/auth.js';
+import { loginPageConfigRoutes } from './routes/foundation/login-page-config.js';
 import { settingsRoutes } from './routes/foundation/settings.js';
 import { adminRoutes } from './routes/foundation/admin.js';
 import { adminEmbeddingLocksRoutes } from './routes/foundation/admin-embedding-locks.js';
@@ -404,6 +405,7 @@ export async function buildApp() {
   await app.register(healthApiRoutes, { prefix: '/api' });
   await app.register(healthApiAdminRoutes, { prefix: '/api' });
   await app.register(authRoutes, { prefix: '/api/auth' });
+  await app.register(loginPageConfigRoutes, { prefix: '/api' });
   await app.register(settingsRoutes, { prefix: '/api' });
   await app.register(adminRoutes, { prefix: '/api' });
   await app.register(adminEmbeddingLocksRoutes, { prefix: '/api' });

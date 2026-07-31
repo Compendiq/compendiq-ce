@@ -11,9 +11,8 @@ import {
 } from './stores/theme-store';
 
 /**
- * Regression tests for the Slate Steel + Frost Steel palette — the cool
- * slate-and-steel system ported from lifecycle-management, replacing the
- * Graphite Honey + Honey Linen pair.
+ * Regression tests for the Slate Steel + Frost Steel palette — the mineral
+ * ink-and-paper system that replaced the Graphite Honey + Honey Linen pair.
  *
  * The load-bearing half of this file is `describe('Measured contrast')`: it
  * parses the real token values out of index.css and COMPUTES WCAG contrast
@@ -29,6 +28,13 @@ const css = readFileSync(cssPath, 'utf-8');
 const darkBlock = extractBlock(css, '@theme {');
 const lightBlock = extractBlock(css, '[data-theme="frost-steel"] {');
 const lightSharedBlock = extractBlock(css, '[data-theme-type="light"] {');
+const lightHeaderBlock = extractBlock(css, '[data-theme-type="light"] .app-header {');
+const lightSidebarBlock = extractBlock(css, '[data-theme-type="light"] .app-sidebar {');
+const lightSearchBlock = extractBlock(css, '[data-theme-type="light"] .app-search {');
+const lightSelectionBlock = extractBlock(css, '[data-theme-type="light"] .nav-selection {');
+const panelContextBlock = extractBlock(css, '@utility panel-context {');
+const lightPanelContextBlock = extractBlock(css, '[data-theme-type="light"] .panel-context {');
+const lightPanelTabBlock = extractBlock(css, '[data-theme-type="light"] .panel-tab-active {');
 
 /** Read the first colour stop of a `--token: linear-gradient(…)` declaration. */
 function gradientTop(block: string, name: string): string {
@@ -385,9 +391,40 @@ describe('Both themes declare a complete, symmetric token set', () => {
 
   // The retired recipe tinted the light shadow warm brown (rgb 50/42/20) to sit
   // under a honey accent. On a cool palette that reads as a stain.
-  it('uses the cool slate shadow tint, not the retired warm brown', () => {
+  it('uses the mineral ink shadow tint, not the retired warm brown', () => {
     expect(lightSharedBlock).not.toMatch(/rgba\(\s*50,\s*42,\s*20/);
-    expect(lightSharedBlock).toMatch(/rgba\(\s*23,\s*28,\s*44/);
+    expect(lightSharedBlock).toMatch(/rgba\(\s*23,\s*36,\s*34/);
+  });
+});
+
+describe('Light mode has its own shell composition', () => {
+  it('keeps the header on an opaque paper surface', () => {
+    expect(lightHeaderBlock).toMatch(/var\(--color-card\) 96%/);
+    expect(lightHeaderBlock).toMatch(/box-shadow:\s*none/);
+  });
+
+  it('sets the sidebar one value step below the reading canvas', () => {
+    expect(lightSidebarBlock).toMatch(/var\(--color-background\) 84%/);
+    expect(lightSidebarBlock).toMatch(/var\(--color-muted\)/);
+  });
+
+  it('gives the search control an AA-visible interactive edge', () => {
+    expect(lightSearchBlock).toMatch(/border-color:\s*var\(--color-border-interactive\)/);
+  });
+
+  it('uses a quieter selection dose than the dark shell', () => {
+    expect(lightSelectionBlock).toMatch(/var\(--color-primary\)[^;]*\/ 0\.09/);
+    expect(lightSelectionBlock).toMatch(/outline-color:/);
+  });
+
+  it('keeps the workspace selector visibly interactive in both themes', () => {
+    expect(panelContextBlock).toMatch(/border:\s*1px solid var\(--color-border-interactive\)/);
+    expect(lightPanelContextBlock).toMatch(/var\(--color-card\) 94%/);
+  });
+
+  it('lifts the active inspector tab above the paper rail', () => {
+    expect(lightPanelTabBlock).toMatch(/background:\s*var\(--color-card\)/);
+    expect(lightPanelTabBlock).toMatch(/box-shadow:/);
   });
 });
 

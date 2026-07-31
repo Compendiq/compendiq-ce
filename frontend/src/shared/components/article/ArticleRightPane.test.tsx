@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { createMemoryRouter, MemoryRouter, Route, RouterProvider, Routes } from 'react-router-dom';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ArticleRightPane } from './ArticleRightPane';
@@ -163,11 +163,60 @@ describe('ArticleRightPane', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
     expect(screen.getByTestId('article-right-pane')).toBeInTheDocument();
-    expect(screen.getByText('Properties')).toBeInTheDocument();
+    expect(screen.getByText('Page context')).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Details' })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByText('AI Improve')).toBeInTheDocument();
     expect(screen.getByText('Pin')).toBeInTheDocument();
     expect(screen.getByText('Open in Confluence')).toBeInTheDocument();
     expect(screen.getByText('Delete')).toBeInTheDocument();
+  });
+
+  it('keeps primary actions visible and tucks maintenance and deletion behind disclosures', () => {
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    expect(screen.getByText('AI Improve').closest('details')).toBeNull();
+    expect(screen.getByText('Export PDF').closest('details')).toBeNull();
+    expect(screen.getByText('Pin').closest('details')).toBeNull();
+
+    const moreActions = screen.getByText('More actions').closest('details');
+    const dangerZone = screen.getByText('Danger zone').closest('details');
+    expect(moreActions).not.toHaveAttribute('open');
+    expect(dangerZone).not.toHaveAttribute('open');
+
+    fireEvent.click(screen.getByText('More actions'));
+    expect(moreActions).toHaveAttribute('open');
+    fireEvent.click(screen.getByText('Danger zone'));
+    expect(dangerZone).toHaveAttribute('open');
+  });
+
+  it('opens on the outline when the page has document structure', () => {
+    useArticleViewStore.setState({
+      headings: [{ id: 'intro', text: 'Introduction', level: 1 }],
+    });
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    expect(screen.getByRole('tab', { name: /Outline/ })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByText('Introduction')).toBeInTheDocument();
+    expect(screen.queryByTestId('article-actions')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Details' }));
+    expect(screen.getByTestId('article-actions')).toBeInTheDocument();
+  });
+
+  it('honors explicit inspector view requests from layout presets', () => {
+    useArticleViewStore.setState({
+      headings: [{ id: 'intro', text: 'Introduction', level: 1 }],
+    });
+
+    const { rerender } = render(
+      <ArticleRightPane inspectorViewRequest={{ view: 'details', requestId: 1 }} />,
+      { wrapper: createWrapper() },
+    );
+    expect(screen.getByRole('tab', { name: 'Details' })).toHaveAttribute('aria-selected', 'true');
+
+    rerender(<ArticleRightPane inspectorViewRequest={{ view: 'outline', requestId: 2 }} />);
+    expect(screen.getByRole('tab', { name: /Outline/ })).toHaveAttribute('aria-selected', 'true');
   });
 
   it('collapses to a slim rail when the collapse button is clicked', () => {
@@ -261,6 +310,18 @@ describe('ArticleRightPane', () => {
     expect(useUiStore.getState().articleSidebarCollapsed).toBe(false);
   });
 
+  it('closes the dock to expand its forced rail without changing an expanded preference', () => {
+    window.innerWidth = 1400;
+    useAiDockStore.setState({ open: true, seed: null });
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByLabelText('Expand page sidebar'));
+
+    expect(useAiDockStore.getState().open).toBe(false);
+    expect(useUiStore.getState().articleSidebarCollapsed).toBe(false);
+    expect(screen.getByTestId('article-right-pane')).toBeInTheDocument();
+  });
+
   it('steps aside entirely below the wide breakpoint while the dock is open', () => {
     window.innerWidth = 900;
     useAiDockStore.setState({ open: true, seed: null });
@@ -268,6 +329,38 @@ describe('ArticleRightPane', () => {
     const { container } = render(<ArticleRightPane />, { wrapper: createWrapper() });
 
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it('falls back to Details when navigating from a structured page to a heading-free page', async () => {
+    useArticleViewStore.setState({
+      headings: [{ id: 'intro', text: 'Introduction', level: 1 }],
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const router = createMemoryRouter(
+      [{ path: '/pages/:id', element: <ArticleRightPane /> }],
+      { initialEntries: ['/pages/page-1'] },
+    );
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <LazyMotion features={domAnimation}>
+          <RouterProvider router={router} />
+        </LazyMotion>
+      </QueryClientProvider>,
+    );
+    expect(screen.getByRole('tab', { name: /Outline/ })).toHaveAttribute('aria-selected', 'true');
+
+    await act(async () => {
+      await router.navigate('/pages/page-2');
+    });
+    act(() => {
+      useArticleViewStore.getState().setHeadings([]);
+    });
+
+    expect(screen.getByRole('tab', { name: 'Details' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('article-actions')).toBeInTheDocument();
   });
 
   it('renders Re-sync and Re-embed buttons for Confluence-sourced articles', () => {
@@ -483,13 +576,14 @@ describe('ArticleRightPane', () => {
 
     expect(screen.getByText('Introduction')).toBeInTheDocument();
     expect(screen.getByText('Usage')).toBeInTheDocument();
-    expect(screen.getByText('2 sections')).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /Outline/ })).toHaveTextContent('2');
   });
 
   it('shows empty message when there are no headings', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    expect(screen.getByText('No headings on this page.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: 'Outline' }));
+    expect(screen.getByText('No outline yet')).toBeInTheDocument();
   });
 
   // #880: outline rows were clickable <div>s with focus-visible classes but no
@@ -530,7 +624,7 @@ describe('ArticleRightPane', () => {
       expect(scrollToSpy).toHaveBeenCalled();
       // setActiveId(headingId) ran → the row gets the active treatment.
       const activeRow = screen.getByText('Introduction').closest('[role="treeitem"]')!;
-      expect(activeRow.className).toContain('nm-pill-active');
+      expect(activeRow.className).toContain('nav-selection');
     });
 
     it('prevents the default page-scroll on Space', () => {
@@ -587,7 +681,24 @@ describe('ArticleRightPane', () => {
   it('has a resize handle', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    expect(screen.getByRole('separator', { name: 'Resize page sidebar' })).toBeInTheDocument();
+    const handle = screen.getByRole('separator', { name: 'Resize page sidebar' });
+    expect(handle).toHaveAttribute('aria-valuenow', '280');
+    expect(handle).toHaveAttribute('tabindex', '0');
+  });
+
+  it('supports keyboard resizing and double-click reset', () => {
+    useUiStore.setState({ articleSidebarWidth: 320 });
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+    const handle = screen.getByRole('separator', { name: 'Resize page sidebar' });
+
+    fireEvent.keyDown(handle, { key: 'ArrowLeft' });
+    expect(useUiStore.getState().articleSidebarWidth).toBe(336);
+
+    fireEvent.keyDown(handle, { key: 'ArrowRight' });
+    expect(useUiStore.getState().articleSidebarWidth).toBe(320);
+
+    fireEvent.doubleClick(handle);
+    expect(useUiStore.getState().articleSidebarWidth).toBe(280);
   });
 
   it('renders QualityScoreBadge in properties when quality score is present', () => {

@@ -14,7 +14,10 @@ import { ConfluencePatBanner } from '../banners/ConfluencePatBanner';
 import { UserMenu } from './UserMenu';
 import { SidebarTreeView } from './SidebarTreeView';
 import { SettingsSidebar } from './SettingsSidebar';
-import { ArticleRightPane } from '../article/ArticleRightPane';
+import {
+  ArticleRightPane,
+  type InspectorViewRequest,
+} from '../article/ArticleRightPane';
 import { AiProvider } from '../../../features/ai/AiContext';
 import { AiDock } from '../../../features/ai/dock/AiDock';
 import { useAiDockStore } from '../../../stores/ai-dock-store';
@@ -22,6 +25,8 @@ import { ShortcutHint } from '../ShortcutHint';
 import { Logo } from '../Logo';
 import { ThemeToggle } from './ThemeToggle';
 import { PageTransition } from './PageTransition';
+import { LayoutPresetMenu, type LayoutPreset } from './LayoutPresetMenu';
+import { useMediaQuery } from '../../hooks/use-media-query';
 import { cn } from '../../lib/cn';
 
 export function AppLayout({ children }: { children: ReactNode }) {
@@ -35,11 +40,23 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const setPendingSequence = useKeyboardShortcutsStore((s) => s.setPendingSequence);
   const toggleTreeSidebar = useUiStore((s) => s.toggleTreeSidebar);
   const toggleArticleSidebar = useUiStore((s) => s.toggleArticleSidebar);
+  const treeSidebarCollapsed = useUiStore((s) => s.treeSidebarCollapsed);
+  const articleSidebarCollapsed = useUiStore((s) => s.articleSidebarCollapsed);
+  const setTreeSidebarCollapsed = useUiStore((s) => s.setTreeSidebarCollapsed);
+  const setArticleSidebarCollapsed = useUiStore((s) => s.setArticleSidebarCollapsed);
   const singleKeyShortcutsEnabled = useUiStore((s) => s.singleKeyShortcutsEnabled);
+  const dockOpen = useAiDockStore((s) => s.open);
+  const openDock = useAiDockStore((s) => s.openDock);
+  const closeDock = useAiDockStore((s) => s.closeDock);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [activeLayoutPreset, setActiveLayoutPreset] = useState<LayoutPreset | null>(null);
+  const [inspectorViewRequest, setInspectorViewRequest] = useState<InspectorViewRequest | null>(null);
+  const [midWidthTreeExpandedOverride, setMidWidthTreeExpandedOverride] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const mobileSidebarRef = useRef<HTMLDivElement>(null);
+  const previousLayoutPathRef = useRef(location.pathname);
   const isArticleRoute = /^\/pages\/[^/]+$/.test(location.pathname);
+  const isInspectorCompactLayout = useMediaQuery('(min-width: 768px) and (max-width: 1439px)');
   // On /settings* we swap the Pages tree for a Settings-specific sidebar so
   // the main nav (Pages / AI / Graph) stays accessible — otherwise users land
   // in Settings with no in-rail path back to the rest of the app, since the
@@ -47,6 +64,100 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const isSettingsRoute = /^\/settings(\/|$)/.test(location.pathname);
 
   const closeMobileSidebar = useCallback(() => setMobileSidebarOpen(false), []);
+
+  const requestInspectorView = useCallback((view: InspectorViewRequest['view']) => {
+    setInspectorViewRequest((current) => ({
+      view,
+      requestId: (current?.requestId ?? 0) + 1,
+    }));
+  }, []);
+
+  const applyLayoutPreset = useCallback((preset: LayoutPreset) => {
+    setActiveLayoutPreset(preset);
+
+    if (preset === 'reading') {
+      setTreeSidebarCollapsed(true);
+      setArticleSidebarCollapsed(false);
+      closeDock();
+      requestInspectorView('outline');
+      setMidWidthTreeExpandedOverride(false);
+      return;
+    }
+
+    if (preset === 'editing') {
+      setTreeSidebarCollapsed(false);
+      setArticleSidebarCollapsed(false);
+      closeDock();
+      requestInspectorView('details');
+      // Editing intentionally keeps navigation available even where the
+      // inspector would normally compact it for reading room.
+      setMidWidthTreeExpandedOverride(true);
+      return;
+    }
+
+    if (preset === 'focus') {
+      setTreeSidebarCollapsed(true);
+      setArticleSidebarCollapsed(true);
+      closeDock();
+      setMidWidthTreeExpandedOverride(false);
+      return;
+    }
+
+    setTreeSidebarCollapsed(false);
+    setArticleSidebarCollapsed(true);
+    openDock();
+    setMidWidthTreeExpandedOverride(false);
+  }, [
+    closeDock,
+    openDock,
+    requestInspectorView,
+    setArticleSidebarCollapsed,
+    setTreeSidebarCollapsed,
+  ]);
+
+  // At intermediate desktop widths, an expanded inspector temporarily turns
+  // the left navigation into its rail. This never writes to the persisted UI
+  // preference, and the rail's expand control remains an explicit override.
+  const forceTreeCollapsed =
+    isArticleRoute &&
+    isInspectorCompactLayout &&
+    !articleSidebarCollapsed &&
+    !dockOpen &&
+    !midWidthTreeExpandedOverride;
+
+  useEffect(() => {
+    if (
+      midWidthTreeExpandedOverride &&
+      (!isArticleRoute || !isInspectorCompactLayout || articleSidebarCollapsed || dockOpen)
+    ) {
+      setMidWidthTreeExpandedOverride(false);
+    }
+  }, [
+    articleSidebarCollapsed,
+    dockOpen,
+    isArticleRoute,
+    isInspectorCompactLayout,
+    midWidthTreeExpandedOverride,
+  ]);
+
+  // A manual panel change means the last command is no longer an exact preset.
+  useEffect(() => {
+    if (!activeLayoutPreset) return;
+    const matches = {
+      reading: treeSidebarCollapsed && !articleSidebarCollapsed && !dockOpen,
+      editing: !treeSidebarCollapsed && !articleSidebarCollapsed && !dockOpen,
+      focus: treeSidebarCollapsed && articleSidebarCollapsed && !dockOpen,
+      research: !treeSidebarCollapsed && articleSidebarCollapsed && dockOpen,
+    }[activeLayoutPreset];
+    if (!matches) setActiveLayoutPreset(null);
+  }, [activeLayoutPreset, articleSidebarCollapsed, dockOpen, treeSidebarCollapsed]);
+
+  useEffect(() => {
+    if (previousLayoutPathRef.current === location.pathname) return;
+    previousLayoutPathRef.current = location.pathname;
+    setActiveLayoutPreset(null);
+    setMidWidthTreeExpandedOverride(false);
+  }, [location.pathname]);
 
   // `.` means "give me the right side of the screen back". While the docked
   // assistant is open it holds that side and forces the article pane into its
@@ -268,8 +379,8 @@ export function AppLayout({ children }: { children: ReactNode }) {
       <CommandPalette />
       <KeyboardShortcutsModal />
 
-      {/* Top navigation bar — full-width flat strip with bottom border. */}
-      <header className="relative z-10 flex h-[55px] shrink-0 items-center bg-background border-b border-border px-4">
+      {/* Top navigation bar — a denser mineral surface over the app canvas. */}
+      <header className="app-header relative z-10 flex h-[58px] shrink-0 items-center border-b px-4">
         {/* Mobile hamburger — opens sidebar slide-over */}
         <button
           onClick={() => setMobileSidebarOpen((v) => !v)}
@@ -297,7 +408,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
             onClick={openCommandPalette}
             aria-label="Search knowledge base"
             aria-expanded={isCommandPaletteOpen}
-            className="pointer-events-auto flex w-full max-w-xl items-center gap-2 rounded-lg border border-border/50 bg-foreground/5 px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-foreground/10 hover:border-border"
+            className="app-search pointer-events-auto flex h-9 w-full max-w-xl items-center gap-2 rounded-lg px-3 text-sm"
           >
             <Search size={16} className="shrink-0" />
             <span className="truncate">Search pages, commands...</span>
@@ -312,13 +423,19 @@ export function AppLayout({ children }: { children: ReactNode }) {
           onClick={openCommandPalette}
           aria-label="Search"
           aria-expanded={isCommandPaletteOpen}
-          className="ml-auto mr-2 flex items-center rounded-md bg-foreground/5 p-1.5 text-muted-foreground transition-colors hover:bg-foreground/10 sm:hidden"
+          className="app-search ml-auto mr-2 flex items-center rounded-md p-1.5 sm:hidden"
         >
           <Search size={16} />
         </button>
 
-        {/* Right side: theme + user */}
+        {/* Right side: article layout + theme + user */}
         <div className="flex items-center gap-3 sm:ml-auto">
+          {isArticleRoute && (
+            <LayoutPresetMenu
+              activePreset={activeLayoutPreset}
+              onSelect={applyLayoutPreset}
+            />
+          )}
           <ThemeToggle />
           <UserMenu />
         </div>
@@ -373,13 +490,20 @@ export function AppLayout({ children }: { children: ReactNode }) {
             On /settings* we swap to SettingsSidebar so the main nav strip
             stays visible alongside the Settings section nav. */}
         <div className="hidden md:flex">
-          {isSettingsRoute ? <SettingsSidebar /> : <SidebarTreeView />}
+          {isSettingsRoute
+            ? <SettingsSidebar />
+            : (
+              <SidebarTreeView
+                forceCollapsed={forceTreeCollapsed}
+                onForceExpand={() => setMidWidthTreeExpandedOverride(true)}
+              />
+            )}
         </div>
 
         {/* Main content area + optional right sidebar */}
         <div className="flex flex-1 overflow-hidden">
           <main className="flex flex-1 flex-col overflow-hidden">
-            <div ref={scrollContainerRef} data-scroll-container className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pt-4 pb-4 [scrollbar-gutter:stable_both-edges]">
+            <div ref={scrollContainerRef} data-scroll-container className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pb-5 pt-5 sm:px-6 [scrollbar-gutter:stable_both-edges]">
               <PageTransition>
                 {/* flex flex-1 flex-col so pages that opt in (e.g. /ai) can use
                     flex-1 on a child to fill the available scroll height
@@ -397,7 +521,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
               editor column flex-shrinks around them and each panel scrolls
               independently — the dock is part of the layout, not an overlay
               floating above it (#1126). */}
-          {isArticleRoute && <ArticleRightPane />}
+          {isArticleRoute && <ArticleRightPane inspectorViewRequest={inspectorViewRequest} />}
           {isArticleRoute && <AiDock />}
         </div>
       </div>

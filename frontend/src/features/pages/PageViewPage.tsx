@@ -183,6 +183,7 @@ export function PageViewPage() {
   // this page.
   const [isDirty, setIsDirty] = useState(false);
   const [headings, setHeadings] = useState<TocHeading[]>([]);
+  const previousPageIdRef = useRef(id);
   const [lightboxSrc, setLightboxSrc] = useState<{ alt: string; src: string } | null>(null);
   const [drawioEditingDiagram, setDrawioEditingDiagram] = useState<string | null>(null);
   const [drawioXml, setDrawioXml] = useState<string>('');
@@ -233,7 +234,7 @@ export function PageViewPage() {
     };
   }, []);
 
-  // Reset edit-mode state whenever the :id route param changes (#872). The
+  // Reset page-local state whenever the :id route param changes (#872). The
   // /pages/:id route is not keyed, so React Router keeps this single
   // PageViewPage instance mounted across id changes — only useParams().id
   // and the react-query page object update. Without this reset, navigating
@@ -247,6 +248,15 @@ export function PageViewPage() {
   // here: the per-page localStorage draft is keyed by id and its
   // restore-on-edit feature must survive navigation.
   useEffect(() => {
+    const pageChanged = previousPageIdRef.current !== id;
+    previousPageIdRef.current = id;
+    if (pageChanged) {
+      // ArticleViewer publishes the destination headings asynchronously.
+      // Clear page A's structure immediately so the app-level inspector cannot
+      // expose a stale Outline while page B is loading or has no headings.
+      setHeadings([]);
+      setStoreHeadings([]);
+    }
     setEditing(false);
     setEditHtml('');
     setEditTitle('');
@@ -256,7 +266,7 @@ export function PageViewPage() {
     setConfirmDiscardOpen(false);
     setConfirmTrashOpen(false);
     setRelocateOpen(false);
-  }, [id]);
+  }, [id, setStoreHeadings]);
 
   useLayoutEffect(() => {
     scrollArticleToTop();
@@ -677,12 +687,10 @@ export function PageViewPage() {
         </div>
       )}
       {/* Article card. 25px gap below the toolbar when editing. When not
-          editing, the card sits on its own with no toolbar above.
-          Background tint matches the AI page panes (bg-card at 50% alpha
-          over the page bg + backdrop-blur) for cross-route consistency. */}
+          editing, the card sits on its own with no toolbar above. */}
       <div
         className={cn(
-          'overflow-hidden rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm',
+          'overflow-hidden rounded-xl border border-border/55 bg-card/80',
           editing && 'mt-[25px]',
         )}
       >
@@ -694,14 +702,14 @@ export function PageViewPage() {
             {/* Source badge */}
             {page.source === 'standalone' ? (
               <span
-                className="inline-flex items-center gap-1 rounded-full bg-[#e7f2e8] px-2 py-0.5 text-[11px] font-medium text-[#1f5a2a] dark:bg-[#1a2a1d] dark:text-[#9ad4a8]"
+                className="inline-flex items-center gap-1 rounded-full border border-success/20 bg-success/10 px-2 py-0.5 text-[11px] font-medium text-success"
                 data-testid="badge-local"
               >
                 Local
               </span>
             ) : (
               <span
-                className="inline-flex items-center gap-1 rounded-full bg-blue-500/15 px-2 py-0.5 text-[11px] font-medium text-blue-500"
+                className="inline-flex items-center gap-1 rounded-full border border-info/20 bg-info/10 px-2 py-0.5 text-[11px] font-medium text-info"
                 data-testid="badge-confluence"
               >
                 Confluence
@@ -711,7 +719,7 @@ export function PageViewPage() {
             {page.source === 'standalone' && (
               page.visibility === 'shared' ? (
                 <span
-                  className="inline-flex items-center gap-1 rounded-full bg-[#e6effb] px-2 py-0.5 text-[11px] font-medium text-[#1c3e72] dark:bg-[#162236] dark:text-[#a4c2eb]"
+                  className="inline-flex items-center gap-1 rounded-full border border-info/20 bg-info/10 px-2 py-0.5 text-[11px] font-medium text-info"
                   data-testid="badge-shared"
                 >
                   <Globe size={10} /> Shared
@@ -719,7 +727,7 @@ export function PageViewPage() {
               ) : (
                 // Private = neutral gray. Was amber, but privacy carries no AI semantic.
                 <span
-                  className="inline-flex items-center gap-1 rounded-full bg-[#ececea] px-2 py-0.5 text-[11px] font-medium text-[#4a4a48] dark:bg-[#2a2925] dark:text-[#c5bea9]"
+                  className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
                   data-testid="badge-private"
                 >
                   <Lock size={10} /> Private
@@ -729,7 +737,7 @@ export function PageViewPage() {
             {/* Draft indicator — neutral private-tier palette (drafts read as personal/private state, not AI). */}
             {'hasDraft' in page && Boolean((page as Record<string, unknown>).hasDraft) && (
               <span
-                className="inline-flex items-center gap-1 rounded-full bg-[#ececea] px-2 py-0.5 text-[11px] font-medium text-[#4a4a48] dark:bg-[#2a2925] dark:text-[#c5bea9]"
+                className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
                 data-testid="badge-draft"
               >
                 <AlertCircle size={10} /> Draft
