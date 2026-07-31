@@ -47,14 +47,14 @@ export const THEMES: ThemeMeta[] = [
     // the theme. `bg` is the flat --color-background rather than the lightest
     // stop of --surface-backdrop: the chip is too small to read a gradient,
     // and the flat value is what the majority of the viewport settles to.
-    preview: { bg: '#0b1417', card: '#112126', primary: '#74aefc', accent: '#e8f1f2' },
+    preview: { bg: '#0b121c', card: '#111a27', primary: '#74aefc', accent: '#e8f1f2' },
   },
   {
     id: 'frost-steel',
     label: 'Frost Steel',
-    description: 'Soft sage paper with a grounded steel accent',
+    description: 'Soft frost paper with a grounded steel accent',
     category: 'light',
-    preview: { bg: '#f3f6f1', card: '#fffdfa', primary: '#2b63b7', accent: '#172422' },
+    preview: { bg: '#f4f5f7', card: '#ffffff', primary: '#2b63b7', accent: '#1a1d20' },
   },
 ];
 
