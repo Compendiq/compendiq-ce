@@ -59,7 +59,7 @@ export function LocalLoopLogin({ authPanel, controls }: LocalLoopLoginProps) {
             </p>
           </section>
 
-          <div className="lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:self-center">{authPanel}</div>
+          <div className="lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:self-end">{authPanel}</div>
 
           <section
             className="nm-card relative overflow-hidden p-5 sm:p-6 lg:col-start-1 lg:row-start-2"
