@@ -35,7 +35,7 @@ export function ChangeDeskLogin({ authPanel, controls }: ChangeDeskLoginProps) {
             </p>
           </section>
 
-          <div className="lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:self-center">{authPanel}</div>
+          <div className="lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:self-end">{authPanel}</div>
 
           <section
             className="nm-card overflow-hidden lg:col-start-1 lg:row-start-2"
