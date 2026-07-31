@@ -230,8 +230,20 @@ export function ArticleRightPane({
   // have quietly changed meaning.
   const dockOpen = useAiDockStore((s) => s.open);
   const openDock = useAiDockStore((s) => s.openDock);
+  const closeDock = useAiDockStore((s) => s.closeDock);
   const dockLayoutIsWide = useIsDockWideLayout();
   const collapsed = userCollapsed || dockOpen;
+  const handleExpandSidebar = useCallback(() => {
+    if (dockOpen) {
+      closeDock();
+      // The dock may be the only reason the rail is collapsed. Preserve an
+      // already-expanded preference, but honor an explicit Expand action when
+      // the user had previously collapsed the sidebar themselves.
+      if (userCollapsed) toggleSidebar();
+      return;
+    }
+    toggleSidebar();
+  }, [closeDock, dockOpen, toggleSidebar, userCollapsed]);
 
   const headings = useArticleViewStore((s) => s.headings);
   const editing = useArticleViewStore((s) => s.editing);
@@ -313,11 +325,13 @@ export function ArticleRightPane({
     if (previousInspectorPageIdRef.current !== id) {
       previousInspectorPageIdRef.current = id;
       inspectorViewTouchedRef.current = false;
-      setActiveInspectorView(headings.length > 0 ? 'outline' : 'details');
+      // `headings` still belongs to the previous page during this render.
+      // Start from Details until the destination publishes its own structure.
+      setActiveInspectorView('details');
       return;
     }
-    if (!inspectorViewTouchedRef.current && headings.length > 0) {
-      setActiveInspectorView('outline');
+    if (!inspectorViewTouchedRef.current) {
+      setActiveInspectorView(headings.length > 0 ? 'outline' : 'details');
     }
   }, [headings.length, id]);
 
@@ -641,7 +655,7 @@ export function ArticleRightPane({
         >
           <div className="flex h-12 w-full flex-col items-center justify-center gap-0.5">
             <button
-              onClick={toggleSidebar}
+              onClick={handleExpandSidebar}
               className={railIconBtn}
               aria-label="Expand page sidebar"
               title="Expand sidebar (.)"

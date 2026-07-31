@@ -183,6 +183,7 @@ export function PageViewPage() {
   // this page.
   const [isDirty, setIsDirty] = useState(false);
   const [headings, setHeadings] = useState<TocHeading[]>([]);
+  const previousPageIdRef = useRef(id);
   const [lightboxSrc, setLightboxSrc] = useState<{ alt: string; src: string } | null>(null);
   const [drawioEditingDiagram, setDrawioEditingDiagram] = useState<string | null>(null);
   const [drawioXml, setDrawioXml] = useState<string>('');
@@ -233,7 +234,7 @@ export function PageViewPage() {
     };
   }, []);
 
-  // Reset edit-mode state whenever the :id route param changes (#872). The
+  // Reset page-local state whenever the :id route param changes (#872). The
   // /pages/:id route is not keyed, so React Router keeps this single
   // PageViewPage instance mounted across id changes — only useParams().id
   // and the react-query page object update. Without this reset, navigating
@@ -247,6 +248,15 @@ export function PageViewPage() {
   // here: the per-page localStorage draft is keyed by id and its
   // restore-on-edit feature must survive navigation.
   useEffect(() => {
+    const pageChanged = previousPageIdRef.current !== id;
+    previousPageIdRef.current = id;
+    if (pageChanged) {
+      // ArticleViewer publishes the destination headings asynchronously.
+      // Clear page A's structure immediately so the app-level inspector cannot
+      // expose a stale Outline while page B is loading or has no headings.
+      setHeadings([]);
+      setStoreHeadings([]);
+    }
     setEditing(false);
     setEditHtml('');
     setEditTitle('');
@@ -256,7 +266,7 @@ export function PageViewPage() {
     setConfirmDiscardOpen(false);
     setConfirmTrashOpen(false);
     setRelocateOpen(false);
-  }, [id]);
+  }, [id, setStoreHeadings]);
 
   useLayoutEffect(() => {
     scrollArticleToTop();

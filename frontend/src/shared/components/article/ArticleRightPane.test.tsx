@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { createMemoryRouter, MemoryRouter, Route, RouterProvider, Routes } from 'react-router-dom';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ArticleRightPane } from './ArticleRightPane';
@@ -310,6 +310,18 @@ describe('ArticleRightPane', () => {
     expect(useUiStore.getState().articleSidebarCollapsed).toBe(false);
   });
 
+  it('closes the dock to expand its forced rail without changing an expanded preference', () => {
+    window.innerWidth = 1400;
+    useAiDockStore.setState({ open: true, seed: null });
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByLabelText('Expand page sidebar'));
+
+    expect(useAiDockStore.getState().open).toBe(false);
+    expect(useUiStore.getState().articleSidebarCollapsed).toBe(false);
+    expect(screen.getByTestId('article-right-pane')).toBeInTheDocument();
+  });
+
   it('steps aside entirely below the wide breakpoint while the dock is open', () => {
     window.innerWidth = 900;
     useAiDockStore.setState({ open: true, seed: null });
@@ -317,6 +329,38 @@ describe('ArticleRightPane', () => {
     const { container } = render(<ArticleRightPane />, { wrapper: createWrapper() });
 
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it('falls back to Details when navigating from a structured page to a heading-free page', async () => {
+    useArticleViewStore.setState({
+      headings: [{ id: 'intro', text: 'Introduction', level: 1 }],
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const router = createMemoryRouter(
+      [{ path: '/pages/:id', element: <ArticleRightPane /> }],
+      { initialEntries: ['/pages/page-1'] },
+    );
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <LazyMotion features={domAnimation}>
+          <RouterProvider router={router} />
+        </LazyMotion>
+      </QueryClientProvider>,
+    );
+    expect(screen.getByRole('tab', { name: /Outline/ })).toHaveAttribute('aria-selected', 'true');
+
+    await act(async () => {
+      await router.navigate('/pages/page-2');
+    });
+    act(() => {
+      useArticleViewStore.getState().setHeadings([]);
+    });
+
+    expect(screen.getByRole('tab', { name: 'Details' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('article-actions')).toBeInTheDocument();
   });
 
   it('renders Re-sync and Re-embed buttons for Confluence-sourced articles', () => {

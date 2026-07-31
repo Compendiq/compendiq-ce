@@ -500,6 +500,41 @@ describe('PageViewPage', () => {
     });
   });
 
+  it('clears stale shared headings when navigating to a heading-free page', async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const router = createMemoryRouter(
+      [{ path: '/pages/:id', element: <PageViewPage /> }],
+      { initialEntries: ['/pages/page-1'] },
+    );
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <LazyMotion features={domAnimation}>
+          <RouterProvider router={router} />
+        </LazyMotion>
+      </QueryClientProvider>,
+    );
+    await waitFor(() => {
+      expect(useArticleViewStore.getState().headings).toHaveLength(2);
+    });
+
+    currentMockPage = {
+      ...mockPage,
+      id: 'page-2',
+      title: 'Heading-free page',
+      bodyHtml: '',
+    };
+    await act(async () => {
+      await router.navigate('/pages/page-2');
+    });
+
+    await waitFor(() => {
+      expect(useArticleViewStore.getState().headings).toEqual([]);
+    });
+  });
+
   it('syncs editing state to article-view-store', async () => {
     render(<PageViewPage />, { wrapper: createWrapper() });
 
