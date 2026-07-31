@@ -50,7 +50,7 @@ describe('ThemeTab', () => {
       screen.getByText('Deep mineral ink with a crisp steel accent'),
     ).toBeInTheDocument();
     expect(
-      screen.getByText('Soft sage paper with a grounded steel accent'),
+      screen.getByText('Soft frost paper with a grounded steel accent'),
     ).toBeInTheDocument();
   });
 

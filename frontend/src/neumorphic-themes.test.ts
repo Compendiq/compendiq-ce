@@ -393,7 +393,7 @@ describe('Both themes declare a complete, symmetric token set', () => {
   // under a honey accent. On a cool palette that reads as a stain.
   it('uses the mineral ink shadow tint, not the retired warm brown', () => {
     expect(lightSharedBlock).not.toMatch(/rgba\(\s*50,\s*42,\s*20/);
-    expect(lightSharedBlock).toMatch(/rgba\(\s*23,\s*36,\s*34/);
+    expect(lightSharedBlock).toMatch(/rgba\(\s*26,\s*29,\s*32/);
   });
 });
 
