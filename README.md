@@ -17,14 +17,14 @@
 </p>
 
 <p align="center">
-  <a href="#-quick-install-in-3-minutes"><b>⚡ Quickstart</b></a> &nbsp;&bull;&nbsp;
-  <a href="#-key-features"><b>✨ Features</b></a> &nbsp;&bull;&nbsp;
-  <a href="#-why-compendiq"><b>💡 Why Compendiq?</b></a> &nbsp;&bull;&nbsp;
-  <a href="#-architecture"><b>🏗️ Architecture</b></a> &nbsp;&bull;&nbsp;
-  <a href="docs/USER-GUIDE.md"><b>📚 User Guide</b></a> &nbsp;&bull;&nbsp;
-  <a href="docs/integrations/README.md"><b>🔌 Integrations</b></a> &nbsp;&bull;&nbsp;
-  <a href="#-community-vs-enterprise"><b>🏢 Enterprise</b></a> &nbsp;&bull;&nbsp;
-  <a href="SECURITY.md"><b>🔒 Security</b></a>
+  <a href="#quick-install-in-3-minutes"><b>Quickstart</b></a> &nbsp;&bull;&nbsp;
+  <a href="#key-features"><b>Features</b></a> &nbsp;&bull;&nbsp;
+  <a href="#why-compendiq"><b>Why Compendiq?</b></a> &nbsp;&bull;&nbsp;
+  <a href="#architecture"><b>Architecture</b></a> &nbsp;&bull;&nbsp;
+  <a href="docs/USER-GUIDE.md"><b>User Guide</b></a> &nbsp;&bull;&nbsp;
+  <a href="docs/integrations/README.md"><b>Integrations</b></a> &nbsp;&bull;&nbsp;
+  <a href="#community-vs-enterprise"><b>Enterprise</b></a> &nbsp;&bull;&nbsp;
+  <a href="SECURITY.md"><b>Security</b></a>
 </p>
 
 ---
@@ -35,7 +35,7 @@
 
 ---
 
-## ⚡ Quick Install in 3 Minutes
+## Quick Install in 3 Minutes
 
 Deploy the complete enterprise stack (Frontend, Fastify API, PostgreSQL 17 + pgvector, Redis 8) with a single command:
 
@@ -45,7 +45,7 @@ curl -fsSL https://raw.githubusercontent.com/Compendiq/compendiq-ce/main/scripts
 
 > **Requirements:** Linux / macOS with Docker Engine 24+ & Compose v2, 4 GB RAM, port `8081` available. For local AI inference, [Ollama](https://ollama.ai) running on the host.
 
-### 📥 Model Setup
+### Model Setup
 Once installed, pull your embedding model and chat model via Ollama:
 
 ```bash
@@ -54,7 +54,7 @@ ollama pull qwen3:4b        # Fast local chat model (or model of your choice)
 ```
 
 <details>
-<summary><strong>🔍 Under the Hood: What the Automated Installer Does</strong></summary>
+<summary><strong>Under the Hood: What the Automated Installer Does</strong></summary>
 
 1. **Cryptographic Security**: Generates high-entropy `JWT_SECRET` and `PAT_ENCRYPTION_KEY` (AES-256-GCM, 32+ chars).
 2. **Environment Configuration**: Writes `~/compendiq/docker-compose.yml` with isolated secrets.
@@ -65,7 +65,7 @@ ollama pull qwen3:4b        # Fast local chat model (or model of your choice)
 </details>
 
 <details>
-<summary><strong>⚙️ Custom Install Directory & Remote GPU Hosts</strong></summary>
+<summary><strong>Custom Install Directory & Remote GPU Hosts</strong></summary>
 
 ```bash
 # Install to custom directory
@@ -78,7 +78,7 @@ OLLAMA_BASE_URL=http://gpu-server:11434 curl -fsSL https://raw.githubusercontent
 </details>
 
 <details>
-<summary><strong>🗑️ Uninstalling</strong></summary>
+<summary><strong>Uninstalling</strong></summary>
 
 ```bash
 bash ~/compendiq/uninstall.sh
@@ -89,42 +89,42 @@ bash ~/compendiq/uninstall.sh
 
 ---
 
-## 💡 Why Compendiq?
+## Why Compendiq?
 
 | Feature / Capability | Traditional Confluence | Cloud AI SaaS Tools | **Compendiq (CE)** |
 | :--- | :---: | :---: | :---: |
-| **On-Premise Data Center Support** | ⚠️ Native (No AI) | ❌ Cloud Only | ✅ **Full Native Sync** |
-| **Zero Data Egress / Air-Gapped** | ✅ | ❌ Data leaves network | ✅ **100% On-Premise (Ollama)** |
-| **Hybrid Vector + Keyword Search** | ❌ (Keyword only) | ⚠️ Basic Vector | ✅ **pgvector + FTS + RRF** |
-| **Confluence Macro Round-Trip** | ✅ | ❌ Formats break | ✅ **Full XHTML Macro Parity** |
-| **Knowledge Gap & Audit Engine** | ❌ | ❌ | ✅ **Automated AI Audits** |
-| **Open Source & Extensible** | ❌ | ❌ Proprietary | ✅ **AGPL-3.0 Open Core** |
+| **On-Premise Data Center Support** | Native (No AI) | Cloud Only | **Full Native Sync** |
+| **Zero Data Egress / Air-Gapped** | Yes | Data leaves network | **100% On-Premise (Ollama)** |
+| **Hybrid Vector + Keyword Search** | No (Keyword only) | Basic Vector | **pgvector + FTS + RRF** |
+| **Confluence Macro Round-Trip** | Yes | Formats break | **Full XHTML Macro Parity** |
+| **Knowledge Gap & Audit Engine** | No | No | **Automated AI Audits** |
+| **Open Source & Extensible** | No | Proprietary | **AGPL-3.0 Open Core** |
 
 ---
 
-## ✨ Key Features
+## Key Features
 
-### 🧠 1. Intelligent RAG Q&A Across Your Knowledge Base
+### 1. Intelligent RAG Q&A Across Your Knowledge Base
 Ask natural language questions and receive accurate, cited answers synthesized from across your Confluence spaces.
 * **Hybrid Search Engine**: Combines pgvector cosine similarity, PostgreSQL Full-Text Keyword Search, and Reciprocal Rank Fusion (RRF).
 * **Real-time SSE Streaming**: Ultra-fast Server-Sent Events streaming with interactive source citations and deep links back to original pages.
 
-### 🪄 2. 1-Click Document Superpowers
+### 2. 1-Click Document Superpowers
 * **AI Article Enhancement**: Fix grammar, restructure layouts, expand technical depth, or adjust tone instantly.
 * **Template Generator**: Instantly author standard runbooks, how-to guides, architecture decisions (ADRs), and troubleshooting matrixes.
 * **Summarization & Tagging**: Generate concise executive summaries and automated LLM tag classifications.
 * **Duplicate & Gap Detection**: Automatically identify duplicated documentation and missing operational guides.
 
-### 🔌 3. Native Confluence Data Center Compatibility
+### 3. Native Confluence Data Center Compatibility
 * **Bi-directional Sync**: Continuous background synchronization keeping Compendiq in lockstep with Confluence.
 * **XHTML Storage Format Preservation**: Perfect round-trip support for code blocks, task lists, info/warning panels, user mentions, page links, attachments, and draw.io diagrams.
 
-### 📝 4. Power-User Modern Editor
+### 4. Power-User Modern Editor
 * Built on **TipTap v3 (ProseMirror)** with Vim keybindings, drag-and-drop block reordering, find & replace, image/table captions, header auto-numbering, automatic language syntax detection, and clipboard image pasting.
 
 ---
 
-## 🛠️ Complete Feature Matrix
+## Complete Feature Matrix
 
 | Category | Highlights & Capabilities |
 | :--- | :--- |
@@ -136,7 +136,7 @@ Ask natural language questions and receive accurate, cited answers synthesized f
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 Compendiq is engineered for enterprise reliability, high concurrency, and low latency.
 
@@ -170,7 +170,7 @@ Compendiq is engineered for enterprise reliability, high concurrency, and low la
                      └──────────────────────────────────────────┘
 ```
 
-### 🧰 Tech Stack Overview
+### Tech Stack Overview
 
 - **Frontend**: React 19, Vite 8, TailwindCSS 4, Radix UI, Zustand, TanStack Query, Framer Motion
 - **Backend**: Fastify 5, Node.js 22+, TypeScript, BullMQ Queue System
@@ -180,32 +180,32 @@ Compendiq is engineered for enterprise reliability, high concurrency, and low la
 
 ---
 
-## 🏢 Community Edition vs Enterprise
+## Community Edition vs Enterprise
 
 Compendiq Community Edition is **100% free and open-source under AGPL-3.0** with **zero artificial resource limits**.
 
 | Capability | Community Edition (Free) | Enterprise Edition (Paid) |
 | :--- | :---: | :---: |
-| **Confluence Sync + AI Q&A + Generation** | ✅ Included | ✅ Included |
-| **pgvector Hybrid Search (Vector + FTS + RRF)** | ✅ Included | ✅ Included |
-| **Multi-Provider LLM Support (Ollama, OpenAI, Azure, vLLM)** | ✅ Included | ✅ Included |
-| **TipTap v3 Rich Text Editor with Confluence Macros** | ✅ Included | ✅ Included |
-| **PDF Import & Export** | ✅ Included | ✅ Included |
-| **Role-Based Access Control (RBAC)** | ✅ Included | ✅ Included |
-| **Audit Logging & Security Controls** | ✅ Included | ✅ Included |
-| **OIDC / SAML SSO Integration** | ── | ✅ **Enterprise** |
-| **Per-Space RAG Fine-Grained Permissions** | ── | ✅ **Enterprise** |
-| **Exportable Compliance Audit Logs** | ── | ✅ **Enterprise** |
-| **Dedicated SLA & Priority Engineering Support** | ── | ✅ **Enterprise** |
+| **Confluence Sync + AI Q&A + Generation** | Included | Included |
+| **pgvector Hybrid Search (Vector + FTS + RRF)** | Included | Included |
+| **Multi-Provider LLM Support (Ollama, OpenAI, Azure, vLLM)** | Included | Included |
+| **TipTap v3 Rich Text Editor with Confluence Macros** | Included | Included |
+| **PDF Import & Export** | Included | Included |
+| **Role-Based Access Control (RBAC)** | Included | Included |
+| **Audit Logging & Security Controls** | Included | Included |
+| **OIDC / SAML SSO Integration** | -- | **Enterprise** |
+| **Per-Space RAG Fine-Grained Permissions** | -- | **Enterprise** |
+| **Exportable Compliance Audit Logs** | -- | **Enterprise** |
+| **Dedicated SLA & Priority Engineering Support** | -- | **Enterprise** |
 
-👉 **Interested in Enterprise?** [Open an Enterprise Request](https://github.com/Compendiq/compendiq-ce/issues/new?template=enterprise-interest.md), consult the [Stewardship Guide](docs/STEWARDSHIP.md), or start a conversation on [GitHub Discussions](https://github.com/Compendiq/compendiq-ce/discussions).
+Interested in Enterprise? [Open an Enterprise Request](https://github.com/Compendiq/compendiq-ce/issues/new?template=enterprise-interest.md), consult the [Stewardship Guide](docs/STEWARDSHIP.md), or start a conversation on [GitHub Discussions](https://github.com/Compendiq/compendiq-ce/discussions).
 
 ---
 
-## 💻 Developer Quick Start
+## Developer Quick Start
 
 <details>
-<summary><strong>🛠️ Full Local Development Setup</strong></summary>
+<summary><strong>Full Local Development Setup</strong></summary>
 
 ### 1. Clone Repository
 ```bash
@@ -236,7 +236,7 @@ Open `http://localhost:5273` in your browser. The initial account created automa
 </details>
 
 <details>
-<summary><strong>🧪 Test Suite & Verification</strong></summary>
+<summary><strong>Test Suite & Verification</strong></summary>
 
 ```bash
 npm test                          # Run all unit & integration tests
@@ -251,7 +251,7 @@ npm run typecheck                 # Strict TypeScript compilation check
 
 ---
 
-## ⚙️ Configuration Reference
+## Configuration Reference
 
 Maintained through environment variables:
 
@@ -265,17 +265,17 @@ Maintained through environment variables:
 | `CONFLUENCE_VERIFY_SSL` | Optional | Set to `false` when connecting to self-signed TLS Confluence hosts |
 
 <details>
-<summary><strong>📋 Complete Environment Variables Table</strong></summary>
+<summary><strong>Complete Environment Variables Table</strong></summary>
 
 | Variable | Default | Purpose |
 | :--- | :--- | :--- |
-| `JWT_SECRET` | ── | JWT signing secret (32+ chars) |
-| `PAT_ENCRYPTION_KEY` | ── | AES-256-GCM secret key (32+ chars) |
+| `JWT_SECRET` | -- | JWT signing secret (32+ chars) |
+| `PAT_ENCRYPTION_KEY` | -- | AES-256-GCM secret key (32+ chars) |
 | `POSTGRES_USER` | `kb_user` | Database user |
-| `POSTGRES_PASSWORD` | ── | Database password |
+| `POSTGRES_PASSWORD` | -- | Database password |
 | `POSTGRES_DB` | `kb_creator` | Database name |
 | `POSTGRES_URL` | `postgresql://kb_user:<password>@localhost:5432/kb_creator` | Connection string |
-| `REDIS_PASSWORD` | ── | Redis auth password |
+| `REDIS_PASSWORD` | -- | Redis auth password |
 | `REDIS_URL` | `redis://:<password>@localhost:6379` | Redis connection URI |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Deprecated seed-only setting for Ollama host |
 | `LLM_VERIFY_SSL` | `true` | Enforce SSL verification for LLM endpoints |
@@ -284,24 +284,24 @@ Maintained through environment variables:
 | `SYNC_INTERVAL_MIN` | `15` | Polling schedule interval for Confluence sync |
 | `NODE_ENV` | `development` | Runtime environment (`development` / `production`) |
 | `OTEL_ENABLED` | `false` | Toggle OpenTelemetry instrumentation |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | ── | OTLP collector endpoint |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | -- | OTLP collector endpoint |
 
 </details>
 
 ---
 
-## 🌐 Enterprise Deployment Topologies
+## Enterprise Deployment Topologies
 
 Deploy in demanding corporate enterprise environments:
-* 🛡️ [**Behind a Reverse Proxy**](docs/integrations/reverse-proxy/nginx.md) – Nginx / Traefik / Caddy TLS termination and SSE buffering.
-* 🔐 [**Self-Signed & Custom CA Certificates**](docs/integrations/self-signed-tls/README.md) – Trust custom corporate PKI CA bundles via `NODE_EXTRA_CA_CERTS`.
-* 📦 [**Air-Gapped / Disconnected Environments**](docs/integrations/air-gapped/README.md) – Side-load container images and run offline.
+* [**Behind a Reverse Proxy**](docs/integrations/reverse-proxy/nginx.md) – Nginx / Traefik / Caddy TLS termination and SSE buffering.
+* [**Self-Signed & Custom CA Certificates**](docs/integrations/self-signed-tls/README.md) – Trust custom corporate PKI CA bundles via `NODE_EXTRA_CA_CERTS`.
+* [**Air-Gapped / Disconnected Environments**](docs/integrations/air-gapped/README.md) – Side-load container images and run offline.
 
 Explore all architecture patterns in [`docs/integrations/README.md`](docs/integrations/README.md).
 
 ---
 
-## 🤝 Contributing & Security
+## Contributing & Security
 
 - **Contributing**: Check out our [Contributing Guidelines](CONTRIBUTING.md) to get started!
 - **Security Policy**: Please review [SECURITY.md](SECURITY.md) to report vulnerabilities privately via GitHub Security Advisories.
@@ -311,5 +311,5 @@ Explore all architecture patterns in [`docs/integrations/README.md`](docs/integr
 
 <p align="center">
   Built with precision for privacy-conscious teams.<br />
-  ⭐ <strong>If Compendiq empowers your organization, <a href="https://github.com/Compendiq/compendiq-ce">star the repo</a> to support open-source AI!</strong>
+  <strong>If Compendiq empowers your organization, <a href="https://github.com/Compendiq/compendiq-ce">star the repo</a> to support open-source AI!</strong>
 </p>
