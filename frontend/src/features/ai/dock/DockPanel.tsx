@@ -301,7 +301,7 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
             data-testid="ai-dock-attachment-context-warning"
           >
             <AlertTriangle size={12} className="shrink-0" aria-hidden />
-            Both attachments will be sent — a small model may not fit them.
+            Both attachments will be sent to Improve — a small model may not fit them.
           </p>
         )}
 

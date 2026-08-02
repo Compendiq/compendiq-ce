@@ -358,13 +358,18 @@ describe('dock image attach (#1154)', () => {
     expect(mockPrepareImage).not.toHaveBeenCalled();
   });
 
-  it('warns when both slots are filled', async () => {
+  it('warns when both slots are filled, naming Improve as the sender', async () => {
     renderDock({ chatVision: true });
     await openAndSettle();
     await attachDocument();
     await attachImage();
 
-    expect(screen.getByTestId('ai-dock-attachment-context-warning')).toBeInTheDocument();
+    // The dock's Send button never reaches an attachment — only the Improve
+    // chip does — so this copy must name Improve rather than reuse the other
+    // two surfaces' "will be sent" wording, which would misstate what Send does.
+    expect(screen.getByTestId('ai-dock-attachment-context-warning')).toHaveTextContent(
+      'Both attachments will be sent to Improve — a small model may not fit them.',
+    );
   });
 
   it.each([
