@@ -111,6 +111,15 @@ flowchart LR
 - `/ai` keeps only the Ask and Generate tabs. The four document actions are
   dock chips; their mode screens still render for `?mode=…` deep links (which
   `SidebarTreeView` and old bookmarks still produce), but nothing offers them.
+- **Opening the assistant runs nothing (#1176).** The rail icon, the expanded
+  pane's row and `Alt+I` (`ai-assistant` in the shortcut registry) call
+  `openDock()` and stop there. #1126 had them seed `'improve'`, which `DockPanel`
+  fired as soon as a model and the page resolved — so one click started a
+  full-page rewrite of an improvement type nobody had picked, with no stop
+  control and no abort on close. `DockSeed` / `seedPageId` / `consumeSeed` and
+  the effect that consumed them are gone, and with them the page-mismatch guard
+  that existed only to keep a pending seed from firing at whatever document
+  loaded next. Every request now starts at a chip or the composer.
 
 ## Composer attachments (#1131 documents, #1154 images)
 
@@ -167,8 +176,9 @@ flowchart TB
   be a 400, not a feature. Only the Improve chip consumes them, so both zones say
   so in their trigger label and on their card (`triggerLabel` / `usageHint`).
   Improve also re-checks `isBusy` **inside** `runChip` rather than only on the
-  chip's `disabled`: `DockDiffCard`'s "Re-run Improve" and the seed effect both
-  reach it directly.
+  chip's `disabled`: `DockDiffCard`'s "Re-run Improve" reaches it directly and is
+  not disabled while an attachment stages. (#1154 listed a second such caller,
+  the seed effect that ran Improve on open; #1176 deleted it — see below.)
 - Both `isExtracting` and `isPreparing` are **depth counters**, not booleans. The
   shared drop target accepts a second file mid-flight, and a boolean would clear
   on the first `finally` — re-enabling the trigger and unblocking Send while the
