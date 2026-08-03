@@ -17,6 +17,15 @@ import type { Node as PMNode } from '@tiptap/pm/model';
  *
  * `codeBlock` is excluded to match `selectionShouldShow`, which has always
  * refused to offer inline formatting or Improve inside code.
+ *
+ * `listItem` is here because the decision on #1179 names it, but it is not
+ * reachable through the drag handle as the editor is configured today:
+ * `<DragHandle>` runs in its default non-nested mode, where the library's
+ * `getOuterNode` climbs to the doc's direct child — so hovering a list resolves
+ * to the `bulletList` / `orderedList` (Delete-only) and never to the item
+ * inside it. That same climb is why `blockquote` IS reachable: it is itself a
+ * top-level block. Turning the handle's `nested` option on would make
+ * `listItem` live without any change here, which is why it stays.
  */
 export const TEXT_BLOCK_TYPES: ReadonlySet<string> = new Set([
   'paragraph',
@@ -28,6 +37,37 @@ export const TEXT_BLOCK_TYPES: ReadonlySet<string> = new Set([
 /** Whether formatting toggles and Improve may be offered for this node. */
 export function supportsTextActions(node: PMNode): boolean {
   return TEXT_BLOCK_TYPES.has(node.type.name);
+}
+
+/**
+ * The second half of the same guard, for content *inside* an allowed block.
+ *
+ * `TEXT_BLOCK_TYPES` keeps Improve away from block-level macros, but a plain
+ * `paragraph` may still carry Confluence's **inline** atoms — `confluenceStatus`,
+ * `confluenceUserMention`, `confluenceJiraIssue`. Those are invisible to the
+ * rewrite twice over: `doc.textBetween` skips them entirely, so the model never
+ * sees them (a paragraph reading "Ask @jdoe about DONE" is sent as
+ * `"Ask  about "`), and the Markdown-derived HTML that comes back replaces the
+ * whole content range, deleting the nodes. The next Save pushes that to
+ * Confluence — the same silent loss `TEXT_BLOCK_TYPES` exists to prevent, just
+ * one level down.
+ *
+ * Formatting toggles are unaffected: a mark toggle rewrites marks, not nodes,
+ * and leaves the atoms in place.
+ *
+ * `hardBreak` is excluded deliberately. It is a leaf and so an atom by
+ * ProseMirror's reckoning, but losing a line break is cosmetic and undoable —
+ * not the structured Confluence content this guard is about — and blocking
+ * Improve on every paragraph that contains a `<br>` would gut the feature.
+ */
+export function containsStructuredInline(doc: PMNode, from: number, to: number): boolean {
+  let found = false;
+  doc.nodesBetween(from, to, (node) => {
+    if (found) return false;
+    if (node.isInline && !node.isText && node.type.name !== 'hardBreak') found = true;
+    return !found;
+  });
+  return found;
 }
 
 /**

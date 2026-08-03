@@ -1,7 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { Schema } from '@tiptap/pm/model';
+import type { Node as PMNode } from '@tiptap/pm/model';
 
-import { TEXT_BLOCK_TYPES, blockLabel, supportsTextActions } from './block-menu-nodes';
+import {
+  TEXT_BLOCK_TYPES,
+  blockLabel,
+  containsStructuredInline,
+  supportsTextActions,
+} from './block-menu-nodes';
 
 /**
  * #1179 — which blocks may be offered text actions, and what they are called.
@@ -13,6 +19,8 @@ const schema = new Schema({
     doc: { content: 'block+' },
     text: { group: 'inline' },
     paragraph: { group: 'block', content: 'inline*' },
+    hardBreak: { group: 'inline', inline: true },
+    confluenceStatus: { group: 'inline', inline: true, atom: true },
     heading: { group: 'block', content: 'inline*', attrs: { level: { default: 1 } } },
     blockquote: { group: 'block', content: 'block+' },
     listItem: { group: 'block', content: 'paragraph+' },
@@ -87,5 +95,43 @@ describe('blockLabel', () => {
 
   it('humanises a node type it has no entry for', () => {
     expect(blockLabel(node('confluenceRoadmapPlanner'))).toBe('Confluence roadmap planner');
+  });
+});
+
+
+describe('containsStructuredInline', () => {
+  const doc = (...content: PMNode[]) => schema.nodes.doc!.create(null, content);
+  const para = (...content: PMNode[]) => schema.nodes.paragraph!.create(null, content);
+  const text = (t: string) => schema.text(t);
+
+  /** Range covering the first paragraph's inline content. */
+  const contentRange = (d: ReturnType<typeof doc>) => ({ from: 1, to: d.child(0).nodeSize - 1 });
+
+  it('is false for plain text', () => {
+    const d = doc(para(text('Just prose')));
+    const { from, to } = contentRange(d);
+    expect(containsStructuredInline(d, from, to)).toBe(false);
+  });
+
+  // The real defect: `textBetween` omits these, so the model never sees them,
+  // and Replace overwrites the range and deletes the nodes.
+  it('is true when an inline Confluence atom sits in the range', () => {
+    const d = doc(para(text('Release '), schema.nodes.confluenceStatus!.create(), text(' now')));
+    const { from, to } = contentRange(d);
+    expect(containsStructuredInline(d, from, to)).toBe(true);
+  });
+
+  it('ignores a hard break — losing one is cosmetic, not Confluence content', () => {
+    const d = doc(para(text('One'), schema.nodes.hardBreak!.create(), text('two')));
+    const { from, to } = contentRange(d);
+    expect(containsStructuredInline(d, from, to)).toBe(false);
+  });
+
+  it('does not look outside the range it was given', () => {
+    const d = doc(
+      para(text('Clean paragraph')),
+      para(text('Has '), schema.nodes.confluenceStatus!.create()),
+    );
+    expect(containsStructuredInline(d, 1, d.child(0).nodeSize - 1)).toBe(false);
   });
 });

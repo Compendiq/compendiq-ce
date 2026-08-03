@@ -5,6 +5,7 @@ import { useEditor, EditorContent } from '@tiptap/react';
 import { Node } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import { Highlight } from '@tiptap/extension-highlight';
+import { ConfluenceStatus, ConfluenceUserMention } from './article-extensions';
 import type { Editor as EditorType } from '@tiptap/react';
 
 // Mock the SSE transport so "Improve" never hits the network. Capturing the
@@ -102,6 +103,10 @@ function Harness({
       StarterKit.configure(trailingNode ? {} : { trailingNode: false }),
       Highlight.configure({ multicolor: true }),
       DrawioDiagram,
+      // The REAL inline Confluence atoms — the macro-loss guard below is about
+      // these exact node types, so a stand-in would prove nothing.
+      ConfluenceStatus,
+      ConfluenceUserMention,
     ],
     content,
     immediatelyRender: false,
@@ -292,6 +297,60 @@ describe('EditorBlockMenu — text blocks', () => {
 
     expect(editor.state.doc.child(0).type.name).toBe('blockquote');
     expect(editor.state.doc.child(0).textContent).toBe('Better quote');
+  });
+});
+
+// The block-type allow-list keeps Improve away from block-level macros, but a
+// plain paragraph can still carry Confluence's INLINE atoms. `textBetween` skips
+// them (the model never sees them) and Replace overwrites the whole content
+// range, deleting the nodes — silent Confluence loss on the next Save.
+describe('EditorBlockMenu — inline macros inside an allowed text block', () => {
+  const WITH_MENTION =
+    '<p>Ask <span class="confluence-user-mention" data-username="jdoe">@jdoe</span> about it</p>';
+  const WITH_STATUS =
+    '<p>Release <span class="confluence-status" data-color="green">DONE</span> now</p>';
+
+  function countType(editor: EditorType, name: string): number {
+    let n = 0;
+    editor.state.doc.descendants((node) => { if (node.type.name === name) n += 1; });
+    return n;
+  }
+
+  it('hides Improve on a paragraph carrying a user mention', async () => {
+    const { editor } = await mountMenu(WITH_MENTION);
+    expect(countType(editor, 'confluenceUserMention')).toBe(1);
+
+    expect(screen.queryByTestId('block-ai-trigger')).toBeNull();
+    expect(
+      screen.getByText(/a rewrite would drop this block.s inline macros/i),
+    ).toBeTruthy();
+  });
+
+  it('hides Improve on a paragraph carrying a status macro', async () => {
+    const { editor } = await mountMenu(WITH_STATUS);
+    expect(countType(editor, 'confluenceStatus')).toBe(1);
+    expect(screen.queryByTestId('block-ai-trigger')).toBeNull();
+  });
+
+  it('still offers formatting and Delete, which do not touch the atoms', async () => {
+    const { editor } = await mountMenu(WITH_MENTION);
+
+    fireEvent.click(screen.getByTitle('Bold (Ctrl+B)'));
+
+    expect(editor.getHTML()).toContain('<strong>');
+    expect(countType(editor, 'confluenceUserMention')).toBe(1);
+    expect(screen.getByTestId('block-menu-delete')).toBeTruthy();
+  });
+
+  it('leaves Improve alone on a paragraph with no inline macro', async () => {
+    await mountMenu('<p>Just ordinary prose</p>');
+    expect(screen.getByTestId('block-ai-trigger')).toBeTruthy();
+    expect(screen.queryByText(/inline macros/i)).toBeNull();
+  });
+
+  it('does not block Improve for a line break, which is only cosmetic', async () => {
+    await mountMenu('<p>First line<br>second line</p>');
+    expect(screen.getByTestId('block-ai-trigger')).toBeTruthy();
   });
 });
 

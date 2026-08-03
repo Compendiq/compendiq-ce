@@ -13,7 +13,7 @@ import { buildImproveHtml } from './improve-markdown';
 import { EditorFormatBar } from './EditorFormatBar';
 import { ImprovePanel, type ImprovePanelCopy } from './ImprovePanel';
 import { buildInstruction, BLOCK_INSTRUCTION, type QuickAction } from './improve-actions';
-import { blockLabel, supportsTextActions } from './block-menu-nodes';
+import { blockLabel, containsStructuredInline, supportsTextActions } from './block-menu-nodes';
 import {
   blockMenuTargetKey,
   blockMenuTargetRange,
@@ -49,9 +49,13 @@ import {
  *
  * Mouse-only by design (recorded on the issue): the handle is created
  * imperatively by the drag-handle library and is only ever positioned by
- * `mousemove`, so it cannot be reached by keyboard. Nothing here is
- * keyboard-inaccessible as a result — every action is also reachable through
- * the selection bubble menu, which is fully keyboard-operable.
+ * `mousemove`, so it cannot be reached by keyboard. Nothing becomes
+ * keyboard-inaccessible as a result, but the two halves get there differently.
+ * The formatting toggles and Improve are the selection bubble menu's own
+ * actions, and that menu is fully keyboard-operable. Delete has no bubble-menu
+ * equivalent; its keyboard path is ProseMirror's own — arrow onto a block to
+ * make a `NodeSelection`, or Backspace from the start of the block after it.
+ * This menu is a faster route to that, not the only one.
  */
 
 const BLOCK_COPY: ImprovePanelCopy = {
@@ -118,10 +122,14 @@ export function EditorBlockMenu({
     editor,
     selector: () => {
       const range = contentRange();
+      const { doc } = editor.state;
       return {
         present: nodeRange() !== null,
         hasText: range !== null
-          && editor.state.doc.textBetween(range.from, range.to, '\n').trim().length > 0,
+          && doc.textBetween(range.from, range.to, '\n').trim().length > 0,
+        // Improve rewrites the whole content range from Markdown, which drops
+        // any inline Confluence macro sitting in it. See containsStructuredInline.
+        dropsMacros: range !== null && containsStructuredInline(doc, range.from, range.to),
       };
     },
   });
@@ -216,7 +224,7 @@ export function EditorBlockMenu({
     onClose();
   }, [editor, nodeRange, label, onClose]);
 
-  const showImprove = textActions && live.hasText;
+  const showImprove = textActions && live.hasText && !live.dropsMacros;
 
   return (
     <div data-testid="editor-block-menu" className="flex w-72 flex-col py-1.5">
@@ -256,6 +264,13 @@ export function EditorBlockMenu({
               <Sparkles size={15} />
               <span>Improve with AI</span>
             </button>
+          )}
+
+          {textActions && live.dropsMacros && (
+            <p className="px-4 pb-1 text-xs text-muted-foreground">
+              Improve is unavailable here: a rewrite would drop this block&rsquo;s
+              inline macros.
+            </p>
           )}
         </>
       ) : (
