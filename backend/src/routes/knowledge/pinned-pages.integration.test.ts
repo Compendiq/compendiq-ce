@@ -82,15 +82,12 @@ describe.skipIf(!dbAvailable)('pinned pages, unbounded (#1130) [integration]', (
       }
       return reply.status(error.statusCode ?? 500).send({ error: error.message });
     });
-    // The only stub in the file. `x-test-user` lets a case act as a second
-    // account without rebuilding the app; everything else runs for real.
+    // The only stub in the file, and the only decorator the route asks for.
+    // `x-test-user` lets a case act as a second account without rebuilding the
+    // app; everything else runs for real.
     app.decorate('authenticate', async (request: FastifyRequest) => {
       request.userId = (request.headers['x-test-user'] as string | undefined) ?? userId;
     });
-    app.decorate('requireAdmin', async (request: FastifyRequest) => {
-      request.userId = userId;
-    });
-    app.decorate('redis', {});
     await app.register(pinnedPagesRoutes, { prefix: '/api' });
     await app.ready();
   });
@@ -163,20 +160,40 @@ describe.skipIf(!dbAvailable)('pinned pages, unbounded (#1130) [integration]', (
     const pageId = await makePage(1);
 
     expect((await pin(pageId)).statusCode).toBe(200);
-    // Second call short-circuits on the already-pinned fast path.
+    // Second call short-circuits on the already-pinned fast path, so this
+    // asserts the endpoint's idempotency — not the INSERT, which never reruns.
     expect((await pin(pageId)).statusCode).toBe(200);
 
     expect(await pinnedRowCount(userId)).toBe(1);
   });
 
+  // The route's ON CONFLICT clause is only load-bearing if the pair it names is
+  // genuinely unique, and no route call can show that: a sequential re-pin stops
+  // at the fast path above, and a concurrent one races. So the constraint is
+  // asserted head-on, with the test's own minimal statement rather than a
+  // restatement of the route's INSERT — a duplicate must be refused, which is
+  // exactly the 23505 the handler's ON CONFLICT swallows. Losing the constraint
+  // would not be silent either: `ON CONFLICT (user_id, page_id)` with nothing to
+  // match raises 42P10 on every pin, so the rest of this file would go red too.
+  it('rejects a duplicate (user_id, page_id) at the schema level', async () => {
+    const pageId = await makePage(1);
+    expect((await pin(pageId)).statusCode).toBe(200);
+
+    await expect(
+      query('INSERT INTO pinned_pages (user_id, page_id) VALUES ($1, $2)', [userId, pageId]),
+    ).rejects.toMatchObject({ code: '23505' });
+
+    expect(await pinnedRowCount(userId)).toBe(1);
+  });
+
   // With the count guard gone, ON CONFLICT is the only thing standing between
-  // two simultaneous pins of the same page and a unique violation: the
+  // two simultaneous pins of the same page and the unique violation above: the
   // already-pinned SELECT is a fast path, not a lock, so requests fired
   // together can all read "not pinned" and all reach the INSERT. How far they
   // actually interleave is the scheduler's to decide, so what is asserted is
   // the contract that has to hold either way — every caller gets a 200 and
   // exactly one row lands. A handler that let a duplicate INSERT through
-  // unguarded would surface the unique violation here as a 500.
+  // unguarded would surface that violation here as a 500.
   it('absorbs simultaneous pins of the same page instead of raising a unique violation', async () => {
     const pageId = await makePage(1);
 
@@ -204,8 +221,10 @@ describe.skipIf(!dbAvailable)('pinned pages, unbounded (#1130) [integration]', (
     expect(await pinnedRowCount(other)).toBe(1);
   });
 
-  // The excerpt is truncated by Postgres, not in JS: the row count is
-  // unbounded now, and `body_text` is a TOASTed full-article column.
+  // The excerpt is truncated in SQL, not only in JS: the row count is unbounded
+  // now, and `body_text` is a TOASTed full-article column, so the handler's
+  // trailing `.slice(0, 200)` must never be what does the work. Only the shape
+  // is visible from out here — `pinned-pages.test.ts` pins the statement text.
   it('returns a 200-character excerpt without shipping the whole body', async () => {
     const pageId = await makePage(1);
     await query('UPDATE pages SET body_text = $2 WHERE id = $1', [pageId, 'A'.repeat(5000)]);
