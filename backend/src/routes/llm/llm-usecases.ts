@@ -1,12 +1,22 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { LlmUsecaseSchema, UpdateUsecaseAssignmentsInputSchema, UsecaseDefaultSchema, type LlmUsecase } from '@compendiq/contracts';
+import {
+  LlmUsecaseSchema,
+  UpdateUsecaseAssignmentsInputSchema,
+  UsecaseDefaultSchema,
+  VisionCapabilityDetailSchema,
+  type LlmUsecase,
+} from '@compendiq/contracts';
 import { query, getPool } from '../../core/db/postgres.js';
 import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
 import { bumpProviderCacheVersion } from '../../domains/llm/services/cache-bus.js';
 import { emitLlmAudit } from '../../domains/llm/services/llm-audit-hook.js';
 import { getRateLimits } from '../../core/services/rate-limit-service.js';
-import { getVisionCapability, refreshVisionCapability } from '../../domains/llm/services/model-capabilities.js';
+import {
+  getVisionCapability,
+  refreshVisionCapability,
+  readVisionCapabilityDetail,
+} from '../../domains/llm/services/model-capabilities.js';
 import { logger } from '../../core/utils/logger.js';
 
 const ADMIN_LIMIT = {
@@ -14,6 +24,20 @@ const ADMIN_LIMIT = {
 };
 
 const USECASES: readonly LlmUsecase[] = ['chat', 'summary', 'quality', 'auto_tag', 'embedding'] as const;
+
+/** #1184 — shared by the capability read and the manual re-probe. */
+const NO_CHAT_PROVIDER =
+  'No provider resolved for use case "chat". Configure one in Settings → LLM.';
+
+/**
+ * The provider+model that `chat` currently resolves to, or null when nothing
+ * is configured. Uses `resolveUsecase` so the capability routes always talk
+ * about the same pair the post-save refresh probes.
+ */
+async function resolveChatPair(): Promise<{ providerId: string; model: string } | null> {
+  const resolved = await resolveUsecase('chat').catch(() => null);
+  return resolved ? { providerId: resolved.config.providerId, model: resolved.model } : null;
+}
 
 export async function llmUsecaseRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
@@ -147,6 +171,80 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
         metadata: { usecases: Object.keys(updates) },
       });
       return { ok: true };
+    },
+  );
+
+  // ─── #1184: vision capability detail + manual re-probe ───────────────────
+  //
+  // Both routes are about `chat` specifically, spelled into the path rather
+  // than taken as a `:usecase` parameter. Only `chat` ever resolves to a model
+  // that will be asked to read an image; a probe aimed at an embedding
+  // endpoint is a chat completion against the wrong API and would cache a
+  // meaningless verdict. Same reasoning as the `usecase === 'chat'` guard on
+  // `/llm/usecase-default` above.
+  //
+  // Both are `requireAdmin`. `probeError` is the provider's own error body
+  // (see `llm-http-error.ts`) — third-party text that can echo request
+  // fragments and internal topology — so it is reachable here and nowhere
+  // else. `/llm/usecase-default` is authenticated but *not* admin-gated and
+  // must never gain these fields.
+
+  // GET /admin/llm-usecases/chat/vision-capability — the stored verdict plus
+  // the evidence behind it, so the Settings badge can render `probed_at` and
+  // `probe_error` on page load rather than only after a click. A pure cache
+  // read: it never probes, because it runs on every paint of Settings → LLM.
+  fastify.get(
+    '/admin/llm-usecases/chat/vision-capability',
+    { preHandler: fastify.requireAdmin, ...ADMIN_LIMIT },
+    async (_req, reply) => {
+      const pair = await resolveChatPair();
+      if (!pair) return reply.code(404).send({ error: NO_CHAT_PROVIDER });
+
+      // No row means never probed — answer with nulls rather than 404ing, so
+      // the badge renders "Unconfirmed" without special-casing an absent body.
+      const detail = await readVisionCapabilityDetail(pair.providerId, pair.model);
+      return VisionCapabilityDetailSchema.parse({
+        providerId: pair.providerId,
+        model: pair.model,
+        vision: detail?.vision ?? null,
+        probedAt: detail?.probedAt ?? null,
+        probeError: detail?.probeError ?? null,
+      });
+    },
+  );
+
+  // POST /admin/llm-usecases/chat/reprobe-vision — force a fresh probe of the
+  // resolved chat pair and answer with the new verdict.
+  //
+  // Blocking, like `POST /admin/llm-providers/:id/test`: the admin clicked a
+  // button and is waiting for its answer. It goes through the queue and the
+  // per-provider breaker, so a busy provider can make this slow — `maxTokens:
+  // 64` keeps the probe itself short, but the client must not assume a
+  // sub-second response.
+  //
+  // Deliberately `refreshVisionCapability` for the single pair, not
+  // `invalidateProviderCapabilities` — the latter drops every verdict for the
+  // provider, including models the admin did not ask about.
+  fastify.post(
+    '/admin/llm-usecases/chat/reprobe-vision',
+    { preHandler: fastify.requireAdmin, ...ADMIN_LIMIT },
+    async (req, reply) => {
+      const pair = await resolveChatPair();
+      if (!pair) return reply.code(404).send({ error: NO_CHAT_PROVIDER });
+
+      const detail = await refreshVisionCapability(pair.providerId, pair.model);
+      emitLlmAudit({
+        event: 'llm_vision_capability_reprobed',
+        userId: req.userId,
+        metadata: { providerId: pair.providerId, model: pair.model, vision: detail.vision },
+      });
+      return VisionCapabilityDetailSchema.parse({
+        providerId: pair.providerId,
+        model: pair.model,
+        vision: detail.vision,
+        probedAt: detail.probedAt,
+        probeError: detail.probeError,
+      });
     },
   );
 }

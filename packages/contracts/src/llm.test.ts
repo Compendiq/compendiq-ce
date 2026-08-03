@@ -4,6 +4,7 @@ import {
   LlmProviderInputSchema,
   UsecaseAssignmentsSchema,
   UsecaseDefaultSchema,
+  VisionCapabilityDetailSchema,
 } from './llm.js';
 import {
   AskRequestSchema,
@@ -114,5 +115,63 @@ describe('UsecaseDefaultSchema vision tri-state (#1154)', () => {
   // with different copy from false, so it must not collapse with "absent".
   it('rejects vision being absent', () => {
     expect(() => UsecaseDefaultSchema.parse(base)).toThrow();
+  });
+
+  /**
+   * #1184: `GET /llm/usecase-default` is `fastify.authenticate`, not
+   * `requireAdmin` — every logged-in user can call it. `probe_error` carries
+   * the provider's raw error body, which `llm-http-error.ts` keeps off
+   * client-visible paths because it can echo request fragments and internal
+   * topology.
+   *
+   * The route hands its object literal to `.parse()` and returns the *parsed*
+   * value, so this schema is the actual gate: a future edit that spreads a
+   * capability row into that literal still cannot leak the error, because the
+   * key is stripped here.
+   */
+  it('strips probeError rather than passing it through to non-admin callers', () => {
+    const parsed = UsecaseDefaultSchema.parse({
+      ...base,
+      vision: false,
+      probeError: 'chat HTTP 401: {"error":"invalid key for tenant-7 at 10.0.0.4"}',
+      probedAt: '2026-08-01T00:00:00.000Z',
+    });
+    expect(parsed).not.toHaveProperty('probeError');
+    expect(parsed).not.toHaveProperty('probedAt');
+    expect(JSON.stringify(parsed)).not.toContain('10.0.0.4');
+  });
+});
+
+describe('VisionCapabilityDetailSchema (#1184)', () => {
+  const base = {
+    providerId: '00000000-0000-4000-8000-000000000001',
+    model: 'qwen2.5vl',
+    probedAt: '2026-08-01T12:00:00.000Z',
+    probeError: null,
+  };
+
+  it.each([true, false, null])('accepts vision: %j', (vision) => {
+    expect(() => VisionCapabilityDetailSchema.parse({ ...base, vision })).not.toThrow();
+  });
+
+  // A model that has never been probed has no row at all — the admin read
+  // answers with the resolved pair and nulls rather than 404ing, so the badge
+  // can render "Unconfirmed" without special-casing a missing response.
+  it('accepts a never-probed pair (probedAt null)', () => {
+    const parsed = VisionCapabilityDetailSchema.parse({
+      ...base,
+      vision: null,
+      probedAt: null,
+    });
+    expect(parsed.probedAt).toBeNull();
+  });
+
+  it('rejects vision being absent', () => {
+    expect(() => VisionCapabilityDetailSchema.parse(base)).toThrow();
+  });
+
+  it('rejects probeError being absent', () => {
+    const { probeError: _omitted, ...withoutError } = base;
+    expect(() => VisionCapabilityDetailSchema.parse({ ...withoutError, vision: false })).toThrow();
   });
 });

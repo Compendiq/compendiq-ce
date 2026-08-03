@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import type { LlmProvider, LlmUsecase, UsecaseAssignments, UsecaseDefault } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
-import { VisionBadge } from '../../../shared/components/badges/VisionBadge';
+import { ChatVisionCapability } from './ChatVisionCapability';
 
 const USECASE_LABELS: Record<LlmUsecase, string> = {
   chat: 'Chat',
@@ -49,43 +49,48 @@ export function UsecaseAssignmentsSection({ assignments, providers, onChange }: 
         const row = assignments[u];
         const effectiveProviderId = row.providerId ?? row.resolved.providerId;
         return (
-          <div
-            key={u}
-            data-testid={`usecase-row-${u}`}
-            className="grid grid-cols-[140px_180px_1fr_auto] items-center gap-2"
-          >
-            <span className="flex items-center gap-1 text-sm font-medium">
-              {USECASE_LABELS[u]}
-              {u === 'embedding' && (
-                <span title="Changing requires re-embedding all pages" aria-label="embedding-warning">
-                  ⚠
-                </span>
-              )}
-            </span>
-            <select
-              className="nm-select-md"
-              value={row.providerId ?? ''}
-              onChange={(e) => update(u, { providerId: e.target.value || null })}
-              data-testid={`usecase-${u}-provider`}
-            >
-              <option value="">Inherit default</option>
-              {providers.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-            <ModelPicker
-              providerId={effectiveProviderId}
-              value={row.model}
-              onChange={(m) => update(u, { model: m })}
-              testId={`usecase-${u}-model`}
-              inheritLabel="Inherit provider's model"
-            />
-            <span className="flex items-center gap-2 text-muted-foreground text-xs">
-              → {row.resolved.providerName} / {row.resolved.model || '(none)'}
-              {u === 'chat' && chatDefault && <VisionBadge vision={chatDefault.vision} />}
-            </span>
+          <div key={u} data-testid={`usecase-row-${u}`} className="space-y-1.5">
+            <div className="grid grid-cols-[140px_180px_1fr_auto] items-center gap-2">
+              <span className="flex items-center gap-1 text-sm font-medium">
+                {USECASE_LABELS[u]}
+                {u === 'embedding' && (
+                  <span title="Changing requires re-embedding all pages" aria-label="embedding-warning">
+                    ⚠
+                  </span>
+                )}
+              </span>
+              <select
+                className="nm-select-md"
+                value={row.providerId ?? ''}
+                onChange={(e) => update(u, { providerId: e.target.value || null })}
+                data-testid={`usecase-${u}-provider`}
+              >
+                <option value="">Inherit default</option>
+                {providers.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+              <ModelPicker
+                providerId={effectiveProviderId}
+                value={row.model}
+                onChange={(m) => update(u, { model: m })}
+                testId={`usecase-${u}-model`}
+                inheritLabel="Inherit provider's model"
+              />
+              <span className="flex items-center gap-2 text-muted-foreground text-xs">
+                → {row.resolved.providerName} / {row.resolved.model || '(none)'}
+              </span>
+            </div>
+            {/*
+              #1184: the capability affordances sit on their own line under the
+              chat row. The badge alone fitted in the resolved column; the badge
+              plus a timestamp, a re-check button and a disclosure does not, and
+              cramming them there would have squeezed the four columns the other
+              use cases share.
+            */}
+            {u === 'chat' && chatDefault && <ChatVisionCapability vision={chatDefault.vision} />}
           </div>
         );
       })}

@@ -49,7 +49,9 @@ export interface LlmAdminAuditEntry {
     | 'llm_provider_updated'
     | 'llm_provider_deleted'
     | 'llm_provider_set_default'
-    | 'llm_usecase_assignments_updated';
+    | 'llm_usecase_assignments_updated'
+    /** #1184 — an admin forced a fresh vision probe of the resolved chat pair. */
+    | 'llm_vision_capability_reprobed';
   userId: string | null;
   metadata?: Record<string, unknown>;
 }
