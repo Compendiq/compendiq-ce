@@ -3,6 +3,10 @@ import { query, getPool } from '../../core/db/postgres.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { userCanAccessPage, getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
+// #1166: `/move` and `POST /pages/:id/relocate` are the two writers of
+// `pages.parent_id`; they must agree on which identifier flavour a child
+// stores, so both derive it from this one helper rather than re-deriving it.
+import { parentKeyFor } from '../../domains/knowledge/services/page-relocate-service.js';
 import { z } from 'zod';
 
 const CreateLocalSpaceSchema = z.object({
@@ -311,15 +315,15 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
     const { id } = IdParamSchema.parse(request.params);
     const body = MovePageSchema.parse(request.body);
 
-    // Look up the page
+    // Look up the page. Only `id` and `space_key` are needed here: the
+    // parent/path state the move actually writes from is re-read under the
+    // advisory lock below, and the `parent_id` flavour depends on the *target
+    // parent's* source, not this page's (#1166).
     const existing = await query<{
       id: number;
-      parent_id: string | null;
       space_key: string | null;
-      source: string;
-      path: string | null;
     }>(
-      'SELECT id, parent_id, space_key, source, path FROM pages WHERE id = $1 AND deleted_at IS NULL',
+      'SELECT id, space_key FROM pages WHERE id = $1 AND deleted_at IS NULL',
       [id],
     );
     if (existing.rows.length === 0) {
@@ -367,7 +371,8 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
     // (non-atomic) and the xact-scoped lock would bind to the wrong session.
     let moved: {
       id: number;
-      parentId: string | number | null;
+      /** The key actually written to `pages.parent_id` — see #1166. */
+      parentId: string | null;
       spaceKey: string | null;
       path: string;
       depth: number;
@@ -392,21 +397,66 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
         throw fastify.httpErrors.notFound('Page not found');
       }
       const current = fresh.rows[0]!;
+      // `MovePageSchema.parentId` is `.nullable()` but not `.optional()`, so
+      // the fallback is unreachable today — every move states its parent. It
+      // stays as the defined behaviour for a space-only body, and the parent
+      // lookup below is dual-arm partly so that `current.parent_id` (already a
+      // stored key, i.e. a Confluence id under a Confluence parent) resolves
+      // if the schema is ever widened.
       const moveParentId = body.parentId !== undefined ? body.parentId : current.parent_id;
       const moveSpaceKey = body.spaceKey ?? current.space_key;
 
       // If new parent is specified, verify it exists (and take its path for
-      // the materialized-path computation below).
+      // the materialized-path computation below, plus the identifier its
+      // children must store).
       let parentPath: string | null = null;
+      let parentKey: string | null = null;
       if (moveParentId !== null) {
-        const parentCheck = await txClient.query<{ path: string | null }>(
-          'SELECT id, path FROM pages WHERE id = $1 AND deleted_at IS NULL',
-          [moveParentId],
+        // #1166: resolve the parent against BOTH arms of the dual-identifier
+        // scheme, exactly as `GET /pages/:id/children` does. The incoming
+        // `parentId` may be a numeric `pages.id`, a Confluence page id, or —
+        // on a space-only move, where it falls back to the stored
+        // `current.parent_id` — whichever flavour the column already holds.
+        // Resolving against `pages.id` alone made a Confluence-parented page
+        // unmovable: `WHERE id = 'CONF-1'` is a `22P02`, and a numeric
+        // Confluence id above 2^31 a `22003`, both aborting the statement as a
+        // 500. Compare `id::text = $1` and never cast the parameter to int
+        // (same hazard as #1167).
+        //
+        // Confluence DC ids are numeric strings, so one value can match a
+        // `pages.id` AND some other row's `confluence_id`. Prefer the
+        // `confluence_id` arm — deterministically, rather than letting the
+        // planner pick — because that is the arm the caller can only have
+        // meant: a Confluence id is the page's own public identity, whereas
+        // the numeric id collision is an accident of two id spaces sharing
+        // digits. `pages_confluence_id_unique` (migration 029) plus the
+        // primary key cap the match at two rows.
+        const parentCheck = await txClient.query<{
+          id: number;
+          path: string | null;
+          source: string;
+          confluence_id: string | null;
+        }>(
+          `SELECT id, path, source, confluence_id FROM pages
+           WHERE (confluence_id = $1 OR id::text = $1) AND deleted_at IS NULL
+           ORDER BY (confluence_id IS NOT DISTINCT FROM $1) DESC, id
+           LIMIT 1`,
+          [String(moveParentId)],
         );
-        if (parentCheck.rows.length === 0) {
+        const parent = parentCheck.rows[0];
+        if (!parent) {
           throw fastify.httpErrors.badRequest('Parent page not found');
         }
-        parentPath = parentCheck.rows[0]!.path;
+        parentPath = parent.path;
+        // #1166: `parent_id` is a TEXT column whose meaning depends on the
+        // parent's source — the parent's `confluence_id` when it is
+        // Confluence-sourced, its numeric id as text otherwise. Storing the
+        // numeric id under a Confluence parent still resolved through the
+        // dual-arm tree CTE but was dropped, silently and without an error, by
+        // every single-arm reader (`subpage-context`, `embedding-service`,
+        // `pages-embeddings`). Same rule relocate applies, from the same
+        // helper, so the two writers of this column cannot drift.
+        parentKey = parentKeyFor(parent.source, parent.id, parent.confluence_id);
 
         // Prevent circular reference (#891): reject moving a page under itself or
         // under any of its own descendants. Walk the ancestor chain of the target
@@ -416,6 +466,10 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
         // (not UNION ALL) dedupes so a pre-existing cycle in the data cannot loop.
         // This also covers Confluence-synced pages whose materialized `path` is
         // NULL, where the old path-substring check was a silent no-op.
+        //
+        // The anchor takes the *resolved* `parent.id` (#1166): a genuine
+        // `pages.id`, so it needs no dual arm of its own and cannot overflow
+        // int4 the way the raw request identifier could.
         const cycleCheck = await txClient.query(
           `WITH RECURSIVE ancestors AS (
              SELECT id, parent_id FROM pages WHERE id = $1 AND deleted_at IS NULL
@@ -426,7 +480,7 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
              WHERE p.deleted_at IS NULL
            )
            SELECT 1 FROM ancestors WHERE id = $2 LIMIT 1`,
-          [moveParentId, page.id],
+          [parent.id, page.id],
         );
         if (cycleCheck.rows.length > 0) {
           throw fastify.httpErrors.badRequest('Cannot move a page under itself or its own descendant');
@@ -441,7 +495,7 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
       await txClient.query(
         `UPDATE pages SET parent_id = $1, space_key = $2, path = $3, depth = $4
          WHERE id = $5`,
-        [moveParentId !== null ? String(moveParentId) : null, moveSpaceKey, newPath, newDepth, page.id],
+        [parentKey, moveSpaceKey, newPath, newDepth, page.id],
       );
 
       // Update all descendants: replace old path prefix with new path prefix.
@@ -469,7 +523,11 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
       }
 
       await txClient.query('COMMIT');
-      moved = { id: page.id, parentId: moveParentId, spaceKey: moveSpaceKey, path: newPath, depth: newDepth };
+      // #1166: the response (and the PAGE_MOVED audit metadata built from it)
+      // echoes the key that was STORED, not the identifier the caller sent —
+      // the two differ whenever the parent is Confluence-sourced, and echoing
+      // the input reported a link the readers cannot resolve.
+      moved = { id: page.id, parentId: parentKey, spaceKey: moveSpaceKey, path: newPath, depth: newDepth };
     } catch (err) {
       await txClient.query('ROLLBACK').catch(() => undefined);
       throw err;

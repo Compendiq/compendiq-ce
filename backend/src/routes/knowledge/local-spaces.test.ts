@@ -14,8 +14,10 @@ vi.mock('../../core/services/redis-cache.js', () => {
   };
 });
 
+// #1166 asserts the PAGE_MOVED metadata, so the spy is addressable.
+const mockLogAuditEvent = vi.fn().mockResolvedValue(undefined);
 vi.mock('../../core/services/audit-service.js', () => ({
-  logAuditEvent: vi.fn().mockResolvedValue(undefined),
+  logAuditEvent: (...args: unknown[]) => mockLogAuditEvent(...args),
 }));
 
 vi.mock('../../core/utils/logger.js', () => ({
@@ -423,9 +425,10 @@ describe('Local Spaces Routes', () => {
     mockQueryFn.mockResolvedValueOnce({
       rows: [{ parent_id: null, space_key: 'PROJ', path: '/10' }],
     });
-    // Parent exists check (also supplies the parent path)
+    // Parent exists check (also supplies the parent path, source and
+    // confluence_id — #1166 derives the stored parent_id flavour from them)
     mockQueryFn.mockResolvedValueOnce({
-      rows: [{ id: 5, path: '/5' }],
+      rows: [{ id: 5, path: '/5', source: 'standalone', confluence_id: null }],
     });
     // #891 cycle-check: no cycle (empty result)
     mockQueryFn.mockResolvedValueOnce({ rows: [] });
@@ -447,6 +450,84 @@ describe('Local Spaces Routes', () => {
     expect(body.depth).toBe(1);
   });
 
+  it('move: stores the parent confluence_id when the parent is Confluence-sourced (#1166)', async () => {
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ id: 10, space_key: 'PROJ' }],
+    });
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ parent_id: null, space_key: 'PROJ', path: '/10' }],
+    });
+    // Parent is Confluence-synced: its children key on its confluence_id, not
+    // its numeric id. Its materialized path is NULL, as synced pages' are.
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ id: 5, path: null, source: 'confluence', confluence_id: '424242' }],
+    });
+    mockQueryFn.mockResolvedValueOnce({ rows: [] }); // cycle check: clear
+    mockQueryFn.mockResolvedValue({ rows: [] }); // UPDATEs
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/pages/10/move',
+      payload: { parentId: 5 },
+    });
+
+    expect(response.statusCode).toBe(200);
+    // Response echoes the STORED key, not the caller's `5` (#1166 contract).
+    expect(JSON.parse(response.payload).parentId).toBe('424242');
+
+    // …and the column really holds it.
+    const updateCall = mockQueryFn.mock.calls.find(
+      (c) => typeof c[0] === 'string' && (c[0] as string).startsWith('UPDATE pages SET parent_id'),
+    );
+    expect(updateCall).toBeDefined();
+    expect((updateCall![1] as unknown[])[0]).toBe('424242');
+
+    // The audit trail records the stored key too, so it matches the row.
+    expect(mockLogAuditEvent).toHaveBeenCalledWith(
+      'test-user-id',
+      'PAGE_MOVED',
+      'page',
+      '10',
+      expect.objectContaining({ parentId: '424242' }),
+      expect.anything(),
+    );
+  });
+
+  it('move: resolves the parent against both id and confluence_id, never casting to int (#1166)', async () => {
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 10, space_key: 'PROJ' }] });
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ parent_id: null, space_key: 'PROJ', path: '/10' }],
+    });
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ id: 5, path: null, source: 'confluence', confluence_id: '3000000000' }],
+    });
+    mockQueryFn.mockResolvedValueOnce({ rows: [] });
+    mockQueryFn.mockResolvedValue({ rows: [] });
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/pages/10/move',
+      payload: { parentId: '3000000000' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const parentLookup = mockQueryFn.mock.calls.find(
+      (c) => typeof c[0] === 'string' && (c[0] as string).includes('confluence_id = $1 OR id::text = $1'),
+    );
+    expect(parentLookup).toBeDefined();
+    // A Confluence id above 2^31 raises 22003 the moment the parameter is cast
+    // to int (the #1167 hazard) — compare `id::text` and pass a plain string.
+    expect(parentLookup![0] as string).not.toMatch(/\$1::int|CAST\s*\(\s*\$1/i);
+    expect((parentLookup![1] as unknown[])[0]).toBe('3000000000');
+
+    // The cycle-check anchor takes the RESOLVED numeric id, so it cannot
+    // overflow either.
+    const cycleCheck = mockQueryFn.mock.calls.find(
+      (c) => typeof c[0] === 'string' && (c[0] as string).includes('WITH RECURSIVE ancestors'),
+    );
+    expect((cycleCheck![1] as unknown[])[0]).toBe(5);
+  });
+
   it('move: rejects making a page its own parent (#891)', async () => {
     // Existing page
     mockQueryFn.mockResolvedValueOnce({
@@ -458,7 +539,7 @@ describe('Local Spaces Routes', () => {
     });
     // Parent exists check (parent is the page itself)
     mockQueryFn.mockResolvedValueOnce({
-      rows: [{ id: 5, path: '/5' }],
+      rows: [{ id: 5, path: '/5', source: 'standalone', confluence_id: null }],
     });
     // Cycle-check finds the moved page in the ancestor chain
     mockQueryFn.mockResolvedValueOnce({ rows: [{ found: 1 }] });
@@ -490,7 +571,7 @@ describe('Local Spaces Routes', () => {
     });
     // Parent exists check (a descendant of page 5, also NULL path)
     mockQueryFn.mockResolvedValueOnce({
-      rows: [{ id: 9, path: null }],
+      rows: [{ id: 9, path: null, source: 'confluence', confluence_id: 'conf-9' }],
     });
     // Cycle-check finds the moved page in the ancestor chain
     mockQueryFn.mockResolvedValueOnce({ rows: [{ found: 1 }] });

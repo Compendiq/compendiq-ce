@@ -160,6 +160,51 @@ async function walkParents(startId: number, maxHops = 10): Promise<number[]> {
   return visited;
 }
 
+/**
+ * The subtree query `GET /api/pages/:id/children` actually runs
+ * (`pages-crud.ts`), verbatim: the anchor keys on the parent's own identifier
+ * (`confluence_id ?? id::text`) and the recursion resolves both arms with
+ * `COALESCE(t.confluence_id, t.id::text)`. Reproduced here rather than
+ * registering the whole pages-crud router, which drags in RBAC space
+ * assignments this file deliberately does not fixture.
+ */
+async function treeDescendantIds(parentId: number): Promise<number[]> {
+  const parent = await query<{ confluence_id: string | null }>(
+    'SELECT confluence_id FROM pages WHERE id = $1',
+    [parentId],
+  );
+  const parentLookupId = parent.rows[0]!.confluence_id ?? String(parentId);
+  const res = await query<{ id: number }>(
+    `WITH RECURSIVE tree AS (
+       SELECT p.id, p.confluence_id, p.parent_id, 1 AS depth
+       FROM pages p
+       WHERE p.parent_id = $1 AND p.deleted_at IS NULL
+       UNION ALL
+       SELECT p.id, p.confluence_id, p.parent_id, t.depth + 1
+       FROM pages p
+       JOIN tree t ON p.parent_id = COALESCE(t.confluence_id, t.id::text)
+       WHERE p.deleted_at IS NULL AND t.depth < 10
+     )
+     SELECT id FROM tree ORDER BY depth, id`,
+  [parentLookupId],
+  );
+  return res.rows.map((r) => r.id);
+}
+
+/**
+ * A **single-arm** reader: `WHERE parent_id = $1` against the parent's own
+ * `confluence_id`, the shape `subpage-context.ts` uses to pull sub-pages into
+ * an LLM prompt. It has no id::text fallback, so a child that stored the wrong
+ * flavour is dropped silently — no error, just a missing sub-page.
+ */
+async function subpageChildIds(parentKey: string): Promise<number[]> {
+  const res = await query<{ id: number }>(
+    'SELECT id FROM pages WHERE parent_id = $1 AND deleted_at IS NULL ORDER BY id',
+    [parentKey],
+  );
+  return res.rows.map((r) => r.id);
+}
+
 // --- Tests ---
 
 describe.skipIf(!dbAvailable)('PUT /api/pages/:id/move — cycle guard against real Postgres (#891)', () => {
@@ -270,8 +315,9 @@ describe.skipIf(!dbAvailable)('PUT /api/pages/:id/move — cycle guard against r
     const response = await movePage(leaf!, root!);
 
     expect(response.statusCode).toBe(200);
-    // parent_id is rewritten to the numeric-id-as-text form.
-    expect((await getPageRow(leaf!)).parent_id).toBe(String(root));
+    // #1166: the root is Confluence-sourced, so its children key on its
+    // confluence_id — not on its numeric id, which is what /move used to store.
+    expect((await getPageRow(leaf!)).parent_id).toBe('c2-root');
     await expect(walkParents(leaf!)).resolves.toEqual([leaf, root]);
   });
 
@@ -285,7 +331,9 @@ describe.skipIf(!dbAvailable)('PUT /api/pages/:id/move — cycle guard against r
 
     expect(response.statusCode).toBe(200);
     const body = response.json();
-    expect(body.parentId).toBe(r2);
+    // #1166: the response echoes the STORED key, not the caller's input, so a
+    // numeric `parentId` comes back as the text the column actually holds.
+    expect(body.parentId).toBe(String(r2));
     expect(body.path).toBe(`/${r2}/${r1}`);
     expect(body.depth).toBe(1);
 
@@ -300,6 +348,148 @@ describe.skipIf(!dbAvailable)('PUT /api/pages/:id/move — cycle guard against r
     expect(child.depth).toBe(2);
 
     await expect(walkParents(c1!)).resolves.toEqual([c1, r1, r2]);
+  });
+
+  // ── (e) parent_id flavour written by the move (#1166) ────────────────────
+
+  describe('parent_id flavour (#1166)', () => {
+    async function moveRaw(id: number, payload: Record<string, unknown>) {
+      return app.inject({ method: 'PUT', url: `/api/pages/${id}/move`, payload });
+    }
+
+    it('stores the parent CONFLUENCE id, so the tree CTE and a single-arm reader both find the child', async () => {
+      const [parent] = await createConfluenceChain(['CONF-100']);
+      const [child] = await createStandaloneChain(1, 'flavour');
+
+      const response = await movePage(child!, parent!);
+
+      expect(response.statusCode).toBe(200);
+      // The stored key is the parent's confluence_id, not its numeric id.
+      expect((await getPageRow(child!)).parent_id).toBe('CONF-100');
+      // …and the response echoes what was stored (#1166 contract change).
+      expect(response.json().parentId).toBe('CONF-100');
+
+      // The dual-arm subtree query resolves the child.
+      await expect(treeDescendantIds(parent!)).resolves.toEqual([child]);
+      // So does a single-arm reader — the ones that used to drop the row.
+      await expect(subpageChildIds('CONF-100')).resolves.toEqual([child]);
+    });
+
+    it('still stores the numeric id when the new parent is standalone', async () => {
+      const [parent] = await createStandaloneChain(1, 'localparent');
+      const [child] = await createStandaloneChain(1, 'localchild');
+
+      const response = await movePage(child!, parent!);
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().parentId).toBe(String(parent));
+      expect((await getPageRow(child!)).parent_id).toBe(String(parent));
+      await expect(treeDescendantIds(parent!)).resolves.toEqual([child]);
+    });
+
+    it('accepts the parent CONFLUENCE id as the request identifier', async () => {
+      const [parent] = await createConfluenceChain(['CONF-200']);
+      const [child] = await createStandaloneChain(1, 'byconfid');
+
+      // Callers legitimately hold the confluence id — it is the identifier the
+      // column itself stores and the one `GET /pages/:id/children` accepts.
+      const response = await moveRaw(child!, { parentId: 'CONF-200' });
+
+      expect(response.statusCode).toBe(200);
+      expect((await getPageRow(child!)).parent_id).toBe('CONF-200');
+      await expect(treeDescendantIds(parent!)).resolves.toEqual([child]);
+    });
+
+    it('does not overflow int4 on a Confluence id above 2^31 (#1167 hazard)', async () => {
+      // `pages.id` is int4. Casting the parameter would raise 22003 and abort
+      // the whole statement — a 500 on a perfectly valid Confluence id.
+      const bigId = '3000000000';
+      const [parent] = await createConfluenceChain([bigId]);
+      const [child] = await createStandaloneChain(1, 'bigid');
+
+      const response = await moveRaw(child!, { parentId: bigId });
+
+      expect(response.statusCode).toBe(200);
+      expect((await getPageRow(child!)).parent_id).toBe(bigId);
+      await expect(treeDescendantIds(parent!)).resolves.toEqual([child]);
+    });
+
+    it('rejects a space-only body: MovePageSchema requires an explicit parentId', async () => {
+      // Pinning the contract. `parentId` is `.nullable()` but NOT `.optional()`,
+      // so the handler's `body.parentId !== undefined` fallback to the stored
+      // `current.parent_id` is unreachable today. If that ever changes, the
+      // stored value flowing back into the parent lookup is a Confluence key
+      // under a Confluence parent — which is why that lookup is dual-arm.
+      const child = await createPage({ title: 'space-only', parentRef: 'CONF-300' });
+      await setPath(child, `/${child}`, 0);
+
+      const response = await moveRaw(child, { spaceKey: 'DEST' });
+
+      expect(response.statusCode).toBe(400);
+      expect((await getPageRow(child)).space_key).toBe('PROJ');
+    });
+
+    it('changes space while restating a Confluence parent key, keeping the flavour', async () => {
+      // The supported form of the move above: the caller restates the parent,
+      // in the flavour the column already holds.
+      const [parent] = await createConfluenceChain(['CONF-300']);
+      const child = await createPage({ title: 'restated', parentRef: 'CONF-300' });
+      await setPath(child, `/${child}`, 0);
+      await query(
+        `INSERT INTO spaces (space_key, space_name, source)
+         VALUES ('DEST', 'Destination', 'local')`,
+      );
+
+      const response = await moveRaw(child, { parentId: 'CONF-300', spaceKey: 'DEST' });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().spaceKey).toBe('DEST');
+      const row = await getPageRow(child);
+      expect(row.parent_id).toBe('CONF-300');
+      expect(row.space_key).toBe('DEST');
+      await expect(treeDescendantIds(parent!)).resolves.toEqual([child]);
+    });
+
+    it('resolves an ambiguous identifier to the confluence_id row, deterministically', async () => {
+      // Confluence DC page ids are numeric strings, so one value can match a
+      // standalone page's `id` AND another page's `confluence_id`.
+      const [standalone] = await createStandaloneChain(1, 'ambig-local');
+      const collidingKey = String(standalone);
+      const [confluenceParent] = await createConfluenceChain([collidingKey]);
+      const [child] = await createStandaloneChain(1, 'ambig-child');
+
+      const response = await moveRaw(child!, { parentId: collidingKey });
+
+      expect(response.statusCode).toBe(200);
+      // Both candidates would store the same parent_id text, so the winner is
+      // identified by whose PATH was used: the Confluence row's path is NULL.
+      expect(response.json().path).toBe(`/${child}`);
+      expect(response.json().depth).toBe(0);
+      expect((await getPageRow(child!)).path).toBe(`/${child}`);
+      await expect(treeDescendantIds(confluenceParent!)).resolves.toEqual([child]);
+    });
+
+    it('still rejects a parent that does not exist under either arm', async () => {
+      const [child] = await createStandaloneChain(1, 'noparent');
+
+      const response = await moveRaw(child!, { parentId: 'NO-SUCH-PAGE' });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error).toContain('Parent page not found');
+      expect((await getPageRow(child!)).parent_id).toBeNull();
+    });
+
+    it('rejects a cycle when the target parent is addressed by its confluence id', async () => {
+      const [root, , leaf] = await createConfluenceChain(['c3-root', 'c3-mid', 'c3-leaf']);
+
+      // The cycle-check anchor must resolve 'c3-leaf' too, not just numeric ids.
+      const response = await moveRaw(root!, { parentId: 'c3-leaf' });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error).toContain('itself or its own descendant');
+      expect((await getPageRow(root!)).parent_id).toBeNull();
+      await expect(walkParents(leaf!)).resolves.toHaveLength(3);
+    });
   });
 
   // ── concurrency: moves are serialized on the advisory lock (#891 review) ──

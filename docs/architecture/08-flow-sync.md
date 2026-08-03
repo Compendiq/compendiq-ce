@@ -329,6 +329,41 @@ Because Confluence DC page ids are numeric strings, the new key can collide
 with some other page's numeric `id` (or vice versa). The move refuses with
 `409` rather than re-pointing a different page's children.
 
+#### The `/move` half (#1166)
+
+`PUT /api/pages/:id/move` is the other writer of this column, and the same rule
+binds it: it stores the key of the parent it is moving *under*, derived from
+that parent's `source` by the shared `parentKeyFor()` helper in
+`page-relocate-service.ts`. Storing the numeric id under a Confluence parent
+still resolved through the dual-arm tree CTE, but the single-arm readers
+(`subpage-context.ts`, `embedding-service.ts`, `pages-embeddings.ts`) dropped
+the child without an error — and the next sync overwrote the column from the
+upstream ancestors, so nothing ever surfaced the wrong value.
+
+Consequences of writing the same flavour the readers agree on:
+
+- **The parent is resolved against both arms** — `confluence_id = $1 OR
+  id::text = $1` — so a caller may address the new parent by either identifier,
+  the same latitude `GET /pages/:id/children` gives. The parameter is **never
+  cast to `int`**: a Confluence id above 2^31 raises `22003` and aborts the
+  statement (#1167). The cycle-check anchor then takes the *resolved* numeric
+  `pages.id`, so it needs no dual arm of its own.
+- **An ambiguous identifier resolves to the `confluence_id` row.** Unlike
+  relocate, which rewrites *other* rows and therefore refuses with `409`,
+  `/move` only writes the moved page, so a deterministic choice is enough. The
+  Confluence arm wins because a Confluence id is the page's own public
+  identity, whereas the numeric collision is an accident of two id spaces
+  sharing digits.
+- **The response body and the `PAGE_MOVED` audit metadata echo the stored key,
+  not the caller's input.** They differ exactly when the parent is
+  Confluence-sourced, and echoing the input reported a link no reader resolves.
+
+`/move` still **never contacts Confluence**: re-parenting is not pushed
+upstream, and `ConfluenceClient.updatePage` sends no `ancestors` to do it with.
+The corrected value therefore remains transient for Confluence-sourced children
+— the next sync rewrites `parent_id` from upstream either way. Writing the
+flavour every reader agrees on is what changes.
+
 ### Concurrency
 
 - Relocate takes `PAGE_MOVE_ADVISORY_LOCK_ID` (`core/db/advisory-locks.ts`),
@@ -494,7 +529,8 @@ LLM. See [`11-content-pipeline.md`](./11-content-pipeline.md).
 - `backend/src/routes/confluence/sync.ts`
 - `backend/src/routes/confluence/spaces.ts` — `DELETE /api/spaces/:key` (unsync)
 - `backend/src/routes/knowledge/pages-relocate.ts` — `POST /api/pages/:id/relocate` + preview
-- `backend/src/domains/knowledge/services/page-relocate-service.ts` — the move transaction and ordering
+- `backend/src/domains/knowledge/services/page-relocate-service.ts` — the move transaction and ordering, and `parentKeyFor()`
+- `backend/src/routes/knowledge/local-spaces.ts` — `PUT /api/pages/:id/move`, the other `parent_id` writer
 - `backend/src/core/db/advisory-locks.ts` — `PAGE_MOVE_ADVISORY_LOCK_ID`, shared with `PUT /pages/:id/move`
 - `backend/src/core/services/rbac-service.ts` — `getSelectedSyncSpaces` (explicit editor assignments)
 - `frontend/src/features/settings/SpacesTab.tsx` — Remove action + empty-save guard
