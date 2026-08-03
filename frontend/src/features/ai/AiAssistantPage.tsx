@@ -163,10 +163,12 @@ const MessageBubble = memo(function MessageBubble({
  * surfaces for one task, with no signal which is canonical.
  *
  * Their screens below are NOT removed. `/ai?mode=improve&pageId=…` still
- * renders Improve in full, so bookmarks and any link produced before this
- * change keep working — including SidebarTreeView's `isAiRoute` re-navigation.
- * Retiring those screens is a separate change, once nothing is observed
- * reaching them.
+ * renders Improve in full, so bookmarks and any link made before this change
+ * keep working. Nothing in the app builds such a URL any more, and
+ * SidebarTreeView never did: its `isAiRoute` re-navigation is `/ai?pageId=…`
+ * with `replace: true`, which drops a `mode=` rather than carrying one, and
+ * AiContext reads the mode-less result as Ask. Retiring those screens is a
+ * separate change, once nothing is observed reaching them.
  */
 const MODE_BUTTONS: Array<{ key: Mode; icon: typeof MessageSquare; label: string }> = [
   { key: 'ask', icon: MessageSquare, label: 'Q&A' },

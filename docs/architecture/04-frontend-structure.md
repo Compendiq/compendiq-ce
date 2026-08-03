@@ -109,8 +109,15 @@ flowchart LR
   open: it rewrites the saved page, which an open editor would overwrite on its
   next save. `article-view` therefore stays a set of read-only mirrors.
 - `/ai` keeps only the Ask and Generate tabs. The four document actions are
-  dock chips; their mode screens still render for `?mode=…` deep links (which
-  `SidebarTreeView` and old bookmarks still produce), but nothing offers them.
+  dock chips; their mode screens still render for `?mode=…` deep links, but
+  nothing offers them and nothing in the app builds one — only bookmarks and
+  links made before #1126. `SidebarTreeView` is not a source of them and never
+  was: its `isAiRoute` clicks navigate to `/ai?pageId=…` with `replace: true`,
+  which *drops* any `mode=` already in the URL, and `AiContext` reads the
+  mode-less result as Ask (deliberately — a sticky `improve` carried onto a
+  plain `/ai` would render a document screen with no tab selected and no way
+  back except the URL bar). It is what clears a mode deep link, not what makes
+  one.
 - **Opening the assistant runs nothing (#1176).** The rail icon, the expanded
   pane's row and `Alt+I` (`ai-assistant` in the shortcut registry) call
   `openDock()` and stop there. #1126 had them seed `'improve'`, which `DockPanel`
