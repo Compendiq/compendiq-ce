@@ -901,14 +901,22 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const params = ChildrenQuerySchema.parse(request.query);
     const { sort, order, depth } = params;
 
-    // Resolve page: try confluence_id first, then integer id
+    // Resolve page: try confluence_id first, then integer id.
+    //
+    // The id arm compares `id::text`, not `$1::int` (#1167). `pages.id` is
+    // SERIAL (int4), so casting the *parameter* overflows on any Confluence
+    // content id above 2^31 — and the `confluence_id` arm does not rescue it,
+    // because the cast aborts the statement before the OR can match. Casting
+    // the column instead cannot overflow. The numeric guard stays: it keeps a
+    // non-numeric id off the un-indexable `id::text` arm so the planner can
+    // serve it straight from the confluence_id index.
     const isNumericId = /^\d+$/.test(id);
     const pageResult = await query<{ id: number; confluence_id: string | null; space_key: string | null; source: string; visibility: string; created_by_user_id: string | null }>(
       `SELECT id, confluence_id, space_key, source, visibility, created_by_user_id FROM pages
-       WHERE ${isNumericId ? '(confluence_id = $1 OR id = $1::int)' : 'confluence_id = $1'}
+       WHERE ${isNumericId ? '(confluence_id = $1 OR id::text = $1)' : 'confluence_id = $1'}
          AND deleted_at IS NULL
        LIMIT 1`,
-      [isNumericId ? id : id],
+      [id],
     );
 
     if (pageResult.rows.length === 0) {
@@ -1165,10 +1173,17 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const storageBody = htmlToConfluence(body.bodyHtml);
 
     // Resolve parentId: frontend may send internal DB id (numeric) instead of confluence_id
+    //
+    // #1167: the id arm compares `id::text`, not `$1::int`. `pages.id` is
+    // SERIAL (int4), so casting the parameter overflowed on any Confluence
+    // content id above 2^31 — and because the cast is evaluated before the OR
+    // can match, the `confluence_id` arm never got the chance to rescue it:
+    // the whole statement aborted with 22003 and the create 500ed even though
+    // the parent row was right there.
     let confluenceParentId = body.parentId;
     if (confluenceParentId && /^\d+$/.test(confluenceParentId)) {
       const parentLookup = await query<{ confluence_id: string | null }>(
-        'SELECT confluence_id FROM pages WHERE id = $1::int OR confluence_id = $2',
+        'SELECT confluence_id FROM pages WHERE id::text = $1 OR confluence_id = $2',
         [confluenceParentId, confluenceParentId],
       );
       if (parentLookup.rows[0]?.confluence_id) {
