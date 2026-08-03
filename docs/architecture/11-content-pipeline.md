@@ -202,7 +202,7 @@ explain itself:
 
 | Layer | Limit | Unit | Why this value |
 |-------|-------|------|----------------|
-| nginx edge (`frontend/nginx.conf`, `location ^~ /api/`) | 30 MB | bytes | Above every backend route limit, and the value `docs/integrations/reverse-proxy/nginx.md` already tells operators to set upstream. Unset it defaults to **1 MB** and answers with an HTML 413 naming nginx's rule, not the app's. |
+| nginx edge (`frontend/nginx.conf`, `location ^~ /api/`) | `44m` = 46,137,344 | bytes (nginx's `m` is binary) | Sized to the **largest** `bodyLimit` behind the location — the draw.io attachment route's 40 MiB, not import's 8 MiB — because an edge below any one route's limit makes nginx the binding constraint for that route. Unset it defaults to **1 MB** and answers with an HTML 413 naming nginx's rule, not the app's. |
 | Fastify route `bodyLimit` | 8 MiB | bytes | Fastify's default is 1 MiB, which is *below* what a document at the schema limit can serialise to. Worst case is ~6 MB: `JSON.stringify` spends up to 3 bytes of UTF-8 per UTF-16 code unit, or 6 when it has to escape one. |
 | `ImportMarkdownSchema` | 1,000,000 | **characters** | The limit the user is told about. Its message is the one worth reaching them. |
 | Client precheck (`NewPagePage.tsx`) | 4 MB, then 1,000,000 chars | bytes, then characters | Refuses an oversize file without a round-trip. Bytes first so a huge file is never read into memory just to be counted. |
@@ -211,6 +211,15 @@ The units differ on purpose and the gaps between the layers exist because of
 it: 1,000,000 characters of Markdown is up to 3 MB of UTF-8 and ~6 MB of
 JSON-escaped request body, so an edge limit set to the same *number* as the
 schema would still refuse files the schema accepts.
+
+The edge is shared, so it is **not** sized for import. `location ^~ /api/`
+also carries the attachment routes, whose payloads are base64 inside JSON and
+so a third larger than the binary they carry: a local attachment at its 25 MB
+cap is 34,952,536 bytes on the wire, and a draw.io save carries a 10 MB PNG
+plus 25 MB of XML in one body — 40,195,416 bytes. `nginx-api-body-limit.test.ts`
+parses every `bodyLimit` out of the backend route modules and fails if the edge
+drops below any of them, so raising a route's limit past the edge is caught
+here rather than in production.
 
 ## Why store three forms?
 

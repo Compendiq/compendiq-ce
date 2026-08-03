@@ -57,7 +57,9 @@ server {
     ssl_certificate_key /etc/ssl/private/compendiq.key;
 
     # Compendiq can emit large diagram + attachment uploads — raise the cap.
-    client_max_body_size 30m;
+    # Keep this at or above the bundled frontend edge (44m), or yours becomes
+    # the binding limit and large draw.io saves die on your 413, not the app's.
+    client_max_body_size 44m;
 
     # SSE streaming (LLM chat). Buffering breaks server-sent events.
     proxy_buffering     off;
@@ -122,9 +124,13 @@ Check `FRONTEND_URL` matches the exact scheme + host + port the browser is using
 nginx is buffering the SSE response. Confirm `proxy_buffering off;` is inside the `server` block and that there's no global `proxy_buffering on;` overriding it. Restart nginx after editing.
 
 **3. Uploads larger than 1 MB (default nginx body cap) return 413.**
-Raise `client_max_body_size 30m;` (or more) in the `server` block. 30 MB is enough for a 25 MB draw.io diagram + JSON overhead; tune higher if your users paste larger images.
+Raise `client_max_body_size 44m;` (or more) in the `server` block.
 
-There are **two** nginx layers in this topology: yours, and the one inside the Compendiq frontend container. The bundled edge sets `client_max_body_size 30m` on `/api/` (`frontend/nginx.conf`), so raising only your outer proxy is enough — but if you raise yours *above* 30 MB, the inner one becomes the new cap and answers with its own HTML 413. Releases before this setting existed capped every `/api/` request at nginx's 1 MB default regardless of what the outer proxy allowed; upgrade the frontend image if a 30m outer proxy still 413s.
+44 MB is not a round guess — it is the smallest value that clears the largest body the backend itself will accept. Attachments travel as base64 inside JSON, which inflates them by a third: a local attachment at its 25 MB binary cap is **34,952,536 bytes** on the wire, and a draw.io save carries a 10 MB PNG *and* 25 MB of XML in one body — **40,195,416 bytes**. The routes declare `bodyLimit`s of 35 MB and 40 MiB to match. Anything below that and nginx rejects a request the app would have accepted.
+
+> Earlier revisions of this page recommended `30m` on the grounds that it covered "a 25 MB draw.io diagram + JSON overhead". That was wrong: 30m is 31,457,280 bytes, below both figures above. If you are running that value, raise it.
+
+There are **two** nginx layers in this topology: yours, and the one inside the Compendiq frontend container. The bundled edge sets `client_max_body_size 44m` on `/api/` (`frontend/nginx.conf`), so the **lower of the two wins** — set yours to at least 44m. Releases before that setting existed capped every `/api/` request at nginx's 1 MB default no matter what the outer proxy allowed, so upgrade the frontend image if a correctly-configured outer proxy still 413s.
 
 **4. Audit log shows the nginx loopback IP instead of the real client IP.**
 `trustProxy` is already enabled in Compendiq, so the issue is usually nginx not forwarding the real IP. Confirm `X-Forwarded-For` is set in the `proxy_set_header` list above. Restart Compendiq after the nginx reload if the log keeps showing `127.0.0.1`.

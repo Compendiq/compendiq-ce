@@ -39,6 +39,53 @@ function toBytes(size: string): number {
  */
 const WORST_CASE_IMPORT_BODY_BYTES = 6 * 1_000_000;
 
+/** Backend route modules that raise Fastify's 1 MiB default body limit. */
+const ROUTE_FILES = [
+  'backend/src/routes/confluence/attachments.ts',
+  'backend/src/routes/knowledge/local-attachments.ts',
+  'backend/src/routes/knowledge/pages-crud.ts',
+  'backend/src/routes/knowledge/pages-import.ts',
+];
+
+/** Evaluate the literal forms a bodyLimit is written in: `40 * 1024 * 1024`, `35_000_000`. */
+function product(expression: string): number {
+  return expression
+    .split('*')
+    .map((factor) => Number(factor.replace(/_/g, '').trim()))
+    .reduce((a, b) => a * b, 1);
+}
+
+/**
+ * Every per-route `bodyLimit` declared behind this location, read out of the
+ * backend sources rather than copied here.
+ *
+ * Import is not the only route under `/api/`, and it is far from the largest —
+ * the attachment routes declare 40 MiB and 35 MB for base64-inflated diagram
+ * and image payloads. An edge below those makes nginx the binding limit for
+ * them: the same unreadable HTML 413 this file exists to prevent, just on a
+ * different route. Parsing the real values means raising a route's bodyLimit
+ * past the edge fails here rather than in production.
+ */
+function declaredRouteBodyLimits(): { file: string; bytes: number }[] {
+  const repoRoot = resolve(__dirname, '..', '..');
+
+  return ROUTE_FILES.flatMap((file) => {
+    const source = readFileSync(resolve(repoRoot, file), 'utf-8');
+    return [...source.matchAll(/bodyLimit:\s*([\w\s*]+?)\s*[,}]/g)].map((match) => {
+      const raw = match[1]!.trim();
+      // A named constant resolves to its initialiser in the same file.
+      const expression = /^\d/.test(raw)
+        ? raw
+        : source.match(new RegExp(`\\b${raw}\\s*=\\s*([\\d_\\s*]+);`))?.[1] ?? '';
+      const bytes = product(expression);
+      if (!Number.isFinite(bytes) || bytes <= 0) {
+        throw new Error(`Could not read bodyLimit "${raw}" in ${file}`);
+      }
+      return { file, bytes };
+    });
+  });
+}
+
 /** Directive lines only, so prose in a comment can't be read as config. */
 const directives = confSource
   .split('\n')
@@ -65,11 +112,39 @@ describe('nginx.conf API edge body limit', () => {
     expect(apiBlock![1]).toMatch(/^\s*client_max_body_size\s/m);
   });
 
-  it('stays at or below what the reverse-proxy guide tells operators to allow', () => {
-    // docs/integrations/reverse-proxy/nginx.md tells operators to set 30m on
-    // the proxy in front of this one. An edge above that would be unreachable
-    // in exactly the deployments the guide describes.
-    const match = confSource.match(/^\s*client_max_body_size\s+(\S+?);/m);
-    expect(toBytes(match![1]!)).toBeLessThanOrEqual(toBytes('30m'));
+  it('clears every per-route bodyLimit the backend declares behind /api/', () => {
+    // The invariant the whole change rests on: the app is always what rejects.
+    // A route whose bodyLimit sits above the edge can never reach its own
+    // validation, so the user gets nginx's HTML 413 instead of the app's
+    // message — on that route, exactly the #1178 bug.
+    const limits = declaredRouteBodyLimits();
+    expect(limits.length).toBeGreaterThanOrEqual(4);
+
+    const edge = toBytes(confSource.match(/^\s*client_max_body_size\s+(\S+?);/m)![1]!);
+    for (const { file, bytes } of limits) {
+      expect(
+        edge,
+        `client_max_body_size must clear the bodyLimit declared in ${file}`,
+      ).toBeGreaterThanOrEqual(bytes);
+    }
+  });
+
+  it('matches the value the reverse-proxy guide tells operators to allow', () => {
+    // Two nginx layers in the documented topology: the operator's, and this
+    // one. If the guide recommends less than the bundled edge, the outer proxy
+    // silently becomes the binding limit and the raise here buys nothing —
+    // which is precisely how the 1 MB default went unnoticed.
+    const guide = readFileSync(
+      resolve(__dirname, '..', '..', 'docs/integrations/reverse-proxy/nginx.md'),
+      'utf-8',
+    );
+    const edge = toBytes(confSource.match(/^\s*client_max_body_size\s+(\S+?);/m)![1]!);
+
+    const recommended = [...guide.matchAll(/client_max_body_size\s+(\S+?);/g)]
+      .map((m) => toBytes(m[1]!));
+    expect(recommended.length).toBeGreaterThan(0);
+    for (const value of recommended) {
+      expect(value).toBeGreaterThanOrEqual(edge);
+    }
   });
 });
