@@ -554,6 +554,13 @@ export function PageViewPage() {
       description: 'Exit edit mode',
       category: 'editor',
       action: () => {
+        // Kept as defence in depth now that the hook bails on
+        // `defaultPrevented`: the two catch different things. The flag catches
+        // any layer that dismisses on ESC (every Radix one does); this probe
+        // catches the hand-rolled overlays that never call preventDefault —
+        // AiDockSheet, ProviderEditModal, the mobile sidebar. On its own it is
+        // unreliable, because a layer unmounted during the capture phase is
+        // already gone from the DOM by the time this runs.
         if (document.querySelector('[role="dialog"]')) return;
         if (editing) handleCancelEditing();
       },
