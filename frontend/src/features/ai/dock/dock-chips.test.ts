@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { DOCK_CHIPS, chipUserMessage } from './dock-chips';
+import { DOCK_CHIPS, chipUserMessage, improveChipHint } from './dock-chips';
+import { IMPROVEMENT_TYPES } from '../improvement-types';
 
 describe('dock chips (#1126)', () => {
   it('offers exactly the four document actions — Generate is not one of them', () => {
@@ -16,8 +17,27 @@ describe('dock chips (#1126)', () => {
     }
   });
 
+  // #1177: the one chip whose press means different things depending on a
+  // setting. Its tooltip has to say which.
+  describe('the Improve hint', () => {
+    it('names the pass it is about to run', () => {
+      for (const type of IMPROVEMENT_TYPES) {
+        expect(improveChipHint(type)).toContain(`${type} pass`);
+      }
+    });
+
+    it('still explains what the composer text is for', () => {
+      expect(improveChipHint('clarity')).toContain('extra instructions');
+    });
+
+    it('is what the chip reads before anyone touches the picker', () => {
+      const improve = DOCK_CHIPS.find((c) => c.id === 'improve');
+      expect(improve?.hint).toBe(improveChipHint('grammar'));
+    });
+  });
+
   describe('user turns', () => {
-    const base = { improvementType: 'grammar', diagramType: 'flowchart' };
+    const base = { improvementType: 'grammar', diagramType: 'flowchart' } as const;
 
     it('uses the typed instruction verbatim as the Improve turn', () => {
       expect(chipUserMessage('improve', { ...base, instruction: 'tighten the intro' }))

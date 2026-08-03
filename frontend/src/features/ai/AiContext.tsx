@@ -6,6 +6,7 @@ import type { UsecaseDefault } from '@compendiq/contracts';
 import { apiFetch, ApiError } from '../../shared/lib/api';
 import { streamSSE } from '../../shared/lib/sse';
 import { usePage, useEmbeddingStatus, type EmbeddingStatusData } from '../../shared/hooks/use-pages';
+import { DEFAULT_IMPROVEMENT_TYPE, type ImprovementType } from './improvement-types';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 import { useStreamingContent } from '../../shared/hooks/use-streaming-content';
 import { type Source } from './SourceCitations';
@@ -143,8 +144,20 @@ interface AiContextValue {
   isLight: boolean;
 
   // Improve mode state
-  improvementType: string;
-  setImprovementType: (v: string) => void;
+  /**
+   * Which of the five passes `/llm/improve` will be asked for. Typed by the
+   * contract's own enum (#1177) rather than `string`, so no picker can offer —
+   * and no caller pass — a value the endpoint would reject with a 400.
+   *
+   * Deliberately session state rather than a persisted preference: it belongs
+   * to the document in front of you, not to you. One page wants its structure
+   * reworked and the next wants a spell-check, so a value that survived a
+   * reload would be wrong more often than right. Both surfaces that set it show
+   * what is selected before it runs — `/ai`'s selector inline, the dock's chip
+   * in its own label — so the session lifetime is never a hidden one.
+   */
+  improvementType: ImprovementType;
+  setImprovementType: (v: ImprovementType) => void;
   showDiffView: boolean;
   setShowDiffView: (v: boolean) => void;
   improvedContent: string;
@@ -382,7 +395,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
     setThinkingModeState(v);
     localStorage.setItem('ai-thinking-mode', String(v));
   }, []);
-  const [improvementType, setImprovementType] = useState('grammar');
+  const [improvementType, setImprovementType] = useState<ImprovementType>(DEFAULT_IMPROVEMENT_TYPE);
   const [diagramType, setDiagramType] = useState('flowchart');
   const [isInsertingDiagram, setIsInsertingDiagram] = useState(false);
 
