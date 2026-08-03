@@ -430,6 +430,9 @@ describe('Local Spaces Routes', () => {
     mockQueryFn.mockResolvedValueOnce({
       rows: [{ id: 5, path: '/5', source: 'standalone', confluence_id: null }],
     });
+    // #1166 ambiguity guard: no other row claims the identifier. One call
+    // only — the requested identifier and the stored key are both '5'.
+    mockQueryFn.mockResolvedValueOnce({ rows: [] });
     // #891 cycle-check: no cycle (empty result)
     mockQueryFn.mockResolvedValueOnce({ rows: [] });
     // Update page
@@ -462,6 +465,11 @@ describe('Local Spaces Routes', () => {
     mockQueryFn.mockResolvedValueOnce({
       rows: [{ id: 5, path: null, source: 'confluence', confluence_id: '424242' }],
     });
+    // #1166 ambiguity guard runs TWICE here: the requested identifier ('5')
+    // and the stored key ('424242') are different values, and each must be
+    // unique on its own.
+    mockQueryFn.mockResolvedValueOnce({ rows: [] });
+    mockQueryFn.mockResolvedValueOnce({ rows: [] });
     mockQueryFn.mockResolvedValueOnce({ rows: [] }); // cycle check: clear
     mockQueryFn.mockResolvedValue({ rows: [] }); // UPDATEs
 
@@ -501,6 +509,8 @@ describe('Local Spaces Routes', () => {
     mockQueryFn.mockResolvedValueOnce({
       rows: [{ id: 5, path: null, source: 'confluence', confluence_id: '3000000000' }],
     });
+    // Requested identifier == stored key here, so one ambiguity check, clear.
+    mockQueryFn.mockResolvedValueOnce({ rows: [] });
     mockQueryFn.mockResolvedValueOnce({ rows: [] });
     mockQueryFn.mockResolvedValue({ rows: [] });
 
@@ -528,6 +538,41 @@ describe('Local Spaces Routes', () => {
     expect((cycleCheck![1] as unknown[])[0]).toBe(5);
   });
 
+  it('move: refuses an ambiguous parent identifier with 409, before the cycle check (#1166)', async () => {
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 10, space_key: 'PROJ' }] });
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ parent_id: null, space_key: 'PROJ', path: '/10' }],
+    });
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ id: 5, path: '/5', source: 'standalone', confluence_id: null }],
+    });
+    // Another row also answers to '5' — here a Confluence page carrying it as
+    // its confluence_id. The stored key would resolve to two parents.
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 77, title: 'decoy' }] });
+    mockQueryFn.mockResolvedValue({ rows: [] });
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/pages/10/move',
+      payload: { parentId: '5' },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json().error).toContain('ambiguous');
+
+    // The guard short-circuits: the cycle check never runs, and nothing is
+    // written. Ordering matters — the cycle check anchors on ONE row, so
+    // letting it run first is what reopened #891.
+    const cycleCheck = mockQueryFn.mock.calls.find(
+      (c) => typeof c[0] === 'string' && (c[0] as string).includes('WITH RECURSIVE ancestors'),
+    );
+    expect(cycleCheck).toBeUndefined();
+    const updateCall = mockQueryFn.mock.calls.find(
+      (c) => typeof c[0] === 'string' && (c[0] as string).includes('UPDATE pages'),
+    );
+    expect(updateCall).toBeUndefined();
+  });
+
   it('move: rejects making a page its own parent (#891)', async () => {
     // Existing page
     mockQueryFn.mockResolvedValueOnce({
@@ -541,6 +586,8 @@ describe('Local Spaces Routes', () => {
     mockQueryFn.mockResolvedValueOnce({
       rows: [{ id: 5, path: '/5', source: 'standalone', confluence_id: null }],
     });
+    // #1166 ambiguity guard: unambiguous, so the cycle check still decides.
+    mockQueryFn.mockResolvedValueOnce({ rows: [] });
     // Cycle-check finds the moved page in the ancestor chain
     mockQueryFn.mockResolvedValueOnce({ rows: [{ found: 1 }] });
     // Fallback so any further (unexpected) query resolves harmlessly
@@ -573,6 +620,9 @@ describe('Local Spaces Routes', () => {
     mockQueryFn.mockResolvedValueOnce({
       rows: [{ id: 9, path: null, source: 'confluence', confluence_id: 'conf-9' }],
     });
+    // #1166 ambiguity guard, twice: requested '9' vs stored key 'conf-9'.
+    mockQueryFn.mockResolvedValueOnce({ rows: [] });
+    mockQueryFn.mockResolvedValueOnce({ rows: [] });
     // Cycle-check finds the moved page in the ancestor chain
     mockQueryFn.mockResolvedValueOnce({ rows: [{ found: 1 }] });
     mockQueryFn.mockResolvedValue({ rows: [] });

@@ -450,9 +450,12 @@ describe.skipIf(!dbAvailable)('PUT /api/pages/:id/move — cycle guard against r
       await expect(treeDescendantIds(parent!)).resolves.toEqual([child]);
     });
 
-    it('resolves an ambiguous identifier to the confluence_id row, deterministically', async () => {
+    it('refuses an ambiguous identifier with 409 instead of picking a winner', async () => {
       // Confluence DC page ids are numeric strings, so one value can match a
-      // standalone page's `id` AND another page's `confluence_id`.
+      // standalone page's `id` AND another page's `confluence_id`. Picking a
+      // winner is not enough: the winner decides the `path`, but the value
+      // STORED is the ambiguous string, and every reader resolves it against
+      // both arms — so the child would show up under both candidates.
       const [standalone] = await createStandaloneChain(1, 'ambig-local');
       const collidingKey = String(standalone);
       const [confluenceParent] = await createConfluenceChain([collidingKey]);
@@ -460,13 +463,95 @@ describe.skipIf(!dbAvailable)('PUT /api/pages/:id/move — cycle guard against r
 
       const response = await moveRaw(child!, { parentId: collidingKey });
 
-      expect(response.statusCode).toBe(200);
-      // Both candidates would store the same parent_id text, so the winner is
-      // identified by whose PATH was used: the Confluence row's path is NULL.
-      expect(response.json().path).toBe(`/${child}`);
-      expect(response.json().depth).toBe(0);
-      expect((await getPageRow(child!)).path).toBe(`/${child}`);
-      await expect(treeDescendantIds(confluenceParent!)).resolves.toEqual([child]);
+      expect(response.statusCode).toBe(409);
+      expect(response.json().error).toContain('ambiguous');
+      // Nothing moved: neither candidate claims the child.
+      expect((await getPageRow(child!)).parent_id).toBeNull();
+      await expect(treeDescendantIds(confluenceParent!)).resolves.toEqual([]);
+      await expect(treeDescendantIds(standalone!)).resolves.toEqual([]);
+    });
+
+    it('refuses a self-parent hidden behind a colliding confluence_id (#891 regression)', async () => {
+      // The cycle guard anchors on ONE resolved row, but the stored key
+      // resolves against both arms. With a decoy whose confluence_id equals
+      // the moved page's own id, anchoring on the decoy let the page become
+      // its own parent — the exact thing #891 exists to prevent.
+      const [moved] = await createStandaloneChain(1, 'selfdecoy');
+      const collidingKey = String(moved);
+      await createPage({
+        title: 'decoy',
+        source: 'confluence',
+        confluenceId: collidingKey,
+      });
+
+      const response = await moveRaw(moved!, { parentId: collidingKey });
+
+      expect(response.statusCode).toBe(409);
+      expect((await getPageRow(moved!)).parent_id).toBeNull();
+      // The invariant that actually matters, asserted the way readers see it:
+      // the tree CTE follows BOTH arms, so it is what surfaces the cycle. A
+      // single-parent walk cannot — with two matching parents it silently
+      // takes one and reports a clean chain. Unfixed, this returned the page
+      // itself ten times: its own descendant, to the recursion cap.
+      await expect(treeDescendantIds(moved!)).resolves.toEqual([]);
+    });
+
+    it('refuses a M→D→M cycle hidden behind a colliding confluence_id (#891 regression)', async () => {
+      // M → D. A decoy Confluence page carries D's numeric id as its
+      // confluence_id, so anchoring the cycle walk on the decoy (which has no
+      // ancestors) passed while the stored key pointed back at D.
+      const [m, d] = await createStandaloneChain(2, 'cycledecoy');
+      const collidingKey = String(d);
+      await createPage({
+        title: 'outer-decoy',
+        source: 'confluence',
+        confluenceId: collidingKey,
+      });
+
+      const response = await moveRaw(m!, { parentId: collidingKey });
+
+      expect(response.statusCode).toBe(409);
+      expect((await getPageRow(m!)).parent_id).toBeNull();
+      // Unfixed, the subtree under M alternated [D, M, D, M, …] to the cap.
+      await expect(treeDescendantIds(m!)).resolves.toEqual([d]);
+      await expect(walkParents(d!)).resolves.toEqual([d, m]);
+    });
+
+    it('counts a TRASHED colliding row as ambiguous, because restoring it would compete', async () => {
+      // `pages_confluence_id_unique` (migration 029) is partial on
+      // `confluence_id IS NOT NULL` and does NOT exclude `deleted_at`, so a
+      // trashed row still owns its confluence_id and can be restored straight
+      // back into contention. Relocate counts trashed rows for this reason;
+      // /move must agree or the two writers disagree on what is ambiguous.
+      const [parent] = await createStandaloneChain(1, 'trashparent');
+      const collidingKey = String(parent);
+      const decoy = await createPage({
+        title: 'trashed-decoy',
+        source: 'confluence',
+        confluenceId: collidingKey,
+      });
+      await query('UPDATE pages SET deleted_at = NOW() WHERE id = $1', [decoy]);
+      const [child] = await createStandaloneChain(1, 'trashchild');
+
+      const response = await moveRaw(child!, { parentId: collidingKey });
+
+      expect(response.statusCode).toBe(409);
+      expect((await getPageRow(child!)).parent_id).toBeNull();
+    });
+
+    it('refuses when the STORED key collides, even though the request identifier does not', async () => {
+      // Addressing a Confluence parent by its numeric id: the request
+      // identifier is unambiguous, but the key that gets stored is the
+      // parent's confluence_id — which another page's numeric id may equal.
+      // Both identifiers have to be checked, not just the one sent.
+      const [decoy] = await createStandaloneChain(1, 'storedcollide');
+      const [parent] = await createConfluenceChain([String(decoy)]);
+      const [child] = await createStandaloneChain(1, 'storedchild');
+
+      const response = await moveRaw(child!, { parentId: parent! });
+
+      expect(response.statusCode).toBe(409);
+      expect((await getPageRow(child!)).parent_id).toBeNull();
     });
 
     it('still rejects a parent that does not exist under either arm', async () => {

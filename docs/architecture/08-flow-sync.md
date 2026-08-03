@@ -334,26 +334,46 @@ with some other page's numeric `id` (or vice versa). The move refuses with
 `PUT /api/pages/:id/move` is the other writer of this column, and the same rule
 binds it: it stores the key of the parent it is moving *under*, derived from
 that parent's `source` by the shared `parentKeyFor()` helper in
-`page-relocate-service.ts`. Storing the numeric id under a Confluence parent
-still resolved through the dual-arm tree CTE, but the single-arm readers
-(`subpage-context.ts`, `embedding-service.ts`, `pages-embeddings.ts`) dropped
-the child without an error — and the next sync overwrote the column from the
-upstream ancestors, so nothing ever surfaced the wrong value.
+`page-relocate-service.ts`. It used to store the numeric id unconditionally,
+and the next sync overwrote the column from the upstream ancestors, so nothing
+ever surfaced the wrong value.
 
-Consequences of writing the same flavour the readers agree on:
+**There is no flavour that satisfies every reader**, and the fix should not be
+described as if there were. The single arms are contradictory:
+`embedding-service.ts` joins `parent.confluence_id = child.parent_id`, while
+`pages-embeddings.ts` joins `p.parent_id = a.id::text`. Under a Confluence
+parent, storing the parent's own key therefore **gains** `subpage-context.ts`
+(sub-pages fed to the LLM) and `embedding-service.ts`, and **loses**
+`pages-embeddings.ts` clustering.
+
+That loss is *alignment*, not damage: a natively synced Confluence child is
+absent from those clusters too, so after the fix a moved child behaves exactly
+like its synced siblings rather than like a standalone page that happens to sit
+under one. Anyone touching `pages-embeddings.ts` should read its `id::text`
+join as "clusters standalone hierarchies only", which is what it has always
+done.
+
+Other consequences of the fix:
 
 - **The parent is resolved against both arms** — `confluence_id = $1 OR
   id::text = $1` — so a caller may address the new parent by either identifier,
-  the same latitude `GET /pages/:id/children` gives. The parameter is **never
-  cast to `int`**: a Confluence id above 2^31 raises `22003` and aborts the
-  statement (#1167). The cycle-check anchor then takes the *resolved* numeric
-  `pages.id`, so it needs no dual arm of its own.
-- **An ambiguous identifier resolves to the `confluence_id` row.** Unlike
-  relocate, which rewrites *other* rows and therefore refuses with `409`,
-  `/move` only writes the moved page, so a deterministic choice is enough. The
-  Confluence arm wins because a Confluence id is the page's own public
-  identity, whereas the numeric collision is an accident of two id spaces
-  sharing digits.
+  the same latitude `GET /pages/:id/children` gives. That **parent** parameter
+  is never cast to `int`: a Confluence id above 2^31 raises `22003` and aborts
+  the statement (#1167). The cycle-check anchor then takes the *resolved*
+  numeric `pages.id`, so it needs no dual arm of its own. The claim is limited
+  to the parent arm — the **moved page's own `:id`** is still an uncast
+  `WHERE id = $1`, so `PUT /api/pages/CONF-1/move` and an `:id` above 2^31 are
+  `500`s. Pre-existing and shared with `/reorder`; not addressed by #1166.
+- **An ambiguous identifier is refused with `409`, not resolved to a winner.**
+  Picking one row settles the `path` and the stored key, but the value stored
+  stays ambiguous and every reader resolves it against *both* arms — so the
+  cycle guard would validate one candidate parent while readers follow the
+  other. That is not hypothetical: it let a page become its own parent, after
+  which the tree CTE returns it as its own descendant up to the recursion cap.
+  `/move` therefore reuses relocate's `assertIdentifierUnambiguous`, including
+  its deliberate counting of soft-deleted rows. Both the requested identifier
+  and the stored key are checked, since they differ when a Confluence parent is
+  addressed by its numeric id.
 - **The response body and the `PAGE_MOVED` audit metadata echo the stored key,
   not the caller's input.** They differ exactly when the parent is
   Confluence-sourced, and echoing the input reported a link no reader resolves.
@@ -361,8 +381,7 @@ Consequences of writing the same flavour the readers agree on:
 `/move` still **never contacts Confluence**: re-parenting is not pushed
 upstream, and `ConfluenceClient.updatePage` sends no `ancestors` to do it with.
 The corrected value therefore remains transient for Confluence-sourced children
-— the next sync rewrites `parent_id` from upstream either way. Writing the
-flavour every reader agrees on is what changes.
+— the next sync rewrites `parent_id` from upstream either way.
 
 ### Concurrency
 

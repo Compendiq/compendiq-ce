@@ -4,9 +4,14 @@ import { RedisCache } from '../../core/services/redis-cache.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { userCanAccessPage, getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 // #1166: `/move` and `POST /pages/:id/relocate` are the two writers of
-// `pages.parent_id`; they must agree on which identifier flavour a child
-// stores, so both derive it from this one helper rather than re-deriving it.
-import { parentKeyFor } from '../../domains/knowledge/services/page-relocate-service.js';
+// `pages.parent_id`; they must agree both on which identifier flavour a child
+// stores and on what makes an identifier too ambiguous to store, so both
+// derive those from these helpers rather than re-deriving them.
+import {
+  parentKeyFor,
+  assertIdentifierUnambiguous,
+  RelocateError,
+} from '../../domains/knowledge/services/page-relocate-service.js';
 import { z } from 'zod';
 
 const CreateLocalSpaceSchema = z.object({
@@ -421,16 +426,14 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
         // unmovable: `WHERE id = 'CONF-1'` is a `22P02`, and a numeric
         // Confluence id above 2^31 a `22003`, both aborting the statement as a
         // 500. Compare `id::text = $1` and never cast the parameter to int
-        // (same hazard as #1167).
+        // (same hazard as #1167 — note this covers the *parent* identifier
+        // only; the moved page's own `:id` is resolved separately above).
         //
         // Confluence DC ids are numeric strings, so one value can match a
-        // `pages.id` AND some other row's `confluence_id`. Prefer the
-        // `confluence_id` arm — deterministically, rather than letting the
-        // planner pick — because that is the arm the caller can only have
-        // meant: a Confluence id is the page's own public identity, whereas
-        // the numeric id collision is an accident of two id spaces sharing
-        // digits. `pages_confluence_id_unique` (migration 029) plus the
-        // primary key cap the match at two rows.
+        // `pages.id` AND some other row's `confluence_id`. Ambiguity is
+        // refused outright below rather than resolved by preferring one arm:
+        // see `assertIdentifierUnambiguous`.
+        const requestedKey = String(moveParentId);
         const parentCheck = await txClient.query<{
           id: number;
           path: string | null;
@@ -441,7 +444,7 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
            WHERE (confluence_id = $1 OR id::text = $1) AND deleted_at IS NULL
            ORDER BY (confluence_id IS NOT DISTINCT FROM $1) DESC, id
            LIMIT 1`,
-          [String(moveParentId)],
+          [requestedKey],
         );
         const parent = parentCheck.rows[0];
         if (!parent) {
@@ -450,13 +453,46 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
         parentPath = parent.path;
         // #1166: `parent_id` is a TEXT column whose meaning depends on the
         // parent's source — the parent's `confluence_id` when it is
-        // Confluence-sourced, its numeric id as text otherwise. Storing the
-        // numeric id under a Confluence parent still resolved through the
-        // dual-arm tree CTE but was dropped, silently and without an error, by
-        // every single-arm reader (`subpage-context`, `embedding-service`,
-        // `pages-embeddings`). Same rule relocate applies, from the same
-        // helper, so the two writers of this column cannot drift.
+        // Confluence-sourced, its numeric id as text otherwise. Same rule
+        // relocate applies, from the same helper, so the two writers of this
+        // column cannot drift.
+        //
+        // There is no flavour that satisfies every reader: `embedding-service`
+        // joins `parent.confluence_id = child.parent_id` while
+        // `pages-embeddings` joins `p.parent_id = a.id::text`, which are
+        // contradictory single arms. Writing the parent's own key wins
+        // `subpage-context` and `embedding-service` and loses
+        // `pages-embeddings` clustering. That loss is *alignment*, not damage:
+        // a natively synced Confluence child is absent from those clusters
+        // too, so a moved child now behaves exactly like its synced siblings
+        // instead of like a standalone page that happens to sit under one.
         parentKey = parentKeyFor(parent.source, parent.id, parent.confluence_id);
+
+        // #1166 review: refuse an ambiguous identifier instead of picking a
+        // winner. Resolving to one row settles `parentPath` and `parentKey`,
+        // but the value actually STORED stays ambiguous, and every reader
+        // resolves it against both arms — so the cycle guard below would
+        // validate the one row `LIMIT 1` picked while readers follow the
+        // other. That reopened #891: with a decoy whose `confluence_id` equals
+        // the moved page's own id, a page became its own parent (the tree CTE
+        // then returns it as its own descendant, to the recursion cap).
+        //
+        // Both identifiers are checked, because they differ when a Confluence
+        // parent is addressed by its numeric id: `requestedKey` decides which
+        // row we resolved, `parentKey` is what children will resolve against.
+        // Delegated to relocate's guard so the two writers of this column
+        // agree on what "ambiguous" means — including its deliberate counting
+        // of soft-deleted rows, which still own their `confluence_id` and can
+        // be restored back into contention.
+        try {
+          await assertIdentifierUnambiguous(requestedKey, parent.id, 'parent', txClient, 'move');
+          if (parentKey !== requestedKey) {
+            await assertIdentifierUnambiguous(parentKey, parent.id, 'stored parent', txClient, 'move');
+          }
+        } catch (err) {
+          if (err instanceof RelocateError) throw fastify.httpErrors.conflict(err.message);
+          throw err;
+        }
 
         // Prevent circular reference (#891): reject moving a page under itself or
         // under any of its own descendants. Walk the ancestor chain of the target
