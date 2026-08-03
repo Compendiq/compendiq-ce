@@ -35,6 +35,10 @@ import { buildApp } from '../../app.js';
 import { generateAccessToken } from '../../core/plugins/auth.js';
 import { VisionCapabilityDetailSchema } from '@compendiq/contracts';
 import { PROBE_ERROR_MAX_CHARS } from '../../domains/llm/services/model-capabilities.js';
+import {
+  setLlmAdminAuditHook,
+  type LlmAdminAuditEntry,
+} from '../../domains/llm/services/llm-audit-hook.js';
 
 /**
  * The provider's raw error body, as `probeVision` would have stored it. Shaped
@@ -370,5 +374,103 @@ describe.skipIf(!dbAvailable)('POST /api/admin/llm-usecases/chat/reprobe-vision 
 
     expect(res.statusCode).toBe(401);
     expect(mockProbeVision).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * A manual re-probe is an admin mutating shared LLM configuration, so it emits
+ * an admin audit event like every other mutating route in this file. Nothing
+ * asserted that until now: CE registers no admin hook, so `emitLlmAudit` is a
+ * no-op and deleting the call left both route test files green — a refactor
+ * could drop the event and EE would silently lose the attestation.
+ */
+describe.skipIf(!dbAvailable)('the manual re-probe is audited (#1184)', () => {
+  const entries: LlmAdminAuditEntry[] = [];
+  /** CE registers no admin hook, so "restoring" means going back to a no-op. */
+  const noopHook = async () => {};
+
+  beforeEach(() => {
+    entries.length = 0;
+  });
+
+  async function withRecordingHook(run: () => Promise<void>): Promise<void> {
+    setLlmAdminAuditHook(async (entry) => {
+      entries.push(entry);
+    });
+    try {
+      await run();
+    } finally {
+      setLlmAdminAuditHook(noopHook);
+    }
+  }
+
+  it('emits llm_vision_capability_reprobed naming the pair and the verdict', async () => {
+    const { providerId, model } = await seedDefaultProvider();
+    mockProbeVision.mockResolvedValue({ vision: true });
+
+    await withRecordingHook(async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/admin/llm-usecases/chat/reprobe-vision',
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+      expect(res.statusCode).toBe(200);
+      // Fire-and-forget by contract, so poll rather than assume it has landed.
+      await vi.waitFor(() => expect(entries).toHaveLength(1));
+    });
+
+    expect(entries[0]).toMatchObject({
+      event: 'llm_vision_capability_reprobed',
+      metadata: { providerId, model, vision: true },
+    });
+    expect(entries[0]!.userId).toEqual(expect.any(String));
+  });
+
+  it('records the verdict that was actually reached, not a presumed success', async () => {
+    await seedDefaultProvider();
+    mockProbeVision.mockResolvedValue({ vision: null, error: SECRET_PROBE_ERROR });
+
+    await withRecordingHook(async () => {
+      await app.inject({
+        method: 'POST',
+        url: '/api/admin/llm-usecases/chat/reprobe-vision',
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+      await vi.waitFor(() => expect(entries).toHaveLength(1));
+    });
+
+    expect(entries[0]!.metadata).toMatchObject({ vision: null });
+    // The audit trail is not a back door for the provider's error body either.
+    expect(JSON.stringify(entries[0])).not.toContain('llm-internal.corp.lan');
+  });
+
+  it('does not emit for the read-only capability route', async () => {
+    await seedDefaultProvider();
+
+    await withRecordingHook(async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/admin/llm-usecases/chat/vision-capability',
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+      expect(res.statusCode).toBe(200);
+    });
+
+    expect(entries).toEqual([]);
+  });
+
+  it('does not emit when the re-probe is refused', async () => {
+    await seedDefaultProvider();
+
+    await withRecordingHook(async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/admin/llm-usecases/chat/reprobe-vision',
+        headers: { authorization: `Bearer ${memberToken}` },
+      });
+      expect(res.statusCode).toBe(403);
+    });
+
+    expect(entries).toEqual([]);
   });
 });

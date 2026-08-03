@@ -83,6 +83,33 @@ describe('ChatVisionCapability — when it was last checked (#1184)', () => {
   });
 });
 
+/**
+ * The tri-state must survive the trip from the caller's prop to the badge.
+ *
+ * `VisionBadge.test.tsx` pins the badge's own three renderings and
+ * `UsecaseAssignmentsSection.vision.test.tsx` only asserts that a badge
+ * exists — nothing connected the two. Collapsing this component's pass-through
+ * to `vision={vision === true}` left the entire frontend suite green while
+ * rendering a never-probed model as "Text-only" / "This model refused a test
+ * image": a false claim about a model nothing has asked yet, and per
+ * `VisionBadge`'s own docblock the dominant first-paint state.
+ */
+describe('ChatVisionCapability — the vision tri-state reaches the badge (#1184)', () => {
+  it.each([
+    [true, /^vision$/i],
+    [false, /text-only/i],
+    [null, /unconfirmed/i],
+  ])('renders vision=%j as its own verdict', async (vision, label) => {
+    mockApiFetch.mockImplementation(async (path: string) =>
+      path === CAPABILITY_URL ? capability({ vision, probeError: null }) : {},
+    );
+
+    renderStrip(vision);
+
+    expect(await screen.findByTestId('vision-badge')).toHaveTextContent(label);
+  });
+});
+
 describe('ChatVisionCapability — the probe error disclosure (#1184)', () => {
   it('keeps the probe error behind a closed disclosure', async () => {
     renderStrip();
