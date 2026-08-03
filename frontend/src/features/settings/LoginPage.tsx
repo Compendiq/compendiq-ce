@@ -64,6 +64,7 @@ export function LoginPage() {
   // button would appear and then vanish again on its own.
   const configGeneration = useRef(0);
   const oidcGeneration = useRef(0);
+  const registrationGeneration = useRef(0);
 
   const loginVariant = resolveLoginVariant(
     searchParams,
@@ -145,15 +146,31 @@ export function LoginPage() {
     }
   }, []);
 
-  // "Check again" re-runs everything this page probes, not just SSO. The
-  // presentation config carries the edition badge and the layout variant, and
-  // a recovered backend that only restored the SSO button would leave the
-  // header still branded as if the edition were unknown.
+  const fetchRegistrationPolicy = useCallback(async () => {
+    const generation = ++registrationGeneration.current;
+    try {
+      const policy = RegistrationPolicySchema.parse(await apiFetch('/auth/registration-policy'));
+      if (generation !== registrationGeneration.current) return;
+      setAllowRegistration(policy.allowRegistration);
+    } catch {
+      // Fail closed — on every settle, not just the first. A recheck that
+      // cannot reach this route must not leave a stale "yes" on screen.
+      if (generation !== registrationGeneration.current) return;
+      setAllowRegistration(false);
+    }
+  }, []);
+
+  // "Check again" re-runs everything this page probes, not just SSO — all
+  // three requests died with the same upstream. The presentation config
+  // carries the edition badge and the layout variant; the registration policy
+  // fails closed, so a deployment that allows sign-up would keep hiding its
+  // own "Create one" link until the user reloaded.
   const recheckServerState = useCallback(() => {
     setFocusSsoOnRecovery(true);
     void probeOidcConfig();
     void fetchLoginPageConfig();
-  }, [probeOidcConfig, fetchLoginPageConfig]);
+    void fetchRegistrationPolicy();
+  }, [probeOidcConfig, fetchLoginPageConfig, fetchRegistrationPolicy]);
 
   useEffect(() => {
     void fetchLoginPageConfig();
@@ -164,17 +181,8 @@ export function LoginPage() {
   }, [probeOidcConfig]);
 
   useEffect(() => {
-    async function fetchRegistrationPolicy() {
-      try {
-        const policy = RegistrationPolicySchema.parse(await apiFetch('/auth/registration-policy'));
-        setAllowRegistration(policy.allowRegistration);
-      } catch {
-        // Fail closed.
-      }
-    }
-
     void fetchRegistrationPolicy();
-  }, []);
+  }, [fetchRegistrationPolicy]);
 
   function handleVariantChange(variant: LoginVariant) {
     const nextParams = new URLSearchParams(searchParams);

@@ -285,6 +285,45 @@ describe('LoginPage', () => {
       // it posts to the same dead upstream.
       expect(announcer).not.toHaveTextContent('You can still sign in with credentials');
     });
+
+    // The same silence rule has to hold on a *recheck*, not just first paint.
+    // Without re-arming it, the region speaks the previous attribution the
+    // instant the SSO probe answers, then contradicts itself when the
+    // reachability probe lands.
+    it('goes silent again while a recheck re-establishes the attribution', async () => {
+      const recheckConfig = deferred<Record<string, unknown>>();
+      let configCalls = 0;
+      vi.mocked(apiFetch).mockImplementation(async (url: string) => {
+        const u = String(url);
+        if (u.includes('/auth/login-page-config')) {
+          configCalls += 1;
+          if (configCalls === 1) throw new Error('Bad Gateway');
+          return recheckConfig.promise as never;
+        }
+        if (u.includes('/auth/oidc/config')) throw new Error('Bad Gateway');
+        if (u.includes('/auth/registration-policy')) return { allowRegistration: false } as never;
+        throw new Error(`unexpected apiFetch url: ${u}`);
+      });
+
+      renderLoginPage();
+      const announcer = await screen.findByTestId('sso-status-announcer');
+      await waitFor(() => expect(announcer).toHaveTextContent('Cannot reach the server.'));
+
+      fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
+
+      // The SSO probe has already failed again, but the reachability probe is
+      // still out — so there is nothing trustworthy to say yet.
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Check again' })).toBeInTheDocument());
+      expect(announcer.textContent).toBe('');
+
+      await act(async () => {
+        recheckConfig.resolve({ variant: 'local-loop', edition: 'community' });
+      });
+
+      expect(announcer).toHaveTextContent(
+        'Single sign-on status unavailable. You can still sign in with credentials below.',
+      );
+    });
   });
 
   // ─── which failure actually happened ─────────────────────────────────────
@@ -306,6 +345,34 @@ describe('LoginPage', () => {
 
       expect(await screen.findByText('Single sign-on status unavailable')).toBeInTheDocument();
       expect(screen.queryByText('Cannot reach the server')).not.toBeInTheDocument();
+    });
+
+    // All three mount requests died with the same upstream. The registration
+    // policy fails closed, so a deployment that allows sign-up keeps hiding
+    // its own "Create one" link until the page is reloaded.
+    it('re-runs the registration policy too, so sign-up reappears after recovery', async () => {
+      let policyCalls = 0;
+      vi.mocked(apiFetch).mockImplementation(async (url: string) => {
+        const u = String(url);
+        if (u.includes('/auth/registration-policy')) {
+          policyCalls += 1;
+          if (policyCalls === 1) throw new Error('Bad Gateway');
+          return { allowRegistration: true } as never;
+        }
+        if (u.includes('/auth/login-page-config')) return { variant: 'local-loop' } as never;
+        if (u.includes('/auth/oidc/config')) throw new Error('Bad Gateway');
+        throw new Error(`unexpected apiFetch url: ${u}`);
+      });
+
+      renderLoginPage();
+
+      const trigger = await screen.findByRole('button', { name: 'Check again' });
+      expect(screen.queryByRole('button', { name: 'Create one' })).not.toBeInTheDocument();
+
+      fireEvent.click(trigger);
+
+      expect(await screen.findByRole('button', { name: 'Create one' })).toBeInTheDocument();
+      expect(policyCalls).toBe(2);
     });
 
     it('re-runs the presentation config too, so a recovered backend restores the badge', async () => {
@@ -422,6 +489,7 @@ describe('LoginPage', () => {
 
       const ssoButton = await screen.findByRole('button', { name: 'Sign in with OrgSSO' });
       await waitFor(() => expect(ssoButton).toHaveFocus());
+      const announcerBefore = screen.getByTestId('sso-status-announcer');
 
       await act(async () => {
         recheckConfig.resolve({ variant: 'change-desk', edition: 'enterprise' });
@@ -431,7 +499,41 @@ describe('LoginPage', () => {
       expect(await screen.findByText('Enterprise Edition')).toBeInTheDocument();
       // … and the user is still on the button, not dumped at <body>.
       expect(screen.getByRole('button', { name: 'Sign in with OrgSSO' })).toHaveFocus();
-      expect(screen.getByTestId('sso-status-announcer')).toBeInTheDocument();
+      // Same DOM node, not a re-created one: a live region that is remounted
+      // alongside its text is exactly what it was hoisted out of the panel to
+      // stop being. Node identity is the only assertion that catches that.
+      expect(screen.getByTestId('sso-status-announcer')).toBe(announcerBefore);
+    });
+
+    // The only outcome a recovered CE backend can produce: `app.ts` serves a
+    // fixed { enabled: false, enterpriseRequired: true } stub in community
+    // mode. It collapses the notice without producing an SSO button, so
+    // keying the focus restore on that button strands the user on <body>.
+    it('re-homes focus on the credential form when a recheck resolves SSO away', async () => {
+      let oidcCalls = 0;
+      vi.mocked(apiFetch).mockImplementation(async (url: string) => {
+        const u = String(url);
+        if (u.includes('/auth/oidc/config')) {
+          oidcCalls += 1;
+          if (oidcCalls === 1) throw new Error('Bad Gateway');
+          return { enabled: false, issuer: null, name: null, enterpriseRequired: true } as never;
+        }
+        if (u.includes('/auth/login-page-config')) return { variant: 'local-loop' } as never;
+        if (u.includes('/auth/registration-policy')) return { allowRegistration: false } as never;
+        throw new Error(`unexpected apiFetch url: ${u}`);
+      });
+
+      renderLoginPage();
+
+      const trigger = await screen.findByRole('button', { name: 'Check again' });
+      trigger.focus();
+      fireEvent.click(trigger);
+
+      // Focus lands in a passive effect, so it can trail the DOM removal by a
+      // tick — assert on the focus itself, not on the unmount that precedes it.
+      await waitFor(() => expect(screen.getByPlaceholderText('Enter username')).toHaveFocus());
+      expect(screen.queryByTestId('sso-probe-failed')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('sso-login-btn')).not.toBeInTheDocument();
     });
 
     it('leaves focus alone when the user has moved to a field mid-recheck', async () => {

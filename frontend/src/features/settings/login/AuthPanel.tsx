@@ -71,17 +71,22 @@ export function AuthPanel({
 
   const ssoButtonRef = useRef<HTMLButtonElement>(null);
 
-  // A successful recheck replaces the trigger the user just pressed with the
-  // SSO button, orphaning focus on <body> — a keyboard user would have to tab
-  // in from the top of the page to reach the control they just recovered. Only
-  // *orphaned* focus is claimed: if the user has moved on to a form field in
-  // the meantime, `document.activeElement` is that field and this leaves it
-  // alone rather than yanking them out of it.
+  // A settled recheck removes the trigger the user just pressed, orphaning
+  // focus on <body>. Both outcomes do it, not just the happy one: SSO turning
+  // out to be genuinely off collapses the whole block, and on CE that is the
+  // *only* thing a recovered backend can report (`app.ts` serves a fixed
+  // `enabled: false` stub in community mode). So this keys off the notice
+  // going away rather than off the SSO button arriving, and re-homes focus on
+  // whichever control replaced it — the SSO button, or else the username field
+  // the user now has to use. Still only *orphaned* focus is claimed: if they
+  // moved to a form field mid-recheck, `document.activeElement` is that field
+  // and this leaves it alone. `probeFailed` is still true while rechecking, so
+  // neither branch fires until an answer arrives.
   useEffect(() => {
-    if (!showSso || !focusSsoOnRecovery) return;
+    if (!focusSsoOnRecovery || probeFailed) return;
     if (document.activeElement && document.activeElement !== document.body) return;
-    ssoButtonRef.current?.focus();
-  }, [showSso, focusSsoOnRecovery]);
+    (ssoButtonRef.current ?? usernameInputRef.current)?.focus();
+  }, [showSso, probeFailed, focusSsoOnRecovery, usernameInputRef]);
 
   const notice = ssoNoticeCopy(serverUnreachable);
 
