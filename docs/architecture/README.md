@@ -40,7 +40,7 @@ Quick reference for what to update when:
 | `sync-service.ts`, sync scheduler, attachment handler | `08-flow-sync.md` |
 | `rag-service.ts`, `llm-ask.ts`, prompt-building, caching | `09-flow-rag-chat.md` |
 | Enterprise loader, license route, license persistence | `10-flow-enterprise-license.md` |
-| `content-converter.ts`, `document-extractor.ts`, XHTML/HTML/Markdown conversion, uploaded-file extraction | `11-content-pipeline.md` |
+| `content-converter.ts`, `document-extractor.ts`, `pages-import.ts`, XHTML/HTML/Markdown conversion, uploaded-file extraction, import size limits | `11-content-pipeline.md` |
 
 If a change spans multiple areas, update every affected diagram. If a diagram
 becomes stale and you are not sure how to update it, flag it in the PR

@@ -16,6 +16,21 @@ import { toast } from 'sonner';
 
 const NEW_PAGE_DRAFT_KEY = 'new-page';
 
+/**
+ * Mirrors `ImportMarkdownSchema`'s cap in
+ * `backend/src/routes/knowledge/pages-import.ts`. Characters, not bytes —
+ * confusing the two is what let an oversize import reach the edge (#1178).
+ */
+const MAX_IMPORT_CHARS = 1_000_000;
+
+/**
+ * Cheap pre-read guard. UTF-8 spends at most three bytes per UTF-16 code unit,
+ * so a file within MAX_IMPORT_CHARS is never larger than ~3 MB; 4 MB leaves
+ * room for that worst case without reading a hundred-megabyte file into memory
+ * just to count its characters.
+ */
+const MAX_IMPORT_BYTES = 4 * 1_000_000;
+
 type ArticleType = 'local' | 'confluence';
 type Visibility = 'private' | 'shared';
 
@@ -198,7 +213,30 @@ export function NewPagePage() {
     if (!file) return;
 
     try {
+      // Size is checked here, in the app's own words, because the round-trip
+      // has no good answer for an oversize file (#1178): the nginx edge
+      // answers first with an HTML 413 whose "Request Entity Too Large" names
+      // the proxy's rule, not this limit, and nothing in it suggests a smaller
+      // file. Bytes first — the cheap check that avoids pulling a huge file
+      // into memory just to count its characters — then characters, which is
+      // the unit the route's schema actually enforces.
+      if (file.size > MAX_IMPORT_BYTES) {
+        toast.error(
+          `This file is ${(file.size / 1_000_000).toFixed(1)} MB. Markdown import accepts files up to `
+          + `${MAX_IMPORT_BYTES / 1_000_000} MB — split it into several pages.`,
+        );
+        return;
+      }
+
       const markdown = await file.text();
+      if (markdown.length > MAX_IMPORT_CHARS) {
+        toast.error(
+          `This file has ${markdown.length.toLocaleString('en-US')} characters. Markdown import accepts `
+          + `up to ${MAX_IMPORT_CHARS.toLocaleString('en-US')} — split it into several pages.`,
+        );
+        return;
+      }
+
       const fileTitle = file.name.replace(/\.(md|markdown)$/i, '');
       const preview = await importMarkdownMutation.mutateAsync({ markdown, title: fileTitle });
 
@@ -228,9 +266,11 @@ export function NewPagePage() {
       toast.success('Markdown loaded — review it, then press Create Page');
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to import markdown');
+    } finally {
+      // Reset file input so the same file can be re-selected — including after
+      // one of the size guards above returned early.
+      if (fileInputRef.current) fileInputRef.current.value = '';
     }
-    // Reset file input so the same file can be re-selected
-    if (fileInputRef.current) fileInputRef.current.value = '';
   }, [importMarkdownMutation, editorInstance]);
 
   // Labels ride along with the create (#1133), so there is exactly one request

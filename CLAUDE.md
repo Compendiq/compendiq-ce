@@ -123,6 +123,15 @@ parent and visibility the user chose. It replaces `POST /api/pages/import`, whic
 inserted the row itself under a hardcoded `space_key = '_standalone'`. Don't reintroduce
 a client-side Markdown→HTML path: `markdownToHtml` has no frontend counterpart.
 
+Its size limits (#1178) are a **ladder in two different units**, and every rung must clear
+the one below: nginx `client_max_body_size 30m` → the route's `bodyLimit` 8 MiB →
+`ImportMarkdownSchema`'s 1,000,000 **characters** → the client precheck in `NewPagePage`.
+1,000,000 characters is up to 3 MB of UTF-8 and ~6 MB of JSON-escaped request body, so an
+edge limit set to the same *number* as the schema still refuses files the schema accepts —
+which is what produced an HTML 413 from nginx naming a limit the app had never heard of.
+`parseFrontMatter` tolerates CRLF and a leading BOM because failing to match is **silent**:
+the `---` block renders as body and the import reports success with title and labels gone.
+
 **Uploaded documents** (#1131) enter through `core/services/document-extractor.ts`, behind
 `POST /api/llm/extract-document`: pdf (`unpdf`), docx (`mammoth` → `htmlToMarkdown`), odt
 (`content.xml` walk), rtf (control-word strip), md/txt (read directly). The format is decided

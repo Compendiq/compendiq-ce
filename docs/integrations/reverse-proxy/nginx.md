@@ -124,6 +124,8 @@ nginx is buffering the SSE response. Confirm `proxy_buffering off;` is inside th
 **3. Uploads larger than 1 MB (default nginx body cap) return 413.**
 Raise `client_max_body_size 30m;` (or more) in the `server` block. 30 MB is enough for a 25 MB draw.io diagram + JSON overhead; tune higher if your users paste larger images.
 
+There are **two** nginx layers in this topology: yours, and the one inside the Compendiq frontend container. The bundled edge sets `client_max_body_size 30m` on `/api/` (`frontend/nginx.conf`), so raising only your outer proxy is enough — but if you raise yours *above* 30 MB, the inner one becomes the new cap and answers with its own HTML 413. Releases before this setting existed capped every `/api/` request at nginx's 1 MB default regardless of what the outer proxy allowed; upgrade the frontend image if a 30m outer proxy still 413s.
+
 **4. Audit log shows the nginx loopback IP instead of the real client IP.**
 `trustProxy` is already enabled in Compendiq, so the issue is usually nginx not forwarding the real IP. Confirm `X-Forwarded-For` is set in the `proxy_set_header` list above. Restart Compendiq after the nginx reload if the log keeps showing `127.0.0.1`.
 
