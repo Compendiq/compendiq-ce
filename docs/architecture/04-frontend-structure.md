@@ -178,7 +178,8 @@ flowchart TB
   Improve also re-checks `isBusy` **inside** `runChip` rather than only on the
   chip's `disabled`: `DockDiffCard`'s "Re-run Improve" reaches it directly and is
   not disabled while an attachment stages. (#1154 listed a second such caller,
-  the seed effect that ran Improve on open; #1176 deleted it — see below.)
+  the seed effect that ran Improve on open; #1176 deleted it — see "Opening the
+  assistant runs nothing" under *Article route panels* above.)
 - Both `isExtracting` and `isPreparing` are **depth counters**, not booleans. The
   shared drop target accepts a second file mid-flight, and a boolean would clear
   on the first `finally` — re-enabling the trigger and unblocking Send while the

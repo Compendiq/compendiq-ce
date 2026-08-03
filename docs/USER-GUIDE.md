@@ -123,13 +123,10 @@ AI can analyze and improve existing articles:
 4. Click the **Improve** chip.
 5. Review the proposed changes in the diff card and **Apply** or **Skip** them.
 
-To pick a specific improvement mode, use the **AI** panel's Improve view (`G A`):
-
-- **Grammar** -- fix spelling, grammar, and punctuation
-- **Structure** -- improve headings, sections, and organization
-- **Clarity** -- simplify language and improve readability
-- **Technical accuracy** -- verify technical claims and add corrections
-- **Completeness** -- identify and fill gaps in the content
+Improve rewrites for grammar, spelling and punctuation by default. To ask for something
+else -- restructuring, simpler language, filling gaps, checking technical claims -- say so
+in the prompt box before clicking **Improve**; whatever you type is sent as extra
+instructions with the request.
 
 ### Generate an Article
 
