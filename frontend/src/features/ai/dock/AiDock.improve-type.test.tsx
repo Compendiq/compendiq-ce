@@ -55,8 +55,21 @@ function sse(...chunks: Array<Record<string, unknown>>) {
   })();
 }
 
+/**
+ * Whether `/ollama/models` is answering. Flipped mid-test — with a cache
+ * invalidation to make the provider ask again — so the models-error state can be
+ * entered and left while the dock stays mounted. The mock is still the only
+ * thing being controlled; the invalidation just makes the component re-ask.
+ */
+let modelsFail = false;
+let queryClient: QueryClient;
+
+function refetchModels() {
+  void queryClient.invalidateQueries({ queryKey: ['llm', 'models', 'chat'] });
+}
+
 function renderDock() {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
       <LazyMotion features={domAnimation}>
@@ -95,12 +108,15 @@ async function chooseType(type: string) {
 describe('AiDock improvement type (#1177)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    modelsFail = false;
     useAiDockStore.setState({ open: false });
     useUiStore.setState({ aiDockWidth: 420 });
     window.innerWidth = 1400;
     apiFetchMock.mockImplementation((path: string) => {
       if (path === '/pages/page-1') return Promise.resolve(PAGE);
-      if (path.startsWith('/ollama/models')) return Promise.resolve([{ name: 'llama3' }]);
+      if (path.startsWith('/ollama/models')) {
+        return modelsFail ? Promise.reject(new Error('provider down')) : Promise.resolve([{ name: 'llama3' }]);
+      }
       if (path.startsWith('/llm/usecase-default')) return Promise.resolve({ model: 'llama3' });
       if (path === '/llm/conversations') return Promise.resolve([]);
       if (path === '/embeddings/status') return Promise.resolve({ total: 1, embedded: 1, isProcessing: false });
@@ -243,19 +259,31 @@ describe('AiDock improvement type (#1177)', () => {
   });
 
   // The panel root closes the whole assistant on Escape. Without a stop, tidying
-  // the drawer away would take the conversation with it.
-  it('gives Escape to the drawer first, and hands focus back to the caret', async () => {
+  // the drawer away takes the conversation with it.
+  //
+  // This is where the control was actually broken once, and where its first test
+  // lied about it: the handler sat on the drawer alone, and jsdom's
+  // `fireEvent.click` leaves focus on <body> — so dispatching Escape at the
+  // drawer exercised a state the click path never reaches. Every real browser
+  // focuses a button when you click it, which puts focus on the *caret*, a
+  // sibling of the drawer, and the key went straight past to the panel root.
+  // The explicit `.focus()` below is not ceremony; it is the browser behaviour
+  // jsdom omits, and without it this test passes against the bug.
+  it('gives Escape to the drawer when focus is on the caret that opened it', async () => {
     renderDock();
     await openAndSettle();
 
     fireEvent.click(toggle());
-    const drawer = await screen.findByTestId('ai-dock-improve-types');
+    await screen.findByTestId('ai-dock-improve-types');
+    act(() => toggle().focus());
+    expect(document.activeElement).toBe(toggle());
 
-    fireEvent.keyDown(drawer, { key: 'Escape' });
+    fireEvent.keyDown(toggle(), { key: 'Escape' });
 
     await waitFor(() => {
       expect(screen.queryByTestId('ai-dock-improve-types')).not.toBeInTheDocument();
     });
+    // The assistant — and the conversation in it — survives.
     expect(screen.getByTestId('ai-dock')).toBeInTheDocument();
     expect(document.activeElement).toBe(toggle());
 
@@ -264,6 +292,67 @@ describe('AiDock improvement type (#1177)', () => {
     await waitFor(() => {
       expect(screen.queryByTestId('ai-dock')).not.toBeInTheDocument();
     });
+  });
+
+  it('gives Escape to the drawer from inside it too, and hands focus back', async () => {
+    renderDock();
+    await openAndSettle();
+
+    fireEvent.click(toggle());
+    const option = await screen.findByTestId('ai-dock-improve-type-clarity');
+    act(() => option.focus());
+
+    fireEvent.keyDown(option, { key: 'Escape' });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('ai-dock-improve-types')).not.toBeInTheDocument();
+    });
+    expect(screen.getByTestId('ai-dock')).toBeInTheDocument();
+    // Focus cannot be left on an element that just unmounted.
+    expect(document.activeElement).toBe(toggle());
+  });
+
+  // The handler is mounted on the split chip permanently, so it has to be inert
+  // while the drawer is closed rather than swallowing the dock's own Escape.
+  it('leaves Escape to the assistant while the drawer is closed', async () => {
+    renderDock();
+    await openAndSettle();
+
+    const improve = screen.getByTestId('ai-dock-chip-improve');
+    act(() => improve.focus());
+    fireEvent.keyDown(improve, { key: 'Escape' });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('ai-dock')).not.toBeInTheDocument();
+    });
+  });
+
+  // The retry chip replaces the whole row when the model list fails, taking the
+  // caret with it. If the open state outlived that, a later recovery would bring
+  // the drawer back unasked — nobody reopened it, and the row it costs height in
+  // is the one the disclosure exists to keep short.
+  it('does not reopen itself when the model list fails and then recovers', async () => {
+    renderDock();
+    await openAndSettle();
+    fireEvent.click(toggle());
+    expect(await screen.findByTestId('ai-dock-improve-types')).toBeInTheDocument();
+
+    modelsFail = true;
+    act(refetchModels);
+
+    await waitFor(() => {
+      expect(screen.getByText('Models unavailable — retry')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('ai-dock-improve-types')).not.toBeInTheDocument();
+
+    modelsFail = false;
+    act(refetchModels);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('ai-dock-chip-improve')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('ai-dock-improve-types')).not.toBeInTheDocument();
+    expect(toggle()).toHaveAttribute('aria-expanded', 'false');
   });
 
   it('goes quiet with the chip it belongs to while a stream is in flight', async () => {

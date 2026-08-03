@@ -1,5 +1,5 @@
 import { Wand2, ListCollapse, GitBranch, ShieldCheck } from 'lucide-react';
-import { DEFAULT_IMPROVEMENT_TYPE, type ImprovementType } from '../improvement-types';
+import { type ImprovementType } from '../improvement-types';
 
 export type DockChipId = 'improve' | 'summarize' | 'diagram' | 'quality';
 
@@ -7,8 +7,28 @@ export interface DockChip {
   id: DockChipId;
   label: string;
   Icon: typeof Wand2;
-  /** Tooltip. Names what the chip will do, in the product's own language. */
-  hint: string;
+  /**
+   * Tooltip. Names what the chip will do, in the product's own language.
+   *
+   * Absent for Improve, whose meaning is not constant: the same press runs a
+   * spell-check or a structural rewrite depending on the selected pass, so
+   * `DockPanel` composes its tooltip with `improveChipHint` from the live
+   * selection. A constant here would be a second, permanently stale answer
+   * sitting beside the real one (#1177).
+   */
+  hint?: string;
+}
+
+/**
+ * The Improve chip's tooltip (#1177).
+ *
+ * Alone among the four, this chip is parameterised, so its tooltip names the
+ * pass rather than describing "improve" in the abstract. The chip's own label
+ * spells the type out only when it is not the default; this is where the rest
+ * of the answer is.
+ */
+export function improveChipHint(type: ImprovementType): string {
+  return `Rewrite this page with a ${type} pass. Anything typed below is used as extra instructions.`;
 }
 
 /**
@@ -22,28 +42,8 @@ export interface DockChip {
  * rather than acting on the open one, and its upload zone and long-form prompt
  * do not fit a 420px column. It stays on `/ai`.
  */
-/**
- * The Improve chip's tooltip (#1177).
- *
- * Alone among the four, this chip is parameterised: the same press runs a
- * spell-check or a structural rewrite depending on a setting that lives one
- * disclosure away. So the tooltip names the pass rather than describing
- * "improve" in the abstract — the chip's own label only spells the type out
- * when it is not the default, and this is where the rest of the answer is.
- */
-export function improveChipHint(type: ImprovementType): string {
-  return `Rewrite this page with a ${type} pass. Anything typed below is used as extra instructions.`;
-}
-
 export const DOCK_CHIPS: readonly DockChip[] = [
-  {
-    id: 'improve',
-    label: 'Improve',
-    Icon: Wand2,
-    // The default reading. `DockPanel` recomputes it from the live selection —
-    // this is what the chip says before anyone has touched the picker.
-    hint: improveChipHint(DEFAULT_IMPROVEMENT_TYPE),
-  },
+  { id: 'improve', label: 'Improve', Icon: Wand2 },
   { id: 'summarize', label: 'Summarize', Icon: ListCollapse, hint: 'Summarize this page.' },
   { id: 'diagram', label: 'Diagram', Icon: GitBranch, hint: 'Draw a diagram of this page.' },
   { id: 'quality', label: 'Quality', Icon: ShieldCheck, hint: 'Score this page across five quality dimensions.' },

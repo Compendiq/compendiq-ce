@@ -12,8 +12,11 @@ describe('dock chips (#1126)', () => {
 
   it('gives every chip a hint that names what it will do', () => {
     for (const chip of DOCK_CHIPS) {
-      expect(chip.hint.length).toBeGreaterThan(0);
-      expect(chip.hint.endsWith('.')).toBe(true);
+      // Improve's is composed from the live selection rather than stored — see
+      // the block below.
+      const hint = chip.id === 'improve' ? improveChipHint('grammar') : chip.hint;
+      expect(hint, `${chip.id} has no hint`).toBeTruthy();
+      expect(hint!.endsWith('.')).toBe(true);
     }
   });
 
@@ -30,9 +33,13 @@ describe('dock chips (#1126)', () => {
       expect(improveChipHint('clarity')).toContain('extra instructions');
     });
 
-    it('is what the chip reads before anyone touches the picker', () => {
-      const improve = DOCK_CHIPS.find((c) => c.id === 'improve');
-      expect(improve?.hint).toBe(improveChipHint('grammar'));
+    it('is the chip’s only tooltip — the table stores none for it', () => {
+      // A stored constant would be a second answer that no surface reads and
+      // that no selection can keep current. `DockPanel` composes this one.
+      expect(DOCK_CHIPS.find((c) => c.id === 'improve')?.hint).toBeUndefined();
+      for (const chip of DOCK_CHIPS) {
+        if (chip.id !== 'improve') expect(chip.hint).toBeTruthy();
+      }
     });
   });
 

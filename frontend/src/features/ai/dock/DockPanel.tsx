@@ -51,6 +51,31 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
     typesToggleRef.current?.focus();
   }, []);
 
+  // While the drawer is open, Escape belongs to the drawer: fold it away, hand
+  // focus back to the caret, and let the *next* Escape close the assistant.
+  //
+  // Mounted on the split chip as well as on the drawer, because focus is
+  // usually on neither's contents but on the caret itself — clicking a button
+  // focuses it in every real browser (jsdom does not, which is why the first
+  // version of this passed its test while failing in Chrome). A handler that
+  // only listens inside the drawer misses the commonest route by construction,
+  // and the panel root's Escape wins: the user presses it to tidy away a drawer
+  // and loses the whole conversation.
+  const handleTypesEscape = useCallback((e: React.KeyboardEvent) => {
+    if (e.key !== 'Escape' || !typesOpen) return;
+    e.stopPropagation();
+    collapseTypes();
+  }, [typesOpen, collapseTypes]);
+
+  // The retry chip replaces the whole row when the model list fails, taking the
+  // caret with it. Drop the open state at the same time, or a later recovery
+  // brings the drawer back unasked — the one thing the comment above promises
+  // it will not do. The render guard below still stands: it covers the frame
+  // between the failure and this effect.
+  useEffect(() => {
+    if (modelsError) setTypesOpen(false);
+  }, [modelsError]);
+
   // Source material attached in the composer (#1131, #1154). Dock-local rather
   // than AiContext state: it is material for the *next* action, not part of the
   // conversation, and nothing outside this panel reads it.
@@ -291,9 +316,15 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
                       "grammar" on every dock in the product would cost the row's
                       one spare line to repeat the documented default; saying
                       nothing after the user picked `structure` would leave a
-                      chip that rewrites a page differently than it reads. Steel
-                      is the interaction accent, and it is the same steel the
-                      selected option carries in the drawer below. */}
+                      chip that rewrites a page differently than it reads.
+
+                      Steel marks the choice here and in the drawer, but by
+                      different means, because the substrate differs: this is
+                      bare text on the panel, so it takes `--color-primary-ink`,
+                      the system's steel-as-a-text-colour token. The selected
+                      option down there sits on a steel tint already and keeps
+                      the neutral `text-action` — steel ink on a steel wash
+                      loses the contrast the token exists to guarantee. */}
                   {isImprove && improvementType !== DEFAULT_IMPROVEMENT_TYPE && (
                     <span className="font-medium text-primary-ink" data-testid="ai-dock-improve-type-label">
                       · {improvementType}
@@ -304,8 +335,10 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
               if (!isImprove) return chip;
               return (
                 // One flex item, so the row's `gap-1.5` never opens a seam
-                // between the two halves and wrapping never splits them.
-                <div key={id} className="flex">
+                // between the two halves and wrapping never splits them — and
+                // one Escape handler, so the drawer absorbs the key from either
+                // half rather than only from its own contents.
+                <div key={id} className="flex" onKeyDown={handleTypesEscape}>
                   {chip}
                   <button
                     ref={typesToggleRef}
@@ -350,7 +383,7 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
             value={improvementType}
             onChange={setImprovementType}
             disabled={isStreaming || !page || !model || isBusy}
-            onDismiss={collapseTypes}
+            onKeyDown={handleTypesEscape}
           />
         )}
 
@@ -455,7 +488,11 @@ interface ImprovementTypeDrawerProps {
   value: ImprovementType;
   onChange: (value: ImprovementType) => void;
   disabled: boolean;
-  onDismiss: () => void;
+  /**
+   * Escape handling, owned by `DockPanel` and mounted on the split chip too —
+   * the drawer is only one of the two places focus can be while it is open.
+   */
+  onKeyDown: (e: React.KeyboardEvent) => void;
 }
 
 /**
@@ -474,23 +511,20 @@ interface ImprovementTypeDrawerProps {
  * brings its own `forced-colors: active` treatment. The quiet `--color-border`
  * appears once, around the drawer itself, because that is a grouping surface
  * rather than something you press.
+ *
+ * `nm-pill-active text-action` is the pairing every selected pill in the app
+ * uses (`SidebarTreeView`, `DndLocalSpaceTree`, `ArticleRightPane`,
+ * `CommentsSidebar`). The steel is the tint and the border; the label stays
+ * neutral, because `nm-pill-active`'s own `color: var(--color-primary)` would
+ * put steel ink on a steel wash.
  */
-function ImprovementTypeDrawer({ id, value, onChange, disabled, onDismiss }: ImprovementTypeDrawerProps) {
+function ImprovementTypeDrawer({ id, value, onChange, disabled, onKeyDown }: ImprovementTypeDrawerProps) {
   return (
     <div
       id={id}
       role="group"
       aria-label="Improvement type"
-      onKeyDown={(e) => {
-        if (e.key !== 'Escape') return;
-        // The panel root closes the whole assistant on Escape. While this
-        // drawer is open, Escape belongs to it: fold it away and hand focus back
-        // to the caret, and let the next Escape close the dock. Without the stop
-        // the two happen at once and the user loses the panel they were only
-        // trying to tidy.
-        e.stopPropagation();
-        onDismiss();
-      }}
+      onKeyDown={onKeyDown}
       className="mb-2 rounded-lg border border-border bg-foreground/[0.03] px-2 py-2"
       data-testid="ai-dock-improve-types"
     >
