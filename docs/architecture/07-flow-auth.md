@@ -253,11 +253,13 @@ upstream, so a backend that is down or restarting returns 502 for this route —
 and swallowing that into a hidden button removes the only sign-in path on an
 SSO-only deployment while looking exactly like the button having been deleted.
 
-**Check again** re-runs both probes, not just the SSO one — the presentation
-config carries the layout variant and the edition badge, and a recovered
-backend that only restored the button would leave the header stale. Both
-probes drop responses from a superseded generation, so a slow answer landing
-after a newer one cannot undo it in either direction. No reload is needed.
+**Check again** re-runs all three of the page's probes, not just the SSO one —
+they died with the same upstream. The presentation config carries the layout
+variant and the edition badge; the registration policy fails closed, so a
+deployment that allows sign-up would otherwise keep hiding its own "Create
+one" link until the user reloaded. Each probe drops responses from a
+superseded generation, so a slow answer landing after a newer one cannot undo
+it in either direction. No reload is needed.
 
 ### Why the notice is built the way it is
 
@@ -272,10 +274,20 @@ None of them are stylistic.
   control is blurred by the browser and leaves the tab order — dropping the
   focus of the user who just pressed it, which is the failure above by another
   route. The click handler is detached instead.
-- **Focus restore is scoped to focus the panel itself orphaned.** A recovered
-  recheck replaces the trigger with the SSO button, so the panel claims focus
-  — but only when `document.activeElement` is still `<body>`. A user who moved
-  to a form field meanwhile keeps it.
+- **Focus restore keys off the notice going away, not the SSO button
+  arriving.** Those are not the same condition: a recheck that settles on "SSO
+  is genuinely off" also collapses the notice, and on CE that is the *only*
+  outcome a recovered backend can produce (`app.ts` serves a fixed
+  `enabled: false` stub in community mode). Focus moves to whichever control
+  replaced the trigger — the SSO button, or else the username field — and only
+  when `document.activeElement` is still `<body>`, so a user who moved to a
+  form field meanwhile keeps it.
+- **Nothing is announced when the notice resolves.** The region speaks the
+  failure once; a "recovered" announcement would contradict the rule above for
+  no gain. During a recheck the focused trigger is itself the feedback surface
+  (its accessible name becomes "Checking…" while `aria-busy` and
+  `aria-disabled` flip on the node the screen-reader cursor is on), and the
+  focus move is what confirms the outcome.
 - **The recheck flag and the live region live in `LoginPage`, not the panel.**
   `ChangeDeskLogin` and `LocalLoopLogin` are different component types, so the
   first successful presentation-config read *remounts the whole panel*. Anything
