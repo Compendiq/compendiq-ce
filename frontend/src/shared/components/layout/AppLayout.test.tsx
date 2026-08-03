@@ -97,7 +97,7 @@ describe('AppLayout', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     useCommandPaletteStore.setState({ isOpen: false });
-    useAiDockStore.setState({ open: false, seed: null });
+    useAiDockStore.setState({ open: false });
     useUiStore.setState({
       treeSidebarCollapsed: false,
       articleSidebarCollapsed: false,
@@ -557,7 +557,7 @@ describe('AppLayout', () => {
     }
 
     it('closes the dock rather than leaving the key dead', () => {
-      useAiDockStore.setState({ open: true, seed: null });
+      useAiDockStore.setState({ open: true });
       const dotShortcut = captureShortcuts('/pages/page-1');
 
       act(() => dotShortcut().action());
@@ -575,7 +575,7 @@ describe('AppLayout', () => {
     });
 
     it('leaves the pane toggle alone off article routes', () => {
-      useAiDockStore.setState({ open: true, seed: null });
+      useAiDockStore.setState({ open: true });
       const dotShortcut = captureShortcuts('/');
 
       act(() => dotShortcut().action());

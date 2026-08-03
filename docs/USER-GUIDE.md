@@ -116,14 +116,17 @@ The AI assistant can answer questions, improve content, and help with writing:
 AI can analyze and improve existing articles:
 
 1. Open a page.
-2. Click **AI Improve** (or press `Alt+I`).
-3. Choose an improvement mode:
-   - **Grammar** -- fix spelling, grammar, and punctuation
-   - **Structure** -- improve headings, sections, and organization
-   - **Clarity** -- simplify language and improve readability
-   - **Technical accuracy** -- verify technical claims and add corrections
-   - **Completeness** -- identify and fill gaps in the content
-4. Review the suggested changes and apply them.
+2. Click **AI Assistant** (or press `Alt+I`) to open the assistant beside the article.
+   Opening it starts nothing.
+3. Optionally type instructions in the prompt box -- they are sent with the request --
+   and attach a document or image as reference material.
+4. Click the **Improve** chip.
+5. Review the proposed changes in the diff card and **Apply** or **Skip** them.
+
+Improve rewrites for grammar, spelling and punctuation by default. To ask for something
+else -- restructuring, simpler language, filling gaps, checking technical claims -- say so
+in the prompt box before clicking **Improve**; whatever you type is sent as extra
+instructions with the request.
 
 ### Generate an Article
 
@@ -264,7 +267,7 @@ Press `?` or `Ctrl+/` to open the keyboard shortcuts modal. Key shortcuts:
 | `Alt+N` | New Page |
 | `Alt+P` | Pin/Unpin page |
 | `Alt+Shift+D` | Delete page |
-| `Alt+I` | AI Improve |
+| `Alt+I` | AI Assistant |
 
 ### Editor
 

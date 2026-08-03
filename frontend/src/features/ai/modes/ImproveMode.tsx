@@ -187,7 +187,9 @@ export function ImproveModeInput() {
     // slots by #1154).
     if (isStreaming || isBusy) return;
     if (!page) {
-      toast.error('No page selected. Open a page first, then click "AI Improve".');
+      // #1176 renamed the article-pane control this used to name: it opens the
+      // assistant now, and Improve happens at the chip inside it.
+      toast.error('No page selected. Open a page first, then open the AI Assistant.');
       return;
     }
     if (!model) {
@@ -357,5 +359,5 @@ export const IMPROVE_EMPTY_TITLE = 'Select a page and improvement type';
 export function improveEmptySubtitle(page: { title: string } | undefined): string {
   return page
     ? `Ready to improve: ${page.title}`
-    : 'Navigate to a page and click "AI Improve" to get started';
+    : 'Navigate to a page and open the AI Assistant to get started';
 }

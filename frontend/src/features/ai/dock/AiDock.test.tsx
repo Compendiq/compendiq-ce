@@ -57,7 +57,7 @@ function renderDock(initialEntry = '/pages/page-1') {
       <LazyMotion features={domAnimation}>
         <MemoryRouter initialEntries={[initialEntry]}>
           <AiProvider>
-            <button data-testid="dock-trigger">AI Improve</button>
+            <button data-testid="dock-trigger">AI Assistant</button>
             <Routes>
               <Route path="/pages/:id" element={<div>article</div>} />
               <Route path="/ai" element={<div>ai page</div>} />
@@ -71,9 +71,9 @@ function renderDock(initialEntry = '/pages/page-1') {
 }
 
 /** Open the dock and wait until it has a model, i.e. until the chips are live. */
-async function openAndSettle(seed?: 'improve') {
+async function openAndSettle() {
   act(() => {
-    useAiDockStore.getState().openDock(seed);
+    useAiDockStore.getState().openDock();
   });
   await waitFor(() => {
     expect(screen.getByTestId('ai-dock-send')).toBeInTheDocument();
@@ -91,7 +91,7 @@ describe('AiDock (#1126)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     modelsFail = false;
-    useAiDockStore.setState({ open: false, seed: null, seedPageId: null });
+    useAiDockStore.setState({ open: false });
     useUiStore.setState({ aiDockWidth: 420 });
     window.innerWidth = 1400;
     apiFetchMock.mockImplementation((path: string) => {
@@ -108,7 +108,7 @@ describe('AiDock (#1126)', () => {
   });
 
   afterEach(() => {
-    useAiDockStore.setState({ open: false, seed: null, seedPageId: null });
+    useAiDockStore.setState({ open: false });
   });
 
   it('renders nothing until it is opened', () => {
@@ -145,7 +145,7 @@ describe('AiDock (#1126)', () => {
   });
 
   // Two of the three real triggers are DESTROYED by opening the dock: the
-  // expanded pane's "AI Improve" row unmounts when the pane is forced to its
+  // expanded pane's "AI Assistant" row unmounts when the pane is forced to its
   // rail, and below 1100px the whole pane unmounts. Restoring
   // `document.activeElement` naively hands focus to <body> in both cases.
   describe('focus restore when opening destroyed the trigger', () => {
@@ -177,14 +177,14 @@ describe('AiDock (#1126)', () => {
     function RebuiltTrigger({ hasPane }: { hasPane: boolean }) {
       const open = useAiDockStore((s) => s.open);
       const openDock = useAiDockStore((s) => s.openDock);
-      if (open) return hasPane ? <div><button data-ai-improve-trigger>rail improve</button></div> : null;
-      return <button data-ai-improve-trigger onClick={() => openDock()}>AI Improve</button>;
+      if (open) return hasPane ? <div><button data-ai-assistant-trigger>rail assistant</button></div> : null;
+      return <button data-ai-assistant-trigger onClick={() => openDock()}>AI Assistant</button>;
     }
 
-    it('hands focus to the improve trigger the article pane renders after closing', async () => {
+    it('hands focus to the assistant trigger the article pane renders after closing', async () => {
       renderWithTrigger(<RebuiltTrigger hasPane />);
 
-      const trigger = screen.getByText('AI Improve');
+      const trigger = screen.getByText('AI Assistant');
       act(() => trigger.focus());
       fireEvent.click(trigger);
       await waitFor(() => expect(screen.getByTestId('ai-dock-input')).toBeInTheDocument());
@@ -196,7 +196,7 @@ describe('AiDock (#1126)', () => {
 
       await waitFor(() => {
         expect(screen.queryByTestId('ai-dock')).not.toBeInTheDocument();
-        expect(document.activeElement).toBe(document.querySelector('[data-ai-improve-trigger]'));
+        expect(document.activeElement).toBe(document.querySelector('[data-ai-assistant-trigger]'));
       });
       expect(document.activeElement).not.toBe(document.body);
     });
@@ -205,7 +205,7 @@ describe('AiDock (#1126)', () => {
       // Landing on <body> would strand the keyboard at the top of the document.
       renderWithTrigger(<RebuiltTrigger hasPane={false} />);
 
-      const trigger = screen.getByText('AI Improve');
+      const trigger = screen.getByText('AI Assistant');
       act(() => trigger.focus());
       fireEvent.click(trigger);
       await waitFor(() => expect(screen.getByTestId('ai-dock-input')).toBeInTheDocument());
@@ -221,32 +221,25 @@ describe('AiDock (#1126)', () => {
     });
   });
 
-  // The dock waits for `page` before running a seeded action, and that wait is
-  // unbounded — a slow or failed page query leaves time to navigate away.
-  it('drops a seed whose page is no longer the one in view', async () => {
+  // #1176: opening the assistant used to fire a full-page rewrite on the spot.
+  // Nothing about the click said which of the five improvement types to use, the
+  // dock has no way to stop a run once it starts, and closing it does not abort
+  // one — so the only safe thing for an *opening* gesture to do is open.
+  it('sends nothing when it opens, and improves only once the chip is pressed', async () => {
     renderDock();
+    await openAndSettle();
 
-    act(() => {
-      // Opened for page-2 while the app is showing page-1.
-      useAiDockStore.getState().openDock('improve', 'page-2');
-    });
-    await waitFor(() => expect(screen.getByTestId('ai-dock-chip-improve')).not.toBeDisabled());
-
-    // No unrequested inference, and nothing written into page-1's thread.
     expect(streamSSEMock).not.toHaveBeenCalled();
     expect(screen.getByTestId('ai-dock-empty')).toBeInTheDocument();
-    expect(useAiDockStore.getState().seed).toBeNull();
-  });
 
-  it('still runs a seed for the page it was requested on', async () => {
-    renderDock();
-
-    act(() => {
-      useAiDockStore.getState().openDock('improve', 'page-1');
-    });
+    fireEvent.click(screen.getByTestId('ai-dock-chip-improve'));
 
     await waitFor(() => {
-      expect(streamSSEMock).toHaveBeenCalledWith('/llm/improve', expect.anything(), expect.anything());
+      expect(streamSSEMock).toHaveBeenCalledWith(
+        '/llm/improve',
+        expect.objectContaining({ pageId: 'page-1' }),
+        expect.anything(),
+      );
     });
   });
 
@@ -324,20 +317,6 @@ describe('AiDock (#1126)', () => {
 
     await waitFor(() => expect(streamSSEMock).toHaveBeenCalled());
     expect(composer().value).toBe('a question for later');
-  });
-
-  it('runs the seeded Improve prompt when opened from an "AI Improve" trigger', async () => {
-    renderDock();
-    await openAndSettle('improve');
-
-    await waitFor(() => {
-      expect(streamSSEMock).toHaveBeenCalledWith(
-        '/llm/improve',
-        expect.objectContaining({ pageId: 'page-1', type: 'grammar' }),
-        expect.anything(),
-      );
-    });
-    expect(useAiDockStore.getState().seed).toBeNull();
   });
 
   it('offers a retry instead of chips when the model list cannot be loaded', async () => {

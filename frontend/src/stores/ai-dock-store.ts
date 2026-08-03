@@ -1,13 +1,5 @@
 import { create } from 'zustand';
 
-/**
- * A prompt the dock should run the moment it opens (#1126). "AI Improve" in the
- * article rail, in the expanded pane, and on Alt+I all used to navigate away to
- * `/ai?mode=improve&pageId=…`; they now open the dock with `'improve'` seeded
- * instead, which is the whole point of the dock — the document stays on screen.
- */
-export type DockSeed = 'improve';
-
 interface AiDockState {
   /**
    * Deliberately NOT persisted. The dock forces the article right pane into its
@@ -17,33 +9,23 @@ interface AiDockState {
    * — it lives in `ui-store` as `aiDockWidth`.
    */
   open: boolean;
-  /** Consumed once by the dock on open, then cleared. */
-  seed: DockSeed | null;
   /**
-   * The page the seed was requested for.
+   * Opens the assistant, and only opens it.
    *
-   * The dock waits for `page` to resolve before running a seeded action, and
-   * that wait is unbounded — a slow or failed page query (a trashed page, a bad
-   * link) gives the user time to navigate somewhere else with the dock still
-   * open. Without this, the seed would fire against whatever document loaded
-   * next: an inference nobody asked for, a user turn written into the wrong
-   * thread, and a diff card proposing to rewrite a page they never selected.
+   * #1126 gave this a `seed` — a prompt the dock ran the moment a model and the
+   * page resolved — so that "AI Improve" could stop navigating to
+   * `/ai?mode=improve&pageId=…` and act beside the document instead. #1176
+   * removed it: the click that opened the panel also started a full-page rewrite,
+   * of an improvement type the user never picked, that the dock offers no way to
+   * stop and that closing the panel does not abort. An opening gesture opens.
+   * The request now waits for a chip press or a typed question.
    */
-  seedPageId: string | null;
-  openDock: (seed?: DockSeed, seedPageId?: string | null) => void;
+  openDock: () => void;
   closeDock: () => void;
-  consumeSeed: () => void;
 }
 
 export const useAiDockStore = create<AiDockState>()((set) => ({
   open: false,
-  seed: null,
-  seedPageId: null,
-  openDock: (seed, seedPageId) => set({
-    open: true,
-    seed: seed ?? null,
-    seedPageId: seed ? seedPageId ?? null : null,
-  }),
-  closeDock: () => set({ open: false, seed: null, seedPageId: null }),
-  consumeSeed: () => set({ seed: null, seedPageId: null }),
+  openDock: () => set({ open: true }),
+  closeDock: () => set({ open: false }),
 }));

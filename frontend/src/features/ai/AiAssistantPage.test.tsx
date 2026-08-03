@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
@@ -393,7 +393,17 @@ describe('AiAssistantPage', () => {
     it('explains where the mode went instead of leaving the tablist looking broken', () => {
       render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve']) });
 
-      expect(screen.getByTestId('ai-legacy-mode-notice')).toBeInTheDocument();
+      const notice = screen.getByTestId('ai-legacy-mode-notice');
+      expect(notice).toBeInTheDocument();
+
+      // The notice sends the reader to a keyboard shortcut, and `ShortcutHint`
+      // renders NOTHING for a registry id it cannot find. #1176 renamed this one
+      // (`ai-improve` → `ai-assistant`), so asserting only that the notice
+      // exists would still pass with the badge silently blank — the sentence
+      // would tell the user to "press" nothing at all. Assert the key reached
+      // the screen. Alt prints as "Alt" off macOS and ⌥ on it, and `isMac()`
+      // reads a real navigator here.
+      expect(within(notice).getByText(/(Alt\+|⌥)I/)).toBeInTheDocument();
     });
 
     it('enables improve button when page is loaded and model is available', async () => {

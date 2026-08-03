@@ -352,7 +352,7 @@ describe('PageViewPage', () => {
     );
     localStorage.clear();
     Element.prototype.scrollTo = vi.fn();
-    useAiDockStore.setState({ open: false, seed: null });
+    useAiDockStore.setState({ open: false });
 
     useAuthStore.getState().setAuth('token', {
       id: '1',
@@ -405,8 +405,8 @@ describe('PageViewPage', () => {
     render(<PageViewPage />, { wrapper: createWrapper() });
 
     expect(screen.getByText('Edit')).toBeInTheDocument();
-    // AI Improve, Pin, Confluence, Delete are now in ArticleRightPane
-    expect(screen.queryByText('AI Improve')).not.toBeInTheDocument();
+    // AI Assistant, Pin, Confluence, Delete are now in ArticleRightPane
+    expect(screen.queryByText('AI Assistant')).not.toBeInTheDocument();
     expect(screen.queryByText('Delete')).not.toBeInTheDocument();
   });
 
@@ -798,25 +798,28 @@ describe('PageViewPage', () => {
     expect(mockDeleteMutateAsync).not.toHaveBeenCalled();
   });
 
-  it('registers an Alt+I shortcut for AI Improve', () => {
+  it('registers an Alt+I shortcut for the AI assistant', () => {
     render(<PageViewPage />, { wrapper: createWrapper() });
     const aiShortcut = capturedShortcuts.find((s) => s.key === 'Alt+I');
     expect(aiShortcut).toBeDefined();
     expect(aiShortcut!.alt).toBe(true);
     expect(aiShortcut!.keys).toContain('i');
     expect(aiShortcut!.category).toBe('actions');
+    // The shortcut sheet reads this back to the user, so it has to describe
+    // what the key does now: open the assistant, not run an improvement.
+    expect(aiShortcut!.description).toBe('AI Assistant');
   });
 
-  // #1126: the third of three "AI Improve" call sites. All of them used to
-  // navigate to /ai?mode=improve&pageId=…, which took the document off screen
-  // in order to operate on it. They now open the dock beside it instead.
-  it('Alt+I action opens the docked assistant with Improve seeded', () => {
+  // #1126: the third of three assistant call sites. All of them used to navigate
+  // to /ai?mode=improve&pageId=…, which took the document off screen in order to
+  // operate on it. They now open the dock beside it instead — and since #1176,
+  // opening is all they do.
+  it('Alt+I action opens the docked assistant without starting a run', () => {
     render(<PageViewPage />, { wrapper: createWrapper() });
     const aiShortcut = capturedShortcuts.find((s) => s.key === 'Alt+I');
     expect(aiShortcut).toBeDefined();
     aiShortcut!.action();
     expect(useAiDockStore.getState().open).toBe(true);
-    expect(useAiDockStore.getState().seed).toBe('improve');
     expect(mockNavigate).not.toHaveBeenCalled();
   });
 

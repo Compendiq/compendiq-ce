@@ -58,9 +58,20 @@ it at ~420px. Rail icons fly out on hover/focus so the outline stays reachable.
                                      40px        ~420px
 ```
 
-The rail's existing `Wand2` "AI Improve" button (`ArticleRightPane.tsx:557-564`) stops
-navigating to `/ai?mode=improve&pageId=…` and instead opens the dock with an Improve
-prompt seeded.
+The rail's "AI Improve" button (`ArticleRightPane.tsx:557-564`) stops navigating to
+`/ai?mode=improve&pageId=…` and instead opens the dock with an Improve prompt seeded.
+
+> **Amended by #1176.** The seeded auto-run is gone. Opening the assistant and
+> rewriting the whole document were the same click: the improvement type was never
+> chosen (it took `AiContext`'s `grammar` default), the dock offers no way to stop a
+> run, and closing the panel does not abort one — so a single press started an
+> unrequested, uncancellable rewrite. The trigger is now `Sparkles` "AI Assistant" in
+> the rail, the expanded pane and on `Alt+I` (`ai-assistant` in the shortcut
+> registry); it opens the panel with the composer focused and sends nothing. Improve
+> starts where the other three actions do — at its chip. `DockSeed`, `seedPageId` and
+> `consumeSeed` were deleted with the effect that consumed them; the `seedPageId`
+> page-mismatch guard went with them because there is no longer a pending action for
+> a navigation to strand.
 
 ### One thread, four chips
 

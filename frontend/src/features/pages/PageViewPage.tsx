@@ -579,16 +579,16 @@ export function PageViewPage() {
       key: 'Alt+I',
       keys: ['i'],
       alt: true,
-      description: 'AI Improve',
+      description: 'AI Assistant',
       category: 'actions',
       // #1126: opens the assistant beside the document instead of navigating to
       // /ai and leaving it. One of three call sites that used the same URL — the
       // other two are in ArticleRightPane's rail and expanded pane.
-      action: () => {
-        if (id) openDock('improve', id);
-      },
+      // #1176: and opening is all it does — it no longer starts an improvement
+      // the user did not ask for, which is why it is no longer called Improve.
+      action: openDock,
     },
-  ], [editing, handleSave, handleCancelEditing, handleStartEditing, handlePinToggle, handleDeletePage, id, openDock]);
+  ], [editing, handleSave, handleCancelEditing, handleStartEditing, handlePinToggle, handleDeletePage, openDock]);
 
   useKeyboardShortcuts(pageShortcuts);
 

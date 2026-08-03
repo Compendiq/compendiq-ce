@@ -23,10 +23,13 @@ export interface DockActionOptions {
    * one action that has to wait for it.
    *
    * The chip's own `disabled` is not enough. `runChip` is also reached from
-   * `DockDiffCard`'s "Re-run Improve", which carries no disabled state, and
-   * from the seed effect — so the guard has to live in the handler, where every
-   * caller passes through it. `/ai`'s Generate and Improve already re-check
-   * their `isBusy` inside their handlers for the same reason (#940).
+   * `DockDiffCard`'s "Re-run Improve", which carries no disabled state — so the
+   * guard has to live in the handler, where every caller passes through it.
+   * `/ai`'s Generate and Improve already re-check their `isBusy` inside their
+   * handlers for the same reason (#940).
+   *
+   * #1176 removed a second such caller — the effect that ran Improve the moment
+   * the dock opened. The guard outlives it because the re-run button does.
    */
   isBusy?: boolean;
   /**
