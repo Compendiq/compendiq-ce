@@ -1203,6 +1203,30 @@ it('declines a click outside any table so ProseMirror\'s default runs', async ()
       expect(dragHandle).toBeFalsy();
     });
 
+    // #1179 — the handle now hosts the block context menu. Kept shallow on
+    // purpose: the drag-handle plugin resolves its node from `mousemove`
+    // coordinates and `getBoundingClientRect`, so it never tracks a node under
+    // jsdom and the menu itself can never open here. `EditorBlockMenu.test.tsx`
+    // drives the menu body directly against a real editor instead.
+    it('renders the block-menu trigger inside the handle in edit mode', async () => {
+      render(<Editor content="<p>Hello</p>" editable={true} />);
+
+      const trigger = await screen.findByTestId('drag-handle-trigger');
+      expect(trigger.closest('.drag-handle')).toBeTruthy();
+      // Closed: nothing declares the open state, so the CSS reveal is inert.
+      expect(trigger.getAttribute('data-block-menu-open')).toBeNull();
+    });
+
+    it('does not render the block-menu trigger in read-only mode', async () => {
+      const { container } = render(<Editor content="<p>Hello</p>" editable={false} />);
+
+      await waitFor(() => {
+        expect(container.querySelector('[class*="tiptap"]')).toBeTruthy();
+      });
+
+      expect(screen.queryByTestId('drag-handle-trigger')).toBeNull();
+    });
+
     // CSS guards. The original bug was a dead selector — `[style*="display:
     // block"]` — that never matched because the upstream TipTap extension
     // toggles `visibility`, not `display`. We want to catch any future
@@ -1226,6 +1250,23 @@ it('declines a click outside any table so ProseMirror\'s default runs', async ()
         // (browsers serialize as either `visibility: hidden` or, rarely,
         // `visibility:hidden`).
         expect(css).toMatch(/\.drag-handle:not\(\[style\*="visibility:\s*hidden"\]\):not\(\[style\*="visibility:hidden"\]\)/);
+      });
+
+      // #1179 — the block menu is portalled to <body>, so the pointer leaves
+      // the handle the moment it moves onto the menu and the hover reveal drops
+      // away. Without an open-state reveal the handle fades out from under the
+      // menu it just opened. This is the CSS half of that contract; the React
+      // half (`data-block-menu-open`) is asserted above.
+      it('keeps the handle visible while its block menu is open', async () => {
+        const { readFileSync } = await import('node:fs');
+        const { resolve } = await import('node:path');
+        const cssPath = resolve(__dirname, '../../../index.css');
+        const css = readFileSync(cssPath, 'utf8').replace(/\s+/g, ' ');
+
+        const selector = '.drag-handle:has([data-block-menu-open="true"])';
+        expect(css).toContain(selector);
+        const body = css.slice(css.indexOf('{', css.indexOf(selector)) + 1);
+        expect(body.slice(0, body.indexOf('}'))).toMatch(/opacity:\s*1\s*!important/);
       });
 
       it('shows the handle when no visibility is set and hides it when visibility: hidden is set (behavioural)', () => {

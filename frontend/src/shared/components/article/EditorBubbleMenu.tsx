@@ -1,17 +1,15 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { BubbleMenu } from '@tiptap/react/menus';
-import { useEditorState } from '@tiptap/react';
 import { PluginKey } from '@tiptap/pm/state';
 import type { Editor as EditorType } from '@tiptap/react';
-import {
-  Bold, Italic, Underline, Strikethrough, Code, Highlighter,
-  Sparkles, Loader2, Check, ArrowDownToLine, RotateCcw, X,
-} from 'lucide-react';
-import type { ImprovementType } from '@compendiq/contracts';
+import { Sparkles } from 'lucide-react';
 import { cn } from '../../lib/cn';
-import { SanitizedHtml } from '../SanitizedHtml';
 import { useImproveStream } from './use-improve-stream';
 import { buildImproveHtml } from './improve-markdown';
+import { EditorFormatBar } from './EditorFormatBar';
+import { ImprovePanel, type ImprovePanelCopy } from './ImprovePanel';
+import { buildInstruction, type QuickAction } from './improve-actions';
+import { hasBlockMenuTarget } from './block-menu-decoration';
 import {
   createImproveDecorationPlugin,
   improveDecorationKey,
@@ -44,49 +42,6 @@ import {
 // eslint-disable-next-line react-refresh/only-export-components
 export const editorBubbleMenuPluginKey = new PluginKey('editorBubbleMenu');
 
-interface QuickAction {
-  key: string;
-  label: string;
-  type: ImprovementType;
-  /** Extra instruction passed to `/llm/improve` for tone/length variants. */
-  instruction?: string;
-}
-
-// Quick actions map onto the backend's five `ImprovementType` values. Tone /
-// length variants ride on the optional `instruction` field rather than new
-// backend types, keeping v1 within the existing `/llm/improve` contract.
-const QUICK_ACTIONS: readonly QuickAction[] = [
-  { key: 'improve', label: 'Improve writing', type: 'clarity' },
-  { key: 'grammar', label: 'Fix spelling & grammar', type: 'grammar' },
-  {
-    key: 'shorter', label: 'Make shorter', type: 'clarity',
-    instruction: 'Make the passage more concise while preserving all key information.',
-  },
-  {
-    key: 'longer', label: 'Make longer', type: 'completeness',
-    instruction: 'Expand the passage with more detail and helpful examples.',
-  },
-  {
-    key: 'professional', label: 'More professional tone', type: 'clarity',
-    instruction: 'Rewrite the passage in a more professional, formal tone.',
-  },
-];
-
-// Selection-specific prompt steering: the `improve_*` system prompts assume a
-// whole article, so we pass an instruction that scopes the model to the passage
-// and forbids extra commentary. (#708 — "improve the following passage; return
-// only the improved passage, same language".)
-const SELECTION_INSTRUCTION =
-  'You are improving a SHORT SELECTED PASSAGE from a larger document, not the whole document. ' +
-  'Return ONLY the improved passage with no preamble, headings, or explanation, and keep it in the same language.';
-
-function buildInstruction(action: QuickAction, freeForm?: string): string {
-  const parts = [SELECTION_INSTRUCTION];
-  if (action.instruction) parts.push(action.instruction);
-  if (freeForm?.trim()) parts.push(freeForm.trim());
-  return parts.join('\n\n');
-}
-
 /**
  * Whether the selection bubble menu should be visible. Exported for unit
  * testing the show/hide contract (the BubbleMenu plugin calls this on every
@@ -96,6 +51,12 @@ function buildInstruction(action: QuickAction, freeForm?: string): string {
  */
 // eslint-disable-next-line react-refresh/only-export-components
 export function selectionShouldShow(editor: EditorType, aiOpen: boolean): boolean {
+  // #1179 — the block context menu owns the interaction while it is open, and
+  // its text actions select the whole block. That selection is non-empty, so
+  // without this the bubble menu would render a second panel on top of it.
+  // Checked before `aiOpen` so an AI section left open behind the block menu
+  // cannot force the bubble menu back into view either.
+  if (hasBlockMenuTarget(editor)) return false;
   if (aiOpen) return true;
   if (!editor.isEditable) return false;
   if (editor.state.selection.empty) return false;
@@ -105,34 +66,14 @@ export function selectionShouldShow(editor: EditorType, aiOpen: boolean): boolea
   return true;
 }
 
-function MenuButton({
-  onClick, active, title, children,
-}: {
-  onClick: () => void;
-  active?: boolean;
-  title: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      onMouseDown={(e) => e.preventDefault()} // keep editor selection on click
-      onClick={onClick}
-      title={title}
-      aria-label={title}
-      aria-pressed={active}
-      className={cn(
-        'flex h-8 w-8 items-center justify-center rounded transition-colors',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
-        active
-          ? 'bg-primary/20 text-primary ring-1 ring-primary/30'
-          : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
-      )}
-    >
-      {children}
-    </button>
-  );
-}
+const SELECTION_COPY: ImprovePanelCopy = {
+  ariaLabel: 'Improve selection with AI',
+  placeholder: 'Ask AI to edit the selection…',
+  inputLabel: 'Ask AI to edit the selection',
+  replaceTitle: 'Replace selection',
+  insertTitle: 'Insert below selection',
+  pendingLabel: 'Improving selection…',
+};
 
 /**
  * The visible menu body. Split out from `EditorBubbleMenu` so it can be tested
@@ -152,10 +93,6 @@ export function BubbleMenuContent({
   // Range captured the moment "Improve" is clicked, so Replace/Insert act on
   // the original selection even after focus moves or the selection collapses.
   const rangeRef = useRef<{ from: number; to: number } | null>(null);
-  const [freeForm, setFreeForm] = useState('');
-  // The action + free-form text of the most recent run, captured so "Try again"
-  // replays the user's actual choice rather than a hardcoded default.
-  const lastRunRef = useRef<{ action: QuickAction; freeForm: string } | null>(null);
   const stream = useImproveStream();
   const rootRef = useRef<HTMLDivElement>(null);
   const aiPanelId = useId();
@@ -170,20 +107,6 @@ export function BubbleMenuContent({
     return () => { editor.unregisterPlugin(improveDecorationKey); };
   }, [editor]);
 
-  // Subscribe to active marks so the formatting buttons re-render their
-  // active/pressed state on selection and toggle changes (mirrors EditorToolbar).
-  const active = useEditorState({
-    editor,
-    selector: ({ editor: e }) => ({
-      bold: e.isActive('bold'),
-      italic: e.isActive('italic'),
-      underline: e.isActive('underline'),
-      strike: e.isActive('strike'),
-      code: e.isActive('code'),
-      highlight: e.isActive('highlight'),
-    }),
-  });
-
   const setAi = useCallback((open: boolean) => {
     setAiOpen(open);
     onAiOpenChange?.(open);
@@ -197,7 +120,6 @@ export function BubbleMenuContent({
     // hides the native selection highlight. Decorate the captured range so the
     // passage stays visibly marked (no document mutation).
     setImproveDecoration(editor, { from, to });
-    setFreeForm('');
     stream.reset();
     setAi(true);
   }, [editor, stream, setAi]);
@@ -208,7 +130,6 @@ export function BubbleMenuContent({
     clearImproveDecoration(editor);
     setAi(false);
     rangeRef.current = null;
-    lastRunRef.current = null;
   }, [editor, stream, setAi]);
 
   // Cmd/Ctrl+J expands the AI section on the current selection (#708 optional
@@ -291,11 +212,19 @@ export function BubbleMenuContent({
   // track the passage even if the document changed while the section was
   // open; fall back to the captured range when no decoration exists.
   const currentRange = useCallback((): { from: number; to: number } | null => {
-    if (!editor.isDestroyed) {
-      const deco = improveDecorationKey.getState(editor.state)?.find()[0];
-      if (deco) return { from: deco.from, to: deco.to };
-    }
-    return rangeRef.current;
+    if (editor.isDestroyed) return null;
+    const deco = improveDecorationKey.getState(editor.state)?.find()[0];
+    if (deco) return { from: deco.from, to: deco.to };
+    // No decoration left: the passage was deleted while the section was open —
+    // #1179's block menu makes that a single click. The captured offsets now
+    // point into a shorter document, so clamp them and refuse rather than hand
+    // an out-of-range range to `insertContentAt`, which throws.
+    const captured = rangeRef.current;
+    if (!captured) return null;
+    const max = editor.state.doc.content.size;
+    const from = Math.min(captured.from, max);
+    const to = Math.min(captured.to, max);
+    return from < to ? { from, to } : null;
   }, [editor]);
 
   const runAction = useCallback(
@@ -304,19 +233,10 @@ export function BubbleMenuContent({
       if (!range) return;
       const text = editor.state.doc.textBetween(range.from, range.to, '\n');
       if (!text.trim()) return;
-      lastRunRef.current = { action, freeForm: freeFormText };
       void stream.run(text, action.type, buildInstruction(action, freeFormText));
     },
     [editor, stream, currentRange],
   );
-
-  // "Try again" replays the last action with its captured free-form text,
-  // falling back to the default quick action if nothing has run yet.
-  const retry = useCallback(() => {
-    const last = lastRunRef.current;
-    if (last) runAction(last.action, last.freeForm);
-    else runAction(QUICK_ACTIONS[0]!, freeForm);
-  }, [runAction, freeForm]);
 
   const replaceSelection = useCallback(() => {
     const range = currentRange();
@@ -341,13 +261,6 @@ export function BubbleMenuContent({
     closeAi();
   }, [editor, stream.output, closeAi, currentRange]);
 
-  const isStreaming = stream.status === 'streaming';
-  const hasResult = stream.output.length > 0;
-  // The stream finished but produced nothing — surface explicit feedback rather
-  // than silently dropping back to the quick-action menu.
-  const emptyResult = stream.status === 'done' && !hasResult;
-  const { html: previewHtml } = buildImproveHtml(stream.output);
-
   return (
     <div
       ref={rootRef}
@@ -357,56 +270,7 @@ export function BubbleMenuContent({
         'motion-safe:animate-in motion-safe:fade-in-0 motion-safe:zoom-in-95',
       )}
     >
-      <div
-        role="toolbar"
-        aria-label="Selection formatting"
-        className="flex items-center gap-0.5 p-1"
-      >
-        <MenuButton
-          onClick={() => editor.chain().focus().toggleBold().run()}
-          active={active.bold}
-          title="Bold (Ctrl+B)"
-        >
-          <Bold size={15} />
-        </MenuButton>
-        <MenuButton
-          onClick={() => editor.chain().focus().toggleItalic().run()}
-          active={active.italic}
-          title="Italic (Ctrl+I)"
-        >
-          <Italic size={15} />
-        </MenuButton>
-        <MenuButton
-          onClick={() => editor.chain().focus().toggleUnderline().run()}
-          active={active.underline}
-          title="Underline (Ctrl+U)"
-        >
-          <Underline size={15} />
-        </MenuButton>
-        <MenuButton
-          onClick={() => editor.chain().focus().toggleStrike().run()}
-          active={active.strike}
-          title="Strikethrough (Ctrl+Shift+X)"
-        >
-          <Strikethrough size={15} />
-        </MenuButton>
-        <MenuButton
-          onClick={() => editor.chain().focus().toggleCode().run()}
-          active={active.code}
-          title="Inline code (Ctrl+E)"
-        >
-          <Code size={15} />
-        </MenuButton>
-        <MenuButton
-          onClick={() => editor.chain().focus().toggleHighlight().run()}
-          active={active.highlight}
-          title="Highlight (Ctrl+Shift+H)"
-        >
-          <Highlighter size={15} />
-        </MenuButton>
-
-        <div role="separator" aria-orientation="vertical" className="mx-0.5 h-5 w-px bg-border" />
-
+      <EditorFormatBar editor={editor} ariaLabel="Selection formatting">
         <button
           type="button"
           onMouseDown={(e) => e.preventDefault()} // keep editor selection on click
@@ -426,7 +290,7 @@ export function BubbleMenuContent({
           <Sparkles size={15} />
           <span>Improve</span>
         </button>
-      </div>
+      </EditorFormatBar>
 
       {/* #782 — the AI section expands the SAME container in place (below the
           toolbar row) instead of opening a second portalled popover on the
@@ -434,156 +298,17 @@ export function BubbleMenuContent({
           (placement 'top' on the wrapper), so growing downward is re-anchored
           by the updatePosition effect and never covers the decorated text. */}
       {aiOpen && (
-        <div
+        <ImprovePanel
           id={aiPanelId}
-          role="group"
-          aria-label="Improve selection with AI"
-          data-testid="bubble-ai-panel"
-          className="w-80 border-t border-border p-3"
-        >
-          {!hasResult && !isStreaming && !emptyResult && stream.status !== 'error' && (
-            <div className="flex flex-col gap-2">
-              <input
-                type="text"
-                value={freeForm}
-                autoFocus
-                onChange={(e) => setFreeForm(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && freeForm.trim()) {
-                    e.preventDefault();
-                    runAction(QUICK_ACTIONS[0]!, freeForm);
-                  }
-                }}
-                placeholder="Ask AI to edit the selection…"
-                aria-label="Ask AI to edit the selection"
-                className="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-              />
-              <div className="flex flex-col gap-0.5">
-                {QUICK_ACTIONS.map((action) => (
-                  <button
-                    key={action.key}
-                    type="button"
-                    onClick={() => runAction(action, freeForm)}
-                    className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-foreground hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                  >
-                    <Sparkles size={14} className="text-primary" />
-                    {action.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {(isStreaming || hasResult) && (
-            <div className="flex flex-col gap-2">
-              <div
-                data-testid="bubble-ai-preview"
-                aria-live="polite"
-                className={cn(
-                  'prose prose-sm max-h-56 max-w-none overflow-y-auto rounded-md border border-border/60 bg-background p-2 text-sm',
-                  isStreaming && !hasResult && 'motion-safe:animate-pulse',
-                )}
-              >
-                {hasResult
-                  ? <SanitizedHtml html={previewHtml} />
-                  : <span className="text-muted-foreground">Improving selection…</span>}
-              </div>
-
-              <div className="flex flex-wrap items-center gap-1">
-                <button
-                  type="button"
-                  onClick={replaceSelection}
-                  disabled={!hasResult || isStreaming}
-                  title="Replace selection"
-                  className="flex items-center gap-1 rounded-md bg-primary/15 px-2 py-1 text-xs font-medium text-primary hover:bg-primary/25 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                >
-                  <Check size={13} /> Replace
-                </button>
-                <button
-                  type="button"
-                  onClick={insertBelow}
-                  disabled={!hasResult || isStreaming}
-                  title="Insert below selection"
-                  className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-foreground/5 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                >
-                  <ArrowDownToLine size={13} /> Insert below
-                </button>
-                <button
-                  type="button"
-                  onClick={retry}
-                  disabled={isStreaming}
-                  title="Try again"
-                  className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-foreground/5 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                >
-                  <RotateCcw size={13} /> Try again
-                </button>
-                <button
-                  type="button"
-                  onClick={closeAi}
-                  title="Discard"
-                  className="ml-auto flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                >
-                  <X size={13} /> Discard
-                </button>
-              </div>
-            </div>
-          )}
-
-          {isStreaming && (
-            <div className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground">
-              <Loader2 size={13} className="motion-safe:animate-spin" />
-              Streaming…
-            </div>
-          )}
-
-          {emptyResult && (
-            <div className="flex flex-col gap-2" data-testid="bubble-ai-empty">
-              <p className="text-sm text-muted-foreground" role="status">
-                No changes returned. Try again or adjust your request.
-              </p>
-              <div className="flex gap-1">
-                <button
-                  type="button"
-                  onClick={retry}
-                  title="Try again"
-                  className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                >
-                  <RotateCcw size={13} /> Try again
-                </button>
-                <button
-                  type="button"
-                  onClick={closeAi}
-                  title="Discard"
-                  className="ml-auto flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                >
-                  <X size={13} /> Discard
-                </button>
-              </div>
-            </div>
-          )}
-
-          {stream.status === 'error' && (
-            <div className="flex flex-col gap-2">
-              <p className="text-sm text-destructive" role="alert">{stream.error}</p>
-              <div className="flex gap-1">
-                <button
-                  type="button"
-                  onClick={retry}
-                  className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                >
-                  <RotateCcw size={13} /> Try again
-                </button>
-                <button
-                  type="button"
-                  onClick={closeAi}
-                  className="ml-auto flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                >
-                  <X size={13} /> Close
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
+          testIdPrefix="bubble-ai"
+          copy={SELECTION_COPY}
+          stream={stream}
+          onRun={runAction}
+          onReplace={replaceSelection}
+          onInsertBelow={insertBelow}
+          onClose={closeAi}
+          className="w-80"
+        />
       )}
     </div>
   );
