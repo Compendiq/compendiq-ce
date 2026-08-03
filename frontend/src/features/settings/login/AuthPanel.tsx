@@ -2,6 +2,18 @@ import type { FormEvent, RefObject } from 'react';
 import type { OidcConfig } from '@compendiq/contracts';
 import { ArrowRight, Eye, EyeOff, LoaderCircle } from 'lucide-react';
 
+/**
+ * Outcome of the `GET /auth/oidc/config` probe. Like the `vision` tri-state on
+ * the AI composers, this must never collapse to "config or null": a *failed*
+ * probe is not the same answer as "SSO is disabled". Reporting a dead backend
+ * as "no SSO here" silently removes the only sign-in path on an SSO-only
+ * deployment, and reads to the user as if the button had been deleted.
+ */
+export type OidcProbe =
+  | { status: 'pending' }
+  | { status: 'ready'; config: OidcConfig }
+  | { status: 'failed' };
+
 export interface AuthPanelProps {
   usernameInputRef: RefObject<HTMLInputElement | null>;
   isRegister: boolean;
@@ -11,7 +23,8 @@ export interface AuthPanelProps {
   showPassword: boolean;
   confirmError: string | null;
   loading: boolean;
-  oidcConfig: OidcConfig | null;
+  oidcProbe: OidcProbe;
+  onRetryOidc: () => void;
   allowRegistration: boolean;
   onUsernameChange: (value: string) => void;
   onPasswordChange: (value: string) => void;
@@ -30,7 +43,8 @@ export function AuthPanel({
   showPassword,
   confirmError,
   loading,
-  oidcConfig,
+  oidcProbe,
+  onRetryOidc,
   allowRegistration,
   onUsernameChange,
   onPasswordChange,
@@ -39,6 +53,7 @@ export function AuthPanel({
   onModeChange,
   onSubmit,
 }: AuthPanelProps) {
+  const oidcConfig = oidcProbe.status === 'ready' ? oidcProbe.config : null;
   const showSso = oidcConfig?.enabled && !oidcConfig.enterpriseRequired;
 
   return (
@@ -57,19 +72,39 @@ export function AuthPanel({
         </p>
       </div>
 
-      {showSso && (
+      {(showSso || oidcProbe.status === 'failed') && (
         <>
-          <button
-            type="button"
-            onClick={() => {
-              window.location.href = '/api/auth/oidc/authorize';
-            }}
-            data-testid="sso-login-btn"
-            className="nm-button-primary flex min-h-11 w-full items-center justify-center gap-2 px-4 text-sm font-semibold"
-          >
-            Sign in with {oidcConfig.name || 'SSO'}
-            <ArrowRight aria-hidden="true" className="h-4 w-4" />
-          </button>
+          {showSso ? (
+            <button
+              type="button"
+              onClick={() => {
+                window.location.href = '/api/auth/oidc/authorize';
+              }}
+              data-testid="sso-login-btn"
+              className="nm-button-primary flex min-h-11 w-full items-center justify-center gap-2 px-4 text-sm font-semibold"
+            >
+              Sign in with {oidcConfig.name || 'SSO'}
+              <ArrowRight aria-hidden="true" className="h-4 w-4" />
+            </button>
+          ) : (
+            <div
+              role="status"
+              data-testid="sso-probe-failed"
+              className="rounded-lg border border-border p-4"
+            >
+              <p className="text-sm font-medium text-foreground">Single sign-on status unavailable</p>
+              <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                The server did not respond, so we cannot tell whether SSO is configured here.
+              </p>
+              <button
+                type="button"
+                onClick={onRetryOidc}
+                className="mt-3 rounded-sm text-sm font-semibold text-primary-ink underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+              >
+                Check again
+              </button>
+            </div>
+          )}
 
           <div className="my-5 flex items-center gap-3 text-xs text-muted-foreground">
             <span className="h-px flex-1 bg-border" aria-hidden="true" />

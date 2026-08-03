@@ -1,10 +1,12 @@
 import type { ReactNode } from 'react';
+import type { AppEdition } from '@compendiq/contracts';
 import { BookOpenText, Bot, Database, Server } from 'lucide-react';
 import { LoginBrandHeader } from './LoginBrandHeader';
 
 interface LocalLoopLoginProps {
   authPanel: ReactNode;
   controls?: ReactNode;
+  edition?: AppEdition | null;
 }
 
 const steps = [
@@ -30,7 +32,7 @@ const steps = [
   },
 ];
 
-export function LocalLoopLogin({ authPanel, controls }: LocalLoopLoginProps) {
+export function LocalLoopLogin({ authPanel, controls, edition }: LocalLoopLoginProps) {
   return (
     <div className="app-backdrop h-dvh overflow-y-auto text-foreground">
       <div className="relative isolate mx-auto flex min-h-full w-full max-w-[1440px] flex-col overflow-hidden px-5 py-5 sm:px-8 sm:py-7 lg:px-12 lg:py-9">
@@ -39,7 +41,7 @@ export function LocalLoopLogin({ authPanel, controls }: LocalLoopLoginProps) {
           className="pointer-events-none absolute left-[8%] top-[12%] -z-10 h-[32rem] w-[32rem] rounded-full bg-primary opacity-[0.08] blur-[120px]"
         />
 
-        <LoginBrandHeader controls={controls} />
+        <LoginBrandHeader controls={controls} edition={edition} />
 
         <main className="grid flex-1 gap-10 py-12 lg:grid-cols-[minmax(0,1fr)_minmax(22rem,28rem)] lg:grid-rows-[auto_auto] lg:items-center lg:gap-x-16 lg:gap-y-10 lg:py-14">
           <section className="max-w-3xl lg:col-start-1 lg:row-start-1" aria-labelledby="local-loop-title">

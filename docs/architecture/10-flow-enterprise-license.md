@@ -114,6 +114,23 @@ CE and EE ship the **same frontend image**. There is no IIFE bundle, no
 build-time patch, no separate EE SPA. All gating happens at runtime via
 `useEnterprise()`.
 
+### The one edition consumer that does not use `/api/admin/license`
+
+The **login page** is unauthenticated, so it cannot call that admin route at
+all. Its edition badge comes from the public
+`GET /api/auth/login-page-config`, which reports `'enterprise'` whenever the
+loaded plugin is not the noop shim — deliberately derived from the *build*,
+not the license, since an EE deployment whose license lapsed is still not
+"Community Edition · AGPL-3.0", and claiming otherwise on the sign-in screen
+would be a licensing statement we have no grounds for.
+
+`edition` is **optional** in `LoginPageConfigResponseSchema`. An EE stack pins
+the CE frontend by image tag (`compendiq-ce-frontend:${CE_TAG:-dev}`) while its
+backend is built from an older CE release, so the SPA regularly talks to a
+backend predating the field; absent means "unknown" and the badge is omitted
+rather than guessed. A required key would throw in `.parse()` and take the
+unrelated `variant` down with it.
+
 ## Key files (CE side)
 
 | File | Purpose |

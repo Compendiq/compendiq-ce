@@ -1,15 +1,15 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import {
-  LoginPageConfigSchema,
+  type AppEdition,
+  LoginPageConfigResponseSchema,
   OidcConfigSchema,
-  type OidcConfig,
   RegistrationPolicySchema,
 } from '@compendiq/contracts';
 import { useAuthStore } from '../../stores/auth-store';
 import { apiFetch } from '../../shared/lib/api';
-import { AuthPanel, type AuthPanelProps } from './login/AuthPanel';
+import { AuthPanel, type AuthPanelProps, type OidcProbe } from './login/AuthPanel';
 import { ChangeDeskLogin } from './login/ChangeDeskLogin';
 import { LocalLoopLogin } from './login/LocalLoopLogin';
 import { LoginVariantPicker } from './login/LoginVariantPicker';
@@ -41,9 +41,10 @@ export function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [confirmError, setConfirmError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [oidcConfig, setOidcConfig] = useState<OidcConfig | null>(null);
+  const [oidcProbe, setOidcProbe] = useState<OidcProbe>({ status: 'pending' });
   const [allowRegistration, setAllowRegistration] = useState(false);
   const [runtimeVariant, setRuntimeVariant] = useState<LoginVariant | null>(null);
+  const [edition, setEdition] = useState<AppEdition | null>(null);
 
   const loginVariant = resolveLoginVariant(
     searchParams,
@@ -83,28 +84,37 @@ export function LoginPage() {
   useEffect(() => {
     async function fetchLoginPageConfig() {
       try {
-        const config = LoginPageConfigSchema.parse(await apiFetch('/auth/login-page-config'));
+        const config = LoginPageConfigResponseSchema.parse(
+          await apiFetch('/auth/login-page-config'),
+        );
         setRuntimeVariant(config.variant);
+        setEdition(config.edition ?? null);
       } catch {
-        // Presentation config must never block sign-in; retain the build default.
+        // Presentation config must never block sign-in; retain the build
+        // default and leave the edition unknown (the badge is then omitted).
       }
     }
 
     void fetchLoginPageConfig();
   }, []);
 
-  useEffect(() => {
-    async function fetchOidcConfig() {
-      try {
-        const config = OidcConfigSchema.parse(await apiFetch('/auth/oidc/config'));
-        setOidcConfig(config);
-      } catch {
-        // No or invalid config: keep SSO hidden.
-      }
+  const probeOidcConfig = useCallback(async () => {
+    setOidcProbe({ status: 'pending' });
+    try {
+      const config = OidcConfigSchema.parse(await apiFetch('/auth/oidc/config'));
+      setOidcProbe({ status: 'ready', config });
+    } catch {
+      // A failed probe is NOT "SSO is disabled" — the backend may simply be
+      // down (a 502 through nginx takes every /api route with it). Swallowing
+      // it into a hidden button makes an outage indistinguishable from the
+      // button having been removed, which is exactly how #1187 was misread.
+      setOidcProbe({ status: 'failed' });
     }
-
-    void fetchOidcConfig();
   }, []);
+
+  useEffect(() => {
+    void probeOidcConfig();
+  }, [probeOidcConfig]);
 
   useEffect(() => {
     async function fetchRegistrationPolicy() {
@@ -176,7 +186,8 @@ export function LoginPage() {
     showPassword,
     confirmError,
     loading,
-    oidcConfig,
+    oidcProbe,
+    onRetryOidc: () => void probeOidcConfig(),
     allowRegistration,
     onUsernameChange: setUsername,
     onPasswordChange: (value) => {
@@ -198,8 +209,8 @@ export function LoginPage() {
   const authPanel = <AuthPanel {...authPanelProps} />;
 
   return loginVariant === 'change-desk' ? (
-    <ChangeDeskLogin authPanel={authPanel} controls={controls} />
+    <ChangeDeskLogin authPanel={authPanel} controls={controls} edition={edition} />
   ) : (
-    <LocalLoopLogin authPanel={authPanel} controls={controls} />
+    <LocalLoopLogin authPanel={authPanel} controls={controls} edition={edition} />
   );
 }

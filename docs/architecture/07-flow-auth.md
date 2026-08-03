@@ -229,6 +229,29 @@ Why the extra hop via a `login_code`? It keeps tokens out of the URL
 fragment that the browser exposes to history/referer. The callback page
 posts to a JSON endpoint and only then receives the real JWT.
 
+### Deciding whether to offer the SSO button
+
+Before any of the above, the login page probes `GET /api/auth/oidc/config`.
+CE answers with a static `{ enabled: false, enterpriseRequired: true }` stub
+(`app.ts`, community mode only); EE answers from the `oidc_providers` table
+plus the license. The button renders when `enabled && !enterpriseRequired`.
+
+The probe has **three** outcomes, not two, and they must not be collapsed
+(`OidcProbe` in `login/AuthPanel.tsx` — same rule as the `vision` tri-state on
+the AI composers):
+
+| Outcome | Login page |
+|---------|-----------|
+| `ready`, `enabled` | SSO button + "or continue with credentials" divider |
+| `ready`, not enabled | nothing — SSO is genuinely off here |
+| `failed` (5xx / network / rate-limit / parse) | "Single sign-on status unavailable" notice with a **Check again** retry |
+
+A failed probe is *not* "SSO is disabled". nginx proxies all of `/api/` to one
+upstream, so a backend that is down or restarting returns 502 for this route —
+and swallowing that into a hidden button removes the only sign-in path on an
+SSO-only deployment while looking exactly like the button having been deleted.
+Retry re-runs the probe in place; no reload is needed.
+
 ## Where this lives
 
 | Concern | File |
@@ -243,3 +266,5 @@ posts to a JSON endpoint and only then receives the real JWT.
 | API client (single-flight + proactive/reactive refresh) | `frontend/src/shared/lib/api.ts` |
 | OIDC callback UI | `frontend/src/features/auth/OidcCallbackPage.tsx` |
 | OIDC admin config UI | `frontend/src/features/admin/OidcSettingsPage.tsx` |
+| SSO probe tri-state + unavailable notice | `frontend/src/features/settings/login/AuthPanel.tsx` |
+| Public login presentation (variant + edition badge) | `backend/src/routes/foundation/login-page-config.ts` |

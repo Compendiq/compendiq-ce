@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { LoginPageConfigSchema } from '@compendiq/contracts';
 import { logAuditEvent } from '../../core/services/audit-service.js';
+import { getEnterprisePlugin } from '../../core/enterprise/loader.js';
 import {
   getLoginPageVariant,
   setLoginPageVariant,
@@ -22,9 +23,17 @@ const ADMIN_RATE_LIMIT = {
 
 export async function loginPageConfigRoutes(fastify: FastifyInstance) {
   // Public by design: the login route needs its presentation before a user
-  // has authenticated. The response contains only the two-value layout choice.
+  // has authenticated. The response carries the layout choice and the edition
+  // badge — presentation only, no authentication or licensing behaviour.
+  //
+  // The edition is derived from the loaded enterprise plugin (the noop shim
+  // reports 'community'), not from the license: an EE deployment whose license
+  // has lapsed still runs the enterprise build, and mislabelling it "Community
+  // Edition · AGPL-3.0" on the sign-in screen would be a licensing claim we
+  // have no business making.
   fastify.get('/auth/login-page-config', PUBLIC_RATE_LIMIT, async () => ({
     variant: await getLoginPageVariant(),
+    edition: getEnterprisePlugin().version === 'community' ? 'community' : 'enterprise',
   }));
 
   // Persisted globally for the deployment. Authentication logic is shared and

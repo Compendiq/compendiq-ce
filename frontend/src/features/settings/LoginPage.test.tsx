@@ -17,21 +17,35 @@ vi.mock('sonner', () => ({
 type OidcOpt = Record<string, unknown> | 'reject';
 type RegOpt = { allowRegistration: boolean } | 'reject';
 type LoginVariantOpt = 'local-loop' | 'change-desk' | 'reject';
+type EditionOpt = 'community' | 'enterprise' | 'absent';
 
 /**
  * URL-keyed apiFetch mock. LoginPage fires two independent probes on mount
  * (`/auth/oidc/config` and `/auth/registration-policy`), so a call-order-based
  * `mockResolvedValueOnce` is brittle — key the resolution on the URL instead.
  */
-function mockApi(opts: { oidc?: OidcOpt; registration?: RegOpt; loginVariant?: LoginVariantOpt } = {}) {
+function mockApi(
+  opts: {
+    oidc?: OidcOpt;
+    registration?: RegOpt;
+    loginVariant?: LoginVariantOpt;
+    edition?: EditionOpt;
+  } = {},
+) {
   const oidc = opts.oidc ?? { enabled: false, issuer: null, name: null, enterpriseRequired: false };
   const registration = opts.registration ?? { allowRegistration: false };
   const loginVariant = opts.loginVariant ?? 'local-loop';
+  // Default 'absent' mirrors a backend predating the field — the common case
+  // on an EE deployment pinning the CE frontend by tag.
+  const edition = opts.edition ?? 'absent';
   vi.mocked(apiFetch).mockImplementation(async (url: string) => {
     const u = String(url);
     if (u.includes('/auth/login-page-config')) {
       if (loginVariant === 'reject') throw new Error('no login config');
-      return { variant: loginVariant } as never;
+      return {
+        variant: loginVariant,
+        ...(edition === 'absent' ? {} : { edition }),
+      } as never;
     }
     if (u.includes('/auth/oidc/config')) {
       if (oidc === 'reject') throw new Error('no oidc');
@@ -104,6 +118,85 @@ describe('LoginPage', () => {
     mockApi({ oidc: 'reject' });
     renderLoginPage();
     expect(screen.queryByTestId('sso-login-btn')).not.toBeInTheDocument();
+  });
+
+  // ─── probe failure is not "SSO is disabled" ──────────────────────────────
+  // A 502 through nginx (backend down/restarting) used to be swallowed into a
+  // hidden button, making an outage indistinguishable from the button having
+  // been removed — on an SSO-only deployment that is the entire sign-in path.
+  describe('OIDC probe failure', () => {
+    it('surfaces an unavailable notice instead of silently hiding SSO', async () => {
+      mockApi({ oidc: 'reject' });
+      renderLoginPage();
+
+      expect(await screen.findByTestId('sso-probe-failed')).toBeInTheDocument();
+      expect(screen.getByText('Single sign-on status unavailable')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Check again' })).toBeInTheDocument();
+      expect(screen.queryByTestId('sso-login-btn')).not.toBeInTheDocument();
+    });
+
+    it('stays silent when the probe succeeds and SSO is legitimately disabled', async () => {
+      mockApi({ oidc: { enabled: false, issuer: null, name: null, enterpriseRequired: false } });
+      renderLoginPage();
+
+      await waitFor(() => expect(vi.mocked(apiFetch)).toHaveBeenCalled());
+      expect(screen.queryByTestId('sso-probe-failed')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('sso-login-btn')).not.toBeInTheDocument();
+    });
+
+    it('recovers the SSO button when the user retries a probe that failed once', async () => {
+      let oidcCalls = 0;
+      vi.mocked(apiFetch).mockImplementation(async (url: string) => {
+        const u = String(url);
+        if (u.includes('/auth/oidc/config')) {
+          oidcCalls += 1;
+          if (oidcCalls === 1) throw new Error('Bad Gateway');
+          return { enabled: true, issuer: 'https://idp.example.com', name: 'OrgSSO' } as never;
+        }
+        if (u.includes('/auth/login-page-config')) return { variant: 'local-loop' } as never;
+        if (u.includes('/auth/registration-policy')) return { allowRegistration: false } as never;
+        throw new Error(`unexpected apiFetch url: ${u}`);
+      });
+
+      renderLoginPage();
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Check again' }));
+
+      expect(await screen.findByRole('button', { name: 'Sign in with OrgSSO' })).toBeInTheDocument();
+      expect(screen.queryByTestId('sso-probe-failed')).not.toBeInTheDocument();
+    });
+  });
+
+  // ─── edition badge ───────────────────────────────────────────────────────
+  // Both editions ship this same SPA, so the badge must come from the backend.
+  describe('edition badge', () => {
+    it('badges a community backend', async () => {
+      mockApi({ edition: 'community' });
+      renderLoginPage();
+      expect(await screen.findByText('Community Edition · AGPL-3.0')).toBeInTheDocument();
+    });
+
+    it('badges an enterprise backend instead of claiming Community Edition', async () => {
+      mockApi({ edition: 'enterprise' });
+      renderLoginPage();
+      expect(await screen.findByText('Enterprise Edition')).toBeInTheDocument();
+      expect(screen.queryByText('Community Edition · AGPL-3.0')).not.toBeInTheDocument();
+    });
+
+    it('omits the badge when the backend does not report an edition', async () => {
+      mockApi({ edition: 'absent' });
+      renderLoginPage();
+      await waitFor(() => expect(vi.mocked(apiFetch)).toHaveBeenCalled());
+      expect(screen.queryByText('Community Edition · AGPL-3.0')).not.toBeInTheDocument();
+      expect(screen.queryByText('Enterprise Edition')).not.toBeInTheDocument();
+    });
+
+    it('omits the badge when the presentation config cannot be loaded', async () => {
+      mockApi({ loginVariant: 'reject' });
+      renderLoginPage();
+      await waitFor(() => expect(vi.mocked(apiFetch)).toHaveBeenCalled());
+      expect(screen.queryByText('Community Edition · AGPL-3.0')).not.toBeInTheDocument();
+    });
   });
 
   describe('configurable presentation', () => {

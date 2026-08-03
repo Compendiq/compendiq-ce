@@ -1,13 +1,15 @@
 import type { ReactNode } from 'react';
+import type { AppEdition } from '@compendiq/contracts';
 import { Check, FileText, Link2, Sparkles } from 'lucide-react';
 import { LoginBrandHeader } from './LoginBrandHeader';
 
 interface ChangeDeskLoginProps {
   authPanel: ReactNode;
   controls?: ReactNode;
+  edition?: AppEdition | null;
 }
 
-export function ChangeDeskLogin({ authPanel, controls }: ChangeDeskLoginProps) {
+export function ChangeDeskLogin({ authPanel, controls, edition }: ChangeDeskLoginProps) {
   return (
     <div className="app-backdrop h-dvh overflow-y-auto text-foreground">
       <div className="relative isolate mx-auto flex min-h-full w-full max-w-[1440px] flex-col overflow-hidden px-5 py-5 sm:px-8 sm:py-7 lg:px-12 lg:py-9">
@@ -16,7 +18,7 @@ export function ChangeDeskLogin({ authPanel, controls }: ChangeDeskLoginProps) {
           className="pointer-events-none absolute bottom-[4%] left-[18%] -z-10 h-[28rem] w-[28rem] rounded-full bg-status-ai opacity-[0.07] blur-[120px]"
         />
 
-        <LoginBrandHeader controls={controls} />
+        <LoginBrandHeader controls={controls} edition={edition} />
 
         <main className="grid flex-1 gap-10 py-12 lg:grid-cols-[minmax(0,1.12fr)_minmax(22rem,28rem)] lg:grid-rows-[auto_auto] lg:items-center lg:gap-x-16 lg:gap-y-9 lg:py-14">
           <section className="max-w-3xl lg:col-start-1 lg:row-start-1" aria-labelledby="change-desk-title">
