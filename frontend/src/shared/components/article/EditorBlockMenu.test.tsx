@@ -614,13 +614,12 @@ describe('EditorBlockMenu — popover wiring (source guards)', () => {
     expect(source).toMatch(/onFocusOutside=\{\(event\) => event\.preventDefault\(\)\}/);
   });
 
-  // The behaviour is covered against the real hook in block-menu-escape.test.tsx;
-  // this pins that THIS component is still the thing wired to it, and on
-  // `onKeyDown` rather than Radix's `onEscapeKeyDown` — the latter runs in the
-  // capture phase, where stopping propagation is too late to matter and
-  // `preventDefault` alone does not stop the shortcut.
-  it('contains Escape on the content, so it cannot reach the exit-edit shortcut', () => {
-    expect(source).toMatch(/onKeyDown=\{\(event\) => absorbBlockMenuEscape\(event, closeMenu\)\}/);
+  // Theory-independent tripwire. `block-menu-escape.test.tsx` covers the
+  // behaviour, but it does so by MODELLING Radix + React timing — if either
+  // library changes when it unmounts, those models can drift green while the
+  // real bug returns. This assertion costs one line and survives that.
+  it('contains Escape via onEscapeKeyDown', () => {
+    expect(source).toMatch(/onEscapeKeyDown=\{\(event\) => absorbBlockMenuEscape\(event, closeMenu\)\}/);
   });
 
   // Radix's `Popover.Anchor` is what the menu is positioned against, and the

@@ -428,10 +428,11 @@ export function EditorBlockHandle({ editor }: { editor: EditorType }) {
               // Escape and an outside pointerdown still close it.
               onFocusOutside={(event) => event.preventDefault()}
               // Escape must not reach `document` — see absorbBlockMenuEscape.
-              // On `onKeyDown`, not Radix's `onEscapeKeyDown`: `preventDefault`
-              // alone does not stop the page's shortcut, which ignores
-              // `defaultPrevented` in its dispatch loop.
-              onKeyDown={(event) => absorbBlockMenuEscape(event, closeMenu)}
+              // Not `onKeyDown`: bypassed when Radix unmounts this layer in its
+              // capture pass, and again when the key comes from outside the
+              // layer. Not `preventDefault` alone: the page's shortcut ignores
+              // `defaultPrevented`. Both measured across the full grid.
+              onEscapeKeyDown={(event) => absorbBlockMenuEscape(event, closeMenu)}
             >
               <EditorBlockMenu
                 editor={editor}

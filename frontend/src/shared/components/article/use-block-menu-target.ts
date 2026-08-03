@@ -92,31 +92,39 @@ export function useBlockMenuTarget(editor: EditorType): UseBlockMenuTargetResult
 /**
  * Absorb an Escape that the block menu is handling.
  *
- * `use-keyboard-shortcuts` listens on `document` and suppresses single-key
- * shortcuts only when `isEditableTarget(event)` is true — i.e. when focus is
- * inside `.tiptap`, an input, or a contentEditable. This menu is portalled to
- * `<body>` and Radix moves focus into it, so the target is none of those: the
- * gate passes and `PageViewPage`'s `Escape` shortcut runs `handleCancelEditing()`.
- * The user pressed Escape to dismiss a menu and got thrown out of the editor —
- * with unsaved changes, into a "Discard changes?" prompt.
+ * **`onEscapeKeyDown` + `preventDefault()` + `stopPropagation()`. Not
+ * `onKeyDown`: it is bypassed when the layer unmounts in Radix's capture pass,
+ * and again when the key is dispatched from outside the layer. Not
+ * `preventDefault` alone: the shortcut dispatch ignores `defaultPrevented`.**
  *
- * `preventDefault` is NOT enough: the hook only consults `defaultPrevented` in
- * its blur-a-native-input branch, never in the shortcut dispatch loop. The key
- * has to be stopped from reaching `document` at all, which is why this runs on
- * the content's `onKeyDown` (React's portal listener sits on the portal
- * container, below `document`) rather than in Radix's document-capture escape
- * hook. Same fix, same reason, as `AiDockSheet.tsx`.
+ * Those are two independent sufficient causes plus a half-fix, and all three are
+ * measured — `block-menu-escape.test.tsx` runs the full grid of every wiring
+ * against both causes. `onKeyDown` contains the key in exactly one of four
+ * cells (focus inside the menu, unmount deferred), which is RTL's default and
+ * the reason a broken fix once passed a green suite.
+ *
+ * Both halves are needed:
+ * - `preventDefault()` so Radix skips its own dismissal — we close here instead,
+ *   so `close` runs once rather than twice.
+ * - `stopPropagation()` on the NATIVE event so it never reaches the
+ *   document-bubble listener in `use-keyboard-shortcuts`. That hook suppresses
+ *   single-key shortcuts only when `isEditableTarget(event)` is true, and a
+ *   portalled Radix layer is not editable — so `PageViewPage`'s `Escape` would
+ *   run `handleCancelEditing()` and throw the user out of the editor, into a
+ *   "Discard changes?" prompt if they had unsaved work. `preventDefault` alone
+ *   does NOT stop it: the hook consults `defaultPrevented` only in its
+ *   blur-a-native-input branch, never in the dispatch loop — a browser trace
+ *   measured `defaultPrevented=true` at both bubble points with the shortcut
+ *   firing regardless.
  *
  * The selection bubble menu avoids all of this only because its buttons
  * `preventDefault` on mousedown, so focus never leaves `.tiptap`.
  */
 export function absorbBlockMenuEscape(
-  event: { key: string; preventDefault: () => void; stopPropagation: () => void },
+  event: { preventDefault: () => void; stopPropagation: () => void },
   close: () => void,
-): boolean {
-  if (event.key !== 'Escape') return false;
+): void {
   event.preventDefault();
   event.stopPropagation();
   close();
-  return true;
 }
