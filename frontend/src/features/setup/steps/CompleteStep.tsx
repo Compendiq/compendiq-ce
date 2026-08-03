@@ -23,8 +23,13 @@ export function CompleteStep() {
         animate={{ scale: 1, opacity: 1 }}
         transition={{ delay: 0.1, duration: 0.3 }}
       >
-        <div className="flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500/20">
-          <svg className="h-8 w-8 text-emerald-400" viewBox="0 0 20 20" fill="currentColor">
+        {/* Same semantic status tokens as the connection banners in the steps
+            before this one (#1168): literal emerald is dark-theme tuned and is
+            not remapped for Frost Steel, so this checkmark — a meaningful state
+            graphic under WCAG 1.4.11's 3:1 floor — measured 1.55:1 on its own
+            disc in the light theme. */}
+        <div className="flex h-16 w-16 items-center justify-center rounded-full bg-status-connected/20">
+          <svg className="h-8 w-8 text-status-connected" viewBox="0 0 20 20" fill="currentColor">
             <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
           </svg>
         </div>
