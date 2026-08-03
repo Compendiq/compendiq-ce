@@ -7,6 +7,7 @@ import { getEmbeddingStatus, processDirtyPages, reEmbedAll, resetFailedEmbedding
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
 import { getRateLimits } from '../../core/services/rate-limit-service.js';
+import { toPageIdText } from '../../core/utils/page-id-text.js';
 
 const adminMax = async () => (await getRateLimits()).admin.max;
 
@@ -68,15 +69,20 @@ export async function knowledgeAdminRoutes(fastify: FastifyInstance) {
     // can match, so the whole statement aborted and the route 500ed even though
     // the row existed. Casting the column cannot fail on any input.
     //
-    // The numeric guard is now about the planner, not safety: it keeps a
-    // non-numeric pageId off the un-indexable `id::text` arm so the lookup is
-    // served straight from the confluence_id index. Same shape as the
-    // `/pages/:id/children` resolution in `pages-crud.ts`.
+    // The numeric guard is no longer what makes this safe — `id::text` cannot
+    // fail on any input — it just keeps a non-numeric pageId off an arm it
+    // could never match. That arm stays index-served either way: migration 084
+    // indexes this exact expression (`pages_id_text_idx ON pages ((id::text))`).
+    //
+    // `toPageIdText` restores the numeric normalisation the `::int` cast used
+    // to provide, so a zero-padded '007' still resolves to page 7. It applies
+    // to the id arm only; `confluence_id` is text and matches verbatim. Same
+    // resolution as the parent lookup in `POST /api/pages` (`pages-crud.ts`).
     const isNumericId = /^\d+$/.test(pageId);
     const pageResult = isNumericId
       ? await query<{ id: number }>(
           'SELECT id FROM pages WHERE id::text = $1 OR confluence_id = $2',
-          [pageId, pageId],
+          [toPageIdText(pageId), pageId],
         )
       : await query<{ id: number }>(
           'SELECT id FROM pages WHERE confluence_id = $1',

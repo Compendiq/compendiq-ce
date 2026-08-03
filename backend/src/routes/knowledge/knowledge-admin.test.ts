@@ -338,6 +338,24 @@ describe('knowledge-admin routes - happy path', () => {
     expect(mockRegenerateSummary).toHaveBeenCalledWith(99);
   });
 
+  // The id arm is normalised (`toPageIdText`) so a zero-padded id still
+  // resolves the way `'007'::int` used to; `confluence_id` stays verbatim.
+  it('should normalise a zero-padded pageId on the id arm only', async () => {
+    mockQueryFn.mockResolvedValue({ rows: [{ id: 7 }] });
+    mockRegenerateSummary.mockResolvedValue(undefined);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/llm/summary-regenerate/007',
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockQueryFn).toHaveBeenCalledWith(
+      'SELECT id FROM pages WHERE id::text = $1 OR confluence_id = $2',
+      ['7', '007'],
+    );
+  });
+
   // #356 AC: when no provider is configured, the route must still respond
   // cleanly (the fire-and-forget runSummaryBatch call swallows the
   // no-provider case internally and marks pending pages as skipped). The

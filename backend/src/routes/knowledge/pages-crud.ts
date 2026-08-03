@@ -6,6 +6,7 @@ import { getClientForUser } from '../../domains/confluence/services/sync-service
 import { htmlToConfluence, confluenceToHtml } from '../../core/services/content-converter.js';
 import { cleanPageAttachments, writeAttachmentCache } from '../../domains/confluence/services/attachment-handler.js';
 import { assertNonSsrfUrl, SsrfError } from '../../core/utils/ssrf-guard.js';
+import { toPageIdText } from '../../core/utils/page-id-text.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import {
   startBulkJob,
@@ -907,16 +908,22 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // SERIAL (int4), so casting the *parameter* overflows on any Confluence
     // content id above 2^31 — and the `confluence_id` arm does not rescue it,
     // because the cast aborts the statement before the OR can match. Casting
-    // the column instead cannot overflow. The numeric guard stays: it keeps a
-    // non-numeric id off the un-indexable `id::text` arm so the planner can
-    // serve it straight from the confluence_id index.
+    // the column instead cannot overflow, and migration 084 indexes exactly
+    // this expression (`pages_id_text_idx ON pages ((id::text))`), so the arm
+    // stays index-served. The numeric guard keeps a non-numeric id off that
+    // arm, where it could never match anyway.
+    //
+    // `toPageIdText` restores the numeric normalisation the `::int` cast used
+    // to provide: text comparison is literal, so a zero-padded '007' would no
+    // longer find page 7. It applies to the id arm ONLY — confluence_id is a
+    // text column and must still be matched verbatim.
     const isNumericId = /^\d+$/.test(id);
     const pageResult = await query<{ id: number; confluence_id: string | null; space_key: string | null; source: string; visibility: string; created_by_user_id: string | null }>(
       `SELECT id, confluence_id, space_key, source, visibility, created_by_user_id FROM pages
-       WHERE ${isNumericId ? '(confluence_id = $1 OR id::text = $1)' : 'confluence_id = $1'}
+       WHERE ${isNumericId ? '(confluence_id = $1 OR id::text = $2)' : 'confluence_id = $1'}
          AND deleted_at IS NULL
        LIMIT 1`,
-      [id],
+      isNumericId ? [id, toPageIdText(id)] : [id],
     );
 
     if (pageResult.rows.length === 0) {
@@ -1180,11 +1187,17 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // can match, the `confluence_id` arm never got the chance to rescue it:
     // the whole statement aborted with 22003 and the create 500ed even though
     // the parent row was right there.
+    //
+    // `toPageIdText` keeps the numeric normalisation the cast used to provide
+    // (see the children route above). It matters more here than anywhere else:
+    // an unresolved lookup leaves `confluenceParentId` holding the caller's raw
+    // input, which then goes upstream to `client.createPage` as a parent id, so
+    // a silent miss misplaces the page in Confluence rather than 404ing.
     let confluenceParentId = body.parentId;
     if (confluenceParentId && /^\d+$/.test(confluenceParentId)) {
       const parentLookup = await query<{ confluence_id: string | null }>(
         'SELECT confluence_id FROM pages WHERE id::text = $1 OR confluence_id = $2',
-        [confluenceParentId, confluenceParentId],
+        [toPageIdText(confluenceParentId), confluenceParentId],
       );
       if (parentLookup.rows[0]?.confluence_id) {
         confluenceParentId = parentLookup.rows[0].confluence_id;

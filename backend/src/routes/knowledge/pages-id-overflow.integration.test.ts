@@ -220,6 +220,34 @@ describe.skipIf(!dbAvailable)('pages.id int4 overflow on externally-sourced ids 
         'conf-small',
       );
     });
+
+    it('still resolves a zero-padded internal DB id', async () => {
+      const parentDbId = await createPage({ title: 'Small parent', confluenceId: 'conf-small' });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages',
+        payload: {
+          spaceKey: 'CONF',
+          title: 'Child page',
+          bodyHtml: '<p>body</p>',
+          parentId: `000${parentDbId}`,
+          source: 'confluence',
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      // `'007'::int` normalised to 7; text comparison is literal, so without
+      // normalising the id arm this silently missed. A missed parent lookup is
+      // worse than a 404 here — it forwards the caller's raw input upstream as
+      // the Confluence parent id, misplacing the new page.
+      expect(h.client.createPage).toHaveBeenCalledWith(
+        'CONF',
+        'Child page',
+        expect.any(String),
+        'conf-small',
+      );
+    });
   });
 
   // ── Site 2: GET /api/pages/:id/children (pages-crud.ts) ──────────────────
@@ -255,6 +283,39 @@ describe.skipIf(!dbAvailable)('pages.id int4 overflow on externally-sourced ids 
         expect.objectContaining({ title: 'Kid' }),
       ]);
     });
+
+    it('still resolves a zero-padded internal DB id', async () => {
+      const parentDbId = await createPage({ title: 'Small parent', confluenceId: 'conf-small' });
+      await createPage({ title: 'Kid', confluenceId: 'conf-kid', parentRef: 'conf-small' });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/pages/000${parentDbId}/children`,
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().children).toEqual([
+        expect.objectContaining({ title: 'Kid' }),
+      ]);
+    });
+
+    it('matches confluence_id verbatim, without numeric normalisation', async () => {
+      // The normalisation is for the id arm only. A page whose confluence_id is
+      // literally '000999888777' must still be found by that exact string — and
+      // must NOT be found by its normalised form, which would be a false match.
+      // The numeric form is chosen far beyond any serial this suite allocates,
+      // so the id arm cannot rescue the lookup and make the assertion vacuous.
+      const padded = '000999888777';
+      await createPage({ title: 'Padded', confluenceId: padded });
+      await createPage({ title: 'Kid', confluenceId: 'conf-kid', parentRef: padded });
+
+      const hit = await app.inject({ method: 'GET', url: `/api/pages/${padded}/children` });
+      expect(hit.statusCode).toBe(200);
+      expect(hit.json().children).toEqual([expect.objectContaining({ title: 'Kid' })]);
+
+      const miss = await app.inject({ method: 'GET', url: '/api/pages/999888777/children' });
+      expect(miss.statusCode).toBe(404);
+    });
   });
 
   // ── Site 3: POST /api/llm/summary-regenerate/:pageId (knowledge-admin.ts) ─
@@ -287,6 +348,23 @@ describe.skipIf(!dbAvailable)('pages.id int4 overflow on externally-sourced ids 
       const response = await app.inject({
         method: 'POST',
         url: `/api/llm/summary-regenerate/${dbId}`,
+      });
+
+      expect(response.statusCode).toBe(200);
+      const after = await query<{ summary_status: string }>(
+        'SELECT summary_status FROM pages WHERE id = $1',
+        [dbId],
+      );
+      expect(after.rows[0]!.summary_status).toBe('pending');
+    });
+
+    it('still resolves a zero-padded internal DB id', async () => {
+      const dbId = await createPage({ title: 'Small page', confluenceId: 'conf-small' });
+      await query("UPDATE pages SET summary_status = 'summarized' WHERE id = $1", [dbId]);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/llm/summary-regenerate/000${dbId}`,
       });
 
       expect(response.statusCode).toBe(200);
