@@ -311,8 +311,11 @@ describe('AiContext per-page threads (#1126)', () => {
   });
 
   it('applies an explicit ?mode= when navigating onto /ai', () => {
-    // The provider no longer remounts on route entry, so the mode carried by
-    // the article rail's "AI Improve" link has to be applied reactively.
+    // The provider no longer remounts on route entry, so a mode carried in the
+    // URL has to be applied reactively. Nothing in the app still produces one:
+    // #1126 turned the article rail's link into the dock, and #1176 took the
+    // last of its Improve wording with it. Bookmarks and links made before that
+    // change still arrive here, which is why the mode screens still render.
     renderThreadApp('/ai', ['/ai?mode=improve&pageId=page-a']);
 
     expect(screen.getByTestId('mode')).toHaveTextContent('ask');
