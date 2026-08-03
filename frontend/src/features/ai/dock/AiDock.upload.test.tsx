@@ -257,7 +257,20 @@ describe('AiDock — reference document (#1131)', () => {
     await waitFor(() => expect(screen.getByTestId('ai-dock-chip-improve')).not.toBeDisabled());
   });
 
-  it('refuses an unsupported file before it reaches the server', async () => {
+  /**
+   * #1154 changed which refusal this is, not whether there is one. A PNG is no
+   * longer "not a document" — it is an image the dock cannot use yet, because
+   * the resolved chat model has not been probed as vision-capable. The refusal
+   * still happens client-side, before any upload.
+   *
+   * This fixture's `/llm/usecase-default` response carries no `vision` field,
+   * so `chatVision` is `null` — capability unestablished, not denied — and the
+   * message is the tri-state "not confirmed" one rather than a claim the model
+   * cannot read images. (It was the generic fallback until the dock started
+   * supplying `imageDisabledReason`; the fallback now only covers a caller that
+   * passes none.)
+   */
+  it('refuses an image while the model has no vision capability, before it reaches the server', async () => {
     renderDock();
     await openAndSettle();
 
@@ -267,9 +280,34 @@ describe('AiDock — reference document (#1131)', () => {
 
     await waitFor(() => {
       expect(toastErrorMock).toHaveBeenCalledWith(
-        'Only PDF, DOCX, MD, TXT, RTF and ODT files are accepted',
+        "Image support for the model assigned to chat (llama3) isn't "
+        + 'confirmed yet — try again shortly.',
       );
     });
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('ai-dock-doc-attachment-card')).not.toBeInTheDocument();
+  });
+
+  /** A file that is neither a document nor an image still gets the one
+   *  "we don't take that" message, naming both accepted sets. */
+  it('refuses an unsupported file before it reaches the server', async () => {
+    renderDock();
+    await openAndSettle();
+
+    fireEvent.change(screen.getByTestId('ai-dock-doc-file-input'), {
+      target: { files: [new File(['x'], 'archive.zip', { type: 'application/zip' })] },
+    });
+
+    await waitFor(() => {
+      expect(toastErrorMock).toHaveBeenCalledWith(
+        expect.stringContaining('Unsupported file.'),
+      );
+    });
+    const message = toastErrorMock.mock.calls[0]![0] as string;
+    expect(message).toContain('PDF');
+    expect(message).toContain('DOCX');
+    expect(message).toContain('ODT');
+    expect(message).toContain('PNG');
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 

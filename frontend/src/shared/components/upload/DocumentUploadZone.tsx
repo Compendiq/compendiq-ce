@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { AlertTriangle, FileText, Loader2, Paperclip, Upload, X } from 'lucide-react';
-import { toast } from 'sonner';
 import { SUPPORTED_DOCUMENT_FORMATS, type DocumentFormat } from '@compendiq/contracts';
 import type { ExtractDocumentResult } from '../../hooks/use-extract-document';
 import { cn } from '../../lib/cn';
+import { composerRowClass } from './composer-row';
 
 /**
  * Shared document-upload affordance (#1131).
@@ -15,14 +15,14 @@ import { cn } from '../../lib/cn';
  * common one, so it gets `composer`: a paperclip inside the prompt box that
  * costs nothing until it is used, and a compact card once it is.
  *
- * Everything else is shared and lives here exactly once — client-side
- * validation, the 20 MB gate, extraction error handling, and the copy, all of
- * which are derived from {@link DocumentUploadZoneProps.formats} rather than
- * written twice.
+ * **Presentational since #1154.** It picks a file and hands it to
+ * {@link DocumentUploadZoneProps.onPick}; it no longer extracts anything, and it
+ * decides nothing about which files are acceptable. Both gates — format and the
+ * 20 MB ceiling — live in `useAttachments`, which is the only place that knows
+ * whether a file is a document or an image. Putting either back here would mean
+ * a PNG dropped on a shared composer target gets tested against a document-only
+ * check and silently rejected, which is the bug this shape exists to prevent.
  */
-
-/** Server-side upload ceiling, mirrored here so a doomed POST is never sent. */
-const MAX_FILE_BYTES = 20 * 1024 * 1024;
 
 /** Above this the backend truncates the document for the model's context window. */
 const DOCUMENT_TEXT_TRUNCATION_THRESHOLD = 80_000;
@@ -32,7 +32,11 @@ interface DocumentFormatMeta {
   label: string;
   /** Accepted filename extensions, without the dot. */
   extensions: readonly string[];
-  /** MIME types browsers actually report. Advisory only — see `isAccepted`. */
+  /**
+   * MIME types browsers actually report. They only ever widen the `accept`
+   * attribute — nothing here decides whether a file is acceptable, and the
+   * gate that eventually does (`useAttachments`) matches on extension.
+   */
   mimeTypes: readonly string[];
 }
 
@@ -57,14 +61,21 @@ const FORMAT_META: Record<DocumentFormat, DocumentFormatMeta> = {
   },
 };
 
-/** "PDF", "PDF and DOCX", "PDF, DOCX and MD" — copy, not a machine list. */
-function formatList(formats: readonly DocumentFormat[]): string {
-  const labels = formats.map((f) => FORMAT_META[f].label);
-  if (labels.length <= 1) return labels[0] ?? '';
-  return `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`;
-}
-
-/** The `accept` attribute: extensions *and* MIME types, so both file pickers behave. */
+/**
+ * The `accept` attribute: extensions *and* MIME types, so both file pickers
+ * behave.
+ *
+ * Listing both is not belt-and-braces, it is the whole point: browsers disagree
+ * wildly about the MIME type of a `.md`, `.rtf` or `.odt` — Chrome reports `''`
+ * for Markdown on some platforms — so an accept list of MIME types alone would
+ * grey out legitimate files in the picker. This is a filter on what the picker
+ * offers, never a gate: `useAttachments` decides what is actually accepted, and
+ * the bytes are re-sniffed server-side after that.
+ *
+ * (Until #1154 the same extension-or-MIME looseness also backed an `isAccepted`
+ * guard in this component. That guard is gone, not relaxed — the gate moved to
+ * `useAttachments`, which matches on extension.)
+ */
 function acceptAttribute(formats: readonly DocumentFormat[]): string {
   return formats
     .flatMap((f) => [
@@ -72,23 +83,6 @@ function acceptAttribute(formats: readonly DocumentFormat[]): string {
       ...FORMAT_META[f].extensions.map((ext) => `.${ext}`),
     ])
     .join(',');
-}
-
-/**
- * Extension *or* MIME match, not both.
- *
- * Browsers disagree wildly about the MIME type of a `.md`, `.rtf` or `.odt` —
- * Chrome reports `''` for Markdown on some platforms — so requiring the MIME to
- * match would reject legitimate files. The bytes are re-sniffed server-side
- * regardless; this check exists only to fail fast and locally.
- */
-function isAccepted(file: File, formats: readonly DocumentFormat[]): boolean {
-  const name = file.name.toLowerCase();
-  return formats.some((f) => {
-    const meta = FORMAT_META[f];
-    return meta.extensions.some((ext) => name.endsWith(`.${ext}`)) ||
-      (file.type !== '' && meta.mimeTypes.includes(file.type));
-  });
 }
 
 /** Human-readable size. */
@@ -100,22 +94,27 @@ function formatFileSize(bytes: number): string {
 
 export interface DocumentUploadZoneProps {
   /**
-   * Which formats this surface offers. Drives the `accept` attribute, the
-   * client-side check, and every string the component renders — a single-format
-   * list says "Only PDF files are accepted", a longer one names them all.
+   * Which formats this surface offers. Drives the `accept` attribute and every
+   * string the component renders.
+   *
+   * **It no longer gates anything** (#1154) — the parent's `useAttachments`
+   * decides what is accepted, so narrowing this list changes the copy and the
+   * picker's filter but will NOT refuse a dropped file of another supported
+   * type. To actually narrow what is accepted, the gate has to move to
+   * `useAttachments` too.
    *
    * Defaults to every format the backend supports.
    */
   formats?: readonly DocumentFormat[];
   /**
-   * `extractDocument` from a `useExtractDocument()` instance. Pass the parent's
-   * instance together with its `isExtracting`, never a second one (#940).
+   * Hand the picked file to the parent's `useAttachments` router, which decides
+   * document-vs-image. This component no longer extracts anything itself: with a
+   * shared composer drop target, a dropped PNG would otherwise be tested against
+   * this component's document-only format check and silently rejected.
    */
-  extract: (file: File) => Promise<ExtractDocumentResult>;
-  /** `isExtracting` from that same instance. */
+  onPick: (file: File) => void;
+  /** `isExtracting` from the parent's `useAttachments`, for the busy state. */
   isExtracting: boolean;
-  /** Called with the extraction result and the original filename. */
-  onExtracted: (result: ExtractDocumentResult, filename: string) => void;
   /** The extracted document currently attached, or `null`. Parent owns it. */
   extracted: ExtractDocumentResult | null;
   /** Filename of the attached document, or `null`. */
@@ -126,9 +125,15 @@ export interface DocumentUploadZoneProps {
   disabled?: boolean;
   /**
    * `dropzone` (default) is a standing full-width dashed target with a preview
-   * card. `composer` is a paperclip button plus a compact attachment card, and
-   * renders as a **fragment** meant to sit inside an `nm-composer` that has
-   * `flex-wrap` — its full-width rows then stack above the textarea.
+   * card. `composer` is a paperclip button plus a compact attachment card,
+   * meant to sit inside an `nm-composer` that has `flex-wrap`.
+   *
+   * The `composer` variant contributes exactly one flex item: a row holding the
+   * card (or drop hint) and this zone's own trigger together, per
+   * {@link composerRowClass}. `ImageAttachZone` takes the same shape, so two
+   * zones stack as two rows instead of interleaving. That structure is what
+   * makes tab order match reading order (WCAG 2.4.3) — see `composerRowClass`
+   * for why the `order-*` convention it replaced could not.
    */
   variant?: 'dropzone' | 'composer';
   /** Accessible name and tooltip for the `composer` trigger. */
@@ -136,22 +141,36 @@ export interface DocumentUploadZoneProps {
   /** `composer` only: one line naming what consumes the document. */
   usageHint?: string;
   /**
-   * An **ancestor** element that should accept drops instead of the trigger —
-   * the dock passes its composer, so a file can be let go anywhere on the
-   * prompt box rather than onto a 28px paperclip. Must contain the trigger:
-   * when it is set the trigger stops handling drops itself, so that one drop
-   * is not extracted twice.
+   * #1154: drag state supplied by the parent's `useAttachments`, which owns a
+   * shared drop target spanning the whole composer.
+   *
+   * Supplying it means **the parent owns the drop**, not merely the highlight:
+   * this component then attaches no drag or drop listeners of its own. It has
+   * to be all-or-nothing. `useAttachments` listens natively on an ancestor
+   * while React delegates to its root container, so on one bubbling drop the
+   * ancestor fires *first* and this component's handler second — two intakes of
+   * one file, which `stopPropagation` cannot undo after the fact. A test in
+   * `GenerateMode.image.test.tsx` pins the extraction count at one.
+   *
+   * Omit it and the component keeps its own state and its own listeners, which
+   * is what a standalone `dropzone` needs — there it IS the drop target.
+   *
+   * **No shipped surface omits it today** (#1154). Generate passes it on the
+   * `dropzone` variant too, so the internal `dragDepth`/`enterDrag`/`leaveDrag`/
+   * `handleDrop` path is exercised only by this component's own tests. It is
+   * kept deliberately: this is a shared component, and a standalone dropzone
+   * with no `useAttachments` above it is the configuration it was built for. It
+   * is a supported fallback, not a live dependency of anything on screen.
    */
-  dropTargetRef?: React.RefObject<HTMLElement | null>;
+  isDragOver?: boolean;
   /** Prefix for every `data-testid` this renders. */
   testIdPrefix?: string;
 }
 
 export function DocumentUploadZone({
   formats = SUPPORTED_DOCUMENT_FORMATS,
-  extract,
+  onPick,
   isExtracting,
-  onExtracted,
   extracted,
   filename,
   onRemove,
@@ -159,35 +178,24 @@ export function DocumentUploadZone({
   variant = 'dropzone',
   triggerLabel,
   usageHint,
-  dropTargetRef,
+  isDragOver: isDragOverProp,
   testIdPrefix = 'document',
 }: DocumentUploadZoneProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [isDragOver, setIsDragOver] = useState(false);
+  const [internalIsDragOver, setInternalIsDragOver] = useState(false);
+
+  // The parent's state wins when it has one: only it can see a drag over the
+  // whole composer. Falling back rather than replacing keeps the `dropzone`
+  // variant — which is its own drop target — working with no prop at all.
+  const isDragOver = isDragOverProp ?? internalIsDragOver;
 
   // A single-format surface names that format everywhere it would otherwise
   // say "document": pass `formats={['pdf']}` and every string reads "PDF". No
-  // surface does today — both take all six since #1132 — but the copy stays
-  // derived rather than hardcoded so narrowing one is a one-line change.
+  // surface does today — both take all six since #1132 — and note that this
+  // changes only the copy and the picker's filter: since #1154 narrowing
+  // `formats` does not narrow what is actually accepted. See the prop's doc.
   const only = formats.length === 1 ? formats[0] : undefined;
   const noun = only ? FORMAT_META[only].label : 'document';
-
-  const handleFile = useCallback(async (file: File) => {
-    if (!isAccepted(file, formats)) {
-      toast.error(`Only ${formatList(formats)} files are accepted`);
-      return;
-    }
-    if (file.size > MAX_FILE_BYTES) {
-      toast.error('File exceeds 20 MB limit');
-      return;
-    }
-    try {
-      const result = await extract(file);
-      onExtracted(result, file.name);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : `${noun} extraction failed`);
-    }
-  }, [extract, onExtracted, formats, noun]);
 
   // Drag state is counted, not toggled: `dragleave` fires every time the
   // pointer crosses into a child, so a composer full of children would flicker
@@ -195,28 +203,31 @@ export function DocumentUploadZone({
   const dragDepth = useRef(0);
   const enterDrag = useCallback(() => {
     dragDepth.current += 1;
-    setIsDragOver(true);
+    setInternalIsDragOver(true);
   }, []);
   const leaveDrag = useCallback(() => {
     dragDepth.current = Math.max(0, dragDepth.current - 1);
-    if (dragDepth.current === 0) setIsDragOver(false);
+    if (dragDepth.current === 0) setInternalIsDragOver(false);
   }, []);
   const endDrag = useCallback(() => {
     dragDepth.current = 0;
-    setIsDragOver(false);
+    setInternalIsDragOver(false);
   }, []);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     endDrag();
     const file = e.dataTransfer.files[0];
-    if (file) void handleFile(file);
-  }, [endDrag, handleFile]);
+    // Straight to the parent's router: this component decides nothing about
+    // which files are acceptable (#1154).
+    if (file) onPick(file);
+  }, [endDrag, onPick]);
 
-  // When an ancestor is handling drops, the trigger must not handle them too:
-  // the ancestor's native listener and this element's React handler would both
-  // see the same bubbling event and extract the file twice.
-  const dragProps = dropTargetRef ? {} : {
+  // Attached only when this component owns the drop. A parent that passes
+  // `isDragOver` has a `useAttachments` drop target on an ancestor, and that
+  // listener already sees this element's drops — see the prop's doc for why
+  // both listening means the file is taken in twice.
+  const dragProps = isDragOverProp !== undefined ? {} : {
     onDragEnter: enterDrag,
     onDragLeave: leaveDrag,
     // Without preventDefault the browser navigates to the dropped file.
@@ -224,32 +235,7 @@ export function DocumentUploadZone({
     onDrop: handleDrop,
   };
 
-  // Widen the drop target to a parent-owned element. Native listeners rather
-  // than cloned props, because the element belongs to the caller's tree.
   const blocked = disabled || isExtracting;
-  useEffect(() => {
-    const target = dropTargetRef?.current;
-    if (!target || blocked) return;
-
-    const onDragOver = (e: DragEvent) => e.preventDefault();
-    const onDrop = (e: DragEvent) => {
-      e.preventDefault();
-      endDrag();
-      const file = e.dataTransfer?.files[0];
-      if (file) void handleFile(file);
-    };
-
-    target.addEventListener('dragenter', enterDrag);
-    target.addEventListener('dragleave', leaveDrag);
-    target.addEventListener('dragover', onDragOver);
-    target.addEventListener('drop', onDrop);
-    return () => {
-      target.removeEventListener('dragenter', enterDrag);
-      target.removeEventListener('dragleave', leaveDrag);
-      target.removeEventListener('dragover', onDragOver);
-      target.removeEventListener('drop', onDrop);
-    };
-  }, [dropTargetRef, blocked, enterDrag, leaveDrag, endDrag, handleFile]);
 
   const fileInput = (
     <input
@@ -259,7 +245,7 @@ export function DocumentUploadZone({
       className="hidden"
       onChange={(e) => {
         const file = e.target.files?.[0];
-        if (file) void handleFile(file);
+        if (file) onPick(file);
         // Reset so re-selecting the same file triggers onChange
         e.target.value = '';
       }}
@@ -301,12 +287,15 @@ export function DocumentUploadZone({
 
   if (variant === 'composer') {
     return (
-      <>
+      <div
+        className={composerRowClass(isDragOver || Boolean(extracted && filename))}
+        data-testid={`${testIdPrefix}-row`}
+      >
         {fileInput}
 
         {isDragOver ? (
           <div
-            className="flex w-full items-center justify-center gap-2 rounded-md border border-dashed border-primary bg-primary/10 px-2 py-2 text-xs font-medium text-primary-ink"
+            className="flex min-w-0 flex-1 items-center justify-center gap-2 rounded-md border border-dashed border-primary bg-primary/10 px-2 py-2 text-xs font-medium text-primary-ink"
             data-testid={`${testIdPrefix}-drop-hint`}
           >
             <Upload size={13} aria-hidden />
@@ -314,7 +303,7 @@ export function DocumentUploadZone({
           </div>
         ) : extracted && filename ? (
           <div
-            className="flex w-full items-start gap-2 rounded-md border border-border bg-background/40 px-2 py-1.5"
+            className="flex min-w-0 flex-1 items-start gap-2 rounded-md border border-border bg-background/40 px-2 py-1.5"
             data-testid={`${testIdPrefix}-attachment-card`}
           >
             <FileText size={14} className="mt-0.5 shrink-0 text-muted-foreground" aria-hidden />
@@ -347,9 +336,10 @@ export function DocumentUploadZone({
           title={triggerLabel ?? `Attach a ${noun}`}
           className={cn(
             // The transparent border is load-bearing: it makes this exactly as
-            // tall as the bordered send button beside it, so two self-end icons
-            // on the composer's last line share one optical centre.
-            'flex shrink-0 self-end items-center rounded-md border border-transparent px-2 py-2',
+            // tall as the bordered send button, so when this row holds nothing
+            // but the trigger the two icons share the composer's last line and
+            // one optical centre. (The row owns `self-end`, not the button.)
+            'flex shrink-0 items-center rounded-md border border-transparent px-2 py-2',
             'text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground',
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
             'disabled:pointer-events-none disabled:opacity-50',
@@ -361,7 +351,7 @@ export function DocumentUploadZone({
             ? <Loader2 size={16} className="animate-spin" aria-hidden />
             : <Paperclip size={16} aria-hidden />}
         </button>
-      </>
+      </div>
     );
   }
 

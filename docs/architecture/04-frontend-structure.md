@@ -36,9 +36,9 @@ flowchart TB
     subgraph shared["shared/"]
         direction LR
         sEnt["enterprise/<br/>context · loader · types · hook"]
-        sComp["components/<br/>layout · article · diagrams · badges ·<br/>banners (TrialBanner · ConfluencePatBanner #771) ·<br/>feedback · effects ·<br/>upload/ DocumentUploadZone — Generate + dock (#1131)"]
-        sHooks["hooks/<br/>useSessionInit · useTokenRefreshTimer ·<br/>useThemeEffect · useSetupStatus"]
-        sLib["lib/ (api client, utils)"]
+        sComp["components/<br/>layout · article · diagrams · effects ·<br/>banners (TrialBanner · ConfluencePatBanner #771) · feedback ·<br/>badges/ VisionBadge (#1154) ·<br/>upload/ DocumentUploadZone (#1131) ·<br/>ImageAttachZone · composer-row (#1154)"]
+        sHooks["hooks/<br/>useSessionInit · useTokenRefreshTimer ·<br/>useThemeEffect · useSetupStatus ·<br/>useAttachments · usePrepareImage (#1154)"]
+        sLib["lib/ (api client, utils)<br/>downscale-image (#1154)"]
     end
 
     features --> shared
@@ -111,6 +111,75 @@ flowchart LR
 - `/ai` keeps only the Ask and Generate tabs. The four document actions are
   dock chips; their mode screens still render for `?mode=…` deep links (which
   `SidebarTreeView` and old bookmarks still produce), but nothing offers them.
+
+## Composer attachments (#1131 documents, #1154 images)
+
+The three AI composer surfaces — `/ai` Generate, `/ai` Improve and the dock's
+`DockPanel` — do not each hold their own attachment state. All three mount one
+`useAttachments` (`shared/hooks/`), which owns **both** slots and every way a
+file can arrive.
+
+```mermaid
+flowchart TB
+    subgraph surfaces["The three composers"]
+        gen["GenerateMode"]
+        imp["ImproveMode"]
+        dock["DockPanel"]
+    end
+
+    surfaces --> hook["useAttachments<br/>both slots · click/drop/paste routing<br/>shared drop target on nm-composer<br/>20 MB document gate"]
+
+    hook -->|document| ext["useExtractDocument<br/>POST /api/llm/extract-document"]
+    hook -->|image| prep["usePrepareImage"]
+    prep --> down["downscale-image<br/>→ WebP, longest edge ≤1568"]
+    down --> api["POST /api/llm/prepare-image<br/>→ handle (Redis, 15 min)"]
+
+    hook -.renders.-> zones["DocumentUploadZone · ImageAttachZone<br/>presentational — gate nothing"]
+```
+
+- **The hook decides, the zones display.** Whether a dropped file is a document
+  or an image is answered once, in the only place that sees both halves; the
+  zones report the file they were handed. A shared drop target makes this
+  structural rather than stylistic — if both zones listened, which one claimed a
+  dropped PNG would be emergent rather than designed.
+- Passing **`isDragOver`** into `DocumentUploadZone` is the signal that an
+  ancestor owns the drop target; the component then binds no drag handlers of its
+  own. Omitting it while the hook listens double-fires every drop.
+- Every image is re-encoded in the browser before staging, so the server only
+  ever receives WebP inside the edge cap. **SVG is refused client-side** and never
+  rasterized. See [`11-content-pipeline.md`](./11-content-pipeline.md) for the
+  server contract.
+- Attaching an image requires `AiContext`'s **`chatVision`** to be exactly
+  `true`. It is a tri-state (`true` / `false` / `null`) and must not be collapsed
+  to a boolean: `false` is "probed and refused", `null` is "not established" —
+  which is usually *not probed yet*, since `getVisionCapability` is a cache read
+  that schedules a refresh and returns `null` on the spot — and `VisionBadge`
+  (`shared/components/badges/`, also shown on the Settings → LLM chat assignment)
+  renders them as different words. No copy may claim a probe ran.
+- The verdict is about the **chat use-case default**, never the model dropdown.
+  `/llm/generate` and `/llm/improve` both gate on `resolveUsecase('chat')` and
+  ignore the body's `model`, so refusal copy interpolates `AiContext`'s
+  **`chatVisionModel`** — and `ImageAttachZone` names the prop `visionModel` to
+  keep it apart from `model`. On `/ai` the two differ on screen the moment the
+  user changes the dropdown.
+- **In the dock, neither attachment reaches Send.** `ask()` posts to `/llm/ask`,
+  which accepts no `referenceText` and no `imageHandle` — wiring either in would
+  be a 400, not a feature. Only the Improve chip consumes them, so both zones say
+  so in their trigger label and on their card (`triggerLabel` / `usageHint`).
+  Improve also re-checks `isBusy` **inside** `runChip` rather than only on the
+  chip's `disabled`: `DockDiffCard`'s "Re-run Improve" and the seed effect both
+  reach it directly.
+- Both `isExtracting` and `isPreparing` are **depth counters**, not booleans. The
+  shared drop target accepts a second file mid-flight, and a boolean would clear
+  on the first `finally` — re-enabling the trigger and unblocking Send while the
+  second attachment was still being prepared (#940). Removing or clearing a slot
+  also bumps its request id, so an in-flight result that lands afterwards is
+  discarded rather than re-attaching itself to whatever page the user moved to.
+- Each zone contributes **one flex row holding its own card and trigger**
+  (`composer-row.ts`). `order-*` moves boxes without moving the tab sequence, so
+  the reordering convention that predated this is gone from the zones and all
+  three hosts; `expectComposerFocusOrder` (`test-utils.ts`) fails on any `order-*`
+  inside a composer (WCAG 2.4.3).
 
 ## Relocating an article across the Confluence boundary (#1123)
 

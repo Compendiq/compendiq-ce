@@ -41,6 +41,16 @@ vi.mock('sonner', () => ({
   },
 }));
 
+/**
+ * The action button, by name. A bare `getByRole('button')` used to be
+ * unambiguous here and stopped being so when #1154 gave this composer its
+ * attach triggers; the name also covers the pre-model "Loading models..."
+ * label, which is the same button mid-boot.
+ */
+function improveButton(): HTMLButtonElement {
+  return screen.getByRole('button', { name: /Improve Page|Loading models/i }) as HTMLButtonElement;
+}
+
 function createWrapper(initialEntries = ['/ai?pageId=page-1&mode=improve']) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -114,7 +124,7 @@ describe('ImproveMode', () => {
     render(<ImproveModeInput />, { wrapper: createWrapper() });
     // Wait for models to load before checking for "Improve Page"
     // Button text will be "Loading models..." until models load
-    expect(screen.getByRole('button')).toBeInTheDocument();
+    expect(improveButton()).toBeInTheDocument();
   });
 
   it('allows typing in the instruction textarea', () => {
@@ -134,8 +144,7 @@ describe('ImproveMode', () => {
 
     // Wait for models to load
     await waitFor(() => {
-      const btn = screen.getByRole('button');
-      expect(btn).not.toBeDisabled();
+      expect(improveButton()).not.toBeDisabled();
     });
 
     // Type instruction
@@ -143,8 +152,7 @@ describe('ImproveMode', () => {
     fireEvent.change(textarea, { target: { value: 'Focus on the intro' } });
 
     // Click improve
-    const btn = screen.getByRole('button');
-    fireEvent.click(btn);
+    fireEvent.click(improveButton());
 
     await waitFor(() => {
       expect(streamSSEMock).toHaveBeenCalledWith(
@@ -169,13 +177,11 @@ describe('ImproveMode', () => {
 
     // Wait for models to load
     await waitFor(() => {
-      const btn = screen.getByRole('button');
-      expect(btn).not.toBeDisabled();
+      expect(improveButton()).not.toBeDisabled();
     });
 
     // Click improve without typing instruction
-    const btn = screen.getByRole('button');
-    fireEvent.click(btn);
+    fireEvent.click(improveButton());
 
     await waitFor(() => {
       expect(streamSSEMock).toHaveBeenCalledWith(
@@ -382,12 +388,10 @@ describe('ImproveMode', () => {
     render(<ImproveModeInput />, { wrapper: createWrapper() });
 
     await waitFor(() => {
-      const btn = screen.getByRole('button');
-      expect(btn).not.toBeDisabled();
+      expect(improveButton()).not.toBeDisabled();
     });
 
-    const btn = screen.getByRole('button');
-    fireEvent.click(btn);
+    fireEvent.click(improveButton());
 
     // While streaming, textarea should be disabled
     await waitFor(() => {

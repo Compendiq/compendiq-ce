@@ -132,6 +132,20 @@ function mockRoutes(options?: {
         headers: { 'Content-Type': 'application/json' },
       });
     }
+    // #1154: UsecaseAssignmentsSection's VisionBadge reads this same key live,
+    // so it must resolve to a valid UsecaseDefault shape, not the catch-all [].
+    if (url.endsWith('/llm/usecase-default?usecase=chat')) {
+      return new Response(
+        JSON.stringify({
+          usecase: 'chat',
+          providerId: providerA.id,
+          providerName: 'Ollama',
+          model: 'qwen3:4b',
+          vision: true,
+        }),
+        { headers: { 'Content-Type': 'application/json' } },
+      );
+    }
     return new Response(JSON.stringify([]), { headers: { 'Content-Type': 'application/json' } });
   });
 }
@@ -435,11 +449,23 @@ describe('LlmTab', () => {
     fireEvent.click(screen.getByRole('button', { name: /save use-case assignments/i }));
 
     // After the mutation succeeds, both seeded entries must be invalidated.
+    // ['llm', 'models', 'chat'] has no active observer in this render tree,
+    // so it just sits invalidated. ['llm', 'usecase-default', 'chat'] *does*
+    // have one now — UsecaseAssignmentsSection's VisionBadge query (#1154)
+    // shares this exact key — so invalidating it triggers an immediate
+    // refetch and `isInvalidated` flips back to `false` once that resolves.
+    // Assert the refetch actually happened (stale seed replaced by the fresh
+    // mocked response) instead of the transient invalidated flag.
     await waitFor(() => {
-      const usecaseEntry = qc.getQueryState(['llm', 'usecase-default', 'chat']);
       const modelsEntry = qc.getQueryState(['llm', 'models', 'chat']);
-      expect(usecaseEntry?.isInvalidated).toBe(true);
       expect(modelsEntry?.isInvalidated).toBe(true);
+      expect(qc.getQueryData(['llm', 'usecase-default', 'chat'])).toEqual({
+        usecase: 'chat',
+        providerId: providerA.id,
+        providerName: 'Ollama',
+        model: 'qwen3:4b',
+        vision: true,
+      });
     });
   });
 

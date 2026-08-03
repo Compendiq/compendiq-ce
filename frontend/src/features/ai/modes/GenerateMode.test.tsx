@@ -6,6 +6,7 @@ import { LazyMotion, domAnimation } from 'framer-motion';
 import { GenerateModeInput, GenerateSavePanel, GENERATE_EMPTY_TITLE, GENERATE_EMPTY_SUBTITLE } from './GenerateMode';
 import { AiProvider, useAiContext } from '../AiContext';
 import { useAuthStore } from '../../../stores/auth-store';
+import { MAX_DOCUMENT_BYTES } from '../../../shared/hooks/use-attachments';
 
 Element.prototype.scrollIntoView = vi.fn();
 
@@ -347,11 +348,14 @@ describe('GenerateMode', () => {
       { format: 'odt', filename: 'draft.odt', mime: 'application/vnd.oasis.opendocument.text', label: 'ODT' },
     ] as const;
 
-    function upload({ filename, mime }: { filename: string; mime: string }) {
+    function upload(
+      { filename, mime, size }: { filename: string; mime: string; size?: number },
+    ) {
       const fileInput = screen.getByTestId('document-file-input');
-      fireEvent.change(fileInput, {
-        target: { files: [new File(['dummy bytes'], filename, { type: mime })] },
-      });
+      const file = new File(['dummy bytes'], filename, { type: mime });
+      // A file that reports a size without allocating one.
+      if (size !== undefined) Object.defineProperty(file, 'size', { value: size });
+      fireEvent.change(fileInput, { target: { files: [file] } });
     }
 
     it('renders the upload zone with format-neutral copy', () => {
@@ -601,13 +605,17 @@ describe('GenerateMode', () => {
     });
 
     it('shows error toast when extraction fails', async () => {
-      mockExtractDocument.mockRejectedValue(new Error('File exceeds 20 MB limit'));
+      // A server-side failure, not the size limit: mocking `extractDocument`
+      // to reject with the size message would never reach the real gate in
+      // `useAttachments`, which refuses an oversized file before the hook is
+      // called at all — see the next test.
+      mockExtractDocument.mockRejectedValue(new Error('Document extraction failed: 500'));
 
       render(<GenerateModeInput />, { wrapper: createWrapper() });
-      upload({ filename: 'huge.odt', mime: 'application/vnd.oasis.opendocument.text' });
+      upload({ filename: 'notes.odt', mime: 'application/vnd.oasis.opendocument.text' });
 
       await waitFor(() => {
-        expect(toastErrorMock).toHaveBeenCalledWith('File exceeds 20 MB limit');
+        expect(toastErrorMock).toHaveBeenCalledWith('Document extraction failed: 500');
       });
 
       // Upload zone should still be visible (no preview card)
@@ -615,17 +623,79 @@ describe('GenerateMode', () => {
       expect(screen.getByTestId('document-upload-zone')).toBeInTheDocument();
     });
 
-    it('rejects an unsupported file type client-side and names all six', async () => {
+    /**
+     * The real 20 MB gate, which mirrors the server's multipart cap so a doomed
+     * POST is never sent. The `extractDocument` mock deliberately stays on its
+     * happy path here: the point is that it is never reached.
+     */
+    it('refuses an oversized document without contacting the server', async () => {
       render(<GenerateModeInput />, { wrapper: createWrapper() });
-      upload({ filename: 'diagram.png', mime: 'image/png' });
+      upload({
+        filename: 'huge.odt',
+        mime: 'application/vnd.oasis.opendocument.text',
+        size: MAX_DOCUMENT_BYTES + 1,
+      });
+
+      await waitFor(() => {
+        expect(toastErrorMock).toHaveBeenCalledWith('File exceeds 20 MB limit');
+      });
+      expect(mockExtractDocument).not.toHaveBeenCalled();
+      expect(screen.queryByTestId('document-preview-card')).not.toBeInTheDocument();
+    });
+
+    // The fixture was `diagram.png` until #1154. A PNG is no longer an
+    // unsupported *document* — Generate accepts images now, so `useAttachments`
+    // routes it to the image branch before the document format check is
+    // reached, and refusing it with a document format list would tell the user
+    // something false about what this screen accepts. The next test covers the
+    // PNG; this one keeps the format list pinned with a file that really is
+    // unsupported.
+    it('rejects an unsupported file type client-side and names every accepted format', async () => {
+      render(<GenerateModeInput />, { wrapper: createWrapper() });
+      upload({ filename: 'archive.zip', mime: 'application/zip' });
 
       await waitFor(() => {
         expect(toastErrorMock).toHaveBeenCalledWith(
-          'Only PDF, DOCX, MD, TXT, RTF and ODT files are accepted',
+          'Unsupported file. Documents: PDF, DOCX, MD, TXT, RTF, ODT. Images: PNG, JPEG, WEBP, GIF.',
         );
       });
 
       expect(mockExtractDocument).not.toHaveBeenCalled();
+    });
+
+    it('refuses a PNG with the vision reason, not the document format list', async () => {
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/llm/usecase-default?usecase=chat') {
+          return Promise.resolve({
+            usecase: 'chat', providerId: 'p1', providerName: 'Local', model: 'llama3', vision: false,
+          });
+        }
+        if (path.startsWith('/ollama/models')) return Promise.resolve([{ name: 'llama3' }]);
+        return Promise.resolve([]);
+      });
+
+      render(<GenerateModeInput />, { wrapper: createWrapper() });
+      // The refusal interpolates the resolved model, so it has to have resolved
+      // before the file is picked — an enabled send button is that signal.
+      fireEvent.change(
+        screen.getByPlaceholderText('Describe the page to generate...'),
+        { target: { value: 'anything' } },
+      );
+      await waitFor(() => {
+        expect(getSendButton()).not.toBeDisabled();
+      });
+
+      upload({ filename: 'diagram.png', mime: 'image/png' });
+
+      await waitFor(() => {
+        expect(toastErrorMock).toHaveBeenCalledWith(
+          "The model assigned to chat (llama3) can't read images — "
+          + 'assign a vision-capable model in Settings → LLM.',
+        );
+      });
+
+      expect(mockExtractDocument).not.toHaveBeenCalled();
+      expect(screen.queryByTestId('image-attach-card')).not.toBeInTheDocument();
     });
 
     it('changes placeholder text when a document is uploaded', async () => {
