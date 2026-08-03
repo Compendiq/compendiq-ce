@@ -91,6 +91,31 @@ export function clearBlockMenuTarget(editor: EditorType): void {
 }
 
 /**
+ * Transaction meta the drag-handle plugin reads to freeze itself. Named here
+ * rather than written inline at the call site because a typo would be silent:
+ * the plugin ignores metas it does not recognise, so the handle would keep
+ * tracking the pointer and would null its node out the moment the pointer left
+ * for the portalled menu.
+ */
+export const DRAG_HANDLE_LOCK_META = 'lockDragHandle';
+
+/**
+ * Freeze (`true`) or release (`false`) the drag handle. While locked the
+ * plugin's `mousemove`, `mouseleave` and `keydown` handlers all early-return,
+ * so the handle stays put and keeps pointing at the block the menu was opened
+ * on. Releasing on close is not optional — a handle left locked never tracks
+ * the pointer again for the life of the editor.
+ *
+ * It has to be the meta: the `lockDragHandle` / `unlockDragHandle` *commands*
+ * live on the `DragHandle` Extension, which this editor never registers — only
+ * the React component's plugin.
+ */
+export function setDragHandleLocked(editor: EditorType, locked: boolean): void {
+  if (editor.isDestroyed) return;
+  editor.view.dispatch(editor.state.tr.setMeta(DRAG_HANDLE_LOCK_META, locked));
+}
+
+/**
  * The target block's live range, remapped through every transaction since the
  * menu opened. `null` when no menu is open, when the plugin is not registered
  * (read-only editors never mount the handle), or when the block is gone.

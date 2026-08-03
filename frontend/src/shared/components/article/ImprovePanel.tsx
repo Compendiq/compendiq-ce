@@ -41,6 +41,7 @@ export function ImprovePanel({
   onReplace,
   onInsertBelow,
   onClose,
+  replaceBlocked,
   className,
 }: {
   id?: string;
@@ -52,6 +53,12 @@ export function ImprovePanel({
   onReplace: () => void;
   onInsertBelow: () => void;
   onClose: () => void;
+  /**
+   * When set, Replace is refused and this is the reason shown. Used when the
+   * model's answer cannot be written back without destroying the block it was
+   * asked about — Insert below stays available, so nothing is lost.
+   */
+  replaceBlocked?: string | null;
   className?: string;
 }) {
   const [freeForm, setFreeForm] = useState('');
@@ -133,12 +140,18 @@ export function ImprovePanel({
               : <span className="text-muted-foreground">{copy.pendingLabel}</span>}
           </div>
 
+          {replaceBlocked && !isStreaming && (
+            <p className="text-xs text-warning" role="status" data-testid={`${testIdPrefix}-replace-blocked`}>
+              {replaceBlocked}
+            </p>
+          )}
+
           <div className="flex flex-wrap items-center gap-1">
             <button
               type="button"
               onClick={onReplace}
-              disabled={!hasResult || isStreaming}
-              title={copy.replaceTitle}
+              disabled={!hasResult || isStreaming || !!replaceBlocked}
+              title={replaceBlocked || copy.replaceTitle}
               className="flex items-center gap-1 rounded-md bg-primary/15 px-2 py-1 text-xs font-medium text-primary hover:bg-primary/25 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
             >
               <Check size={13} /> Replace

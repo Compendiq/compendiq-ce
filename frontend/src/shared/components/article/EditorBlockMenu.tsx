@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import * as Popover from '@radix-ui/react-popover';
 import { useEditorState } from '@tiptap/react';
-import { TextSelection } from '@tiptap/pm/state';
 import type { Editor as EditorType } from '@tiptap/react';
 import type { Node as PMNode } from '@tiptap/pm/model';
 import DragHandle from '@tiptap/extension-drag-handle-react';
@@ -13,14 +12,11 @@ import { buildImproveHtml } from './improve-markdown';
 import { EditorFormatBar } from './EditorFormatBar';
 import { ImprovePanel, type ImprovePanelCopy } from './ImprovePanel';
 import { buildInstruction, BLOCK_INSTRUCTION, type QuickAction } from './improve-actions';
-import { blockLabel, containsStructuredInline, supportsTextActions } from './block-menu-nodes';
 import {
-  blockMenuTargetKey,
-  blockMenuTargetRange,
-  clearBlockMenuTarget,
-  createBlockMenuTargetPlugin,
-  setBlockMenuTarget,
-} from './block-menu-decoration';
+  blockLabel, containsLossyMarks, containsStructuredInline, supportsTextActions,
+} from './block-menu-nodes';
+import { blockMenuTargetKey, blockMenuTargetRange } from './block-menu-decoration';
+import { absorbBlockMenuEscape, useBlockMenuTarget } from './use-block-menu-target';
 
 /**
  * #1179 — right-click menu on the editor's block drag handle.
@@ -124,12 +120,20 @@ export function EditorBlockMenu({
       const range = contentRange();
       const { doc } = editor.state;
       return {
+        // `DecorationSet.map` drops a node decoration whenever its node is
+        // replaced — measured, including a swap to a different node type of
+        // exactly the same span (`paragraph('xy')` and `blockquote(paragraph())`
+        // are both nodeSize 4). So "the marker is still there" already means
+        // "it is still the block this menu was opened on"; an extra node-type
+        // comparison here would be dead code. The test file pins the outcome.
         present: nodeRange() !== null,
         hasText: range !== null
           && doc.textBetween(range.from, range.to, '\n').trim().length > 0,
         // Improve rewrites the whole content range from Markdown, which drops
         // any inline Confluence macro sitting in it. See containsStructuredInline.
         dropsMacros: range !== null && containsStructuredInline(doc, range.from, range.to),
+        // Warned about rather than hidden — see containsLossyMarks.
+        dropsLinks: range !== null && containsLossyMarks(doc, range.from, range.to),
       };
     },
   });
@@ -167,16 +171,51 @@ export function EditorBlockMenu({
     void stream.run(text, action.type, buildInstruction(action, freeForm, BLOCK_INSTRUCTION));
   }, [editor, stream, contentRange]);
 
+  /**
+   * Whether the model answered with more than one block. `unwrapSingleParagraph`
+   * only strips a wrapper when the answer is exactly one paragraph; otherwise it
+   * hands back the block-level HTML unchanged, which is precisely the case that
+   * cannot be written into a heading's inline content.
+   */
+  const multiBlockAnswer = useCallback((): boolean => {
+    if (!stream.output) return false;
+    const { inline, html } = buildImproveHtml(stream.output);
+    return inline === html.trim();
+  }, [stream.output]);
+
+  /**
+   * Replacing a heading's content range with block-level HTML does not fill the
+   * heading — ProseMirror lifts the blocks out and the `h2` is gone (or becomes
+   * an `h1`, or a list). "Make longer" on a heading hits this every time, and a
+   * heading demoted to body text silently breaks the page's TOC and anchors on
+   * the next Save. Other allowed types are safe: `blockquote` and `listItem`
+   * take block content by schema, and a `paragraph` becoming paragraphs is the
+   * point of the action. So this refuses only where it must, and Insert below
+   * stays available, which loses nothing.
+   */
+  const replaceWouldDestroyBlock = node.type.name === 'heading' && multiBlockAnswer();
+
+  const replaceBlocked = replaceWouldDestroyBlock
+    ? 'That answer is more than one block, so replacing would turn this heading into body text. Insert it below instead.'
+    : null;
+
   const replaceBlockContent = useCallback(() => {
     const range = contentRange();
     if (!range || !stream.output) return;
+    // Backstop for a CROSS-FILE contract, not a stale-render guard: the render
+    // gate derives from React state, so it cannot go stale against this click
+    // the way a document-derived range can. What it defends is `ImprovePanel`
+    // continuing to honour `replaceBlocked` — a shared component this file does
+    // not own. No behavioural test can reach it while the panel disables the
+    // button (adversarial review confirmed the mutant survives), which is the
+    // price of it being a backstop rather than the primary gate.
+    if (replaceWouldDestroyBlock) return;
     const { inline } = buildImproveHtml(stream.output);
-    // The range is the block's CONTENT, so the block node itself survives: an
-    // improved `h2` is still an `h2`. Replacing the node range instead would
-    // flatten it — and for a macro node would destroy it outright.
+    // The range is the block's CONTENT, so a single-paragraph answer replaces
+    // the text and leaves the node alone — an improved `h2` is still an `h2`.
     editor.chain().focus().insertContentAt({ from: range.from, to: range.to }, inline).run();
     onClose();
-  }, [editor, stream.output, contentRange, onClose]);
+  }, [editor, stream.output, contentRange, onClose, replaceWouldDestroyBlock]);
 
   const insertBelowBlock = useCallback(() => {
     const range = nodeRange();
@@ -191,37 +230,37 @@ export function EditorBlockMenu({
   const deleteBlock = useCallback(() => {
     const range = nodeRange();
     if (!range) return;
-    const { doc, schema } = editor.state;
-    const isOnlyBlock = range.from === 0 && range.to === doc.content.size;
 
-    editor.chain().focus().command(({ tr, dispatch }) => {
-      if (!dispatch) return true;
-      if (isOnlyBlock) {
-        // A `block+` document cannot be empty, so deleting the last block has
-        // to leave something behind. Stated outright rather than left to
-        // `deleteRange`'s "delete as much as is valid" fallback: the empty
-        // paragraph and the caret sitting in it are the intended result, not a
-        // by-product of how far ProseMirror decided it could delete.
-        const paragraph = schema.nodes.paragraph?.createAndFill();
-        if (!paragraph) return false;
-        tr.replaceWith(range.from, range.to, paragraph);
-        tr.setSelection(TextSelection.create(tr.doc, 1));
-      } else {
-        // `deleteRange` (not `delete`) so removing the last child of a
-        // container takes the now-empty container with it.
-        tr.deleteRange(range.from, range.to);
-      }
-      return true;
-    }).run();
+    // `deleteRange`, not `delete`: it widens to a range the schema can actually
+    // lose, so removing a container's last child takes the empty container with
+    // it, and emptying the whole document leaves the bare paragraph that a
+    // `block+` doc requires rather than an invalid empty one.
+    //
+    // An earlier revision special-cased "this is the only block" and swapped in
+    // a fresh paragraph by hand. That branch was removed because it was dead:
+    // measured against `deleteRange` over a sole paragraph, heading, atom,
+    // blockquote, list, table, figure, layout, panel, code block and rule, the
+    // two produce byte-identical documents AND the same selection.
+    // `EditorBlockMenu.test.tsx` pins the invariant itself instead, which is
+    // what actually has to hold if ProseMirror's fitting ever changes.
+    try {
+      editor.chain().focus().deleteRange({ from: range.from, to: range.to }).run();
 
-    // No confirmation dialog: the block is outlined in the document while the
-    // menu is open, so the user can see what they are removing, and nothing
-    // reaches Confluence until Save. An undo affordance is the proportionate
-    // safety net for a three-step deliberate gesture.
-    toast.success(`${label} deleted`, {
-      action: { label: 'Undo', onClick: () => editor.commands.undo() },
-    });
-    onClose();
+      // No confirmation dialog: the block is outlined in the document while the
+      // menu is open, so the user can see what they are removing, and nothing
+      // reaches Confluence until Save. An undo affordance is the proportionate
+      // safety net for a three-step deliberate gesture.
+      toast.success(`${label} deleted`, {
+        // The toast outlives the menu and can outlive the editor — leaving edit
+        // mode or navigating away destroys it while this is still on screen.
+        action: { label: 'Undo', onClick: () => { if (!editor.isDestroyed) editor.commands.undo(); } },
+      });
+    } finally {
+      // Whatever happened, the menu must close: it owns the target marker and
+      // the drag-handle lock, and leaving either set strands the editor — the
+      // bubble menu suppressed and the handle frozen for the rest of the session.
+      onClose();
+    }
   }, [editor, nodeRange, label, onClose]);
 
   const showImprove = textActions && live.hasText && !live.dropsMacros;
@@ -272,6 +311,13 @@ export function EditorBlockMenu({
               inline macros.
             </p>
           )}
+
+          {showImprove && live.dropsLinks && (
+            <p className="px-4 pb-1 text-xs text-warning" data-testid="block-menu-link-warning">
+              Only plain text is sent — links, code spans and highlights in this
+              block will not survive a rewrite.
+            </p>
+          )}
         </>
       ) : (
         <p className="px-4 pb-1 text-xs text-muted-foreground">
@@ -293,6 +339,7 @@ export function EditorBlockMenu({
           onReplace={replaceBlockContent}
           onInsertBelow={insertBelowBlock}
           onClose={closeAi}
+          replaceBlocked={replaceBlocked}
           className="mt-1.5"
         />
       )}
@@ -324,11 +371,11 @@ export function EditorBlockMenu({
  * lock, and the Radix popover; the menu body above owns everything else.
  */
 export function EditorBlockHandle({ editor }: { editor: EditorType }) {
-  // The hovered block, kept in a ref rather than state: the drag-handle plugin
-  // fires `onNodeChange` on every `mousemove` across the document, and putting
-  // that in React state would re-render the editor tree continuously.
-  const hoveredRef = useRef<{ node: PMNode; pos: number } | null>(null);
-  const [target, setTarget] = useState<{ node: PMNode; pos: number } | null>(null);
+  // Open/close state plus the two editor-level side effects it owns — marking
+  // the target block and freezing the handle — live in the hook so they can be
+  // tested. This component cannot be: the drag-handle plugin resolves its node
+  // from pointer coordinates, which jsdom never produces.
+  const { target, setHovered, open: openTarget, close: closeMenu } = useBlockMenuTarget(editor);
   const open = target !== null;
 
   // MUST be stable: the drag-handle component lists `onNodeChange` in the
@@ -336,39 +383,15 @@ export function EditorBlockHandle({ editor }: { editor: EditorType }) {
   // arrow would tear the plugin down and rebuild it on every render.
   const handleNodeChange = useCallback(
     ({ node, pos }: { node: PMNode | null; pos: number }) => {
-      hoveredRef.current = node && pos >= 0 ? { node, pos } : null;
+      setHovered(node && pos >= 0 ? { node, pos } : null);
     },
-    [],
+    [setHovered],
   );
-
-  useEffect(() => {
-    if (editor.isDestroyed) return;
-    editor.registerPlugin(createBlockMenuTargetPlugin());
-    return () => { editor.unregisterPlugin(blockMenuTargetKey); };
-  }, [editor]);
 
   const openMenu = useCallback((event: React.MouseEvent) => {
     event.preventDefault();
-    const hovered = hoveredRef.current;
-    if (!hovered || editor.isDestroyed) return;
-    // The drag-handle plugin nulls its node out on `mouseleave` unless the
-    // pointer lands inside the handle's own wrapper — and the menu is portalled
-    // to <body>, so it never is. Locking freezes the handle where it is and
-    // makes `mousemove` / `mouseleave` / `keydown` early-return. It has to be
-    // the transaction meta: the `lockDragHandle` *command* lives on the
-    // DragHandle Extension, which this editor does not register (only the React
-    // component's plugin).
-    editor.view.dispatch(editor.state.tr.setMeta('lockDragHandle', true));
-    setBlockMenuTarget(editor, hovered.pos);
-    setTarget(hovered);
-  }, [editor]);
-
-  const closeMenu = useCallback(() => {
-    setTarget(null);
-    if (editor.isDestroyed) return;
-    clearBlockMenuTarget(editor);
-    editor.view.dispatch(editor.state.tr.setMeta('lockDragHandle', false));
-  }, [editor]);
+    openTarget();
+  }, [openTarget]);
 
   return (
     <DragHandle editor={editor} className="drag-handle" onNodeChange={handleNodeChange}>
@@ -404,6 +427,11 @@ export function EditorBlockHandle({ editor }: { editor: EditorType }) {
               // Bold — so focus leaving is explicitly not a dismissal here.
               // Escape and an outside pointerdown still close it.
               onFocusOutside={(event) => event.preventDefault()}
+              // Escape must not reach `document` — see absorbBlockMenuEscape.
+              // On `onKeyDown`, not Radix's `onEscapeKeyDown`: `preventDefault`
+              // alone does not stop the page's shortcut, which ignores
+              // `defaultPrevented` in its dispatch loop.
+              onKeyDown={(event) => absorbBlockMenuEscape(event, closeMenu)}
             >
               <EditorBlockMenu
                 editor={editor}

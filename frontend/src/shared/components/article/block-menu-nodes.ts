@@ -134,3 +134,39 @@ export function blockLabel(node: PMNode): string {
   }
   return BLOCK_LABELS[name] ?? humanizeTypeName(name);
 }
+
+/**
+ * Marks that do not survive a rewrite, because `doc.textBetween` strips every
+ * mark before the text reaches the model and nothing it returns can restore
+ * them. Listed rather than "all marks" because the distinction is whether the
+ * loss is *recoverable from the answer itself*:
+ *
+ * - `link` — the href is data, not formatting. A bare word ships to Confluence
+ *   where a page link was.
+ * - `code` — the worst of these in a KB. `POST /api/pages` demoted to prose
+ *   changes what the sentence means, and unlike a colour the reader cannot tell
+ *   by looking that it used to be code.
+ * - `highlight`, `textStyle` — deliberate emphasis and colour the user applied.
+ *
+ * `bold` / `italic` / `strike` are deliberately absent: they are expressible in
+ * Markdown, so a rewrite plausibly re-emits them, and warning about them would
+ * fire on almost every block and train the user to ignore the warning.
+ */
+const LOSSY_MARKS: readonly string[] = ['link', 'code', 'highlight', 'textStyle'];
+
+/**
+ * Whether a range carries marks a Markdown round-trip cannot give back.
+ *
+ * Unlike an inline macro node this only warns rather than hides. The text
+ * survives, the loss is confined to the formatting, the streamed preview shows
+ * the answer before the user accepts — and these marks are common enough that
+ * hiding Improve wherever one appears would gut the feature. The user is told
+ * before they accept, which is the part that was missing.
+ */
+export function containsLossyMarks(doc: PMNode, from: number, to: number): boolean {
+  const { marks } = doc.type.schema;
+  return LOSSY_MARKS.some((name) => {
+    const type = marks[name];
+    return type ? doc.rangeHasMark(from, to, type) : false;
+  });
+}

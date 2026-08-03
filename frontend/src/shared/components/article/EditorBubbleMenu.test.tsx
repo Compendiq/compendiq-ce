@@ -267,8 +267,20 @@ describe('BubbleMenuContent — inline AI improve replace-range', () => {
     // The passage disappears out from under the open section.
     act(() => { editor.commands.setContent('<p>Hi</p>'); });
 
-    fireEvent.click(screen.getByTitle('Replace selection'));
+    // The captured offsets now point past the end of the document. Without the
+    // clamp `insertContentAt` throws a RangeError out of the click handler —
+    // which React reports asynchronously, so assert on the error rather than
+    // relying on it surfacing as a test failure.
+    const errors: string[] = [];
+    const onError = (e: ErrorEvent) => { errors.push(e.message); e.preventDefault(); };
+    window.addEventListener('error', onError);
+    try {
+      fireEvent.click(screen.getByTitle('Replace selection'));
+    } finally {
+      window.removeEventListener('error', onError);
+    }
 
+    expect(errors).toEqual([]);
     expect(editor.getHTML()).toBe('<p>Hi</p>');
   });
 });

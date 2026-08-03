@@ -26,8 +26,14 @@ interface MarkSpec {
 
 /**
  * Apply a mark toggle. When a range is supplied it is selected *inside the same
- * chain*, so the command runs against the block and the resulting selection
- * shows the user exactly what was formatted.
+ * chain*, so the command runs against the whole block rather than wherever the
+ * caret happened to be — then the selection is collapsed again.
+ *
+ * That collapse matters: a block-wide selection left behind outlives the menu,
+ * and the moment the menu's marker clears, `selectionShouldShow` sees a
+ * non-empty selection and pops the bubble menu over the block the user just
+ * finished with. Nothing is lost by collapsing — while the block menu is open
+ * the target is shown by its outline decoration, not by the selection.
  */
 function toggle(
   editor: EditorType,
@@ -35,7 +41,11 @@ function toggle(
   command: (chain: ReturnType<EditorType['chain']>) => ReturnType<EditorType['chain']>,
 ): void {
   const chain = editor.chain().focus();
-  command(range ? chain.setTextSelection(range) : chain).run();
+  if (!range) {
+    command(chain).run();
+    return;
+  }
+  command(chain.setTextSelection(range)).setTextSelection(range.to).run();
 }
 
 const MARKS: readonly MarkSpec[] = [

@@ -1,11 +1,15 @@
 import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { useEffect, useState } from 'react';
 import { useEditor, EditorContent } from '@tiptap/react';
 import { Node } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import { Highlight } from '@tiptap/extension-highlight';
+import { toast } from 'sonner';
 import { ConfluenceStatus, ConfluenceUserMention } from './article-extensions';
+import { Link } from '@tiptap/extension-link';
 import type { Editor as EditorType } from '@tiptap/react';
 
 // Mock the SSE transport so "Improve" never hits the network. Capturing the
@@ -107,6 +111,7 @@ function Harness({
       // these exact node types, so a stand-in would prove nothing.
       ConfluenceStatus,
       ConfluenceUserMention,
+      Link,
     ],
     content,
     immediatelyRender: false,
@@ -190,6 +195,18 @@ describe('EditorBlockMenu — text blocks', () => {
     fireEvent.click(screen.getByTitle('Bold (Ctrl+B)'));
 
     expect(editor.getHTML()).toBe('<p><strong>Hello world</strong></p>');
+  });
+
+  // A block-wide selection left behind outlives the menu: once the marker
+  // clears, `selectionShouldShow` sees it and pops the bubble menu over the
+  // block the user just finished with.
+  it('leaves no selection behind for the bubble menu to latch onto', async () => {
+    const { editor } = await mountMenu('<p>Hello world</p>');
+
+    fireEvent.click(screen.getByTitle('Bold (Ctrl+B)'));
+
+    expect(editor.getHTML()).toBe('<p><strong>Hello world</strong></p>');
+    expect(editor.state.selection.empty).toBe(true);
   });
 
   it('formats the second block when that is the target', async () => {
@@ -354,6 +371,100 @@ describe('EditorBlockMenu — inline macros inside an allowed text block', () =>
   });
 });
 
+// `unwrapSingleParagraph` only strips a wrapper when the answer is exactly one
+// paragraph. Anything else stays block-level HTML, and inserting THAT over a
+// heading's inline content range does not fill the heading — ProseMirror lifts
+// the blocks out and the heading is gone. "Make longer" produces this every
+// time, and a heading demoted to body text breaks the page's TOC on Save.
+describe('EditorBlockMenu — multi-block answers over a heading', () => {
+  async function improve(content: string, chunks: string, blockIndex = 0) {
+    streamSSE.mockReturnValue(gen([{ content: chunks }, { done: true }]));
+    const mounted = await mountMenu(content, blockIndex);
+    fireEvent.click(screen.getByTestId('block-ai-trigger'));
+    fireEvent.click(screen.getByText('Improve writing'));
+    await screen.findByTestId('block-ai-preview');
+    return mounted;
+  }
+
+  it('refuses Replace and says why when the answer is more than one block', async () => {
+    const { editor } = await improve('<h2>Release notes</h2><p>after</p>', 'Release notes v2\n\nEvery change is listed.');
+
+    await waitFor(() => expect(screen.getByTestId('block-ai-replace-blocked')).toBeTruthy());
+    expect(screen.getByTitle(/more than one block/i)).toBeDisabled();
+
+    fireEvent.click(screen.getByTitle(/more than one block/i));
+    expect(editor.state.doc.child(0).type.name).toBe('heading');
+    expect(editor.state.doc.child(0).textContent).toBe('Release notes');
+  });
+
+  it('refuses when the answer is a markdown heading, which would re-level it', async () => {
+    await improve('<h2>Release notes</h2>', '# Big title');
+    await waitFor(() => expect(screen.getByTestId('block-ai-replace-blocked')).toBeTruthy());
+  });
+
+  it('leaves Insert below available, so the answer is never lost', async () => {
+    const { editor } = await improve('<h2>Release notes</h2><p>after</p>', 'Release notes v2\n\nEvery change is listed.');
+
+    await waitFor(() => expect(screen.getByTitle('Insert below block')).not.toBeDisabled());
+    fireEvent.click(screen.getByTitle('Insert below block'));
+
+    expect(editor.state.doc.child(0).type.name).toBe('heading');
+    expect(editor.getHTML()).toContain('Every change is listed.');
+  });
+
+  it('still allows Replace on a heading when the answer is a single paragraph', async () => {
+    const { editor } = await improve('<h2>Vague heading</h2>', 'Sharper heading');
+
+    await waitFor(() => expect(screen.getByTitle('Replace block content')).not.toBeDisabled());
+    expect(screen.queryByTestId('block-ai-replace-blocked')).toBeNull();
+    fireEvent.click(screen.getByTitle('Replace block content'));
+
+    expect(editor.state.doc.child(0).type.name).toBe('heading');
+    expect(editor.state.doc.child(0).textContent).toBe('Sharper heading');
+  });
+
+  // A paragraph becoming two paragraphs is the point of "Make longer", and a
+  // blockquote takes block content by schema — neither loses a node.
+  it('allows a multi-block Replace on a paragraph', async () => {
+    const { editor } = await improve('<p>Short</p>', 'First part.\n\nSecond part.');
+
+    await waitFor(() => expect(screen.getByTitle('Replace block content')).not.toBeDisabled());
+    fireEvent.click(screen.getByTitle('Replace block content'));
+
+    expect(editor.getHTML()).toContain('First part.');
+    expect(editor.getHTML()).toContain('Second part.');
+  });
+
+  it('allows a multi-block Replace on a quote, which survives it', async () => {
+    const { editor } = await improve('<blockquote><p>Short</p></blockquote>', 'First part.\n\nSecond part.');
+
+    await waitFor(() => expect(screen.getByTitle('Replace block content')).not.toBeDisabled());
+    fireEvent.click(screen.getByTitle('Replace block content'));
+
+    expect(editor.state.doc.child(0).type.name).toBe('blockquote');
+  });
+});
+
+// A link is a MARK, not a node, so the inline-macro guard never sees it.
+// `textBetween` strips it, the model cannot return what it never saw, and the
+// href is data rather than formatting. Warned, not hidden: the text survives,
+// and hiding Improve for every paragraph with a link would gut the feature.
+describe('EditorBlockMenu — link marks', () => {
+  const WITH_LINK = '<p>See the <a href="https://conf/x/RUNBOOK">runbook</a> first</p>';
+
+  it('warns that a rewrite drops the href, but still offers Improve', async () => {
+    await mountMenu(WITH_LINK);
+
+    expect(screen.getByTestId('block-ai-trigger')).toBeTruthy();
+    expect(screen.getByTestId('block-menu-link-warning')).toBeTruthy();
+  });
+
+  it('shows no warning on a block with no link', async () => {
+    await mountMenu('<p>Just ordinary prose</p>');
+    expect(screen.queryByTestId('block-menu-link-warning')).toBeNull();
+  });
+});
+
 describe('EditorBlockMenu — atomic and macro blocks', () => {
   it('offers Delete ONLY on a draw.io diagram', async () => {
     await mountMenu('<p>Text</p><div data-drawio></div>', 1);
@@ -408,8 +519,12 @@ describe('EditorBlockMenu — Delete', () => {
     expect(editor.state.doc.textContent).toBe('TextAfter');
   });
 
+  // The invariant, not the mechanism: `doc` is `block+`, so emptying it outright
+  // is an invalid document. ProseMirror's `deleteRange` is what delivers the
+  // bare paragraph (measured identical to hand-rolling one across every
+  // container shape in the schema), so these pin the outcome that must hold if
+  // its fitting ever changes.
   it('leaves an empty paragraph when the last remaining block is deleted', async () => {
-    // `doc` is `block+`: emptying it outright is an invalid document.
     const { editor } = await mountMenu('<p>The only block</p>');
 
     fireEvent.click(screen.getByTestId('block-menu-delete'));
@@ -429,6 +544,43 @@ describe('EditorBlockMenu — Delete', () => {
     expect(editor.state.doc.child(0).type.name).toBe('paragraph');
   });
 
+  // `deleteRange` widens to a range the schema can lose. Removing a container's
+  // only child has to take the container too rather than leave it empty and
+  // invalid — the case the old hand-rolled "is this the only block" branch never
+  // covered, since it only fired for a whole-document range.
+  it('takes the container with it when the block was its only child', async () => {
+    const { editor } = await mountMenu('<p>Before</p><blockquote><p>Quoted</p></blockquote>', 1);
+
+    fireEvent.click(screen.getByTestId('block-menu-delete'));
+
+    expect(editor.getHTML()).not.toContain('<blockquote>');
+    expect(editor.state.doc.type.validContent(editor.state.doc.content)).toBe(true);
+    let invalid: string | null = null;
+    editor.state.doc.descendants((n) => {
+      if (!n.type.validContent(n.content)) invalid = n.type.name;
+    });
+    expect(invalid).toBeNull();
+  });
+
+  // The toast outlives the menu and can outlive the editor — leaving edit mode
+  // or navigating away destroys it while the toast is still on screen.
+  it('does not throw when Undo is clicked after the editor is destroyed', async () => {
+    const { editor } = await mountMenu('<p>Keep</p><p>Remove</p>', 1);
+    const toasts: Array<{ action?: { onClick: () => void } }> = [];
+    const spy = vi.spyOn(toast, 'success').mockImplementation(((_m: unknown, opts: unknown) => {
+      toasts.push(opts as { action?: { onClick: () => void } });
+      return 1;
+    }) as typeof toast.success);
+
+    fireEvent.click(screen.getByTestId('block-menu-delete'));
+    spy.mockRestore();
+
+    const undo = toasts[0]?.action?.onClick;
+    expect(undo).toBeTypeOf('function');
+    editor.destroy();
+    expect(() => undo!()).not.toThrow();
+  });
+
   it('deletes the right block after the document shifted above it', async () => {
     // The snapshotted `pos` is stale the moment anything above the block
     // changes; the marker decoration is what keeps the target correct.
@@ -438,6 +590,44 @@ describe('EditorBlockMenu — Delete', () => {
     fireEvent.click(screen.getByTestId('block-menu-delete'));
 
     expect(editor.getHTML()).toBe('<p>PREFIX First</p>');
+  });
+});
+
+/**
+ * Source-level guards, in the style this repo already uses for the CSS
+ * contracts (`index-css-a11y.test.ts`, the neumorphic source walk).
+ *
+ * `EditorBlockHandle` mounts the Radix layer, and it cannot be driven under
+ * jsdom: the drag-handle plugin resolves its node from `mousemove` coordinates
+ * and `getBoundingClientRect`, so the menu never opens and none of the popover's
+ * props are ever exercised. These pin the two that are load-bearing and would
+ * otherwise fail silently — verified by adversarial mutation to survive the
+ * whole behavioural suite.
+ */
+describe('EditorBlockMenu — popover wiring (source guards)', () => {
+  const source = readFileSync(resolve(__dirname, 'EditorBlockMenu.tsx'), 'utf-8');
+
+  // Every action chain ends in `editor.chain().focus()`, which moves focus out
+  // of the popover. Radix reads that as an interaction outside the layer and
+  // dismisses — so without this the menu closes after a single Bold.
+  it('does not treat focus leaving for the editor as a dismissal', () => {
+    expect(source).toMatch(/onFocusOutside=\{\(event\) => event\.preventDefault\(\)\}/);
+  });
+
+  // The behaviour is covered against the real hook in block-menu-escape.test.tsx;
+  // this pins that THIS component is still the thing wired to it, and on
+  // `onKeyDown` rather than Radix's `onEscapeKeyDown` — the latter runs in the
+  // capture phase, where stopping propagation is too late to matter and
+  // `preventDefault` alone does not stop the shortcut.
+  it('contains Escape on the content, so it cannot reach the exit-edit shortcut', () => {
+    expect(source).toMatch(/onKeyDown=\{\(event\) => absorbBlockMenuEscape\(event, closeMenu\)\}/);
+  });
+
+  // Radix's `Popover.Anchor` is what the menu is positioned against, and the
+  // `data-block-menu-open` attribute is what `index.css` keys the handle's
+  // open-state reveal off (`.drag-handle:has([data-block-menu-open="true"])`).
+  it('declares the open state the handle CSS reveal keys off', () => {
+    expect(source).toMatch(/data-block-menu-open=\{open \? 'true' : undefined\}/);
   });
 });
 
@@ -496,6 +686,44 @@ describe('EditorBlockMenu — lifecycle', () => {
     if (bold) fireEvent.click(bold);
 
     expect(editor.getHTML()).not.toContain('<strong>');
+  });
+
+  // The menu must not survive its target being swapped out from under it, even
+  // when the replacement occupies exactly the same span and the range therefore
+  // still "fits" — `blockquote(paragraph())` and `paragraph('xy')` are both
+  // nodeSize 4. ProseMirror drops the node decoration on any replacement, which
+  // is what delivers this; the test pins the outcome rather than the mechanism.
+  it('closes itself when the target is swapped for a different node of the same size', async () => {
+    const { editor, onClose } = await mountMenu('<p>First</p><p>xy</p>', 1);
+    const pos = topLevelPos(editor, 1);
+    expect(editor.state.doc.child(1).nodeSize).toBe(4);
+    expect(onClose).not.toHaveBeenCalled();
+
+    act(() => {
+      editor.commands.command(({ tr, dispatch }) => {
+        if (!dispatch) return true;
+        const swapped = editor.schema.nodes.blockquote!.create(
+          null,
+          editor.schema.nodes.paragraph!.create(null),
+        );
+        expect(swapped.nodeSize).toBe(4);
+        tr.replaceWith(pos, pos + 4, swapped);
+        return true;
+      });
+    });
+
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+
+  // The close-on-missing-target check keys off the NODE range. Keying it off the
+  // content range instead would close every atomic block's menu the instant it
+  // opened, since an atom has no content range at all.
+  it('stays open on an atomic block, whose content range is empty by nature', async () => {
+    const { onClose } = await mountMenu('<p>Text</p><div data-drawio></div>', 1);
+
+    expect(screen.getByTestId('block-menu-delete')).toBeTruthy();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it('closes itself when the target block disappears underneath it', async () => {

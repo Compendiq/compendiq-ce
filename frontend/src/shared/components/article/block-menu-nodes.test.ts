@@ -5,6 +5,7 @@ import type { Node as PMNode } from '@tiptap/pm/model';
 import {
   TEXT_BLOCK_TYPES,
   blockLabel,
+  containsLossyMarks,
   containsStructuredInline,
   supportsTextActions,
 } from './block-menu-nodes';
@@ -31,6 +32,14 @@ const schema = new Schema({
     unknownMacro: { group: 'block', content: 'block*', attrs: { macroName: { default: null } } },
     figure: { group: 'block', content: 'paragraph*' },
     confluenceRoadmapPlanner: { group: 'block', atom: true },
+  },
+  marks: {
+    link: { attrs: { href: {} } },
+    code: {},
+    highlight: {},
+    textStyle: {},
+    bold: {},
+    italic: {},
   },
 });
 
@@ -133,5 +142,44 @@ describe('containsStructuredInline', () => {
       para(text('Has '), schema.nodes.confluenceStatus!.create()),
     );
     expect(containsStructuredInline(d, 1, d.child(0).nodeSize - 1)).toBe(false);
+  });
+});
+
+
+describe('containsLossyMarks', () => {
+  const para = (...content: PMNode[]) => schema.nodes.paragraph!.create(null, content);
+  const doc = (...content: PMNode[]) => schema.nodes.doc!.create(null, content);
+  const marked = (text: string, mark: string, attrs?: Record<string, unknown>) =>
+    schema.text(text, [schema.marks[mark]!.create(attrs)]);
+  const range = (d: ReturnType<typeof doc>) => ({ from: 1, to: d.child(0).nodeSize - 1 });
+
+  it('is false for unmarked prose', () => {
+    const d = doc(para(schema.text('Just prose')));
+    const { from, to } = range(d);
+    expect(containsLossyMarks(d, from, to)).toBe(false);
+  });
+
+  // The href is data, not formatting — `textBetween` never sends it.
+  it.each(['link', 'code', 'highlight', 'textStyle'])('is true for a %s mark', (mark) => {
+    const attrs = mark === 'link' ? { href: 'https://conf/x/RUNBOOK' } : undefined;
+    const d = doc(para(schema.text('See the '), marked('runbook', mark, attrs)));
+    const { from, to } = range(d);
+    expect(containsLossyMarks(d, from, to)).toBe(true);
+  });
+
+  // Expressible in Markdown, so a rewrite plausibly re-emits them. Warning here
+  // would fire on nearly every block and train the user to ignore the warning.
+  it.each(['bold', 'italic'])('is false for a %s mark', (mark) => {
+    const d = doc(para(schema.text('Very '), marked('important', mark)));
+    const { from, to } = range(d);
+    expect(containsLossyMarks(d, from, to)).toBe(false);
+  });
+
+  it('does not look outside the range it was given', () => {
+    const d = doc(
+      para(schema.text('Clean')),
+      para(marked('code', 'code')),
+    );
+    expect(containsLossyMarks(d, 1, d.child(0).nodeSize - 1)).toBe(false);
   });
 });
