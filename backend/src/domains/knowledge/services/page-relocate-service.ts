@@ -58,6 +58,7 @@ import {
   isStorableAttachmentFilename,
 } from '../../confluence/services/attachment-handler.js';
 import {
+  canStoreLocalFilename,
   listLocalAttachmentsForRelocate,
   writeLocalAttachmentFileForRelocate,
   localAttachmentsDir,
@@ -243,16 +244,24 @@ export function rewriteAttachmentRefs(
   let changed = false;
 
   /**
-   * Images only, in both directions (#1169). Nothing in this system produces an
-   * attachment *anchor*: `htmlToConfluence` matches only
-   * `img[src^="/api/attachments/"]`, and a Confluence attachment link arrives as
-   * `<a href="#confluence-attachment:<filename>">`, which never carries that
-   * prefix. The `a[href]` arm this used to have was dead on both paths and was
-   * dropped rather than wired — wiring it needs an outbound anchor rule in the
-   * converter and anchor marker handling in the publish branch first.
+   * Handles `img[src]` AND `a[href]`. The anchor arm looks defensive but is
+   * live (#1169): the Markdown import (#1133) produces one whenever a link
+   * targets an internal attachment URL — `markdownToHtml` and DOMPurify both
+   * keep `href` verbatim, and `htmlToConfluence` *preserves* the anchor rather
+   * than dropping it, so it round-trips into `body_storage` and back. On a move
+   * to local the bytes are staged under the new key and the old cache directory
+   * is then removed, so an anchor left on the old prefix is a dead link into a
+   * directory this very move deleted.
+   *
+   * Only images are marked for publish. `htmlToConfluence` converts nothing but
+   * `img[src^="/api/attachments/"]` into an `ri:attachment`, so an anchor's
+   * rewritten href survives to Confluence as a raw internal URL either way —
+   * imperfect, pre-dates #1164, and out of scope here. Confluence's own
+   * attachment links arrive as `<a href="#confluence-attachment:…">`, which
+   * never carries the prefix and is left alone by the prefix test below.
    */
-  const rewriteImage = (el: Element): void => {
-    const value = el.getAttribute('src') ?? '';
+  const rewriteOne = (el: Element, attr: string): void => {
+    const value = el.getAttribute(attr) ?? '';
     const matched = fromPrefixes.find((p) => value.startsWith(p));
     if (matched === undefined) return;
     const encodedName = value.slice(matched.length);
@@ -267,7 +276,7 @@ export function rewriteAttachmentRefs(
     // An external-URL image round-trips as ri:url, not ri:attachment — leave
     // its markers alone or htmlToConfluence emits the wrong element entirely.
     const isExternal = el.getAttribute('data-confluence-image-source') === 'external-url';
-    const publish = markAsConfluenceAttachment && !isExternal;
+    const publish = markAsConfluenceAttachment && el.tagName.toLowerCase() === 'img' && !isExternal;
     const target = publish ? (el.getAttribute('data-confluence-filename') || local) : local;
 
     if (publish) {
@@ -278,11 +287,12 @@ export function rewriteAttachmentRefs(
     }
 
     refs.set(local, { local, target });
-    el.setAttribute('src', `${toPrefix}${encodeURIComponent(target)}`);
+    el.setAttribute(attr, `${toPrefix}${encodeURIComponent(target)}`);
     changed = true;
   };
 
-  for (const img of doc.querySelectorAll('img[src]')) rewriteImage(img);
+  for (const img of doc.querySelectorAll('img[src]')) rewriteOne(img, 'src');
+  for (const anchor of doc.querySelectorAll('a[href]')) rewriteOne(anchor, 'href');
 
   return { html: changed ? doc.body.innerHTML : html, refs: [...refs.values()] };
 }
@@ -438,7 +448,12 @@ async function relocateToConfluence(opts: {
     // written outside `localFilePath` still reaches the read below, where the
     // store throws a bare `Error` that app.ts masks to "Internal Server Error".
     // Refuse by name instead, so the response says which file to fix (#1169).
-    if (!isStorableAttachmentFilename(local)) {
+    //
+    // BOTH rules apply: the move has to land the file in the Confluence cache
+    // *and* read it out of the local store, and the two disagree — the cache
+    // rejects NUL bytes, the local store caps at 255 characters. Asking only
+    // one let an over-long row warn past as "missing on disk" instead.
+    if (!isStorableAttachmentFilename(local) || !canStoreLocalFilename(local)) {
       throw new RelocateError(
         400,
         `Attachment "${local}" cannot be moved: its filename is not one the attachment stores accept. Remove or rename it, then try again.`,

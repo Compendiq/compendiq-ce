@@ -9,7 +9,11 @@
  */
 import { describe, it, expect } from 'vitest';
 import { rewriteAttachmentRefs, parentKeyFor } from './page-relocate-service.js';
-import { htmlToConfluence, confluenceToHtml } from '../../../core/services/content-converter.js';
+import {
+  htmlToConfluence,
+  confluenceToHtml,
+  markdownToHtml,
+} from '../../../core/services/content-converter.js';
 
 /** Storage for an image borrowed from another page — ordinary Confluence markup. */
 const CROSS_PAGE_STORAGE =
@@ -159,28 +163,61 @@ describe('rewriteAttachmentRefs (#1123)', () => {
     expect(html).toContain('/api/local-attachments/42/my%20diagram%20(v2).png');
   });
 
-  // ── #1169: anchors are images-only by design ──────────────────────────────
+  // ── #1169: the anchor arm is live, not defensive ──────────────────────────
   //
-  // Nothing in either direction produces `<a href="/api/attachments/…">`:
-  // `htmlToConfluence` matches only `img[src^="/api/attachments/"]`, and a
-  // Confluence attachment *link* arrives as `<a href="#confluence-attachment:…">`,
-  // which never carries the prefix. Rewriting anchors would therefore only ever
-  // fire on hand-authored HTML, and the publish direction has no marker
-  // handling for anchors — the rewritten href would be dropped by the
-  // converter. Leaving them alone is the honest behaviour.
+  // The Markdown import (#1133) produces `<a href="/api/attachments/<key>/…">`
+  // whenever a link targets an internal attachment URL, and `htmlToConfluence`
+  // *preserves* the anchor rather than dropping it — so one reaches `body_html`
+  // and survives a storage-format round-trip. A move stages the bytes under the
+  // new key and then deletes the old cache directory, so an un-rewritten anchor
+  // is a dead link. Only images are *marked* for publish; the href itself is
+  // re-keyed in both directions.
 
-  it('leaves anchor hrefs alone — no code path produces an attachment anchor', () => {
-    const input = '<p><a href="/api/attachments/42/spec.pdf">Spec</a></p>';
-
+  it('rewrites anchor hrefs, not just image sources', () => {
     const { html, refs } = rewriteAttachmentRefs(
-      input,
+      '<p><a href="/api/attachments/42/spec.pdf">Spec</a></p>',
       ['/api/attachments/42/'],
       '/api/local-attachments/42/',
       false,
     );
 
-    expect(html).toBe(input);
-    expect(refs).toEqual([]);
+    expect(html).toContain('href="/api/local-attachments/42/spec.pdf"');
+    expect(refs).toEqual([{ local: 'spec.pdf', target: 'spec.pdf' }]);
+  });
+
+  it('re-keys the anchor the Markdown import actually produces', async () => {
+    // Pins the producer rather than a hand-written string: if `markdownToHtml`
+    // ever stops emitting a bare `href`, this stops being a live path and the
+    // arm above can be revisited.
+    const imported = await markdownToHtml('[Spec](/api/attachments/42/spec.pdf)');
+    expect(imported).toContain('href="/api/attachments/42/spec.pdf"');
+    // It also survives the storage round-trip, so it is still there by the time
+    // a relocate reads `body_html` back.
+    expect(htmlToConfluence(imported)).toContain('href="/api/attachments/42/spec.pdf"');
+
+    const { html } = rewriteAttachmentRefs(
+      imported,
+      ['/api/attachments/42/'],
+      '/api/local-attachments/42/',
+      false,
+    );
+
+    expect(html).toContain('href="/api/local-attachments/42/spec.pdf"');
+  });
+
+  it('re-keys an anchor on publish without marking it as an attachment', () => {
+    // `htmlToConfluence` converts only `img[src^="/api/attachments/"]` into an
+    // `ri:attachment`, so marking an anchor would be a lie. The href is
+    // re-keyed onto the cache prefix and nothing more.
+    const { html } = rewriteAttachmentRefs(
+      '<p><a href="/api/local-attachments/42/spec.pdf">Spec</a></p>',
+      ['/api/local-attachments/42/'],
+      '/api/attachments/900001/',
+      true,
+    );
+
+    expect(html).toContain('href="/api/attachments/900001/spec.pdf"');
+    expect(html).not.toContain('data-confluence-filename');
   });
 
   it('leaves an unrelated page\'s attachments alone', () => {

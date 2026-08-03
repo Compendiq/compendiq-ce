@@ -76,8 +76,13 @@ function localPageDir(pageId: number): string {
  * merely *found* a filename — a `local_attachments` row written outside this
  * module — need to know before they resolve a path, because the throw carries
  * no way to say which file was at fault (#1169).
+ *
+ * Deliberately **not** identical to the Confluence cache's
+ * `isStorableAttachmentFilename`: this store caps length, that one rejects NUL
+ * bytes. A filename moving between the two stores must satisfy both, so
+ * relocate asks both rather than picking one.
  */
-function canStoreLocalFilename(filename: string): boolean {
+export function canStoreLocalFilename(filename: string): boolean {
   const safe = path.basename(filename);
   return Boolean(safe) && !safe.startsWith('.') && safe.length <= 255;
 }

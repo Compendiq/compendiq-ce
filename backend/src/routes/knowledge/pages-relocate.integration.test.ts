@@ -463,6 +463,31 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
       expect((await getRow(id)).source).toBe('standalone');
     });
 
+    it('refuses an over-long local filename by name too, not just a hidden one (#1169)', async () => {
+      // The two stores enforce different rules — the local one caps at 255
+      // characters, the Confluence one does not — so the guard has to ask both.
+      // The *file* cannot exist at this length on any real filesystem, but the
+      // *row* can, and the row is what the guard reasons about: gating on the
+      // Confluence rule alone let this warn past as "missing on disk".
+      const id = await createPage({ title: 'A', source: 'standalone', spaceKey: 'LOCAL', ownerId: userId });
+      const longName = `${'a'.repeat(300)}.png`;
+      await query(
+        `INSERT INTO local_attachments (page_id, filename, content_type, size_bytes, sha256, created_by)
+         VALUES ($1, $2, 'image/png', 1, 'deadbeef', $3)`,
+        [id, longName, userId],
+      );
+      // Let the upstream create succeed, so a failure here is the guard's doing
+      // and not a half-configured mock.
+      h.client.createPage.mockResolvedValue(createdPage('900030'));
+
+      const res = await toConfluence(id);
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toContain(longName);
+      expect(h.client.createPage).not.toHaveBeenCalled();
+      expect((await getRow(id)).source).toBe('standalone');
+    });
+
     it('leaves nothing changed when the upstream create fails', async () => {
       const id = await createPage({ title: 'A', source: 'standalone', spaceKey: 'LOCAL', ownerId: userId });
       const child = await createPage({
@@ -598,6 +623,32 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
         [id],
       );
       expect(rows.rows.map((r) => r.filename)).toEqual(['chart.png']);
+    });
+
+    it('re-keys an attachment anchor, not just an image (#1169)', async () => {
+      // The Markdown import (#1133) is a live producer of these: a link whose
+      // target is an internal attachment URL survives `markdownToHtml` and
+      // DOMPurify verbatim, and `htmlToConfluence` preserves it rather than
+      // dropping it. The move stages the bytes into the local store and then
+      // removes the Confluence cache directory, so an anchor left on the old
+      // key is a dead link pointing at a directory this move just deleted.
+      const id = await createPage({
+        title: 'Linked',
+        source: 'confluence',
+        confluenceId: '700040',
+        spaceKey: 'CONF',
+        bodyHtml: '<p><a href="/api/attachments/700040/spec.pdf">Spec</a></p>',
+      });
+      await writeStoreA('700040', 'spec.pdf', 'pdf-bytes');
+
+      const res = await toLocal(id, '700040');
+      expect(res.statusCode).toBe(200);
+
+      const row = await getRow(id);
+      expect(row.body_html).toContain(`/api/local-attachments/${id}/spec.pdf`);
+      expect(row.body_html).not.toContain('/api/attachments/700040/');
+      expect(await storeBFiles(id)).toEqual(['spec.pdf']);
+      expect(await storeAFiles('700040')).toEqual([]);
     });
 
     it('ignores a stray hidden file in the attachment cache (#1169)', async () => {
