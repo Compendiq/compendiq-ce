@@ -114,8 +114,21 @@ describe('resolveBulkSelection — ids mode', () => {
     });
 
     const args = mockQueryFn.mock.calls[0]!;
-    expect(args[1]![0]).toEqual([1]);            // numericIds
+    // #1167: bound as TEXT against `cp.id::text`, so int4 cannot overflow.
+    expect(args[1]![0]).toEqual(['1']);          // numericIds
     expect(args[1]![1]).toEqual([]);             // confluenceStringIds (empty)
+  });
+
+  // #1167: the id array is normalised the way the int cast used to normalise,
+  // so a zero-padded id still addresses the same row.
+  it('normalises zero-padded ids on the id array', async () => {
+    mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+    await resolveBulkSelection('user-1', { ids: ['007', 'conf-2'] }, ['OPS']);
+
+    const args = mockQueryFn.mock.calls[0]!;
+    expect(args[1]![0]).toEqual(['7']);
+    expect(args[1]![1]).toEqual(['conf-2']);
   });
 });
 

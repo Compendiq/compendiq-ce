@@ -72,6 +72,15 @@ vi.mock('../../domains/knowledge/services/summary-worker.js', async (importOrigi
   runSummaryBatch: vi.fn(async () => ({ processed: 0, errors: 0 })),
 }));
 
+// Same treatment for the embedding worker the bulk-embed route fires and
+// forgets. It is not just an LLM boundary: left real, it races these tests by
+// clearing `embedding_dirty` on the rows they just asserted about.
+vi.mock('../../domains/llm/services/embedding-service.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../domains/llm/services/embedding-service.js')>()),
+  processDirtyPages: vi.fn(async () => undefined),
+  isProcessingUser: vi.fn(() => false),
+}));
+
 const dbAvailable = await isDbAvailable();
 
 // --- Fixtures ---
@@ -375,7 +384,7 @@ describe.skipIf(!dbAvailable)('pages.id int4 overflow on externally-sourced ids 
       expect(after.rows[0]!.summary_status).toBe('pending');
     });
 
-    it('404s for an unknown id above 2^31 rather than 500ing', async () => {
+    it('404s for an unknown id above 2^31 rather than 500ing (site 3)', async () => {
       const response = await app.inject({
         method: 'POST',
         url: `/api/llm/summary-regenerate/${BIG_CONFLUENCE_ID}`,
@@ -383,6 +392,88 @@ describe.skipIf(!dbAvailable)('pages.id int4 overflow on externally-sourced ids 
 
       expect(response.json().error ?? '').not.toMatch(/out of range for type integer/);
       expect(response.statusCode).toBe(404);
+    });
+  });
+
+  // ── Site 4: bulk selection (core/services/bulk-page-selection.ts) ─────────
+  //
+  // The array arm is the worst instance of this defect, not a milder one. The
+  // text arm excludes `/^\d+$/`, so a numeric Confluence id lands in the int[]
+  // arm alone with no second arm to rescue it — and `bulkWireId` sends exactly
+  // that for every synced page, so the ordinary UI reaches it. Eight call sites
+  // share `resolveBulkSelection`; `POST /pages/bulk/embed` is the thinnest.
+
+  describe('POST /api/pages/bulk/embed (bulk selection resolver)', () => {
+    it('does not 500 the whole batch on an id above 2^31', async () => {
+      await createPage({ title: 'Big', confluenceId: BIG_CONFLUENCE_ID });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/embed',
+        payload: { ids: [BIG_CONFLUENCE_ID] },
+      });
+
+      expect(response.json().error ?? '').not.toMatch(/out of range for type integer/);
+      expect(response.statusCode).toBe(200);
+    });
+
+    it('keeps partial success: one oversized id no longer sinks the batch', async () => {
+      // The resolvable page is addressed by a NON-numeric confluence_id on
+      // purpose — a numeric one is filtered out of the text arm before the
+      // query runs, which is the separate pre-existing gap noted in the PR.
+      await createPage({ title: 'Fine', confluenceId: 'conf-ok' });
+      await createPage({ title: 'Big', confluenceId: BIG_CONFLUENCE_ID });
+      // `embedding_dirty` defaults to TRUE, so clear it first — otherwise the
+      // assertion below cannot tell what this request actually marked.
+      await query('UPDATE pages SET embedding_dirty = FALSE', []);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/embed',
+        payload: { ids: ['conf-ok', BIG_CONFLUENCE_ID] },
+      });
+
+      expect(response.statusCode).toBe(200);
+      // Before the fix the int4 cast aborted the statement, so the good page
+      // was not embedded either — the entire batch 500ed.
+      expect(response.json()).toMatchObject({ succeeded: 1, failed: 1 });
+
+      const embedded = await query<{ confluence_id: string }>(
+        'SELECT confluence_id FROM pages WHERE embedding_dirty = TRUE',
+      );
+      expect(embedded.rows.map((r) => r.confluence_id)).toEqual(['conf-ok']);
+    });
+
+    it('resolves a zero-padded internal DB id exactly like the unpadded one', async () => {
+      const dbId = await createPage({ title: 'By PK', confluenceId: 'conf-pk' });
+
+      const padded = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/embed',
+        payload: { ids: [`000${dbId}`] },
+      });
+      await query('UPDATE pages SET embedding_dirty = FALSE', []);
+      const plain = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/embed',
+        payload: { ids: [String(dbId)] },
+      });
+
+      expect(padded.statusCode).toBe(200);
+      // The id arm resolved the row via its PK despite the zero padding, so the
+      // page was eligible and got marked dirty.
+      expect(padded.json()).toMatchObject({ succeeded: 1 });
+      // Padding must not be the differentiator: whatever the unpadded id does,
+      // the padded one does too. Counts only — `notFoundIds` deliberately
+      // echoes the caller's original string, so the messages differ. (Both do
+      // report the id as not-found: a synced row is mapped back by
+      // confluence_id, so addressing it by PK double-counts. Pre-existing,
+      // unrelated to the cast.)
+      const counts = (r: typeof padded) => {
+        const { succeeded, failed } = r.json();
+        return { succeeded, failed };
+      };
+      expect(counts(padded)).toEqual(counts(plain));
     });
   });
 });

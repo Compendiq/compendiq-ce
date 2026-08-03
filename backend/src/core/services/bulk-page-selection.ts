@@ -21,6 +21,7 @@
 import { z } from 'zod';
 import { query } from '../db/postgres.js';
 import { visiblePagesPredicate } from './page-visibility.js';
+import { toPageIdText } from '../utils/page-id-text.js';
 
 /**
  * Subset of the GET /pages filter shape that's safe + useful for bulk
@@ -241,7 +242,17 @@ export async function resolveBulkSelection(
   // -- ids mode --
   if (selection.ids) {
     const ids = selection.ids;
-    const numericIds = ids.filter((id) => /^\d+$/.test(id)).map(Number);
+    // Bound as TEXT against `cp.id::text`, not as int4 (#1167). The array arm
+    // is the *worst* instance of that overflow, not a milder one: the text arm
+    // below explicitly excludes `/^\d+$/`, so a numeric Confluence content id
+    // lands in this arm alone with no second arm to rescue it. Above 2^31 the
+    // int4 cast aborted the statement, 500ing the entire batch — no partial
+    // success — and the ordinary UI feeds exactly these ids (`bulkWireId`
+    // sends `confluenceId ?? id` for every synced page).
+    //
+    // `toPageIdText` keeps the numeric normalisation the int cast used to
+    // provide, so a zero-padded id still matches the same row it always did.
+    const numericIds = ids.filter((id) => /^\d+$/.test(id)).map(toPageIdText);
     const confluenceStringIds =
       options.idMode === 'numeric-only' ? [] : ids.filter((id) => !/^\d+$/.test(id));
 
@@ -257,7 +268,7 @@ export async function resolveBulkSelection(
       // to their private pages regardless of visibility, and the space branch
       // is not gated on source = 'confluence'.
       `SELECT cp.id, cp.confluence_id, cp.space_key, cp.source, cp.labels, cp.created_by_user_id FROM pages cp
-       WHERE (cp.id = ANY($1::int[]) OR cp.confluence_id = ANY($2::text[]))
+       WHERE (cp.id::text = ANY($1::text[]) OR cp.confluence_id = ANY($2::text[]))
          AND cp.deleted_at IS NULL
          AND ((cp.source = 'standalone' AND (cp.visibility = 'shared' OR cp.created_by_user_id = $3))
               OR cp.space_key = ANY($4::text[]))`,
