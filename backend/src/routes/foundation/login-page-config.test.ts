@@ -2,6 +2,7 @@ import { beforeAll, beforeEach, afterAll, describe, expect, it, vi } from 'vites
 import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 import { ZodError } from 'zod';
+import { noopPlugin } from '../../core/enterprise/noop.js';
 
 const mockGetLoginPageVariant = vi.fn();
 const mockSetLoginPageVariant = vi.fn();
@@ -82,7 +83,12 @@ describe('login page config routes', () => {
     expect(response.json()).toEqual({ variant: 'local-loop', edition: 'enterprise' });
   });
 
-  it('reports the community edition when the noop shim is active', async () => {
+  // Pins the contract between `noop.ts` and this route: the shim's `version`
+  // field is the only thing that keeps a CE deployment from badging itself
+  // "Enterprise Edition". A stub object would not catch it being renamed.
+  it('reports the community edition when the real noop shim is active', async () => {
+    mockGetEnterprisePlugin.mockReturnValue(noopPlugin);
+
     const response = await app.inject({ method: 'GET', url: '/api/auth/login-page-config' });
 
     expect(response.json()).toMatchObject({ edition: 'community' });

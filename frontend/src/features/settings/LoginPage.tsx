@@ -45,6 +45,16 @@ export function LoginPage() {
   const [allowRegistration, setAllowRegistration] = useState(false);
   const [runtimeVariant, setRuntimeVariant] = useState<LoginVariant | null>(null);
   const [edition, setEdition] = useState<AppEdition | null>(null);
+  // null until the presentation config has settled once. `false` means an
+  // unrelated core route on the same upstream failed too, which is how the
+  // panel tells "the API is down" apart from "the SSO route failed".
+  const [serverReachable, setServerReachable] = useState<boolean | null>(null);
+
+  // Both probes can be re-run by the user. Without a generation counter a slow
+  // failure that resolves after a newer success would overwrite it — the SSO
+  // button would appear and then vanish again on its own.
+  const configGeneration = useRef(0);
+  const oidcGeneration = useRef(0);
 
   const loginVariant = resolveLoginVariant(
     searchParams,
@@ -81,36 +91,60 @@ export function LoginPage() {
     setSearchParams(nextParams, { replace: true });
   }, [searchParams, setSearchParams]);
 
-  useEffect(() => {
-    async function fetchLoginPageConfig() {
-      try {
-        const config = LoginPageConfigResponseSchema.parse(
-          await apiFetch('/auth/login-page-config'),
-        );
-        setRuntimeVariant(config.variant);
-        setEdition(config.edition ?? null);
-      } catch {
-        // Presentation config must never block sign-in; retain the build
-        // default and leave the edition unknown (the badge is then omitted).
-      }
+  const fetchLoginPageConfig = useCallback(async () => {
+    const generation = ++configGeneration.current;
+    try {
+      const config = LoginPageConfigResponseSchema.parse(
+        await apiFetch('/auth/login-page-config'),
+      );
+      if (generation !== configGeneration.current) return;
+      setRuntimeVariant(config.variant);
+      setEdition(config.edition ?? null);
+      setServerReachable(true);
+    } catch {
+      // Presentation config must never block sign-in; retain the build
+      // default and leave the edition unknown (the badge is then omitted).
+      // The failure is still worth recording: this route is unrelated to SSO,
+      // so losing it too is what identifies a whole-API outage.
+      if (generation !== configGeneration.current) return;
+      setServerReachable(false);
     }
-
-    void fetchLoginPageConfig();
   }, []);
 
   const probeOidcConfig = useCallback(async () => {
-    setOidcProbe({ status: 'pending' });
+    const generation = ++oidcGeneration.current;
+    // A recheck stays in the `failed` state so the notice — and the button the
+    // user just pressed — survives the round trip. Only the first probe of a
+    // page load may render nothing at all.
+    setOidcProbe((current) =>
+      current.status === 'failed' ? { status: 'failed', retrying: true } : { status: 'pending' },
+    );
     try {
       const config = OidcConfigSchema.parse(await apiFetch('/auth/oidc/config'));
+      if (generation !== oidcGeneration.current) return;
       setOidcProbe({ status: 'ready', config });
     } catch {
       // A failed probe is NOT "SSO is disabled" — the backend may simply be
       // down (a 502 through nginx takes every /api route with it). Swallowing
       // it into a hidden button makes an outage indistinguishable from the
       // button having been removed, which is exactly how #1187 was misread.
-      setOidcProbe({ status: 'failed' });
+      if (generation !== oidcGeneration.current) return;
+      setOidcProbe({ status: 'failed', retrying: false });
     }
   }, []);
+
+  // "Check again" re-runs everything this page probes, not just SSO. The
+  // presentation config carries the edition badge and the layout variant, and
+  // a recovered backend that only restored the SSO button would leave the
+  // header still branded as if the edition were unknown.
+  const recheckServerState = useCallback(() => {
+    void probeOidcConfig();
+    void fetchLoginPageConfig();
+  }, [probeOidcConfig, fetchLoginPageConfig]);
+
+  useEffect(() => {
+    void fetchLoginPageConfig();
+  }, [fetchLoginPageConfig]);
 
   useEffect(() => {
     void probeOidcConfig();
@@ -187,7 +221,8 @@ export function LoginPage() {
     confirmError,
     loading,
     oidcProbe,
-    onRetryOidc: () => void probeOidcConfig(),
+    onRetryOidc: recheckServerState,
+    serverUnreachable: serverReachable === false,
     allowRegistration,
     onUsernameChange: setUsername,
     onPasswordChange: (value) => {

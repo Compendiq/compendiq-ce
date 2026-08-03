@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { LoginPage } from './LoginPage';
@@ -19,10 +19,22 @@ type RegOpt = { allowRegistration: boolean } | 'reject';
 type LoginVariantOpt = 'local-loop' | 'change-desk' | 'reject';
 type EditionOpt = 'community' | 'enterprise' | 'absent';
 
+/** Promise a test can settle by hand, to pin down out-of-order responses. */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 /**
- * URL-keyed apiFetch mock. LoginPage fires two independent probes on mount
- * (`/auth/oidc/config` and `/auth/registration-policy`), so a call-order-based
- * `mockResolvedValueOnce` is brittle — key the resolution on the URL instead.
+ * URL-keyed apiFetch mock. LoginPage fires three independent probes on mount
+ * (`/auth/login-page-config`, `/auth/oidc/config` and
+ * `/auth/registration-policy`), so a call-order-based `mockResolvedValueOnce`
+ * is brittle — key the resolution on the URL instead.
  */
 function mockApi(
   opts: {
@@ -164,6 +176,155 @@ describe('LoginPage', () => {
 
       expect(await screen.findByRole('button', { name: 'Sign in with OrgSSO' })).toBeInTheDocument();
       expect(screen.queryByTestId('sso-probe-failed')).not.toBeInTheDocument();
+    });
+
+    // Dropping back to `pending` on a recheck would unmount the notice — and
+    // with it the button the user just pressed. Focus lands on <body>, and a
+    // hanging request (the 504 case this whole notice exists for) leaves an
+    // empty panel that reads as success.
+    it('keeps the notice and its trigger mounted while a recheck is in flight', async () => {
+      const slowRecheck = deferred<Record<string, unknown>>();
+      let oidcCalls = 0;
+      vi.mocked(apiFetch).mockImplementation(async (url: string) => {
+        const u = String(url);
+        if (u.includes('/auth/oidc/config')) {
+          oidcCalls += 1;
+          if (oidcCalls === 1) throw new Error('Bad Gateway');
+          return slowRecheck.promise as never;
+        }
+        if (u.includes('/auth/login-page-config')) return { variant: 'local-loop' } as never;
+        if (u.includes('/auth/registration-policy')) return { allowRegistration: false } as never;
+        throw new Error(`unexpected apiFetch url: ${u}`);
+      });
+
+      renderLoginPage();
+      fireEvent.click(await screen.findByRole('button', { name: 'Check again' }));
+
+      const busyTrigger = await screen.findByRole('button', { name: /Checking/ });
+      expect(screen.getByTestId('sso-probe-failed')).toBeInTheDocument();
+      expect(busyTrigger).toBeDisabled();
+      expect(busyTrigger).toHaveAttribute('aria-busy', 'true');
+
+      await act(async () => {
+        slowRecheck.resolve({ enabled: true, issuer: 'https://idp.example.com', name: 'OrgSSO' });
+      });
+      expect(screen.getByRole('button', { name: 'Sign in with OrgSSO' })).toBeInTheDocument();
+    });
+
+    it('moves focus to the recovered SSO button rather than dropping it on <body>', async () => {
+      let oidcCalls = 0;
+      vi.mocked(apiFetch).mockImplementation(async (url: string) => {
+        const u = String(url);
+        if (u.includes('/auth/oidc/config')) {
+          oidcCalls += 1;
+          if (oidcCalls === 1) throw new Error('Bad Gateway');
+          return { enabled: true, issuer: 'https://idp.example.com', name: 'OrgSSO' } as never;
+        }
+        if (u.includes('/auth/login-page-config')) return { variant: 'local-loop' } as never;
+        if (u.includes('/auth/registration-policy')) return { allowRegistration: false } as never;
+        throw new Error(`unexpected apiFetch url: ${u}`);
+      });
+
+      renderLoginPage();
+      fireEvent.click(await screen.findByRole('button', { name: 'Check again' }));
+
+      const ssoButton = await screen.findByRole('button', { name: 'Sign in with OrgSSO' });
+      await waitFor(() => expect(ssoButton).toHaveFocus());
+    });
+
+    it('announces the failure through a live region present from first paint', async () => {
+      mockApi({ oidc: 'reject' });
+      renderLoginPage();
+
+      // Empty but mounted: a live region is announced when its *contents*
+      // change, and assistive tech is inconsistent about a region inserted at
+      // the same moment as its text.
+      const announcer = screen.getByTestId('sso-status-announcer');
+      expect(announcer.textContent).toBe('');
+      expect(announcer).toHaveAttribute('aria-live', 'polite');
+
+      await waitFor(() =>
+        expect(announcer).toHaveTextContent(
+          'Single sign-on status unavailable. You can still sign in with credentials below.',
+        ),
+      );
+    });
+  });
+
+  // ─── which failure actually happened ─────────────────────────────────────
+  // `/auth/login-page-config` is an unrelated core route on the same upstream.
+  // Losing it too means nothing responded — and a CE deployment that has never
+  // had SSO should not be told its single sign-on is unavailable.
+  describe('probe failure attribution', () => {
+    it('names the outage when the whole API is unreachable, not just SSO', async () => {
+      mockApi({ oidc: 'reject', loginVariant: 'reject' });
+      renderLoginPage();
+
+      expect(await screen.findByText('Cannot reach the server')).toBeInTheDocument();
+      expect(screen.queryByText('Single sign-on status unavailable')).not.toBeInTheDocument();
+    });
+
+    it('blames only SSO when the rest of the API is answering', async () => {
+      mockApi({ oidc: 'reject' });
+      renderLoginPage();
+
+      expect(await screen.findByText('Single sign-on status unavailable')).toBeInTheDocument();
+      expect(screen.queryByText('Cannot reach the server')).not.toBeInTheDocument();
+    });
+
+    it('re-runs the presentation config too, so a recovered backend restores the badge', async () => {
+      let configCalls = 0;
+      vi.mocked(apiFetch).mockImplementation(async (url: string) => {
+        const u = String(url);
+        if (u.includes('/auth/login-page-config')) {
+          configCalls += 1;
+          if (configCalls === 1) throw new Error('Bad Gateway');
+          return { variant: 'local-loop', edition: 'enterprise' } as never;
+        }
+        // SSO stays down: the badge has to recover on its own signal.
+        if (u.includes('/auth/oidc/config')) throw new Error('Bad Gateway');
+        if (u.includes('/auth/registration-policy')) return { allowRegistration: false } as never;
+        throw new Error(`unexpected apiFetch url: ${u}`);
+      });
+
+      renderLoginPage();
+      expect(await screen.findByText('Cannot reach the server')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
+
+      expect(await screen.findByText('Enterprise Edition')).toBeInTheDocument();
+      // API is back, SSO route still is not — the notice narrows accordingly.
+      expect(await screen.findByText('Single sign-on status unavailable')).toBeInTheDocument();
+    });
+
+    it('ignores a stale presentation-config response that lands after a newer one', async () => {
+      const slowFirst = deferred<Record<string, unknown>>();
+      let configCalls = 0;
+      vi.mocked(apiFetch).mockImplementation(async (url: string) => {
+        const u = String(url);
+        if (u.includes('/auth/login-page-config')) {
+          configCalls += 1;
+          if (configCalls === 1) return slowFirst.promise as never;
+          throw new Error('Bad Gateway');
+        }
+        if (u.includes('/auth/oidc/config')) throw new Error('Bad Gateway');
+        if (u.includes('/auth/registration-policy')) return { allowRegistration: false } as never;
+        throw new Error(`unexpected apiFetch url: ${u}`);
+      });
+
+      renderLoginPage();
+      fireEvent.click(await screen.findByRole('button', { name: 'Check again' }));
+      expect(await screen.findByText('Cannot reach the server')).toBeInTheDocument();
+
+      // The original request finally answers, long after a newer one said the
+      // server is down. It must not resurrect a badge or claim reachability.
+      await act(async () => {
+        slowFirst.resolve({ variant: 'local-loop', edition: 'community' });
+      });
+
+      expect(configCalls).toBe(2);
+      expect(screen.queryByText('Community Edition · AGPL-3.0')).not.toBeInTheDocument();
+      expect(screen.getByText('Cannot reach the server')).toBeInTheDocument();
     });
   });
 

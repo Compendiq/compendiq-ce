@@ -1,4 +1,4 @@
-import type { FormEvent, RefObject } from 'react';
+import { useEffect, useRef, type FormEvent, type RefObject } from 'react';
 import type { OidcConfig } from '@compendiq/contracts';
 import { ArrowRight, Eye, EyeOff, LoaderCircle } from 'lucide-react';
 
@@ -8,11 +8,15 @@ import { ArrowRight, Eye, EyeOff, LoaderCircle } from 'lucide-react';
  * probe is not the same answer as "SSO is disabled". Reporting a dead backend
  * as "no SSO here" silently removes the only sign-in path on an SSO-only
  * deployment, and reads to the user as if the button had been deleted.
+ *
+ * `failed` carries its own in-flight flag rather than dropping back to
+ * `pending`: a recheck has to keep the notice — and the button the user just
+ * pressed — mounted. Only the first probe of a page load renders nothing.
  */
 export type OidcProbe =
   | { status: 'pending' }
   | { status: 'ready'; config: OidcConfig }
-  | { status: 'failed' };
+  | { status: 'failed'; retrying: boolean };
 
 export interface AuthPanelProps {
   usernameInputRef: RefObject<HTMLInputElement | null>;
@@ -25,6 +29,15 @@ export interface AuthPanelProps {
   loading: boolean;
   oidcProbe: OidcProbe;
   onRetryOidc: () => void;
+  /**
+   * True once `GET /auth/login-page-config` — an unrelated core route on the
+   * same upstream — has failed too. That is what separates "nothing responded"
+   * from "the SSO route specifically failed", and it decides which of the two
+   * notices is honest: a CE deployment that has never had SSO should not be
+   * told its single sign-on is unavailable when the real answer is that the
+   * whole API is down.
+   */
+  serverUnreachable: boolean;
   allowRegistration: boolean;
   onUsernameChange: (value: string) => void;
   onPasswordChange: (value: string) => void;
@@ -45,6 +58,7 @@ export function AuthPanel({
   loading,
   oidcProbe,
   onRetryOidc,
+  serverUnreachable,
   allowRegistration,
   onUsernameChange,
   onPasswordChange,
@@ -53,11 +67,56 @@ export function AuthPanel({
   onModeChange,
   onSubmit,
 }: AuthPanelProps) {
-  const oidcConfig = oidcProbe.status === 'ready' ? oidcProbe.config : null;
-  const showSso = oidcConfig?.enabled && !oidcConfig.enterpriseRequired;
+  // Non-null exactly when the SSO button should render, so the JSX below keeps
+  // its narrowing instead of re-testing the same two fields.
+  const ssoConfig =
+    oidcProbe.status === 'ready' && oidcProbe.config.enabled && !oidcProbe.config.enterpriseRequired
+      ? oidcProbe.config
+      : null;
+  const showSso = ssoConfig !== null;
+  const probeFailed = oidcProbe.status === 'failed';
+  const rechecking = oidcProbe.status === 'failed' && oidcProbe.retrying;
+
+  const ssoButtonRef = useRef<HTMLButtonElement>(null);
+  const recheckRequestedRef = useRef(false);
+
+  // A successful recheck replaces the button the user just pressed with the SSO
+  // button. Without moving focus onto the replacement it falls back to <body>,
+  // and a keyboard user has to tab in from the top of the page to reach the
+  // control they just recovered.
+  useEffect(() => {
+    if (showSso && recheckRequestedRef.current) {
+      recheckRequestedRef.current = false;
+      ssoButtonRef.current?.focus();
+    }
+  }, [showSso]);
+
+  function handleRecheck() {
+    recheckRequestedRef.current = true;
+    onRetryOidc();
+  }
+
+  const noticeHeading = serverUnreachable
+    ? 'Cannot reach the server'
+    : 'Single sign-on status unavailable';
+  const noticeBody = serverUnreachable
+    ? 'Nothing on the API responded, so we cannot tell whether single sign-on is configured here. Credential sign-in will likely fail too until the server is back.'
+    : 'The single sign-on check did not complete, so we cannot tell whether it is configured here.';
 
   return (
     <section className="nm-card-elevated w-full max-w-md p-6 sm:p-8" aria-labelledby="auth-panel-title">
+      {/*
+        Mounted from the first render on purpose: a live region is announced
+        when its *contents* change, and assistive tech is inconsistent about
+        regions inserted together with their text. Wording deliberately differs
+        from the visible notice so the two never read as one duplicated string.
+      */}
+      <div role="status" aria-live="polite" data-testid="sso-status-announcer" className="sr-only">
+        {probeFailed && !rechecking
+          ? `${noticeHeading}. You can still sign in with credentials below.`
+          : ''}
+      </div>
+
       <div className="mb-7">
         <p className="mb-2 text-sm font-semibold text-primary-ink">
           {isRegister ? 'New workspace account' : 'Welcome back'}
@@ -72,10 +131,11 @@ export function AuthPanel({
         </p>
       </div>
 
-      {(showSso || oidcProbe.status === 'failed') && (
+      {(ssoConfig || probeFailed) && (
         <>
-          {showSso ? (
+          {ssoConfig ? (
             <button
+              ref={ssoButtonRef}
               type="button"
               onClick={() => {
                 window.location.href = '/api/auth/oidc/authorize';
@@ -83,25 +143,22 @@ export function AuthPanel({
               data-testid="sso-login-btn"
               className="nm-button-primary flex min-h-11 w-full items-center justify-center gap-2 px-4 text-sm font-semibold"
             >
-              Sign in with {oidcConfig.name || 'SSO'}
+              Sign in with {ssoConfig.name || 'SSO'}
               <ArrowRight aria-hidden="true" className="h-4 w-4" />
             </button>
           ) : (
-            <div
-              role="status"
-              data-testid="sso-probe-failed"
-              className="rounded-lg border border-border p-4"
-            >
-              <p className="text-sm font-medium text-foreground">Single sign-on status unavailable</p>
-              <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                The server did not respond, so we cannot tell whether SSO is configured here.
-              </p>
+            <div data-testid="sso-probe-failed" className="rounded-lg border border-border p-4">
+              <p className="text-sm font-medium text-foreground">{noticeHeading}</p>
+              <p className="mt-1 text-sm leading-6 text-muted-foreground">{noticeBody}</p>
               <button
                 type="button"
-                onClick={onRetryOidc}
-                className="mt-3 rounded-sm text-sm font-semibold text-primary-ink underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                onClick={handleRecheck}
+                disabled={rechecking}
+                aria-busy={rechecking}
+                className="mt-3 inline-flex min-h-11 items-center gap-2 rounded-sm text-sm font-semibold text-primary-ink underline-offset-4 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring enabled:hover:underline disabled:cursor-not-allowed disabled:opacity-70"
               >
-                Check again
+                {rechecking && <LoaderCircle aria-hidden="true" className="h-4 w-4 animate-spin" />}
+                {rechecking ? 'Checking…' : 'Check again'}
               </button>
             </div>
           )}

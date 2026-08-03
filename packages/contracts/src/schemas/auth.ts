@@ -62,6 +62,10 @@ export type AppEdition = z.infer<typeof AppEditionSchema>;
  * backend predating this field. A required key would throw in `.parse()` and
  * take the (unrelated) `variant` down with it — absent simply means "edition
  * unknown", and the badge is omitted rather than guessed.
+ *
+ * `.nullish()` rather than `.optional()` for the same fail-open reason as
+ * `OidcConfigSchema`: a backend that spells "unknown" as an explicit `null`
+ * should still hand over a usable `variant` instead of throwing.
  */
 export const LoginPageConfigResponseSchema = LoginPageConfigSchema.extend({
   edition: AppEditionSchema.nullish(),

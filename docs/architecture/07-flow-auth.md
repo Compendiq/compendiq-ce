@@ -236,21 +236,43 @@ CE answers with a static `{ enabled: false, enterpriseRequired: true }` stub
 (`app.ts`, community mode only); EE answers from the `oidc_providers` table
 plus the license. The button renders when `enabled && !enterpriseRequired`.
 
-The probe has **three** outcomes, not two, and they must not be collapsed
-(`OidcProbe` in `login/AuthPanel.tsx` — same rule as the `vision` tri-state on
-the AI composers):
+The probe outcome must not be collapsed to "config or null" (`OidcProbe` in
+`login/AuthPanel.tsx` — same rule as the `vision` tri-state on the AI
+composers):
 
 | Outcome | Login page |
 |---------|-----------|
+| `pending` (first probe of the page load) | nothing yet |
 | `ready`, `enabled` | SSO button + "or continue with credentials" divider |
 | `ready`, not enabled | nothing — SSO is genuinely off here |
-| `failed` (5xx / network / rate-limit / parse) | "Single sign-on status unavailable" notice with a **Check again** retry |
+| `failed`, `retrying: false` (5xx / network / rate-limit / parse) | unavailable notice with a **Check again** trigger |
+| `failed`, `retrying: true` | the *same* notice, trigger disabled and `aria-busy` |
 
 A failed probe is *not* "SSO is disabled". nginx proxies all of `/api/` to one
 upstream, so a backend that is down or restarting returns 502 for this route —
 and swallowing that into a hidden button removes the only sign-in path on an
 SSO-only deployment while looking exactly like the button having been deleted.
-Retry re-runs the probe in place; no reload is needed.
+
+Three properties of that notice are load-bearing:
+
+- **A recheck stays in `failed`**, it does not fall back to `pending`. Dropping
+  to `pending` unmounts the notice together with the button the user just
+  pressed: focus lands on `<body>`, and the hanging-upstream case this notice
+  exists for shows an empty panel that reads as success.
+- **Focus moves to the SSO button** when a recheck recovers it, because the
+  control the user activated is the one being replaced.
+- **Which failure gets named** depends on a second signal.
+  `GET /api/auth/login-page-config` is an unrelated core route on the same
+  upstream, so losing it too means nothing responded — the notice then says
+  *"Cannot reach the server"* rather than blaming SSO. It matters most on CE,
+  where SSO does not exist at all and an SSO-shaped error is pure noise.
+
+**Check again** re-runs both probes, not just the SSO one — the presentation
+config carries the layout variant and the edition badge, and a recovered
+backend that only restored the button would leave the header stale. Both
+probes drop responses from a superseded generation, so a slow failure landing
+after a newer success cannot make the button appear and then vanish again.
+No reload is needed.
 
 ## Where this lives
 
@@ -267,4 +289,5 @@ Retry re-runs the probe in place; no reload is needed.
 | OIDC callback UI | `frontend/src/features/auth/OidcCallbackPage.tsx` |
 | OIDC admin config UI | `frontend/src/features/admin/OidcSettingsPage.tsx` |
 | SSO probe tri-state + unavailable notice | `frontend/src/features/settings/login/AuthPanel.tsx` |
+| Probe generations + combined recheck | `frontend/src/features/settings/LoginPage.tsx` |
 | Public login presentation (variant + edition badge) | `backend/src/routes/foundation/login-page-config.ts` |
