@@ -237,7 +237,7 @@ CE answers with a static `{ enabled: false, enterpriseRequired: true }` stub
 plus the license. The button renders when `enabled && !enterpriseRequired`.
 
 The probe outcome must not be collapsed to "config or null" (`OidcProbe` in
-`login/AuthPanel.tsx` — same rule as the `vision` tri-state on the AI
+`login/sso-notice.ts` — same rule as the `vision` tri-state on the AI
 composers):
 
 | Outcome | Login page |
@@ -246,33 +246,52 @@ composers):
 | `ready`, `enabled` | SSO button + "or continue with credentials" divider |
 | `ready`, not enabled | nothing — SSO is genuinely off here |
 | `failed`, `retrying: false` (5xx / network / rate-limit / parse) | unavailable notice with a **Check again** trigger |
-| `failed`, `retrying: true` | the *same* notice, trigger disabled and `aria-busy` |
+| `failed`, `retrying: true` | the *same* notice, trigger `aria-disabled` + `aria-busy` |
 
 A failed probe is *not* "SSO is disabled". nginx proxies all of `/api/` to one
 upstream, so a backend that is down or restarting returns 502 for this route —
 and swallowing that into a hidden button removes the only sign-in path on an
 SSO-only deployment while looking exactly like the button having been deleted.
 
-Three properties of that notice are load-bearing:
-
-- **A recheck stays in `failed`**, it does not fall back to `pending`. Dropping
-  to `pending` unmounts the notice together with the button the user just
-  pressed: focus lands on `<body>`, and the hanging-upstream case this notice
-  exists for shows an empty panel that reads as success.
-- **Focus moves to the SSO button** when a recheck recovers it, because the
-  control the user activated is the one being replaced.
-- **Which failure gets named** depends on a second signal.
-  `GET /api/auth/login-page-config` is an unrelated core route on the same
-  upstream, so losing it too means nothing responded — the notice then says
-  *"Cannot reach the server"* rather than blaming SSO. It matters most on CE,
-  where SSO does not exist at all and an SSO-shaped error is pure noise.
-
 **Check again** re-runs both probes, not just the SSO one — the presentation
 config carries the layout variant and the edition badge, and a recovered
 backend that only restored the button would leave the header stale. Both
-probes drop responses from a superseded generation, so a slow failure landing
-after a newer success cannot make the button appear and then vanish again.
-No reload is needed.
+probes drop responses from a superseded generation, so a slow answer landing
+after a newer one cannot undo it in either direction. No reload is needed.
+
+### Why the notice is built the way it is
+
+Every one of these exists because the obvious alternative breaks something.
+None of them are stylistic.
+
+- **A recheck stays in `failed`** rather than returning to `pending`. Dropping
+  to `pending` unmounts the notice together with the trigger the user just
+  pressed: focus lands on `<body>`, and the hanging-upstream case this notice
+  exists for shows an empty panel that reads as success.
+- **The trigger is `aria-disabled`, not `disabled`.** A genuinely disabled
+  control is blurred by the browser and leaves the tab order — dropping the
+  focus of the user who just pressed it, which is the failure above by another
+  route. The click handler is detached instead.
+- **Focus restore is scoped to focus the panel itself orphaned.** A recovered
+  recheck replaces the trigger with the SSO button, so the panel claims focus
+  — but only when `document.activeElement` is still `<body>`. A user who moved
+  to a form field meanwhile keeps it.
+- **The recheck flag and the live region live in `LoginPage`, not the panel.**
+  `ChangeDeskLogin` and `LocalLoopLogin` are different component types, so the
+  first successful presentation-config read *remounts the whole panel*. Anything
+  inside it is destroyed mid-recheck.
+- **The live region waits for the attribution signal.** The two probes settle
+  independently, so announcing on the first would say "Cannot reach the server"
+  and contradict it a few frames later. The visible heading does refine in
+  place — the weaker true statement then the stronger one is honest on screen —
+  but a screen reader cannot retract what it has already said.
+- **Which failure gets named** is that attribution signal.
+  `GET /api/auth/login-page-config` is an unrelated core route on the same
+  upstream, so losing it too means nothing responded and the notice says
+  *"Cannot reach the server"* instead of blaming SSO. It matters most on CE,
+  where SSO does not exist at all and an SSO-shaped error is pure noise. That
+  wording also drops the "you can still sign in with credentials" reassurance:
+  the credential form posts to the same dead upstream.
 
 ## Where this lives
 
@@ -288,6 +307,7 @@ No reload is needed.
 | API client (single-flight + proactive/reactive refresh) | `frontend/src/shared/lib/api.ts` |
 | OIDC callback UI | `frontend/src/features/auth/OidcCallbackPage.tsx` |
 | OIDC admin config UI | `frontend/src/features/admin/OidcSettingsPage.tsx` |
-| SSO probe tri-state + unavailable notice | `frontend/src/features/settings/login/AuthPanel.tsx` |
-| Probe generations + combined recheck | `frontend/src/features/settings/LoginPage.tsx` |
+| SSO probe tri-state + notice copy (visible and announced) | `frontend/src/features/settings/login/sso-notice.ts` |
+| Unavailable notice + focus restore | `frontend/src/features/settings/login/AuthPanel.tsx` |
+| Probe generations, combined recheck, live region | `frontend/src/features/settings/LoginPage.tsx` |
 | Public login presentation (variant + edition badge) | `backend/src/routes/foundation/login-page-config.ts` |
