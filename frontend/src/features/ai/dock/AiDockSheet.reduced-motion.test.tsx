@@ -58,7 +58,7 @@ function renderSheet() {
 describe('AiDockSheet under prefers-reduced-motion (#1126)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    useAiDockStore.setState({ open: false, seed: null, seedPageId: null });
+    useAiDockStore.setState({ open: false });
     window.innerWidth = 390;
     window.innerHeight = PHONE_HEIGHT;
     apiFetchMock.mockImplementation((path: string) => {
@@ -74,7 +74,7 @@ describe('AiDockSheet under prefers-reduced-motion (#1126)', () => {
   });
 
   afterEach(() => {
-    useAiDockStore.setState({ open: false, seed: null, seedPageId: null });
+    useAiDockStore.setState({ open: false });
   });
 
   it('strips the height transition, so moving between detents is instant', async () => {

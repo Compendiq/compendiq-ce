@@ -113,7 +113,7 @@ function improveBody(): Record<string, unknown> {
 describe('AiDock — reference document (#1131)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    useAiDockStore.setState({ open: false, seed: null, seedPageId: null });
+    useAiDockStore.setState({ open: false });
     useUiStore.setState({ aiDockWidth: 420 });
     window.innerWidth = 1400;
     apiFetchMock.mockImplementation((path: string) => {
@@ -131,7 +131,7 @@ describe('AiDock — reference document (#1131)', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
-    useAiDockStore.setState({ open: false, seed: null, seedPageId: null });
+    useAiDockStore.setState({ open: false });
   });
 
   it('offers the attach control inside the composer, not as a standing panel', async () => {

@@ -149,7 +149,7 @@ describe('ArticleRightPane', () => {
     useArticleViewStore.setState({ headings: [], editing: false });
     // The dock forces this pane into its rail while open (#1126), so a test
     // that opens it would otherwise change what every later test renders.
-    useAiDockStore.setState({ open: false, seed: null });
+    useAiDockStore.setState({ open: false });
     // jsdom's default. `useIsDockWideLayout` reads it via matchMedia, and the
     // pane steps aside entirely below 1100px while the dock is open.
     window.innerWidth = 1024;
@@ -165,7 +165,7 @@ describe('ArticleRightPane', () => {
     expect(screen.getByTestId('article-right-pane')).toBeInTheDocument();
     expect(screen.getByText('Page context')).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Details' })).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getByText('AI Improve')).toBeInTheDocument();
+    expect(screen.getByText('AI Assistant')).toBeInTheDocument();
     expect(screen.getByText('Pin')).toBeInTheDocument();
     expect(screen.getByText('Open in Confluence')).toBeInTheDocument();
     expect(screen.getByText('Delete')).toBeInTheDocument();
@@ -174,7 +174,7 @@ describe('ArticleRightPane', () => {
   it('keeps primary actions visible and tucks maintenance and deletion behind disclosures', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    expect(screen.getByText('AI Improve').closest('details')).toBeNull();
+    expect(screen.getByText('AI Assistant').closest('details')).toBeNull();
     expect(screen.getByText('Export PDF').closest('details')).toBeNull();
     expect(screen.getByText('Pin').closest('details')).toBeNull();
 
@@ -246,7 +246,7 @@ describe('ArticleRightPane', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
     expect(screen.queryByTestId('article-actions')).not.toBeInTheDocument();
-    expect(screen.queryByText('AI Improve')).not.toBeInTheDocument();
+    expect(screen.queryByText('AI Assistant')).not.toBeInTheDocument();
   });
 
   it('keeps AI-Tagging available in edit mode (#354)', () => {
@@ -284,22 +284,22 @@ describe('ArticleRightPane', () => {
     expect(screen.queryByText('Version history')).not.toBeInTheDocument();
   });
 
-  // #1126: "AI Improve" used to navigate to /ai?mode=improve&pageId=…, which
-  // took the document off screen to operate on it. It now opens the assistant
-  // beside the document with the Improve prompt seeded.
-  it('opens the docked assistant with Improve seeded instead of navigating away', () => {
+  // #1126: this button used to navigate to /ai?mode=improve&pageId=…, which took
+  // the document off screen to operate on it. It opens the assistant beside the
+  // document instead. #1176: and only opens it — it queues no work, so the
+  // control is "AI Assistant" rather than a rewrite that starts on click.
+  it('opens the docked assistant instead of navigating away, and starts nothing', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    fireEvent.click(screen.getByText('AI Improve'));
+    fireEvent.click(screen.getByText('AI Assistant'));
 
     expect(useAiDockStore.getState().open).toBe(true);
-    expect(useAiDockStore.getState().seed).toBe('improve');
     expect(mockNavigate).not.toHaveBeenCalled();
   });
 
   it('collapses itself to the rail while the dock is open, without touching the saved preference', () => {
     window.innerWidth = 1400;
-    useAiDockStore.setState({ open: true, seed: null });
+    useAiDockStore.setState({ open: true });
 
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
@@ -312,7 +312,7 @@ describe('ArticleRightPane', () => {
 
   it('closes the dock to expand its forced rail without changing an expanded preference', () => {
     window.innerWidth = 1400;
-    useAiDockStore.setState({ open: true, seed: null });
+    useAiDockStore.setState({ open: true });
 
     render(<ArticleRightPane />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByLabelText('Expand page sidebar'));
@@ -324,7 +324,7 @@ describe('ArticleRightPane', () => {
 
   it('steps aside entirely below the wide breakpoint while the dock is open', () => {
     window.innerWidth = 900;
-    useAiDockStore.setState({ open: true, seed: null });
+    useAiDockStore.setState({ open: true });
 
     const { container } = render(<ArticleRightPane />, { wrapper: createWrapper() });
 

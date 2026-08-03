@@ -45,7 +45,7 @@ export const SHORTCUTS: ShortcutRegistryEntry[] = [
   { id: 'new-page', keys: 'alt+n', label: 'New Page', category: 'actions' },
   { id: 'pin-page', keys: 'alt+p', label: 'Pin/Unpin page', category: 'actions' },
   { id: 'delete-page', keys: 'alt+shift+d', label: 'Delete page', category: 'actions' },
-  { id: 'ai-improve', keys: 'alt+i', label: 'AI Improve', category: 'actions' },
+  { id: 'ai-assistant', keys: 'alt+i', label: 'AI Assistant', category: 'actions' },
 
   // -- Panels --
   { id: 'toggle-sidebar', keys: ',', label: 'Toggle Left Sidebar', category: 'panels' },

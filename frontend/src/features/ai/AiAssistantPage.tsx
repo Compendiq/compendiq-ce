@@ -453,7 +453,7 @@ export function AiAssistantPage() {
           data-testid="ai-legacy-mode-notice"
         >
           This view moved into the assistant that opens beside an article. Open the page and press{' '}
-          <ShortcutHint shortcutId="ai-improve" /> — or pick Q&amp;A or Generate above.
+          <ShortcutHint shortcutId="ai-assistant" /> — or pick Q&amp;A or Generate above.
         </p>
       )}
 

@@ -14,8 +14,8 @@ import {
   FileDown,
   Loader2,
   RefreshCw,
+  Sparkles,
   Trash2,
-  Wand2,
   History,
 } from 'lucide-react';
 import { AutoTagger } from '../../../features/pages/AutoTagger';
@@ -716,14 +716,17 @@ export function ArticleRightPane({
                   // where the dock's focus restore lands when the trigger the
                   // user pressed was destroyed by opening the dock — this one
                   // survives every post-open state at >= 1100px.
-                  onClick={() => openDock('improve', id)}
+                  // #1176: opening is all it does. It used to start a full-page
+                  // rewrite on the same click, which is why it was called "AI
+                  // Improve" and drew a wand.
+                  onClick={() => openDock()}
                   className={railIconBtn}
-                  aria-label="AI Improve"
-                  title={`AI Improve (${formatKeysForPlatform(getShortcutHint('ai-improve') ?? '', detectMac())})`}
-                  data-testid="article-improve-rail-btn"
-                  data-ai-improve-trigger
+                  aria-label="AI Assistant"
+                  title={`AI Assistant (${formatKeysForPlatform(getShortcutHint('ai-assistant') ?? '', detectMac())})`}
+                  data-testid="article-assistant-rail-btn"
+                  data-ai-assistant-trigger
                 >
-                  <Wand2 size={16} />
+                  <Sparkles size={16} />
                 </button>
 
                 {aiAutoTagAvailable && id && (
@@ -1010,13 +1013,13 @@ export function ArticleRightPane({
             // #1126: opens the assistant beside the document. Opening it also
             // forces this pane into its rail, so this button is the last thing
             // the user sees of the expanded pane before it collapses.
-            onClick={() => openDock('improve', id)}
+            onClick={() => openDock()}
             className="panel-context flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-sm font-medium text-primary-ink transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:border-primary/55"
-            title={`AI Improve (${formatKeysForPlatform(getShortcutHint('ai-improve') ?? '', detectMac())})`}
-            data-ai-improve-trigger
+            title={`AI Assistant (${formatKeysForPlatform(getShortcutHint('ai-assistant') ?? '', detectMac())})`}
+            data-ai-assistant-trigger
           >
-            <Wand2 size={15} className="shrink-0 opacity-70" />
-            <span className="truncate">AI Improve</span>
+            <Sparkles size={15} className="shrink-0 opacity-70" />
+            <span className="truncate">AI Assistant</span>
           </button>
 
           <button

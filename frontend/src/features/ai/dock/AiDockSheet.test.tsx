@@ -64,7 +64,7 @@ function renderSheet() {
       <LazyMotion features={domAnimation}>
         <MemoryRouter initialEntries={['/pages/page-1']}>
           <AiProvider>
-            <button data-testid="sheet-trigger">AI Improve</button>
+            <button data-testid="sheet-trigger">AI Assistant</button>
             <main>
               <Routes>
                 <Route path="/pages/:id" element={<div>article</div>} />
@@ -108,7 +108,7 @@ function drag(fromY: number, toY: number) {
 describe('AiDockSheet (#1126)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    useAiDockStore.setState({ open: false, seed: null, seedPageId: null });
+    useAiDockStore.setState({ open: false });
     window.innerWidth = PHONE_WIDTH;
     window.innerHeight = PHONE_HEIGHT;
     apiFetchMock.mockImplementation((path: string) => {
@@ -123,7 +123,7 @@ describe('AiDockSheet (#1126)', () => {
   });
 
   afterEach(() => {
-    useAiDockStore.setState({ open: false, seed: null, seedPageId: null });
+    useAiDockStore.setState({ open: false });
   });
 
   it('renders nothing until it is opened', () => {

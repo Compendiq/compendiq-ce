@@ -17,7 +17,7 @@ import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { MemoryRouter, Routes, Route, useNavigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
-import { AiProvider } from '../AiContext';
+import { AiProvider, useAiContext } from '../AiContext';
 import { AiDock } from './AiDock';
 import { ApiError } from '../../../shared/lib/api';
 import { useAiDockStore } from '../../../stores/ai-dock-store';
@@ -94,6 +94,16 @@ function GoTo({ to }: { to: string }) {
   return <button data-testid="go" onClick={() => navigate(to)}>go</button>;
 }
 
+/**
+ * Moves the page out from under a pending diff, through the public context the
+ * way a mode does. A stale diff card offers "Re-run Improve" instead of Apply,
+ * which is the one remaining caller that reaches `runChip` undisabled.
+ */
+function DiffProbe() {
+  const { setDiffBaseVersion } = useAiContext();
+  return <button data-testid="diff-probe" onClick={() => setDiffBaseVersion(1)}>move the page</button>;
+}
+
 function renderDock({ chatVision }: { chatVision: boolean | null }) {
   apiFetchMock.mockImplementation((path: string) => {
     if (path === '/pages/page-1') return Promise.resolve(pageFixture('page-1', 'Onboarding Guide'));
@@ -117,6 +127,7 @@ function renderDock({ chatVision }: { chatVision: boolean | null }) {
         <MemoryRouter initialEntries={['/pages/page-1']}>
           <AiProvider>
             <GoTo to="/pages/page-2" />
+            <DiffProbe />
             <Routes>
               <Route path="/pages/:id" element={<div>article</div>} />
             </Routes>
@@ -186,7 +197,7 @@ beforeEach(() => {
   // behaviour, so a `{ ...URL }` stub makes `new URL(...)` throw for the whole file.
   vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:preview');
   vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
-  useAiDockStore.setState({ open: false, seed: null, seedPageId: null });
+  useAiDockStore.setState({ open: false });
   useUiStore.setState({ aiDockWidth: 420 });
   window.innerWidth = 1400;
 });
@@ -194,7 +205,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
-  useAiDockStore.setState({ open: false, seed: null, seedPageId: null });
+  useAiDockStore.setState({ open: false });
 });
 
 // ---------------------------------------------------------------------------
@@ -523,23 +534,37 @@ describe('dock lapsed image handle (#1154)', () => {
   });
 
   /**
-   * `runChip` is reached from three places and only one of them — the chip
-   * itself — is disabled while an attachment is staging. The seed effect and
-   * `DockDiffCard`'s "Re-run Improve" both call it directly, so the wait has to
-   * live inside the handler or Improve goes out with `imageHandle` undefined
-   * while the image card is still on screen. That is #940's shape, and it is why
-   * `/ai`'s Generate and Improve re-check `isBusy` inside their handlers too.
+   * `runChip` is reached from two places and only one of them — the chip itself
+   * — is disabled while an attachment is staging. `DockDiffCard`'s "Re-run
+   * Improve" calls it directly, so the wait has to live inside the handler or
+   * Improve goes out with `imageHandle` undefined while the image card is still
+   * on screen. That is #940's shape, and it is why `/ai`'s Generate and Improve
+   * re-check `isBusy` inside their handlers too.
+   *
+   * (#1176 removed the third caller, the seed effect that ran Improve the moment
+   * the dock opened. The guard outlives it because the re-run button does.)
    */
-  it('refuses a seeded Improve while an attachment is still being prepared', async () => {
-    mockIsPreparing.value = true;
+  it('refuses a re-run of Improve while an attachment is still being prepared', async () => {
     renderDock({ chatVision: true });
-    act(() => { useAiDockStore.getState().openDock('improve'); });
-    await waitFor(() => expect(screen.getByTestId('ai-dock-send')).toBeInTheDocument());
-    // The seed is consumed before the action runs, so this is the signal that
-    // the effect fired and `runChip` was actually entered.
-    await waitFor(() => expect(useAiDockStore.getState().seed).toBeNull());
+    await openAndSettle();
+    await attachImage();
+    await clickChip('improve');
+    await waitFor(() => expect(screen.getByTestId('dock-diff-card')).toBeInTheDocument());
 
-    expect(streamSSEMock.mock.calls.find((c) => c[0] === '/llm/improve')).toBeUndefined();
+    // The page moved under the pending diff, so the card offers a re-run in
+    // place of Apply — the undisabled way back into `runChip`.
+    act(() => { fireEvent.click(screen.getByTestId('diff-probe')); });
+    expect(screen.getByTestId('dock-diff-rerun')).toBeInTheDocument();
+
+    // A fresh image goes on while that offer sits there. `isPreparing` is read
+    // on render, so the composer keystroke is what re-renders the panel with it.
+    mockIsPreparing.value = true;
+    fireEvent.change(screen.getByTestId('ai-dock-input'), { target: { value: 'x' } });
+
+    streamSSEMock.mockClear();
+    await act(async () => { fireEvent.click(screen.getByTestId('dock-diff-rerun')); });
+
+    expect(streamSSEMock).not.toHaveBeenCalled();
     expect(toastErrorMock).toHaveBeenCalledWith(expect.stringMatching(/still attaching/i));
   });
 

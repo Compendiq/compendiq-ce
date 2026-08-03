@@ -11,7 +11,6 @@ import { useAttachments } from '../../../shared/hooks/use-attachments';
 import { DocumentUploadZone } from '../../../shared/components/upload/DocumentUploadZone';
 import { ImageAttachZone, imageDisabledReason } from '../../../shared/components/upload/ImageAttachZone';
 import { PROMPT_MAX_LENGTH } from '../modes/prompt-limits';
-import { useAiDockStore } from '../../../stores/ai-dock-store';
 import { DOCK_CHIPS } from './dock-chips';
 import { DockDiffCard } from './DockDiffCard';
 import { useDockActions } from './use-dock-actions';
@@ -77,10 +76,6 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
     void pickFile(file);
   }, [pickFile]);
 
-  const seed = useAiDockStore((s) => s.seed);
-  const seedPageId = useAiDockStore((s) => s.seedPageId);
-  const consumeSeed = useAiDockStore((s) => s.consumeSeed);
-
   const composerRef = useAutoGrowTextarea(input);
 
   // Opening the assistant moves focus to the composer; closing it returns focus
@@ -92,7 +87,7 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
   //
   // Restoring is not simply "focus whatever was focused before", because
   // opening the assistant destroys its trigger in most layouts: the expanded
-  // pane's "AI Improve" row unmounts when the pane is forced to its rail, and
+  // pane's "AI Assistant" row unmounts when the pane is forced to its rail, and
   // below 1100px — which includes every phone — the entire pane unmounts. For
   // those, by the time this effect's cleanup runs the opener is already
   // detached and focus has fallen to <body>, so restoring it would strand the
@@ -111,9 +106,9 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
       // re-renders the pane in the same commit, so which one it is depends on
       // the user's own collapse preference and the viewport; the marker is on
       // both so the hand-off does not have to care.
-      const improveTrigger = document.querySelector<HTMLElement>('[data-ai-improve-trigger]');
-      if (improveTrigger) {
-        improveTrigger.focus();
+      const assistantTrigger = document.querySelector<HTMLElement>('[data-ai-assistant-trigger]');
+      if (assistantTrigger) {
+        assistantTrigger.focus();
         return;
       }
       const main = document.querySelector<HTMLElement>('main');
@@ -125,32 +120,10 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
     };
   }, [composerRef]);
 
-  // `runChip` changes identity whenever any of its many context inputs change.
-  // Holding it in a ref keeps the seed effect below keyed on what actually
-  // gates the seed — the seed itself, and whether a model and page exist yet.
-  const runChipRef = useRef(runChip);
-  useEffect(() => {
-    runChipRef.current = runChip;
-  }, [runChip]);
-
-  // Run the seeded action once a model is resolved. Firing on mount would hit
-  // `runChip`'s "No model available" guard, because the models query starts in
-  // the same tick the dock opens.
-  //
-  // The wait is unbounded, so the document can change underneath it — a slow or
-  // failed page query leaves the user free to navigate away with the dock still
-  // open. A seed that no longer matches the page in view is dropped rather than
-  // fired at whatever loaded next.
-  useEffect(() => {
-    if (!seed) return;
-    if (seedPageId !== null && seedPageId !== pageId) {
-      consumeSeed();
-      return;
-    }
-    if (!model || !page) return;
-    consumeSeed();
-    void runChipRef.current(seed);
-  }, [seed, seedPageId, pageId, model, page, consumeSeed]);
+  // Nothing runs on open (#1176). The panel used to fire a seeded action here as
+  // soon as a model resolved, which made opening the assistant and rewriting the
+  // whole document the same gesture. Every request now starts at a chip or the
+  // composer, where the user can see what they are asking for.
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Enter submits, Shift+Enter inserts a newline — the contract #1120
