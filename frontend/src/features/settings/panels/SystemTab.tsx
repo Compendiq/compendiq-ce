@@ -2,8 +2,9 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  LoginPageConfigResponseSchema,
   LoginPageConfigSchema,
-  type LoginPageConfig,
+  type LoginPageConfigResponse,
   type LoginPageVariant,
 } from '@compendiq/contracts';
 import { toast } from 'sonner';
@@ -40,9 +41,13 @@ function useBackendBuildInfo() {
 }
 
 function useLoginPageConfig() {
-  return useQuery<LoginPageConfig>({
+  // Response schema on the GET, request schema on the PUT — one schema per
+  // direction. This panel only reads `variant`; `edition` rides along for the
+  // login page's badge and is simply ignored here.
+  return useQuery<LoginPageConfigResponse>({
     queryKey: ['login-page-config'],
-    queryFn: async () => LoginPageConfigSchema.parse(await apiFetch('/auth/login-page-config')),
+    queryFn: async () =>
+      LoginPageConfigResponseSchema.parse(await apiFetch('/auth/login-page-config')),
     staleTime: 30_000,
   });
 }

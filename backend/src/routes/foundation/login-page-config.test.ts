@@ -2,10 +2,16 @@ import { beforeAll, beforeEach, afterAll, describe, expect, it, vi } from 'vites
 import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 import { ZodError } from 'zod';
+import { noopPlugin } from '../../core/enterprise/noop.js';
 
 const mockGetLoginPageVariant = vi.fn();
 const mockSetLoginPageVariant = vi.fn();
 const mockRequireAdmin = vi.fn();
+const mockGetEnterprisePlugin = vi.fn();
+
+vi.mock('../../core/enterprise/loader.js', () => ({
+  getEnterprisePlugin: () => mockGetEnterprisePlugin(),
+}));
 
 vi.mock('../../core/services/login-page-config-service.js', () => ({
   getLoginPageVariant: (...args: unknown[]) => mockGetLoginPageVariant(...args),
@@ -51,6 +57,7 @@ describe('login page config routes', () => {
     vi.clearAllMocks();
     mockGetLoginPageVariant.mockResolvedValue('local-loop');
     mockSetLoginPageVariant.mockResolvedValue(undefined);
+    mockGetEnterprisePlugin.mockReturnValue({ version: 'community' });
   });
 
   it('exposes the effective variant without authentication', async () => {
@@ -59,8 +66,32 @@ describe('login page config routes', () => {
     const response = await app.inject({ method: 'GET', url: '/api/auth/login-page-config' });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ variant: 'change-desk' });
+    expect(response.json()).toEqual({ variant: 'change-desk', edition: 'community' });
     expect(mockRequireAdmin).not.toHaveBeenCalled();
+  });
+
+  // The login screen is unauthenticated and cannot read GET /api/admin/license,
+  // so the edition it badges itself with comes from here. Both editions ship the
+  // same CE SPA — without this the EE sign-in page brands itself "Community
+  // Edition · AGPL-3.0".
+  it('reports the enterprise edition when the enterprise plugin is loaded', async () => {
+    mockGetEnterprisePlugin.mockReturnValue({ version: '1.4.2' });
+
+    const response = await app.inject({ method: 'GET', url: '/api/auth/login-page-config' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ variant: 'local-loop', edition: 'enterprise' });
+  });
+
+  // Pins the contract between `noop.ts` and this route: the shim's `version`
+  // field is the only thing that keeps a CE deployment from badging itself
+  // "Enterprise Edition". A stub object would not catch it being renamed.
+  it('reports the community edition when the real noop shim is active', async () => {
+    mockGetEnterprisePlugin.mockReturnValue(noopPlugin);
+
+    const response = await app.inject({ method: 'GET', url: '/api/auth/login-page-config' });
+
+    expect(response.json()).toMatchObject({ edition: 'community' });
   });
 
   it('lets an admin persist a supported variant and audits the change', async () => {

@@ -229,6 +229,82 @@ Why the extra hop via a `login_code`? It keeps tokens out of the URL
 fragment that the browser exposes to history/referer. The callback page
 posts to a JSON endpoint and only then receives the real JWT.
 
+### Deciding whether to offer the SSO button
+
+Before any of the above, the login page probes `GET /api/auth/oidc/config`.
+CE answers with a static `{ enabled: false, enterpriseRequired: true }` stub
+(`app.ts`, community mode only); EE answers from the `oidc_providers` table
+plus the license. The button renders when `enabled && !enterpriseRequired`.
+
+The probe outcome must not be collapsed to "config or null" (`OidcProbe` in
+`login/sso-notice.ts` — same rule as the `vision` tri-state on the AI
+composers):
+
+| Outcome | Login page |
+|---------|-----------|
+| `pending` (first probe of the page load) | nothing yet |
+| `ready`, `enabled` | SSO button + "or continue with credentials" divider |
+| `ready`, not enabled | nothing — SSO is genuinely off here |
+| `failed`, `retrying: false` (5xx / network / rate-limit / parse) | unavailable notice with a **Check again** trigger |
+| `failed`, `retrying: true` | the *same* notice, trigger `aria-disabled` + `aria-busy` |
+
+A failed probe is *not* "SSO is disabled". nginx proxies all of `/api/` to one
+upstream, so a backend that is down or restarting returns 502 for this route —
+and swallowing that into a hidden button removes the only sign-in path on an
+SSO-only deployment while looking exactly like the button having been deleted.
+
+**Check again** re-runs all three of the page's probes, not just the SSO one —
+they died with the same upstream. The presentation config carries the layout
+variant and the edition badge; the registration policy fails closed, so a
+deployment that allows sign-up would otherwise keep hiding its own "Create
+one" link until the user reloaded. Each probe drops responses from a
+superseded generation, so a slow answer landing after a newer one cannot undo
+it in either direction. No reload is needed.
+
+### Why the notice is built the way it is
+
+Every one of these exists because the obvious alternative breaks something.
+None of them are stylistic.
+
+- **A recheck stays in `failed`** rather than returning to `pending`. Dropping
+  to `pending` unmounts the notice together with the trigger the user just
+  pressed: focus lands on `<body>`, and the hanging-upstream case this notice
+  exists for shows an empty panel that reads as success.
+- **The trigger is `aria-disabled`, not `disabled`.** A genuinely disabled
+  control is blurred by the browser and leaves the tab order — dropping the
+  focus of the user who just pressed it, which is the failure above by another
+  route. The click handler is detached instead.
+- **Focus restore keys off the notice going away, not the SSO button
+  arriving.** Those are not the same condition: a recheck that settles on "SSO
+  is genuinely off" also collapses the notice, and on CE that is the *only*
+  outcome a recovered backend can produce (`app.ts` serves a fixed
+  `enabled: false` stub in community mode). Focus moves to whichever control
+  replaced the trigger — the SSO button, or else the username field — and only
+  when `document.activeElement` is still `<body>`, so a user who moved to a
+  form field meanwhile keeps it.
+- **Nothing is announced when the notice resolves.** The region speaks the
+  failure once; a "recovered" announcement would contradict the rule above for
+  no gain. During a recheck the focused trigger is itself the feedback surface
+  (its accessible name becomes "Checking…" while `aria-busy` and
+  `aria-disabled` flip on the node the screen-reader cursor is on), and the
+  focus move is what confirms the outcome.
+- **The recheck flag and the live region live in `LoginPage`, not the panel.**
+  `ChangeDeskLogin` and `LocalLoopLogin` are different component types, so the
+  first successful presentation-config read *remounts the whole panel*. Anything
+  inside it is destroyed mid-recheck.
+- **The live region waits for the attribution signal.** The two probes settle
+  independently, so announcing on the first would say "Cannot reach the server"
+  and contradict it a few frames later. The visible heading does refine in
+  place — the weaker true statement then the stronger one is honest on screen —
+  but a screen reader cannot retract what it has already said.
+- **Which failure gets named** is that attribution signal.
+  `GET /api/auth/login-page-config` is an unrelated core route on the same
+  upstream, so losing it too means nothing responded and the notice says
+  *"Cannot reach the server"* instead of blaming SSO. It matters most on CE,
+  where SSO does not exist at all and an SSO-shaped error is pure noise. That
+  wording also drops the "you can still sign in with credentials" reassurance:
+  the credential form posts to the same dead upstream.
+
 ## Where this lives
 
 | Concern | File |
@@ -243,3 +319,7 @@ posts to a JSON endpoint and only then receives the real JWT.
 | API client (single-flight + proactive/reactive refresh) | `frontend/src/shared/lib/api.ts` |
 | OIDC callback UI | `frontend/src/features/auth/OidcCallbackPage.tsx` |
 | OIDC admin config UI | `frontend/src/features/admin/OidcSettingsPage.tsx` |
+| SSO probe tri-state + notice copy (visible and announced) | `frontend/src/features/settings/login/sso-notice.ts` |
+| Unavailable notice + focus restore | `frontend/src/features/settings/login/AuthPanel.tsx` |
+| Probe generations, combined recheck, live region | `frontend/src/features/settings/LoginPage.tsx` |
+| Public login presentation (variant + edition badge) | `backend/src/routes/foundation/login-page-config.ts` |

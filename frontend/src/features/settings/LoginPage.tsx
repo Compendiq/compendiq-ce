@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import {
-  LoginPageConfigSchema,
+  type AppEdition,
+  LoginPageConfigResponseSchema,
   OidcConfigSchema,
-  type OidcConfig,
   RegistrationPolicySchema,
 } from '@compendiq/contracts';
 import { useAuthStore } from '../../stores/auth-store';
@@ -13,6 +13,7 @@ import { AuthPanel, type AuthPanelProps } from './login/AuthPanel';
 import { ChangeDeskLogin } from './login/ChangeDeskLogin';
 import { LocalLoopLogin } from './login/LocalLoopLogin';
 import { LoginVariantPicker } from './login/LoginVariantPicker';
+import { ssoProbeAnnouncement, type OidcProbe } from './login/sso-notice';
 import {
   isLoginVariantPickerEnabled,
   resolveLoginVariant,
@@ -41,9 +42,29 @@ export function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [confirmError, setConfirmError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [oidcConfig, setOidcConfig] = useState<OidcConfig | null>(null);
+  const [oidcProbe, setOidcProbe] = useState<OidcProbe>({ status: 'pending' });
   const [allowRegistration, setAllowRegistration] = useState(false);
   const [runtimeVariant, setRuntimeVariant] = useState<LoginVariant | null>(null);
+  const [edition, setEdition] = useState<AppEdition | null>(null);
+  // null until the presentation config has settled once. `false` means an
+  // unrelated core route on the same upstream failed too, which is how the
+  // panel tells "the API is down" apart from "the SSO route failed".
+  const [serverReachable, setServerReachable] = useState<boolean | null>(null);
+  // Whether that answer is currently being re-established. The visible heading
+  // keeps the last known attribution while a recheck runs (reverting it would
+  // show a *longer* wrong state), but the live region waits.
+  const [attributionPending, setAttributionPending] = useState(true);
+  // Set when the user asks for a recheck, and never cleared: it only licenses
+  // the panel to claim focus that its own unmount orphaned. Kept here because
+  // a late `variant` response remounts the panel.
+  const [focusSsoOnRecovery, setFocusSsoOnRecovery] = useState(false);
+
+  // Both probes can be re-run by the user. Without a generation counter a slow
+  // failure that resolves after a newer success would overwrite it — the SSO
+  // button would appear and then vanish again on its own.
+  const configGeneration = useRef(0);
+  const oidcGeneration = useRef(0);
+  const registrationGeneration = useRef(0);
 
   const loginVariant = resolveLoginVariant(
     searchParams,
@@ -80,44 +101,88 @@ export function LoginPage() {
     setSearchParams(nextParams, { replace: true });
   }, [searchParams, setSearchParams]);
 
-  useEffect(() => {
-    async function fetchLoginPageConfig() {
-      try {
-        const config = LoginPageConfigSchema.parse(await apiFetch('/auth/login-page-config'));
-        setRuntimeVariant(config.variant);
-      } catch {
-        // Presentation config must never block sign-in; retain the build default.
-      }
+  const fetchLoginPageConfig = useCallback(async () => {
+    const generation = ++configGeneration.current;
+    setAttributionPending(true);
+    try {
+      const config = LoginPageConfigResponseSchema.parse(
+        await apiFetch('/auth/login-page-config'),
+      );
+      if (generation !== configGeneration.current) return;
+      setRuntimeVariant(config.variant);
+      setEdition(config.edition ?? null);
+      setServerReachable(true);
+      setAttributionPending(false);
+    } catch {
+      // Presentation config must never block sign-in; retain the build
+      // default and leave the edition unknown (the badge is then omitted).
+      // The failure is still worth recording: this route is unrelated to SSO,
+      // so losing it too is what identifies a whole-API outage.
+      if (generation !== configGeneration.current) return;
+      setServerReachable(false);
+      setAttributionPending(false);
     }
+  }, []);
 
+  const probeOidcConfig = useCallback(async () => {
+    const generation = ++oidcGeneration.current;
+    // A recheck stays in the `failed` state so the notice — and the button the
+    // user just pressed — survives the round trip. Only the first probe of a
+    // page load may render nothing at all.
+    setOidcProbe((current) =>
+      current.status === 'failed' ? { status: 'failed', retrying: true } : { status: 'pending' },
+    );
+    try {
+      const config = OidcConfigSchema.parse(await apiFetch('/auth/oidc/config'));
+      if (generation !== oidcGeneration.current) return;
+      setOidcProbe({ status: 'ready', config });
+    } catch {
+      // A failed probe is NOT "SSO is disabled" — the backend may simply be
+      // down (a 502 through nginx takes every /api route with it). Swallowing
+      // it into a hidden button makes an outage indistinguishable from the
+      // button having been removed, which is exactly how #1187 was misread.
+      if (generation !== oidcGeneration.current) return;
+      setOidcProbe({ status: 'failed', retrying: false });
+    }
+  }, []);
+
+  const fetchRegistrationPolicy = useCallback(async () => {
+    const generation = ++registrationGeneration.current;
+    try {
+      const policy = RegistrationPolicySchema.parse(await apiFetch('/auth/registration-policy'));
+      if (generation !== registrationGeneration.current) return;
+      setAllowRegistration(policy.allowRegistration);
+    } catch {
+      // Fail closed — on every settle, not just the first. A recheck that
+      // cannot reach this route must not leave a stale "yes" on screen.
+      if (generation !== registrationGeneration.current) return;
+      setAllowRegistration(false);
+    }
+  }, []);
+
+  // "Check again" re-runs everything this page probes, not just SSO — all
+  // three requests died with the same upstream. The presentation config
+  // carries the edition badge and the layout variant; the registration policy
+  // fails closed, so a deployment that allows sign-up would keep hiding its
+  // own "Create one" link until the user reloaded.
+  const recheckServerState = useCallback(() => {
+    setFocusSsoOnRecovery(true);
+    void probeOidcConfig();
     void fetchLoginPageConfig();
-  }, []);
-
-  useEffect(() => {
-    async function fetchOidcConfig() {
-      try {
-        const config = OidcConfigSchema.parse(await apiFetch('/auth/oidc/config'));
-        setOidcConfig(config);
-      } catch {
-        // No or invalid config: keep SSO hidden.
-      }
-    }
-
-    void fetchOidcConfig();
-  }, []);
-
-  useEffect(() => {
-    async function fetchRegistrationPolicy() {
-      try {
-        const policy = RegistrationPolicySchema.parse(await apiFetch('/auth/registration-policy'));
-        setAllowRegistration(policy.allowRegistration);
-      } catch {
-        // Fail closed.
-      }
-    }
-
     void fetchRegistrationPolicy();
-  }, []);
+  }, [probeOidcConfig, fetchLoginPageConfig, fetchRegistrationPolicy]);
+
+  useEffect(() => {
+    void fetchLoginPageConfig();
+  }, [fetchLoginPageConfig]);
+
+  useEffect(() => {
+    void probeOidcConfig();
+  }, [probeOidcConfig]);
+
+  useEffect(() => {
+    void fetchRegistrationPolicy();
+  }, [fetchRegistrationPolicy]);
 
   function handleVariantChange(variant: LoginVariant) {
     const nextParams = new URLSearchParams(searchParams);
@@ -176,7 +241,10 @@ export function LoginPage() {
     showPassword,
     confirmError,
     loading,
-    oidcConfig,
+    oidcProbe,
+    onRetryOidc: recheckServerState,
+    serverUnreachable: serverReachable === false,
+    focusSsoOnRecovery,
     allowRegistration,
     onUsernameChange: setUsername,
     onPasswordChange: (value) => {
@@ -197,9 +265,25 @@ export function LoginPage() {
   ) : undefined;
   const authPanel = <AuthPanel {...authPanelProps} />;
 
-  return loginVariant === 'change-desk' ? (
-    <ChangeDeskLogin authPanel={authPanel} controls={controls} />
-  ) : (
-    <LocalLoopLogin authPanel={authPanel} controls={controls} />
+  return (
+    <>
+      {/*
+        Outside the variant branch, and mounted from the first render. Both
+        matter: a live region is announced when its *contents* change, so one
+        inserted together with its text is unreliable — and the two shells are
+        different component types, so a late `variant` response remounts
+        everything inside the branch, which would re-create this region with
+        the text already in it.
+      */}
+      <div role="status" aria-live="polite" data-testid="sso-status-announcer" className="sr-only">
+        {ssoProbeAnnouncement(oidcProbe, serverReachable === false, attributionPending)}
+      </div>
+
+      {loginVariant === 'change-desk' ? (
+        <ChangeDeskLogin authPanel={authPanel} controls={controls} edition={edition} />
+      ) : (
+        <LocalLoopLogin authPanel={authPanel} controls={controls} edition={edition} />
+      )}
+    </>
   );
 }
