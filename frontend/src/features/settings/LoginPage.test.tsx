@@ -202,8 +202,12 @@ describe('LoginPage', () => {
 
       const busyTrigger = await screen.findByRole('button', { name: /Checking/ });
       expect(screen.getByTestId('sso-probe-failed')).toBeInTheDocument();
-      expect(busyTrigger).toBeDisabled();
       expect(busyTrigger).toHaveAttribute('aria-busy', 'true');
+      // aria-disabled, not disabled: a real `disabled` is blurred by the
+      // browser and leaves the tab order, dropping the focus of the user who
+      // just pressed it.
+      expect(busyTrigger).toHaveAttribute('aria-disabled', 'true');
+      expect(busyTrigger).not.toBeDisabled();
 
       await act(async () => {
         slowRecheck.resolve({ enabled: true, issuer: 'https://idp.example.com', name: 'OrgSSO' });
@@ -248,6 +252,38 @@ describe('LoginPage', () => {
           'Single sign-on status unavailable. You can still sign in with credentials below.',
         ),
       );
+    });
+
+    // The two signals behind the notice settle independently. Announcing on
+    // the first one alone means a second, contradicting announcement lands a
+    // few frames later — a screen reader cannot take back what it has said.
+    it('says nothing until the attribution signal has settled', async () => {
+      const slowConfig = deferred<Record<string, unknown>>();
+      vi.mocked(apiFetch).mockImplementation(async (url: string) => {
+        const u = String(url);
+        if (u.includes('/auth/login-page-config')) return slowConfig.promise as never;
+        if (u.includes('/auth/oidc/config')) throw new Error('Bad Gateway');
+        if (u.includes('/auth/registration-policy')) return { allowRegistration: false } as never;
+        throw new Error(`unexpected apiFetch url: ${u}`);
+      });
+
+      renderLoginPage();
+
+      // The visible notice is up — the user is never left staring at nothing …
+      expect(await screen.findByTestId('sso-probe-failed')).toBeInTheDocument();
+      // … but nothing has been announced, because which failure this is
+      // depends on a probe that has not answered.
+      expect(screen.getByTestId('sso-status-announcer').textContent).toBe('');
+
+      await act(async () => {
+        slowConfig.reject(new Error('Bad Gateway'));
+      });
+
+      const announcer = screen.getByTestId('sso-status-announcer');
+      expect(announcer).toHaveTextContent('Cannot reach the server.');
+      // The unreachable wording must not promise credential sign-in works —
+      // it posts to the same dead upstream.
+      expect(announcer).not.toHaveTextContent('You can still sign in with credentials');
     });
   });
 
@@ -325,6 +361,106 @@ describe('LoginPage', () => {
       expect(configCalls).toBe(2);
       expect(screen.queryByText('Community Edition · AGPL-3.0')).not.toBeInTheDocument();
       expect(screen.getByText('Cannot reach the server')).toBeInTheDocument();
+    });
+
+    // Mirror of the above. The failure direction is the damaging one: nothing
+    // serialises the presentation-config probe, so a hung mount request can
+    // still reject after a recheck has proved the server is answering.
+    it('ignores a stale presentation-config failure that lands after a newer success', async () => {
+      const slowFirst = deferred<Record<string, unknown>>();
+      let configCalls = 0;
+      vi.mocked(apiFetch).mockImplementation(async (url: string) => {
+        const u = String(url);
+        if (u.includes('/auth/login-page-config')) {
+          configCalls += 1;
+          if (configCalls === 1) return slowFirst.promise as never;
+          return { variant: 'local-loop', edition: 'enterprise' } as never;
+        }
+        if (u.includes('/auth/oidc/config')) throw new Error('Bad Gateway');
+        if (u.includes('/auth/registration-policy')) return { allowRegistration: false } as never;
+        throw new Error(`unexpected apiFetch url: ${u}`);
+      });
+
+      renderLoginPage();
+      fireEvent.click(await screen.findByRole('button', { name: 'Check again' }));
+      expect(await screen.findByText('Enterprise Edition')).toBeInTheDocument();
+
+      await act(async () => {
+        slowFirst.reject(new Error('Bad Gateway'));
+      });
+
+      expect(configCalls).toBe(2);
+      expect(screen.queryByText('Cannot reach the server')).not.toBeInTheDocument();
+      expect(screen.getByText('Enterprise Edition')).toBeInTheDocument();
+    });
+
+    // ChangeDeskLogin and LocalLoopLogin are different component types, so a
+    // variant the server reports late remounts the entire auth panel — taking
+    // any focus bookkeeping and any live region that lives inside it.
+    it('keeps focus and the live region across the layout swap a late variant causes', async () => {
+      const recheckConfig = deferred<Record<string, unknown>>();
+      let oidcCalls = 0;
+      let configCalls = 0;
+      vi.mocked(apiFetch).mockImplementation(async (url: string) => {
+        const u = String(url);
+        if (u.includes('/auth/login-page-config')) {
+          configCalls += 1;
+          if (configCalls === 1) throw new Error('Bad Gateway');
+          return recheckConfig.promise as never;
+        }
+        if (u.includes('/auth/oidc/config')) {
+          oidcCalls += 1;
+          if (oidcCalls === 1) throw new Error('Bad Gateway');
+          return { enabled: true, issuer: 'https://idp.example.com', name: 'OrgSSO' } as never;
+        }
+        if (u.includes('/auth/registration-policy')) return { allowRegistration: false } as never;
+        throw new Error(`unexpected apiFetch url: ${u}`);
+      });
+
+      renderLoginPage();
+      fireEvent.click(await screen.findByRole('button', { name: 'Check again' }));
+
+      const ssoButton = await screen.findByRole('button', { name: 'Sign in with OrgSSO' });
+      await waitFor(() => expect(ssoButton).toHaveFocus());
+
+      await act(async () => {
+        recheckConfig.resolve({ variant: 'change-desk', edition: 'enterprise' });
+      });
+
+      // Layout really did swap …
+      expect(await screen.findByText('Enterprise Edition')).toBeInTheDocument();
+      // … and the user is still on the button, not dumped at <body>.
+      expect(screen.getByRole('button', { name: 'Sign in with OrgSSO' })).toHaveFocus();
+      expect(screen.getByTestId('sso-status-announcer')).toBeInTheDocument();
+    });
+
+    it('leaves focus alone when the user has moved to a field mid-recheck', async () => {
+      const slowOidc = deferred<Record<string, unknown>>();
+      let oidcCalls = 0;
+      vi.mocked(apiFetch).mockImplementation(async (url: string) => {
+        const u = String(url);
+        if (u.includes('/auth/oidc/config')) {
+          oidcCalls += 1;
+          if (oidcCalls === 1) throw new Error('Bad Gateway');
+          return slowOidc.promise as never;
+        }
+        if (u.includes('/auth/login-page-config')) return { variant: 'local-loop' } as never;
+        if (u.includes('/auth/registration-policy')) return { allowRegistration: false } as never;
+        throw new Error(`unexpected apiFetch url: ${u}`);
+      });
+
+      renderLoginPage();
+      fireEvent.click(await screen.findByRole('button', { name: 'Check again' }));
+
+      const usernameInput = screen.getByPlaceholderText('Enter username');
+      usernameInput.focus();
+
+      await act(async () => {
+        slowOidc.resolve({ enabled: true, issuer: 'https://idp.example.com', name: 'OrgSSO' });
+      });
+
+      expect(screen.getByRole('button', { name: 'Sign in with OrgSSO' })).toBeInTheDocument();
+      expect(usernameInput).toHaveFocus();
     });
   });
 

@@ -9,10 +9,11 @@ import {
 } from '@compendiq/contracts';
 import { useAuthStore } from '../../stores/auth-store';
 import { apiFetch } from '../../shared/lib/api';
-import { AuthPanel, type AuthPanelProps, type OidcProbe } from './login/AuthPanel';
+import { AuthPanel, type AuthPanelProps } from './login/AuthPanel';
 import { ChangeDeskLogin } from './login/ChangeDeskLogin';
 import { LocalLoopLogin } from './login/LocalLoopLogin';
 import { LoginVariantPicker } from './login/LoginVariantPicker';
+import { ssoProbeAnnouncement, type OidcProbe } from './login/sso-notice';
 import {
   isLoginVariantPickerEnabled,
   resolveLoginVariant,
@@ -49,6 +50,14 @@ export function LoginPage() {
   // unrelated core route on the same upstream failed too, which is how the
   // panel tells "the API is down" apart from "the SSO route failed".
   const [serverReachable, setServerReachable] = useState<boolean | null>(null);
+  // Whether that answer is currently being re-established. The visible heading
+  // keeps the last known attribution while a recheck runs (reverting it would
+  // show a *longer* wrong state), but the live region waits.
+  const [attributionPending, setAttributionPending] = useState(true);
+  // Set when the user asks for a recheck, and never cleared: it only licenses
+  // the panel to claim focus that its own unmount orphaned. Kept here because
+  // a late `variant` response remounts the panel.
+  const [focusSsoOnRecovery, setFocusSsoOnRecovery] = useState(false);
 
   // Both probes can be re-run by the user. Without a generation counter a slow
   // failure that resolves after a newer success would overwrite it — the SSO
@@ -93,6 +102,7 @@ export function LoginPage() {
 
   const fetchLoginPageConfig = useCallback(async () => {
     const generation = ++configGeneration.current;
+    setAttributionPending(true);
     try {
       const config = LoginPageConfigResponseSchema.parse(
         await apiFetch('/auth/login-page-config'),
@@ -101,6 +111,7 @@ export function LoginPage() {
       setRuntimeVariant(config.variant);
       setEdition(config.edition ?? null);
       setServerReachable(true);
+      setAttributionPending(false);
     } catch {
       // Presentation config must never block sign-in; retain the build
       // default and leave the edition unknown (the badge is then omitted).
@@ -108,6 +119,7 @@ export function LoginPage() {
       // so losing it too is what identifies a whole-API outage.
       if (generation !== configGeneration.current) return;
       setServerReachable(false);
+      setAttributionPending(false);
     }
   }, []);
 
@@ -138,6 +150,7 @@ export function LoginPage() {
   // a recovered backend that only restored the SSO button would leave the
   // header still branded as if the edition were unknown.
   const recheckServerState = useCallback(() => {
+    setFocusSsoOnRecovery(true);
     void probeOidcConfig();
     void fetchLoginPageConfig();
   }, [probeOidcConfig, fetchLoginPageConfig]);
@@ -223,6 +236,7 @@ export function LoginPage() {
     oidcProbe,
     onRetryOidc: recheckServerState,
     serverUnreachable: serverReachable === false,
+    focusSsoOnRecovery,
     allowRegistration,
     onUsernameChange: setUsername,
     onPasswordChange: (value) => {
@@ -243,9 +257,25 @@ export function LoginPage() {
   ) : undefined;
   const authPanel = <AuthPanel {...authPanelProps} />;
 
-  return loginVariant === 'change-desk' ? (
-    <ChangeDeskLogin authPanel={authPanel} controls={controls} edition={edition} />
-  ) : (
-    <LocalLoopLogin authPanel={authPanel} controls={controls} edition={edition} />
+  return (
+    <>
+      {/*
+        Outside the variant branch, and mounted from the first render. Both
+        matter: a live region is announced when its *contents* change, so one
+        inserted together with its text is unreliable — and the two shells are
+        different component types, so a late `variant` response remounts
+        everything inside the branch, which would re-create this region with
+        the text already in it.
+      */}
+      <div role="status" aria-live="polite" data-testid="sso-status-announcer" className="sr-only">
+        {ssoProbeAnnouncement(oidcProbe, serverReachable === false, attributionPending)}
+      </div>
+
+      {loginVariant === 'change-desk' ? (
+        <ChangeDeskLogin authPanel={authPanel} controls={controls} edition={edition} />
+      ) : (
+        <LocalLoopLogin authPanel={authPanel} controls={controls} edition={edition} />
+      )}
+    </>
   );
 }

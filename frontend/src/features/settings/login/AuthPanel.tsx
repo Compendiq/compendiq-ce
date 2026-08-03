@@ -1,22 +1,6 @@
 import { useEffect, useRef, type FormEvent, type RefObject } from 'react';
-import type { OidcConfig } from '@compendiq/contracts';
 import { ArrowRight, Eye, EyeOff, LoaderCircle } from 'lucide-react';
-
-/**
- * Outcome of the `GET /auth/oidc/config` probe. Like the `vision` tri-state on
- * the AI composers, this must never collapse to "config or null": a *failed*
- * probe is not the same answer as "SSO is disabled". Reporting a dead backend
- * as "no SSO here" silently removes the only sign-in path on an SSO-only
- * deployment, and reads to the user as if the button had been deleted.
- *
- * `failed` carries its own in-flight flag rather than dropping back to
- * `pending`: a recheck has to keep the notice — and the button the user just
- * pressed — mounted. Only the first probe of a page load renders nothing.
- */
-export type OidcProbe =
-  | { status: 'pending' }
-  | { status: 'ready'; config: OidcConfig }
-  | { status: 'failed'; retrying: boolean };
+import { ssoNoticeCopy, type OidcProbe } from './sso-notice';
 
 export interface AuthPanelProps {
   usernameInputRef: RefObject<HTMLInputElement | null>;
@@ -38,6 +22,13 @@ export interface AuthPanelProps {
    * whole API is down.
    */
   serverUnreachable: boolean;
+  /**
+   * Set once the user has asked for a recheck. Owned by the page rather than
+   * this component because a late `variant` response swaps the whole login
+   * shell for a different component type, which remounts this panel and would
+   * otherwise reset the bookkeeping mid-recheck.
+   */
+  focusSsoOnRecovery: boolean;
   allowRegistration: boolean;
   onUsernameChange: (value: string) => void;
   onPasswordChange: (value: string) => void;
@@ -59,6 +50,7 @@ export function AuthPanel({
   oidcProbe,
   onRetryOidc,
   serverUnreachable,
+  focusSsoOnRecovery,
   allowRegistration,
   onUsernameChange,
   onPasswordChange,
@@ -78,45 +70,23 @@ export function AuthPanel({
   const rechecking = oidcProbe.status === 'failed' && oidcProbe.retrying;
 
   const ssoButtonRef = useRef<HTMLButtonElement>(null);
-  const recheckRequestedRef = useRef(false);
 
-  // A successful recheck replaces the button the user just pressed with the SSO
-  // button. Without moving focus onto the replacement it falls back to <body>,
-  // and a keyboard user has to tab in from the top of the page to reach the
-  // control they just recovered.
+  // A successful recheck replaces the trigger the user just pressed with the
+  // SSO button, orphaning focus on <body> — a keyboard user would have to tab
+  // in from the top of the page to reach the control they just recovered. Only
+  // *orphaned* focus is claimed: if the user has moved on to a form field in
+  // the meantime, `document.activeElement` is that field and this leaves it
+  // alone rather than yanking them out of it.
   useEffect(() => {
-    if (showSso && recheckRequestedRef.current) {
-      recheckRequestedRef.current = false;
-      ssoButtonRef.current?.focus();
-    }
-  }, [showSso]);
+    if (!showSso || !focusSsoOnRecovery) return;
+    if (document.activeElement && document.activeElement !== document.body) return;
+    ssoButtonRef.current?.focus();
+  }, [showSso, focusSsoOnRecovery]);
 
-  function handleRecheck() {
-    recheckRequestedRef.current = true;
-    onRetryOidc();
-  }
-
-  const noticeHeading = serverUnreachable
-    ? 'Cannot reach the server'
-    : 'Single sign-on status unavailable';
-  const noticeBody = serverUnreachable
-    ? 'Nothing on the API responded, so we cannot tell whether single sign-on is configured here. Credential sign-in will likely fail too until the server is back.'
-    : 'The single sign-on check did not complete, so we cannot tell whether it is configured here.';
+  const notice = ssoNoticeCopy(serverUnreachable);
 
   return (
     <section className="nm-card-elevated w-full max-w-md p-6 sm:p-8" aria-labelledby="auth-panel-title">
-      {/*
-        Mounted from the first render on purpose: a live region is announced
-        when its *contents* change, and assistive tech is inconsistent about
-        regions inserted together with their text. Wording deliberately differs
-        from the visible notice so the two never read as one duplicated string.
-      */}
-      <div role="status" aria-live="polite" data-testid="sso-status-announcer" className="sr-only">
-        {probeFailed && !rechecking
-          ? `${noticeHeading}. You can still sign in with credentials below.`
-          : ''}
-      </div>
-
       <div className="mb-7">
         <p className="mb-2 text-sm font-semibold text-primary-ink">
           {isRegister ? 'New workspace account' : 'Welcome back'}
@@ -148,14 +118,22 @@ export function AuthPanel({
             </button>
           ) : (
             <div data-testid="sso-probe-failed" className="rounded-lg border border-border p-4">
-              <p className="text-sm font-medium text-foreground">{noticeHeading}</p>
-              <p className="mt-1 text-sm leading-6 text-muted-foreground">{noticeBody}</p>
+              <p className="text-sm font-medium text-foreground">{notice.heading}</p>
+              <p className="mt-1 text-sm leading-6 text-muted-foreground">{notice.body}</p>
+              {/*
+                `aria-disabled` rather than `disabled`: a genuinely disabled
+                control is removed from the tab order and blurred by the
+                browser, which would drop the focus of the very user who just
+                pressed it — the failure this notice was reworked to avoid. The
+                handler is detached instead, so the button stays focusable and
+                still reports itself as unavailable.
+              */}
               <button
                 type="button"
-                onClick={handleRecheck}
-                disabled={rechecking}
+                onClick={rechecking ? undefined : onRetryOidc}
+                aria-disabled={rechecking}
                 aria-busy={rechecking}
-                className="mt-3 inline-flex min-h-11 items-center gap-2 rounded-sm text-sm font-semibold text-primary-ink underline-offset-4 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring enabled:hover:underline disabled:cursor-not-allowed disabled:opacity-70"
+                className="mt-3 inline-flex min-h-11 items-center gap-2 rounded-sm text-sm font-semibold text-primary-ink underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring aria-disabled:cursor-default aria-disabled:opacity-70"
               >
                 {rechecking && <LoaderCircle aria-hidden="true" className="h-4 w-4 animate-spin" />}
                 {rechecking ? 'Checking…' : 'Check again'}
