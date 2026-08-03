@@ -71,12 +71,22 @@ function localPageDir(pageId: number): string {
   return dir;
 }
 
-function localFilePath(pageId: number, filename: string): string {
+/**
+ * The rule {@link localFilePath} enforces, asked as a question. Callers that
+ * merely *found* a filename — a `local_attachments` row written outside this
+ * module — need to know before they resolve a path, because the throw carries
+ * no way to say which file was at fault (#1169).
+ */
+function canStoreLocalFilename(filename: string): boolean {
   const safe = path.basename(filename);
-  if (!safe || safe.startsWith('.') || safe.length > 255) {
+  return Boolean(safe) && !safe.startsWith('.') && safe.length <= 255;
+}
+
+function localFilePath(pageId: number, filename: string): string {
+  if (!canStoreLocalFilename(filename)) {
     throw new LocalAttachmentError('INVALID_FILENAME', 'Filename is empty, hidden, or too long');
   }
-  return path.join(localPageDir(pageId), safe);
+  return path.join(localPageDir(pageId), path.basename(filename));
 }
 
 function mapRow(r: {
@@ -280,10 +290,15 @@ export async function listLocalAttachments(
  * access), and it must be able to migrate the attachments of a page it is in
  * the act of flipping to `source='confluence'` — a state the gate rejects by
  * design. Not exported through any route; callers must have authorised first.
+ *
+ * `path` is null for a row this store would refuse to write — one inserted
+ * outside {@link localFilePath}, e.g. by hand. Throwing instead would take down
+ * the caller (and the relocate preview behind it) with an error that cannot
+ * name the offending file; a null hands that decision back (#1169).
  */
 export async function listLocalAttachmentsForRelocate(
   pageId: number,
-): Promise<Array<{ filename: string; contentType: string; path: string }>> {
+): Promise<Array<{ filename: string; contentType: string; path: string | null }>> {
   const res = await query<{ filename: string; content_type: string }>(
     'SELECT filename, content_type FROM local_attachments WHERE page_id = $1 ORDER BY filename',
     [pageId],
@@ -291,7 +306,7 @@ export async function listLocalAttachmentsForRelocate(
   return res.rows.map((r) => ({
     filename: r.filename,
     contentType: r.content_type,
-    path: localFilePath(pageId, r.filename),
+    path: canStoreLocalFilename(r.filename) ? localFilePath(pageId, r.filename) : null,
   }));
 }
 

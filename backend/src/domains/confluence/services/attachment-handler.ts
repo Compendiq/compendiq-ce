@@ -48,26 +48,41 @@ function validatePageId(pageId: string): string {
   return pageId;
 }
 
-function validateFilename(filename: string): string {
+/**
+ * Whether an attachment filename is one the stores will hold — the same rule
+ * {@link validateFilename} enforces, asked as a question instead of thrown.
+ *
+ * Callers that must not blow up on a file they merely *found* need to check
+ * before they read: `validateFilename` throws a bare `Error`, which surfaces as
+ * a masked 500 several layers up (#1169).
+ */
+export function isStorableAttachmentFilename(filename: string): boolean {
   if (typeof filename !== 'string') {
-    throw new Error('Invalid filename');
+    return false;
   }
   // `path.basename` strips any directory components — `../../etc/passwd`
   // collapses to `passwd`, `/abs/file` to `file`. We then re-validate.
   const base = path.basename(filename);
   if (base.length === 0) {
-    throw new Error('Invalid filename');
+    return false;
   }
   if (base.includes('\0')) {
-    throw new Error('Invalid filename');
+    return false;
   }
   // Reject hidden / metadata files (`.`, `..`, `.htaccess`, …). After
   // `basename`, `..` and `.` would otherwise round-trip through the
   // containment check unchanged, which is still safe but pointless.
   if (base.startsWith('.')) {
+    return false;
+  }
+  return true;
+}
+
+function validateFilename(filename: string): string {
+  if (!isStorableAttachmentFilename(filename)) {
     throw new Error('Invalid filename');
   }
-  return base;
+  return path.basename(filename);
 }
 
 /**
@@ -790,11 +805,22 @@ export function attachmentCacheDir(pageId: string): string {
   return attachmentDirNow(pageId);
 }
 
-/** Filenames cached for an attachment key. Empty when the directory is absent. */
+/**
+ * Filenames cached for an attachment key. Empty when the directory is absent.
+ *
+ * Hidden entries are skipped: no write path in either store can create one
+ * (`validateFilename` here, `localFilePath` in the local store both refuse a
+ * leading dot), so a dot-named file is always something else writing into the
+ * directory — `.DS_Store`, an AppleDouble sidecar, an rsync temp file. Listing
+ * it made the caller's very next read throw `Invalid filename`, which failed an
+ * entire relocate over debris nothing references (#1169).
+ */
 export async function listCachedAttachments(pageId: string): Promise<string[]> {
   try {
     const entries = await fs.readdir(attachmentDirNow(pageId), { withFileTypes: true });
-    return entries.filter((e) => e.isFile()).map((e) => e.name);
+    return entries
+      .filter((e) => e.isFile() && isStorableAttachmentFilename(e.name))
+      .map((e) => e.name);
   } catch {
     return [];
   }

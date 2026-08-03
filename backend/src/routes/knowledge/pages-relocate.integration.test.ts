@@ -441,6 +441,28 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
       expect(versions.rowCount).toBe(4);
     });
 
+    it('names the attachment in a 400 when a local row holds an unstorable filename (#1169)', async () => {
+      // The cache lister screens hidden names out, but `local_attachments`
+      // filenames come from the DB, so a row written outside `localFilePath`
+      // still reaches the read. A 500 would be masked to "Internal Server
+      // Error" by app.ts — only a 4xx can tell the user which file to fix.
+      const id = await createPage({ title: 'A', source: 'standalone', spaceKey: 'LOCAL', ownerId: userId });
+      await writeStoreB(id, '.hidden.png', 'bytes', userId);
+
+      // The preview counts the same filenames, so it must survive the row too —
+      // it 500'd before the dialog could even open.
+      const preview = await app.inject({ method: 'GET', url: `/api/pages/${id}/relocate/preview` });
+      expect(preview.statusCode).toBe(200);
+      expect(preview.json().attachmentCount).toBe(1);
+
+      const res = await toConfluence(id);
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toContain('.hidden.png');
+      expect(h.client.createPage).not.toHaveBeenCalled();
+      expect((await getRow(id)).source).toBe('standalone');
+    });
+
     it('leaves nothing changed when the upstream create fails', async () => {
       const id = await createPage({ title: 'A', source: 'standalone', spaceKey: 'LOCAL', ownerId: userId });
       const child = await createPage({
@@ -578,6 +600,33 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
       expect(rows.rows.map((r) => r.filename)).toEqual(['chart.png']);
     });
 
+    it('ignores a stray hidden file in the attachment cache (#1169)', async () => {
+      // Neither store can create a dot-named file, so one in the cache dir is
+      // always foreign debris — `.DS_Store`, an AppleDouble sidecar, an rsync
+      // temp file. Reading it threw `Invalid filename` and 500'd the whole
+      // move, which `app.ts` then masked to "Internal Server Error".
+      const id = await createPage({
+        title: 'Imaged',
+        source: 'confluence',
+        confluenceId: '700030',
+        spaceKey: 'CONF',
+        bodyHtml: '<p><img src="/api/attachments/700030/chart.png" /></p>',
+      });
+      await writeStoreA('700030', 'chart.png', 'chart-bytes');
+      await writeStoreA('700030', '.DS_Store', 'finder-junk');
+
+      const res = await toLocal(id, '700030');
+      expect(res.statusCode).toBe(200);
+      expect(res.json().attachmentsMigrated).toBe(1);
+
+      expect(await storeBFiles(id)).toEqual(['chart.png']);
+      const rows = await query<{ filename: string }>(
+        'SELECT filename FROM local_attachments WHERE page_id = $1',
+        [id],
+      );
+      expect(rows.rows.map((r) => r.filename)).toEqual(['chart.png']);
+    });
+
     it('rejects a confirmation that does not name this page and space', async () => {
       const id = await createPage({
         title: 'Synced', source: 'confluence', confluenceId: '700006', spaceKey: 'CONF',
@@ -595,6 +644,30 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
 
       expect(h.client.deletePage).not.toHaveBeenCalled();
       expect((await getRow(id)).source).toBe('confluence');
+    });
+
+    it('relocates a Confluence page whose space_key is NULL (#1169)', async () => {
+      // `pages.space_key` has been nullable since migration 029. The preview
+      // hands the client `page.space_key ?? ''`, so the confirmation it echoes
+      // back carries an empty string — which the schema must accept, or such a
+      // row can never be relocated at all.
+      const id = await createPage({
+        title: 'Spaceless', source: 'confluence', confluenceId: '700020', spaceKey: null,
+      });
+
+      const preview = await app.inject({ method: 'GET', url: `/api/pages/${id}/relocate/preview` });
+      expect(preview.statusCode).toBe(200);
+      expect(preview.json().upstreamDeletion).toMatchObject({ confluenceId: '700020', spaceKey: '' });
+
+      const res = await toLocal(id, '700020', {
+        confirmDeleteConfluencePage: { confluenceId: '700020', spaceKey: '' },
+      });
+      expect(res.statusCode).toBe(200);
+
+      const row = await getRow(id);
+      expect(row.source).toBe('standalone');
+      expect(row.confluence_id).toBeNull();
+      expect(h.client.deletePage).toHaveBeenCalledWith('700020');
     });
 
     it('restores the pre-move state when the upstream page is provably still live', async () => {

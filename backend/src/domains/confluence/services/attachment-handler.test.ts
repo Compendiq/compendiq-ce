@@ -11,6 +11,7 @@ import {
   getMimeType,
   cacheAttachment,
   hasLocalAttachments,
+  listCachedAttachments,
   getExpectedAttachmentFilenames,
   getMissingAttachments,
   STREAM_THRESHOLD_BYTES,
@@ -1369,6 +1370,38 @@ describe('attachment-handler', () => {
       ).resolves.toBeDefined();
       const mkdirCall = vi.mocked(fs.mkdir).mock.calls[0][0] as string;
       expect(mkdirCall).toContain('page-123');
+    });
+  });
+
+  describe('listCachedAttachments', () => {
+    function givenDirEntries(entries: Array<{ name: string; file: boolean }>) {
+      vi.mocked(fs.readdir as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
+        entries.map((e) => ({ name: e.name, isFile: () => e.file })),
+      );
+    }
+
+    it('lists cached files and ignores sub-directories', async () => {
+      givenDirEntries([
+        { name: 'chart.png', file: true },
+        { name: 'nested', file: false },
+      ]);
+
+      expect(await listCachedAttachments('700100')).toEqual(['chart.png']);
+    });
+
+    it('skips hidden entries no attachment path could have created (#1169)', async () => {
+      // `validateFilename` and `localFilePath` both refuse a leading dot, so a
+      // dot-named file here came from something else writing into the
+      // directory — `.DS_Store`, an AppleDouble sidecar, an rsync temp file.
+      // Returning it made every caller throw `Invalid filename` on the very
+      // next read, which failed the whole relocate.
+      givenDirEntries([
+        { name: '.DS_Store', file: true },
+        { name: 'chart.png', file: true },
+        { name: '._chart.png', file: true },
+      ]);
+
+      expect(await listCachedAttachments('700100')).toEqual(['chart.png']);
     });
   });
 });

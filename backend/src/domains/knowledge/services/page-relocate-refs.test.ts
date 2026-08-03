@@ -159,15 +159,28 @@ describe('rewriteAttachmentRefs (#1123)', () => {
     expect(html).toContain('/api/local-attachments/42/my%20diagram%20(v2).png');
   });
 
-  it('rewrites anchor hrefs, not just image sources', () => {
-    const { html } = rewriteAttachmentRefs(
-      '<p><a href="/api/attachments/42/spec.pdf">Spec</a></p>',
+  // ── #1169: anchors are images-only by design ──────────────────────────────
+  //
+  // Nothing in either direction produces `<a href="/api/attachments/…">`:
+  // `htmlToConfluence` matches only `img[src^="/api/attachments/"]`, and a
+  // Confluence attachment *link* arrives as `<a href="#confluence-attachment:…">`,
+  // which never carries the prefix. Rewriting anchors would therefore only ever
+  // fire on hand-authored HTML, and the publish direction has no marker
+  // handling for anchors — the rewritten href would be dropped by the
+  // converter. Leaving them alone is the honest behaviour.
+
+  it('leaves anchor hrefs alone — no code path produces an attachment anchor', () => {
+    const input = '<p><a href="/api/attachments/42/spec.pdf">Spec</a></p>';
+
+    const { html, refs } = rewriteAttachmentRefs(
+      input,
       ['/api/attachments/42/'],
       '/api/local-attachments/42/',
       false,
     );
 
-    expect(html).toContain('href="/api/local-attachments/42/spec.pdf"');
+    expect(html).toBe(input);
+    expect(refs).toEqual([]);
   });
 
   it('leaves an unrelated page\'s attachments alone', () => {

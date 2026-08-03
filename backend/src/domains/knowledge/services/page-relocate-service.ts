@@ -55,6 +55,7 @@ import {
   writeAttachmentCacheAt,
   removeAttachmentDirectory,
   getMimeType,
+  isStorableAttachmentFilename,
 } from '../../confluence/services/attachment-handler.js';
 import {
   listLocalAttachmentsForRelocate,
@@ -241,8 +242,17 @@ export function rewriteAttachmentRefs(
   const refs = new Map<string, RewrittenRef>();
   let changed = false;
 
-  const rewriteOne = (el: Element, attr: string): void => {
-    const value = el.getAttribute(attr) ?? '';
+  /**
+   * Images only, in both directions (#1169). Nothing in this system produces an
+   * attachment *anchor*: `htmlToConfluence` matches only
+   * `img[src^="/api/attachments/"]`, and a Confluence attachment link arrives as
+   * `<a href="#confluence-attachment:<filename>">`, which never carries that
+   * prefix. The `a[href]` arm this used to have was dead on both paths and was
+   * dropped rather than wired — wiring it needs an outbound anchor rule in the
+   * converter and anchor marker handling in the publish branch first.
+   */
+  const rewriteImage = (el: Element): void => {
+    const value = el.getAttribute('src') ?? '';
     const matched = fromPrefixes.find((p) => value.startsWith(p));
     if (matched === undefined) return;
     const encodedName = value.slice(matched.length);
@@ -257,7 +267,7 @@ export function rewriteAttachmentRefs(
     // An external-URL image round-trips as ri:url, not ri:attachment — leave
     // its markers alone or htmlToConfluence emits the wrong element entirely.
     const isExternal = el.getAttribute('data-confluence-image-source') === 'external-url';
-    const publish = markAsConfluenceAttachment && el.tagName.toLowerCase() === 'img' && !isExternal;
+    const publish = markAsConfluenceAttachment && !isExternal;
     const target = publish ? (el.getAttribute('data-confluence-filename') || local) : local;
 
     if (publish) {
@@ -268,12 +278,11 @@ export function rewriteAttachmentRefs(
     }
 
     refs.set(local, { local, target });
-    el.setAttribute(attr, `${toPrefix}${encodeURIComponent(target)}`);
+    el.setAttribute('src', `${toPrefix}${encodeURIComponent(target)}`);
     changed = true;
   };
 
-  for (const img of doc.querySelectorAll('img[src]')) rewriteOne(img, 'src');
-  for (const anchor of doc.querySelectorAll('a[href]')) rewriteOne(anchor, 'href');
+  for (const img of doc.querySelectorAll('img[src]')) rewriteImage(img);
 
   return { html: changed ? doc.body.innerHTML : html, refs: [...refs.values()] };
 }
@@ -331,7 +340,9 @@ async function readAttachmentBytes(
   if (cached) return cached;
   if (page.source !== 'standalone') return null;
   const row = (await listLocalAttachmentsForRelocate(page.id)).find((r) => r.filename === filename);
-  if (!row) return null;
+  // A null path is a row whose filename the store would refuse — unreadable by
+  // definition, and reported to the caller as a missing file (#1169).
+  if (!row || row.path === null) return null;
   try {
     return await fs.readFile(row.path);
   } catch {
@@ -422,6 +433,17 @@ async function relocateToConfluence(opts: {
   const claimedTargets = new Map<string, string>();
   const collisions: string[] = [];
   for (const local of await collectAttachmentFilenames(page)) {
+    // `listCachedAttachments` screens unstorable names out of the cache side,
+    // but the local side's filenames come from `local_attachments` rows — one
+    // written outside `localFilePath` still reaches the read below, where the
+    // store throws a bare `Error` that app.ts masks to "Internal Server Error".
+    // Refuse by name instead, so the response says which file to fix (#1169).
+    if (!isStorableAttachmentFilename(local)) {
+      throw new RelocateError(
+        400,
+        `Attachment "${local}" cannot be moved: its filename is not one the attachment stores accept. Remove or rename it, then try again.`,
+      );
+    }
     const data = await readAttachmentBytes(page, local);
     if (data === null) {
       warnings.push(`Attachment "${local}" is referenced but missing on disk; it was not published.`);
@@ -611,6 +633,12 @@ async function relocateToLocal(opts: {
   // page's diagrams are fetched from `/api/local-attachments/<id>/…`, so leaving
   // them in the Confluence cache would break inline draw.io editing after the
   // move, and the cache's on-miss refetch has no upstream to fall back to.
+  //
+  // A failure part-way through leaves the already-staged files on disk. They
+  // are deliberately not cleaned up: nothing in the database references them,
+  // the `local_attachments` rows are only written inside the transaction, and a
+  // retry overwrites them by name. "Nothing mutated" is a claim about the DB,
+  // not about the disk (#1169).
   const staged: Array<{ filename: string; contentType: string; size: number; sha: string }> = [];
   for (const filename of await listCachedAttachments(oldConfluenceId)) {
     const data = await readCachedAttachmentFile(oldConfluenceId, filename);
