@@ -11,22 +11,18 @@ import { ImageAttachZone, imageDisabledReason } from '../../../shared/components
 import { cn } from '../../../shared/lib/cn';
 import { apiFetch, ApiError } from '../../../shared/lib/api';
 import { toast } from 'sonner';
-
-const IMPROVEMENT_TYPES = ['grammar', 'structure', 'clarity', 'technical', 'completeness'] as const;
-
-const IMPROVEMENT_DESCRIPTIONS: Record<(typeof IMPROVEMENT_TYPES)[number], string> = {
-  grammar: 'Fix spelling, grammar, and punctuation without changing meaning',
-  structure: 'Reorganize headings, paragraph flow, and logical order',
-  clarity: 'Simplify complex sentences and remove unnecessary jargon',
-  technical: 'Fix technical errors and add missing technical details',
-  completeness: 'Fill gaps, add missing sections, and include examples',
-};
+import { IMPROVEMENT_TYPES, IMPROVEMENT_DESCRIPTIONS } from '../improvement-types';
 
 /**
  * Improvement type selector rendered just under the mode segmented control.
  * Visual grammar matches the AI sub-header: a single `rounded-xl border` card
  * with h-7 outlined chips so all of the AI surfaces feel like one toolbar
  * stack rather than three different controls.
+ *
+ * Still the `/ai?mode=improve` control only. The dock has its own (#1177) —
+ * this card's proportions are wrong for a 420px column — but both read the same
+ * `IMPROVEMENT_TYPES` / `IMPROVEMENT_DESCRIPTIONS`, so the list and the copy
+ * cannot disagree between them.
  */
 export function ImproveTypeSelector() {
   const { improvementType, setImprovementType } = useAiContext();
@@ -54,7 +50,7 @@ export function ImproveTypeSelector() {
         ))}
       </div>
       <p className="basis-full text-xs text-muted-foreground/80">
-        {IMPROVEMENT_DESCRIPTIONS[improvementType as keyof typeof IMPROVEMENT_DESCRIPTIONS]}
+        {IMPROVEMENT_DESCRIPTIONS[improvementType]}
       </p>
     </div>
   );

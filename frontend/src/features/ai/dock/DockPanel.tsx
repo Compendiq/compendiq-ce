@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef } from 'react';
-import { AlertTriangle, Loader2, PanelRightClose, Send, Sparkles, X } from 'lucide-react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { AlertTriangle, ChevronDown, Loader2, PanelRightClose, Send, Sparkles, X } from 'lucide-react';
 import { useAiContext, type Message } from '../AiContext';
 import { StreamingMessage } from '../StreamingMessage';
 import { CitationChips } from '../CitationChips';
@@ -11,7 +11,11 @@ import { useAttachments } from '../../../shared/hooks/use-attachments';
 import { DocumentUploadZone } from '../../../shared/components/upload/DocumentUploadZone';
 import { ImageAttachZone, imageDisabledReason } from '../../../shared/components/upload/ImageAttachZone';
 import { PROMPT_MAX_LENGTH } from '../modes/prompt-limits';
-import { DOCK_CHIPS } from './dock-chips';
+import {
+  DEFAULT_IMPROVEMENT_TYPE, IMPROVEMENT_DESCRIPTIONS, IMPROVEMENT_TYPES, type ImprovementType,
+} from '../improvement-types';
+import { cn } from '../../../shared/lib/cn';
+import { DOCK_CHIPS, improveChipHint } from './dock-chips';
 import { DockDiffCard } from './DockDiffCard';
 import { useDockActions } from './use-dock-actions';
 
@@ -31,8 +35,46 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
   const {
     page, pageId, messages, messagesEndRef, isStreaming, isThinking, thinkingElapsed,
     streamingContent, input, setInput, modelsError, refetchModels, model, chatVision,
-    chatVisionModel,
+    chatVisionModel, improvementType, setImprovementType,
   } = useAiContext();
+
+  // Which improvement pass Improve will run is a *setting*, so it hides behind a
+  // disclosure on the Improve chip rather than spending a permanent line of a
+  // 420px column on five options most runs leave at `grammar` (#1177). Open
+  // state is per-mount and deliberately not restored: a drawer that reopened
+  // itself would cost the height it was designed to save.
+  const [typesOpen, setTypesOpen] = useState(false);
+  const typesPanelId = useId();
+  const typesToggleRef = useRef<HTMLButtonElement>(null);
+  const collapseTypes = useCallback(() => {
+    setTypesOpen(false);
+    typesToggleRef.current?.focus();
+  }, []);
+
+  // While the drawer is open, Escape belongs to the drawer: fold it away, hand
+  // focus back to the caret, and let the *next* Escape close the assistant.
+  //
+  // Mounted on the split chip as well as on the drawer, because focus is
+  // usually on neither's contents but on the caret itself — clicking a button
+  // focuses it in every real browser (jsdom does not, which is why the first
+  // version of this passed its test while failing in Chrome). A handler that
+  // only listens inside the drawer misses the commonest route by construction,
+  // and the panel root's Escape wins: the user presses it to tidy away a drawer
+  // and loses the whole conversation.
+  const handleTypesEscape = useCallback((e: React.KeyboardEvent) => {
+    if (e.key !== 'Escape' || !typesOpen) return;
+    e.stopPropagation();
+    collapseTypes();
+  }, [typesOpen, collapseTypes]);
+
+  // The retry chip replaces the whole row when the model list fails, taking the
+  // caret with it. Drop the open state at the same time, or a later recovery
+  // brings the drawer back unasked — the one thing the comment above promises
+  // it will not do. The render guard below still stands: it covers the frame
+  // between the failure and this effect.
+  useEffect(() => {
+    if (modelsError) setTypesOpen(false);
+  }, [modelsError]);
 
   // Source material attached in the composer (#1131, #1154). Dock-local rather
   // than AiContext state: it is material for the *next* action, not part of the
@@ -240,26 +282,116 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
               <AlertTriangle size={12} aria-hidden /> Models unavailable — retry
             </button>
           ) : (
-            DOCK_CHIPS.map(({ id, label, Icon, hint }) => (
-              <button
-                key={id}
-                type="button"
-                onClick={() => void runChip(id)}
-                // Improve alone waits out an in-flight attachment: firing it now
-                // would send the request without the reference text still being
-                // extracted or the image still being staged (#940's lesson,
-                // widened to both slots by #1154). The other three read no
-                // attachment, so they stay live.
-                disabled={isStreaming || !page || !model || (id === 'improve' && isBusy)}
-                title={hint}
-                className="flex h-7 items-center gap-1.5 rounded-md border border-border-interactive px-2.5 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:opacity-50"
-                data-testid={`ai-dock-chip-${id}`}
-              >
-                <Icon size={12} aria-hidden /> {label}
-              </button>
-            ))
+            DOCK_CHIPS.map(({ id, label, Icon, hint }) => {
+              // Improve alone waits out an in-flight attachment: firing it now
+              // would send the request without the reference text still being
+              // extracted or the image still being staged (#940's lesson,
+              // widened to both slots by #1154). The other three read no
+              // attachment, so they stay live.
+              const isImprove = id === 'improve';
+              const disabled = isStreaming || !page || !model || (isImprove && isBusy);
+              const chip = (
+                <button
+                  // Carries the array key for the other three chips; ignored
+                  // for Improve, which returns it inside the keyed <div> below.
+                  key={id}
+                  type="button"
+                  onClick={() => {
+                    // The choice is committed the moment the run starts, so the
+                    // drawer folds away with it and the column goes back to one
+                    // row of chips. The thread jumps at the same instant (user
+                    // turn plus placeholder), which absorbs the reflow.
+                    if (isImprove) setTypesOpen(false);
+                    void runChip(id);
+                  }}
+                  disabled={disabled}
+                  title={isImprove ? improveChipHint(improvementType) : hint}
+                  className={cn(
+                    'flex h-7 items-center gap-1.5 rounded-md border border-border-interactive px-2.5 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:opacity-50',
+                    // Half of a split control: the caret picks up the right end.
+                    isImprove && 'relative rounded-r-none hover:z-10 focus-visible:z-10',
+                  )}
+                  data-testid={`ai-dock-chip-${id}`}
+                >
+                  <Icon size={12} aria-hidden /> {label}
+                  {/* The type is spelled out exactly when it is news. Saying
+                      "grammar" on every dock in the product would cost the row's
+                      one spare line to repeat the documented default; saying
+                      nothing after the user picked `structure` would leave a
+                      chip that rewrites a page differently than it reads.
+
+                      Steel marks the choice here and in the drawer, but by
+                      different means, because the substrate differs: this is
+                      bare text on the panel, so it takes `--color-primary-ink`,
+                      the system's steel-as-a-text-colour token. The selected
+                      option down there sits on a steel tint already and keeps
+                      the neutral `text-action` — steel ink on a steel wash
+                      loses the contrast the token exists to guarantee. */}
+                  {isImprove && improvementType !== DEFAULT_IMPROVEMENT_TYPE && (
+                    <span className="font-medium text-primary-ink" data-testid="ai-dock-improve-type-label">
+                      · {improvementType}
+                    </span>
+                  )}
+                </button>
+              );
+              if (!isImprove) return chip;
+              return (
+                // One flex item, so the row's `gap-1.5` never opens a seam
+                // between the two halves and wrapping never splits them — and
+                // one Escape handler, so the drawer absorbs the key from either
+                // half rather than only from its own contents.
+                <div key={id} className="flex" onKeyDown={handleTypesEscape}>
+                  {chip}
+                  <button
+                    ref={typesToggleRef}
+                    type="button"
+                    onClick={() => setTypesOpen((open) => !open)}
+                    // The caret shares Improve's disabled state rather than
+                    // computing its own. They are one control, a half-lit split
+                    // chip reads as a rendering fault, and every reason Improve
+                    // is unavailable — no page, no model, an attachment still
+                    // staging, a stream in flight — is a moment when there is
+                    // nothing yet to configure.
+                    disabled={disabled}
+                    aria-expanded={typesOpen}
+                    // Only while the drawer exists. `aria-controls` pointing at
+                    // an unrendered id is a dangling reference, and the two
+                    // other AI disclosures in the app (`bubble-ai-trigger`,
+                    // `block-ai-trigger`) already gate it the same way.
+                    aria-controls={typesOpen ? typesPanelId : undefined}
+                    aria-label={`Improvement type: ${improvementType}`}
+                    title={`${improvementType} — ${IMPROVEMENT_DESCRIPTIONS[improvementType]}`}
+                    // -ml-px collapses the two 1px borders into the single hairline
+                    // that makes the pair read as one chip; z-10 on hover/focus
+                    // lifts whichever half is being addressed so its own border
+                    // and ring win over its neighbour's.
+                    className="relative -ml-px flex h-7 w-7 items-center justify-center rounded-md rounded-l-none border border-border-interactive text-muted-foreground transition-colors hover:z-10 hover:bg-foreground/5 hover:text-foreground focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:opacity-50"
+                    data-testid="ai-dock-improve-types-toggle"
+                  >
+                    <ChevronDown
+                      size={12}
+                      aria-hidden
+                      className={cn(
+                        'transition-transform duration-200 motion-reduce:transition-none',
+                        typesOpen && 'rotate-180',
+                      )}
+                    />
+                  </button>
+                </div>
+              );
+            })
           )}
         </div>
+
+        {!modelsError && typesOpen && (
+          <ImprovementTypeDrawer
+            id={typesPanelId}
+            value={improvementType}
+            onChange={setImprovementType}
+            disabled={isStreaming || !page || !model || isBusy}
+            onKeyDown={handleTypesEscape}
+          />
+        )}
 
         {/* An advisory, not a refusal: the backend accepts both, and only the
             resolved model knows whether they fit. Amber is the attention colour
@@ -349,6 +481,97 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Improvement type
+// ---------------------------------------------------------------------------
+
+interface ImprovementTypeDrawerProps {
+  id: string;
+  value: ImprovementType;
+  onChange: (value: ImprovementType) => void;
+  disabled: boolean;
+  /**
+   * Escape handling, owned by `DockPanel` and mounted on the split chip too —
+   * the drawer is only one of the two places focus can be while it is open.
+   */
+  onKeyDown: (e: React.KeyboardEvent) => void;
+}
+
+/**
+ * The five improvement passes, restored to the dock (#1177).
+ *
+ * `/ai`'s `ImproveTypeSelector` is a card with a heading, h-7 chips and a
+ * caption — the proportions of a control that owns its own screen. Here the
+ * same five options are a drawer that opens out of the Improve chip and closes
+ * when the run starts, so the resting state of a 420px column is still one row
+ * of chips.
+ *
+ * The border grammar is the dock's, not the selector's: unselected options take
+ * `--color-border-interactive` like every other operable edge in the panel
+ * (WCAG 1.4.11), and the selected one takes `nm-pill-active` — the same pressed
+ * steel the sidebar and the article rail use for "this is the one", which also
+ * brings its own `forced-colors: active` treatment. The quiet `--color-border`
+ * appears once, around the drawer itself, because that is a grouping surface
+ * rather than something you press.
+ *
+ * `nm-pill-active text-action` is the pairing every selected pill in the app
+ * uses (`SidebarTreeView`, `DndLocalSpaceTree`, `ArticleRightPane`,
+ * `CommentsSidebar`). The steel is the tint and the border; the label stays
+ * neutral, because `nm-pill-active`'s own `color: var(--color-primary)` would
+ * put steel ink on a steel wash.
+ */
+function ImprovementTypeDrawer({ id, value, onChange, disabled, onKeyDown }: ImprovementTypeDrawerProps) {
+  return (
+    <div
+      id={id}
+      role="group"
+      aria-label="Improvement type"
+      onKeyDown={onKeyDown}
+      className="mb-2 rounded-lg border border-border bg-foreground/[0.03] px-2 py-2"
+      data-testid="ai-dock-improve-types"
+    >
+      <div className="flex flex-wrap gap-1">
+        {IMPROVEMENT_TYPES.map((type) => {
+          const selected = value === type;
+          return (
+            <button
+              key={type}
+              type="button"
+              onClick={() => onChange(type)}
+              disabled={disabled}
+              // Kept from `ImproveTypeSelector` verbatim: five toggles reporting
+              // their own pressed state, each carrying its description, is what
+              // a screen reader gets on `/ai` and there is no reason for the
+              // dock to announce the same choice differently.
+              aria-pressed={selected}
+              title={IMPROVEMENT_DESCRIPTIONS[type]}
+              className={cn(
+                'flex h-6 items-center rounded-md px-2 text-[11px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:opacity-50',
+                selected
+                  ? 'nm-pill-active font-medium text-action'
+                  : 'border border-border-interactive text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
+              )}
+              data-testid={`ai-dock-improve-type-${type}`}
+            >
+              {/* Lower case, like the turn these produce in the thread
+                  ("Improve this page (structure).") and like the chip's own
+                  suffix. They are parameters, not headings. */}
+              {type}
+            </button>
+          );
+        })}
+      </div>
+      {/* Five one-word options need the sentence that `/ai` prints under them —
+          "technical" and "completeness" are not self-explanatory, and a `title`
+          alone is unreachable by touch. It costs one line, and only while the
+          drawer the user opened is open. */}
+      <p className="mt-2 text-[11px] leading-snug text-muted-foreground">
+        {IMPROVEMENT_DESCRIPTIONS[value]}
+      </p>
     </div>
   );
 }

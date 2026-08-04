@@ -85,6 +85,30 @@ one, and its upload zone plus long-form prompt fit badly in a 420px column. `/ai
 loses its context chip entirely — it becomes the no-document home for Ask and
 Generate.
 
+> **Amended by #1177 — a chip may carry a parameter.** Improve is the one action of
+> the four that is parameterised: `/llm/improve` takes one of five passes (grammar,
+> structure, clarity, technical, completeness), `/ai?mode=improve` has always let the
+> user pick, and the dock shipped without the control — so every docked Improve was a
+> grammar pass on whatever `AiContext` happened to hold. Improve becomes a **split
+> chip**: the verb, plus a caret (`aria-expanded`) that discloses the five passes on a
+> row beneath the chips and folds them away again when the run starts. The chip names
+> the pass in its own label whenever it is not the default, so a chip that would
+> rewrite the page differently than it reads cannot exist.
+>
+> **This is not a new AI mode**, and the anti-goal below stands unchanged. The pass is
+> an argument to an action the dock already has: it is reachable only from that
+> action's own chip, it adds no destination, no screen and no verb, and the dock still
+> offers exactly four. A permanently visible row of five was rejected for the two
+> reasons a 420px column makes obvious — it spends a whole line on a setting most runs
+> leave alone, and sitting under all four chips it would imply the pass applies to
+> Summarize, Diagram and Quality, which it does not.
+>
+> Two sibling gaps are left open **deliberately**, not by oversight: the Diagram chip's
+> `diagramType` is dock-unreachable in the same way (every docked diagram is a
+> flowchart), and `ImproveModeInput`'s MCP `searchWeb` toggle has no dock equivalent.
+> Whoever closes them should reuse the split-chip pattern rather than inventing a
+> second one.
+
 ### Color
 
 Violet marks the AI surface (panel header, streaming indicator, assistant avatar) per
@@ -169,7 +193,8 @@ where it actually matters.
 **Anti-goals**
 
 - No multi-page context basket
-- No new AI modes
+- No new AI modes — a *sub-mode* of an action the dock already has is a parameter of
+  that action, not a mode (see #1177's amendment above)
 - No changes to the visual system
 
 ## Sequencing
