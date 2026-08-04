@@ -651,6 +651,18 @@ export function htmlToConfluence(html: string): string {
       summary.remove();
     }
 
+    // Any <summary> still in the subtree (wrapped in another element, or a
+    // second sibling) is not this section's title per the direct-child rule
+    // above — but it must not ship to Confluence as a literal HTML5 element
+    // either. Improve-apply feeds model-produced markdown through this
+    // function with no tag allow-list, so the shape is reachable without the
+    // editor. Unwrap it: the text belongs to the body, only the tag is
+    // invalid. Nested sections' summaries are already gone here — the loop
+    // runs innermost-first, so they were consumed by their own iteration.
+    for (const stray of details.querySelectorAll('summary')) {
+      stray.replaceWith(...stray.childNodes);
+    }
+
     // Re-emit parameters persisted by the forward pass (mirrors the
     // unknown-macro handler below). A `title` key is skipped when <summary>
     // provided the parameter above — the summary is its source of truth.

@@ -560,6 +560,20 @@ describe('content-converter', () => {
         expect(xhtml).toContain('ac:name="ui-expand"');
       });
 
+      it('unwraps a summary that is not a direct child instead of leaking the tag', () => {
+        // The direct-child rule (above) means a wrapped <summary> is not this
+        // section's title — but it must not ship to Confluence as a literal
+        // HTML5 element either. Improve-apply feeds model-produced markdown
+        // through htmlToConfluence with no tag allow-list, so the shape is
+        // reachable without the editor (#1216 re-review).
+        const xhtml = htmlToConfluence(
+          '<details data-macro-name="expand"><div><summary>WrappedTitle</summary></div><p>body</p></details>',
+        );
+        expect(xhtml).not.toContain('<summary');
+        expect(xhtml).toContain('WrappedTitle');
+        expect(xhtml).not.toContain('ac:name="title"');
+      });
+
       it('does not let a summary-less outer section steal a nested summary as its title', () => {
         const xhtml = htmlToConfluence(
           '<details>' +
