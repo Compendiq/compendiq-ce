@@ -195,29 +195,47 @@ export function LlmStep({ onNext, onBack }: LlmStepProps) {
           {testing ? 'Testing...' : 'Test Connection'}
         </button>
 
-        {/* Test result */}
+        {/* Test result indicator. Uses the semantic status tokens rather than
+            literal Tailwind emerald/red: those shades are dark-theme tuned and
+            (unlike the amber ones) are not remapped for Frost Steel, so the
+            label rendered at 1.33:1 and the icon at 1.69:1 on the light
+            surface. The status tokens carry an AA-passing value per theme, and
+            match ConfluenceStep's banner. The icons move with the label
+            because they are meaningful state graphics, so they answer to WCAG
+            1.4.11's 3:1 non-text floor — the emerald (1.78:1) and red (2.65:1)
+            glyph shades they used to carry both missed it.
+
+            The ink sits on the icon/label row rather than on this container:
+            the model list below inherits from here, and a model name is data,
+            not status — it must keep reading as body text. */}
         {testResult && (
           <m.div
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: 'auto' }}
             className={`rounded-lg border p-4 ${
               testResult.success
-                ? 'border-emerald-500/30 bg-emerald-500/10'
-                : 'border-red-500/30 bg-red-500/10'
+                ? 'border-status-connected/30 bg-status-connected/10'
+                : 'border-status-disconnected/30 bg-status-disconnected/10'
             }`}
             data-testid="llm-test-result"
           >
-            <div className="flex items-center gap-2">
+            <div
+              className={`flex items-center gap-2 ${
+                testResult.success ? 'text-status-connected' : 'text-status-disconnected'
+              }`}
+            >
+              {/* Both glyphs are fill="currentColor", so they inherit the row's
+                  status ink — one source of truth for the banner's colour. */}
               {testResult.success ? (
-                <svg className="h-5 w-5 text-emerald-400" viewBox="0 0 20 20" fill="currentColor">
+                <svg className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
                   <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
                 </svg>
               ) : (
-                <svg className="h-5 w-5 text-red-400" viewBox="0 0 20 20" fill="currentColor">
+                <svg className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
                   <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
                 </svg>
               )}
-              <span className={`text-sm font-medium ${testResult.success ? 'text-emerald-300' : 'text-red-300'}`}>
+              <span className="text-sm font-medium">
                 {testResult.success ? 'Connected' : testResult.error ?? 'Connection failed'}
               </span>
             </div>
