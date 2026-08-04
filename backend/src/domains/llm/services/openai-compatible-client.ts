@@ -259,6 +259,16 @@ async function boundedErrorDetail(res: { body?: ReadableStream | null }): Promis
   if (!res.body) return '';
   const reader = res.body.getReader();
 
+  // Byte cap on the read itself (PR #1214 review): the value is sliced to
+  // ERROR_BODY_MAX_CHARS below anyway, so buffering an arbitrarily large error
+  // body — a misbehaving loopback provider can stream hundreds of MB inside
+  // the 5s window — buys nothing but memory pressure. The ×4 is UTF-8's
+  // maximum bytes per code point, so the bytes we do keep always decode to at
+  // least ERROR_BODY_MAX_CHARS characters whenever the body has them: the
+  // truncated detail is byte-for-byte what the unbounded read would have
+  // produced, including for fully multibyte bodies.
+  const maxBytes = ERROR_BODY_MAX_CHARS * 4;
+
   async function readAll(): Promise<string> {
     // `res.body` is typed `ReadableStream` (undici's own declaration, no
     // generic argument — see the type on this function's parameter), so
@@ -267,10 +277,20 @@ async function boundedErrorDetail(res: { body?: ReadableStream | null }): Promis
     // assumption explicit rather than letting `any` flow silently into
     // `chunks`.
     const chunks: Uint8Array[] = [];
+    let totalBytes = 0;
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      if (value) chunks.push(value as Uint8Array);
+      if (value) {
+        chunks.push(value as Uint8Array);
+        totalBytes += (value as Uint8Array).byteLength;
+        if (totalBytes > maxBytes) {
+          // Already more than the slice below can use — stop buffering and
+          // tear the upstream connection down, mirroring the timeout path.
+          await reader.cancel().catch(() => { /* already closed / benign cancel race */ });
+          break;
+        }
+      }
     }
     return Buffer.concat(chunks).toString('utf8');
   }

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { checkHealth, listModels, chat, streamChat, generateEmbedding, invalidateBreaker, __test_only__, LlmHttpError, type ProviderConfig } from './openai-compatible-client.js';
+import { ERROR_BODY_MAX_CHARS } from './llm-http-error.js';
 
 let srv: Server;
 let baseUrl: string;
@@ -292,6 +293,72 @@ describe('openai-compatible-client — streamChat bounds a stalled error-body re
     } finally {
       clearTimeoutSpy.mockRestore();
       await new Promise<void>((r) => { fastSrv.closeAllConnections(); fastSrv.close(() => r()); });
+    }
+  });
+});
+
+// ─── PR #1214 review: an oversized error body must not be buffered whole ─────
+// boundedErrorDetail's timeout bounds *time*, not *memory*: before the byte
+// cap, a non-2xx response that streams fast for the full 5s window forced
+// buffering everything sent (hundreds of MB from a loopback provider) for a
+// value that is then sliced to ERROR_BODY_MAX_CHARS.
+describe('openai-compatible-client — streamChat bounds an oversized error-body read (#1214 review)', () => {
+  it('returns the truncated detail promptly and tears down the socket instead of buffering the whole body', async () => {
+    // The server streams far more than the byte cap and deliberately never
+    // ends the response, which makes the three outcomes distinguishable
+    // without timing luck:
+    //  - an unbounded read would sit on the never-ending body until the 5s
+    //    timer (deliberately NOT shrunk here) fires, and the timeout path
+    //    returns detail '' — so a truncated-body detail can only come from
+    //    the byte cap stopping the read;
+    //  - 'close' on a response that is never ended server-side can only mean
+    //    the client (our reader.cancel()) tore the connection down.
+    let serverSawClose = false;
+    let resolveClose!: () => void;
+    const closePromise = new Promise<void>((r) => { resolveClose = r; });
+    const chunk = 'x'.repeat(1024);
+    const chunkCount = 256; // 256 KiB ≫ the ERROR_BODY_MAX_CHARS * 4 byte cap
+    const bigSrv = createServer((req, res) => {
+      if (req.url === '/v1/chat/completions') {
+        let body = '';
+        req.on('data', (c) => (body += c));
+        req.on('end', () => {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          for (let i = 0; i < chunkCount; i++) res.write(chunk);
+          // Never res.end() — see the determinism note above.
+          res.on('close', () => { serverSawClose = true; resolveClose(); });
+        });
+        return;
+      }
+      res.writeHead(404); res.end();
+    });
+    await new Promise<void>((r) => bigSrv.listen(0, r));
+    const { port } = bigSrv.address() as AddressInfo;
+    try {
+      const start = Date.now();
+      const gen = streamChat(
+        { ...cfg, providerId: 'streamchat-big-error-1214', baseUrl: `http://127.0.0.1:${port}/v1` },
+        'm1', [{ role: 'user', content: 'hi' }],
+      );
+      const err = await gen.next().then(
+        () => { throw new Error('expected streamChat to reject'); },
+        (e: unknown) => e,
+      );
+      const elapsed = Date.now() - start;
+
+      expect(err).toBeInstanceOf(LlmHttpError);
+      expect((err as LlmHttpError).status).toBe(500);
+      // Truncated body text, not the timeout path's '' — the cap ended the read.
+      expect((err as LlmHttpError).detail).toBe('x'.repeat(ERROR_BODY_MAX_CHARS));
+      // Comfortably under the 5s default bounded-read timer: the byte cap,
+      // not the timer, is what returned.
+      expect(elapsed).toBeLessThan(2500);
+
+      // reader.cancel() must reach the server as a real socket teardown.
+      await Promise.race([closePromise, new Promise<void>((r) => setTimeout(r, 1000))]);
+      expect(serverSawClose).toBe(true);
+    } finally {
+      await new Promise<void>((r) => { bigSrv.closeAllConnections(); bigSrv.close(() => r()); });
     }
   });
 });
