@@ -320,7 +320,12 @@ erDiagram
   `#1154` amendment for the full verdict table. `getVisionCapability`
   (`domains/llm/services/model-capabilities.ts`) reads this table without
   ever blocking on a probe; `refreshVisionCapability` writes it, called from
-  the admin save path and re-probe actions.
+  the admin save path and the manual re-probe route (#1184). `probe_error`
+  carries the provider's own error body and is readable only through
+  admin-gated routes: `readVisionCapabilityDetail` backs
+  `GET /admin/llm-usecases/chat/vision-capability` and
+  `POST /admin/llm-usecases/chat/reprobe-vision`, while the non-admin
+  `GET /llm/usecase-default` exposes the `vision` verdict alone.
 - **`audit_log`** captures auth events, license changes, RBAC mutations,
   and high-value LLM calls (prompt-injection flags, failed sanitization).
 - **User FK policies on hard delete** (migration 062): `audit_log.user_id`,

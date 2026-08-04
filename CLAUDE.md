@@ -181,6 +181,17 @@ card and its own trigger** (`composerRowClass`), because `order-*` moves boxes w
 moving the tab sequence (WCAG 2.4.3) — don't reintroduce `order-*` anywhere in a composer;
 `expectComposerFocusOrder` fails on it.
 
+**A wrong verdict is correctable, and `probe_error` is admin-only** (#1184). Settings → LLM
+carries a **Re-check** control on the chat row — `POST /admin/llm-usecases/chat/reprobe-vision`,
+a blocking probe of the pair `resolveUsecase('chat')` resolves — plus a disclosure exposing
+`probed_at` and `probe_error` from `GET /admin/llm-usecases/chat/vision-capability`. Both are
+`requireAdmin`. **Never extend `UsecaseDefaultSchema` with `probeError`**: `GET
+/llm/usecase-default` is `fastify.authenticate` but *not* admin-gated, and the probe error is
+the provider's raw body, which `llm-http-error.ts` keeps off client-visible paths because it
+can echo request fragments and internal topology. It is truncated at
+`PROBE_ERROR_MAX_CHARS` on the way out and rendered as plain JSX text — never
+`dangerouslySetInnerHTML`, never a Markdown renderer.
+
 ## Versioning
 
 SemVer, pre-1.0. Single source of truth: **root `package.json` `"version"`**. Backend reads at startup (`core/utils/version.ts` → `APP_VERSION`); frontend injects `__APP_VERSION__` via Vite `define`; mcp-docs reads its own.

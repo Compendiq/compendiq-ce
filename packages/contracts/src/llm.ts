@@ -88,8 +88,36 @@ export const UsecaseDefaultSchema = z.object({
    * — hence nullable rather than optional.
    */
   vision: z.boolean().nullable(),
+  // NOTE (#1184): `probeError` / `probedAt` deliberately do NOT belong here.
+  // This route is `fastify.authenticate`, not `requireAdmin`. The evidence
+  // behind a verdict lives on `VisionCapabilityDetailSchema` below.
 });
 export type UsecaseDefault = z.infer<typeof UsecaseDefaultSchema>;
+
+// ─── Admin-only capability detail (#1184) ────────────────────────────────
+/**
+ * Shape returned by `GET /admin/llm-usecases/chat/vision-capability` and by
+ * `POST /admin/llm-usecases/chat/reprobe-vision` — the stored verdict for the
+ * provider+model that `chat` currently resolves to, plus the evidence behind
+ * it.
+ *
+ * **Admin-only, deliberately.** `probeError` is the provider's own error body
+ * (see `backend/.../llm-http-error.ts`): third-party text that can echo
+ * request fragments and internal topology. `UsecaseDefaultSchema` above is
+ * served to every authenticated user, which is why this is a separate schema
+ * rather than an extension of it.
+ *
+ * `probedAt` is null for a pair with no row yet (never probed). `vision` keeps
+ * the tri-state: `false` = probed and refused, `null` = never established.
+ */
+export const VisionCapabilityDetailSchema = z.object({
+  providerId: z.string().uuid(),
+  model: z.string(),
+  vision: z.boolean().nullable(),
+  probedAt: z.string().nullable(),
+  probeError: z.string().nullable(),
+});
+export type VisionCapabilityDetail = z.infer<typeof VisionCapabilityDetailSchema>;
 
 // ─── DEPRECATED: old two-slot enum kept for transitional typing only ──────
 /** @deprecated use `LlmProvider.id` (uuid). Removed after Task 36. */
