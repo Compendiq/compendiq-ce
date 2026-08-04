@@ -441,6 +441,53 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
       expect(versions.rowCount).toBe(4);
     });
 
+    it('names the attachment in a 400 when a local row holds an unstorable filename (#1169)', async () => {
+      // The cache lister screens hidden names out, but `local_attachments`
+      // filenames come from the DB, so a row written outside `localFilePath`
+      // still reaches the read. A 500 would be masked to "Internal Server
+      // Error" by app.ts — only a 4xx can tell the user which file to fix.
+      const id = await createPage({ title: 'A', source: 'standalone', spaceKey: 'LOCAL', ownerId: userId });
+      await writeStoreB(id, '.hidden.png', 'bytes', userId);
+
+      // The preview counts the same filenames, so it must survive the row too —
+      // it 500'd before the dialog could even open.
+      const preview = await app.inject({ method: 'GET', url: `/api/pages/${id}/relocate/preview` });
+      expect(preview.statusCode).toBe(200);
+      expect(preview.json().attachmentCount).toBe(1);
+
+      const res = await toConfluence(id);
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toContain('.hidden.png');
+      expect(h.client.createPage).not.toHaveBeenCalled();
+      expect((await getRow(id)).source).toBe('standalone');
+    });
+
+    it('refuses an over-long local filename by name too, not just a hidden one (#1169)', async () => {
+      // The two stores enforce different rules — the local one caps at 255
+      // characters, the Confluence one does not — so the guard has to ask both.
+      // The *file* cannot exist at this length on any real filesystem, but the
+      // *row* can, and the row is what the guard reasons about: gating on the
+      // Confluence rule alone let this warn past as "missing on disk".
+      const id = await createPage({ title: 'A', source: 'standalone', spaceKey: 'LOCAL', ownerId: userId });
+      const longName = `${'a'.repeat(300)}.png`;
+      await query(
+        `INSERT INTO local_attachments (page_id, filename, content_type, size_bytes, sha256, created_by)
+         VALUES ($1, $2, 'image/png', 1, 'deadbeef', $3)`,
+        [id, longName, userId],
+      );
+      // Let the upstream create succeed, so a failure here is the guard's doing
+      // and not a half-configured mock.
+      h.client.createPage.mockResolvedValue(createdPage('900030'));
+
+      const res = await toConfluence(id);
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toContain(longName);
+      expect(h.client.createPage).not.toHaveBeenCalled();
+      expect((await getRow(id)).source).toBe('standalone');
+    });
+
     it('leaves nothing changed when the upstream create fails', async () => {
       const id = await createPage({ title: 'A', source: 'standalone', spaceKey: 'LOCAL', ownerId: userId });
       const child = await createPage({
@@ -578,6 +625,59 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
       expect(rows.rows.map((r) => r.filename)).toEqual(['chart.png']);
     });
 
+    it('re-keys an attachment anchor, not just an image (#1169)', async () => {
+      // The Markdown import (#1133) is a live producer of these: a link whose
+      // target is an internal attachment URL survives `markdownToHtml` and
+      // DOMPurify verbatim, and `htmlToConfluence` preserves it rather than
+      // dropping it. The move stages the bytes into the local store and then
+      // removes the Confluence cache directory, so an anchor left on the old
+      // key is a dead link pointing at a directory this move just deleted.
+      const id = await createPage({
+        title: 'Linked',
+        source: 'confluence',
+        confluenceId: '700040',
+        spaceKey: 'CONF',
+        bodyHtml: '<p><a href="/api/attachments/700040/spec.pdf">Spec</a></p>',
+      });
+      await writeStoreA('700040', 'spec.pdf', 'pdf-bytes');
+
+      const res = await toLocal(id, '700040');
+      expect(res.statusCode).toBe(200);
+
+      const row = await getRow(id);
+      expect(row.body_html).toContain(`/api/local-attachments/${id}/spec.pdf`);
+      expect(row.body_html).not.toContain('/api/attachments/700040/');
+      expect(await storeBFiles(id)).toEqual(['spec.pdf']);
+      expect(await storeAFiles('700040')).toEqual([]);
+    });
+
+    it('ignores a stray hidden file in the attachment cache (#1169)', async () => {
+      // Neither store can create a dot-named file, so one in the cache dir is
+      // always foreign debris — `.DS_Store`, an AppleDouble sidecar, an rsync
+      // temp file. Reading it threw `Invalid filename` and 500'd the whole
+      // move, which `app.ts` then masked to "Internal Server Error".
+      const id = await createPage({
+        title: 'Imaged',
+        source: 'confluence',
+        confluenceId: '700030',
+        spaceKey: 'CONF',
+        bodyHtml: '<p><img src="/api/attachments/700030/chart.png" /></p>',
+      });
+      await writeStoreA('700030', 'chart.png', 'chart-bytes');
+      await writeStoreA('700030', '.DS_Store', 'finder-junk');
+
+      const res = await toLocal(id, '700030');
+      expect(res.statusCode).toBe(200);
+      expect(res.json().attachmentsMigrated).toBe(1);
+
+      expect(await storeBFiles(id)).toEqual(['chart.png']);
+      const rows = await query<{ filename: string }>(
+        'SELECT filename FROM local_attachments WHERE page_id = $1',
+        [id],
+      );
+      expect(rows.rows.map((r) => r.filename)).toEqual(['chart.png']);
+    });
+
     it('rejects a confirmation that does not name this page and space', async () => {
       const id = await createPage({
         title: 'Synced', source: 'confluence', confluenceId: '700006', spaceKey: 'CONF',
@@ -595,6 +695,30 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
 
       expect(h.client.deletePage).not.toHaveBeenCalled();
       expect((await getRow(id)).source).toBe('confluence');
+    });
+
+    it('relocates a Confluence page whose space_key is NULL (#1169)', async () => {
+      // `pages.space_key` has been nullable since migration 029. The preview
+      // hands the client `page.space_key ?? ''`, so the confirmation it echoes
+      // back carries an empty string — which the schema must accept, or such a
+      // row can never be relocated at all.
+      const id = await createPage({
+        title: 'Spaceless', source: 'confluence', confluenceId: '700020', spaceKey: null,
+      });
+
+      const preview = await app.inject({ method: 'GET', url: `/api/pages/${id}/relocate/preview` });
+      expect(preview.statusCode).toBe(200);
+      expect(preview.json().upstreamDeletion).toMatchObject({ confluenceId: '700020', spaceKey: '' });
+
+      const res = await toLocal(id, '700020', {
+        confirmDeleteConfluencePage: { confluenceId: '700020', spaceKey: '' },
+      });
+      expect(res.statusCode).toBe(200);
+
+      const row = await getRow(id);
+      expect(row.source).toBe('standalone');
+      expect(row.confluence_id).toBeNull();
+      expect(h.client.deletePage).toHaveBeenCalledWith('700020');
     });
 
     it('restores the pre-move state when the upstream page is provably still live', async () => {
@@ -624,6 +748,46 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
       // start shadowing a page that is still Confluence-backed.
       const rows = await query('SELECT 1 FROM local_attachments WHERE page_id = $1', [parent]);
       expect(rows.rowCount).toBe(0);
+      // …and so are the BYTES (#1169 review). Dropping the row while leaving
+      // the file behind is what made "nothing mutated" a claim about the
+      // database only; every failed attempt used to add another orphan.
+      expect(await storeBFiles(parent)).toEqual([]);
+      // The originals are untouched — this path must never cost the user data.
+      expect(await storeAFiles('700007')).toEqual(['pic.png']);
+    });
+
+    // An ambiguous identifier does NOT reach the staging cleanup, and it is
+    // worth saying so: the obvious way to write that test passes for the wrong
+    // reason. `assertIdentifierUnambiguous` runs once pre-flight — before a
+    // single byte is staged — and again under the lock, so a decoy seeded up
+    // front is refused by the first check and the rollback path never runs.
+    // (Measured: the cleanup can be deleted outright and such a test stays
+    // green.) Only a decoy that appears BETWEEN the two checks reaches the
+    // transaction's catch, which is a race no test can stage deterministically.
+    // The upstream-failure case above covers the same cleanup on a path that is
+    // genuinely reachable; `local-attachment-service.test.ts` covers the helper.
+    it('refuses an ambiguous new local key before staging anything', async () => {
+      const id = await createPage({
+        title: 'Ambiguous', source: 'confluence', confluenceId: '700050', spaceKey: 'CONF',
+        bodyHtml: '<p><img src="/api/attachments/700050/pic.png" /></p>',
+      });
+      await writeStoreA('700050', 'pic.png', 'bytes');
+      // A different page whose confluence_id equals this page's numeric id, so
+      // the key its children would store is ambiguous.
+      await createPage({
+        title: 'Decoy', source: 'confluence', confluenceId: String(id), spaceKey: 'CONF',
+      });
+
+      const res = await toLocal(id, '700050');
+
+      expect(res.statusCode).toBe(409);
+      const rows = await query('SELECT 1 FROM local_attachments WHERE page_id = $1', [id]);
+      expect(rows.rowCount).toBe(0);
+      // Empty because staging never started, not because it was cleaned up.
+      expect(await storeBFiles(id)).toEqual([]);
+      // The source bytes survive, so a retry after fixing the collision works.
+      expect(await storeAFiles('700050')).toEqual(['pic.png']);
+      expect((await getRow(id)).source).toBe('confluence');
     });
 
     it('treats a 404 from the upstream delete as success', async () => {

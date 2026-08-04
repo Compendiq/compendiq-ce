@@ -353,7 +353,16 @@ export const RelocatePageSchema = z.discriminatedUnion('target', [
      */
     confirmDeleteConfluencePage: z.object({
       confluenceId: z.string().min(1),
-      spaceKey: z.string().min(1),
+      /**
+       * Deliberately NOT `.min(1)`: `pages.space_key` is nullable (migration
+       * 029) and both the preview and the route encode that NULL as `''`, so
+       * an empty string here is the no-space encoding rather than an omission.
+       * A `.min(1)` rejects the body before the route can compare it, which
+       * makes a space-less Confluence row impossible to relocate at all. The
+       * confirmation's force comes from matching the live row, not from
+       * non-emptiness.
+       */
+      spaceKey: z.string(),
     }),
   }),
 ]);

@@ -268,6 +268,23 @@ describe('RelocateDialog — preview', () => {
     expect(row).toHaveTextContent(/Release Runbook/);
     expect(row).toHaveTextContent(/DEV/);
   });
+
+  it('names the missing space rather than leaving a hole in the sentence (#1169)', async () => {
+    // A Confluence row may legally have a NULL space_key, which the route
+    // encodes as `''` — rendered raw it reads "in space  is deleted".
+    givenPreview(() =>
+      confluencePreview({
+        spaceKey: null,
+        upstreamDeletion: { confluenceId: '98765432', spaceKey: '', title: 'Release Runbook' },
+      }),
+    );
+    renderDialog({ source: 'confluence', pageTitle: 'Release Runbook' });
+    await awaitPreview();
+
+    expect(screen.getByTestId('relocate-effect-upstream')).toHaveTextContent(
+      /in space \(no space\) is deleted in Confluence/,
+    );
+  });
 });
 
 describe('RelocateDialog — access change', () => {
@@ -496,6 +513,21 @@ describe('RelocateDialog — confirmation body', () => {
     const label = screen.getByTestId('relocate-ack-delete-label');
     expect(label).toHaveTextContent(/Release Runbook/);
     expect(label).toHaveTextContent(/DEV/);
+  });
+
+  it('names the missing space in the delete acknowledgement too (#1169)', async () => {
+    givenPreview(() =>
+      confluencePreview({
+        spaceKey: null,
+        upstreamDeletion: { confluenceId: '98765432', spaceKey: '', title: 'Release Runbook' },
+      }),
+    );
+    renderDialog({ source: 'confluence', pageTitle: 'Release Runbook' });
+    await awaitPreview();
+
+    expect(screen.getByTestId('relocate-ack-delete-label')).toHaveTextContent(
+      /from Confluence space \(no space\)\./,
+    );
   });
 });
 

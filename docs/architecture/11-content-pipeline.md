@@ -525,8 +525,8 @@ changes with it.
 
 - **local → Confluence.** Files are collected from Store A (numeric key)
   *and* Store B, uploaded to the new Confluence page with `updateAttachment()`,
-  and written into Store A under the new `confluence_id`. Every `<img src>` /
-  `<a href>` is normalised onto `/api/attachments/…` and tagged with
+  and written into Store A under the new `confluence_id`. Every `<img src>` is
+  normalised onto `/api/attachments/…` and tagged with
   `data-confluence-filename` **before** `htmlToConfluence()` runs: its selector
   is `img[src^="/api/attachments/"]`, so a Store B image that skipped this step
   would survive into storage format as a raw `<img>` pointing at a route
@@ -547,6 +547,29 @@ Bytes are always **copied** before the transaction commits, and the old
 directory is removed only afterwards, best-effort. A filesystem operation
 cannot join a database transaction, so the split is deliberate: the worst case
 is an orphaned directory, never a missing image.
+
+**Anchors are re-keyed too, not just images** — `<a href="/api/attachments/…">`
+is a live case, not a defensive one (#1169). The Markdown import (#1133)
+produces one whenever a link targets an internal attachment URL: `href`
+survives `markdownToHtml` and DOMPurify verbatim, and `htmlToConfluence`
+*preserves* the anchor rather than converting it, so it round-trips through
+`body_storage` intact. Since a move stages the bytes under the new key and then
+deletes the old directory, an un-rewritten anchor is a dead link. Only images
+are *marked* for publish (`data-confluence-filename`), because only
+`img[src^="/api/attachments/"]` becomes an `ri:attachment`; an anchor's href
+therefore reaches Confluence as a raw internal URL, which is imperfect and
+pre-dates #1164. Confluence's own attachment links arrive as
+`<a href="#confluence-attachment:…">` and never match the prefix, so they are
+left alone.
+
+Hidden entries in a Store A directory are skipped rather than migrated (#1169).
+No write path in either store can create one, so a dot-named file is always
+foreign — `.DS_Store`, an AppleDouble sidecar, an rsync temp file — and reading
+it used to fail the entire move. A `local_attachments` row naming an unstorable
+file is a different case: it is a record the app claims to own, so the move
+refuses with a `400` that names the file rather than dropping it silently. The
+two stores disagree on what is storable (the cache rejects NUL bytes, the local
+store caps at 255 characters), so a move checks a filename against **both**.
 
 See [`08-flow-sync.md`](./08-flow-sync.md) for where this hooks into the
 sync pipeline.

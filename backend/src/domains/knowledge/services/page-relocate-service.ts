@@ -55,9 +55,12 @@ import {
   writeAttachmentCacheAt,
   removeAttachmentDirectory,
   getMimeType,
+  isStorableAttachmentFilename,
 } from '../../confluence/services/attachment-handler.js';
 import {
+  canStoreLocalFilename,
   listLocalAttachmentsForRelocate,
+  removeLocalAttachmentFilesForRelocate,
   writeLocalAttachmentFileForRelocate,
   localAttachmentsDir,
 } from '../../../core/services/local-attachment-service.js';
@@ -249,6 +252,23 @@ export function rewriteAttachmentRefs(
   const refs = new Map<string, RewrittenRef>();
   let changed = false;
 
+  /**
+   * Handles `img[src]` AND `a[href]`. The anchor arm looks defensive but is
+   * live (#1169): the Markdown import (#1133) produces one whenever a link
+   * targets an internal attachment URL — `markdownToHtml` and DOMPurify both
+   * keep `href` verbatim, and `htmlToConfluence` *preserves* the anchor rather
+   * than dropping it, so it round-trips into `body_storage` and back. On a move
+   * to local the bytes are staged under the new key and the old cache directory
+   * is then removed, so an anchor left on the old prefix is a dead link into a
+   * directory this very move deleted.
+   *
+   * Only images are marked for publish. `htmlToConfluence` converts nothing but
+   * `img[src^="/api/attachments/"]` into an `ri:attachment`, so an anchor's
+   * rewritten href survives to Confluence as a raw internal URL either way —
+   * imperfect, pre-dates #1164, and out of scope here. Confluence's own
+   * attachment links arrive as `<a href="#confluence-attachment:…">`, which
+   * never carries the prefix and is left alone by the prefix test below.
+   */
   const rewriteOne = (el: Element, attr: string): void => {
     const value = el.getAttribute(attr) ?? '';
     const matched = fromPrefixes.find((p) => value.startsWith(p));
@@ -339,7 +359,9 @@ async function readAttachmentBytes(
   if (cached) return cached;
   if (page.source !== 'standalone') return null;
   const row = (await listLocalAttachmentsForRelocate(page.id)).find((r) => r.filename === filename);
-  if (!row) return null;
+  // A null path is a row whose filename the store would refuse — unreadable by
+  // definition, and reported to the caller as a missing file (#1169).
+  if (!row || row.path === null) return null;
   try {
     return await fs.readFile(row.path);
   } catch {
@@ -430,6 +452,22 @@ async function relocateToConfluence(opts: {
   const claimedTargets = new Map<string, string>();
   const collisions: string[] = [];
   for (const local of await collectAttachmentFilenames(page)) {
+    // `listCachedAttachments` screens unstorable names out of the cache side,
+    // but the local side's filenames come from `local_attachments` rows — one
+    // written outside `localFilePath` still reaches the read below, where the
+    // store throws a bare `Error` that app.ts masks to "Internal Server Error".
+    // Refuse by name instead, so the response says which file to fix (#1169).
+    //
+    // BOTH rules apply: the move has to land the file in the Confluence cache
+    // *and* read it out of the local store, and the two disagree — the cache
+    // rejects NUL bytes, the local store caps at 255 characters. Asking only
+    // one let an over-long row warn past as "missing on disk" instead.
+    if (!isStorableAttachmentFilename(local) || !canStoreLocalFilename(local)) {
+      throw new RelocateError(
+        400,
+        `Attachment "${local}" cannot be moved: its filename is not one the attachment stores accept. Remove or rename it, then try again.`,
+      );
+    }
     const data = await readAttachmentBytes(page, local);
     if (data === null) {
       warnings.push(`Attachment "${local}" is referenced but missing on disk; it was not published.`);
@@ -619,17 +657,36 @@ async function relocateToLocal(opts: {
   // page's diagrams are fetched from `/api/local-attachments/<id>/…`, so leaving
   // them in the Confluence cache would break inline draw.io editing after the
   // move, and the cache's on-miss refetch has no upstream to fall back to.
+  //
+  // Staging happens BEFORE the transaction that inserts the matching
+  // `local_attachments` rows, so a rollback would otherwise leave the bytes
+  // behind — inert, but accumulating on every failed attempt. The transaction's
+  // failure path removes exactly these filenames (#1169 review); the loop below
+  // records them as it goes, so a throw part-way through still cleans up what
+  // it managed to write.
   const staged: Array<{ filename: string; contentType: string; size: number; sha: string }> = [];
-  for (const filename of await listCachedAttachments(oldConfluenceId)) {
-    const data = await readCachedAttachmentFile(oldConfluenceId, filename);
-    if (data === null) continue;
-    await writeLocalAttachmentFileForRelocate(page.id, filename, data);
-    staged.push({
-      filename,
-      contentType: getMimeType(filename),
-      size: data.length,
-      sha: createHash('sha256').update(data).digest('hex'),
-    });
+  /** Undo the staging. Safe to call more than once — `fs.rm` uses `force`. */
+  const discardStaged = () =>
+    removeLocalAttachmentFilesForRelocate(page.id, staged.map((s) => s.filename));
+  try {
+    for (const filename of await listCachedAttachments(oldConfluenceId)) {
+      const data = await readCachedAttachmentFile(oldConfluenceId, filename);
+      if (data === null) continue;
+      await writeLocalAttachmentFileForRelocate(page.id, filename, data);
+      // Recorded only after the write succeeds, so `staged` never names a file
+      // that is not on disk — and names every one that is.
+      staged.push({
+        filename,
+        contentType: getMimeType(filename),
+        size: data.length,
+        sha: createHash('sha256').update(data).digest('hex'),
+      });
+    }
+  } catch (err) {
+    // A throw mid-loop (a full disk, a permission change) leaves the files
+    // written so far with no row and no caller to claim them.
+    await discardStaged();
+    throw err;
   }
 
   const { html: rewrittenHtml } = rewriteAttachmentRefs(
@@ -726,6 +783,10 @@ async function relocateToLocal(opts: {
     await txClient.query('COMMIT');
   } catch (err) {
     await txClient.query('ROLLBACK').catch(() => undefined);
+    // The rows that would have owned these files never landed, so the bytes
+    // are unreferenced. Cleaning up here is what lets "nothing mutated" be a
+    // claim about the disk as well as the database (#1169 review).
+    await discardStaged();
     throw err;
   } finally {
     txClient.release();
@@ -745,6 +806,11 @@ async function relocateToLocal(opts: {
       // Provably still live: put everything back so neither side changed,
       // rather than leaving a duplicate for the next sync to import.
       await restorePreMoveState(snapshot, staged.map((s) => s.filename));
+      // `restorePreMoveState` drops the `local_attachments` rows; the bytes are
+      // this function's to remove, and after the restore nothing references
+      // them — the page is Confluence-sourced again and reads from the cache
+      // directory, which this path has not touched (#1169 review).
+      await discardStaged();
       throw err;
     }
   }

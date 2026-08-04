@@ -71,12 +71,27 @@ function localPageDir(pageId: number): string {
   return dir;
 }
 
-function localFilePath(pageId: number, filename: string): string {
+/**
+ * The rule {@link localFilePath} enforces, asked as a question. Callers that
+ * merely *found* a filename — a `local_attachments` row written outside this
+ * module — need to know before they resolve a path, because the throw carries
+ * no way to say which file was at fault (#1169).
+ *
+ * Deliberately **not** identical to the Confluence cache's
+ * `isStorableAttachmentFilename`: this store caps length, that one rejects NUL
+ * bytes. A filename moving between the two stores must satisfy both, so
+ * relocate asks both rather than picking one.
+ */
+export function canStoreLocalFilename(filename: string): boolean {
   const safe = path.basename(filename);
-  if (!safe || safe.startsWith('.') || safe.length > 255) {
+  return Boolean(safe) && !safe.startsWith('.') && safe.length <= 255;
+}
+
+function localFilePath(pageId: number, filename: string): string {
+  if (!canStoreLocalFilename(filename)) {
     throw new LocalAttachmentError('INVALID_FILENAME', 'Filename is empty, hidden, or too long');
   }
-  return path.join(localPageDir(pageId), safe);
+  return path.join(localPageDir(pageId), path.basename(filename));
 }
 
 function mapRow(r: {
@@ -280,10 +295,15 @@ export async function listLocalAttachments(
  * access), and it must be able to migrate the attachments of a page it is in
  * the act of flipping to `source='confluence'` — a state the gate rejects by
  * design. Not exported through any route; callers must have authorised first.
+ *
+ * `path` is null for a row this store would refuse to write — one inserted
+ * outside {@link localFilePath}, e.g. by hand. Throwing instead would take down
+ * the caller (and the relocate preview behind it) with an error that cannot
+ * name the offending file; a null hands that decision back (#1169).
  */
 export async function listLocalAttachmentsForRelocate(
   pageId: number,
-): Promise<Array<{ filename: string; contentType: string; path: string }>> {
+): Promise<Array<{ filename: string; contentType: string; path: string | null }>> {
   const res = await query<{ filename: string; content_type: string }>(
     'SELECT filename, content_type FROM local_attachments WHERE page_id = $1 ORDER BY filename',
     [pageId],
@@ -291,7 +311,7 @@ export async function listLocalAttachmentsForRelocate(
   return res.rows.map((r) => ({
     filename: r.filename,
     contentType: r.content_type,
-    path: localFilePath(pageId, r.filename),
+    path: canStoreLocalFilename(r.filename) ? localFilePath(pageId, r.filename) : null,
   }));
 }
 
@@ -313,6 +333,32 @@ export async function writeLocalAttachmentFileForRelocate(
   const filePath = localFilePath(pageId, filename);
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(filePath, data);
+}
+
+/**
+ * Undo {@link writeLocalAttachmentFileForRelocate} for named files.
+ *
+ * A Confluence→local move stages bytes *before* the transaction that inserts
+ * their `local_attachments` rows, so a transaction that rolls back leaves the
+ * files behind (#1169 review). Removing exactly the filenames the move staged —
+ * rather than the whole directory — is what makes this safe to call on a
+ * failure path: it cannot touch a file some other writer put there.
+ *
+ * Best-effort and never throws. The caller is already unwinding, and an
+ * orphaned file is inert: nothing in the database references it, and a retry
+ * overwrites it by name. Losing the real error to a cleanup failure would be
+ * strictly worse.
+ */
+export async function removeLocalAttachmentFilesForRelocate(
+  pageId: number,
+  filenames: string[],
+): Promise<void> {
+  await Promise.all(
+    filenames.map(async (filename) => {
+      if (!canStoreLocalFilename(filename)) return;
+      await fs.rm(localFilePath(pageId, filename), { force: true }).catch(() => undefined);
+    }),
+  );
 }
 
 /** Absolute directory holding a page's local attachments (#1123 relocate cleanup). */

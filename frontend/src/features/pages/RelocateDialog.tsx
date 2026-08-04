@@ -154,6 +154,22 @@ function Count({ children }: { children: React.ReactNode }) {
 }
 
 /**
+ * A Confluence space key in the upstream-deletion sentences.
+ *
+ * `pages.space_key` is nullable, and the route encodes that NULL as `''` all
+ * the way through the preview and the confirmation body. Rendered raw it
+ * leaves a blank where the space name belongs — "in space  is deleted" — so
+ * name the absence instead (#1169).
+ */
+function SpaceKeyName({ spaceKey }: { spaceKey: string }) {
+  return spaceKey ? (
+    <span className="font-mono">{spaceKey}</span>
+  ) : (
+    <span className="italic text-muted-foreground">(no space)</span>
+  );
+}
+
+/**
  * The one row that has to explain something a count cannot: children keep
  * their own space and path while their `parent_id` now points across the
  * boundary, so they stay in the origin tree with their parent no longer in it.
@@ -246,7 +262,7 @@ function ConsequenceLedger({ preview, target }: { preview: RelocatePreview; targ
           value={
             <>
               “{upstreamDeletion.title}” in space{' '}
-              <span className="font-mono">{upstreamDeletion.spaceKey}</span> is deleted in Confluence
+              <SpaceKeyName spaceKey={upstreamDeletion.spaceKey} /> is deleted in Confluence
             </>
           }
           detail="Everyone in Confluence loses the page. This cannot be undone from Compendiq."
@@ -750,7 +766,7 @@ export function RelocateDialog({ open, pageId, pageTitle, source, onClose }: Rel
                         />
                         <span className="text-sm text-foreground" data-testid="relocate-ack-delete-label">
                           Delete “{upstream.title}” from Confluence space{' '}
-                          <span className="font-mono">{upstream.spaceKey}</span>. Everyone in Confluence
+                          <SpaceKeyName spaceKey={upstream.spaceKey} />. Everyone in Confluence
                           loses the page.
                         </span>
                       </label>
