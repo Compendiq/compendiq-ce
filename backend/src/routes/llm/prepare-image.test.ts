@@ -25,7 +25,10 @@ vi.mock('../../core/services/image-staging.js', async (importOriginal) => {
 import { prepareImageRoutes } from './prepare-image.js';
 import { createMultipartPayload } from '../../core/services/test-document-fixtures.js';
 import { buildPng, buildJpeg, SVG_BYTES } from '../../core/services/test-image-fixtures.js';
-import { ImageStagingUnavailableError } from '../../core/services/image-staging.js';
+import {
+  ImageStagingUnavailableError,
+  ImageStagingCapacityError,
+} from '../../core/services/image-staging.js';
 import { MAX_IMAGE_BYTES } from '../../core/services/image-validator.js';
 
 const HANDLE = 'a'.repeat(64);
@@ -130,6 +133,28 @@ describe('POST /llm/prepare-image', () => {
     const app = await startApp();
     const res = await post(app, 'shot.png', buildPng(8, 8));
     expect(res.statusCode).toBe(503);
+  });
+
+  /**
+   * #1183. Redis near its `maxmemory` degrades this feature rather than taking
+   * out job enqueue for the whole app, so the refusal has to reach the user as
+   * a retryable 503 carrying the reason — the composer toasts `message`
+   * verbatim.
+   */
+  it('returns 503 with the capacity reason when Redis has no headroom', async () => {
+    mockStageImage.mockRejectedValue(new ImageStagingCapacityError());
+    const app = await startApp();
+    const res = await post(app, 'shot.png', buildPng(8, 8));
+    expect(res.statusCode).toBe(503);
+    expect(res.json().message).toMatch(/memory limit/i);
+    expect(mockLogAuditEvent).not.toHaveBeenCalled();
+  });
+
+  it('rethrows an unrecognised staging failure rather than reporting 503', async () => {
+    mockStageImage.mockRejectedValue(new Error('boom'));
+    const app = await startApp();
+    const res = await post(app, 'shot.png', buildPng(8, 8));
+    expect(res.statusCode).toBe(500);
   });
 
   it('audits a successful staging without logging bytes', async () => {

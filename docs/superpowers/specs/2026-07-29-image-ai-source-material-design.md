@@ -112,16 +112,20 @@ evicts that user's previous one — `pruneOlderStagedImages` runs a
 not a nicety: the deployed Redis is shared with BullMQ, the LLM response cache
 and the embedding locks, and runs `--maxmemory 256mb --maxmemory-policy
 noeviction` — a full instance rejects **writes**, so unbounded staging is an
-application-wide job-enqueue outage, not merely wasted memory. At 10 MB per
-image and the `llmEmbedding` rate limit, an uncapped namespace reaches that
-ceiling in a few minutes of deliberate uploading. Since the design already
+application-wide job-enqueue outage, not merely wasted memory. At the original
+10 MB per image and the `llmEmbedding` rate limit, an uncapped namespace reached
+that ceiling in a few minutes of deliberate uploading. Since the design already
 commits to exactly one image per request and the composer shows a single
 preview, a depth of 1 costs nothing the feature promises. For the same reason
 the value is the raw bytes behind a short ASCII format header
 (`<format>\n<bytes>`), not base64 inside JSON: ~25% less memory and none of the
-encode/decode/re-encode passes over up to 10 MB. A stored value that does not
-parse — a legacy JSON entry, a truncated write — reads as a **miss** (410
+encode/decode/re-encode passes over the whole image. A stored value that does
+not parse — a legacy JSON entry, a truncated write — reads as a **miss** (410
 "attach it again"), never a 500.
+
+Per-user depth alone is a mitigation rather than a bound; **#1183** added the
+`INFO memory` pre-flight and cut `MAX_IMAGE_BYTES` to 5 MB. See "Known residual
+risks" below.
 
 ### Contracts
 
@@ -382,7 +386,9 @@ expands.
 
 **Ceilings: 10 MB and 4096×4096**, below the documents' 20 MB because base64
 inflates the payload ~1.37× and it lands in a prompt. A 12 MP phone photo
-(4032×3024) fits.
+(4032×3024) fits. *(#1183 lowered the byte ceiling to 5 MB and kept 4096: only
+bytes bound memory, and a 4096×4096 WebP or JPEG is well under 5 MB. A 12 MP
+photo still fits in any lossy format.)*
 
 **Client-side downscale.** The frontend resizes before upload via
 `createImageBitmap(blob, { imageOrientation: 'from-image' })` and a canvas
@@ -478,13 +484,32 @@ Surfaced by the whole-branch review and its fix wave, and verified to be real.
 None blocks the backend PR; all are recorded so nobody rediscovers them as
 mysteries.
 
-**Redis capacity is mitigated, not bounded.** The per-user cap moves the ceiling
-from *uploads × 10 MB* to *users × 10 MB*. A deployment where ~26 or more people
-stage an image inside the same 15-minute window can still fill the shipped
-`--maxmemory 256mb`, and that Redis is `noeviction` and shared with BullMQ, so
-exhaustion fails *writes* app-wide rather than degrading a cache. Raising
-`--maxmemory` or lowering `MAX_IMAGE_BYTES` is an operational decision and was
-deliberately left to the operator.
+**Redis capacity is mitigated, not bounded.** *(Resolved by #1183 — kept because
+the reasoning is why the fix is shaped the way it is.)* The per-user cap moved
+the ceiling from *uploads × 10 MB* to *users × 10 MB*. A deployment where ~26 or
+more people stage an image inside the same 15-minute window could still fill the
+shipped `--maxmemory 256mb`, and that Redis is `noeviction` and shared with
+BullMQ, so exhaustion failed *writes* app-wide rather than degrading a cache.
+This spec left raising `--maxmemory` or lowering `MAX_IMAGE_BYTES` to the
+operator; #1183 concluded that leaving an app-wide outage as an unstated
+operational assumption was the wrong call and closed it in the app:
+
+- `stageImage` pre-flights the write against `INFO memory` and answers **503**
+  when `used_memory + incoming` would exceed `IMAGE_STAGING_MAX_REDIS_PERCENT`
+  (default 80) of `maxmemory`. Nothing is written, the co-tenants keep their
+  headroom, and the message names the 15-minute expiry so the wait is
+  actionable. Exhaustion now degrades this feature instead of job enqueue.
+- The check **fails open** — `maxmemory: 0` (unlimited), an unreadable reply, or
+  an `INFO` that is renamed/ACL-blocked all proceed — because an unreadable
+  reply is not evidence of pressure, and the write is its own backstop: a full
+  `noeviction` instance refuses the `SET` with `OOM`, which maps to the same
+  503 rather than a 500.
+- `MAX_IMAGE_BYTES` is now **5 MB**, halving both the per-user Redis ceiling and
+  the base64 heap cost noted below. `MAX_IMAGE_DIMENSION` stays 4096 — only
+  bytes are a memory bound, and 4096 is still reachable in WebP/JPEG.
+
+Full reasoning, including why there is no cache on the check and no separate
+staged-bytes counter, is in ADR-021's `#1183` paragraphs.
 
 **Two concurrent uploads by one user are resolved by repair, not by a lock.**
 If each prune's `SCAN` runs before the other's `DEL`, both handles would be

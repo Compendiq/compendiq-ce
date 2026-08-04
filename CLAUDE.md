@@ -159,6 +159,20 @@ is probed with a known-content image, never declared, because neither the OpenAI
 cannot inspect pixels, so prompt injection rendered as an image is an accepted, documented
 risk (ADR-021's `#1154` amendment) — not something this path mitigates.
 
+**That Redis is shared and `noeviction`, so staging is capacity-gated (#1183).** A full
+instance rejects *writes* — BullMQ enqueue included — so `stageImage` reads `INFO memory`
+first and answers **503** when the write would take Redis past
+`IMAGE_STAGING_MAX_REDIS_PERCENT` (default 80) of `maxmemory`: the image feature degrades
+instead of sync, re-embed, summary and quality all failing to enqueue. The check **fails
+open** — `maxmemory: 0`, an unreadable reply, or an `INFO` that a hardened deployment has
+renamed all proceed — because the write is its own backstop: an `OOM` reply from the `SET`
+maps to the same 503. Don't add a cache in front of it (a stale "there is room" admits every
+upload in the window on one reading) and don't replace it with a staged-bytes counter (a TTL
+expiry can't decrement one, so it drifts up until the feature wedges). `MAX_IMAGE_BYTES` is
+**5 MB** and is the only *memory* ceiling; `MAX_IMAGE_DIMENSION` stays **4096** on purpose —
+dimensions bound what the model looks at, not what Redis holds, and 4096 is still reachable
+in WebP/JPEG. Both are pinned by tests, so moving either is a deliberate capacity decision.
+
 **The frontend half normalises before it stages.** `shared/lib/downscale-image.ts`
 re-encodes **every** attached image — not only oversized ones — to **WebP within a 1568px
 longest edge**, so the server never sees anything else and most of its rejections

@@ -14,7 +14,7 @@
 /**
  * Ceiling on the *source* file, checked before any decode.
  *
- * Not the same thing as the backend's `MAX_IMAGE_BYTES` (10 MB), which bounds the
+ * Not the same thing as the backend's `MAX_IMAGE_BYTES` (5 MB), which bounds the
  * staged bytes *after* downscaling. This one exists because decoding is where the
  * memory goes: a 20000x20000 PNG is tens of KB compressed and ~1.6 GB decoded,
  * enough to kill the tab. 30 MB is generous for a raw 5K screenshot or a phone

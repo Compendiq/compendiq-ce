@@ -997,6 +997,20 @@ Migrations run automatically on startup. If a migration fails:
 
 ### High memory usage
 
-- Redis is configured with `maxmemory 256mb` and `allkeys-lru` eviction by default.
+- Redis is configured with `maxmemory 256mb` and **`noeviction`** by default —
+  BullMQ requires it, so a full instance rejects *writes* rather than evicting.
+  That means Redis running out of memory stops job enqueue (sync, re-embed,
+  summary, quality), not just caching. Watch `used_memory` against `maxmemory`
+  in `redis-cli INFO memory`.
 - Reduce `QUALITY_BATCH_SIZE` and `SUMMARY_BATCH_SIZE` to lower worker memory usage.
 - Consider increasing Docker container memory limits for the backend if processing large articles.
+
+**Users report "Image staging is temporarily unavailable … near its memory
+limit".** That is the deliberate guard from issue #1183, not a fault: images
+attached to AI Generate/Improve are staged in Redis for 15 minutes (at most 5 MB
+each, one per user), and staging is refused once the write would take Redis
+above `IMAGE_STAGING_MAX_REDIS_PERCENT` (default 80) of `maxmemory`. The image
+feature degrades so that background processing keeps working. It clears on its
+own as staged entries expire. If it recurs, raise Redis `--maxmemory` in
+`docker/docker-compose.yml` (and `REDIS_MEM_LIMIT` above it) rather than raising
+the percentage — the remaining fifth is the headroom the queues write into.

@@ -6,6 +6,31 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
  * kept strings would hide exactly the mangling that mapping exists to prevent.
  */
 const store = new Map<string, Buffer>();
+
+const MAXMEMORY_256MB = 256 * 1024 * 1024;
+
+/**
+ * A realistic `INFO memory` reply. The decoy lines are the point: `maxmemory`
+ * shares its prefix with `maxmemory_human`, `maxmemory_policy` and
+ * `maxmemory_clients`, and `used_memory` with `used_memory_rss` — a substring
+ * match would read the wrong number and silently mis-size the ceiling.
+ */
+function memoryInfo({ used, max }: { used: number; max: number }): string {
+  return [
+    '# Memory',
+    `used_memory:${used}`,
+    'used_memory_human:1.00M',
+    `used_memory_rss:${used * 3}`,
+    `maxmemory:${max}`,
+    'maxmemory_human:256.00M',
+    'maxmemory_clients:0',
+    'maxmemory_policy:noeviction',
+    '',
+  ].join('\r\n');
+}
+
+let infoReply = memoryInfo({ used: 1024 * 1024, max: MAXMEMORY_256MB });
+
 const mockRedis = {
   set: vi.fn(async (k: string, v: Buffer) => { store.set(k, v); return 'OK'; }),
   get: vi.fn(async (k: string) => store.get(k) ?? null),
@@ -18,6 +43,7 @@ const mockRedis = {
     return { cursor: 0, keys: [...store.keys()].filter((k) => k.startsWith(prefix)) };
   }),
   exists: vi.fn(async (k: string) => (store.has(k) ? 1 : 0)),
+  info: vi.fn(async (_section: string) => infoReply),
   withTypeMapping: vi.fn(() => mockRedis),
 };
 let redisAvailable = true;
@@ -33,8 +59,11 @@ vi.mock('../utils/logger.js', () => ({
 import {
   stageImage,
   loadStagedImage,
+  parseRedisMemory,
   STAGED_IMAGE_TTL_SECONDS,
+  DEFAULT_MAX_REDIS_PERCENT,
   ImageStagingUnavailableError,
+  ImageStagingCapacityError,
 } from './image-staging.js';
 import { buildPng } from './test-image-fixtures.js';
 
@@ -44,7 +73,10 @@ beforeEach(() => {
   mockRedis.del.mockClear();
   mockRedis.scan.mockClear();
   mockRedis.exists.mockClear();
+  mockRedis.info.mockClear();
+  infoReply = memoryInfo({ used: 1024 * 1024, max: MAXMEMORY_256MB });
   redisAvailable = true;
+  vi.unstubAllEnvs();
 });
 
 describe('image staging', () => {
@@ -84,7 +116,7 @@ describe('image staging', () => {
   });
 
   /**
-   * Base64-in-JSON cost ~1.34x the raw size and three passes over up to 10 MB.
+   * Base64-in-JSON cost ~1.34x the raw size and three passes over the image.
    * The stored value is now the bytes plus a short ASCII format header.
    */
   it('stores the raw bytes, not base64', async () => {
@@ -232,5 +264,138 @@ describe('concurrent uploads from one user', () => {
     mockRedis.exists.mockRejectedValueOnce(new Error('READONLY'));
     const handle = await stageImage('u1', buildPng(8, 8), 'png');
     expect(handle).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
+describe('parseRedisMemory', () => {
+  it('reads used_memory and maxmemory, not their prefixed neighbours', () => {
+    const parsed = parseRedisMemory(memoryInfo({ used: 12345, max: MAXMEMORY_256MB }));
+    expect(parsed).toEqual({ usedMemory: 12345, maxMemory: MAXMEMORY_256MB });
+  });
+
+  it('reads a reply with bare LF line endings', () => {
+    const parsed = parseRedisMemory('# Memory\nused_memory:5\nmaxmemory:10\n');
+    expect(parsed).toEqual({ usedMemory: 5, maxMemory: 10 });
+  });
+
+  it.each([
+    ['an empty reply', ''],
+    ['a reply with no maxmemory line', '# Memory\r\nused_memory:5\r\n'],
+    ['a reply with no used_memory line', '# Memory\r\nmaxmemory:10\r\n'],
+    ['a non-numeric value', '# Memory\r\nused_memory:abc\r\nmaxmemory:10\r\n'],
+  ])('returns null for %s', (_label, reply) => {
+    expect(parseRedisMemory(reply)).toBeNull();
+  });
+});
+
+/**
+ * #1183. The per-user cap above bounds the namespace to `users x
+ * MAX_IMAGE_BYTES`, which is a mitigation but not a bound — enough people
+ * staging inside one TTL window still fills a 256 MB `noeviction` instance,
+ * and a full instance rejects *writes* for BullMQ too. So the write is
+ * pre-flighted against `INFO memory` and refused before it can be the thing
+ * that fills Redis.
+ */
+describe('Redis memory pre-flight', () => {
+  const png = buildPng(8, 8);
+
+  it('stages normally when there is headroom', async () => {
+    const handle = await stageImage('u1', png, 'png');
+    expect(await loadStagedImage('u1', handle)).not.toBeNull();
+    expect(mockRedis.info).toHaveBeenCalledWith('memory');
+  });
+
+  it('refuses and writes nothing when the instance is past the threshold', async () => {
+    infoReply = memoryInfo({ used: MAXMEMORY_256MB * 0.95, max: MAXMEMORY_256MB });
+    await expect(stageImage('u1', png, 'png')).rejects.toBeInstanceOf(ImageStagingCapacityError);
+    expect(mockRedis.set).not.toHaveBeenCalled();
+  });
+
+  it('names the wait and the operator remedy in the refusal', async () => {
+    infoReply = memoryInfo({ used: MAXMEMORY_256MB, max: MAXMEMORY_256MB });
+    await expect(stageImage('u1', png, 'png')).rejects.toThrow(/15 minutes/);
+    await expect(stageImage('u1', png, 'png')).rejects.toThrow(/maxmemory/);
+  });
+
+  /**
+   * The bytes about to be written count towards the projection — otherwise an
+   * instance sitting just under the threshold accepts the very write that
+   * crosses it, which is the whole failure being prevented.
+   */
+  it('counts the incoming bytes, not just what is already used', async () => {
+    const big = Buffer.concat([png, Buffer.alloc(4 * 1024 * 1024, 0x00)]);
+    const ceiling = MAXMEMORY_256MB * (DEFAULT_MAX_REDIS_PERCENT / 100);
+    infoReply = memoryInfo({ used: Math.floor(ceiling) - 1024, max: MAXMEMORY_256MB });
+
+    await expect(stageImage('u1', big, 'png')).rejects.toBeInstanceOf(ImageStagingCapacityError);
+    // The same instance state accepts a write that actually fits.
+    await expect(stageImage('u1', png, 'png')).resolves.toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  /**
+   * `maxmemory:0` is Redis for "no limit". There is nothing to be near the top
+   * of, and refusing would break every deployment that runs Redis uncapped.
+   */
+  it('stages when maxmemory is unset', async () => {
+    infoReply = memoryInfo({ used: 8 * 1024 * 1024 * 1024, max: 0 });
+    await expect(stageImage('u1', png, 'png')).resolves.toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  /**
+   * Fail OPEN, deliberately. `INFO` is renamed or ACL-blocked on plenty of
+   * hardened and managed Redis deployments, and an unreadable reply is not
+   * evidence that memory is short — failing closed would make the feature
+   * permanently 503 on an instance that is perfectly healthy. The write itself
+   * is the backstop: a genuinely full `noeviction` instance refuses the SET
+   * with `OOM`, which is caught below.
+   */
+  it('stages when INFO is unparseable', async () => {
+    infoReply = 'ERR unknown command';
+    await expect(stageImage('u1', png, 'png')).resolves.toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('stages when INFO itself fails', async () => {
+    mockRedis.info.mockRejectedValueOnce(new Error('ERR unknown command `info`'));
+    await expect(stageImage('u1', png, 'png')).resolves.toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  /**
+   * The backstop for every fail-open path above: Redis refused the write, so
+   * nothing was stored and nothing else was displaced. That must read as the
+   * same "come back later" 503 as the pre-flight, not as a 500.
+   */
+  it('maps an OOM rejection from the write itself to the capacity error', async () => {
+    mockRedis.set.mockRejectedValueOnce(
+      new Error("OOM command not allowed when used memory > 'maxmemory'."),
+    );
+    await expect(stageImage('u1', png, 'png')).rejects.toBeInstanceOf(ImageStagingCapacityError);
+  });
+
+  it('does not swallow an unrelated write failure', async () => {
+    mockRedis.set.mockRejectedValueOnce(new Error('READONLY You can\'t write against a replica.'));
+    await expect(stageImage('u1', png, 'png')).rejects.toThrow(/READONLY/);
+  });
+
+  describe('IMAGE_STAGING_MAX_REDIS_PERCENT', () => {
+    it('honours a lower threshold', async () => {
+      vi.stubEnv('IMAGE_STAGING_MAX_REDIS_PERCENT', '25');
+      infoReply = memoryInfo({ used: MAXMEMORY_256MB * 0.5, max: MAXMEMORY_256MB });
+      await expect(stageImage('u1', png, 'png')).rejects.toBeInstanceOf(ImageStagingCapacityError);
+    });
+
+    it('honours a higher threshold', async () => {
+      vi.stubEnv('IMAGE_STAGING_MAX_REDIS_PERCENT', '99');
+      infoReply = memoryInfo({ used: MAXMEMORY_256MB * 0.9, max: MAXMEMORY_256MB });
+      await expect(stageImage('u1', png, 'png')).resolves.toMatch(/^[0-9a-f]{64}$/);
+    });
+
+    it.each([['garbage'], ['0'], ['-10'], ['101'], ['']])(
+      'falls back to the default for %s', async (raw) => {
+        vi.stubEnv('IMAGE_STAGING_MAX_REDIS_PERCENT', raw);
+        infoReply = memoryInfo({ used: MAXMEMORY_256MB * 0.9, max: MAXMEMORY_256MB });
+        await expect(stageImage('u1', png, 'png'))
+          .rejects.toBeInstanceOf(ImageStagingCapacityError);
+      },
+    );
   });
 });

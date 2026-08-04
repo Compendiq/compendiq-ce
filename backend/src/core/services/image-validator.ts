@@ -12,7 +12,33 @@ import { SUPPORTED_IMAGE_FORMATS, type ImageFormat } from '@compendiq/contracts'
  * payload ~1.37x and the result lands in a prompt.
  */
 
-export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+/**
+ * Ceiling on the staged bytes, and the only one of the two constants here that
+ * is a *memory* bound (#1183).
+ *
+ * 5 MB, not 10: the staged entry lives in a Redis shared with BullMQ under
+ * `noeviction`, and `resolveImagePart` base64-inflates it ~1.37x for the whole
+ * stream — roughly two copies during dispatch, times the per-user SSE cap. At
+ * 5 MB that is ~21 MB of heap per actively-streaming user rather than ~41 MB.
+ * The number is also the smallest per-image limit any mainstream vision API
+ * accepts, so a larger payload is one at least some providers refuse anyway.
+ *
+ * The UI never approaches it: `downscale-image.ts` re-encodes every attachment
+ * to WebP within a 1568px edge, which lands one to two orders of magnitude
+ * below. This binds direct API callers.
+ */
+export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+
+/**
+ * Ceiling on declared dimensions. Deliberately did NOT move with
+ * `MAX_IMAGE_BYTES`: dimensions bound what the model is asked to look at,
+ * bytes bound what Redis holds, and only the second is a capacity question.
+ * 4096 stays reachable in the formats this feature actually uses — a 4096x4096
+ * WebP or JPEG is comfortably under 5 MB — so cutting it would refuse 4K
+ * screenshots from direct API callers while saving nothing. It is lossless PNG
+ * at full dimensions that meets the byte ceiling first, which is why the 413
+ * names re-encoding as the remedy.
+ */
 export const MAX_IMAGE_DIMENSION = 4096;
 
 export type ImageValidationErrorKind = 'mediaType' | 'unprocessable';
