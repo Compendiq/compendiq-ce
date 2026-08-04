@@ -226,6 +226,73 @@ describe('useKeyboardShortcuts', () => {
     document.body.removeChild(dialog);
   });
 
+  // -- defaultPrevented: another handler already claimed the keystroke --
+  //
+  // The behavioural case (a real Radix layer dismissing from a capture
+  // listener, with the fiber unmounted before this hook runs) lives in
+  // `use-keyboard-shortcuts.default-prevented.test.tsx`. These are the plain
+  // contract: the flag alone decides, no layer required.
+
+  it('does not fire a single-key shortcut when the event is already defaultPrevented', () => {
+    const shortcuts: ShortcutDefinition[] = [
+      { key: 'Escape', keys: ['Escape'], description: 'Exit edit mode', category: 'editor', action: actionFn },
+    ];
+
+    renderHook(() => useKeyboardShortcuts(shortcuts));
+
+    const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    event.preventDefault();
+    document.dispatchEvent(event);
+
+    expect(actionFn).not.toHaveBeenCalled();
+  });
+
+  it('still fires a modifier shortcut when the event is already defaultPrevented', () => {
+    const shortcuts: ShortcutDefinition[] = [
+      { key: 'Ctrl+S', keys: ['s'], mod: true, description: 'Save', category: 'editor', action: actionFn },
+    ];
+
+    renderHook(() => useKeyboardShortcuts(shortcuts));
+
+    const event = new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true, cancelable: true });
+    event.preventDefault();
+    document.dispatchEvent(event);
+
+    expect(actionFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('still fires an alt shortcut when the event is already defaultPrevented', () => {
+    const shortcuts: ShortcutDefinition[] = [
+      { key: 'Alt+I', keys: ['i'], alt: true, description: 'AI Assistant', category: 'actions', action: actionFn },
+    ];
+
+    renderHook(() => useKeyboardShortcuts(shortcuts));
+
+    const event = new KeyboardEvent('keydown', { key: 'i', altKey: true, bubbles: true, cancelable: true });
+    event.preventDefault();
+    document.dispatchEvent(event);
+
+    expect(actionFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not blur a native input on Escape once the keystroke is claimed', () => {
+    // Pre-existing behaviour, pinned because the comment describing it was
+    // wrong before this change: the dismissing layer restores focus itself.
+    renderHook(() => useKeyboardShortcuts([]));
+
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    input.focus();
+
+    const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    event.preventDefault();
+    input.dispatchEvent(event);
+
+    expect(document.activeElement).toBe(input);
+
+    document.body.removeChild(input);
+  });
+
   it('does not fire single-key shortcut when singleKeyEnabled is false', () => {
     const shortcuts: ShortcutDefinition[] = [
       { key: ',', keys: [','], description: 'Toggle left', category: 'panels', action: actionFn },
