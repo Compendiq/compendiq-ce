@@ -60,6 +60,7 @@ import {
 import {
   canStoreLocalFilename,
   listLocalAttachmentsForRelocate,
+  removeLocalAttachmentFilesForRelocate,
   writeLocalAttachmentFileForRelocate,
   localAttachmentsDir,
 } from '../../../core/services/local-attachment-service.js';
@@ -649,22 +650,35 @@ async function relocateToLocal(opts: {
   // them in the Confluence cache would break inline draw.io editing after the
   // move, and the cache's on-miss refetch has no upstream to fall back to.
   //
-  // A failure part-way through leaves the already-staged files on disk. They
-  // are deliberately not cleaned up: nothing in the database references them,
-  // the `local_attachments` rows are only written inside the transaction, and a
-  // retry overwrites them by name. "Nothing mutated" is a claim about the DB,
-  // not about the disk (#1169).
+  // Staging happens BEFORE the transaction that inserts the matching
+  // `local_attachments` rows, so a rollback would otherwise leave the bytes
+  // behind — inert, but accumulating on every failed attempt. The transaction's
+  // failure path removes exactly these filenames (#1169 review); the loop below
+  // records them as it goes, so a throw part-way through still cleans up what
+  // it managed to write.
   const staged: Array<{ filename: string; contentType: string; size: number; sha: string }> = [];
-  for (const filename of await listCachedAttachments(oldConfluenceId)) {
-    const data = await readCachedAttachmentFile(oldConfluenceId, filename);
-    if (data === null) continue;
-    await writeLocalAttachmentFileForRelocate(page.id, filename, data);
-    staged.push({
-      filename,
-      contentType: getMimeType(filename),
-      size: data.length,
-      sha: createHash('sha256').update(data).digest('hex'),
-    });
+  /** Undo the staging. Safe to call more than once — `fs.rm` uses `force`. */
+  const discardStaged = () =>
+    removeLocalAttachmentFilesForRelocate(page.id, staged.map((s) => s.filename));
+  try {
+    for (const filename of await listCachedAttachments(oldConfluenceId)) {
+      const data = await readCachedAttachmentFile(oldConfluenceId, filename);
+      if (data === null) continue;
+      await writeLocalAttachmentFileForRelocate(page.id, filename, data);
+      // Recorded only after the write succeeds, so `staged` never names a file
+      // that is not on disk — and names every one that is.
+      staged.push({
+        filename,
+        contentType: getMimeType(filename),
+        size: data.length,
+        sha: createHash('sha256').update(data).digest('hex'),
+      });
+    }
+  } catch (err) {
+    // A throw mid-loop (a full disk, a permission change) leaves the files
+    // written so far with no row and no caller to claim them.
+    await discardStaged();
+    throw err;
   }
 
   const { html: rewrittenHtml } = rewriteAttachmentRefs(
@@ -761,6 +775,10 @@ async function relocateToLocal(opts: {
     await txClient.query('COMMIT');
   } catch (err) {
     await txClient.query('ROLLBACK').catch(() => undefined);
+    // The rows that would have owned these files never landed, so the bytes
+    // are unreferenced. Cleaning up here is what lets "nothing mutated" be a
+    // claim about the disk as well as the database (#1169 review).
+    await discardStaged();
     throw err;
   } finally {
     txClient.release();
@@ -780,6 +798,11 @@ async function relocateToLocal(opts: {
       // Provably still live: put everything back so neither side changed,
       // rather than leaving a duplicate for the next sync to import.
       await restorePreMoveState(snapshot, staged.map((s) => s.filename));
+      // `restorePreMoveState` drops the `local_attachments` rows; the bytes are
+      // this function's to remove, and after the restore nothing references
+      // them — the page is Confluence-sourced again and reads from the cache
+      // directory, which this path has not touched (#1169 review).
+      await discardStaged();
       throw err;
     }
   }

@@ -748,6 +748,46 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
       // start shadowing a page that is still Confluence-backed.
       const rows = await query('SELECT 1 FROM local_attachments WHERE page_id = $1', [parent]);
       expect(rows.rowCount).toBe(0);
+      // …and so are the BYTES (#1169 review). Dropping the row while leaving
+      // the file behind is what made "nothing mutated" a claim about the
+      // database only; every failed attempt used to add another orphan.
+      expect(await storeBFiles(parent)).toEqual([]);
+      // The originals are untouched — this path must never cost the user data.
+      expect(await storeAFiles('700007')).toEqual(['pic.png']);
+    });
+
+    // An ambiguous identifier does NOT reach the staging cleanup, and it is
+    // worth saying so: the obvious way to write that test passes for the wrong
+    // reason. `assertIdentifierUnambiguous` runs once pre-flight — before a
+    // single byte is staged — and again under the lock, so a decoy seeded up
+    // front is refused by the first check and the rollback path never runs.
+    // (Measured: the cleanup can be deleted outright and such a test stays
+    // green.) Only a decoy that appears BETWEEN the two checks reaches the
+    // transaction's catch, which is a race no test can stage deterministically.
+    // The upstream-failure case above covers the same cleanup on a path that is
+    // genuinely reachable; `local-attachment-service.test.ts` covers the helper.
+    it('refuses an ambiguous new local key before staging anything', async () => {
+      const id = await createPage({
+        title: 'Ambiguous', source: 'confluence', confluenceId: '700050', spaceKey: 'CONF',
+        bodyHtml: '<p><img src="/api/attachments/700050/pic.png" /></p>',
+      });
+      await writeStoreA('700050', 'pic.png', 'bytes');
+      // A different page whose confluence_id equals this page's numeric id, so
+      // the key its children would store is ambiguous.
+      await createPage({
+        title: 'Decoy', source: 'confluence', confluenceId: String(id), spaceKey: 'CONF',
+      });
+
+      const res = await toLocal(id, '700050');
+
+      expect(res.statusCode).toBe(409);
+      const rows = await query('SELECT 1 FROM local_attachments WHERE page_id = $1', [id]);
+      expect(rows.rowCount).toBe(0);
+      // Empty because staging never started, not because it was cleaned up.
+      expect(await storeBFiles(id)).toEqual([]);
+      // The source bytes survive, so a retry after fixing the collision works.
+      expect(await storeAFiles('700050')).toEqual(['pic.png']);
+      expect((await getRow(id)).source).toBe('confluence');
     });
 
     it('treats a 404 from the upstream delete as success', async () => {

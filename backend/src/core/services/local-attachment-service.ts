@@ -335,6 +335,32 @@ export async function writeLocalAttachmentFileForRelocate(
   await fs.writeFile(filePath, data);
 }
 
+/**
+ * Undo {@link writeLocalAttachmentFileForRelocate} for named files.
+ *
+ * A Confluence→local move stages bytes *before* the transaction that inserts
+ * their `local_attachments` rows, so a transaction that rolls back leaves the
+ * files behind (#1169 review). Removing exactly the filenames the move staged —
+ * rather than the whole directory — is what makes this safe to call on a
+ * failure path: it cannot touch a file some other writer put there.
+ *
+ * Best-effort and never throws. The caller is already unwinding, and an
+ * orphaned file is inert: nothing in the database references it, and a retry
+ * overwrites it by name. Losing the real error to a cleanup failure would be
+ * strictly worse.
+ */
+export async function removeLocalAttachmentFilesForRelocate(
+  pageId: number,
+  filenames: string[],
+): Promise<void> {
+  await Promise.all(
+    filenames.map(async (filename) => {
+      if (!canStoreLocalFilename(filename)) return;
+      await fs.rm(localFilePath(pageId, filename), { force: true }).catch(() => undefined);
+    }),
+  );
+}
+
 /** Absolute directory holding a page's local attachments (#1123 relocate cleanup). */
 export function localAttachmentsDir(pageId: number): string {
   return localPageDir(pageId);

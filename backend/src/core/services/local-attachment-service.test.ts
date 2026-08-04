@@ -8,6 +8,8 @@ import {
   putLocalAttachment,
   getLocalAttachment,
   listLocalAttachments,
+  removeLocalAttachmentFilesForRelocate,
+  writeLocalAttachmentFileForRelocate,
   MAX_LOCAL_ATTACHMENT_BYTES,
 } from './local-attachment-service.js';
 
@@ -233,5 +235,57 @@ describe.skipIf(!dbAvailable)('local-attachment-service (#302 Gap 4)', () => {
     await query(`DELETE FROM pages WHERE id = $1`, [pageId]);
     const res = await query(`SELECT COUNT(*) FROM local_attachments WHERE page_id = $1`, [pageId]);
     expect(Number((res.rows[0] as { count: string }).count)).toBe(0);
+  });
+
+  // #1169 review — the staging cleanup a rolled-back relocate depends on.
+  //
+  // A Confluence→local move writes these bytes BEFORE the transaction that
+  // inserts their `local_attachments` rows, so a rollback would otherwise leave
+  // files nothing references, one set per failed attempt.
+  describe('removeLocalAttachmentFilesForRelocate', () => {
+    async function staged(pageId: number): Promise<string[]> {
+      try {
+        return (await fs.readdir(path.join(tempBase, 'local', String(pageId)))).sort();
+      } catch {
+        return [];
+      }
+    }
+
+    it('removes exactly the filenames it is given, and nothing else', async () => {
+      const { pageId } = await seedUserAndPage();
+      for (const name of ['a.png', 'b.png', 'keep.png']) {
+        await writeLocalAttachmentFileForRelocate(pageId, name, Buffer.from([0x89]));
+      }
+
+      await removeLocalAttachmentFilesForRelocate(pageId, ['a.png', 'b.png']);
+
+      // `keep.png` stands in for a file some other writer owns: removing the
+      // whole directory would be simpler and would take it with them.
+      expect(await staged(pageId)).toEqual(['keep.png']);
+    });
+
+    it('is silent about a file that is already gone', async () => {
+      const { pageId } = await seedUserAndPage();
+      await writeLocalAttachmentFileForRelocate(pageId, 'once.png', Buffer.from([0x89]));
+
+      // Called twice: the relocate paths can both fire on one failure, and the
+      // caller is already unwinding — a throw here would lose the real error.
+      await removeLocalAttachmentFilesForRelocate(pageId, ['once.png']);
+      await expect(
+        removeLocalAttachmentFilesForRelocate(pageId, ['once.png', 'never-existed.png']),
+      ).resolves.toBeUndefined();
+      expect(await staged(pageId)).toEqual([]);
+    });
+
+    it('refuses to act on a filename the store could not have written', async () => {
+      const { pageId } = await seedUserAndPage();
+      await writeLocalAttachmentFileForRelocate(pageId, 'real.png', Buffer.from([0x89]));
+
+      // A traversal attempt resolves to `real.png` under `basename`, which is
+      // exactly the kind of accident this must not turn into a deletion.
+      await removeLocalAttachmentFilesForRelocate(pageId, ['.hidden', '']);
+
+      expect(await staged(pageId)).toEqual(['real.png']);
+    });
   });
 });
