@@ -397,11 +397,14 @@ describe.skipIf(!dbAvailable)('pages.id int4 overflow on externally-sourced ids 
 
   // ── Site 4: bulk selection (core/services/bulk-page-selection.ts) ─────────
   //
-  // The array arm is the worst instance of this defect, not a milder one. The
-  // text arm excludes `/^\d+$/`, so a numeric Confluence id lands in the int[]
-  // arm alone with no second arm to rescue it — and `bulkWireId` sends exactly
-  // that for every synced page, so the ordinary UI reaches it. Eight call sites
-  // share `resolveBulkSelection`; `POST /pages/bulk/embed` is the thinnest.
+  // The array arm was the worst instance of this defect, not a milder one: the
+  // text arm used to exclude `/^\d+$/`, so a numeric Confluence id landed in the
+  // int[] arm alone with no second arm to rescue it — and `bulkWireId` sends
+  // exactly that for every synced page, so the ordinary UI reaches it. (That
+  // exclusion is itself removed by the confluence_id addressing PR stacked on
+  // this one; the overflow behaviour asserted here is unaffected either way.)
+  // Eight call sites share `resolveBulkSelection`; `POST /pages/bulk/embed` is
+  // the thinnest.
 
   describe('POST /api/pages/bulk/embed (bulk selection resolver)', () => {
     it('does not 500 the whole batch on an id above 2^31', async () => {
@@ -415,14 +418,22 @@ describe.skipIf(!dbAvailable)('pages.id int4 overflow on externally-sourced ids 
 
       expect(response.json().error ?? '').not.toMatch(/out of range for type integer/);
       expect(response.statusCode).toBe(200);
+      // With the stacked confluence_id addressing fix the oversized id also
+      // *resolves*, not merely fails to 500: an above-int4 Confluence content
+      // id is now fully addressable in bulk.
+      expect(response.json()).toMatchObject({ succeeded: 1, failed: 0 });
     });
 
     it('keeps partial success: one oversized id no longer sinks the batch', async () => {
-      // The resolvable page is addressed by a NON-numeric confluence_id on
-      // purpose — a numeric one is filtered out of the text arm before the
-      // query runs, which is the separate pre-existing gap noted in the PR.
+      // The resolvable page is addressed by a NON-numeric confluence_id, which
+      // keeps this assertion about the *cast* rather than about the text arm's
+      // old `/^\d+$/` exclusion (the separate gap noted in the PR).
       await createPage({ title: 'Fine', confluenceId: 'conf-ok' });
-      await createPage({ title: 'Big', confluenceId: BIG_CONFLUENCE_ID });
+      // No row carries BIG_CONFLUENCE_ID: the oversized id has to be genuinely
+      // unresolvable for this to still be a *partial* success. Before the
+      // stacked fix a matching row would not have resolved either, so the page
+      // that used to sit here proved nothing once numeric ids reached the
+      // confluence arm.
       // `embedding_dirty` defaults to TRUE, so clear it first — otherwise the
       // assertion below cannot tell what this request actually marked.
       await query('UPDATE pages SET embedding_dirty = FALSE', []);
@@ -465,10 +476,10 @@ describe.skipIf(!dbAvailable)('pages.id int4 overflow on externally-sourced ids 
       expect(padded.json()).toMatchObject({ succeeded: 1 });
       // Padding must not be the differentiator: whatever the unpadded id does,
       // the padded one does too. Counts only — `notFoundIds` deliberately
-      // echoes the caller's original string, so the messages differ. (Both do
-      // report the id as not-found: a synced row is mapped back by
-      // confluence_id, so addressing it by PK double-counts. Pre-existing,
-      // unrelated to the cast.)
+      // echoes the caller's original string, so the messages differ. (Both now
+      // report the id as found; the double-count that used to make them both
+      // report not-found — a synced row mapped back by confluence_id — is
+      // fixed by the confluence_id addressing PR that follows this one.)
       const counts = (r: typeof padded) => {
         const { succeeded, failed } = r.json();
         return { succeeded, failed };

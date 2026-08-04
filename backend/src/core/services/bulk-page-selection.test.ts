@@ -9,6 +9,7 @@ vi.mock('../db/postgres.js', () => ({
 import {
   BulkSelectionSchema,
   resolveBulkSelection,
+  bulkResolutionFailures,
   buildFilterClauses,
   BulkSelectionError,
 } from './bulk-page-selection.js';
@@ -43,15 +44,6 @@ describe('BulkSelectionSchema', () => {
 
   it('rejects empty body', () => {
     expect(() => BulkSelectionSchema.parse({})).toThrow();
-  });
-
-  // #1167 review: the array was bounded, each entry was not. `toPageIdText`
-  // runs `BigInt(id)` on every all-digit entry and BigInt parsing is
-  // superlinear in digit count, so 1000 unbounded digit strings is CPU burnt
-  // inside the request. No real page identifier comes close to 64 characters.
-  it('bounds the length of each id, not just the array', () => {
-    expect(BulkSelectionSchema.parse({ ids: ['9'.repeat(64)] }).ids).toEqual(['9'.repeat(64)]);
-    expect(() => BulkSelectionSchema.parse({ ids: ['9'.repeat(65)] })).toThrow();
   });
 
   it('rejects unknown filter keys (strict)', () => {
@@ -129,15 +121,129 @@ describe('resolveBulkSelection — ids mode', () => {
   });
 
   // #1167: the id array is normalised the way the int cast used to normalise,
-  // so a zero-padded id still addresses the same row.
-  it('normalises zero-padded ids on the id array', async () => {
+  // so a zero-padded id still addresses the same row. The confluence arm takes
+  // every id verbatim — including the all-digit ones it used to exclude, which
+  // is what made a synced page unaddressable by its `confluence_id`.
+  it('normalises zero-padded ids on the id array, and passes all ids to the confluence arm', async () => {
     mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
 
     await resolveBulkSelection('user-1', { ids: ['007', 'conf-2'] }, ['OPS']);
 
     const args = mockQueryFn.mock.calls[0]!;
     expect(args[1]![0]).toEqual(['7']);
-    expect(args[1]![1]).toEqual(['conf-2']);
+    expect(args[1]![1]).toEqual(['007', 'conf-2']);
+  });
+
+  it('resolves a synced page by its numeric confluence_id', async () => {
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ id: 4266, confluence_id: '12345', space_key: 'OPS', source: 'confluence' }],
+      rowCount: 1,
+    });
+
+    const r = await resolveBulkSelection('user-1', { ids: ['12345'] }, ['OPS']);
+
+    expect(r.rows.map((row) => row.id)).toEqual([4266]);
+    expect(r.notFoundIds).toEqual([]);
+    expect(r.ambiguousIds).toEqual([]);
+  });
+
+  it('reports a synced page addressed by its PK as found, not as failed', async () => {
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ id: 4266, confluence_id: '12345', space_key: 'OPS', source: 'confluence' }],
+      rowCount: 1,
+    });
+
+    const r = await resolveBulkSelection('user-1', { ids: ['4266'] }, ['OPS']);
+
+    expect(r.rows.map((row) => row.id)).toEqual([4266]);
+    expect(r.notFoundIds).toEqual([]);
+  });
+
+  it('refuses an id that names two different pages, and keeps the rest of the batch', async () => {
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [
+        // `pages.id = 777777` — a standalone page.
+        { id: 777777, confluence_id: null, space_key: null, source: 'standalone' },
+        // A *different* page whose confluence_id is the same string.
+        { id: 12, confluence_id: '777777', space_key: 'OPS', source: 'confluence' },
+        { id: 13, confluence_id: 'conf-ok', space_key: 'OPS', source: 'confluence' },
+      ],
+      rowCount: 3,
+    });
+
+    const r = await resolveBulkSelection('user-1', { ids: ['777777', 'conf-ok'] }, ['OPS']);
+
+    expect(r.ambiguousIds).toEqual(['777777']);
+    // Neither candidate is acted on — not both, and not a chosen winner.
+    expect(r.rows.map((row) => row.id)).toEqual([13]);
+    expect(r.notFoundIds).toEqual([]);
+  });
+
+  it('treats both arms hitting the same row as one target', async () => {
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ id: 555, confluence_id: '555', space_key: 'OPS', source: 'confluence' }],
+      rowCount: 1,
+    });
+
+    const r = await resolveBulkSelection('user-1', { ids: ['555'] }, ['OPS']);
+
+    expect(r.ambiguousIds).toEqual([]);
+    expect(r.rows.map((row) => row.id)).toEqual([555]);
+  });
+
+  it('yields at most one row per supplied id, even when a page is named twice', async () => {
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ id: 4266, confluence_id: '12345', space_key: 'OPS', source: 'confluence' }],
+      rowCount: 1,
+    });
+
+    const r = await resolveBulkSelection('user-1', { ids: ['4266', '12345'] }, ['OPS']);
+
+    expect(r.rows).toHaveLength(1);
+    expect(r.notFoundIds).toEqual([]);
+  });
+
+  it('cannot produce an ambiguous id in numeric-only mode', async () => {
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [
+        { id: 777777, confluence_id: null, space_key: null, source: 'standalone' },
+        { id: 12, confluence_id: '777777', space_key: 'OPS', source: 'confluence' },
+      ],
+      rowCount: 2,
+    });
+
+    const r = await resolveBulkSelection('user-1', { ids: ['777777'] }, ['OPS'], {
+      idMode: 'numeric-only',
+    });
+
+    expect(r.ambiguousIds).toEqual([]);
+    expect(r.rows.map((row) => row.id)).toEqual([777777]);
+  });
+});
+
+describe('bulkResolutionFailures', () => {
+  it('reports ambiguous ids distinctly from not-found ones', () => {
+    const { errors } = bulkResolutionFailures({
+      rows: [],
+      notFoundIds: ['gone'],
+      ambiguousIds: ['777777'],
+    });
+
+    expect(errors).toHaveLength(2);
+    expect(errors[0]).toBe('Page gone not found');
+    // "not found" would be a lie about a page that plainly exists, on a path
+    // that includes bulk delete.
+    expect(errors[1]).toMatch(/^Page 777777: ambiguous identifier/);
+  });
+
+  // The count travels with the lines rather than each route deriving it from
+  // `errors.length` (#1167 review) — six call sites cannot be relied on to keep
+  // that identity, and the first to seed `errors` beforehand would double-count.
+  it('counts every failure it reports, ambiguous ones included', () => {
+    expect(bulkResolutionFailures({ rows: [], notFoundIds: ['a', 'b'], ambiguousIds: ['c'] }))
+      .toMatchObject({ failed: 3 });
+    expect(bulkResolutionFailures({ rows: [], notFoundIds: [], ambiguousIds: [] }))
+      .toEqual({ errors: [], failed: 0 });
   });
 });
 

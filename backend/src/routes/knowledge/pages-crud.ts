@@ -15,6 +15,7 @@ import {
 import {
   BulkPageFilterSchema,
   resolveBulkSelection,
+  bulkResolutionFailures,
   BulkSelectionError,
   type BulkSelection,
 } from '../../core/services/bulk-page-selection.js';
@@ -1948,8 +1949,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       throw err;
     }
 
-    const errors: string[] = resolved.notFoundIds.map((id) => `Page ${id} not found`);
-    let failed = resolved.notFoundIds.length;
+    const { errors, failed: resolutionFailed } = bulkResolutionFailures(resolved);
+    let failed = resolutionFailed;
 
     // --- Partition by source ---
     // #861: standalone delete is owner-only, mirroring DELETE /pages/:id.
@@ -2157,8 +2158,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const spaceKeysById = new Map(
       syncableRows.map((r) => [r.confluenceId as string, r.spaceKey ?? '']),
     );
-    const errors: string[] = resolved.notFoundIds.map((id) => `Page ${id} not found`);
-    let failed = resolved.notFoundIds.length;
+    const { errors, failed: resolutionFailed } = bulkResolutionFailures(resolved);
+    let failed = resolutionFailed;
 
     // Eager-load htmlToText once (avoid repeated dynamic import)
     const { htmlToText } = await import('../../core/services/content-converter.js');
@@ -2261,8 +2262,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       succeeded = result.rows.length;
     }
 
-    const errors: string[] = resolved.notFoundIds.map((id) => `Page ${id} not found`);
-    const failed = resolved.notFoundIds.length;
+    const { errors, failed } = bulkResolutionFailures(resolved);
 
     // Fire-and-forget: trigger processing of dirty pages (same pattern as POST /embeddings/process)
     if (succeeded > 0) {
@@ -2322,8 +2322,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       succeeded = result.rowCount ?? 0;
     }
 
-    const errors: string[] = resolved.notFoundIds.map((id) => `Page ${id} not found`);
-    const failed = resolved.notFoundIds.length;
+    const { errors, failed } = bulkResolutionFailures(resolved);
 
     await cache.invalidate(userId, 'pages');
 
@@ -2379,8 +2378,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const pageMap = new Map(
       resolved.rows.map((r) => [String(r.id), { confluenceId: r.confluenceId, labels: r.labels }]),
     );
-    const errors: string[] = resolved.notFoundIds.map((id) => `Page ${id} not found`);
-    let failed = resolved.notFoundIds.length;
+    const { errors, failed: resolutionFailed } = bulkResolutionFailures(resolved);
+    let failed = resolutionFailed;
 
     // Process each owned page: compute new labels, update DB, sync to Confluence
     const bulkLimit = pLimit(5);
@@ -2513,8 +2512,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       throw err;
     }
 
-    const errors: string[] = resolved.notFoundIds.map((id) => `Page ${id} not found`);
-    const initialFailed = resolved.notFoundIds.length;
+    const { errors, failed: initialFailed } = bulkResolutionFailures(resolved);
     const eligible = resolved.rows.map((r) => ({
       id: r.id,
       confluenceId: r.confluenceId,

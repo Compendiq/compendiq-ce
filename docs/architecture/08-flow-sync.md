@@ -365,6 +365,31 @@ taken on trust: a move to Confluence must echo the exact `page_versions` count
 it is discarding, and a move to local must name the `confluence_id` and
 `space_key` being deleted upstream. Both mismatch with `409`.
 
+### The same collision, in bulk selection
+
+Nothing to do with relocate's transaction, but the same ambiguity and the same
+verdict, so the reasoning is recorded next to it rather than twice.
+
+`resolveBulkSelection` (`core/services/bulk-page-selection.ts`) resolves each
+supplied id against `pages.id` **and** `pages.confluence_id`, so that the wire
+shape the UI sends — `confluence_id` for synced rows — addresses a page at all.
+Because Confluence DC ids are numeric strings, one string can name two
+different live pages, and the resolver refuses on the same principle relocate
+does: an id naming two pages is reported as ambiguous and acted on by nobody,
+never resolved to both and never to a chosen winner. Two deliberate differences,
+both because the operations differ in shape:
+
+- **Per id, not per request.** The bulk routes have a `failed`/`errors` channel
+  and one bad id must not sink the batch (#1167); `/move` and relocate have a
+  single target, so refusing the id and refusing the request are the same thing
+  there.
+- **Only live, in-scope rows compete.** Relocate counts soft-deleted rows
+  because the `parent_id` it writes outlives the request and a restore puts the
+  trashed row back in contention. The resolver acts within the request and every
+  bulk route filters `deleted_at IS NULL`, so a trashed or out-of-scope row can
+  never be a target — vetoing on one would refuse with no hazard behind it, and
+  would disclose that a page exists outside the caller's spaces.
+
 ## Space unsync / removal (#721)
 
 An admin can permanently remove a synced Confluence space from the local store via
