@@ -17,6 +17,11 @@ import {
   selectionShouldShow,
   editorBubbleMenuPluginKey,
 } from './EditorBubbleMenu';
+import {
+  ConfluenceJiraIssue,
+  ConfluenceStatus,
+  ConfluenceUserMention,
+} from './article-extensions';
 import { IMPROVE_DECORATION_CLASS } from './improve-decoration';
 import {
   clearBlockMenuTarget,
@@ -54,7 +59,17 @@ function Harness({
   onReady: (editor: EditorType) => void;
 }) {
   const editor = useEditor({
-    extensions: [StarterKit, Highlight.configure({ multicolor: true })],
+    extensions: [
+      StarterKit,
+      Highlight.configure({ multicolor: true }),
+      // The REAL inline Confluence atoms. The macro guard below is about these
+      // exact node types — a hand-rolled stand-in would prove nothing about the
+      // schema the editor actually runs. They are inert for every other test in
+      // this file, which never puts one in the document.
+      ConfluenceStatus,
+      ConfluenceUserMention,
+      ConfluenceJiraIssue,
+    ],
     content,
     immediatelyRender: false,
   });
@@ -676,6 +691,246 @@ describe('BubbleMenuContent — error state', () => {
     streamSSE.mockReturnValue(gen([{ content: 'Recovered' }]));
     fireEvent.click(screen.getByText('Try again'));
     await waitFor(() => expect(screen.getByTestId('bubble-ai-preview')).toHaveTextContent('Recovered'));
+  });
+});
+
+// The same defect #1179 fixed on the block menu, reached through the more-used
+// surface. `doc.textBetween` skips inline atoms, so the model is sent
+// "Ask  about it" for a paragraph reading "Ask @jdoe about it", and Replace
+// overwrites the range those atoms live in — the mention is gone and the next
+// Save pushes the loss to Confluence.
+describe('BubbleMenuContent — inline macros in the selection', () => {
+  beforeEach(() => streamSSE.mockReset());
+
+  const WITH_MENTION =
+    '<p>Ask <span class="confluence-user-mention" data-username="jdoe">@jdoe</span> about it</p>';
+  const WITH_STATUS =
+    '<p>Release <span class="confluence-status" data-color="green">DONE</span> now</p>';
+  const WITH_JIRA =
+    '<p>See <span class="confluence-jira-issue" data-key="KB-42">KB-42</span> for details</p>';
+
+  function countType(editor: EditorType, name: string): number {
+    let n = 0;
+    editor.state.doc.descendants((node) => { if (node.type.name === name) n += 1; });
+    return n;
+  }
+
+  /** The whole of the first paragraph's inline content. */
+  const wholeParagraph = (editor: EditorType) => ({
+    from: 1,
+    to: editor.state.doc.child(0).nodeSize - 1,
+  });
+
+  const selectAll = (editor: EditorType) => {
+    act(() => { editor.commands.setTextSelection(wholeParagraph(editor)); });
+  };
+
+  it.each([
+    ['a user mention', WITH_MENTION, 'confluenceUserMention'],
+    ['a status macro', WITH_STATUS, 'confluenceStatus'],
+    ['a Jira issue macro', WITH_JIRA, 'confluenceJiraIssue'],
+  ])('hides Improve when the selection contains %s', async (_name, content, type) => {
+    const editor = await mountEditor(content);
+    expect(countType(editor, type)).toBe(1);
+
+    selectAll(editor);
+
+    expect(screen.queryByTestId('bubble-ai-trigger')).toBeNull();
+    expect(screen.getByTestId('bubble-menu-macro-notice')).toHaveTextContent(
+      /a rewrite would drop the inline macros in this selection/i,
+    );
+  });
+
+  // The negative control. A selection with nothing structured in it must reach
+  // the model and write back exactly as it did before this guard existed.
+  it('leaves an ordinary selection untouched — trigger, run and Replace all unchanged', async () => {
+    streamSSE.mockReturnValue(gen([{ content: 'Howdy' }]));
+    const editor = await mountEditor('<p>Hello world</p>');
+    act(() => { editor.commands.setTextSelection({ from: 1, to: 6 }); });
+
+    expect(screen.getByTestId('bubble-ai-trigger')).toBeInTheDocument();
+    expect(screen.queryByTestId('bubble-menu-macro-notice')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('bubble-ai-trigger'));
+    fireEvent.click(await screen.findByText('Improve writing'));
+    await waitFor(() => expect(screen.getByTestId('bubble-ai-preview')).toHaveTextContent('Howdy'));
+    expect(screen.queryByTestId('bubble-ai-replace-blocked')).toBeNull();
+
+    fireEvent.click(screen.getByTitle('Replace selection'));
+    await waitFor(() => expect(editor.getHTML()).toContain('Howdy world'));
+  });
+
+  // The remedy the copy promises, proved end to end. `nodesBetween` does not
+  // visit a node whose start equals `to`, so a range that stops at the atom is
+  // genuinely clean — Improve comes back, the model gets the prose, and the
+  // mention survives the write-back.
+  it('offers Improve again for a selection that stops short of the macro', async () => {
+    streamSSE.mockReturnValue(gen([{ content: 'Please ask' }]));
+    const editor = await mountEditor(WITH_MENTION);
+    // "Ask " — positions 1..5; the mention atom begins at 5.
+    act(() => { editor.commands.setTextSelection({ from: 1, to: 5 }); });
+
+    expect(screen.queryByTestId('bubble-menu-macro-notice')).toBeNull();
+    fireEvent.click(screen.getByTestId('bubble-ai-trigger'));
+    fireEvent.click(await screen.findByText('Improve writing'));
+
+    await waitFor(() => expect(streamSSE).toHaveBeenCalled());
+    expect((streamSSE.mock.calls[0]![1] as { content: string }).content).toBe('Ask ');
+    await waitFor(() => expect(screen.getByTestId('bubble-ai-preview')).toHaveTextContent('Please ask'));
+
+    fireEvent.click(screen.getByTitle('Replace selection'));
+
+    await waitFor(() => expect(editor.getHTML()).toContain('Please ask'));
+    expect(countType(editor, 'confluenceUserMention')).toBe(1);
+    expect(editor.getHTML()).toContain('data-username="jdoe"');
+  });
+
+  // Cmd/Ctrl+J never touches the trigger, so hiding the button alone would
+  // leave the keyboard route opening a section that can only lose the macro.
+  it('refuses Cmd/Ctrl+J on a selection that carries a macro', async () => {
+    const editor = await mountEditor(WITH_MENTION);
+    selectAll(editor);
+
+    fireEvent.keyDown(document, { key: 'j', ctrlKey: true });
+
+    expect(screen.queryByTestId('bubble-ai-panel')).not.toBeInTheDocument();
+    expect(editor.view.dom.querySelector(`.${IMPROVE_DECORATION_CLASS}`)).toBeNull();
+    expect(streamSSE).not.toHaveBeenCalled();
+  });
+
+  it('still offers formatting, which rewrites marks and leaves the atoms alone', async () => {
+    const editor = await mountEditor(WITH_MENTION);
+    selectAll(editor);
+
+    fireEvent.click(screen.getByTitle('Bold (Ctrl+B)'));
+
+    expect(editor.getHTML()).toContain('<strong>');
+    expect(countType(editor, 'confluenceUserMention')).toBe(1);
+  });
+
+  // A `<br>` is an inline atom by ProseMirror's reckoning but not Confluence
+  // content — withholding Improve from every paragraph carrying one would gut
+  // the feature, which is why the predicate excludes it.
+  it('does not withhold Improve for a hard break', async () => {
+    const editor = await mountEditor('<p>First line<br>second line</p>');
+    selectAll(editor);
+
+    expect(screen.getByTestId('bubble-ai-trigger')).toBeInTheDocument();
+    expect(screen.queryByTestId('bubble-menu-macro-notice')).toBeNull();
+  });
+});
+
+// `containsStructuredInline` matches ANY inline node that is not text and not a
+// hardBreak — it does not name the three Confluence atoms. That is deliberate
+// (an unknown inline atom is exactly as lossy), but it couples the copy to the
+// schema: MACRO_NOTICE says "inline macros", so a fourth inline node added
+// later would silently start withholding Improve under a message that no longer
+// describes why. Today the coupling holds, and this is what says so.
+describe('the predicate matches exactly what the copy claims', () => {
+  it('has no inline node in the article schema beyond the three named macros', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+
+    const source = readFileSync(resolve(__dirname, 'article-extensions.ts'), 'utf-8');
+    // Split on the definition boundary first. A single regex spanning from a
+    // `name:` to an `inline: true` runs straight past the end of its own node
+    // and pairs a name with a LATER node's flag.
+    const inlineNodes = source
+      .split(/\bNode\.create\(/)
+      .slice(1)
+      .map((definition) => ({
+        name: definition.match(/name:\s*'([^']+)'/)?.[1],
+        inline: /^\s*inline:\s*true/m.test(definition),
+      }))
+      .filter((d) => d.inline && d.name)
+      .map((d) => d.name);
+
+    expect(new Set(inlineNodes)).toEqual(
+      new Set(['confluenceStatus', 'confluenceJiraIssue', 'confluenceUserMention']),
+    );
+    // The one inline node that would NOT be a macro is configured out of the
+    // group on purpose; `Editor.tsx` passes `inline: false`.
+    const editor = readFileSync(resolve(__dirname, 'Editor.tsx'), 'utf-8');
+    expect(editor).toMatch(/ConfluenceImage\.configure\(\{\s*inline:\s*false\s*\}\)/);
+  });
+});
+
+// The gate above runs when Improve opens. A macro can still arrive inside the
+// captured passage afterwards — an undo, a collaborator, the AI dock — and the
+// decoration widens to include it, so Replace would delete it.
+describe('BubbleMenuContent — a macro arriving in an already-open section', () => {
+  beforeEach(() => streamSSE.mockReset());
+
+  function countMentions(editor: EditorType): number {
+    let n = 0;
+    editor.state.doc.descendants((node) => {
+      if (node.type.name === 'confluenceUserMention') n += 1;
+    });
+    return n;
+  }
+
+  /** Drop a mention into the middle of "Hello world" (inside the captured range). */
+  function insertMention(editor: EditorType): void {
+    const mention = editor.schema.nodes.confluenceUserMention!.create({
+      username: 'jdoe',
+      label: '@jdoe',
+    });
+    editor.view.dispatch(editor.state.tr.insert(6, mention));
+  }
+
+  /** Open the section over the whole paragraph and stream an answer into it. */
+  async function openWithAnswer(): Promise<EditorType> {
+    streamSSE.mockReturnValue(gen([{ content: 'Howdy everyone' }]));
+    const editor = await mountEditor('<p>Hello world</p>');
+    act(() => { editor.commands.setTextSelection({ from: 1, to: 12 }); });
+
+    fireEvent.click(screen.getByTestId('bubble-ai-trigger'));
+    fireEvent.click(await screen.findByText('Improve writing'));
+    await waitFor(() => expect(screen.getByTitle('Replace selection')).not.toBeDisabled());
+    return editor;
+  }
+
+  it('refuses Replace and says why, keeping the trigger as the collapse control', async () => {
+    const editor = await openWithAnswer();
+
+    act(() => { insertMention(editor); });
+
+    expect(screen.getByTestId('bubble-ai-replace-blocked')).toHaveTextContent(
+      /replacing would delete it/i,
+    );
+    expect(screen.getByTitle(/replacing would delete it/i)).toBeDisabled();
+    // The panel is open, so the trigger stays: it is the only way to collapse
+    // the section, and `aria-controls` must keep pointing at a live panel.
+    expect(screen.getByTestId('bubble-ai-trigger')).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('leaves Insert below available, which preserves the macro', async () => {
+    const editor = await openWithAnswer();
+
+    act(() => { insertMention(editor); });
+    fireEvent.click(screen.getByTitle('Insert below selection'));
+
+    await waitFor(() => expect(editor.getHTML()).toContain('Howdy everyone'));
+    expect(countMentions(editor)).toBe(1);
+  });
+
+  // The render gate is a React value, so a transaction landing between the last
+  // paint and the click leaves it a frame stale — and one frame is all it takes
+  // to delete a mention. Nesting both inside a single `act` reproduces exactly
+  // that interleaving: the update is queued, the still-enabled button fires,
+  // and only the document-derived check in `replaceSelection` can refuse.
+  it('refuses Replace when the macro lands between the last render and the click', async () => {
+    const editor = await openWithAnswer();
+    const replace = screen.getByTitle('Replace selection');
+
+    act(() => {
+      insertMention(editor);
+      fireEvent.click(replace);
+    });
+
+    expect(countMentions(editor)).toBe(1);
+    expect(editor.getHTML()).toContain('Hello');
+    expect(editor.getHTML()).not.toContain('Howdy everyone');
   });
 });
 

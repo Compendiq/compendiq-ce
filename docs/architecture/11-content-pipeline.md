@@ -202,6 +202,16 @@ captured range.
   `includeSubPages` omitted — so the backend skips whole-page/sub-page
   context assembly and writes **no** `llm_improvements` row (selection edits
   are ephemeral previews, accepted via the normal editor draft/save flow).
+- This path has **no macro protection**, unlike the `/llm/improvements/apply`
+  route it deliberately bypasses (`protectMedia` / `restoreMedia`, #723).
+  `doc.textBetween` builds `content` and it **skips inline atom nodes** —
+  `confluenceStatus`, `confluenceUserMention`, `confluenceJiraIssue` — so a
+  selection reading "Ask @jdoe about DONE" reaches the model as `"Ask  about "`,
+  and the returned HTML then overwrites the range those nodes live in. Both
+  editor surfaces therefore **withhold Improve** over such a range rather than
+  convert it: `containsStructuredInline()` in `block-menu-nodes.ts`, applied to
+  the block by `EditorBlockMenu` (#1179) and to the selection by
+  `EditorBubbleMenu`. Marks are a softer case and only warn (`containsLossyMarks`).
 
 ```mermaid
 flowchart LR
