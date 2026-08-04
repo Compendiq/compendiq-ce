@@ -148,6 +148,10 @@ import {
   invalidateProviderBreaker,
 } from '../../../core/services/circuit-breaker.js';
 import { getSharedLlmSettings } from '../../../core/services/admin-settings-service.js';
+// Real (unmocked) import — `openai-compatible-client.js` is mocked above, but
+// `llm-http-error.ts` is its own module so LlmHttpError instances constructed
+// here are real `instanceof` matches against what embedding-service.ts imports.
+import { LlmHttpError } from './llm-http-error.js';
 
 /** Helper to create a fake dirty page row */
 function makePage(id: string, numId = 1) {
@@ -1518,6 +1522,50 @@ describe('chunkText', () => {
       expect(isContextLengthError('some string')).toBe(false);
       expect(isContextLengthError(null)).toBe(false);
       expect(isContextLengthError({ message: 'context length' })).toBe(false);
+    });
+
+    // #1185: generateEmbedding now throws LlmHttpError, whose `.message` is a
+    // bare `generateEmbedding HTTP 400` — the body lives on `.detail` instead
+    // (see llm-http-error.ts). These prove the field-based path production
+    // code actually exercises, not just the message-string fallback above
+    // (kept for any caller/mock still throwing a plain Error).
+    describe('LlmHttpError field-based matching (production path)', () => {
+      it('returns true when a 400 detail names the oversized-input signal', () => {
+        const err = new LlmHttpError('generateEmbedding', 400, 'input length exceeds the context length');
+        expect(isContextLengthError(err)).toBe(true);
+      });
+
+      it('returns true when a 400 detail contains "context length" in different wording', () => {
+        const err = new LlmHttpError('generateEmbedding', 400, 'Error: context length exceeded for this model');
+        expect(isContextLengthError(err)).toBe(true);
+      });
+
+      it('is case-insensitive on the detail', () => {
+        const err = new LlmHttpError('generateEmbedding', 400, 'INPUT LENGTH EXCEEDS THE CONTEXT LENGTH');
+        expect(isContextLengthError(err)).toBe(true);
+      });
+
+      it('returns false for a 400 whose detail is unrelated', () => {
+        const err = new LlmHttpError('generateEmbedding', 400, 'invalid request body');
+        expect(isContextLengthError(err)).toBe(false);
+      });
+
+      it('returns false for a non-400 status even if the detail mentions context length', () => {
+        const err = new LlmHttpError('generateEmbedding', 500, 'context length exceeded');
+        expect(isContextLengthError(err)).toBe(false);
+      });
+
+      it('returns false when the detail is empty (no provider body)', () => {
+        const err = new LlmHttpError('generateEmbedding', 400, '');
+        expect(isContextLengthError(err)).toBe(false);
+      });
+
+      it('does NOT rely on `.message`, which no longer carries the body', () => {
+        const err = new LlmHttpError('generateEmbedding', 400, 'input length exceeds the context length');
+        // Sanity check on the load-bearing assumption: message is body-free.
+        expect(err.message).toBe('generateEmbedding HTTP 400');
+        expect(isContextLengthError(err)).toBe(true);
+      });
     });
   });
 

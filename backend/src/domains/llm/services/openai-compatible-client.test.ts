@@ -42,6 +42,41 @@ describe('openai-compatible-client', () => {
   });
 });
 
+// ─── #1185: listModels finishes the LlmHttpError conversion started by #1181 ─
+describe('openai-compatible-client — listModels surfaces HTTP error as LlmHttpError (#1185)', () => {
+  let errSrv: Server;
+  let errBase: string;
+  beforeAll(async () => {
+    errSrv = createServer((req, res) => {
+      if (req.url === '/v1/models') {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'model registry unavailable' } }));
+        return;
+      }
+      res.writeHead(404); res.end();
+    });
+    await new Promise<void>((r) => errSrv.listen(0, r));
+    const { port } = errSrv.address() as AddressInfo;
+    errBase = `http://127.0.0.1:${port}/v1`;
+  });
+  afterAll(() => new Promise<void>((r) => errSrv.close(() => r())));
+
+  it('throws LlmHttpError carrying the status and the body as fields', async () => {
+    const err = await listModels({ ...cfg, providerId: 'listmodels-err-1185', baseUrl: errBase })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(LlmHttpError);
+    expect((err as LlmHttpError).status).toBe(503);
+    expect((err as LlmHttpError).detail).toMatch(/model registry unavailable/);
+  });
+
+  it('keeps the provider body out of the message', async () => {
+    const err = await listModels({ ...cfg, providerId: 'listmodels-err-msg-1185', baseUrl: errBase })
+      .catch((e: unknown) => e);
+    expect((err as Error).message).toBe('listModels HTTP 503');
+    expect((err as Error).message).not.toMatch(/model registry unavailable/);
+  });
+});
+
 describe('openai-compatible-client — chat', () => {
   let chatSrv: Server;
   let chatBase: string;
@@ -86,6 +121,55 @@ describe('openai-compatible-client — chat', () => {
     }
     expect(out.filter(Boolean).join('')).toBe('hello');
     expect(done).toBe(true);
+  });
+});
+
+// ─── #1185: streamChat finishes the LlmHttpError conversion started by #1181 ─
+describe('openai-compatible-client — streamChat surfaces HTTP error as LlmHttpError (#1185)', () => {
+  let errSrv: Server;
+  let errBase: string;
+  beforeAll(async () => {
+    errSrv = createServer((req, res) => {
+      if (req.url === '/v1/chat/completions') {
+        let body = '';
+        req.on('data', (c) => (body += c));
+        req.on('end', () => {
+          res.writeHead(429, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: 'rate limited' } }));
+        });
+        return;
+      }
+      res.writeHead(404); res.end();
+    });
+    await new Promise<void>((r) => errSrv.listen(0, r));
+    const { port } = errSrv.address() as AddressInfo;
+    errBase = `http://127.0.0.1:${port}/v1`;
+  });
+  afterAll(() => new Promise<void>((r) => errSrv.close(() => r())));
+
+  // The generator body doesn't run until the first .next() call, so the
+  // dispatch-phase throw surfaces there rather than at streamChat() itself.
+  async function drainToError(providerId: string): Promise<unknown> {
+    const gen = streamChat({ ...cfg, providerId, baseUrl: errBase }, 'm1', [{ role: 'user', content: 'hi' }]);
+    try {
+      await gen.next();
+      throw new Error('expected streamChat to reject');
+    } catch (e) {
+      return e;
+    }
+  }
+
+  it('throws LlmHttpError carrying the status and the body as fields', async () => {
+    const err = await drainToError('streamchat-err-1185');
+    expect(err).toBeInstanceOf(LlmHttpError);
+    expect((err as LlmHttpError).status).toBe(429);
+    expect((err as LlmHttpError).detail).toMatch(/rate limited/);
+  });
+
+  it('keeps the provider body out of the message', async () => {
+    const err = await drainToError('streamchat-err-msg-1185');
+    expect((err as Error).message).toBe('streamChat HTTP 429');
+    expect((err as Error).message).not.toMatch(/rate limited/);
   });
 });
 
@@ -383,12 +467,16 @@ describe('openai-compatible-client — embeddings', () => {
   });
 });
 
-// ─── #821: HTTP error body must reach the thrown Error ──────────────────────
+// ─── #821 / #1185: HTTP error body must reach the thrown error as a field ───
 // generateEmbedding used to throw `generateEmbedding HTTP 400` with the body
-// discarded, so `isContextLengthError` (embedding-service.ts) could never match
-// the oversized-input signal ("input length exceeds context length") and the
-// oversized-batch-skip / preserve-embeddings safeguards were dead code.
-describe('openai-compatible-client — generateEmbedding surfaces HTTP error body (#821)', () => {
+// folded into `.message` (or, pre-#821, discarded entirely), so
+// `isContextLengthError` (embedding-service.ts) could never reliably match the
+// oversized-input signal ("input length exceeds context length") without
+// parsing prose. #1185 finishes the LlmHttpError conversion #1181 started for
+// chat(): the body now lives on `.detail`, `.message` stays a bare
+// `generateEmbedding HTTP <status>`, and `.bypassCircuitBreaker` is a typed
+// field rather than a duck-typed property bolted onto a plain Error.
+describe('openai-compatible-client — generateEmbedding surfaces HTTP error body (#821, #1185)', () => {
   let errSrv: Server;
   let errBase: string;
   beforeAll(async () => {
@@ -406,12 +494,23 @@ describe('openai-compatible-client — generateEmbedding surfaces HTTP error bod
   });
   afterAll(() => new Promise<void>((r) => errSrv.close(() => r())));
 
-  it('includes the HTTP status and the response body in the thrown error', async () => {
+  it('throws LlmHttpError carrying the status and the body as fields', async () => {
     // Distinct providerId so this deliberate 400 does not trip a breaker shared
     // with the happy-path embedding tests.
-    await expect(
-      generateEmbedding({ ...cfg, providerId: 'emb-err-821', baseUrl: errBase }, 'bge-m3', ['too long']),
-    ).rejects.toThrow(/generateEmbedding HTTP 400.*input length exceeds the context length/s);
+    const err = await generateEmbedding(
+      { ...cfg, providerId: 'emb-err-821', baseUrl: errBase }, 'bge-m3', ['too long'],
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(LlmHttpError);
+    expect((err as LlmHttpError).status).toBe(400);
+    expect((err as LlmHttpError).detail).toMatch(/input length exceeds the context length/);
+  });
+
+  it('keeps the provider body out of the message', async () => {
+    const err = await generateEmbedding(
+      { ...cfg, providerId: 'emb-err-821-msg', baseUrl: errBase }, 'bge-m3', ['too long'],
+    ).catch((e: unknown) => e);
+    expect((err as Error).message).toBe('generateEmbedding HTTP 400');
+    expect((err as Error).message).not.toMatch(/input length exceeds/);
   });
 
   // ─── #867: deterministic 400s must NOT trip the provider breaker ──────────
@@ -435,6 +534,45 @@ describe('openai-compatible-client — generateEmbedding surfaces HTTP error bod
     }
     const { getProviderBreaker } = await import('../../../core/services/circuit-breaker.js');
     expect(getProviderBreaker(providerId).getStatus().state).toBe('CLOSED');
+  });
+
+  // #1185: the #867 behaviour above is now a typed field, not a duck-typed
+  // property on a plain re-thrown Error — assert it directly on the instance.
+  it('marks the typed error bypassCircuitBreaker on a 400 (#867)', async () => {
+    const err = await generateEmbedding(
+      { ...cfg, providerId: 'emb-err-821-bypass', baseUrl: errBase }, 'bge-m3', ['too long'],
+    ).catch((e: unknown) => e);
+    expect((err as LlmHttpError).bypassCircuitBreaker).toBe(true);
+  });
+});
+
+// #1185: a non-400 embedding failure is a real outage signal and must NOT
+// bypass the circuit breaker — only status 400 (a client-input error) does.
+describe('openai-compatible-client — generateEmbedding non-400 errors do not bypass the breaker (#1185)', () => {
+  let err500Srv: Server;
+  let err500Base: string;
+  beforeAll(async () => {
+    err500Srv = createServer((req, res) => {
+      if (req.url === '/v1/embeddings') {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'internal error' } }));
+        return;
+      }
+      res.writeHead(404); res.end();
+    });
+    await new Promise<void>((r) => err500Srv.listen(0, r));
+    const { port } = err500Srv.address() as AddressInfo;
+    err500Base = `http://127.0.0.1:${port}/v1`;
+  });
+  afterAll(() => new Promise<void>((r) => err500Srv.close(() => r())));
+
+  it('does not set bypassCircuitBreaker on a 500', async () => {
+    const err = await generateEmbedding(
+      { ...cfg, providerId: 'emb-500-nobypass', baseUrl: err500Base }, 'bge-m3', ['x'],
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(LlmHttpError);
+    expect((err as LlmHttpError).status).toBe(500);
+    expect((err as LlmHttpError).bypassCircuitBreaker).toBe(false);
   });
 });
 
