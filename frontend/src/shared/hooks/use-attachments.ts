@@ -3,7 +3,7 @@ import { toast } from 'sonner';
 import { SUPPORTED_DOCUMENT_FORMATS, SUPPORTED_IMAGE_FORMATS } from '@compendiq/contracts';
 import { useExtractDocument, type ExtractDocumentResult } from './use-extract-document';
 import { usePrepareImage, type PreparedImage } from './use-prepare-image';
-import { ImageDecodeError, refusedImageReason } from '../lib/downscale-image';
+import { refusedImageReason } from '../lib/downscale-image';
 
 /**
  * #1154: one owner for both attachment slots on the AI composer surfaces.
@@ -170,10 +170,9 @@ export function useAttachments(options: UseAttachmentsOptions = {}) {
           return prepared;
         });
       } catch (err) {
+        if (!mountedRef.current || requestId !== prepareRequestIdRef.current) return;
         // ImageDecodeError already carries user-facing copy (SVG, HEIC, too big).
-        const message = err instanceof ImageDecodeError || err instanceof Error
-          ? err.message
-          : 'Could not attach that image.';
+        const message = err instanceof Error ? err.message : 'Could not attach that image.';
         toast.error(message);
       }
       return;
@@ -215,6 +214,7 @@ export function useAttachments(options: UseAttachmentsOptions = {}) {
       if (!mountedRef.current || requestId !== extractRequestIdRef.current) return;
       setDocument({ result, filename: file.name });
     } catch (err) {
+      if (!mountedRef.current || requestId !== extractRequestIdRef.current) return;
       toast.error(err instanceof Error ? err.message : 'Document extraction failed');
     }
   }, [disabled, imageEnabled, imageDisabledReason, prepareImage, extractDocument]);
