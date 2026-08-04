@@ -823,15 +823,18 @@ describe('PageViewPage', () => {
     expect(mockNavigate).not.toHaveBeenCalled();
   });
 
-  // #703 / #769 — the sticky edit toolbar carries an opaque bg-background
-  // under-mask (z-[-1]) covering exactly the toolbar's box (inset-0), the
-  // same pattern as /ai's sticky bars. The toolbar pins flush at the
-  // scrollport top, so the mask must not extend past the toolbar's box:
-  // negative inset offsets push the absolutely positioned mask outside the
-  // scroll container's content edge (the pattern that caused /ai's phantom
-  // vertical scroll).
-  describe('sticky edit-toolbar under-mask (#703, #769)', () => {
-    it('renders an opaque under-mask behind the edit toolbar covering exactly its box', () => {
+  // #703 / #769 / #1186 — the sticky edit toolbar carries an opaque
+  // bg-background under-mask (z-[-1]) behind it. It covers the toolbar's own
+  // box, so content scrolling under the translucent bar cannot show through,
+  // and it reaches one scroll-container padding step above it, because the
+  // stuck toolbar does not reach the scrollport's own top edge (#1186 — the
+  // exact height is asserted against AppLayout in scroll-padding-mask.test.ts).
+  // Overhang is block-start only: a block-end or inline overhang pushes the
+  // absolutely positioned mask past the scroll container's content edge and
+  // inflates its scrollable height, which is what caused /ai's phantom
+  // vertical scroll (#769).
+  describe('sticky edit-toolbar under-mask (#703, #769, #1186)', () => {
+    it('renders an opaque under-mask behind the edit toolbar', () => {
       const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
       fireEvent.click(screen.getByText('Edit'));
 
@@ -846,20 +849,35 @@ describe('PageViewPage', () => {
       expect(mask!.className).toContain('bg-background');
       expect(mask!.className).not.toContain('bg-background/');
       expect(mask!.className).toContain('z-[-1]');
-      expect(mask!.className).toContain('inset-0');
       expect(mask!.className).toContain('pointer-events-none');
+      // Flush with the toolbar on every edge but the top.
+      expect(mask!.className).toContain('inset-x-0');
+      expect(mask!.className).toContain('bottom-0');
     });
 
-    it('the under-mask does not extend past the toolbar (regression: #769 phantom scroll)', () => {
+    it('the under-mask covers the scroll padding above the stuck toolbar (#1186)', () => {
       const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
       fireEvent.click(screen.getByText('Edit'));
 
       const mask = container.querySelector('.sticky.top-0 [aria-hidden]') as HTMLElement;
       expect(mask).not.toBeNull();
-      // Forbid both negative-utility (-top-[100px]) and arbitrary-negative
-      // (top-[-100px]) spellings, plus inline style offsets.
-      expect(mask.className).not.toMatch(/-(top|bottom|left|right|inset(-[xy])?)-\[/);
-      expect(mask.className).not.toMatch(/\b(top|bottom|left|right|inset(-[xy])?)-\[-/);
+      // A bare inset-0 leaves the padding strip above the stuck toolbar live,
+      // which is the bug: article content scrolls through it in full view.
+      expect(mask.className).not.toMatch(/(^|\s)inset-0(\s|$)/);
+      expect(mask.className).toMatch(/(^|\s)-top-\d/);
+    });
+
+    it('the under-mask does not overhang the block-end or inline edges (#769 phantom scroll)', () => {
+      const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByText('Edit'));
+
+      const mask = container.querySelector('.sticky.top-0 [aria-hidden]') as HTMLElement;
+      expect(mask).not.toBeNull();
+      // Both spellings of a negative offset (-bottom-4 / bottom-[-1rem]) on
+      // every edge that adds scrollable overflow. The block-start edge is
+      // exempt: the scrollport clips it and it grows no scroll range.
+      expect(mask.className).not.toMatch(/(^|\s)-(bottom|left|right|inset(-[xy])?)-/);
+      expect(mask.className).not.toMatch(/\b(bottom|left|right|inset(-[xy])?)-\[-/);
       expect(mask.style.top).toBe('');
       expect(mask.style.bottom).toBe('');
     });

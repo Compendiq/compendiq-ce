@@ -641,16 +641,34 @@ export function PageViewPage() {
           rather than showing through its rounded-corner cutouts. */}
       {editing && (
         <div className="sticky top-0 z-30 isolate">
-          {/* Under-mask: behind the toolbar (z-[-1]), covering exactly the
-              toolbar's box (inset-0). The toolbar pins flush at the
-              scrollport top — same situation as /ai's sub-header (#769) —
-              so there is no gap above it to mask, and the former
-              -top-[100px] upward bleed was dead paint (clipped at the
-              scrollport edge when stuck). Rounded bottom corners keep the
-              mask inside the toolbar's card silhouette. */}
+          {/* Under-mask: behind the toolbar (z-[-1]), covering the toolbar's
+              box AND the strip of scroll-container padding above it.
+
+              A sticky box does NOT pin at the scrollport's top edge when the
+              scroll container has top padding: it is clamped to its
+              containing block, which begins *after* that padding. Measured in
+              Chromium, the stuck toolbar's top is AppLayout's scroll-container
+              content-box top — 20px (its pt-5) below the scrollport edge — so
+              article content scrolls up through that strip in full view before
+              the scrollport clips it (#1186). `-top-5` must therefore track
+              that `pt-5`; scroll-padding-mask.test.ts fails if they diverge.
+
+              Only the block-start edge overhangs. Block-start overflow is
+              clipped by the scrollport and adds no scrollable height, unlike
+              the block-end overhang that inflated /ai's page height (#769) —
+              so bottom/left/right stay flush on the toolbar's box. The fill
+              stays flat bg-background rather than a copy of the gradient
+              --surface-backdrop: at this height the radial has all but
+              resolved to --color-background (measured max delta 3/255 in
+              Slate Steel, 2/255 in Frost Steel, and exact at the column
+              edges), while a re-declared gradient can only line up with the
+              app shell's via background-attachment: fixed, which silently
+              re-anchors to the framer-motion transform on this very element.
+              Rounded bottom corners keep the mask in the toolbar's
+              silhouette. */}
           <div
             aria-hidden
-            className="pointer-events-none absolute inset-0 z-[-1] bg-background rounded-b-xl"
+            className="pointer-events-none absolute inset-x-0 -top-5 bottom-0 z-[-1] bg-background rounded-b-xl"
           />
         <div className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm">
           {editorInstance && (
