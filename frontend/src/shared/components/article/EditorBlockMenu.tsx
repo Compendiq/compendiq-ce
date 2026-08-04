@@ -430,8 +430,10 @@ export function EditorBlockHandle({ editor }: { editor: EditorType }) {
               // Escape must not reach `document` — see absorbBlockMenuEscape.
               // Not `onKeyDown`: bypassed when Radix unmounts this layer in its
               // capture pass, and again when the key comes from outside the
-              // layer. Not `preventDefault` alone: the page's shortcut ignores
-              // `defaultPrevented`. Both measured across the full grid.
+              // layer, so its handler never runs in most of the grid.
+              // `preventDefault` is what the page's shortcut reads since #1206;
+              // `stopPropagation` keeps the key off every other document
+              // listener. Both measured across the full grid.
               onEscapeKeyDown={(event) => absorbBlockMenuEscape(event, closeMenu)}
             >
               <EditorBlockMenu

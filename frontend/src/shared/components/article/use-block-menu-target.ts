@@ -94,28 +94,28 @@ export function useBlockMenuTarget(editor: EditorType): UseBlockMenuTargetResult
  *
  * **`onEscapeKeyDown` + `preventDefault()` + `stopPropagation()`. Not
  * `onKeyDown`: it is bypassed when the layer unmounts in Radix's capture pass,
- * and again when the key is dispatched from outside the layer. Not
- * `preventDefault` alone: the shortcut dispatch ignores `defaultPrevented`.**
+ * and again when the key is dispatched from outside the layer.**
  *
- * Those are two independent sufficient causes plus a half-fix, and all three are
- * measured — `block-menu-escape.test.tsx` runs the full grid of every wiring
- * against both causes. `onKeyDown` contains the key in exactly one of four
- * cells (focus inside the menu, unmount deferred), which is RTL's default and
- * the reason a broken fix once passed a green suite.
+ * Those are two independent sufficient causes and both are measured —
+ * `block-menu-escape.test.tsx` runs the full grid of every wiring against them.
+ * `onKeyDown`'s handler never runs at all in three of its four cells, so it is
+ * not a containment mechanism even where the grid now shows it green.
  *
- * Both halves are needed:
- * - `preventDefault()` so Radix skips its own dismissal — we close here instead,
- *   so `close` runs once rather than twice.
- * - `stopPropagation()` on the NATIVE event so it never reaches the
- *   document-bubble listener in `use-keyboard-shortcuts`. That hook suppresses
- *   single-key shortcuts only when `isEditableTarget(event)` is true, and a
- *   portalled Radix layer is not editable — so `PageViewPage`'s `Escape` would
- *   run `handleCancelEditing()` and throw the user out of the editor, into a
- *   "Discard changes?" prompt if they had unsaved work. `preventDefault` alone
- *   does NOT stop it: the hook consults `defaultPrevented` only in its
- *   blur-a-native-input branch, never in the dispatch loop — a browser trace
- *   measured `defaultPrevented=true` at both bubble points with the shortcut
- *   firing regardless.
+ * Both halves are needed, for different reasons:
+ *
+ * - `preventDefault()` so Radix skips its own dismissal — we close here
+ *   instead, so `close` runs once rather than twice. Since **#1206** it is also
+ *   the signal `use-keyboard-shortcuts` reads: that hook now yields a
+ *   single-key shortcut whose keystroke is already `defaultPrevented`, which is
+ *   what keeps `PageViewPage`'s `Escape` from running `handleCancelEditing()`
+ *   and throwing the user out of the editor. Before #1206 the hook gated solely
+ *   on `isEditableTarget(event)` — false for a portalled Radix layer — and this
+ *   menu needed `stopPropagation` to survive at all.
+ * - `stopPropagation()` on the NATIVE event, so the key reaches no document
+ *   listener whatsoever. `use-keyboard-shortcuts` is not the only thing bound
+ *   to `document`, and the others have no reason to consult a flag Radix set.
+ *   This is the half that does not depend on the listener being well behaved,
+ *   which is why it stays now that #1206 has fixed the shared hook.
  *
  * The selection bubble menu avoids all of this only because its buttons
  * `preventDefault` on mousedown, so focus never leaves `.tiptap`.
