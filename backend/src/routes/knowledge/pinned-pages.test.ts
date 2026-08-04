@@ -289,9 +289,13 @@ describe('Pinned Pages API', () => {
       expect(response.statusCode).toBe(400);
     });
 
-    // #1130 removed the 8-pin cap. There is no count guard left to trip, so a
-    // user who already holds any number of pins can add another.
-    it('should pin without any cap, however many pins the user already holds', async () => {
+    // #1130 removed the 8-pin cap. The DB is mocked here, so the pin count is
+    // unobservable and this can only show that the statement carries no count
+    // guard — it is named for what it checks (#1180). That a ninth pin really
+    // lands is demonstrated against real Postgres in
+    // `pinned-pages.integration.test.ts`; this stays as the tripwire that still
+    // fires where no test database is reachable and that file is skipped.
+    it('should issue an INSERT that carries no count guard', async () => {
       // already-pinned check (not pinned)
       mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
       // atomic insert (succeeded — no count guard to fail)
