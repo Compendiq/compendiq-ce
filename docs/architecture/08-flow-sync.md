@@ -360,10 +360,18 @@ Other consequences of the fix:
   the same latitude `GET /pages/:id/children` gives. That **parent** parameter
   is never cast to `int`: a Confluence id above 2^31 raises `22003` and aborts
   the statement (#1167). The cycle-check anchor then takes the *resolved*
-  numeric `pages.id`, so it needs no dual arm of its own. The claim is limited
-  to the parent arm — the **moved page's own `:id`** is still an uncast
-  `WHERE id = $1`, so `PUT /api/pages/CONF-1/move` and an `:id` above 2^31 are
-  `500`s. Pre-existing and shared with `/reorder`; not addressed by #1166.
+  numeric `pages.id`, so it needs no dual arm of its own.
+- **The moved page's own `:id` is validated, not widened.** It stays a bare
+  `WHERE id = $1`, which casts the text parameter to int4 and therefore aborted
+  the statement for anything that is not one: `PUT /api/pages/CONF-1/move` was a
+  `22P02` and an `:id` above 2^31 a `22003`, both surfacing as `500`. The
+  `IdParamSchema` in `local-spaces.ts` now refuses a non-int4 identifier up
+  front, so those are `400 Invalid page ID` — a guard at the schema, so the
+  three routes sharing it (`/move`, `/reorder`, `/breadcrumb`) are all covered
+  and a fourth cannot reintroduce it. Deliberately **not** the dual-arm
+  resolution the *parent* lookup uses: these address a local row by its primary
+  key and the frontend sends exactly that, so accepting `confluence_id` here
+  would change which pages they reach rather than fix an error.
 - **An ambiguous identifier is refused with `409`, not resolved to a winner.**
   Picking one row settles the `path` and the stored key, but the value stored
   stays ambiguous and every reader resolves it against *both* arms — so the

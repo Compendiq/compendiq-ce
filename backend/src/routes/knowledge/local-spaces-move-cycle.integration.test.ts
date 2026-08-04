@@ -564,6 +564,64 @@ describe.skipIf(!dbAvailable)('PUT /api/pages/:id/move — cycle guard against r
       expect((await getPageRow(child!)).parent_id).toBeNull();
     });
 
+    // ── The route's OWN `:id`, as opposed to the parent identifier ──────────
+    //
+    // #1166 review follow-up. `:id` is spent on a bare `WHERE id = $1`, so
+    // Postgres casts the text parameter to int4 and an identifier that is not
+    // one aborts the statement instead of failing to match — 22P02 for
+    // non-numeric, 22003 above 2^31, both surfacing as a 500 for what is simply
+    // not a page id these routes accept. Asserted against real Postgres because
+    // that is where the cast happens; a mocked query() accepts anything.
+    describe(':id validation (#1166 review)', () => {
+      // Status only: this file's harness flattens every ZodError to
+      // `{ error: 'Validation failed' }`, where `app.ts` emits the schema's own
+      // `id: Invalid page ID`. The status is the whole point anyway — 500 was
+      // the bug, and it is what the user could not act on.
+      it.each([
+        ['non-numeric', 'CONF-1'],
+        ['above int4', '3000000000'],
+        ['far above int4', '99999999999999999999'],
+      ])('refuses a %s :id on /move with 400, not 500', async (_label, badId) => {
+        const [parent] = await createStandaloneChain(1, 'idguard');
+
+        const response = await app.inject({
+          method: 'PUT',
+          url: `/api/pages/${badId}/move`,
+          payload: { parentId: parent },
+        });
+
+        expect(response.statusCode).toBe(400);
+        // Nothing was written on the way to refusing.
+        expect((await getPageRow(parent!)).parent_id).toBeNull();
+      });
+
+      // The guard is on the shared schema, so every route in the file gets it.
+      it('refuses a non-int4 :id on /reorder too', async () => {
+        const response = await app.inject({
+          method: 'PUT',
+          url: '/api/pages/3000000000/reorder',
+          payload: { sortOrder: 1 },
+        });
+
+        expect(response.statusCode).toBe(400);
+      });
+
+      // The negative control: a well-formed id that simply names no row is a
+      // 404, exactly as before. A guard that turned every miss into a 400 would
+      // pass the rows above and fail this.
+      it('still 404s a well-formed :id that names no page', async () => {
+        const [parent] = await createStandaloneChain(1, 'idguard404');
+
+        const response = await app.inject({
+          method: 'PUT',
+          url: '/api/pages/2147483647/move',
+          payload: { parentId: parent },
+        });
+
+        expect(response.statusCode).toBe(404);
+      });
+    });
+
     it('rejects a cycle when the target parent is addressed by its confluence id', async () => {
       const [root, , leaf] = await createConfluenceChain(['c3-root', 'c3-mid', 'c3-leaf']);
 

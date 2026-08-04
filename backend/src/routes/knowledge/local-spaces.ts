@@ -28,7 +28,37 @@ const UpdateLocalSpaceSchema = z.object({
 });
 
 const KeyParamSchema = z.object({ key: z.string().min(1) });
-const IdParamSchema = z.object({ id: z.string().min(1) });
+
+/** Largest value `pages.id` can hold — the column is SERIAL, i.e. int4. */
+const MAX_PAGE_ID = 2147483647;
+
+/**
+ * `:id` for the three routes below is the moved/reordered page's own
+ * `pages.id`, and every one of them spends it on a bare `WHERE id = $1`.
+ *
+ * Postgres casts the text parameter to int4 there, so an identifier that is
+ * not a valid int4 aborts the statement rather than failing to match: `abc`
+ * raises `22P02 invalid_text_representation` and a Confluence content id above
+ * 2^31 raises `22003 numeric_value_out_of_range`. Both surfaced as a 500 —
+ * `PUT /api/pages/CONF-1/move` and `PUT /api/pages/3000000000/reorder` were
+ * "Internal Server Error" for what is simply not a page id this route accepts.
+ *
+ * Guarded at the schema rather than at each call site so a fourth route added
+ * to this file cannot reintroduce it. The bound is what makes it total: a
+ * digits-only check alone still overflows.
+ *
+ * This is deliberately NOT the dual-arm `confluence_id = $1 OR id::text = $1`
+ * resolution that `GET /pages/:id/children` and the *parent* lookup in `/move`
+ * use (#1167). Those accept either identifier by design; these three address a
+ * local row by its primary key, the frontend sends exactly that, and widening
+ * them would change which pages they can reach rather than fix an error.
+ */
+const IdParamSchema = z.object({
+  id: z
+    .string()
+    .min(1)
+    .refine((v) => /^\d+$/.test(v) && Number(v) <= MAX_PAGE_ID, 'Invalid page ID'),
+});
 
 const MovePageSchema = z.object({
   parentId: z.union([z.string(), z.number()]).nullable(),
