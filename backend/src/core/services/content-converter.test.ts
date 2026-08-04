@@ -505,13 +505,73 @@ describe('content-converter', () => {
     // rewrite the third-party macro into a native expand on the first editor
     // save. These cases pin the identity round-trip that prevents that.
     describe('macro identity on <details> (#1211)', () => {
-      it('writes back two different ac:name values from one mixed document', () => {
+      it('writes back two different ac:name values, each on its own body', () => {
         const html =
           '<details data-macro-name="expand"><summary>Native</summary><p>A</p></details>' +
           '<details data-macro-name="ui-expand"><summary>Refined</summary><p>B</p></details>';
         const xhtml = htmlToConfluence(html);
+        // Pin the name-to-content pairing, not just that both values appear
+        // somewhere — a reverse-loop regression that SWAPPED the identities
+        // would pass a presence-only assertion (PR #1216 review).
+        const native = xhtml.match(
+          /<ac:structured-macro ac:name="expand">[\s\S]*?<\/ac:structured-macro>/,
+        )?.[0];
+        expect(native).toBeDefined();
+        expect(native).toContain('Native');
+        expect(native).toContain('<p>A</p>');
+        expect(native).not.toContain('Refined');
+        const refined = xhtml.match(
+          /<ac:structured-macro ac:name="ui-expand">[\s\S]*?<\/ac:structured-macro>/,
+        )?.[0];
+        expect(refined).toBeDefined();
+        expect(refined).toContain('Refined');
+        expect(refined).toContain('<p>B</p>');
+      });
+
+      it('round-trips nested expand sections without leaking a literal <details> (innermost-first)', () => {
+        // Confluence natively supports expand-inside-expand. The reverse loop
+        // rebuilds each body by re-parsing innerHTML, so converting outer
+        // before inner would copy the still-raw inner <details> into the new
+        // body — a copy the loop snapshot never visits — and ship a literal
+        // HTML5 element to Confluence (PR #1216 review).
+        const storage =
+          '<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Outer</ac:parameter><ac:rich-text-body>' +
+          '<p>before</p>' +
+          '<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Inner</ac:parameter><ac:rich-text-body><p>deep</p></ac:rich-text-body></ac:structured-macro>' +
+          '<p>after</p>' +
+          '</ac:rich-text-body></ac:structured-macro>';
+        const html = confluenceToHtml(storage);
+        const xhtml = htmlToConfluence(html);
+        expect(xhtml).not.toContain('<details');
+        expect(xhtml.match(/ac:name="expand"/g)).toHaveLength(2);
+        expect(xhtml).toContain('<ac:parameter ac:name="title">Outer</ac:parameter>');
+        expect(xhtml).toContain('<ac:parameter ac:name="title">Inner</ac:parameter>');
+        expect(xhtml).toContain('<p>deep</p>');
+      });
+
+      it('keeps a nested foreign identity intact inside a native section', () => {
+        const xhtml = htmlToConfluence(
+          '<details data-macro-name="expand"><summary>Outer</summary>' +
+            '<details data-macro-name="ui-expand"><summary>Inner</summary><p>deep</p></details>' +
+            '</details>',
+        );
+        expect(xhtml).not.toContain('<details');
         expect(xhtml).toContain('ac:name="expand"');
         expect(xhtml).toContain('ac:name="ui-expand"');
+      });
+
+      it('does not let a summary-less outer section steal a nested summary as its title', () => {
+        const xhtml = htmlToConfluence(
+          '<details>' +
+            '<details data-macro-name="ui-expand"><summary>InnerTitle</summary><p>deep</p></details>' +
+            '</details>',
+        );
+        // Exactly one title parameter, and it belongs to the inner macro.
+        expect(xhtml.match(/ac:name="title"/g)).toHaveLength(1);
+        const inner = xhtml.match(
+          /<ac:structured-macro ac:name="ui-expand">[\s\S]*?<\/ac:structured-macro>/,
+        )?.[0];
+        expect(inner).toContain('<ac:parameter ac:name="title">InnerTitle</ac:parameter>');
       });
 
       it('passes an unrecognised macroName through, never coercing to expand', () => {

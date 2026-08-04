@@ -615,9 +615,23 @@ export function htmlToConfluence(html: string): string {
     }
   }
 
-  // Convert expand sections back
-  for (const details of doc.querySelectorAll('details')) {
-    const summary = details.querySelector('summary');
+  // Convert expand sections back — innermost-first. The snapshot below is
+  // static while each macro body is rebuilt by re-parsing the element's
+  // innerHTML (transferInnerHtml), so converting an outer <details> before a
+  // nested one would copy the still-raw inner element into the new body — a
+  // copy the snapshot never visits — and ship a literal HTML5 <details> to
+  // Confluence inside the storage XHTML. querySelectorAll returns document
+  // order (outer before inner), so iterating it reversed converts each inner
+  // section in place first; the outer's later re-parse then copies an
+  // already-converted, inert ac:structured-macro. Confluence supports
+  // expand-inside-expand natively, so this nesting is reachable from sync.
+  for (const details of [...doc.querySelectorAll('details')].reverse()) {
+    // Direct child only: an unscoped querySelector('summary') would let a
+    // summary-less outer section steal (and delete) a nested section's
+    // summary as its own title.
+    const summary = [...details.children].find(
+      (el) => el.tagName.toLowerCase() === 'summary',
+    );
     const macro = doc.createElement('ac:structured-macro');
     // #1211: carry the macro identity the forward pass stamped. Absent →
     // `expand` is safe: only the native expand branch has ever produced a

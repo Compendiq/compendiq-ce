@@ -107,7 +107,13 @@ Custom turndown rules handle Confluence-specific macros:
   editor-created sections are all genuinely expands) and passing an
   unrecognised value through rather than coercing it. Without the stamp, a
   second macro mapping to `<details>` (#1129, Refined "UI Expand") would be
-  silently rewritten into a native expand on the first editor save.
+  silently rewritten into a native expand on the first editor save. The
+  reverse loop converts sections **innermost-first** and reads only a
+  direct-child `<summary>`: Confluence supports expand-inside-expand, and
+  because each macro body is rebuilt by re-parsing `innerHTML`, an
+  outer-first pass would ship the still-raw inner `<details>` to Confluence
+  as a literal HTML element (and a summary-less outer could steal the
+  nested section's title).
 - **Editor schema must stay in sync with these placeholders (#857).**
   The round-trip only holds if the TipTap ProseMirror schema has a node
   whose `parseHTML` matches each placeholder (`panel-*`,
