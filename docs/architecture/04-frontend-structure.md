@@ -220,7 +220,7 @@ sequenceDiagram
     D->>Q: user picks spaceKey / visibility
     Q->>API: GET …/preview?spaceKey=… | ?visibility=…
     API-->>Q: accessChange naming real principals (capped, `truncated`)
-    D->>API: POST …/relocate  (echoes localVersionCount /<br/>confirmDeleteConfluencePage; 409 on a stale echo)
+    D->>API: POST …/relocate  (echoes localVersionCount /<br/>confirmDeleteConfluencePage#59; 409 on a stale echo)
 ```
 
 - The preview is a **dependent query** keyed on the destination, not a manual
