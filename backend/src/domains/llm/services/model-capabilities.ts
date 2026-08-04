@@ -80,7 +80,17 @@ async function readRow(providerId: string, model: string): Promise<CapabilityRow
   return rows[0] ?? null;
 }
 
-/** Writes the verdict and answers with the `probed_at` Postgres stamped on it. */
+/**
+ * Writes the verdict and answers with the `probed_at` Postgres stamped on it.
+ *
+ * The error is truncated on the way IN as well as on the way out (#1184
+ * review). The read boundary is what makes the bound total — it also covers
+ * rows written before this existed — but `probe_error` is an untyped `TEXT`
+ * column holding third-party text, so without this a provider answering with
+ * megabytes of HTML would store all of it, once per model, indefinitely.
+ * Truncating both ends costs nothing and keeps the column's size bounded by
+ * something other than the provider's goodwill.
+ */
 async function persist(
   providerId: string,
   model: string,
@@ -95,7 +105,7 @@ async function persist(
            probed_at = EXCLUDED.probed_at,
            probe_error = EXCLUDED.probe_error
      RETURNING probed_at`,
-    [providerId, model, vision, error ?? null],
+    [providerId, model, vision, truncateProbeError(error)],
   );
   return toIso(rows[0]!.probed_at);
 }

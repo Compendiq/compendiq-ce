@@ -311,6 +311,28 @@ describe.skipIf(!dbAvailable)('model capabilities', () => {
       expect(result.probeError!.length).toBeLessThanOrEqual(PROBE_ERROR_MAX_CHARS);
     });
 
+    // #1184 review: the read boundary is what makes the bound total, but the
+    // column itself must not grow without limit either — `probe_error` is
+    // untyped TEXT holding a third party's error body, one row per model.
+    // Asserted against the stored column, not the return value, so a fix that
+    // only truncates on the way out cannot pass.
+    it('stores the probe error already truncated, not just on read', async () => {
+      const id = await seedProvider();
+      mockProbeVision.mockResolvedValue({
+        vision: null,
+        error: 'z'.repeat(PROBE_ERROR_MAX_CHARS * 3),
+      });
+
+      await refreshVisionCapability(id, 'm');
+
+      const { rows } = await query<{ probe_error: string }>(
+        'SELECT probe_error FROM llm_model_capabilities WHERE provider_id = $1 AND model = $2',
+        [id, 'm'],
+      );
+      expect(rows[0]!.probe_error.length).toBeLessThanOrEqual(PROBE_ERROR_MAX_CHARS);
+      expect(rows[0]!.probe_error).toMatch(/…$/);
+    });
+
     it('leaves a short probe error untouched', async () => {
       const id = await seedProvider();
       await query(
