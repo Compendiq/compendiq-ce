@@ -34,7 +34,9 @@ import { logger } from '../utils/logger.js';
  *      `maxmemory` (#1183). (1) is a mitigation, not a bound — `users x 5 MB`
  *      still fills a 256 MB instance if enough people upload inside one TTL
  *      window — and this is what turns that from an app-wide enqueue outage
- *      into one degraded feature.
+ *      into one degraded feature, wherever Redis answers `INFO` (see
+ *      `assertStagingHeadroom` for the fail-open consequence where it
+ *      does not).
  */
 
 export const STAGED_IMAGE_TTL_SECONDS = 900; // 15 minutes
