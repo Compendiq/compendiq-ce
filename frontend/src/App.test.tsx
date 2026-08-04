@@ -6,10 +6,10 @@ import { useAuthStore } from './stores/auth-store';
 import { App, PageLoadingFallback } from './App';
 
 describe('App – ProtectedRoute token restoration', () => {
-  const fetchSpy = vi.spyOn(globalThis, 'fetch');
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    fetchSpy = vi.spyOn(globalThis, 'fetch');
   });
 
   afterEach(() => {
@@ -133,10 +133,10 @@ describe('App – ProtectedRoute token restoration', () => {
 });
 
 describe('App – ProtectedRoute setup-status fail-safe (#932)', () => {
-  const fetchSpy = vi.spyOn(globalThis, 'fetch');
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    fetchSpy = vi.spyOn(globalThis, 'fetch');
   });
 
   afterEach(() => {
@@ -196,10 +196,10 @@ describe('App – ProtectedRoute setup-status fail-safe (#932)', () => {
 });
 
 describe('App – SetupRoute setup-status error handling (#932)', () => {
-  const fetchSpy = vi.spyOn(globalThis, 'fetch');
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    fetchSpy = vi.spyOn(globalThis, 'fetch');
   });
 
   afterEach(() => {
@@ -343,10 +343,10 @@ describe('PageLoadingFallback', () => {
 });
 
 describe('App – route-based code splitting (#186)', () => {
-  const fetchSpy = vi.spyOn(globalThis, 'fetch');
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    fetchSpy = vi.spyOn(globalThis, 'fetch');
     fetchSpy.mockResolvedValue(
       new Response(JSON.stringify({}), {
         status: 200,

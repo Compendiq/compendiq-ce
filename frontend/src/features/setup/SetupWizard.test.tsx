@@ -25,7 +25,7 @@ function typeInto(element: HTMLElement, value: string) {
   fireEvent.change(element, { target: { value } });
 }
 
-const fetchSpy = vi.spyOn(globalThis, 'fetch');
+let fetchSpy: ReturnType<typeof vi.spyOn>;
 
 function mockFetchForSetup(
   opts: { adminExists: boolean } | { steps: { admin: boolean; llm: boolean; confluence: boolean } },
@@ -125,7 +125,7 @@ function mockLlmTestFailure(error: string) {
 describe('SetupWizard', () => {
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    fetchSpy = vi.spyOn(globalThis, 'fetch');
     useAuthStore.getState().clearAuth();
     sessionStorage.clear();
 

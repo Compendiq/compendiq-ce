@@ -13,10 +13,10 @@ function createWrapper() {
 }
 
 describe('useSetupStatus', () => {
-  const fetchSpy = vi.spyOn(globalThis, 'fetch');
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    fetchSpy = vi.spyOn(globalThis, 'fetch');
   });
 
   it('returns loading state initially', () => {
