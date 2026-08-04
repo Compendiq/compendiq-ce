@@ -149,12 +149,20 @@ export function parentKeyFor(source: string, id: number, confluenceId: string | 
  * either the old or the new key collides, rewriting `parent_id = <key>` would
  * silently re-parent another page's children. Detect it and refuse rather than
  * corrupt the tree.
+ *
+ * Shared with `PUT /api/pages/:id/move` since #1166 — the two writers of
+ * `parent_id` must agree on what counts as ambiguous. `/move` cannot get away
+ * with picking a winner instead: choosing one row settles the `path` and the
+ * stored key, but the *stored key itself stays ambiguous*, so the cycle guard
+ * would validate one candidate parent while readers follow the other. That is
+ * how a page became its own parent (#891 regression, caught on #1166 review).
  */
-async function assertIdentifierUnambiguous(
+export async function assertIdentifierUnambiguous(
   key: string,
   pageId: number,
   label: string,
   txClient?: PoolClient,
+  action: 'relocate' | 'move' = 'relocate',
 ): Promise<void> {
   // Soft-deleted rows are deliberately IN scope. `pages_confluence_id_unique`
   // (migration 029) is partial on `confluence_id IS NOT NULL` and does not
@@ -171,8 +179,8 @@ async function assertIdentifierUnambiguous(
   if (first) {
     throw new RelocateError(
       409,
-      `Cannot relocate: the ${label} identifier "${key}" is also used by page ${first.id} ` +
-        `("${first.title}"), so re-pointing child pages would be ambiguous.`,
+      `Cannot ${action}: the ${label} identifier "${key}" is also used by page ${first.id} ` +
+        `("${first.title}"), so the parent link would be ambiguous.`,
       { conflictingPageId: first.id },
     );
   }
