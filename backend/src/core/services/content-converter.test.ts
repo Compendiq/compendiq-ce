@@ -99,7 +99,9 @@ describe('content-converter', () => {
 
     it('converts expand macros to <details>', () => {
       const html = confluenceToHtml(EXPAND_PAGE);
-      expect(html).toContain('<details>');
+      // #1211: the forward pass stamps the producing macro's identity so the
+      // reverse pass can write back the right ac:name.
+      expect(html).toContain('<details data-macro-name="expand">');
       expect(html).toContain('<summary>How do I reset my password?</summary>');
       expect(html).toContain('Settings &gt; Account');
       expect(html).toContain('<summary>What models are supported?</summary>');
@@ -227,7 +229,7 @@ describe('content-converter', () => {
       expect(html).toContain('<pre><code class="language-python">');
       expect(html).toContain('print("hello world")');
       expect(html).toContain('class="panel-info"');
-      expect(html).toContain('<details>');
+      expect(html).toContain('<details data-macro-name="expand">');
       expect(html).toContain('<summary>Details</summary>');
     });
 
@@ -493,6 +495,76 @@ describe('content-converter', () => {
       expect(xhtml).toContain('ac:name="expand"');
       expect(xhtml).toContain('How do I reset my password?');
       expect(xhtml).toContain('ac:rich-text-body');
+    });
+
+    // ========== Macro identity on <details> (#1211) ==========
+    //
+    // htmlToConfluence used to write ac:name="expand" on EVERY <details>. That
+    // is correct only while exactly one macro maps to <details>; the moment a
+    // second one does (#1129, Refined "UI Expand"), write-back would silently
+    // rewrite the third-party macro into a native expand on the first editor
+    // save. These cases pin the identity round-trip that prevents that.
+    describe('macro identity on <details> (#1211)', () => {
+      it('writes back two different ac:name values from one mixed document', () => {
+        const html =
+          '<details data-macro-name="expand"><summary>Native</summary><p>A</p></details>' +
+          '<details data-macro-name="ui-expand"><summary>Refined</summary><p>B</p></details>';
+        const xhtml = htmlToConfluence(html);
+        expect(xhtml).toContain('ac:name="expand"');
+        expect(xhtml).toContain('ac:name="ui-expand"');
+      });
+
+      it('passes an unrecognised macroName through, never coercing to expand', () => {
+        const xhtml = htmlToConfluence(
+          '<details data-macro-name="whatever"><summary>S</summary><p>B</p></details>',
+        );
+        expect(xhtml).toContain('ac:name="whatever"');
+        expect(xhtml).not.toContain('ac:name="expand"');
+      });
+
+      it('defaults an attribute-less <details> to expand (stored content + editor-created sections)', () => {
+        const xhtml = htmlToConfluence('<details><summary>S</summary><p>B</p></details>');
+        expect(xhtml).toContain('ac:name="expand"');
+      });
+
+      it('persists non-title parameters through the forward pass, title staying in <summary> only', () => {
+        const page =
+          '<ac:structured-macro ac:name="expand">' +
+          '<ac:parameter ac:name="title">T</ac:parameter>' +
+          '<ac:parameter ac:name="breakout-mode">wide</ac:parameter>' +
+          '<ac:rich-text-body><p>B</p></ac:rich-text-body></ac:structured-macro>';
+        const html = confluenceToHtml(page);
+        expect(html).toContain('data-macro-name="expand"');
+        expect(html).toContain('breakout-mode');
+        // title is not duplicated into the params JSON — <summary> is its
+        // single source of truth.
+        expect(html).not.toMatch(/data-macro-params="[^"]*title/);
+      });
+
+      it('re-emits data-macro-params as ac:parameter entries, <summary> winning over a stale title param', () => {
+        const xhtml = htmlToConfluence(
+          '<details data-macro-name="ui-expand" ' +
+            'data-macro-params=\'{"expanded":"true","title":"stale"}\'>' +
+            '<summary>Real Title</summary><p>B</p></details>',
+        );
+        expect(xhtml).toContain('ac:name="ui-expand"');
+        expect(xhtml).toContain('<ac:parameter ac:name="expanded">true</ac:parameter>');
+        expect(xhtml).toContain('<ac:parameter ac:name="title">Real Title</ac:parameter>');
+        expect(xhtml).not.toContain('stale');
+      });
+
+      it('preserves a foreign identity on the next sync via the unknown-macro net', () => {
+        // No forward branch maps ui-expand to <details> yet (that is #1129),
+        // so writing one back and re-importing must land it in the #865
+        // unknown-macro placeholder with its identity intact — not vanish and
+        // not become a native expand.
+        const xhtml = htmlToConfluence(
+          '<details data-macro-name="ui-expand"><summary>T</summary><p>B</p></details>',
+        );
+        const html = confluenceToHtml(xhtml);
+        expect(html).toContain('class="confluence-macro-unknown"');
+        expect(html).toContain('data-macro-name="ui-expand"');
+      });
     });
 
     it('round-trips status macros', () => {

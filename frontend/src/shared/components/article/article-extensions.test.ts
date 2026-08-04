@@ -24,6 +24,42 @@ describe('article-extensions', () => {
     });
   });
 
+  // #1211: the backend stamps data-macro-name / data-macro-params on
+  // <details> so the reverse pass can write back the right ac:name once a
+  // second macro maps to this element (#1129). ProseMirror serializes only
+  // DECLARED attributes — if Details stopped declaring these, an editor save
+  // would strip them and the write-back would silently rewrite a foreign
+  // macro into a native expand. These cases pin survival through a real
+  // editor load → serialize round-trip, the failure mode invisible to
+  // backend-only tests.
+  describe('Details macro identity (#1211)', () => {
+    function createDetailsEditor(content: string) {
+      return new Editor({ extensions: [StarterKit, Details, DetailsSummary], content });
+    }
+
+    it('carries data-macro-name and data-macro-params through an editor round-trip', () => {
+      const editor = createDetailsEditor(
+        '<details data-macro-name="ui-expand" ' +
+          'data-macro-params="{&quot;expanded&quot;:&quot;true&quot;}">' +
+          '<summary>T</summary><p>B</p></details>',
+      );
+      const output = editor.getHTML();
+      expect(output).toContain('data-macro-name="ui-expand"');
+      expect(output).toContain('data-macro-params=');
+      expect(output).toContain('expanded');
+      editor.destroy();
+    });
+
+    it('omits both attributes when absent (editor-created sections stay bare)', () => {
+      const editor = createDetailsEditor('<details><summary>T</summary><p>B</p></details>');
+      const output = editor.getHTML();
+      expect(output).toContain('<details');
+      expect(output).not.toContain('data-macro-name');
+      expect(output).not.toContain('data-macro-params');
+      editor.destroy();
+    });
+  });
+
   describe('DetailsSummary', () => {
     it('has correct name', () => {
       expect(DetailsSummary.name).toBe('detailsSummary');

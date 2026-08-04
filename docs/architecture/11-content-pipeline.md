@@ -55,6 +55,7 @@ Custom turndown rules handle Confluence-specific macros:
 | `ac:structured-macro[code]`          | `<pre><code class="language-x">`                             | ` ```x … ``` ` fenced block   |
 | `ac:task-list`                       | `<ul data-task-list>`                                        | `- [ ]` / `- [x]`             |
 | `ac:panel` (info/note/warn)          | `<div class="panel panel-…">`                                | `> **INFO:** …` block-quote   |
+| `ac:structured-macro[expand]`        | `<details data-macro-name="expand" data-macro-params="{…}">` + `<summary>` holding the `title` param (#1211: the identity stamp lets the reverse pass write back the producing macro's `ac:name` — absent defaults to `expand`, an unrecognised value passes through, never coerced — so a second `<details>`-producing macro (#1129) survives editor saves) | flattened content (`details` has no turndown rule and is absent from `MEDIA_SELECTOR` — pre-existing; #1129 must close this before mapping a foreign macro onto `<details>`) |
 | `ri:user`                            | `<span class="confluence-user-mention" data-username="…">@user</span>` | `@user` (inline) |
 | `ri:page`                            | `<a data-page-link>`                                         | `[title](compendiq://page/ID)` |
 | `ac:structured-macro[drawio]`        | `<img data-drawio>`                                          | `![diagram](attachment-url)`  |
@@ -97,13 +98,26 @@ Custom turndown rules handle Confluence-specific macros:
   handler for this div, so opening a synced page with any unhandled macro in
   the editor and saving (or applying Improve / publishing a draft / restoring
   a version) permanently deleted the macro from the Confluence page.
+- `<details>` carries its producing macro's identity (#1211):
+  the forward expand branch stamps `data-macro-name="expand"` (plus
+  non-`title` parameters as JSON `data-macro-params`; `title` lives in
+  `<summary>` only), and the reverse pass writes that value back as
+  `ac:name` — defaulting to `expand` when absent (safe: only the native
+  expand branch has ever produced `<details>`, so stored `body_html` and
+  editor-created sections are all genuinely expands) and passing an
+  unrecognised value through rather than coercing it. Without the stamp, a
+  second macro mapping to `<details>` (#1129, Refined "UI Expand") would be
+  silently rewritten into a native expand on the first editor save.
 - **Editor schema must stay in sync with these placeholders (#857).**
   The round-trip only holds if the TipTap ProseMirror schema has a node
   whose `parseHTML` matches each placeholder (`panel-*`,
   `confluence-toc`, `confluence-jira-issue`, `confluence-include-macro`,
   `confluence-labels-macro`, `confluence-macro-unknown`,
   `confluence-user-mention`) and whose `renderHTML` re-emits the same
-  class + `data-*` attributes. ProseMirror silently unwraps any element
+  class + `data-*` attributes. The `details` node likewise declares
+  `macroName`/`macroParams` (#1211) — ProseMirror serializes only declared
+  attributes, so dropping those declarations silently reintroduces the
+  rewrite bug. ProseMirror silently unwraps any element
   with no matching parse rule, so a placeholder the editor doesn't know
   about is dropped from `getHTML()` and then permanently deleted from the
   Confluence page on the next save. The edit-mode schema

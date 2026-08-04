@@ -166,6 +166,18 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey
     const bodyEl = byTag(macro, 'ac:rich-text-body')[0];
 
     const details = doc.createElement('details');
+    // #1211: stamp which macro produced this <details> so the reverse pass can
+    // write back the right ac:name once a second macro maps to this element
+    // (#1129). Parameters other than `title` are persisted the same way the
+    // #865 unknown-macro net does; `title` stays in <summary> only — one
+    // source of truth per value, and the reverse pass rebuilds the parameter
+    // from there.
+    details.setAttribute('data-macro-name', 'expand');
+    const extraParams = collectDirectTextParams(macro);
+    delete extraParams.title;
+    if (Object.keys(extraParams).length > 0) {
+      details.setAttribute('data-macro-params', JSON.stringify(extraParams));
+    }
     const summary = doc.createElement('summary');
     summary.textContent = title;
     details.appendChild(summary);
@@ -607,7 +619,15 @@ export function htmlToConfluence(html: string): string {
   for (const details of doc.querySelectorAll('details')) {
     const summary = details.querySelector('summary');
     const macro = doc.createElement('ac:structured-macro');
-    macro.setAttribute('ac:name', 'expand');
+    // #1211: carry the macro identity the forward pass stamped. Absent →
+    // `expand` is safe: only the native expand branch has ever produced a
+    // <details> (so every stored body_html predating the stamp genuinely is
+    // one), and editor-created sections (Editor.tsx) carry no attribute
+    // either. An unrecognised value is passed through, never coerced —
+    // coercion is precisely the silent-rewrite bug this exists to prevent,
+    // and passthrough grants nothing new: the #865 unknown-macro net already
+    // round-trips arbitrary data-macro-name values.
+    macro.setAttribute('ac:name', details.getAttribute('data-macro-name') || 'expand');
 
     if (summary) {
       const param = doc.createElement('ac:parameter');
@@ -615,6 +635,27 @@ export function htmlToConfluence(html: string): string {
       param.textContent = summary.textContent ?? '';
       macro.appendChild(param);
       summary.remove();
+    }
+
+    // Re-emit parameters persisted by the forward pass (mirrors the
+    // unknown-macro handler below). A `title` key is skipped when <summary>
+    // provided the parameter above — the summary is its source of truth.
+    const rawParams = details.getAttribute('data-macro-params');
+    if (rawParams) {
+      try {
+        const params = JSON.parse(rawParams) as Record<string, unknown>;
+        for (const [paramName, paramValue] of Object.entries(params)) {
+          if (typeof paramValue !== 'string') continue;
+          if (paramName === 'title' && summary) continue;
+          const p = doc.createElement('ac:parameter');
+          p.setAttribute('ac:name', paramName);
+          p.textContent = paramValue;
+          macro.appendChild(p);
+        }
+      } catch {
+        // Malformed params attribute — preserve the macro without them rather
+        // than fail the whole write-back.
+      }
     }
 
     const body = doc.createElement('ac:rich-text-body');
