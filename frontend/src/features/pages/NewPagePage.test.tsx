@@ -4,6 +4,16 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { NewPagePage } from './NewPagePage';
 
+// Toast is the only channel a failed import has — an assertion that the editor
+// was left alone says nothing about whether the user was told why (#1178).
+const { mockToastError, mockToastSuccess } = vi.hoisted(() => ({
+  mockToastError: vi.fn(),
+  mockToastSuccess: vi.fn(),
+}));
+vi.mock('sonner', () => ({
+  toast: { error: mockToastError, success: mockToastSuccess },
+}));
+
 const mockNavigate = vi.fn();
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');
@@ -161,6 +171,8 @@ describe('NewPagePage', () => {
     mockSetContent.mockClear();
     mockUseTemplateMutateAsync.mockReset();
     mockImportMutateAsync.mockReset();
+    mockToastError.mockClear();
+    mockToastSuccess.mockClear();
     templatesState.items.length = 0;
     editorHtml.current = '';
     spacesState.confluence = [...DEFAULT_CONFLUENCE_SPACES];
@@ -376,6 +388,59 @@ describe('NewPagePage', () => {
       await waitFor(() => expect(mockImportMutateAsync).toHaveBeenCalled());
       expect(mockSetContent).not.toHaveBeenCalled();
       expect(mockNavigate).not.toHaveBeenCalled();
+      // The reason has to reach the user. Asserting only that nothing changed
+      // is what made this class of failure so hard to diagnose (#1178): the
+      // test passed just as happily when the toast said nothing usable.
+      await waitFor(() => expect(mockToastError).toHaveBeenCalledWith('Markdown too large (max ~1MB)'));
+      expect(mockToastSuccess).not.toHaveBeenCalled();
+    });
+
+    // ── Oversize files are refused here, not by a 413 the user cannot read ───
+    // #1178: there was no size guard at all, so an oversize file round-tripped
+    // to the edge and came back as nginx's HTML "Request Entity Too Large".
+
+    /** A file whose `size` and text are both `chars` characters of ASCII. */
+    function importOversizeFile(chars: number) {
+      const input = screen.getByTestId('import-markdown-input');
+      const file = new File(['x'.repeat(chars)], 'big.md', { type: 'text/markdown' });
+      fireEvent.change(input, { target: { files: [file] } });
+    }
+
+    it('refuses a file past the character limit, naming the limit', async () => {
+      render(<NewPagePage />, { wrapper: createWrapper() });
+
+      importOversizeFile(1_000_001);
+
+      await waitFor(() => expect(mockToastError).toHaveBeenCalled());
+      const message = mockToastError.mock.calls[0][0] as string;
+      expect(message).toContain('1,000,000');
+      expect(message).toMatch(/character/i);
+      // No round-trip: the point is to fail before the request.
+      expect(mockImportMutateAsync).not.toHaveBeenCalled();
+      expect(mockSetContent).not.toHaveBeenCalled();
+    });
+
+    it('refuses a file too large to be worth reading, without reading it', async () => {
+      render(<NewPagePage />, { wrapper: createWrapper() });
+
+      // 1,000,000 characters is at most ~3 MB of UTF-8, so anything past 4 MB
+      // cannot be under the character limit — refuse it on bytes rather than
+      // pulling it into memory to count.
+      importOversizeFile(4 * 1_000_000 + 1);
+
+      await waitFor(() => expect(mockToastError).toHaveBeenCalled());
+      expect(mockToastError.mock.calls[0][0]).toMatch(/too large|MB/i);
+      expect(mockImportMutateAsync).not.toHaveBeenCalled();
+    });
+
+    it('accepts a file at the character limit', async () => {
+      mockImportMutateAsync.mockResolvedValue({ title: 'big', bodyHtml: '<p>x</p>', labels: [] });
+      render(<NewPagePage />, { wrapper: createWrapper() });
+
+      importOversizeFile(1_000_000);
+
+      await waitFor(() => expect(mockImportMutateAsync).toHaveBeenCalled());
+      expect(mockToastError).not.toHaveBeenCalled();
     });
   });
 

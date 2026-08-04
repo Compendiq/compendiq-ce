@@ -14,7 +14,7 @@ vi.mock('../../stores/auth-store', () => ({
 }));
 
 // Import after mocks are set up
-const { apiFetch, logoutApi } = await import('./api');
+const { apiFetch, logoutApi, ApiError } = await import('./api');
 
 /** Build a JWT whose payload carries the given `exp` (seconds since epoch). */
 function makeJwt(exp: number): string {
@@ -208,6 +208,127 @@ describe('apiFetch', () => {
     const result = await apiFetch('/data');
     expect(result).toEqual({ result: 'success' });
     expect(mockSetAuth).toHaveBeenCalledWith('refreshed', expect.any(Object));
+  });
+
+  // ── Response decoding: what the user is left holding when it goes wrong ────
+  // Every call in the app goes through here, so these cover the ordinary
+  // successes as well as the failures that produced an undiagnosable toast
+  // (#1178).
+
+  describe('success path', () => {
+    it('returns the parsed body for a JSON response', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(JSON.stringify({ id: 7, title: 'Page' }), {
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+
+      await expect(apiFetch('/pages/7')).resolves.toEqual({ id: 7, title: 'Page' });
+    });
+
+    it('resolves to undefined when the response is not JSON', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response('plain text', { headers: { 'Content-Type': 'text/plain' } }),
+      );
+
+      await expect(apiFetch('/thing')).resolves.toBeUndefined();
+    });
+
+    it('resolves to undefined for a 204, which carries no body to parse', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(null, { status: 204, headers: { 'Content-Type': 'application/json' } }),
+      );
+
+      await expect(apiFetch('/pages/7')).resolves.toBeUndefined();
+    });
+
+    it('reports an empty JSON body as an ApiError, not a raw SyntaxError', async () => {
+      // A 200 that promises JSON and delivers nothing. `res.json()` rejects
+      // with a SyntaxError that is not an ApiError, so every caller's
+      // `err instanceof ApiError` check misses and the toast shows a parser
+      // message — or nothing at all.
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response('', { status: 200, headers: { 'Content-Type': 'application/json' } }),
+      );
+
+      const err = await apiFetch('/pages/7').catch((e) => e);
+      expect(err).toBeInstanceOf(ApiError);
+      expect(err.statusCode).toBe(200);
+      expect(err.message).toMatch(/empty|malformed/i);
+    });
+
+    it('reports a malformed JSON body as an ApiError', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response('<html>oops</html>', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+
+      await expect(apiFetch('/pages/7')).rejects.toBeInstanceOf(ApiError);
+    });
+  });
+
+  describe('error path', () => {
+    it("surfaces the backend's own message verbatim", async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(JSON.stringify({ message: 'Markdown too large (max ~1MB)' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+
+      const err = await apiFetch('/pages/import/preview').catch((e) => e);
+      expect(err).toBeInstanceOf(ApiError);
+      expect(err.statusCode).toBe(400);
+      expect(err.message).toBe('Markdown too large (max ~1MB)');
+    });
+
+    it('names the status when the error body is JSON without a message', async () => {
+      // The one branch that could ever emit the bare 'Request failed' — which
+      // took a full code audit to identify, because the string named nothing.
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(JSON.stringify({ error: 'Bad Gateway' }), {
+          status: 502,
+          statusText: '',
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+
+      const err = await apiFetch('/pages').catch((e) => e);
+      expect(err.message).toContain('502');
+    });
+
+    it('names the status for an HTML error page from the edge proxy', async () => {
+      // What nginx returns above client_max_body_size: an HTML 413 that
+      // Fastify never saw, so none of the app's error contract applies.
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response('<html><body><center>nginx</center></body></html>', {
+          status: 413,
+          statusText: 'Request Entity Too Large',
+          headers: { 'Content-Type': 'text/html' },
+        }),
+      );
+
+      const err = await apiFetch('/pages/import/preview').catch((e) => e);
+      expect(err).toBeInstanceOf(ApiError);
+      expect(err.statusCode).toBe(413);
+      expect(err.message).toContain('413');
+      expect(err.message).toContain('Request Entity Too Large');
+    });
+
+    it('names the status when there is no body and no reason phrase', async () => {
+      // HTTP/2 has no reason phrase, so statusText is always '' — and the old
+      // `body.message ?? …` let that empty string through as the message.
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(null, { status: 500, statusText: '' }),
+      );
+
+      const err = await apiFetch('/pages').catch((e) => e);
+      expect(err).toBeInstanceOf(ApiError);
+      expect(err.message.trim().length).toBeGreaterThan(0);
+      expect(err.message).toContain('500');
+    });
   });
 });
 

@@ -31,8 +31,35 @@ const MAX_TITLE_LENGTH = 500;
 const MAX_LABEL_LENGTH = 100;
 const MAX_LABELS = 50;
 
+/** Longest Markdown document the route will convert, in UTF-16 code units. */
+const MAX_MARKDOWN_LENGTH = 1_000_000;
+
+/**
+ * Transport ceiling for the JSON request body (#1178).
+ *
+ * Fastify's default is 1 MiB, which is *below* what a document at
+ * `MAX_MARKDOWN_LENGTH` can serialise to — the two limits are not in the same
+ * unit. `JSON.stringify` emits a UTF-16 code unit as up to 3 bytes of UTF-8
+ * (any BMP character from U+0800 up, so all CJK) or as up to 6 bytes when it
+ * has to escape it (a control character becomes a six-byte `\uXXXX`), so the
+ * worst case for a document the schema accepts is ~6 MB. Without this option a
+ * perfectly valid file gets a bare `FST_ERR_CTP_BODY_TOO_LARGE` 413 that names
+ * no limit the user can act on, and the schema's own message is unreachable.
+ *
+ * The edge in front of this (`frontend/nginx.conf`, `client_max_body_size`)
+ * is set higher again, so the rejection a user sees always comes from here or
+ * from the schema — never from nginx as an HTML error page.
+ */
+const MAX_IMPORT_BODY_BYTES = 8 * 1024 * 1024;
+
 const ImportMarkdownSchema = z.object({
-  markdown: z.string().min(1, 'markdown field required').max(1_000_000, 'Markdown too large (max ~1MB)'),
+  markdown: z.string()
+    .min(1, 'markdown field required')
+    .max(MAX_MARKDOWN_LENGTH, 'Markdown too large (max ~1MB)')
+    // `.min(1)` accepts "   \n\n \t \n", which converts to an empty body — a
+    // "successful" import that loads nothing into the editor and gives the
+    // user nothing to react to (#1178).
+    .refine((md) => md.trim().length > 0, 'This Markdown file is blank — it contains only whitespace'),
   title: z.string().min(1).max(MAX_TITLE_LENGTH).optional(),
   labels: z.array(z.string().min(1).max(MAX_LABEL_LENGTH)).max(MAX_LABELS).optional(),
 });
@@ -42,7 +69,7 @@ export async function pagesImportRoutes(fastify: FastifyInstance) {
 
   // POST /api/pages/import/preview — convert Markdown (with optional YAML
   // front-matter) into editor-ready HTML. Persists nothing.
-  fastify.post('/pages/import/preview', async (request) => {
+  fastify.post('/pages/import/preview', { bodyLimit: MAX_IMPORT_BODY_BYTES }, async (request) => {
     const parsed = ImportMarkdownSchema.safeParse(request.body);
     if (!parsed.success) {
       throw fastify.httpErrors.badRequest(
@@ -51,23 +78,68 @@ export async function pagesImportRoutes(fastify: FastifyInstance) {
     }
     const body = parsed.data;
 
-    return convertMarkdown(body.markdown, body.title, body.labels);
+    // The conversion pipeline is deep (marked → JSDOM → turndown rules →
+    // DOMPurify) and its inputs are whatever file the user picked. An
+    // unexpected throw anywhere in there is a 500 with 'Internal Server Error'
+    // — true, and useless: the user cannot tell a server outage from a file
+    // they could fix by deleting one broken table (#1178).
+    let converted;
+    try {
+      converted = await convertMarkdown(body.markdown, body.title, body.labels);
+    } catch (err) {
+      request.log.error({ err }, 'Markdown import conversion failed');
+      throw fastify.httpErrors.unprocessableEntity(
+        'Could not convert this Markdown file. It may contain a malformed table, an unclosed code '
+        + 'fence or some other construct the converter cannot read — try removing the last section '
+        + 'you added, or paste the text straight into the editor instead.',
+      );
+    }
+
+    // Conversion can also succeed into nothing — a file that is only
+    // front-matter, or whose entire body the sanitizer stripped. Silently
+    // handing the form an empty article is the same no-op import the
+    // whitespace check above exists to prevent.
+    if (!converted.bodyHtml.trim()) {
+      throw fastify.httpErrors.unprocessableEntity(
+        'This Markdown file has no content to import — everything below its front-matter is empty.',
+      );
+    }
+
+    return converted;
   });
 }
 
 /**
  * Parse YAML front-matter from Markdown.
  * Supports simple key: value lines and bracket arrays [a, b, c].
+ *
+ * Tolerant of what real editors write, because failing to match here is
+ * *silent* — the `---` block falls through to the body, renders as an `<hr>`
+ * followed by an `<h2>` of the raw YAML, and the import still reports success
+ * while the title and labels are gone (#1178):
+ *
+ * - **CRLF.** The original `\n`-only pattern meant no Windows-authored file
+ *   ever matched. Line endings are normalised for the metadata scan, and the
+ *   body is handed back with its own endings untouched — Markdown conversion
+ *   handles either, and rewriting the user's file is not this function's job.
+ * - **A leading UTF-8 BOM.** U+FEFF sits in front of the first `---` and
+ *   defeats `^` identically. It is stripped up front, so it also stops riding
+ *   into the editor on files that have no front-matter at all.
  */
 export function parseFrontMatter(markdown: string): { metadata: Record<string, string | string[]>; content: string } {
-  const match = markdown.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
-  if (!match) return { metadata: {}, content: markdown };
+  const source = markdown.replace(/^\uFEFF/, '');
+  // The closing `---` may be the last line of the file, so the newline after
+  // it is optional: a file that is nothing but front-matter parses to an empty
+  // body, which the route rejects with a message, rather than parsing to
+  // nothing and rendering the YAML as a heading.
+  const match = source.match(/^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n([\s\S]*))?$/);
+  if (!match) return { metadata: {}, content: source };
 
   const yaml = match[1]!;
   const content = match[2] ?? '';
   const metadata: Record<string, string | string[]> = {};
 
-  for (const line of yaml.split('\n')) {
+  for (const line of yaml.split(/\r?\n/)) {
     const colonIdx = line.indexOf(':');
     if (colonIdx > 0) {
       const key = line.slice(0, colonIdx).trim();

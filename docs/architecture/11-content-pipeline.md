@@ -172,6 +172,55 @@ pass a one-format list and the same component says "Only PDF files are
 accepted" instead. `totalPages` is PDF-only, so the preview card prints the
 format's name for the other five rather than a page count they do not have.
 
+## Markdown import (#1133 / #1178)
+
+`POST /api/pages/import/preview` is a **conversion, not a create**: it parses
+YAML front-matter, runs `markdownToHtml()`, sanitizes, and returns
+`{ title, bodyHtml, labels }`. It persists nothing — the New Page form loads
+the result into the editor the way "Use Template" does, and the normal
+`POST /api/pages` create saves it with the space, parent and visibility the
+user chose. `markdownToHtml` has no frontend counterpart, so the conversion
+cannot move into the browser.
+
+**Front-matter is matched against what editors actually write.** Failing to
+match is silent — the `---` block falls through to the body and renders as an
+`<hr>` plus an `<h2>` of the raw YAML, while the import still reports success
+and the title and labels are gone. So `parseFrontMatter` strips a leading UTF-8
+BOM (which otherwise sits in front of the first `---` and defeats `^`) and
+accepts CRLF as well as LF (the `\n`-only pattern meant no Windows-authored
+file ever matched). The body is returned with its own line endings untouched.
+
+**Nothing imports to nothing.** Whitespace-only Markdown is rejected by the
+schema, and a conversion that yields an empty `bodyHtml` — a file that is only
+front-matter, or whose body the sanitizer stripped — is a **422**. An
+unexpected throw anywhere in the conversion is also a 422 naming what to try,
+not a 500 saying `Internal Server Error`.
+
+**Four size limits, deliberately ordered so the app is always what rejects.**
+Each layer clears the one below it, so a user never meets a limit that cannot
+explain itself:
+
+| Layer | Limit | Unit | Why this value |
+|-------|-------|------|----------------|
+| nginx edge (`frontend/nginx.conf`, `location ^~ /api/`) | `44m` = 46,137,344 | bytes (nginx's `m` is binary) | Sized to the **largest** `bodyLimit` behind the location — the draw.io attachment route's 40 MiB, not import's 8 MiB — because an edge below any one route's limit makes nginx the binding constraint for that route. Unset it defaults to **1 MB** and answers with an HTML 413 naming nginx's rule, not the app's. |
+| Fastify route `bodyLimit` | 8 MiB | bytes | Fastify's default is 1 MiB, which is *below* what a document at the schema limit can serialise to. Worst case is ~6 MB: `JSON.stringify` spends up to 3 bytes of UTF-8 per UTF-16 code unit, or 6 when it has to escape one. |
+| `ImportMarkdownSchema` | 1,000,000 | **characters** | The limit the user is told about. Its message is the one worth reaching them. |
+| Client precheck (`NewPagePage.tsx`) | 4 MB, then 1,000,000 chars | bytes, then characters | Refuses an oversize file without a round-trip. Bytes first so a huge file is never read into memory just to be counted. |
+
+The units differ on purpose and the gaps between the layers exist because of
+it: 1,000,000 characters of Markdown is up to 3 MB of UTF-8 and ~6 MB of
+JSON-escaped request body, so an edge limit set to the same *number* as the
+schema would still refuse files the schema accepts.
+
+The edge is shared, so it is **not** sized for import. `location ^~ /api/`
+also carries the attachment routes, whose payloads are base64 inside JSON and
+so a third larger than the binary they carry: a local attachment at its 25 MB
+cap is 34,952,536 bytes on the wire, and a draw.io save carries a 10 MB PNG
+plus 25 MB of XML in one body — 40,195,416 bytes. `nginx-api-body-limit.test.ts`
+parses every `bodyLimit` out of the backend route modules and fails if the edge
+drops below any of them, so raising a route's limit past the edge is caught
+here rather than in production.
+
 ## Why store three forms?
 
 - **`body_storage` (XHTML)** — lossless round-trip with Confluence; any

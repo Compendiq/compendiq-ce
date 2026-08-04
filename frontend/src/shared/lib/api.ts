@@ -110,14 +110,49 @@ export async function apiFetch<T = unknown>(
   }
 
   if (!res.ok) {
-    const body = await res.json().catch(() => ({ message: res.statusText }));
-    throw new ApiError(res.status, body.message ?? 'Request failed');
+    throw new ApiError(res.status, await failureMessage(res));
   }
 
-  if (res.headers.get('content-type')?.includes('application/json')) {
-    return res.json();
+  if (res.headers.get('content-type')?.includes('application/json') && !isBodyless(res.status)) {
+    try {
+      return (await res.json()) as T;
+    } catch {
+      // A response that promises JSON and delivers nothing parseable. Left
+      // alone this rejects with a raw SyntaxError, which is not an ApiError —
+      // so every caller's `err instanceof ApiError` branch misses it and the
+      // user gets a parser message, or silence (#1178).
+      throw new ApiError(
+        res.status,
+        `The server returned an empty or malformed response (HTTP ${res.status}). Please try again.`,
+      );
+    }
   }
   return undefined as T;
+}
+
+/** Statuses that carry no body at all, so there is nothing to parse. */
+function isBodyless(status: number): boolean {
+  return status === 204 || status === 205 || status === 304;
+}
+
+/**
+ * The message a failed response leaves the user holding.
+ *
+ * A JSON body with a `message` is this app's error contract — surface it
+ * verbatim, because it was written to be read. Everything else is a response
+ * the app never composed: an HTML error page from the nginx edge, an empty
+ * body, a gateway failure. Those used to collapse to `res.statusText` — which
+ * names the *proxy's* rule rather than the app's, and is an empty string over
+ * HTTP/2, where it slipped past `??` and produced a toast with no text at all
+ * — or to a bare `'Request failed'` that took a full code audit to trace to a
+ * branch. Both now carry the status code (#1178).
+ */
+async function failureMessage(res: Response): Promise<string> {
+  const body = (await res.json().catch(() => null)) as { message?: unknown } | null;
+  if (typeof body?.message === 'string' && body.message.trim()) return body.message;
+
+  const reason = res.statusText.trim();
+  return reason ? `${reason} (HTTP ${res.status})` : `Request failed (HTTP ${res.status})`;
 }
 
 /**
