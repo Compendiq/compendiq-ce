@@ -170,7 +170,10 @@ request the write is its own backstop: an `OOM` reply from the `SET` maps to the
 **Don't restate that as "the worst case is a slower 503".** It is true per request and false
 per deployment: where `INFO` is unreadable the ceiling never engages, staging fills Redis,
 and `OOM` only arrives once BullMQ enqueue is failing beside it — such deployments are back
-to the per-user mitigation and their operators must watch `used_memory` themselves. Don't add
+to the per-user mitigation and their operators must watch `used_memory` themselves. Even
+where it engages, the check is check-then-write: concurrent uploads inside the window pass
+on the same pre-write reading and can collectively overshoot the reserve, so the percentage
+is a soft target under burst, not a hard guarantee. Don't add
 a cache in front of the check (a stale "there is room" admits every upload in the window on
 one reading) and don't replace it with a staged-bytes counter (a TTL expiry can't decrement
 one, so it drifts up until the feature wedges). `MAX_IMAGE_BYTES` is **5 MB** and is the only
