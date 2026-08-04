@@ -21,8 +21,8 @@ import mermaid from 'mermaid';
  *   1. Confirms every block still parses (catches the `;` class, and
  *      generalizes to any diagram type).
  *   2. For sequenceDiagram blocks, re-scans the raw *source* lines for a
- *      message, note, alt-else-loop-opt-par-and label, or participant/actor
- *      alias, and asserts the text portion contains no raw `#` or `;`
+ *      message, note, alt-else-loop-opt-par-and label, participant/actor
+ *      alias, or title, and asserts the text portion contains no raw `#` or `;`
  *      outside the small set of numeric escapes this doc set has actually
  *      verified safe (see VALID_ESCAPE_RE below). That directly targets
  *      the lexer-hostile raw characters rather than trying to diff parsed
@@ -34,9 +34,19 @@ import mermaid from 'mermaid';
  * Limitation: only sequenceDiagram blocks get the hazard scan. Other
  * diagram types (flowchart, erDiagram, C4Context, ...) have their own dbs
  * with no unified message/label accessor, so they only get the
- * parse-does-not-throw check (step 1). None of the current defects are in
- * a non-sequence diagram, but a `#`/`;` truncation in, say, a flowchart
- * edge label would not be caught here.
+ * parse-does-not-throw check (step 1). That is NOT a latent `#` problem for
+ * them: flowchart node and edge labels (quoted and unquoted) were probed on
+ * the installed mermaid and preserve a raw `#` or `;` intact — they are
+ * captured whole, not through the sequence lexer's `[^#\n;]` boundary — so
+ * the many `(#1123)`-style issue refs in flowchart/ER blocks are safe as
+ * written and must not be "fixed" with escapes. The real residual gap is
+ * inside sequence diagrams themselves: ARROW_MESSAGE_RE only recognises
+ * `[A-Za-z0-9_]+` actor ids, while mermaid accepts wider ids (probed:
+ * `Web Browser->>svc.api: text` parses, spaces and dot included, and a raw
+ * `#` still truncates its message), so an arrow line between such actors is
+ * skipped by the scan entirely and a truncation there would go unnoticed.
+ * No current doc has such a line (measured: every arrow-ish line in the 10
+ * sequence blocks matches ARROW_MESSAGE_RE).
  */
 
 const architectureDir = resolve(__dirname, '../../docs/architecture');
@@ -161,6 +171,20 @@ const LABEL_RE = /^\s*(?:alt|else|opt|loop|par|and|critical|break|option)\b\s*(.
 // pass and closed in this follow-up).
 const ALIAS_RE = /^\s*(?:create\s+)?(?:participant|actor)\s+\S+\s+as\s+(.*)$/i;
 
+// `title Sync flow` and the legacy `title: Sync flow` form. Both lexer
+// rules carry the same character-class boundary as message text
+// (`/^(?:title\s[^#\n;]+)/` and `/^(?:title:\s[^#\n;]+)/`), so a raw `;`
+// is a hard parse error and a raw `#` silently truncates — confirmed on
+// the installed mermaid 11.15.0: `title Sync flow (#906 heartbeat) tail`
+// parses cleanly while getDiagramTitle() returns "Sync flow (". The
+// sequence lexer is case-insensitive (`Title ...` truncates identically),
+// hence the /i. `accTitle:` lines are deliberately NOT matched — their
+// value comes from a different lexer rule that captures to end of line, and
+// probing shows an accTitle with a raw `#`/`;` survives intact, so flagging
+// it would be a false positive (`^\s*title` cannot reach into `accTitle`
+// anyway; keep it that way). (PR #1213 review.)
+const TITLE_RE = /^\s*title:?\s(.*)$/i;
+
 // `box <label>` group headers were checked and are deliberately NOT added
 // to the hazard scan. A raw `;` still hard-fails the same as everywhere
 // else (already caught by the generic "parses without throwing" check
@@ -189,8 +213,8 @@ interface Hazard {
 }
 
 /**
- * Find message/note/label/alias text on sequence-diagram lines carrying a
- * raw `#` or `;` that isn't part of an allow-listed escape.
+ * Find message/note/label/alias/title text on sequence-diagram lines
+ * carrying a raw `#` or `;` that isn't part of an allow-listed escape.
  */
 function findHazards(block: MermaidBlock): Hazard[] {
   const hazards: Hazard[] = [];
@@ -200,7 +224,8 @@ function findHazards(block: MermaidBlock): Hazard[] {
       text.match(ARROW_MESSAGE_RE) ??
       text.match(NOTE_RE) ??
       text.match(LABEL_RE) ??
-      text.match(ALIAS_RE);
+      text.match(ALIAS_RE) ??
+      text.match(TITLE_RE);
     if (!match) continue;
 
     const textPortion = match[1] ?? '';
@@ -242,7 +267,7 @@ describe('docs/architecture mermaid blocks', () => {
     }
   });
 
-  describe('sequence diagrams: no raw # or ; in message/note/label/alias text', () => {
+  describe('sequence diagrams: no raw # or ; in message/note/label/alias/title text', () => {
     const sequenceBlocks = blocks.filter((b) => diagramType(b) === 'sequenceDiagram');
 
     it('found sequence diagrams to check (extractor sanity check)', () => {
@@ -348,6 +373,37 @@ describe('docs/architecture mermaid blocks', () => {
           'participant C as Client',
           'B->>C: hi',
         ]),
+      );
+      expect(hazards).toEqual([]);
+    });
+
+    it('flags a raw # inside a `title` line (the lexer silently truncates it)', () => {
+      const hazards = findHazards(
+        block(['sequenceDiagram', 'title Sync flow (#906 heartbeat) tail', 'A->>B: hi']),
+      );
+      expect(hazards).toHaveLength(1);
+      expect(hazards[0]!.chars).toEqual(['#']);
+      expect(hazards[0]!.raw).toBe('title Sync flow (#906 heartbeat) tail');
+    });
+
+    it('flags a raw ; inside a legacy `title:` line', () => {
+      const hazards = findHazards(
+        block(['sequenceDiagram', 'title: step one; step two', 'A->>B: hi']),
+      );
+      expect(hazards).toHaveLength(1);
+      expect(hazards[0]!.chars).toEqual([';']);
+    });
+
+    it('does not flag an accTitle line (its lexer rule captures past # and ;)', () => {
+      const hazards = findHazards(
+        block(['sequenceDiagram', 'accTitle: Sync flow (#906 heartbeat); details', 'A->>B: hi']),
+      );
+      expect(hazards).toEqual([]);
+    });
+
+    it('allows an escaped title (#35;906)', () => {
+      const hazards = findHazards(
+        block(['sequenceDiagram', 'title Sync flow (#35;906 heartbeat)', 'A->>B: hi']),
       );
       expect(hazards).toEqual([]);
     });
