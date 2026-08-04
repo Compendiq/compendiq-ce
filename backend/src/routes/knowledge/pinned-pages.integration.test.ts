@@ -1,4 +1,31 @@
+/**
+ * Integration tests for the pinned-articles routes against a REAL PostgreSQL
+ * (port 5433, per `test-db-helper.ts`).
+ *
+ * #1130 removed the 8-pin cap, and the job of this file is to *demonstrate*
+ * that through the route itself: the app is built, the real handler in
+ * `pinned-pages.ts` runs, and every statement it issues reaches the test
+ * database. Until #1180 this file executed a pasted copy of the route's INSERT
+ * instead, which only ever proved that Postgres accepts 25 rows — never in
+ * doubt, since the cap was always application-level. That version would have
+ * passed unchanged had the handler reintroduced a count guard, or had the route
+ * been deleted outright, and the copy could drift from the real statement
+ * silently. Nothing here may restate the route's SQL: the route is the thing
+ * under test.
+ *
+ * `pinned-pages.test.ts` covers the same endpoints with `core/db/postgres.js`
+ * mocked, so it can assert the *shape* of a statement but can never hold nine
+ * real rows. The two files are complements, not duplicates.
+ *
+ * Only `fastify.authenticate` is stubbed — the sole boundary this route has.
+ * RBAC is real: the fixture pages are standalone and `shared` (migration 029's
+ * default), so `userCanAccessPage` admits them through its genuine
+ * standalone-visibility branch rather than an admin bypass.
+ */
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import Fastify, { type FastifyRequest } from 'fastify';
+import sensible from '@fastify/sensible';
+import { ZodError } from 'zod';
 
 import {
   setupTestDb,
@@ -7,23 +34,9 @@ import {
   isDbAvailable,
 } from '../../test-db-helper.js';
 import { query } from '../../core/db/postgres.js';
-
-/**
- * Real-DB integration tests for removing the 8-pin cap (#1130).
- *
- * The route tests in `pinned-pages.test.ts` mock `core/db/postgres.js`
- * wholesale, so they can only assert the *text* of the SQL — they can never
- * show that a ninth pin actually lands, which is the entire point of the
- * change. These run the route's own statements against the test Postgres
- * (port 5433) so the behaviour is demonstrated rather than described.
- */
+import { pinnedPagesRoutes } from './pinned-pages.js';
 
 const dbAvailable = await isDbAvailable();
-
-/** Verbatim copy of the INSERT in `pinned-pages.ts`. */
-const PIN_SQL = `INSERT INTO pinned_pages (user_id, page_id, pin_order, pinned_at)
-       SELECT $1, $2, COALESCE((SELECT MAX(pin_order) FROM pinned_pages WHERE user_id = $1), 0) + 1, NOW()
-       ON CONFLICT (user_id, page_id) DO NOTHING`;
 
 let userId: string;
 
@@ -39,21 +52,44 @@ async function makePage(n: number): Promise<number> {
   const res = await query<{ id: number }>(
     `INSERT INTO pages (confluence_id, space_key, title, body_html, body_text, version,
                         source, embedding_dirty, embedding_status, last_synced)
-     VALUES ($1, 'HOME', $2, '<p>x</p>', 'x', 1, 'standalone', FALSE, 'not_embedded', NOW())
+     VALUES (NULL, 'HOME', $1, '<p>x</p>', 'x', 1, 'standalone', FALSE, 'not_embedded', NOW())
      RETURNING id`,
-    [`standalone-pin-${n}`, `Page ${n}`],
+    [`Page ${n}`],
   );
   return res.rows[0]!.id;
 }
 
-async function pin(pageId: number): Promise<number> {
-  const res = await query(PIN_SQL, [userId, pageId]);
-  return res.rowCount ?? 0;
+/** Rows actually persisted for a user — read independently of the GET route. */
+async function pinnedRowCount(uid: string): Promise<number> {
+  const res = await query<{ count: string }>(
+    'SELECT COUNT(*) AS count FROM pinned_pages WHERE user_id = $1',
+    [uid],
+  );
+  return Number(res.rows[0]!.count);
 }
 
 describe.skipIf(!dbAvailable)('pinned pages, unbounded (#1130) [integration]', () => {
+  let app: ReturnType<typeof Fastify>;
+
   beforeAll(async () => {
     await setupTestDb();
+
+    app = Fastify({ logger: false });
+    await app.register(sensible);
+    app.setErrorHandler((error: Error & { statusCode?: number }, _request, reply) => {
+      if (error instanceof ZodError) {
+        return reply.status(400).send({ error: 'Validation failed' });
+      }
+      return reply.status(error.statusCode ?? 500).send({ error: error.message });
+    });
+    // The only stub in the file, and the only decorator the route asks for.
+    // `x-test-user` lets a case act as a second account without rebuilding the
+    // app; everything else runs for real.
+    app.decorate('authenticate', async (request: FastifyRequest) => {
+      request.userId = (request.headers['x-test-user'] as string | undefined) ?? userId;
+    });
+    await app.register(pinnedPagesRoutes, { prefix: '/api' });
+    await app.ready();
   });
 
   beforeEach(async () => {
@@ -62,82 +98,139 @@ describe.skipIf(!dbAvailable)('pinned pages, unbounded (#1130) [integration]', (
   });
 
   afterAll(async () => {
+    await app.close();
     await teardownTestDb();
   });
 
-  // The headline behaviour of #1130, executed rather than string-matched.
-  it('accepts far more than the old cap of eight', async () => {
+  /** Drive the real endpoint, optionally as another account. */
+  function pin(pageId: number, as: string = userId) {
+    return app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/pin`,
+      headers: { 'x-test-user': as },
+    });
+  }
+
+  function listPinned(as: string = userId) {
+    return app.inject({
+      method: 'GET',
+      url: '/api/pages/pinned',
+      headers: { 'x-test-user': as },
+    });
+  }
+
+  // The headline behaviour of #1130, executed through the handler that used to
+  // refuse it. The ninth call is the one the old `MAX_PINS = 8` guard rejected
+  // with `400 Maximum of 8 pinned articles allowed`, so it is asserted by
+  // itself: put any count guard back in the route and this line goes red.
+  it('accepts a ninth pin — and far more — through POST /api/pages/:id/pin', async () => {
     const pageIds: number[] = [];
     for (let i = 0; i < 25; i++) pageIds.push(await makePage(i));
 
+    const statuses: number[] = [];
     for (const id of pageIds) {
-      expect(await pin(id)).toBe(1);
+      statuses.push((await pin(id)).statusCode);
     }
 
-    const count = await query<{ count: string }>(
-      'SELECT COUNT(*) AS count FROM pinned_pages WHERE user_id = $1',
+    expect(statuses[8]).toBe(200);
+    expect(statuses).toEqual(Array(25).fill(200));
+    expect(await pinnedRowCount(userId)).toBe(25);
+
+    // The list endpoint hands back all 25 too — the cap left no residue there.
+    const listed = JSON.parse((await listPinned()).body);
+    expect(listed.total).toBe(25);
+    expect(listed.items).toHaveLength(25);
+  });
+
+  // The route's `COALESCE(MAX(pin_order), 0) + 1` subquery, run over real rows
+  // rather than described. Its ceiling is whatever the sequence reaches.
+  it('gives each new pin the next pin_order with no ceiling', async () => {
+    for (let i = 0; i < 10; i++) {
+      expect((await pin(await makePage(i))).statusCode).toBe(200);
+    }
+
+    const res = await query<{ pin_order: number }>(
+      'SELECT pin_order FROM pinned_pages WHERE user_id = $1 ORDER BY pin_order ASC',
       [userId],
     );
-    expect(Number(count.rows[0]!.count)).toBe(25);
+    expect(res.rows.map((r) => r.pin_order)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  });
+
+  it('is idempotent when the same page is pinned twice', async () => {
+    const pageId = await makePage(1);
+
+    expect((await pin(pageId)).statusCode).toBe(200);
+    // Second call short-circuits on the already-pinned fast path, so this
+    // asserts the endpoint's idempotency — not the INSERT, which never reruns.
+    expect((await pin(pageId)).statusCode).toBe(200);
+
+    expect(await pinnedRowCount(userId)).toBe(1);
+  });
+
+  // The route's ON CONFLICT clause is only load-bearing if the pair it names is
+  // genuinely unique, and no route call can show that: a sequential re-pin stops
+  // at the fast path above, and a concurrent one races. So the constraint is
+  // asserted head-on, with the test's own minimal statement rather than a
+  // restatement of the route's INSERT — a duplicate must be refused, which is
+  // exactly the 23505 the handler's ON CONFLICT swallows. Losing the constraint
+  // would not be silent either: `ON CONFLICT (user_id, page_id)` with nothing to
+  // match raises 42P10 on every pin, so the rest of this file would go red too.
+  it('rejects a duplicate (user_id, page_id) at the schema level', async () => {
+    const pageId = await makePage(1);
+    expect((await pin(pageId)).statusCode).toBe(200);
+
+    await expect(
+      query('INSERT INTO pinned_pages (user_id, page_id) VALUES ($1, $2)', [userId, pageId]),
+    ).rejects.toMatchObject({ code: '23505' });
+
+    expect(await pinnedRowCount(userId)).toBe(1);
   });
 
   // With the count guard gone, ON CONFLICT is the only thing standing between
-  // two simultaneous pins of the same page and a unique violation. A rowCount
-  // of 0 therefore means "someone else got there first", which is success.
-  it('absorbs a duplicate pin instead of raising a unique violation', async () => {
+  // two simultaneous pins of the same page and the unique violation above: the
+  // already-pinned SELECT is a fast path, not a lock, so requests fired
+  // together can all read "not pinned" and all reach the INSERT. How far they
+  // actually interleave is the scheduler's to decide, so what is asserted is
+  // the contract that has to hold either way — every caller gets a 200 and
+  // exactly one row lands. A handler that let a duplicate INSERT through
+  // unguarded would surface that violation here as a 500.
+  it('absorbs simultaneous pins of the same page instead of raising a unique violation', async () => {
     const pageId = await makePage(1);
 
-    expect(await pin(pageId)).toBe(1);
-    expect(await pin(pageId)).toBe(0);
+    const responses = await Promise.all(Array.from({ length: 8 }, () => pin(pageId)));
 
-    const count = await query<{ count: string }>(
-      'SELECT COUNT(*) AS count FROM pinned_pages WHERE user_id = $1',
-      [userId],
-    );
-    expect(Number(count.rows[0]!.count)).toBe(1);
+    expect(responses.map((r) => r.statusCode)).toEqual(Array(8).fill(200));
+    expect(await pinnedRowCount(userId)).toBe(1);
   });
 
-  it('survives concurrent pins of the same page', async () => {
-    const pageId = await makePage(1);
-
-    const results = await Promise.all([pin(pageId), pin(pageId), pin(pageId)]);
-
-    // Exactly one insert wins; the rest are absorbed, none throw.
-    expect(results.filter((n) => n === 1)).toHaveLength(1);
-    const count = await query<{ count: string }>(
-      'SELECT COUNT(*) AS count FROM pinned_pages WHERE user_id = $1',
-      [userId],
-    );
-    expect(Number(count.rows[0]!.count)).toBe(1);
-  });
-
-  it('keeps each user\'s pins to themselves', async () => {
+  it("keeps each user's pins to themselves", async () => {
     const other = await makeUser();
-    const pageId = await makePage(1);
+    const mine = await makePage(1);
+    const theirs = await makePage(2);
 
-    await pin(pageId);
-    await query(PIN_SQL, [other, pageId]);
+    expect((await pin(mine)).statusCode).toBe(200);
+    expect((await pin(theirs, other)).statusCode).toBe(200);
 
-    const mine = await query<{ count: string }>(
-      'SELECT COUNT(*) AS count FROM pinned_pages WHERE user_id = $1',
-      [userId],
-    );
-    expect(Number(mine.rows[0]!.count)).toBe(1);
+    const myList = JSON.parse((await listPinned()).body);
+    expect(myList.items.map((i: { id: string }) => i.id)).toEqual([String(mine)]);
+
+    const theirList = JSON.parse((await listPinned(other)).body);
+    expect(theirList.items.map((i: { id: string }) => i.id)).toEqual([String(theirs)]);
+
+    expect(await pinnedRowCount(userId)).toBe(1);
+    expect(await pinnedRowCount(other)).toBe(1);
   });
 
-  // The excerpt is truncated by Postgres, not in JS: the row count is
-  // unbounded now, and `body_text` is a TOASTed full-article column.
+  // The excerpt is truncated in SQL, not only in JS: the row count is unbounded
+  // now, and `body_text` is a TOASTed full-article column, so the handler's
+  // trailing `.slice(0, 200)` must never be what does the work. Only the shape
+  // is visible from out here — `pinned-pages.test.ts` pins the statement text.
   it('returns a 200-character excerpt without shipping the whole body', async () => {
     const pageId = await makePage(1);
     await query('UPDATE pages SET body_text = $2 WHERE id = $1', [pageId, 'A'.repeat(5000)]);
     await pin(pageId);
 
-    const res = await query<{ body_text: string }>(
-      `SELECT substring(cp.body_text, 1, 200) AS body_text
-         FROM pinned_pages pp JOIN pages cp ON cp.id = pp.page_id
-        WHERE pp.user_id = $1`,
-      [userId],
-    );
-    expect(res.rows[0]!.body_text).toHaveLength(200);
+    const body = JSON.parse((await listPinned()).body);
+    expect(body.items[0].excerpt).toHaveLength(200);
   });
 });

@@ -99,6 +99,29 @@ function mockFetchForSetup(
   });
 }
 
+/**
+ * Re-point only `/setup/llm-test` at a failing probe, delegating every other
+ * setup route to the implementation already installed by `mockFetchForSetup`.
+ * Still a network-boundary mock — the step's own code path is untouched.
+ */
+function mockLlmTestFailure(error: string) {
+  const passthrough = fetchSpy.getMockImplementation();
+  if (!passthrough) throw new Error('mockFetchForSetup must run first');
+
+  fetchSpy.mockImplementation(async (input, init) => {
+    const url = typeof input === 'string' ? input : (input as Request).url;
+
+    if (url.includes('/setup/llm-test')) {
+      return new Response(JSON.stringify({ success: false, error, models: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+
+    return passthrough(input, init);
+  });
+}
+
 describe('SetupWizard', () => {
 
   beforeEach(() => {
@@ -339,6 +362,54 @@ describe('SetupWizard', () => {
     await waitFor(() => {
       expect(screen.getByTestId('llm-test-result')).toBeInTheDocument();
     });
+
+    // #1168: the banner must carry the semantic status tokens, not the literal
+    // emerald shades — those are dark-theme tuned and are not remapped for
+    // Frost Steel, where they measured 1.33:1 (label) and 1.69:1 (icon).
+    const banner = screen.getByTestId('llm-test-result');
+    expect(banner).toHaveClass('border-status-connected/30', 'bg-status-connected/10');
+    expect(banner.className).not.toMatch(/emerald/);
+
+    // The ink lives on the icon/label row so the model list below keeps
+    // reading as body text; the glyph is fill="currentColor" and inherits it.
+    const row = screen.getByText('Connected').parentElement;
+    expect(row).toHaveClass('text-status-connected');
+    const icon = banner.querySelector('svg');
+    expect(icon?.getAttribute('class')).not.toMatch(/emerald|text-(red|green)-/);
+  });
+
+  it('LLM step failure banner uses the disconnected status token', async () => {
+    renderWizard();
+
+    // Navigate to LLM step
+    fireEvent.click(screen.getByTestId('start-setup-btn'));
+    await waitFor(() => {
+      expect(screen.getByTestId('setup-username')).toBeInTheDocument();
+    });
+    typeInto(screen.getByTestId('setup-username'), 'admin');
+    typeInto(screen.getByTestId('setup-password'), 'securepass123');
+    typeInto(screen.getByTestId('setup-confirm-password'), 'securepass123');
+    fireEvent.click(screen.getByTestId('create-admin-btn'));
+
+    await waitFor(() => {
+      expect(screen.getByText('Configure LLM Provider')).toBeInTheDocument();
+    });
+
+    mockLlmTestFailure('Connection refused');
+    fireEvent.click(screen.getByTestId('test-llm-btn'));
+
+    await waitFor(() => {
+      expect(screen.getByText('Connection refused')).toBeInTheDocument();
+    });
+
+    const banner = screen.getByTestId('llm-test-result');
+    expect(banner).toHaveClass('border-status-disconnected/30', 'bg-status-disconnected/10');
+    expect(banner.className).not.toMatch(/\bred-/);
+
+    const row = screen.getByText('Connection refused').parentElement;
+    expect(row).toHaveClass('text-status-disconnected');
+    const icon = banner.querySelector('svg');
+    expect(icon?.getAttribute('class')).not.toMatch(/text-(red|emerald)-/);
   });
 
   it('skips admin step when admin already exists', async () => {

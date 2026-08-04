@@ -181,6 +181,19 @@ export function useKeyboardShortcuts(
       // anything closer to the keystroke. Modifier chords (Ctrl+S, Alt+I) are
       // app-level and deliberately punch through all three gates below — that
       // is why Ctrl+S still saves while you are typing in the editor.
+      //
+      // `shiftRequired` counts as a modifier here, which is worth naming
+      // because WCAG 2.1.4 would not agree: Shift+/ produces `?`, one
+      // character, and the success criterion is about single *characters*, not
+      // about how many physical keys are held. This classification is
+      // pre-existing — the `singleKeyEnabled` gate below has always used it —
+      // and it is left alone rather than corrected here so that this change
+      // stays about `defaultPrevented`. Nothing currently rides on it either:
+      // the app's only `shift: true` shortcut is `Alt+Shift+D`, which requires
+      // Alt as well and so is a genuine chord however Shift is counted. A
+      // Shift-ONLY shortcut — `?` for help being the obvious candidate — would
+      // be the first to bypass all three gates, and should flip this line to
+      // treat Shift as a bare key rather than be added as-is.
       const singleKey = !modRequired && !altRequired && !shiftRequired;
 
       // WCAG 2.1.4: suppress single-key shortcuts when the toggle is off
