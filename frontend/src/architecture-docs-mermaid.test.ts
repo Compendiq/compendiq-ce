@@ -91,9 +91,16 @@ function extractBlocksFromText(file: string, text: string): MermaidBlock[] {
 
   // A fence opened but never closed would otherwise just drop the block
   // silently — the ">= 20 blocks" sanity check below is too coarse to
-  // notice one missing block out of 23, and 8 of the 12 docs end on a
-  // mermaid block, so a truncated file is the common failure shape, not an
-  // edge case (PR #1213 review).
+  // notice one missing block out of 23. And it's not an edge case: in 8 of
+  // these 12 docs (01, 02, 03, 04, 06, 07, 08, 10) the LAST fenced block of
+  // any kind — mermaid or otherwise — is a mermaid block, so deleting its
+  // closing fence leaves no later ``` for the old code to (mis)use as a
+  // substitute close, and the file just runs to EOF still "in" the block.
+  // (This is about fence order, not file length — every doc still has
+  // prose after that block; none of the 12 literally ends on mermaid's
+  // closing ``` as its last line. Verified by measurement, not assumption:
+  // an earlier draft of this comment claimed the opposite — PR #1213
+  // review.)
   if (inBlock) {
     throw new Error(
       `${file}: unterminated \`\`\`mermaid fence opened at line ${startLine - 1} ` +
@@ -145,10 +152,34 @@ const NOTE_RE = /^\s*note\s+(?:over|left of|right of)\s+[^:]+:\s*(.*)$/i;
 // label, and could contain a legitimate `#RRGGBB` that isn't a truncation.
 const LABEL_RE = /^\s*(?:alt|else|opt|loop|par|and|critical|break|option)\b\s*(.*)$/;
 
-// `participant B as Backend`, `actor B as Backend`. The alias text is a
-// display name, not code, and mermaid truncates/breaks it exactly like
-// message text on a raw `#`/`;` (PR #1213 review — previously unguarded).
-const ALIAS_RE = /^\s*(?:participant|actor)\s+\S+\s+as\s+(.*)$/i;
+// `participant B as Backend`, `actor B as Backend`, and the mermaid >=10.3
+// `create participant B as Backend` / `create actor B as Backend` forms.
+// The alias text is a display name, not code, and mermaid truncates/breaks
+// it exactly like message text on a raw `#`/`;` — confirmed for both the
+// plain and `create`-prefixed forms (PR #1213 review — previously
+// unguarded; the `create` prefix was still missed in that review's first
+// pass and closed in this follow-up).
+const ALIAS_RE = /^\s*(?:create\s+)?(?:participant|actor)\s+\S+\s+as\s+(.*)$/i;
+
+// `box <label>` group headers were checked and are deliberately NOT added
+// to the hazard scan. A raw `;` still hard-fails the same as everywhere
+// else (already caught by the generic "parses without throwing" check
+// above, for every construct, not just this one). But a raw `#` does NOT
+// truncate a box label the way it does a message/note/label/alias: probing
+// the installed mermaid showed identical parse behaviour with and without
+// a `#` in the box argument (same downstream code reached either way), and
+// mermaid's own source confirms why — SequenceDB#parseBoxData splits an
+// already-fully-captured line into color/title with a plain JS regex, not
+// through the lexer's `[^#\n;]*` boundary (its own comment: "#hex codes
+// are not supported for now because of the way the char # is handled" is
+// about color *detection* falling back to treating the whole string as the
+// title, not about text loss). This could only be confirmed by reading
+// that source directly: mermaid.render() and even mermaid.parse() cannot
+// run a `box` statement to completion under jsdom at all (clean box labels
+// throw "window.CSS.supports is not a function" from inside
+// parseBoxData — a jsdom gap, not a mermaid or docs defect), so there is no
+// way to observe the final title end-to-end in this test environment. No
+// current doc uses `box`.
 
 interface Hazard {
   line: number;
@@ -268,6 +299,45 @@ describe('docs/architecture mermaid blocks', () => {
       );
       expect(hazards).toHaveLength(1);
       expect(hazards[0]!.chars).toEqual(['#']);
+    });
+
+    it('flags a raw # inside a `create participant ... as` alias', () => {
+      const hazards = findHazards(
+        block([
+          'sequenceDiagram',
+          'participant A',
+          'create participant B as Backend #906 area',
+          'A->>B: hi',
+        ]),
+      );
+      expect(hazards).toHaveLength(1);
+      expect(hazards[0]!.chars).toEqual(['#']);
+      expect(hazards[0]!.raw).toContain('create participant B as Backend #906 area');
+    });
+
+    it('flags a raw # inside a `create actor ... as` alias', () => {
+      const hazards = findHazards(
+        block([
+          'sequenceDiagram',
+          'participant A',
+          'create actor B as Backend #906 area',
+          'A->>B: hi',
+        ]),
+      );
+      expect(hazards).toHaveLength(1);
+      expect(hazards[0]!.chars).toEqual(['#']);
+    });
+
+    it('does not flag a clean `create participant ... as` alias', () => {
+      const hazards = findHazards(
+        block([
+          'sequenceDiagram',
+          'participant A',
+          'create participant B as Backend area',
+          'A->>B: hi',
+        ]),
+      );
+      expect(hazards).toEqual([]);
     });
 
     it('does not flag a clean participant alias', () => {
