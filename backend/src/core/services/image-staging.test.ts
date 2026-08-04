@@ -389,12 +389,28 @@ describe('Redis memory pre-flight', () => {
       await expect(stageImage('u1', png, 'png')).resolves.toMatch(/^[0-9a-f]{64}$/);
     });
 
+    /**
+     * Both directions, because at 90% used they do not discriminate on their
+     * own: a regression that *accepted* `garbage` (NaN ceiling), `0` (zero
+     * ceiling) or `-10` (negative ceiling) also refuses, so "rejects" alone
+     * would stay green while every upload 503'd against an empty Redis. The
+     * 10%-used half is what separates the two — the default admits it, and any
+     * of those three ceilings does not.
+     */
     it.each([['garbage'], ['0'], ['-10'], ['101'], ['']])(
-      'falls back to the default for %s', async (raw) => {
+      'falls back to the default for %s, refusing above 80%%', async (raw) => {
         vi.stubEnv('IMAGE_STAGING_MAX_REDIS_PERCENT', raw);
         infoReply = memoryInfo({ used: MAXMEMORY_256MB * 0.9, max: MAXMEMORY_256MB });
         await expect(stageImage('u1', png, 'png'))
           .rejects.toBeInstanceOf(ImageStagingCapacityError);
+      },
+    );
+
+    it.each([['garbage'], ['0'], ['-10'], ['101'], ['']])(
+      'falls back to the default for %s, still staging below 80%%', async (raw) => {
+        vi.stubEnv('IMAGE_STAGING_MAX_REDIS_PERCENT', raw);
+        infoReply = memoryInfo({ used: MAXMEMORY_256MB * 0.1, max: MAXMEMORY_256MB });
+        await expect(stageImage('u1', png, 'png')).resolves.toMatch(/^[0-9a-f]{64}$/);
       },
     );
   });

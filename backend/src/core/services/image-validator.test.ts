@@ -29,9 +29,10 @@ describe('ceilings', () => {
    * The dimension cap does NOT move with the byte cap. Dimensions bound what
    * the model is asked to look at; bytes bound what Redis holds, and only the
    * bytes are a memory ceiling. 4096 stays reachable in the formats the feature
-   * actually uses (a 4096x4096 WebP or JPEG is comfortably under 5 MB) — it is
-   * lossless PNG at full dimensions that hits the byte cap first, which the
-   * 413 answers by naming re-encoding as the remedy.
+   * actually uses (a 4096x4096 WebP, or a JPEG at moderate quality, typically
+   * lands under 5 MB) — it is lossless PNG at full dimensions that hits the
+   * byte cap first, which the 413 answers by naming re-encoding, quality and
+   * resizing as the remedies.
    */
   it('caps each edge at 4096', () => {
     expect(MAX_IMAGE_DIMENSION).toBe(4096);

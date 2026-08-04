@@ -182,6 +182,13 @@ O(1) command on a path that already streams and hashes megabytes, where a stale
 "there is room" would admit every upload inside the cache window on a single
 reading.
 
+Note the fail-open branches above are a real gap, not just a fallback: a
+deployment whose Redis does not answer `INFO` (renamed or ACL-blocked, common on
+hardened and managed instances) never engages the ceiling at all and is back to
+the per-user mitigation, with `OOM` on the `SET` arriving only once BullMQ is
+already blocked. ADR-021's `#1183` paragraphs carry the reasoning; `.env.example`
+states the condition where an operator will meet it.
+
 ## Retrieval details
 
 - **Vector search** uses pgvector's `<=>` cosine distance against an HNSW

@@ -387,8 +387,10 @@ expands.
 **Ceilings: 10 MB and 4096×4096**, below the documents' 20 MB because base64
 inflates the payload ~1.37× and it lands in a prompt. A 12 MP phone photo
 (4032×3024) fits. *(#1183 lowered the byte ceiling to 5 MB and kept 4096: only
-bytes bound memory, and a 4096×4096 WebP or JPEG is well under 5 MB. A 12 MP
-photo still fits in any lossy format.)*
+bytes bound memory, and a 4096×4096 WebP — or a JPEG at moderate quality —
+typically lands under 5 MB. Not universally: a 12 MP camera JPEG at maximum
+quality is commonly 5–7 MB and would be refused, with lower quality or a resize
+as the remedy.)*
 
 **Client-side downscale.** The frontend resizes before upload via
 `createImageBitmap(blob, { imageOrientation: 'from-image' })` and a canvas
@@ -484,8 +486,10 @@ Surfaced by the whole-branch review and its fix wave, and verified to be real.
 None blocks the backend PR; all are recorded so nobody rediscovers them as
 mysteries.
 
-**Redis capacity is mitigated, not bounded.** *(Resolved by #1183 — kept because
-the reasoning is why the fix is shaped the way it is.)* The per-user cap moved
+**Redis capacity is mitigated, not bounded.** *(Bounded by #1183 wherever Redis
+answers `INFO memory`; still only mitigated where it does not — see the
+fail-open bullet. Kept because the reasoning is why the fix is shaped the way it
+is.)* The per-user cap moved
 the ceiling from *uploads × 10 MB* to *users × 10 MB*. A deployment where ~26 or
 more people stage an image inside the same 15-minute window could still fill the
 shipped `--maxmemory 256mb`, and that Redis is `noeviction` and shared with
@@ -501,12 +505,20 @@ operational assumption was the wrong call and closed it in the app:
   actionable. Exhaustion now degrades this feature instead of job enqueue.
 - The check **fails open** — `maxmemory: 0` (unlimited), an unreadable reply, or
   an `INFO` that is renamed/ACL-blocked all proceed — because an unreadable
-  reply is not evidence of pressure, and the write is its own backstop: a full
-  `noeviction` instance refuses the `SET` with `OOM`, which maps to the same
-  503 rather than a 500.
+  reply is not evidence of pressure. Per request that is cheap: the write is its
+  own backstop, since a full `noeviction` instance refuses the `SET` with `OOM`,
+  which maps to the same 503 rather than a 500. **Per deployment it is not.**
+  Where `INFO` is unreadable the 80% ceiling never engages at all, staging is
+  admitted until Redis is hard-full, and the `OOM` backstop only fires once the
+  co-tenant headroom is already gone — i.e. once BullMQ enqueue is failing too.
+  So on those deployments this risk is *not* closed: it stands exactly as
+  written above, mitigated by `users × MAX_IMAGE_BYTES` and nothing else, and
+  the operator has to monitor `used_memory` themselves. `.env.example` states
+  the condition at the knob.
 - `MAX_IMAGE_BYTES` is now **5 MB**, halving both the per-user Redis ceiling and
   the base64 heap cost noted below. `MAX_IMAGE_DIMENSION` stays 4096 — only
-  bytes are a memory bound, and 4096 is still reachable in WebP/JPEG.
+  bytes are a memory bound, and 4096 is still reachable in WebP or in JPEG at
+  moderate quality.
 
 Full reasoning, including why there is no cache on the check and no separate
 staged-bytes counter, is in ADR-021's `#1183` paragraphs.

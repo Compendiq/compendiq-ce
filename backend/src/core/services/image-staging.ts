@@ -86,7 +86,8 @@ function keyFor(userId: string, handle: string): string {
  * Stored value layout: `<format>\n<raw image bytes>`.
  *
  * One key, one TTL, one round-trip — and the header is ASCII, so the format
- * survives without a second key or a JSON envelope wrapping 10 MB of base64.
+ * survives without a second key or a JSON envelope wrapping `MAX_IMAGE_BYTES`
+ * of base64.
  */
 const FORMAT_TERMINATOR = 0x0a; // '\n'
 /** Longest supported format name is 4 chars ('jpeg'/'webp'); bound the scan anyway. */
@@ -199,11 +200,17 @@ function resolveMaxRedisPercent(): number {
  * already optimistic by whatever is in flight beside it; a time window
  * multiplies that.
  *
- * **Fails open.** `INFO` is renamed or ACL-blocked on plenty of hardened and
- * managed Redis deployments, and an unreadable reply is not evidence that
- * memory is short — failing closed would 503 the feature forever on a healthy
- * instance. The backstop is the write itself: a full `noeviction` instance
- * rejects the SET with `OOM`, which `stageImage` maps to the same error.
+ * **Fails open, so the bound is conditional on `INFO` being readable.** `INFO`
+ * is renamed or ACL-blocked on plenty of hardened and managed Redis
+ * deployments, and an unreadable reply is not evidence that memory is short —
+ * failing closed would 503 the feature forever on a healthy instance. Per
+ * request that is cheap, because the write is its own backstop: a full
+ * `noeviction` instance rejects the SET with `OOM`, which `stageImage` maps to
+ * the same error. Per *deployment* it is weaker, and worth being honest about:
+ * where `INFO` never answers, the ceiling never engages, staging is admitted
+ * until Redis is hard-full, and `OOM` only arrives once the co-tenant headroom
+ * is gone — BullMQ enqueue failing beside it. Those deployments are back to the
+ * per-user cap alone and their operators have to watch `used_memory`.
  */
 async function assertStagingHeadroom(
   redis: RedisClientType,
