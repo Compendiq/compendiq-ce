@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { checkHealth, listModels, chat, streamChat, generateEmbedding, invalidateBreaker, __test_only__, LlmHttpError, type ProviderConfig } from './openai-compatible-client.js';
@@ -186,6 +186,12 @@ describe('openai-compatible-client — streamChat surfaces HTTP error as LlmHttp
 describe('openai-compatible-client — streamChat bounds a stalled error-body read (#1214 review)', () => {
   let stallSrv: Server;
   let stallBase: string;
+  // Tracks whether the server observed the socket close — the stalled
+  // response never ends on its own (no res.end(), no [DONE]), so 'close' can
+  // only mean the client (our reader.cancel()) tore the connection down.
+  // Reset per-test in beforeEach below (mirrors the #868 leak test's pattern).
+  let serverSawClose = false;
+  let resolveClose: () => void;
   beforeAll(async () => {
     stallSrv = createServer((req, res) => {
       if (req.url === '/v1/chat/completions') {
@@ -194,8 +200,9 @@ describe('openai-compatible-client — streamChat bounds a stalled error-body re
         req.on('end', () => {
           res.writeHead(500, { 'Content-Type': 'application/json' });
           // Partial body, deliberately never finished/ended — the read stalls
-          // until the socket is force-closed by afterAll.
+          // until the client cancels (or the socket is force-closed by afterAll).
           res.write('{"error":');
+          res.on('close', () => { serverSawClose = true; resolveClose?.(); });
         });
         return;
       }
@@ -217,7 +224,10 @@ describe('openai-compatible-client — streamChat bounds a stalled error-body re
     __test_only__.resetStreamErrorDetailTimeoutMs();
   });
 
-  it('throws within the bounded timeout instead of hanging on a stalled error body', async () => {
+  it('throws within the bounded timeout instead of hanging on a stalled error body, and tears down the socket', async () => {
+    serverSawClose = false;
+    const closePromise = new Promise<void>((r) => { resolveClose = r; });
+
     // Short test-only override — production defaults to a few seconds, which
     // would make this test slow without proving anything more.
     __test_only__.setStreamErrorDetailTimeoutMs(50);
@@ -239,6 +249,50 @@ describe('openai-compatible-client — streamChat bounds a stalled error-body re
     // Comfortably under undici's ~300s default bodyTimeout — proves the read
     // was actually bounded rather than happening to finish fast.
     expect(elapsed).toBeLessThan(1000);
+
+    // The fix is only real if the socket actually closes: reader.cancel()
+    // must tear down the connection, not just make our promise resolve while
+    // the read keeps running server-side (PR #1214 review, nit B).
+    await Promise.race([closePromise, new Promise<void>((r) => setTimeout(r, 1000))]);
+    expect(serverSawClose).toBe(true);
+  });
+
+  it('clears the bounded-read timer when the body arrives before the timeout (PR #1214 review, nit A)', async () => {
+    // A non-stalled 500 (headers + immediate small body) — errSrv from the
+    // sibling #1185 describe block above proves the happy path already; this
+    // asserts the specific cleanup nit: the losing `setTimeout` must be
+    // cleared, not left ref'd for the rest of the timeout's duration.
+    const clearTimeoutSpy = vi.spyOn(global, 'clearTimeout');
+    const fastSrv = createServer((req, res) => {
+      if (req.url === '/v1/chat/completions') {
+        let body = '';
+        req.on('data', (c) => (body += c));
+        req.on('end', () => {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: 'unavailable' } }));
+        });
+        return;
+      }
+      res.writeHead(404); res.end();
+    });
+    await new Promise<void>((r) => fastSrv.listen(0, r));
+    const { port } = fastSrv.address() as AddressInfo;
+    try {
+      const callsBefore = clearTimeoutSpy.mock.calls.length;
+      const gen = streamChat(
+        { ...cfg, providerId: 'streamchat-fast-1214', baseUrl: `http://127.0.0.1:${port}/v1` },
+        'm1', [{ role: 'user', content: 'hi' }],
+      );
+      const err = await gen.next().then(
+        () => { throw new Error('expected streamChat to reject'); },
+        (e: unknown) => e,
+      );
+      expect((err as LlmHttpError).status).toBe(503);
+      expect(clearTimeoutSpy.mock.calls.length).toBeGreaterThan(callsBefore);
+    } finally {
+      clearTimeoutSpy.mockRestore();
+      await new Promise<void>((r) => { fastSrv.closeAllConnections(); fastSrv.close(() => r()); });
+    }
   });
 });
 

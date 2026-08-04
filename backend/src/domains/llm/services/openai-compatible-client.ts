@@ -1,4 +1,12 @@
 import { Agent, fetch as undiciFetch } from 'undici';
+// Named import, not the ambient global: `lib: ["ES2022"]` (no `dom`) means the
+// global `ReadableStream` comes from `@types/node`'s own declaration, which
+// TS treats as structurally incompatible with the `node:stream/web` type
+// undici's own `.d.ts` actually uses for `Response.body` (a `pipeThrough`
+// generic-variance mismatch) — importing the same module undici types
+// against is what makes `boundedErrorDetail`'s parameter type below actually
+// accept a real `Response`.
+import type { ReadableStream } from 'node:stream/web';
 import { enqueue } from './llm-queue.js';
 import {
   getProviderBreaker,
@@ -231,11 +239,54 @@ async function errorDetail(res: { text(): Promise<string> }): Promise<string> {
 const DEFAULT_STREAM_ERROR_DETAIL_TIMEOUT_MS = 5_000;
 let streamErrorDetailTimeoutMs = DEFAULT_STREAM_ERROR_DETAIL_TIMEOUT_MS;
 
-async function boundedErrorDetail(res: { text(): Promise<string> }): Promise<string> {
-  return Promise.race([
-    errorDetail(res),
-    new Promise<string>((resolve) => setTimeout(() => resolve(''), streamErrorDetailTimeoutMs)),
-  ]);
+/** Sentinel for `boundedErrorDetail`'s race — distinct from any decoded body
+ * text, however unlikely a collision with a literal string would be. */
+const BOUNDED_READ_TIMED_OUT = Symbol('boundedErrorDetail timeout');
+
+/**
+ * Reads the error body directly off the stream's reader — not via
+ * `errorDetail()`'s `res.text()` — so a timeout can cancel the exact same
+ * reader that is mid-read. `res.body.cancel()` is NOT equivalent: once
+ * `.text()` has acquired its (implicit) reader the stream is locked, and
+ * cancelling the *stream* from outside that lock throws `"Invalid state:
+ * ReadableStream is locked"` (confirmed empirically against a real undici
+ * response) — a no-op that leaves the read running until undici's ~300s
+ * `bodyTimeout`. Cancelling through the reader we already own is well-defined
+ * mid-read: it resolves the pending `read()` with `done: true` and tears down
+ * the socket immediately (also confirmed empirically).
+ */
+async function boundedErrorDetail(res: { body?: ReadableStream | null }): Promise<string> {
+  if (!res.body) return '';
+  const reader = res.body.getReader();
+
+  async function readAll(): Promise<string> {
+    // `res.body` is typed `ReadableStream` (undici's own declaration, no
+    // generic argument — see the type on this function's parameter), so
+    // `reader.read()`'s `value` comes back `any`. Every OpenAI-compatible
+    // `/chat/completions` body is bytes on the wire; the cast makes that
+    // assumption explicit rather than letting `any` flow silently into
+    // `chunks`.
+    const chunks: Uint8Array[] = [];
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) chunks.push(value as Uint8Array);
+    }
+    return Buffer.concat(chunks).toString('utf8');
+  }
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<typeof BOUNDED_READ_TIMED_OUT>((resolve) => {
+    timer = setTimeout(() => resolve(BOUNDED_READ_TIMED_OUT), streamErrorDetailTimeoutMs);
+  });
+
+  const winner = await Promise.race([readAll().catch(() => ''), timeoutPromise]);
+  if (winner === BOUNDED_READ_TIMED_OUT) {
+    await reader.cancel().catch(() => { /* already closed / benign cancel race */ });
+    return '';
+  }
+  clearTimeout(timer);
+  return winner.trim().slice(0, ERROR_BODY_MAX_CHARS);
 }
 
 export async function chat(
