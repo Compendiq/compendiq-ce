@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -6,7 +6,7 @@ import { useAuthStore } from './stores/auth-store';
 import { App, PageLoadingFallback } from './App';
 
 describe('App – ProtectedRoute token restoration', () => {
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  let fetchSpy: MockInstance<typeof fetch>;
 
   beforeEach(() => {
     fetchSpy = vi.spyOn(globalThis, 'fetch');
@@ -133,7 +133,7 @@ describe('App – ProtectedRoute token restoration', () => {
 });
 
 describe('App – ProtectedRoute setup-status fail-safe (#932)', () => {
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  let fetchSpy: MockInstance<typeof fetch>;
 
   beforeEach(() => {
     fetchSpy = vi.spyOn(globalThis, 'fetch');
@@ -196,7 +196,7 @@ describe('App – ProtectedRoute setup-status fail-safe (#932)', () => {
 });
 
 describe('App – SetupRoute setup-status error handling (#932)', () => {
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  let fetchSpy: MockInstance<typeof fetch>;
 
   beforeEach(() => {
     fetchSpy = vi.spyOn(globalThis, 'fetch');
@@ -343,7 +343,7 @@ describe('PageLoadingFallback', () => {
 });
 
 describe('App – route-based code splitting (#186)', () => {
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  let fetchSpy: MockInstance<typeof fetch>;
 
   beforeEach(() => {
     fetchSpy = vi.spyOn(globalThis, 'fetch');
