@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { BubbleMenu } from '@tiptap/react/menus';
+import { useEditorState } from '@tiptap/react';
 import { PluginKey } from '@tiptap/pm/state';
 import type { Editor as EditorType } from '@tiptap/react';
 import { Sparkles } from 'lucide-react';
@@ -9,6 +10,7 @@ import { buildImproveHtml } from './improve-markdown';
 import { EditorFormatBar } from './EditorFormatBar';
 import { ImprovePanel, type ImprovePanelCopy } from './ImprovePanel';
 import { buildInstruction, type QuickAction } from './improve-actions';
+import { containsStructuredInline } from './block-menu-nodes';
 import { hasBlockMenuTarget } from './block-menu-decoration';
 import {
   createImproveDecorationPlugin,
@@ -66,6 +68,63 @@ export function selectionShouldShow(editor: EditorType, aiOpen: boolean): boolea
   return true;
 }
 
+/**
+ * Improve is hidden — not warned about — when the selection carries one of
+ * Confluence's inline atoms (`confluenceStatus`, `confluenceUserMention`,
+ * `confluenceJiraIssue`). Same predicate, same verdict as #1179's block menu,
+ * reached by a different route, so the reasoning is recorded here rather than
+ * inherited:
+ *
+ * - **The loss is data, not presentation.** `containsLossyMarks` only warns
+ *   because the words survive and the formatting does not. An atom takes the
+ *   *content* with it: which person was mentioned, which Jira issue, what the
+ *   status said. That is the class `TEXT_BLOCK_TYPES` exists to protect.
+ * - **Warning cannot be honest, because the input is broken too.** `textBetween`
+ *   drops the atoms before the request is built, so the model answers a
+ *   mutilated prompt — "Ask @jdoe about DONE" is sent as `"Ask  about "`. Even
+ *   Insert below, which deletes nothing, would return prose derived from text
+ *   the user never wrote. There is no accept path that produces a right answer,
+ *   so there is nothing worth offering behind a warning. Worse, a plausible
+ *   answer invites the user to insert it and delete the original by hand, which
+ *   is the same loss with extra steps.
+ * - **The disruption argument runs the other way.** A block target has no
+ *   remedy: the menu acts on the whole block, so hiding removes the only route.
+ *   A selection is the user's own drag — the remedy is to select around the
+ *   macro, and the boundary behaviour of `nodesBetween` makes a range that stops
+ *   at the atom clean. Hiding costs *less* here than on the block menu, as long
+ *   as the copy says what to do instead. That is the one thing this surface
+ *   changes: #1179's "unavailable here" is terminal; ours names the way out.
+ *
+ * Auto-shrinking the selection past the atom was considered and rejected. It is
+ * only well defined when the atom sits at an edge — one in the middle needs two
+ * disjoint ranges and `insertContentAt` takes one — and silently improving
+ * something other than what the user highlighted is its own surprise.
+ *
+ * Formatting toggles stay: a mark toggle rewrites marks, not nodes.
+ */
+const MACRO_NOTICE =
+  'Improve is unavailable: a rewrite would drop the inline macros in this selection. Select text around them instead.';
+
+/**
+ * Shown in the AI section when an atom lands *inside* the passage after the
+ * section opened — a collaborator, an undo, the AI dock. The gate above runs
+ * when Improve opens and cannot see that. Replace is the only destructive half,
+ * so it is the only half refused; Insert below still preserves everything.
+ *
+ * **This one renders amber while `MACRO_NOTICE` renders muted, and that is the
+ * intended pairing rather than an oversight.** Both are refusals, so the colour
+ * is not tracking "refusal vs warning" — it is tracking whether the user is
+ * mid-gesture. `MACRO_NOTICE` appears passively as a selection is dragged
+ * across a macro, many times a minute, and amber at that frequency is noise.
+ * This appears only once the user has opened the section, asked for an answer,
+ * and had a control they were reaching for go dead underneath them; that is
+ * attention, which is what ADR-010 reserves amber for. It arrives via
+ * `ImprovePanel`'s `replaceBlocked` slot, which is shared with #1179's
+ * multi-block-heading refusal and is amber for the same reason.
+ */
+const MACRO_REPLACE_BLOCKED =
+  'This passage now contains an inline macro, and replacing would delete it. Insert below instead.';
+
 const SELECTION_COPY: ImprovePanelCopy = {
   ariaLabel: 'Improve selection with AI',
   placeholder: 'Ask AI to edit the selection…',
@@ -115,6 +174,10 @@ export function BubbleMenuContent({
   const openAi = useCallback(() => {
     const { from, to } = editor.state.selection;
     if (from === to) return;
+    // The gate itself, not a mirror of the render gate: Cmd/Ctrl+J reaches this
+    // without going near the trigger, so hiding the button alone would leave the
+    // keyboard path opening a section that can only lose macros. See MACRO_NOTICE.
+    if (containsStructuredInline(editor.state.doc, from, to)) return;
     rangeRef.current = { from, to };
     // #764 — the AI input is about to steal focus, which blurs the editor and
     // hides the native selection highlight. Decorate the captured range so the
@@ -227,6 +290,31 @@ export function BubbleMenuContent({
     return from < to ? { from, to } : null;
   }, [editor]);
 
+  /**
+   * The range Improve is about: the decorated passage once the section is open,
+   * the live selection before that. Two phases, one predicate — so the trigger
+   * disappears as a drag crosses a macro, and the open section keeps watching
+   * the passage it captured rather than wherever the caret has since gone.
+   */
+  const improveRange = useCallback((): { from: number; to: number } | null => {
+    const captured = currentRange();
+    if (captured) return captured;
+    if (editor.isDestroyed) return null;
+    const { from, to } = editor.state.selection;
+    return from < to ? { from, to } : null;
+  }, [editor, currentRange]);
+
+  // Subscribe to the document so this re-evaluates on every selection change
+  // and every edit. `useEditorState` compares results, so a selection dragged
+  // through plain prose re-renders nothing.
+  const dropsMacros = useEditorState({
+    editor,
+    selector: ({ editor: e }) => {
+      const range = improveRange();
+      return range !== null && containsStructuredInline(e.state.doc, range.from, range.to);
+    },
+  });
+
   const runAction = useCallback(
     (action: QuickAction, freeFormText: string) => {
       const range = currentRange();
@@ -241,6 +329,13 @@ export function BubbleMenuContent({
   const replaceSelection = useCallback(() => {
     const range = currentRange();
     if (!range || !stream.output) return;
+    // Re-read from the DOCUMENT, not from `dropsMacros`. The render gate is a
+    // React value derived from editor state, so a transaction landing between
+    // the last paint and this click leaves it a frame stale — and one frame is
+    // all it takes to delete a mention. Unlike #1179's equivalent this is the
+    // primary guard for the mid-flight case, not a cross-file backstop, and the
+    // test suite drives that exact interleaving.
+    if (containsStructuredInline(editor.state.doc, range.from, range.to)) return;
     const { inline } = buildImproveHtml(stream.output);
     editor.chain().focus().insertContentAt({ from: range.from, to: range.to }, inline).run();
     closeAi();
@@ -261,6 +356,12 @@ export function BubbleMenuContent({
     closeAi();
   }, [editor, stream.output, closeAi, currentRange]);
 
+  // While the section is open the trigger is also its collapse control, so it
+  // stays even if a macro arrives in the passage — hiding it there would strand
+  // an expanded panel with no way back and a dangling `aria-controls`. The
+  // mid-flight protection is `replaceBlocked` below, not the render gate.
+  const showImprove = aiOpen || !dropsMacros;
+
   return (
     <div
       ref={rootRef}
@@ -271,26 +372,42 @@ export function BubbleMenuContent({
       )}
     >
       <EditorFormatBar editor={editor} ariaLabel="Selection formatting">
-        <button
-          type="button"
-          onMouseDown={(e) => e.preventDefault()} // keep editor selection on click
-          onClick={() => (aiOpen ? closeAi() : openAi())}
-          title="Improve with AI"
-          aria-label="Improve with AI"
-          aria-expanded={aiOpen}
-          aria-controls={aiOpen ? aiPanelId : undefined}
-          data-testid="bubble-ai-trigger"
-          className={cn(
-            'flex h-8 items-center gap-1 rounded px-2 text-sm font-medium transition-colors',
-            'text-primary hover:bg-primary/10',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
-            aiOpen && 'bg-primary/10',
-          )}
-        >
-          <Sparkles size={15} />
-          <span>Improve</span>
-        </button>
+        {showImprove && (
+          <button
+            type="button"
+            onMouseDown={(e) => e.preventDefault()} // keep editor selection on click
+            onClick={() => (aiOpen ? closeAi() : openAi())}
+            title="Improve with AI"
+            aria-label="Improve with AI"
+            aria-expanded={aiOpen}
+            aria-controls={aiOpen ? aiPanelId : undefined}
+            data-testid="bubble-ai-trigger"
+            className={cn(
+              'flex h-8 items-center gap-1 rounded px-2 text-sm font-medium transition-colors',
+              'text-primary hover:bg-primary/10',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
+              aiOpen && 'bg-primary/10',
+            )}
+          >
+            <Sparkles size={15} />
+            <span>Improve</span>
+          </button>
+        )}
       </EditorFormatBar>
+
+      {/* Deliberately not a live region. This appears and disappears as the
+          selection is dragged, so announcing it would chatter over every drag;
+          it is read when the user goes looking for the button that is missing.
+          Muted, not amber — amber is for a warning the user may act through
+          (#1179's mark warning), and this is a refusal. */}
+      {!aiOpen && dropsMacros && (
+        <p
+          data-testid="bubble-menu-macro-notice"
+          className="w-72 border-t border-border px-3 py-2 text-xs text-muted-foreground"
+        >
+          {MACRO_NOTICE}
+        </p>
+      )}
 
       {/* #782 — the AI section expands the SAME container in place (below the
           toolbar row) instead of opening a second portalled popover on the
@@ -307,6 +424,7 @@ export function BubbleMenuContent({
           onReplace={replaceSelection}
           onInsertBelow={insertBelow}
           onClose={closeAi}
+          replaceBlocked={dropsMacros ? MACRO_REPLACE_BLOCKED : null}
           className="w-80"
         />
       )}
