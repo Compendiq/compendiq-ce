@@ -138,8 +138,26 @@ describe('AiDock improvement type (#1177)', () => {
     expect(screen.queryByTestId('ai-dock-improve-types')).not.toBeInTheDocument();
     expect(screen.queryByTestId('ai-dock-improve-type-structure')).not.toBeInTheDocument();
     expect(toggle()).toHaveAttribute('aria-expanded', 'false');
+    // No dangling `aria-controls`: the panel it names does not exist yet.
+    expect(toggle()).not.toHaveAttribute('aria-controls');
     // Nothing to report while it is the documented default.
     expect(screen.queryByTestId('ai-dock-improve-type-label')).not.toBeInTheDocument();
+  });
+
+  // #1177 review: `aria-controls` must appear and disappear with the panel,
+  // matching `bubble-ai-trigger` / `block-ai-trigger`. Asserted in both
+  // directions so a fix that simply drops the attribute cannot pass.
+  it('points aria-controls at the drawer only while the drawer is rendered', async () => {
+    renderDock();
+    await openAndSettle();
+
+    fireEvent.click(toggle());
+    const drawer = await screen.findByTestId('ai-dock-improve-types');
+    expect(toggle()).toHaveAttribute('aria-controls', drawer.id);
+
+    fireEvent.click(toggle());
+    expect(screen.queryByTestId('ai-dock-improve-types')).not.toBeInTheDocument();
+    expect(toggle()).not.toHaveAttribute('aria-controls');
   });
 
   it('reveals all five, with grammar selected and described', async () => {

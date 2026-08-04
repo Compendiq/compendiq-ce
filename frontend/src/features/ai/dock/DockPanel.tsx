@@ -292,6 +292,8 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
               const disabled = isStreaming || !page || !model || (isImprove && isBusy);
               const chip = (
                 <button
+                  // Carries the array key for the other three chips; ignored
+                  // for Improve, which returns it inside the keyed <div> below.
                   key={id}
                   type="button"
                   onClick={() => {
@@ -352,7 +354,11 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
                     // nothing yet to configure.
                     disabled={disabled}
                     aria-expanded={typesOpen}
-                    aria-controls={typesPanelId}
+                    // Only while the drawer exists. `aria-controls` pointing at
+                    // an unrendered id is a dangling reference, and the two
+                    // other AI disclosures in the app (`bubble-ai-trigger`,
+                    // `block-ai-trigger`) already gate it the same way.
+                    aria-controls={typesOpen ? typesPanelId : undefined}
                     aria-label={`Improvement type: ${improvementType}`}
                     title={`${improvementType} — ${IMPROVEMENT_DESCRIPTIONS[improvementType]}`}
                     // -ml-px collapses the two 1px borders into the single hairline
