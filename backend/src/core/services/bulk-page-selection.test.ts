@@ -45,6 +45,15 @@ describe('BulkSelectionSchema', () => {
     expect(() => BulkSelectionSchema.parse({})).toThrow();
   });
 
+  // #1167 review: the array was bounded, each entry was not. `toPageIdText`
+  // runs `BigInt(id)` on every all-digit entry and BigInt parsing is
+  // superlinear in digit count, so 1000 unbounded digit strings is CPU burnt
+  // inside the request. No real page identifier comes close to 64 characters.
+  it('bounds the length of each id, not just the array', () => {
+    expect(BulkSelectionSchema.parse({ ids: ['9'.repeat(64)] }).ids).toEqual(['9'.repeat(64)]);
+    expect(() => BulkSelectionSchema.parse({ ids: ['9'.repeat(65)] })).toThrow();
+  });
+
   it('rejects unknown filter keys (strict)', () => {
     expect(() =>
       BulkSelectionSchema.parse({
@@ -114,8 +123,21 @@ describe('resolveBulkSelection — ids mode', () => {
     });
 
     const args = mockQueryFn.mock.calls[0]!;
-    expect(args[1]![0]).toEqual([1]);            // numericIds
+    // #1167: bound as TEXT against `cp.id::text`, so int4 cannot overflow.
+    expect(args[1]![0]).toEqual(['1']);          // numericIds
     expect(args[1]![1]).toEqual([]);             // confluenceStringIds (empty)
+  });
+
+  // #1167: the id array is normalised the way the int cast used to normalise,
+  // so a zero-padded id still addresses the same row.
+  it('normalises zero-padded ids on the id array', async () => {
+    mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+    await resolveBulkSelection('user-1', { ids: ['007', 'conf-2'] }, ['OPS']);
+
+    const args = mockQueryFn.mock.calls[0]!;
+    expect(args[1]![0]).toEqual(['7']);
+    expect(args[1]![1]).toEqual(['conf-2']);
   });
 });
 
