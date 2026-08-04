@@ -148,6 +148,8 @@ export const __test_only__ = {
   thinkingExtras,
   isStrictOpenAiCompatibleHost,
   isOpenAiReasoningModel,
+  setStreamErrorDetailTimeoutMs: (ms: number) => { streamErrorDetailTimeoutMs = ms; },
+  resetStreamErrorDetailTimeoutMs: () => { streamErrorDetailTimeoutMs = DEFAULT_STREAM_ERROR_DETAIL_TIMEOUT_MS; },
 };
 
 export interface StreamChatOptions {
@@ -202,6 +204,38 @@ export async function checkHealth(cfg: ProviderConfig): Promise<HealthResult> {
 async function errorDetail(res: { text(): Promise<string> }): Promise<string> {
   const body = await res.text().catch(() => '');
   return body.trim().slice(0, ERROR_BODY_MAX_CHARS);
+}
+
+/**
+ * Bound on `streamChat`'s error-body read (PR #1214 review). `chat` /
+ * `listModels` / `generateEmbedding` all run inside `enqueue()`, whose own
+ * `AbortController` fires — and, per the Fetch spec, aborts an in-progress
+ * body read tied to the same signal — after `LLM_STREAM_TIMEOUT_MS` (default
+ * 5 minutes). A stalled error body on those paths is therefore already
+ * bounded, and the breaker's `onFailure()`/`isProbing` cleanup still runs
+ * once the abort settles the read, just later than usual.
+ *
+ * `streamChat` deliberately bypasses `enqueue()` (see the doc comment on the
+ * function below) and 7 of its 8 production callers pass no `AbortSignal`,
+ * so its dispatch has no such backstop: undici's default `bodyTimeout`
+ * (~300s) resets on every received byte, so a peer that trickles bytes can
+ * hold the read open far longer than that — and since the read happens
+ * inside `getProviderBreaker().execute()`, a HALF_OPEN breaker's
+ * single-probe gate (`isProbing`) stays held for the same duration,
+ * rejecting every other request to that provider with "probe already in
+ * flight" instead of the normal fail-fast-and-retry cycle.
+ *
+ * `streamErrorDetailTimeoutMs` is a `let`, not a `const`, purely so tests can
+ * shrink it via `__test_only__` instead of waiting out the production value.
+ */
+const DEFAULT_STREAM_ERROR_DETAIL_TIMEOUT_MS = 5_000;
+let streamErrorDetailTimeoutMs = DEFAULT_STREAM_ERROR_DETAIL_TIMEOUT_MS;
+
+async function boundedErrorDetail(res: { text(): Promise<string> }): Promise<string> {
+  return Promise.race([
+    errorDetail(res),
+    new Promise<string>((resolve) => setTimeout(() => resolve(''), streamErrorDetailTimeoutMs)),
+  ]);
 }
 
 export async function chat(
@@ -260,7 +294,7 @@ export async function* streamChat(
         dispatcher: dispatcherFor(cfg),
         signal,
       });
-      if (!r.ok || !r.body) throw new LlmHttpError('streamChat', r.status, await errorDetail(r));
+      if (!r.ok || !r.body) throw new LlmHttpError('streamChat', r.status, await boundedErrorDetail(r));
       return r;
     }),
     { 'llm.provider_id': cfg.providerId, 'llm.model': model },

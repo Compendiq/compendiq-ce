@@ -721,8 +721,13 @@ describe('embedding-service', () => {
 
       // Every batch's embedding call rejects with an oversized-input error whose
       // body carries the context-length signal — embedPage skips every batch.
+      // Production-shaped: generateEmbedding throws LlmHttpError with the body
+      // on `.detail` (#1185), not folded into `.message` — this must exercise
+      // the same `instanceof LlmHttpError` branch isContextLengthError takes
+      // in production, per the PR #1214 review (a plain Error here would only
+      // prove the message-based fallback still works).
       mocks.providerGenerateEmbedding.mockRejectedValue(
-        new Error('generateEmbedding HTTP 400: input length exceeds the context length'),
+        new LlmHttpError('generateEmbedding', 400, 'input length exceeds the context length'),
       );
 
       const promise = processDirtyPages('livelock-user');
@@ -1531,7 +1536,11 @@ describe('chunkText', () => {
     // (kept for any caller/mock still throwing a plain Error).
     describe('LlmHttpError field-based matching (production path)', () => {
       it('returns true when a 400 detail names the oversized-input signal', () => {
-        const err = new LlmHttpError('generateEmbedding', 400, 'input length exceeds the context length');
+        // Deliberately does NOT also contain "context length" — every other
+        // truthy case below does, so without this one the 'input length
+        // exceeds' disjunct could be deleted and every test here would still
+        // pass (PR #1214 review mutation-testing finding).
+        const err = new LlmHttpError('generateEmbedding', 400, 'input length exceeds the maximum allowed');
         expect(isContextLengthError(err)).toBe(true);
       });
 
@@ -1548,6 +1557,23 @@ describe('chunkText', () => {
       it('returns false for a 400 whose detail is unrelated', () => {
         const err = new LlmHttpError('generateEmbedding', 400, 'invalid request body');
         expect(isContextLengthError(err)).toBe(false);
+      });
+
+      // PR #1214 review: the pre-#1185 message-fallback branch had a third
+      // term — `msg.includes('http 400') && msg.includes('context')` — that
+      // the LlmHttpError branch dropped. That term is what caught OpenAI's
+      // machine code `context_length_exceeded` (underscored, so it contains
+      // neither 'input length exceeds' nor 'context length') and prose like
+      // "exceeds the model's context window". Losing it flips those
+      // providers from skip-and-preserve (#821/#867) to fail-the-page.
+      it('returns true for a 400 whose detail names the machine code context_length_exceeded', () => {
+        const err = new LlmHttpError('generateEmbedding', 400, '{"error":{"code":"context_length_exceeded"}}');
+        expect(isContextLengthError(err)).toBe(true);
+      });
+
+      it('returns true for a 400 whose detail says "exceeds the model\'s context window"', () => {
+        const err = new LlmHttpError('generateEmbedding', 400, "This request exceeds the model's context window.");
+        expect(isContextLengthError(err)).toBe(true);
       });
 
       it('returns false for a non-400 status even if the detail mentions context length', () => {
@@ -1638,7 +1664,12 @@ describe('chunkText', () => {
       // Phase 2 (BEGIN/DELETE/INSERT×N/UPDATE/COMMIT) handled by mockClient.query default
       // Pool query is NOT used in Phase 2
 
-      const contextErr = new Error('HTTP 400 - input length exceeds context length');
+      // Production-shaped: generateEmbedding throws LlmHttpError with the
+      // body on `.detail` (#1185) — a plain Error here would only exercise
+      // isContextLengthError's message-fallback branch, not the
+      // `instanceof LlmHttpError` branch production actually hits (PR #1214
+      // review).
+      const contextErr = new LlmHttpError('generateEmbedding', 400, 'input length exceeds context length');
 
       // First batch (chunks 0..9) throws a context-length error in Phase 1
       // Second batch succeeds in Phase 1 — then Phase 2 runs atomically
@@ -1656,8 +1687,9 @@ describe('chunkText', () => {
 
     it('rethrows non-context-length errors from embedPage', async () => {
       mocks.htmlToText.mockReturnValue('Some content for the page that is long enough');
-      // Phase 1 throws a server error — no client is opened, no pool query needed
-      const serverErr = new Error('HTTP 500 - internal server error');
+      // Phase 1 throws a server error — no client is opened, no pool query needed.
+      // Production-shaped LlmHttpError, not a plain Error (#1185 / PR #1214 review).
+      const serverErr = new LlmHttpError('generateEmbedding', 500, 'internal server error');
       mocks.providerGenerateEmbedding.mockRejectedValueOnce(serverErr);
 
       await expect(
@@ -1671,8 +1703,9 @@ describe('chunkText', () => {
     it('when EVERY batch is skipped (all context-length): preserves embeddings, leaves page dirty/failed, no DELETE or embedded UPDATE', async () => {
       mocks.htmlToText.mockReturnValue('Some content for the page that is long enough');
 
-      // Every Phase 1 batch rejects with a context-length error → allEmbeddings stays empty
-      const contextErr = new Error('HTTP 400 - input length exceeds context length');
+      // Every Phase 1 batch rejects with a context-length error → allEmbeddings
+      // stays empty. Production-shaped LlmHttpError (#1185 / PR #1214 review).
+      const contextErr = new LlmHttpError('generateEmbedding', 400, 'input length exceeds context length');
       mocks.providerGenerateEmbedding.mockRejectedValue(contextErr);
 
       const count = await embedPage('user-1', 101, 'Page', 'DEV', '<p>content</p>');

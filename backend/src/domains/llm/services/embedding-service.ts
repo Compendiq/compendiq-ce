@@ -115,12 +115,23 @@ export function isCircuitBreakerError(err: unknown): boolean {
  *
  * The message-based fallback below stays for any caller or test double that
  * still throws a plain `Error` with the pre-#1185 message shape.
+ *
+ * The 400-gated branch below must keep parity with the message-based
+ * fallback's three terms, not just the first two: a bare `'context'` check
+ * (PR #1214 review) is what catches OpenAI's machine code
+ * `context_length_exceeded` (underscored — contains neither `'input length
+ * exceeds'` nor `'context length'`) and prose like "exceeds the model's
+ * context window". Dropping it flips those providers from skip-and-preserve
+ * (#821/#867) to fail-the-page. Both branches are 400-gated already, so a
+ * bare `'context'` here has the same reach as the fallback's composite
+ * `('http 400' && 'context')` term — and it subsumes `'context length'`, so
+ * that term isn't repeated separately.
  */
 export function isContextLengthError(err: unknown): boolean {
   if (err instanceof LlmHttpError) {
     if (err.status !== 400) return false;
     const detail = err.detail.toLowerCase();
-    return detail.includes('input length exceeds') || detail.includes('context length');
+    return detail.includes('input length exceeds') || detail.includes('context');
   }
   if (!(err instanceof Error)) return false;
   const msg = err.message.toLowerCase();

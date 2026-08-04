@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { checkHealth, listModels, chat, streamChat, generateEmbedding, invalidateBreaker, __test_only__, LlmHttpError, type ProviderConfig } from './openai-compatible-client.js';
@@ -170,6 +170,75 @@ describe('openai-compatible-client — streamChat surfaces HTTP error as LlmHttp
     const err = await drainToError('streamchat-err-msg-1185');
     expect((err as Error).message).toBe('streamChat HTTP 429');
     expect((err as Error).message).not.toMatch(/rate limited/);
+  });
+});
+
+// ─── PR #1214 review: a stalled error body must not wedge the breaker ───────
+// Unlike chat/listModels/generateEmbedding, streamChat deliberately bypasses
+// enqueue() (see the doc comment on the function), so it gets no
+// LLM_STREAM_TIMEOUT_MS AbortController — 7 of its 8 production callers pass
+// no `signal` either. Reading the error body with `await errorDetail(r)`
+// inside `getProviderBreaker().execute()` before #1185 was instant (no body
+// read at all); after #1185 a peer that sends error headers and then stalls
+// the body (trickling bytes resets undici's default ~300s bodyTimeout) can
+// hold a HALF_OPEN breaker's single-probe gate open indefinitely, rejecting
+// every other request to that provider with "probe already in flight".
+describe('openai-compatible-client — streamChat bounds a stalled error-body read (#1214 review)', () => {
+  let stallSrv: Server;
+  let stallBase: string;
+  beforeAll(async () => {
+    stallSrv = createServer((req, res) => {
+      if (req.url === '/v1/chat/completions') {
+        let body = '';
+        req.on('data', (c) => (body += c));
+        req.on('end', () => {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          // Partial body, deliberately never finished/ended — the read stalls
+          // until the socket is force-closed by afterAll.
+          res.write('{"error":');
+        });
+        return;
+      }
+      res.writeHead(404); res.end();
+    });
+    await new Promise<void>((r) => stallSrv.listen(0, r));
+    const { port } = stallSrv.address() as AddressInfo;
+    stallBase = `http://127.0.0.1:${port}/v1`;
+  });
+  // The stalled response is deliberately never ended, so the keep-alive
+  // socket never closes on its own — plain `server.close()` waits for every
+  // open connection to end first and hangs forever. `closeAllConnections()`
+  // (Node ≥18.2, and this repo requires Node ≥22) force-closes them.
+  afterAll(() => new Promise<void>((r) => {
+    stallSrv.closeAllConnections();
+    stallSrv.close(() => r());
+  }));
+  afterEach(() => {
+    __test_only__.resetStreamErrorDetailTimeoutMs();
+  });
+
+  it('throws within the bounded timeout instead of hanging on a stalled error body', async () => {
+    // Short test-only override — production defaults to a few seconds, which
+    // would make this test slow without proving anything more.
+    __test_only__.setStreamErrorDetailTimeoutMs(50);
+    const gen = streamChat(
+      { ...cfg, providerId: 'streamchat-stall-1214', baseUrl: stallBase }, 'm1', [{ role: 'user', content: 'hi' }],
+    );
+    const start = Date.now();
+    const err = await gen.next().then(
+      () => { throw new Error('expected streamChat to reject'); },
+      (e: unknown) => e,
+    );
+    const elapsed = Date.now() - start;
+
+    expect(err).toBeInstanceOf(LlmHttpError);
+    expect((err as LlmHttpError).status).toBe(500);
+    // The body never arrived within the bound — detail falls back to ''
+    // rather than the read hanging until the connection is torn down.
+    expect((err as LlmHttpError).detail).toBe('');
+    // Comfortably under undici's ~300s default bodyTimeout — proves the read
+    // was actually bounded rather than happening to finish fast.
+    expect(elapsed).toBeLessThan(1000);
   });
 });
 
