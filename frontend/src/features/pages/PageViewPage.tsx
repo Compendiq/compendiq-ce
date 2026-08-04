@@ -665,10 +665,21 @@ export function PageViewPage() {
               app shell's via background-attachment: fixed, which silently
               re-anchors to the framer-motion transform on this very element.
               Rounded bottom corners keep the mask in the toolbar's
-              silhouette. */}
+              silhouette.
+
+              It is deliberately NOT pointer-events-none. Hit-testing follows
+              paint order, so over the toolbar's own box the card below still
+              takes every click (measured: the Save button and the toolbar body
+              keep their hits) — but the padding strip is paint with nothing
+              else in it, and a mask that opts out of hit-testing there hands
+              clicks to the editor content it just hid: a click 2px above the
+              toolbar landed in invisible prose, jumping the caret or toggling
+              an unseen task checkbox. What is occluded to the eye has to be
+              occluded to the pointer. */}
           <div
             aria-hidden
-            className="pointer-events-none absolute inset-x-0 -top-5 bottom-0 z-[-1] bg-background rounded-b-xl"
+            data-testid="edit-toolbar-mask"
+            className="absolute inset-x-0 -top-5 bottom-0 z-[-1] bg-background rounded-b-xl"
           />
         <div className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm">
           {editorInstance && (

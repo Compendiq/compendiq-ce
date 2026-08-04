@@ -13,13 +13,24 @@ import { resolve } from 'path';
  * where the scrollport finally clips — so article content scrolls up through
  * that strip in full view, between the app header and the stuck toolbar.
  *
- * Each sticky surface therefore paints an opaque under-mask that reaches one
- * padding step above its own box. The height of that reach is not a free
- * choice: it is AppLayout's padding, in another file. It has already drifted
- * once (pt-4 to pt-5), and a mask that no longer matches fails silently — the
- * bleed simply returns, thinner. These invariants read both numbers out of the
- * sources rather than restating them, the same approach as
+ * A surface that covers the strip does it by reaching one padding step above
+ * its own box with an opaque under-mask. The height of that reach is not a
+ * free choice: it is AppLayout's padding, in another file. It has already
+ * drifted once (pt-4 to pt-5), and a mask that no longer matches fails
+ * silently — the bleed simply returns, thinner. These invariants read both
+ * numbers out of the sources rather than restating them, the same approach as
  * `nginx-api-body-limit.test.ts`.
+ *
+ * Exactly two surfaces are enforced here, and this file claims nothing about
+ * any other:
+ *   - PageViewPage's sticky edit toolbar (fixed in #1186);
+ *   - NewPagePage's sticky header group, which never lost its mask.
+ * `/ai` is knowingly NOT covered: both of AiAssistantPage's bars sit in this
+ * same scroll container with `inset-0` masks and keep the live strip, tracked
+ * in #1218. Its bottom bar cannot take the mirrored fix — a block-end overhang
+ * grows the scrollable region, which is #769's phantom scroll — so covering it
+ * needs a different mechanism, and adding it to this list needs that work
+ * first, not a wider regex.
  *
  * There is no unit test that can catch this by rendering: jsdom performs no
  * layout, so the strip has no height and nothing scrolls through it.
@@ -53,6 +64,46 @@ function scrollPaddingTopSteps(): number {
   return Number(match[1]);
 }
 
+const EDIT_TOOLBAR_WRAPPER = 'className="sticky top-0 z-30 isolate"';
+const EDIT_TOOLBAR_MASK = 'data-testid="edit-toolbar-mask"';
+
+/**
+ * The classes on the edit toolbar's under-mask.
+ *
+ * Located by marker, and tied to the toolbar it belongs to: the reach asserted
+ * below is the only place the exact height is pinned, so silently reading some
+ * *other* element would leave the real mask free to drift back to a plain box.
+ * Every way of not finding the right element throws by name instead.
+ */
+function editToolbarMaskClasses(): string {
+  const wrapperAt = pageViewSource.indexOf(EDIT_TOOLBAR_WRAPPER);
+  if (wrapperAt < 0) {
+    throw new Error(`No sticky edit-toolbar wrapper (${EDIT_TOOLBAR_WRAPPER}) in PageViewPage.tsx`);
+  }
+
+  const markers = pageViewSource.split(EDIT_TOOLBAR_MASK).length - 1;
+  if (markers !== 1) {
+    throw new Error(`Expected exactly one ${EDIT_TOOLBAR_MASK} in PageViewPage.tsx, found ${markers}`);
+  }
+
+  const maskAt = pageViewSource.indexOf(EDIT_TOOLBAR_MASK);
+  if (maskAt < wrapperAt) {
+    throw new Error('The edit-toolbar mask no longer sits inside the sticky toolbar wrapper');
+  }
+
+  // Nothing may come between the wrapper and its mask but the wrapper's own
+  // comment: a second sticky surface opening in that gap would mean the
+  // marker now labels a mask belonging to something else.
+  const between = pageViewSource.slice(wrapperAt + EDIT_TOOLBAR_WRAPPER.length, maskAt);
+  if (/className="[^"]*\bsticky\b/.test(between)) {
+    throw new Error('Another sticky surface opens between the edit toolbar and its mask');
+  }
+
+  const classes = pageViewSource.slice(maskAt).match(/^[^>]*?className="([^"]+)"/);
+  if (!classes) throw new Error('The edit-toolbar mask carries no className');
+  return classes[1]!;
+}
+
 describe('sticky under-masks cover the scroll container padding (#1186)', () => {
   it('the scroll container declares one unconditional top padding', () => {
     // A breakpoint variant (sm:pt-8) would give the padding two heights while
@@ -62,17 +113,19 @@ describe('sticky under-masks cover the scroll container padding (#1186)', () => 
   });
 
   it("the edit toolbar's under-mask reaches exactly that far above the toolbar", () => {
-    const mask = pageViewSource.match(/aria-hidden\s*\n?\s*className="([^"]*z-\[-1\][^"]*)"/);
-    expect(mask, 'no under-mask found on the sticky edit toolbar').not.toBeNull();
+    const classes = editToolbarMaskClasses();
+    // Anti-vacuity: the subject must be the mask itself, not any element the
+    // locator happened to land on.
+    expect(classes, `not an under-mask: ${classes}`).toContain('z-[-1]');
 
-    const reach = mask![1]!.match(/(?:^|\s)-top-(\d+)(?:\s|$)/);
-    expect(reach, `mask does not reach above its box: ${mask![1]}`).not.toBeNull();
+    const reach = classes.match(/(?:^|\s)-top-(\d+)(?:\s|$)/);
+    expect(reach, `mask does not reach above its box: ${classes}`).not.toBeNull();
     expect(Number(reach![1])).toBe(scrollPaddingTopSteps());
   });
 
   it("the New Page sticky header's mask still covers the same strip", () => {
-    // This surface never lost its mask — it is the reason the bug was only
-    // ever reported against the article editor. Its reach is an absolute px
+    // This surface never lost its mask, which is why #1186 was reported
+    // against the article editor and not here. Its reach is an absolute px
     // value rather than a spacing step, so it is compared at a 16px root; a
     // rem-scaled root shrinks its margin, which is why the article editor's
     // mask uses the spacing scale and tracks the padding at any root size.
