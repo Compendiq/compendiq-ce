@@ -45,6 +45,15 @@ describe('BulkSelectionSchema', () => {
     expect(() => BulkSelectionSchema.parse({})).toThrow();
   });
 
+  // #1167 review: the array was bounded, each entry was not. `toPageIdText`
+  // runs `BigInt(id)` on every all-digit entry and BigInt parsing is
+  // superlinear in digit count, so 1000 unbounded digit strings is CPU burnt
+  // inside the request. No real page identifier comes close to 64 characters.
+  it('bounds the length of each id, not just the array', () => {
+    expect(BulkSelectionSchema.parse({ ids: ['9'.repeat(64)] }).ids).toEqual(['9'.repeat(64)]);
+    expect(() => BulkSelectionSchema.parse({ ids: ['9'.repeat(65)] })).toThrow();
+  });
+
   it('rejects unknown filter keys (strict)', () => {
     expect(() =>
       BulkSelectionSchema.parse({

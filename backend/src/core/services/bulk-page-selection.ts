@@ -57,7 +57,16 @@ type BulkPageFilter = z.infer<typeof BulkPageFilterSchema>;
  */
 export const BulkSelectionSchema = z
   .object({
-    ids: z.array(z.string().min(1)).min(1).max(1000).optional(),
+    /**
+     * `.max(64)` bounds each identifier, not just the array (#1167 review).
+     * A page identifier is either a `pages.id` or a Confluence content id —
+     * both short numeric strings, so 64 is far above anything real. The bound
+     * matters because `toPageIdText` runs `BigInt(id)` on every all-digit
+     * entry, and BigInt parsing is superlinear in digit count: 1000 entries of
+     * multi-megabyte digits would burn CPU inside the request. Authenticated,
+     * so this is hardening rather than an open hole.
+     */
+    ids: z.array(z.string().min(1).max(64)).min(1).max(1000).optional(),
     filter: BulkPageFilterSchema.optional(),
     expectedCount: z.coerce.number().int().min(0).optional(),
     /**
