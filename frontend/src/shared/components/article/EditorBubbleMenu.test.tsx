@@ -18,6 +18,11 @@ import {
   editorBubbleMenuPluginKey,
 } from './EditorBubbleMenu';
 import { IMPROVE_DECORATION_CLASS } from './improve-decoration';
+import {
+  clearBlockMenuTarget,
+  createBlockMenuTargetPlugin,
+  setBlockMenuTarget,
+} from './block-menu-decoration';
 
 function gen(chunks: Array<Record<string, unknown>>) {
   return (async function* () {
@@ -106,6 +111,51 @@ describe('selectionShouldShow', () => {
     const editor = await mountEditor('<p>Hello world</p>');
     act(() => { editor.commands.setTextSelection(2); }); // collapsed
     expect(selectionShouldShow(editor, true)).toBe(true);
+  });
+
+  // #1179 — the block context menu selects the whole block's content to run
+  // the same actions. That selection is non-empty, so without this the bubble
+  // menu would render a second panel on top of the block menu.
+  describe('while the block context menu owns the interaction', () => {
+    it('hides even though the selection is non-empty', async () => {
+      const editor = await mountEditor('<p>Hello world</p>');
+      act(() => {
+        editor.registerPlugin(createBlockMenuTargetPlugin());
+        editor.commands.setTextSelection({ from: 1, to: 6 });
+      });
+      expect(selectionShouldShow(editor, false)).toBe(true);
+
+      act(() => { setBlockMenuTarget(editor, 0); });
+      expect(selectionShouldShow(editor, false)).toBe(false);
+    });
+
+    it('hides even with its own AI section open', async () => {
+      const editor = await mountEditor('<p>Hello world</p>');
+      act(() => {
+        editor.registerPlugin(createBlockMenuTargetPlugin());
+        setBlockMenuTarget(editor, 0);
+      });
+      expect(selectionShouldShow(editor, true)).toBe(false);
+    });
+
+    it('comes back once the block menu closes', async () => {
+      const editor = await mountEditor('<p>Hello world</p>');
+      act(() => {
+        editor.registerPlugin(createBlockMenuTargetPlugin());
+        editor.commands.setTextSelection({ from: 1, to: 6 });
+        setBlockMenuTarget(editor, 0);
+      });
+      expect(selectionShouldShow(editor, false)).toBe(false);
+
+      act(() => { clearBlockMenuTarget(editor); });
+      expect(selectionShouldShow(editor, false)).toBe(true);
+    });
+
+    it('is unaffected on an editor that never registered the marker plugin', async () => {
+      const editor = await mountEditor('<p>Hello world</p>');
+      act(() => { editor.commands.setTextSelection({ from: 1, to: 6 }); });
+      expect(selectionShouldShow(editor, false)).toBe(true);
+    });
   });
 });
 
@@ -196,6 +246,42 @@ describe('BubbleMenuContent — inline AI improve replace-range', () => {
     const [, body] = streamSSE.mock.calls[0]!;
     expect((body as { content: string }).content).toBe('Hello');
     expect(body).not.toHaveProperty('pageId');
+  });
+
+  // #1179 made this a single click: the block menu can delete the very block
+  // an open AI section is improving. The decoration goes with it and the
+  // captured offsets then point past the end of a shorter document, which
+  // `insertContentAt` would throw on.
+  it('refuses to replace when the passage was deleted while the section was open', async () => {
+    streamSSE.mockReturnValue(gen([{ content: 'Improved' }]));
+    const editor = await mountEditor('<p>Hello world</p><p>Second paragraph here</p>');
+    const secondStart = editor.state.doc.child(0).nodeSize + 1;
+    act(() => {
+      editor.commands.setTextSelection({ from: secondStart, to: secondStart + 20 });
+    });
+
+    fireEvent.click(screen.getByTestId('bubble-ai-trigger'));
+    fireEvent.click(await screen.findByText('Improve writing'));
+    await waitFor(() => expect(screen.getByTitle('Replace selection')).not.toBeDisabled());
+
+    // The passage disappears out from under the open section.
+    act(() => { editor.commands.setContent('<p>Hi</p>'); });
+
+    // The captured offsets now point past the end of the document. Without the
+    // clamp `insertContentAt` throws a RangeError out of the click handler —
+    // which React reports asynchronously, so assert on the error rather than
+    // relying on it surfacing as a test failure.
+    const errors: string[] = [];
+    const onError = (e: ErrorEvent) => { errors.push(e.message); e.preventDefault(); };
+    window.addEventListener('error', onError);
+    try {
+      fireEvent.click(screen.getByTitle('Replace selection'));
+    } finally {
+      window.removeEventListener('error', onError);
+    }
+
+    expect(errors).toEqual([]);
+    expect(editor.getHTML()).toBe('<p>Hi</p>');
   });
 });
 

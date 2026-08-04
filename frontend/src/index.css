@@ -2330,6 +2330,39 @@ pre:focus-within .code-copy-btn,
   opacity: 0.7;
 }
 
+/* #1179 — pin the handle visible while its own context menu is open. The menu
+   is portalled to <body>, so the pointer leaves the handle the moment it
+   travels to it and the hover reveal drops away — the handle would fade out
+   from under the menu it opened. `:has()` rather than a class on the handle
+   itself: the element is created imperatively by the drag-handle library and
+   can carry no React props, so the portalled trigger inside it holds the state.
+   The `!important` matches the `:hover` rule it has to out-rank. */
+.drag-handle:has([data-block-menu-open="true"]) {
+  opacity: 1 !important;
+  background-color: oklch(from var(--color-primary) l c h / 0.15);
+  color: var(--color-primary);
+}
+
+/* #1179 — the block the open context menu acts on. A ProseMirror *node*
+   decoration (never a document change), so it also outlines atomic nodes like a
+   draw.io diagram, which an inline highlight cannot do. `outline` rather than
+   `border` so nothing reflows, and so forced-colors mode keeps it. */
+.block-menu-target {
+  outline: 2px solid oklch(from var(--color-primary) l c h / 0.55);
+  outline-offset: 3px;
+  border-radius: var(--radius-sm);
+  background-color: oklch(from var(--color-primary) l c h / 0.05);
+}
+
+/* #1179 — the block context menu's floating surface. `nm-card-elevated` gives
+   it the elevated pane gradient and neumorphic shadow; the edge is upgraded
+   from the quiet hairline to the measured 3:1 interactive border because this
+   panel floats over arbitrary document content (WCAG 1.4.11). Unlayered, so it
+   out-ranks the `@utility` that sets the base border colour. */
+.editor-block-menu {
+  border-color: var(--color-border-interactive);
+}
+
 /* ProseMirror drop cursor — the blue line shown during drag */
 .ProseMirror-dropcursor {
   color: var(--color-primary) !important;

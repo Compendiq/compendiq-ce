@@ -2,7 +2,6 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import * as Popover from '@radix-ui/react-popover';
 import { useEditor, useEditorState, EditorContent } from '@tiptap/react';
 import { TextSelection } from '@tiptap/pm/state';
-import DragHandle from '@tiptap/extension-drag-handle-react';
 import StarterKit from '@tiptap/starter-kit';
 import { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
 import { TaskList, TaskItem } from '@tiptap/extension-list';
@@ -24,7 +23,6 @@ import {
   ToggleLeft, PanelTop, Workflow, Underline, Highlighter, Palette,
   Badge, ChevronsUpDown, Hash, Paperclip, ListTree, ImagePlus, TableProperties, Table2,
   Info, TriangleAlert, StickyNote, Lightbulb,
-  GripVertical,
   Terminal,
 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -65,6 +63,7 @@ import type { Editor as EditorType } from '@tiptap/react';
 import { VimExtension, type VimState } from './vim-extension';
 import { VimModeIndicator } from './VimModeIndicator';
 import { EditorBubbleMenu } from './EditorBubbleMenu';
+import { EditorBlockHandle } from './EditorBlockMenu';
 import { handleTableCellTripleClick } from './table-cell-selection';
 
 const ConfluenceImage = Image.extend({
@@ -1618,11 +1617,10 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       )}
       {editable && editor && <SearchAndReplace editor={editor} />}
       {editable && editor && <EditorBubbleMenu editor={editor} />}
-      {editable && editor && (
-        <DragHandle editor={editor} className="drag-handle">
-          <GripVertical size={16} />
-        </DragHandle>
-      )}
+      {/* #49 drag handle, #1179 its right-click block menu. The handle and its
+          menu live together in EditorBlockMenu: they share the hovered-node
+          tracking, the handle lock and the target marker. */}
+      {editable && editor && <EditorBlockHandle editor={editor} />}
       <EditorContent
         editor={editor}
         className={cn(
