@@ -254,13 +254,21 @@ export function AiAssistantPage() {
           Sits at top-0 of the column so it stays visible as messages grow.
 
           The opaque UNDER-mask (bg-background, z-[-1]) behind the translucent
-          bar is now belt-and-braces, not load-bearing. It was what occluded
-          chat content scrolling up behind the bar (#703) — but since #1218 the
-          message pane owns the scroller and this column no longer scrolls at
-          all, so nothing passes behind the bar to occlude. Do not read a live
-          mask as evidence that it still does. It stays because it costs one
-          div, and because it is what keeps #703 from returning if a future
-          change re-engages the outer scroll container.
+          bar is belt-and-braces through the supported viewport range, not
+          load-bearing. It was what occluded chat content scrolling up behind
+          the bar (#703) — but since #1218 the message pane owns the scroller
+          and this column does not scroll, so nothing passes behind the bar to
+          occlude. Do not read a live mask as evidence that it still does.
+
+          It is not decorative at the extremes, which is the other half of why
+          it stays: both bars are content-sized and cannot shrink, so once they
+          plus the two gaps exceed the column, the outer scroller re-engages
+          and they scroll over each other. Measured at 1280x300 with the
+          composer at AUTO_GROW_MAX_HEIGHT: pane 0px, outer overflow 34px,
+          growing to 134px at 1280x200. No message bleed there — the pane has
+          no height to show one — but the mask is doing work again. It also
+          costs one div, and it is what keeps #703 from returning if a future
+          change re-engages outer scrolling in the ordinary range.
 
           It covers exactly the bar's box (inset-0), and that constraint still
           binds: an absolutely positioned mask overflowing the block-end edge
@@ -604,9 +612,11 @@ export function AiAssistantPage() {
           Its opaque UNDER-mask (bg-background, z-[-1]) is belt-and-braces for
           the same reason as the sub-header's above: it occluded chat content
           scrolling down behind the bar (#703), but since #1218 the message
-          pane owns the scroller and this column no longer scrolls, so nothing
-          reaches behind it. Kept because it costs one div and it is what stops
-          #703 returning if outer scrolling is ever re-engaged.
+          pane owns the scroller and this column does not scroll through the
+          supported viewport range, so nothing reaches behind it. It goes back
+          to doing real work at the extremes the sub-header's comment records
+          (bars taller than the column, outer scroller re-engaged), and it
+          costs one div, which is why it stays.
 
           inset-0, and no overhang in either direction. The block-end rule is
           the sharp one: an absolutely positioned mask past that edge grows the

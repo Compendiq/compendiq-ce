@@ -165,5 +165,17 @@ describe('nothing shows in the scroll container padding (#1186, #1218)', () => {
     ]) {
       expect(guard, `the /ai chain guard no longer covers ${row}`).toContain(row);
     }
+
+    // Naming the rows is not the same as still checking them. A guard whose
+    // cases are skipped keeps every string above and asserts nothing, which is
+    // the one failure mode a pointer-only check cannot see — so the machinery
+    // that does the checking is named too.
+    expect(guard, 'the /ai chain guard has skipped or pending cases').not.toMatch(
+      /\b(it|test|describe)\s*\.\s*(skip|todo|fails)\b/,
+    );
+    expect(guard, 'the /ai chain guard no longer evaluates its min-h-0 predicate').toContain(
+      'declaresMinHeightZero(',
+    );
+    expect(guard, 'the /ai chain guard no longer asserts that predicate').toMatch(/\.toBe\(true\)/);
   });
 });
