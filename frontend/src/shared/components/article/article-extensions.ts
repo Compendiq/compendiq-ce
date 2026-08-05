@@ -61,6 +61,25 @@ export const Details = Node.create({
         parseHTML: (element) => element.hasAttribute('open'),
         renderHTML: (attributes) => (attributes.open ? { open: '' } : {}),
       },
+      // #1211: identity of the Confluence macro this <details> was converted
+      // from, stamped by the backend forward pass. ProseMirror serializes only
+      // declared attributes — without these declarations an editor save strips
+      // the stamp and the backend reverse pass rewrites every section into a
+      // native expand macro, silently deleting a third-party macro from the
+      // Confluence page (#1129). Mirrors UnknownMacro's shape and naming so a
+      // macro graduating from the fallback keeps the same attribute names.
+      macroName: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-macro-name'),
+        renderHTML: (attributes) =>
+          attributes.macroName ? { 'data-macro-name': attributes.macroName } : {},
+      },
+      macroParams: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-macro-params'),
+        renderHTML: (attributes) =>
+          attributes.macroParams ? { 'data-macro-params': attributes.macroParams } : {},
+      },
     };
   },
 
