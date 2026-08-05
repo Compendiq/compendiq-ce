@@ -28,7 +28,7 @@ sequenceDiagram
         S-->>T: skip (another run in progress)
     else acquired
         R-->>S: OK
-        Note over S,R: Heartbeat every TTL/3 (200s): EXPIRE sync:worker:lock 600<br/>if still owned, so long runs never let the lock lapse (#906)
+        Note over S,R: Heartbeat every TTL/3 (200s): EXPIRE sync:worker:lock 600<br/>if still owned, so long runs never let the lock lapse (#35;906)
         S->>DB: SELECT user_settings (decrypt PAT)
         S->>CL: getSpaces(pat)
         CL->>CF: GET /rest/api/space
@@ -51,18 +51,18 @@ sequenceDiagram
 
         S->>DB: INSERT/UPDATE page_versions (snapshot)
 
-        Note over S,DB: Deletion reconciliation (#706) — every sync, incremental too
+        Note over S,DB: Deletion reconciliation (#35;706) — every sync, incremental too
         S->>CL: getAllPageIds(spaceKey)
         CL->>CF: GET /rest/api/content?spaceKey=… (ids only, no expand)
         CF-->>CL: authoritative live id set
         CL-->>S: liveIds
         S->>DB: UPDATE pages SET deleted_at = NULL<br/>WHERE deleted_at older than grace window AND id ∈ liveIds
-        Note over S,DB: revival cross-check (#766) — a trash-restored page is live again<br/>but never re-upserted by incremental sync (no new version);<br/>grace window protects in-flight delete intents
+        Note over S,DB: revival cross-check (#35;766) — a trash-restored page is live again<br/>but never re-upserted by incremental sync (no new version)#59;<br/>grace window protects in-flight delete intents
         S->>DB: SELECT confluence_id FROM pages WHERE space_key=… AND deleted_at IS NULL
         loop per candidate (local row absent from liveIds)
             S->>CL: getPage(confluenceId) — confirm gone
             CL->>CF: GET /rest/api/content/{id}
-            alt 404 or 200 status:"trashed" (deleted — #766)
+            alt 404 or 200 status:"trashed" (deleted — #35;766)
                 CF-->>S: 404 / 200 trashed
                 S->>DB: UPDATE pages SET deleted_at = NOW()
             else 200 current / 403 (still there / not visible to this principal)

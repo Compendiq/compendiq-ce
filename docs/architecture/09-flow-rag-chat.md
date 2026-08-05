@@ -57,7 +57,7 @@ sequenceDiagram
         end
         opt includeSubPages
             BE->>RBAC: userCanAccessPage(userId, parentPageId)
-            RBAC-->>BE: allow / deny (#814 — skip tree on deny)
+            RBAC-->>BE: allow / deny (#35;814 — skip tree on deny)
             BE->>SP: assembleSubPageContext(rootPageId)
             SP->>RBAC: getUserAccessibleSpacesMemoized(userId)
             SP->>CF: fetch child tree WHERE deleted_at IS NULL<br/>AND visible to user (space RBAC)
@@ -66,11 +66,11 @@ sequenceDiagram
         end
         opt externalUrls provided
             BE->>MCP: fetch urls
-            MCP-->>BE: content (sanitized; detections audited — same flags)
+            MCP-->>BE: content (sanitized#59; detections audited — same flags)
         end
         opt searchWeb
             BE->>MCP: search(question)
-            MCP-->>BE: top results (sanitized; detections audited — #835)
+            MCP-->>BE: top results (sanitized#59; detections audited — #35;835)
         end
         BE->>BE: build system prompt + context<br/>(resolveSystemPrompt, guardrails)
         BE->>BE: resolveUsecase('chat')<br/>→ { config, model }
