@@ -543,13 +543,33 @@ stripped, never built" guarantee depends on it.
 Two more rules, both about **which** section a boundary belongs to rather than
 whether one survives.
 
-- **Identity fast path.** When the echo's canonical tokens are an exact
-  permutation of the skeleton and nest validly, the markdown is returned
-  verbatim and each token renders its own payload. Rewriting the stream in
-  *skeleton order* — which is what reconstruction does — pinned a reordered
-  section's title onto whichever body came first, so a model that merely
-  reorganised a page saved "Rollback runbook" over the deploy steps. The same
-  fix keeps a legacy column's width with its own prose.
+- **Identity fast path.** When the echo's canonical tokens carry the skeleton's
+  payloads in the skeleton's nesting **shape** — only the order of siblings
+  differing — the rebuild uses the *echo's* token order, so each token renders
+  its own payload beside its own prose. Rewriting the stream in *skeleton
+  order* pinned a reordered section's title onto whichever body came first, so
+  a model that merely reorganised a page saved "Rollback runbook" over the
+  deploy steps. The same fix keeps a legacy column's width with its own prose.
+
+  This is a **trade, not a strict improvement**. On a pure title swap — the
+  model rewrote the titles and left the bodies alone — skeleton-order rebuilding
+  restored the page's own titles, and the fast path instead believes the echo.
+  It is the right default because reordering sections is a plausible thing to
+  ask an assistant for, while swapping two titles between unchanged bodies is
+  not, and because the alternative silently corrupts the common case. Where the
+  echo is not canonical enough to prove identity, alignment refuses rather than
+  guessing (see `identityConflict` below).
+
+  The permutation must be **structure-preserving**: same tokens, same
+  parent/child relations, siblings in any order. A re-nesting — two sibling
+  sections becoming one inside the other — is refused, because a section the
+  reader could see would end up behind a collapse toggle, which is the harm
+  class the token-free recovery paths already refuse for expands.
+
+  The fast path still runs the reconstruction machinery, so prose placement is
+  normalised: returning the echo verbatim let a sentence the model added
+  *between* two cells be saved as a direct child of `ac:layout-section`, a shape
+  the storage format forbids.
 - **A surplus token refuses the apply.** A token that reconciles with no
   skeleton entry used to be stripped as debris — but only *after* it had been
   allowed to anchor the alignment. Models routinely drop backslash escapes when
@@ -566,6 +586,14 @@ while the model keeps stripping the escapes, and that a mangled echo carrying a
 lookalike is refused rather than rescued. Both were previously "succeed and
 delete something"; #785's note that a consumed lookalike is "the accepted price
 of recovering a mangled echo" no longer holds — the price was the user's words.
+
+**Known limit.** "Surplus" means *reconciles with nothing*. A lookalike whose
+kind the skeleton does contain is **matched** instead, so on an echo that
+dropped its real tokens the lookalike can still become the boundary and split
+the paragraph it sits in. Closing that would mean refusing every echo with a
+token deficit, which is exactly the dropped-close recovery #781 exists for, so
+it is left open deliberately. It needs both a page whose prose spells a token
+its own layout uses *and* a model that dropped the real ones.
 
 #### Token-free recovery does not apply to expands
 

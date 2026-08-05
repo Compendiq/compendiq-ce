@@ -202,6 +202,25 @@ describe('expand sections survive the AI-Improve round-trip (#1221)', () => {
     { name: 'panel', wrap: (i) => `<div class="panel-info"><p>Panel</p>${i}</div>` },
   ];
 
+  it('stays linear in nesting depth — a deep chain must not blow up protectMedia', () => {
+    // The freeze walk descended into a non-frozen child expand TWICE: once
+    // inside isFrozenExpand(child) and again directly, giving T(n)=2·T(n-1).
+    // Measured before the fix: depth 14 ≈ 0.7s, 16 ≈ 2.9s, 18 ≈ 12.5s, 20 ≈ 56s
+    // — synchronous on the Improve/apply request path, so a deep page written
+    // by any user blocks the whole backend. A nested <details> needs no walk at
+    // all: whatever it does, it is self-consistent (see expandTokenizesCleanly).
+    const depth = 18;
+    let html = '<p>core</p>';
+    for (let i = depth; i > 0; i--) {
+      html = `<details data-macro-name="expand"><summary>L${i}</summary>${html}</details>`;
+    }
+    const started = Date.now();
+    const { media } = protectMedia(html);
+    const elapsed = Date.now() - started;
+    expect(media).toHaveLength(0); // nothing constrained — every level tokenises
+    expect(elapsed).toBeLessThan(1000);
+  });
+
   it('leaves an unconstrained section unfrozen so its body can be improved', () => {
     const { html: prot, media } = protectMedia(`<p>Intro</p>${EXPAND}<p>End</p>`);
     expect(media).toHaveLength(0);

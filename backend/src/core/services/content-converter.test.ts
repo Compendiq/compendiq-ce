@@ -2332,10 +2332,15 @@ describe('content-converter: #781 layout-token resilience', () => {
       );
       expect(html).toContain('Stray inter-cell prose');
       // The stray prose must live inside a cell, not directly in the section div.
-      const sectionInner = html.slice(html.indexOf('confluence-layout-section'));
-      const firstCellIdx = sectionInner.indexOf('confluence-layout-cell');
-      const strayIdx = sectionInner.indexOf('Stray inter-cell prose');
-      expect(strayIdx).toBeGreaterThan(firstCellIdx);
+      // "After the first cell opens" is NOT enough — it is also true when the
+      // prose sits between the two cells as a direct child of the section, which
+      // the storage format forbids. Assert it against the STORAGE output, where
+      // that shape is unambiguous (#1232 round 3).
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).not.toMatch(/<ac:layout-section[^>]*>\s*<p>/);
+      expect(xhtml).not.toMatch(/<\/ac:layout-cell>\s*<p>/);
+      expect(xhtml).not.toMatch(/<ac:layout>\s*<p>/);
+      expect(xhtml).toMatch(/<ac:layout-cell>[\s\S]*Stray inter-cell prose[\s\S]*<\/ac:layout-cell>/);
       expect((html.match(/class="confluence-layout-cell"/g) ?? []).length).toBe(2);
     });
 
@@ -2956,6 +2961,80 @@ describe('content-converter: #1221 stage 2 expand boundary tokens', () => {
       );
       expect(xhtml).toContain('[[[SECTION]]]');
       expect(xhtml).toContain('ac:name="section"');
+    });
+
+    it('refuses a re-nesting that would move a sibling section inside a collapsed one', async () => {
+      // Same multiset, different SHAPE: the model turned two siblings into one
+      // nested inside the other. Content is not lost, but a section the reader
+      // could see is now behind a toggle — the harm class that made the
+      // token-free recovery paths 422 for expands. The fast path is restricted
+      // to permutations that preserve the nesting shape (#1232 round 3).
+      const bodyHtml =
+        '<details data-macro-name="expand"><summary>One</summary><p>alpha</p></details>' +
+        '<details data-macro-name="expand"><summary>Two</summary><p>beta</p></details>';
+      const skeleton = extractLayoutSkeleton(protectMedia(bodyHtml).html);
+      const nested = [
+        '[[[EXPAND name=expand open=0 title=One params=]]]', '',
+        'alpha', '',
+        '[[[EXPAND name=expand open=0 title=Two params=]]]', '',
+        'beta', '',
+        '[[[/EXPAND]]]', '',
+        '[[[/EXPAND]]]',
+      ].join('\n');
+      await expect(markdownToHtml(nested, { layoutSkeleton: skeleton })).rejects.toThrow(LayoutRecoveryError);
+    });
+
+    it('refuses an un-nesting that would lift a nested section out to top level', async () => {
+      const bodyHtml =
+        '<details data-macro-name="expand"><summary>One</summary><p>alpha</p>' +
+        '<details data-macro-name="expand"><summary>Two</summary><p>beta</p></details></details>';
+      const skeleton = extractLayoutSkeleton(protectMedia(bodyHtml).html);
+      const siblings = [
+        '[[[EXPAND name=expand open=0 title=One params=]]]', '',
+        'alpha', '',
+        '[[[/EXPAND]]]', '',
+        '[[[EXPAND name=expand open=0 title=Two params=]]]', '',
+        'beta', '',
+        '[[[/EXPAND]]]',
+      ].join('\n');
+      await expect(markdownToHtml(siblings, { layoutSkeleton: skeleton })).rejects.toThrow(LayoutRecoveryError);
+    });
+
+    it('refuses a reorder whose closes were also mangled (identity cannot be confirmed)', async () => {
+      // Pins the identityConflict rejection. Without it the positional match
+      // stands and the two titles are crossed at HTTP 200; the reorder is only
+      // safe when the whole echo is canonical enough to prove identity.
+      const bodyHtml =
+        '<details data-macro-name="expand"><summary>One</summary><p>alpha</p></details>' +
+        '<details data-macro-name="expand"><summary>Two</summary><p>beta</p></details>';
+      const skeleton = extractLayoutSkeleton(protectMedia(bodyHtml).html);
+      const reorderedAndMangled = [
+        '[[[EXPAND name=expand open=0 title=Two params=]]]', '',
+        'beta', '',
+        '[[[/expand]]]', '',
+        '[[[EXPAND name=expand open=0 title=One params=]]]', '',
+        'alpha', '',
+        '[[[/expand]]]',
+      ].join('\n');
+      await expect(
+        markdownToHtml(reorderedAndMangled, { layoutSkeleton: skeleton }),
+      ).rejects.toThrow(LayoutRecoveryError);
+    });
+
+    it('refuses a surplus token on a SINGLE-slot page rather than wrapping around it', async () => {
+      // The multi-slot last resort is pinned elsewhere; this is the one-slot
+      // path, where wrapProseInSingleSlot would strip the surplus as debris —
+      // deleting whatever page text shares its span — and wrap the rest.
+      const bodyHtml =
+        '<div class="confluence-layout"><div class="confluence-layout-section" data-layout-type="single">' +
+        '<div class="confluence-layout-cell"><p>Full width content</p></div></div></div>';
+      const skeleton = extractLayoutSkeleton(protectMedia(bodyHtml).html);
+      // A kind the skeleton does not contain at all, so it reconciles with
+      // nothing — the surplus case. (A lookalike whose kind DOES appear in the
+      // skeleton is matched rather than surplus; see the known-limits note in
+      // 11-content-pipeline.md.)
+      const withSurplus = 'Docs mention [[[COLUMN width=50%]]] in prose.\n\nFresh single-column prose.';
+      await expect(markdownToHtml(withSurplus, { layoutSkeleton: skeleton })).rejects.toThrow(LayoutRecoveryError);
     });
 
     it('keeps a column width with its own prose when the model reorders columns', async () => {

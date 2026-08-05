@@ -1279,14 +1279,18 @@ function expandTokenizesCleanly(el: Element): boolean {
   stack.push('EXPAND');
   const visit = (node: Element): boolean => {
     for (const child of Array.from(node.children)) {
-      // Opaque subtrees emit no tokens, so nothing inside them can invalidate
-      // the sequence: a frozen nested expand, a frozen legacy wrapper, and the
-      // media/unknown-macro placeholders all travel whole. The nested-expand
-      // test is the FULL freeze verdict, not just position — a section frozen
-      // for its own shape is equally invisible, and testing only position made
-      // it freeze its parent too. The recursion terminates: each step descends
-      // strictly further into the tree.
-      if (isExpandSection(child) && isFrozenExpand(child)) continue;
+      // A nested expand is never walked, whatever its verdict turns out to be.
+      // Frozen, it travels as one opaque token and emits nothing. Unfrozen, its
+      // OWN expandTokenizesCleanly already validated both its position (against
+      // this very stack, via enclosingLayoutKinds) and its whole subtree — so
+      // re-checking here can only repeat that work.
+      //
+      // It is also the difference between linear and exponential. Calling
+      // isFrozenExpand(child) here walked the child's subtree once inside that
+      // call and again on the way down, i.e. T(n) = 2·T(n-1): a chain of nested
+      // sections took 12s at depth 18 and ~56s at depth 20, synchronously, on
+      // the Improve and apply request paths.
+      if (isExpandSection(child)) continue;
       if (isFrozenLegacyWrapper(child)) continue;
       if (child.matches(OPAQUE_SUBTREE_SELECTOR)) continue;
 
@@ -2242,14 +2246,46 @@ function tokenIdentity(t: { kind: string; isClose: boolean; attrs: string }): st
   return `${t.isClose ? '/' : ''}${t.kind}|${t.attrs}`;
 }
 
-function sameTokenMultiset(
+/**
+ * Canonical shape of a token stream: the nesting tree, with each level's
+ * siblings sorted so their ORDER does not matter but their PARENT does.
+ * Returns null when the stream is unbalanced.
+ *
+ * #1232 round 3. Comparing multisets alone accepted any re-nesting of the same
+ * tokens — including a section the reader could see being moved INSIDE a
+ * collapsed one. Content is not lost that way, but it disappears behind a
+ * toggle, which is the harm that made the token-free recovery paths refuse.
+ * Sorting siblings is exactly the licence the fast path is meant to grant:
+ * reordering is allowed, re-parenting is not.
+ */
+function canonicalTokenShape(tokens: { kind: string; isClose: boolean; attrs: string }[]): string | null {
+  interface Node { kind: string; identity: string; children: Node[] }
+  const roots: Node[] = [];
+  const stack: Node[] = [];
+  for (const t of tokens) {
+    if (!t.isClose) {
+      const node: Node = { kind: t.kind, identity: tokenIdentity(t), children: [] };
+      (stack[stack.length - 1]?.children ?? roots).push(node);
+      stack.push(node);
+    } else {
+      // Closes carry no payload, so only the kind can be matched here.
+      const open = stack.pop();
+      if (!open || open.kind !== t.kind) return null;
+    }
+  }
+  if (stack.length > 0) return null;
+  const render = (nodes: Node[]): string =>
+    nodes.map((n) => `${n.identity}(${render(n.children)})`).sort().join(',');
+  return render(roots);
+}
+
+function sameTokenShape(
   found: { kind: string; isClose: boolean; attrs: string }[],
   skeleton: LayoutSkeletonToken[],
 ): boolean {
   if (found.length !== skeleton.length) return false;
-  const a = found.map(tokenIdentity).sort();
-  const b = skeleton.map(tokenIdentity).sort();
-  return a.every((identity, i) => identity === b[i]);
+  const a = canonicalTokenShape(found);
+  return a !== null && a === canonicalTokenShape(skeleton);
 }
 
 /** Scan markdown (outside code constructs) for mangled-token candidates. */
@@ -2444,7 +2480,12 @@ function reconstructLayoutMarkdown(
   let cursor = 0;
 
   const placeText = (raw: string): void => {
-    const seg = raw.replace(/^\n+|\n+$/g, ''); // outer newlines only — keep code indentation
+    const seg = raw
+      .replace(/^\n+|\n+$/g, '') // outer newlines only — keep code indentation
+      // A list marker left dangling at the end of a segment is the remains of a
+      // token the model wrote on a list line; keeping it emits an empty list
+      // item next to the rebuilt wrapper (#1232 round 3).
+      .replace(/(?:^|\n)[ \t]*(?:[-*+]|\d+[.)])[ \t]*$/, '');
     if (seg.trim().length === 0) return;
     if (proseAllowedIn(stack)) out.push(`\n\n${seg}\n\n`);
     else pendingText += (pendingText ? '\n\n' : '') + seg;
@@ -2667,20 +2708,33 @@ function recoverLayoutMarkdown(markdown: string, skeleton: LayoutSkeletonToken[]
   // Fast path: layout-free page and a clean echo — nothing to do.
   if (skeleton.length === 0 && rawFound.length === 0) return markdown;
 
-  // #1232 round 2: IDENTITY fast path. When the echo's canonical tokens are an
-  // exact permutation of the skeleton and nest validly, nothing was mangled —
-  // every token carries its own correct payload beside its own prose. Return it
-  // verbatim rather than rewriting it in skeleton ORDER, which is what pinned a
-  // reordered section's title onto the body that happened to come first.
-  // Duplicates inside the multiset are by definition indistinguishable, so
-  // whichever way they pair up is the same document.
+  // #1232 round 2: IDENTITY fast path. When the echo's canonical tokens carry
+  // the skeleton's own payloads in the skeleton's own nesting SHAPE — only the
+  // order of siblings differing — nothing was mangled: every token sits beside
+  // its own prose. Rebuilding from the ECHO's token order instead of the
+  // skeleton's is what stops a reordered section's title being pinned onto the
+  // body that happened to come first. Duplicate identities are by definition
+  // indistinguishable, so however they pair up is the same document.
+  //
+  // The rebuild still runs through reconstructLayoutMarkdown (#1232 round 3):
+  // returning the echo verbatim skipped its prose-placement rules, so a
+  // sentence the model added BETWEEN two cells was saved as a direct child of
+  // ac:layout-section — a shape the storage format forbids. Identity comes from
+  // the echo; where prose may legally sit does not.
   const strictSpans = scanStrictLayoutTokenSpans(markdown);
-  if (
-    skeleton.length > 0 &&
-    sameTokenMultiset(strictSpans, skeleton) &&
-    layoutSequenceValid(strictSpans)
-  ) {
-    return markdown;
+  if (skeleton.length > 0 && sameTokenShape(strictSpans, skeleton) && layoutSequenceValid(strictSpans)) {
+    const echoSkeleton: LayoutSkeletonToken[] = strictSpans.map((t) => ({
+      kind: t.kind,
+      isClose: t.isClose,
+      attrs: t.attrs,
+    }));
+    const rebuilt = reconstructLayoutMarkdown(
+      markdown,
+      strictSpans,
+      echoSkeleton.map((_, i) => i),
+      echoSkeleton,
+    );
+    if (matchesSkeleton(rebuilt, echoSkeleton)) return rebuilt;
   }
 
   const candidates: string[] = [markdown];
