@@ -189,16 +189,20 @@ Custom turndown rules handle Confluence-specific macros:
     that drops the placeholder entirely is caught by the apply route's
     drop-guard, which re-appends the section at the end of the body:
     preserved, but relocated.
-  - **Wrapping a modern `ac:layout` grid: also still frozen.** `[[[LAYOUT]]]`
-    is only valid at the *top* of the token stack, because `ac:layout` is
-    document-level in storage format. A grid nested inside a `<details>` is
-    unreachable from Confluence itself but reachable in our editor (the layout
-    node is `block`, and `details` accepts `block*`), and it would emit a
-    sequence `rebuildLayoutStructure` rejects — after which the all-or-nothing
-    drop-guard strips *every* token and the expand is flattened away. Freezing
-    the section keeps it. (The same shape nested in a legacy
-    `div.confluence-section` still flattens; that is pre-existing and
-    untouched here.)
+  - **Any shape whose token sequence would be rejected: also still frozen.**
+    Not a list of classes — `expandTokenizesCleanly` asks the *same*
+    `layoutOpenAllowed` predicate that will judge the sequence later, walking
+    the expand's enclosing wrappers and its whole subtree. A shape it cannot
+    prove tokenizable keeps the opaque freeze. This covers an expand
+    *containing* a modern `ac:layout` grid, a bare `column` macro (Confluence's
+    Column is not schema-bound to Section, so `expand > column` is real
+    content) or a stray layout cell, and an expand *sitting inside* a layout
+    wrapper, where an `EXPAND` may not open. Each of those would otherwise emit
+    a sequence `rebuildLayoutStructure` rejects, after which the all-or-nothing
+    drop-guard strips *every* token and the section is flattened away — on a
+    model echo with no mangling at all. A hand-maintained class list was tried
+    first and missed `div.confluence-column`; deriving the answer is what makes
+    the freeze and the rebuild unable to disagree.
 
   `details` is deliberately **not** added to `CONSTRAINED_ANCESTOR_SELECTOR` —
   once an expand's boundary is a token, its own body is ordinary Markdown, so
@@ -502,6 +506,49 @@ An `EXPAND` may open at top level or anywhere prose may live — inside a
 `LAYOUT-CELL`, a `SECTION`, a `COLUMN`, or another `EXPAND` — and `SECTION`
 was widened to open inside an `EXPAND`, because Confluence permits a legacy
 section inside an expand body.
+
+#### Token provenance: the rebuild consumes, it does not re-discover
+
+With a skeleton, the verified tokens are swapped for opaque alphanumeric
+sentinels **before** `marked` runs and consumed by index afterwards. Nothing on
+the HTML side matches brackets any more.
+
+This is load-bearing, not tidiness. `turndown` escapes a literal `[[[EXPAND …]]]`
+written in a page's own prose to `\[\[\[…\]\]\]`, which the markdown-side strict
+scan cannot see — so #781's verification reports the echo clean. `marked` then
+un-escapes it, and a rebuild that re-discovers tokens by regex counted the
+prose as structure, failed the balance check, and let the all-or-nothing
+drop-guard strip **every** token: the page's real expand macro was deleted at
+HTTP 200. A balanced literal pair went the other way and *fabricated* a macro
+out of the user's sentence. Consuming the aligned tokens by identity closes
+both, and retires the post-rebuild backstop strip on this path — which had been
+quietly emptying token-shaped text out of expand titles and macro parameters.
+
+Two consequences reach non-expand pages, both deliberate and both strictly
+safer than before:
+
+- **Literal token text survives to the saved page.** A page documenting
+  `[[[SECTION]]]` used to lose the sentence *and* its section macro.
+- **An impossible page nesting fails closed.** If a stored document carries a
+  sequence the storage format forbids, the apply is refused with the #781 422
+  rather than stripped and saved. The freeze normally keeps such shapes opaque,
+  so this is a backstop.
+
+Model-*invented* token text is still stripped as hallucinated debris — the
+escape is what tells the two apart, and #781's "hallucinated tokens are
+stripped, never built" guarantee depends on it.
+
+#### Token-free recovery does not apply to expands
+
+`wrapProseInSingleSlot` and `splitProseByAnchors` both assume a prose-bearing
+slot **partitions** the document. True for layout cells; false for an expand,
+which is a page fragment with ordinary sibling prose. Applied there, a page
+that lost its `EXPAND` tokens had its heading and every surrounding paragraph
+moved *inside* the collapsed section (single slot), or its between-section
+prose pulled into the preceding one (anchor split) — nothing lost, but the page
+hidden behind a toggle and pushed to Confluence at 200. There is no safe guess
+to make, so a skeleton containing an `EXPAND` open skips both paths and takes
+the 422.
 
 `layoutTokens` is set solely by the Improve route
 (`assembleContextIfNeeded` in `routes/llm/_helpers.ts`). Every other
