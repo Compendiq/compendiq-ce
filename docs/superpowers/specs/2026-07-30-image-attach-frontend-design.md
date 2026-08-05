@@ -289,8 +289,8 @@ same module:
 export const MAX_SOURCE_IMAGE_BYTES = 30 * 1024 * 1024; // 30 MB
 ```
 
-This is distinct from the backend's `MAX_IMAGE_BYTES` (10 MB), which bounds the
-*staged, post-downscale* bytes. 30 MB is generous enough for a raw 5 K screenshot
+This is distinct from the backend's `MAX_IMAGE_BYTES` (5 MB since #1183; 10 MB
+when this was written), which bounds the *staged, post-downscale* bytes. 30 MB is generous enough for a raw 5 K screenshot
 or a phone photo while refusing a file no legitimate attach produces, and it
 applies before any decode is attempted — including on the `createImageBitmap`
 path, which still has to parse the container. Exceeding it is a client-side
@@ -305,8 +305,8 @@ Because every upload leaves the browser as WebP at ≤1568 px:
 | 415 unsupported format | No — only WebP is ever sent; SVG/HEIC refused client-side |
 | 415 extension mismatch | No — the filename is set to match the re-encode |
 | 422 oversized dimensions | No — 1568 ≪ 4096 |
-| 413 too large | No — a 1568 px WebP is a few hundred KB against a 10 MB cap |
-| 503 staging unavailable | **Yes** — Redis down |
+| 413 too large | No — a 1568 px WebP is a few hundred KB against a 5 MB cap |
+| 503 staging unavailable | **Yes** — Redis down, or near its memory limit (#1183) |
 | 410 expired handle | **Yes** |
 | 422 capability gate | **Yes** |
 

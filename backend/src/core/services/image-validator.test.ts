@@ -14,6 +14,31 @@ import {
   REAL_GIF_40x30_BASE64,
 } from './test-image-fixtures.js';
 
+/**
+ * Pinned, not derived: these two numbers are the memory contract with a shared
+ * `noeviction` Redis (#1183) and with the ~1.37x base64 inflation
+ * `resolveImagePart` pays per in-flight stream, so raising either is a capacity
+ * decision rather than a tweak. See ADR-021's `#1154` amendment.
+ */
+describe('ceilings', () => {
+  it('caps a staged image at 5 MB', () => {
+    expect(MAX_IMAGE_BYTES).toBe(5 * 1024 * 1024);
+  });
+
+  /**
+   * The dimension cap does NOT move with the byte cap. Dimensions bound what
+   * the model is asked to look at; bytes bound what Redis holds, and only the
+   * bytes are a memory ceiling. 4096 stays reachable in the formats the feature
+   * actually uses (a 4096x4096 WebP, or a JPEG at moderate quality, typically
+   * lands under 5 MB) — it is lossless PNG at full dimensions that hits the
+   * byte cap first, which the 413 answers by naming re-encoding, quality and
+   * resizing as the remedies.
+   */
+  it('caps each edge at 4096', () => {
+    expect(MAX_IMAGE_DIMENSION).toBe(4096);
+  });
+});
+
 describe('sniffImageFormat', () => {
   it.each([
     ['png', buildPng(4, 4)],

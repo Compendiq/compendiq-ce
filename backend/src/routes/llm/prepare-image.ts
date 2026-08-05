@@ -11,13 +11,23 @@ import {
 import {
   stageImage,
   ImageStagingUnavailableError,
+  ImageStagingCapacityError,
 } from '../../core/services/image-staging.js';
 
 const PREPARE_IMAGE_PATH = '/llm/prepare-image';
 
-/** Derived from the constant so the message cannot drift from the limit. */
+/**
+ * Derived from the constant so the message cannot drift from the limit. Names
+ * re-encoding first because that is the remedy that keeps the image's
+ * dimensions: `MAX_IMAGE_DIMENSION` is 4096 and usually reachable in WebP or
+ * JPEG, so a PNG that lands here is typically large for its size rather than
+ * too big. Quality is named too, because a maximum-quality JPEG at 16.7 MP can
+ * exceed the ceiling on its own — telling that caller to "re-encode as JPEG"
+ * and nothing else would describe what they already did.
+ */
 const TOO_LARGE_MESSAGE =
-  `Image exceeds the ${Math.round(MAX_IMAGE_BYTES / (1024 * 1024))} MB limit`;
+  `Image exceeds the ${Math.round(MAX_IMAGE_BYTES / (1024 * 1024))} MB limit. ` +
+  'Re-encode it as WebP, lower the JPEG quality, or resize it, and try again.';
 
 /**
  * Stages an uploaded image for use as LLM source material (#1154).
@@ -71,7 +81,13 @@ export async function prepareImageRoutes(fastify: FastifyInstance) {
     try {
       handle = await stageImage(userId, buffer, validated.format);
     } catch (err) {
-      if (err instanceof ImageStagingUnavailableError) {
+      // Both are "the store cannot take it right now, come back" — down, or
+      // too full to write into without risking the co-tenants (#1183). The
+      // application keeps running either way; only this feature is degraded.
+      if (
+        err instanceof ImageStagingUnavailableError ||
+        err instanceof ImageStagingCapacityError
+      ) {
         throw fastify.httpErrors.serviceUnavailable(err.message);
       }
       throw err;

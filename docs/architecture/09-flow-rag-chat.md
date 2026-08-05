@@ -129,7 +129,14 @@ the LLM prompt on any route (`ask`, `improve`, `analyze-quality`, `summarize`).
 `/api/llm/improve` do, via an `imageHandle` staged ahead of time:
 
 ```
-POST /api/llm/prepare-image        multipart; magic-byte sniff, dimension check
+POST /api/llm/prepare-image        multipart; magic-byte sniff, <=4096 per
+                                   edge, <=5 MB
+  -> INFO memory                   headroom pre-flight (#1183)
+       used + incoming <= N% of maxmemory -> continue
+       over                               -> 503, nothing written
+       maxmemory 0, or INFO unreadable    -> continue (fail open — the SET's
+                                             own OOM reply is the backstop
+                                             and maps to the same 503)
   -> Redis  llm:img:<userId>:<sha256>   TTL 900s; raw bytes behind a
                                         `<format>\n` header, not base64.
                                         Not consumed on read, but a new
@@ -163,6 +170,24 @@ amendment and `06-data-model.md`'s `llm_model_capabilities` entry). Because
 the handle is the sha256 of the validated bytes, it doubles as the
 `imageHash` cache-key input without a separate hashing step — two different
 images with the same prompt produce two distinct cache keys.
+
+The `INFO memory` pre-flight (#1183) exists because the per-user cap alone is a
+mitigation, not a bound: it holds the namespace to `users x 5 MB`, which still
+fills the shipped `--maxmemory 256mb` if enough people upload inside one TTL
+window — and that instance is `noeviction` and shared with BullMQ, so filling it
+fails *writes* application-wide. Refusing the upload turns an app-wide enqueue
+outage into one degraded feature. The threshold is
+`IMAGE_STAGING_MAX_REDIS_PERCENT` (default 80). The check is uncached — one
+O(1) command on a path that already streams and hashes megabytes, where a stale
+"there is room" would admit every upload inside the cache window on a single
+reading.
+
+Note the fail-open branches above are a real gap, not just a fallback: a
+deployment whose Redis does not answer `INFO` (renamed or ACL-blocked, common on
+hardened and managed instances) never engages the ceiling at all and is back to
+the per-user mitigation, with `OOM` on the `SET` arriving only once BullMQ is
+already blocked. ADR-021's `#1183` paragraphs carry the reasoning; `.env.example`
+states the condition where an operator will meet it.
 
 ## Retrieval details
 
