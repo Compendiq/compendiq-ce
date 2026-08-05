@@ -474,6 +474,31 @@ describe('POST /api/llm/improve - web search injection audit (#835)', () => {
       expect.objectContaining({ promptInjectionDetected: false, sanitized: false }),
     );
   });
+
+  it('emits web sources with `url` and pageId 0 so they open as links, not pages (#1125)', async () => {
+    mockFetchWebSources.mockResolvedValue({
+      sources: [{ title: 'Linux', url: 'https://en.wikipedia.org/wiki/Linux', snippet: 'kernel' }],
+      injectionWarnings: [],
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/llm/improve',
+      payload: { content: '<p>Text</p>', type: 'grammar', model: 'llama3', searchWeb: true, searchQuery: 'linux' },
+    });
+
+    const finalEvent = response.body
+      .split('\n')
+      .filter((line) => line.startsWith('data: '))
+      .map((line) => JSON.parse(line.replace('data: ', '')) as Record<string, unknown>)
+      .find((e) => e.final === true);
+
+    expect(finalEvent).toBeDefined();
+    const sources = finalEvent!.sources as Array<Record<string, unknown>>;
+    expect(sources).toHaveLength(1);
+    expect(sources[0].url).toBe('https://en.wikipedia.org/wiki/Linux');
+    expect(sources[0].pageId).toBe(0);
+  });
 });
 
 describe('POST /api/llm/improve - instruction injection audit (#839)', () => {

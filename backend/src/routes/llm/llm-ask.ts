@@ -208,7 +208,11 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     );
 
     // Check RAG cache with stampede protection (only for new conversations without history)
-    const docIds = searchResults.map((r) => r.confluenceId);
+    // Locally-created pages have confluence_id NULL, and a set of nulls collapses
+    // to a run of empty strings in the joined cache key — two different sets of
+    // standalone pages would then share a key and serve each other's answer.
+    // Fall back to the integer PK, which every page has (#1125).
+    const docIds = searchResults.map((r) => r.confluenceId ?? `page:${r.pageId}`);
     const ragCacheKey = buildRagCacheKey(resolvedModel, question, docIds, {
       includeSubPages,
       pageId: body.pageId,
@@ -227,11 +231,16 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         sectionTitle: r.sectionTitle,
         score: r.score,
       })),
+      // `url` is the discriminator the frontend keys on: these are links, not
+      // pages, and routing them through `/pages/:id` lands on the not-found
+      // page (#1125). `confluenceId` keeps carrying the URL for conversations
+      // persisted before this field existed.
       ...externalDocs.map((d) => ({
         pageId: 0,
         pageTitle: d.title,
         spaceKey: 'External',
         confluenceId: d.url,
+        url: d.url,
         sectionTitle: d.title,
         score: 1,
       })),
@@ -240,6 +249,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         pageTitle: s.title,
         spaceKey: 'Web',
         confluenceId: s.url,
+        url: s.url,
         sectionTitle: s.title,
         score: 1,
       })),

@@ -21,6 +21,7 @@ const mockSources: Source[] = [
   {
     pageTitle: 'Getting Started Guide',
     spaceKey: 'DOCS',
+    pageId: 123,
     confluenceId: 'page-123',
     sectionTitle: 'Installation',
     score: 0.85,
@@ -28,12 +29,14 @@ const mockSources: Source[] = [
   {
     pageTitle: 'API Reference',
     spaceKey: 'DEV',
+    pageId: 456,
     confluenceId: 'page-456',
     score: 0.6,
   },
   {
     pageTitle: 'FAQ',
     spaceKey: 'HELP',
+    pageId: 789,
     confluenceId: 'page-789',
     sectionTitle: 'Common Issues',
     score: 0.3,
@@ -70,16 +73,63 @@ describe('CitationChips', () => {
     expect(screen.getByTestId('citation-chip-2').getAttribute('title')).toBe('API Reference');
   });
 
-  it('navigates to page when chip is clicked', () => {
+  it('navigates by internal page id when chip is clicked', () => {
     render(<CitationChips sources={mockSources} />, { wrapper: Wrapper });
     fireEvent.click(screen.getByTestId('citation-chip-1'));
-    expect(mockNavigate).toHaveBeenCalledWith('/pages/page-123');
+    expect(mockNavigate).toHaveBeenCalledWith('/pages/123');
   });
 
   it('navigates to correct page for each chip', () => {
     render(<CitationChips sources={mockSources} />, { wrapper: Wrapper });
     fireEvent.click(screen.getByTestId('citation-chip-3'));
-    expect(mockNavigate).toHaveBeenCalledWith('/pages/page-789');
+    expect(mockNavigate).toHaveBeenCalledWith('/pages/789');
+  });
+
+  // ── #1125 ────────────────────────────────────────────────────────────────
+
+  it('navigates a locally-created page (null confluenceId) by page id', () => {
+    render(
+      <CitationChips sources={[{ pageTitle: 'My Article', spaceKey: 'Local', pageId: 55, confluenceId: null }]} />,
+      { wrapper: Wrapper },
+    );
+    fireEvent.click(screen.getByTestId('citation-chip-1'));
+    expect(mockNavigate).toHaveBeenCalledWith('/pages/55');
+  });
+
+  it('opens a web source in a new tab instead of routing into /pages/', () => {
+    render(
+      <CitationChips
+        sources={[{
+          pageTitle: 'Linux',
+          spaceKey: 'Web',
+          pageId: 0,
+          confluenceId: 'https://en.wikipedia.org/wiki/Linux',
+          url: 'https://en.wikipedia.org/wiki/Linux',
+        }]}
+      />,
+      { wrapper: Wrapper },
+    );
+
+    const chip = screen.getByTestId('citation-chip-1');
+    expect(chip.tagName).toBe('A');
+    expect(chip).toHaveAttribute('href', 'https://en.wikipedia.org/wiki/Linux');
+    expect(chip).toHaveAttribute('target', '_blank');
+    expect(chip).toHaveAttribute('rel', 'noopener noreferrer');
+
+    fireEvent.click(chip);
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  it('renders a source with no usable target as a non-link', () => {
+    render(
+      <CitationChips sources={[{ pageTitle: 'Orphan', spaceKey: 'Web', confluenceId: null }]} />,
+      { wrapper: Wrapper },
+    );
+
+    const chip = screen.getByTestId('citation-chip-1');
+    expect(chip.tagName).toBe('SPAN');
+    fireEvent.click(chip);
+    expect(mockNavigate).not.toHaveBeenCalled();
   });
 
   it('has data-testid on the wrapper', () => {

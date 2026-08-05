@@ -215,6 +215,32 @@ data: { "done": true, "conversationId": "…", "sources": [ … ] }
 On abort (client disconnect) the backend aborts the upstream LLM request —
 see `backend/src/routes/llm/sse-abort.test.ts` for the behaviour we rely on.
 
+### Source objects (#1125)
+
+Every entry in `sources` carries **both** identities, and the frontend picks
+the target from them — `ask`, `generate`, `improve` and `summarize` all emit
+the same shape:
+
+| Field | Knowledge-base hit | Web / external-docs hit |
+|-------|--------------------|-------------------------|
+| `pageId` | integer `pages.id` | `0` |
+| `confluenceId` | Confluence id, **`null` for locally-created pages** | the URL (legacy field, kept for conversations persisted before `url`) |
+| `url` | absent | absolute http(s) URL |
+
+`frontend/src/features/ai/source-target.ts` is the single resolver: a `url`
+(or a URL found in `confluenceId`) opens in a new tab, otherwise navigation
+goes to `/pages/<pageId>`, falling back to `confluenceId` only for stored
+conversations that predate `pageId`. **Never discriminate on
+`spaceKey === 'Web'`** — that is a display label and a real Confluence space
+could be keyed `Web`. Citing by `confluenceId` was #1125: web sources became
+`/pages/https://…` (multi-segment, so NotFoundPage) and standalone pages
+became `/pages/null`.
+
+For the same reason the RAG cache key's doc-id list uses `confluenceId`
+falling back to `page:<pageId>` — a set of NULL ids collapses to
+indistinguishable empty strings, and two different sets of standalone pages
+would otherwise share one key.
+
 ## Cache + stampede protection
 
 - **Key** = `hash(userId, model, normalizedQuestion, contextFingerprint)`.

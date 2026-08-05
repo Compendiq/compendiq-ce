@@ -85,8 +85,11 @@ export async function llmSummarizeRoutes(fastify: FastifyInstance) {
       });
     }
 
+    // `url` marks these as links, not pages — see #1125 / llm-generate.ts.
     const sumExtras = sumWebSources.length > 0 ? {
-      sources: sumWebSources.map((s) => ({ pageTitle: s.title, spaceKey: 'Web', confluenceId: s.url, score: 1 })),
+      sources: sumWebSources.map((s) => ({
+        pageId: 0, pageTitle: s.title, spaceKey: 'Web', confluenceId: s.url, url: s.url, score: 1,
+      })),
     } : undefined;
 
     const basePrompt = await resolveSystemPrompt(userId, 'summarize');

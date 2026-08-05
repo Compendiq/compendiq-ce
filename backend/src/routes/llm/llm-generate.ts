@@ -123,9 +123,12 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
       });
     }
 
+    // `url` marks these as links rather than knowledge-base pages; without it
+    // the frontend routed them to `/pages/<url>` and showed "page not found"
+    // (#1125). `pageId: 0` matches the shape /llm/ask already emits.
     const genExtras = genWebSources.length > 0 ? {
       sources: genWebSources.map((s) => ({
-        pageTitle: s.title, spaceKey: 'Web', confluenceId: s.url, score: 1,
+        pageId: 0, pageTitle: s.title, spaceKey: 'Web', confluenceId: s.url, url: s.url, score: 1,
       })),
     } : undefined;
 
