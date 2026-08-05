@@ -2042,15 +2042,34 @@ describe('AiAssistantPage', () => {
 
   // #703 — chat content must not bleed through the translucent sticky bars.
   // Both bars carry an opaque bg-background under-mask (z-[-1]) covering
-  // exactly the bar's box (inset-0), so scrolling messages are fully occluded
-  // behind the sub-header and the input bar.
+  // exactly the bar's box (inset-0).
   //
-  // #769 — the masks must NOT extend past the bar's box: the original
-  // -top-[100px] / -bottom-[100px] extensions overflowed the scroll
-  // container, and absolute overflow past the block-end edge grows the
-  // scrollable overflow region — producing ~100px of phantom vertical scroll
-  // on every mode even when content fit the viewport.
-  describe('sticky bar under-mask (#703, #769)', () => {
+  // #1218 — those masks are now belt-and-braces rather than load-bearing: the
+  // message pane owns the scroller and the page column no longer scrolls, so
+  // nothing passes behind either bar to be occluded. They are kept because
+  // they cost one div each and they are what stops #703 returning if a future
+  // change re-engages the outer scroll container — which is why the shape they
+  // are pinned to here is still the shape they have to keep.
+  //
+  // #769 — the masks must NOT extend past the bar's box, and that rule still
+  // matters after the structural fix, in the other direction: an absolutely
+  // positioned mask overflowing the block-end edge creates scrollable overflow
+  // in a container that now has none, re-opening #769 on a page that had
+  // stopped scrolling entirely. The original -top-[100px] / -bottom-[100px]
+  // extensions added ~100px of phantom scroll on every mode.
+  //
+  // The rule is enforced as an ALLOW-list — the exact class set — not as a
+  // deny-list of overhang spellings. A deny-list cannot be complete here:
+  // Tailwind writes the same overhang as -bottom-5, -bottom-[5px],
+  // bottom-[-5px], inset-y-[-5px], an arbitrary property or an inline style,
+  // and the two regexes this replaces matched only the arbitrary-value forms —
+  // so -bottom-5, the exact class #1218 was originally filed proposing, walked
+  // past them unmatched. An allow-list cannot be evaded, at the cost of
+  // failing on any legitimate restyle; for a five-class mask that is a
+  // feature, not friction.
+  const UNDER_MASK_CLASSES = 'pointer-events-none absolute inset-0 z-[-1] bg-background';
+
+  describe('sticky bar under-mask (#703, #769, #1218)', () => {
     it('renders an opaque under-mask behind the top sub-header covering exactly its box', () => {
       const { container } = render(<AiAssistantPage />, { wrapper: createWrapper() });
 
@@ -2061,16 +2080,11 @@ describe('AiAssistantPage', () => {
       expect(subHeader!.className).toContain('isolate');
 
       // The under-mask is an aria-hidden, opaque bg-background div behind the
-      // bar (z-[-1]). inset-0 pins it to the bar's box: the bar sticks flush
-      // at the scrollport top, so the bar-sized mask fully occludes messages
-      // scrolling up (#703) without overflowing the bar.
+      // bar (z-[-1]), sized to exactly the bar's box (inset-0). Asserted as
+      // the whole class set, for the reason above the describe.
       const mask = subHeader!.querySelector('[aria-hidden]');
       expect(mask).not.toBeNull();
-      expect(mask!.className).toContain('bg-background');
-      expect(mask!.className).not.toContain('bg-background/');
-      expect(mask!.className).toContain('z-[-1]');
-      expect(mask!.className).toContain('inset-0');
-      expect(mask!.className).toContain('pointer-events-none');
+      expect(mask!.className).toBe(UNDER_MASK_CLASSES);
     });
 
     it('renders an opaque under-mask behind the bottom input bar covering exactly its box', () => {
@@ -2080,16 +2094,11 @@ describe('AiAssistantPage', () => {
       expect(inputBar).not.toBeNull();
       expect(inputBar!.className).toContain('isolate');
 
-      // The bar sticks flush at the scrollport bottom, so a bar-sized
-      // (inset-0) mask fully occludes messages scrolling down (#703) without
-      // overflowing the bar.
+      // Same class set as the sub-header's mask, and for the block-end bar the
+      // no-overhang half of it is the load-bearing one (#769).
       const mask = inputBar!.querySelector('[aria-hidden]');
       expect(mask).not.toBeNull();
-      expect(mask!.className).toContain('bg-background');
-      expect(mask!.className).not.toContain('bg-background/');
-      expect(mask!.className).toContain('z-[-1]');
-      expect(mask!.className).toContain('inset-0');
-      expect(mask!.className).toContain('pointer-events-none');
+      expect(mask!.className).toBe(UNDER_MASK_CLASSES);
     });
 
     it('no under-mask extends past its sticky bar (regression: #769 phantom scroll)', () => {
@@ -2103,16 +2112,18 @@ describe('AiAssistantPage', () => {
         expect(bar).not.toBeNull();
         const mask = bar!.querySelector('[aria-hidden]') as HTMLElement;
         expect(mask).not.toBeNull();
-        // Negative inset offsets (e.g. -top-[100px] / -bottom-[100px]) push
-        // the absolutely positioned mask outside the scroll container's
-        // content edge; overflow past the block-end edge adds phantom
-        // scrollable height. The mask must keep all four edges on the bar.
-        expect(mask.className).not.toMatch(/-(top|bottom|left|right|inset(-[xy])?)-\[/);
-        // Tailwind also accepts the arbitrary-negative-value spelling
-        // (top-[-100px]) — forbid that form too.
-        expect(mask.className).not.toMatch(/\b(top|bottom|left|right|inset(-[xy])?)-\[-/);
+        // Every class-spelled offset is already refused by the exact class set
+        // asserted above. Inline styles are the one way past it — `className`
+        // says nothing about `style={{ bottom: -20 }}`, which pushes the
+        // absolutely positioned mask past the block-end edge and grows the
+        // scrollable overflow region exactly as -bottom-[100px] did.
+        expect(mask.className).toBe(UNDER_MASK_CLASSES);
         expect(mask.style.top).toBe('');
         expect(mask.style.bottom).toBe('');
+        expect(mask.style.left).toBe('');
+        expect(mask.style.right).toBe('');
+        expect(mask.style.inset).toBe('');
+        expect(mask.style.margin).toBe('');
       }
     });
   });

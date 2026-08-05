@@ -745,4 +745,30 @@ describe('GraphPage', () => {
       expect(cleared).toBeDefined();
     });
   });
+
+  // #1218 — this page's root is `h-full`, so AppLayout's min-h-0 chain clamps
+  // it to the scrollport, and the filter row with it. The sidebar is a
+  // cross-axis-stretched flex item inside that row, so its height is the row's
+  // and its content can exceed it; carrying an nm-card border and no overflow,
+  // the label chips painted straight through the card's bottom edge onto the
+  // page background (measured at 1440x560 as a 39px spill in a headless
+  // Chromium fixture, gone with this class, with the card's own scroller
+  // taking over). The graph container beside it has always been
+  // overflow-hidden — this makes the pair consistent.
+  //
+  // jsdom performs no layout, so the class is what can be asserted here; the
+  // spill itself has no height in this environment.
+  it('the filter sidebar scrolls inside its card rather than spilling past it (#1218)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => ({ ...mockGraphData, centerId: '1' }),
+    } as Response);
+
+    render(<GraphPage />, { wrapper: createWrapper(['/graph?focus=1']) });
+
+    const sidebar = await screen.findByTestId('graph-filter-sidebar');
+    expect(sidebar.className).toContain('overflow-y-auto');
+  });
 });

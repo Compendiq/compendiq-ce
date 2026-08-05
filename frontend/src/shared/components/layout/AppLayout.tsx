@@ -508,8 +508,52 @@ export function AppLayout({ children }: { children: ReactNode }) {
                 {/* flex flex-1 flex-col so pages that opt in (e.g. /ai) can use
                     flex-1 on a child to fill the available scroll height
                     without resorting to a `calc(100vh - chrome)` magic number.
-                    Pages that don't opt in render with natural flow as before. */}
-                <div className={cn('mx-auto flex w-full flex-1 flex-col', isArticleRoute ? 'max-w-[1400px]' : 'max-w-7xl')}>
+                    Pages that don't opt in render with natural flow as before.
+
+                    min-h-0 is one link of a four-link chain (#1218): a flex
+                    item's automatic minimum size refuses to shrink below its
+                    content, so this wrapper alone kept /ai's column growing to
+                    its content and left this scroll container — not the
+                    message pane — as the thing that scrolls. The chain is
+                    scroll container -> PageTransition -> this wrapper ->
+                    AiAssistantPage's page root -> the pane's own scroller;
+                    every link is load-bearing, three of four fixes nothing.
+                    It stays out of the max-width ternary on purpose: a link
+                    that only holds on one route is not a link. Guarded by name
+                    in `src/ai-scroll-chain.test.ts`.
+
+                    Two measured side effects.
+
+                    (1) On every route that does NOT cap its own height, the
+                    content now overflows this clamped box with
+                    `overflow: visible` instead of sizing it, and a scroll
+                    container's end padding is not part of the scrollable
+                    overflow an overflowing descendant contributes. The `pb-5`
+                    below is therefore unreachable at the scroll end: the loss
+                    is exactly -20px, always, on every long page. What is left
+                    is whatever trailing space the last element carries itself,
+                    so it is shape-dependent — 36px becomes 16px where the page
+                    body has its own py-4, and on the `space-y-6` routes
+                    (`/`, `/trash`, `/admin/analytics`), where a space-y stack
+                    puts no margin after its last child, 20px becomes 0 and the
+                    last row sits flush on the clip edge. Scrolling,
+                    reachability of the last element and #1186's toolbar mask
+                    are unchanged. Restoring it means moving or re-scoping this
+                    container's padding, which is shared by every route —
+                    rejected in #1218 as route-wide collateral for a
+                    page-specific bug.
+
+                    (2) The clamp propagates only into routes that cap their
+                    own height — /ai (flex-1 chain) and /graph (h-full) — and
+                    inside those, a cross-axis-stretched box with a visible
+                    border and no overflow paints its excess content straight
+                    past that border. All three such boxes handle it: /ai's
+                    message pane scrolls, GraphPage's canvas is
+                    overflow-hidden, and its filter sidebar became
+                    overflow-y-auto in #1218 (it spilled 39px at 1440x560
+                    before). A new one is the thing to check when adding a
+                    height-capping page. */}
+                <div className={cn('mx-auto flex w-full min-h-0 flex-1 flex-col', isArticleRoute ? 'max-w-[1400px]' : 'max-w-7xl')}>
                   {children}
                 </div>
               </PageTransition>
