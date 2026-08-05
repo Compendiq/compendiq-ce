@@ -95,6 +95,32 @@ function collectDirectTextParams(macro: Element): Record<string, string> {
 }
 
 /**
+ * Macros that map onto `<details>` (#1129).
+ *
+ * `ui-expand` is Refined's "UI Expand" from the Refined Macro Toolkit — a
+ * different macro from Atlassian's native `expand`, not a rename. Verified
+ * against a Confluence DC 9.2.19 instance with the app installed: the key is
+ * bare `ui-expand` (the `rw-ui-expands-macro` / `rw-expand` spellings in
+ * Refined's own docs are their Cloud renderer's internals and never appear in
+ * DC storage format), and the element shape is identical to the native macro —
+ * a `title` parameter plus `ac:rich-text-body`, flat siblings rather than a
+ * container macro. Which one produced a given `<details>` is carried on
+ * `data-macro-name` (#1211) so write-back never coerces one into the other.
+ */
+const EXPAND_MACRO_NAMES = new Set(['expand', 'ui-expand']);
+
+/**
+ * …and of those, the ones with a default-open parameter (#1129). Only Refined's
+ * macro has one; emitting `expanded` on a native `expand` would invent a
+ * parameter Atlassian's macro does not define, on a page that never had it.
+ * Membership also decides which macros treat the `open` attribute as the single
+ * source of truth for that state, so the forward and reverse passes stay
+ * symmetric: a name outside this set keeps any `expanded` parameter verbatim in
+ * `data-macro-params` instead.
+ */
+const EXPANDED_PARAM_MACROS = new Set(['ui-expand']);
+
+/**
  * Transfer innerHTML from a source element to a target element.
  * Server-side JSDOM only — used for Confluence macro conversion.
  */
@@ -159,22 +185,34 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey
     macro.replaceWith(div);
   }
 
-  // Process expand macros: ac:structured-macro[name=expand] -> <details>
+  // Process expand macros: ac:structured-macro[name=expand|ui-expand] -> <details>
   for (const macro of byTag(doc, 'ac:structured-macro')) {
-    if (getMacroName(macro) !== 'expand') continue;
+    const macroName = getMacroName(macro);
+    if (!EXPAND_MACRO_NAMES.has(macroName)) continue;
     const title = getParamValue(macro, 'title') ?? 'Click to expand';
     const bodyEl = byTag(macro, 'ac:rich-text-body')[0];
 
     const details = doc.createElement('details');
     // #1211: stamp which macro produced this <details> so the reverse pass can
-    // write back the right ac:name once a second macro maps to this element
-    // (#1129). Parameters other than `title` are persisted the same way the
+    // write back the right ac:name — since #1129 two macros map to this
+    // element. Parameters other than `title` are persisted the same way the
     // #865 unknown-macro net does; `title` stays in <summary> only — one
     // source of truth per value, and the reverse pass rebuilds the parameter
     // from there.
-    details.setAttribute('data-macro-name', 'expand');
+    details.setAttribute('data-macro-name', macroName);
     const extraParams = collectDirectTextParams(macro);
     delete extraParams.title;
+    // #1129: `expanded` gets the same one-value-one-home treatment as `title`.
+    // It is read from the direct-children map rather than getParamValue, which
+    // searches descendants and would pick up a nested macro's parameter
+    // (#1222). Read `=== 'true'` rather than testing for presence: Confluence
+    // DC omits the parameter entirely on a collapsed section and no `false`
+    // spelling was observed, so presence-testing would misread a hand-authored
+    // `expanded=false` as open.
+    if (EXPANDED_PARAM_MACROS.has(macroName)) {
+      if (extraParams.expanded === 'true') details.setAttribute('open', '');
+      delete extraParams.expanded;
+    }
     if (Object.keys(extraParams).length > 0) {
       details.setAttribute('data-macro-params', JSON.stringify(extraParams));
     }
@@ -634,14 +672,15 @@ export function htmlToConfluence(html: string): string {
     );
     const macro = doc.createElement('ac:structured-macro');
     // #1211: carry the macro identity the forward pass stamped. Absent →
-    // `expand` is safe: only the native expand branch has ever produced a
-    // <details> (so every stored body_html predating the stamp genuinely is
-    // one), and editor-created sections (Editor.tsx) carry no attribute
+    // `expand` is safe: the native expand branch was the only producer of a
+    // <details> when the stamp was introduced (so every stored body_html
+    // predating it genuinely is one), and editor-created sections carry no attribute
     // either. An unrecognised value is passed through, never coerced —
     // coercion is precisely the silent-rewrite bug this exists to prevent,
     // and passthrough grants nothing new: the #865 unknown-macro net already
     // round-trips arbitrary data-macro-name values.
-    macro.setAttribute('ac:name', details.getAttribute('data-macro-name') || 'expand');
+    const macroName = details.getAttribute('data-macro-name') || 'expand';
+    macro.setAttribute('ac:name', macroName);
 
     if (summary) {
       const param = doc.createElement('ac:parameter');
@@ -649,6 +688,21 @@ export function htmlToConfluence(html: string): string {
       param.textContent = summary.textContent ?? '';
       macro.appendChild(param);
       summary.remove();
+    }
+
+    // #1129: rebuild the default-open parameter from the `open` attribute, its
+    // single source of truth (the forward pass consumed the parameter into it).
+    // Emitted only when open: Confluence DC omits `expanded` entirely on a
+    // collapsed section rather than writing `expanded=false`, so emitting one
+    // would hand every collapsed section a parameter it never had. Macros
+    // outside EXPANDED_PARAM_MACROS get nothing — the editor forces every
+    // <details> open in edit mode and its summary click handler writes the
+    // attribute, so `open` on a native expand is reachable and must stay inert.
+    if (EXPANDED_PARAM_MACROS.has(macroName) && details.hasAttribute('open')) {
+      const param = doc.createElement('ac:parameter');
+      param.setAttribute('ac:name', 'expanded');
+      param.textContent = 'true';
+      macro.appendChild(param);
     }
 
     // Any <summary> still in the subtree (wrapped in another element, or a
@@ -665,7 +719,10 @@ export function htmlToConfluence(html: string): string {
 
     // Re-emit parameters persisted by the forward pass (mirrors the
     // unknown-macro handler below). A `title` key is skipped when <summary>
-    // provided the parameter above — the summary is its source of truth.
+    // provided the parameter above — the summary is its source of truth. So is
+    // an `expanded` key on a macro that keeps that state in `open` (#1129): the
+    // forward pass never writes one, but a stale copy from hand-edited or
+    // pre-#1129 HTML must not resurrect a section the user has since closed.
     const rawParams = details.getAttribute('data-macro-params');
     if (rawParams) {
       try {
@@ -673,6 +730,7 @@ export function htmlToConfluence(html: string): string {
         for (const [paramName, paramValue] of Object.entries(params)) {
           if (typeof paramValue !== 'string') continue;
           if (paramName === 'title' && summary) continue;
+          if (paramName === 'expanded' && EXPANDED_PARAM_MACROS.has(macroName)) continue;
           const p = doc.createElement('ac:parameter');
           p.setAttribute('ac:name', paramName);
           p.textContent = paramValue;

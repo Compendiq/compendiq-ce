@@ -55,7 +55,7 @@ Custom turndown rules handle Confluence-specific macros:
 | `ac:structured-macro[code]`          | `<pre><code class="language-x">`                             | ` ```x … ``` ` fenced block   |
 | `ac:task-list`                       | `<ul data-task-list>`                                        | `- [ ]` / `- [x]`             |
 | `ac:panel` (info/note/warn)          | `<div class="panel panel-…">`                                | `> **INFO:** …` block-quote   |
-| `ac:structured-macro[expand]`        | `<details data-macro-name="expand" data-macro-params="{…}">` + `<summary>` holding the `title` param (#1211: the identity stamp lets the reverse pass write back the producing macro's `ac:name` — absent defaults to `expand`, an unrecognised value passes through, never coerced — so a second `<details>`-producing macro (#1129) survives editor saves) | flattened content by default; opaque-protected on Improve (#1221 stage 1 — `details` has no turndown rule, so without the freeze the Improve round-trip flattened the section to bare paragraphs and the macro was deleted on write-back) |
+| `ac:structured-macro[expand]` and `[ui-expand]` (Refined) | `<details data-macro-name="expand\|ui-expand" data-macro-params="{…}">` + `<summary>` holding the `title` param (#1211: the identity stamp lets the reverse pass write back the producing macro's `ac:name` — absent defaults to `expand`, an unrecognised value passes through, never coerced — so both macros survive editor saves). `ui-expand`'s `expanded` param maps to the `open` attribute and lives there only (#1129) | flattened content by default; opaque-protected on Improve (#1221 stage 1 — `details` has no turndown rule, so without the freeze the Improve round-trip flattened the section to bare paragraphs and the macro was deleted on write-back) |
 | `ri:user`                            | `<span class="confluence-user-mention" data-username="…">@user</span>` | `@user` (inline) |
 | `ri:page`                            | `<a data-page-link>`                                         | `[title](compendiq://page/ID)` |
 | `ac:structured-macro[drawio]`        | `<img data-drawio>`                                          | `![diagram](attachment-url)`  |
@@ -105,7 +105,7 @@ Custom turndown rules handle Confluence-specific macros:
   `ac:name` — defaulting to `expand` when absent (safe: only the native
   expand branch has ever produced `<details>`, so stored `body_html` and
   editor-created sections are all genuinely expands) and passing an
-  unrecognised value through rather than coercing it. Without the stamp, a
+  unrecognised value through rather than coercing it. Without the stamp, the
   second macro mapping to `<details>` (#1129, Refined "UI Expand") would be
   silently rewritten into a native expand on the first editor save. The
   reverse loop converts sections **innermost-first** and reads only a
@@ -114,6 +114,30 @@ Custom turndown rules handle Confluence-specific macros:
   outer-first pass would ship the still-raw inner `<details>` to Confluence
   as a literal HTML element (and a summary-less outer could steal the
   nested section's title).
+- **Refined's "UI Expand" is the second macro on `<details>` (#1129).**
+  `ui-expand` comes from the Refined Macro Toolkit and is a different macro
+  from Atlassian's native `expand`, not a rename. Verified against a
+  Confluence DC 9.2.19 instance with the app installed: the key is bare
+  `ui-expand` (the `rw-ui-expands-macro` / `rw-expand` spellings in Refined's
+  own docs are their **Cloud** renderer's internals and never appear in DC
+  storage format), and the element shape is identical to the native macro — a
+  `title` parameter plus `ac:rich-text-body`, flat siblings rather than a
+  container macro. It differs in exactly one thing: an `expanded` parameter
+  for a default-open section. That maps to the `<details>` `open` attribute
+  and lives **there only** — the forward pass deletes it from
+  `data-macro-params` the way it deletes `title`, so a user toggling the
+  section in the editor cannot leave a stale copy riding along beside the
+  attribute. Write-back emits the parameter **only when open**: DC omits it
+  entirely on a collapsed section rather than writing `expanded=false`, so
+  emitting one would hand every collapsed section a parameter it never had.
+  The mapping is keyed on the macro name, so `open` on a *native* expand stays
+  inert — Atlassian's macro has no such parameter, and the editor both forces
+  every `<details>` open in edit mode and toggles the attribute on a summary
+  click, so an `open` native section is reachable and must not fabricate one.
+  Refined's bodies carry its own classed markup (`ordered-list top_level`,
+  `rw_adf_text_strong`); that rides through as ordinary body HTML, but we have
+  no rule for those classes, so `rw_adf_text_strong` renders as plain text
+  rather than bold.
 - **`<details>` is frozen whole on the Improve path (#1221 stage 1).**
   `MEDIA_SELECTOR` lists `details`, so `protectMedia` swaps each expand
   section for an opaque token before the HTML→Markdown→HTML round-trip and
