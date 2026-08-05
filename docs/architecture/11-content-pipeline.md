@@ -98,6 +98,21 @@ Custom turndown rules handle Confluence-specific macros:
   handler for this div, so opening a synced page with any unhandled macro in
   the editor and saving (or applying Improve / publishing a draft / restoring
   a version) permanently deleted the macro from the Confluence page.
+- **A macro's parameters are its direct `ac:parameter` children** (#1222).
+  `ac:parameter` is a direct child of `ac:structured-macro` by storage-format
+  schema, so the forward pass scopes every named-parameter lookup to direct
+  children. A descendant-wide search let a body-carrying macro read a *nested*
+  macro's parameter — an untitled `expand` took a nested expand's (or a nested
+  `status` badge's) `title`, `section` took a nested macro's `border`, `column`
+  its `width`, which also landed in an inline flex style — and the reverse pass
+  then persisted that value onto the outer macro as a parameter the Confluence
+  page never had. Which macros could donate a value was an accident of handler
+  order, not a rule: a nested `code` macro is already replaced by the time the
+  expand branch looks, a nested `status` macro is not. The anonymous
+  `<ac:parameter><ri:page/></ac:parameter>` inside `include` / `excerpt-include`
+  is unaffected — it is read by walking `ri:page`, not by name. The fix corrects
+  new conversions only; a stolen value already baked into stored `body_html`
+  stays until that page is re-synced.
 - `<details>` carries its producing macro's identity (#1211):
   the forward expand branch stamps `data-macro-name="expand"` (plus
   non-`title` parameters as JSON `data-macro-params`; `title` lives in

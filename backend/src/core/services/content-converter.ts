@@ -64,10 +64,29 @@ function getMacroName(el: Element): string {
   return el.getAttribute('ac:name') ?? el.getAttribute('data-macro-name') ?? '';
 }
 
+/**
+ * Read one named parameter from a macro's DIRECT ac:parameter children (#1222).
+ *
+ * `ac:parameter` is a direct child of `ac:structured-macro` by storage-format
+ * schema, so scoping the lookup loses nothing legitimate. A descendant search
+ * (what this did before) let a body-carrying macro read the first match
+ * anywhere in its subtree — a NESTED macro's parameter — and the reverse pass
+ * then persisted that value onto the outer macro as a parameter the Confluence
+ * page never had. Verified thefts: an untitled `expand` took a nested expand's
+ * `title`, or a nested `status` badge's (cross-type, because `status` is
+ * processed later and its parameters are still ac:parameter elements when the
+ * expand branch looks); `section` took a nested macro's `border`; `column` took
+ * its `width`, which also landed in an inline flex style.
+ *
+ * Keeps `textContent` semantics — an element-valued parameter contributes its
+ * text — which is what separates this from `collectDirectTextParams` below,
+ * where such a parameter is skipped instead.
+ */
 function getParamValue(macro: Element, name: string): string | null {
-  for (const param of byTag(macro as unknown as Element, 'ac:parameter')) {
-    if (param.getAttribute('ac:name') === name) {
-      return param.textContent;
+  for (const child of [...macro.children]) {
+    if (child.tagName.toLowerCase() !== 'ac:parameter') continue;
+    if (child.getAttribute('ac:name') === name) {
+      return child.textContent;
     }
   }
   return null;
@@ -203,12 +222,12 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey
     const extraParams = collectDirectTextParams(macro);
     delete extraParams.title;
     // #1129: `expanded` gets the same one-value-one-home treatment as `title`.
-    // It is read from the direct-children map rather than getParamValue, which
-    // searches descendants and would pick up a nested macro's parameter
-    // (#1222). Read `=== 'true'` rather than testing for presence: Confluence
-    // DC omits the parameter entirely on a collapsed section and no `false`
-    // spelling was observed, so presence-testing would misread a hand-authored
-    // `expanded=false` as open.
+    // It is read from the direct-children map because it has to be deleted from
+    // that map anyway — getParamValue is scoped to direct children too since
+    // #1222, so either source now answers the same. Read `=== 'true'` rather
+    // than testing for presence: Confluence DC omits the parameter entirely on
+    // a collapsed section and no `false` spelling was observed, so
+    // presence-testing would misread a hand-authored `expanded=false` as open.
     if (EXPANDED_PARAM_MACROS.has(macroName)) {
       if (extraParams.expanded === 'true') details.setAttribute('open', '');
       delete extraParams.expanded;
