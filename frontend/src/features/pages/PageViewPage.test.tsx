@@ -823,15 +823,34 @@ describe('PageViewPage', () => {
     expect(mockNavigate).not.toHaveBeenCalled();
   });
 
-  // #703 / #769 — the sticky edit toolbar carries an opaque bg-background
-  // under-mask (z-[-1]) covering exactly the toolbar's box (inset-0), the
-  // same pattern as /ai's sticky bars. The toolbar pins flush at the
-  // scrollport top, so the mask must not extend past the toolbar's box:
-  // negative inset offsets push the absolutely positioned mask outside the
-  // scroll container's content edge (the pattern that caused /ai's phantom
-  // vertical scroll).
-  describe('sticky edit-toolbar under-mask (#703, #769)', () => {
-    it('renders an opaque under-mask behind the edit toolbar covering exactly its box', () => {
+  // #703 / #769 / #1186 — the sticky edit toolbar carries an opaque
+  // bg-background under-mask (z-[-1]) behind it. It covers the toolbar's own
+  // box, so content scrolling under the translucent bar cannot show through,
+  // and it reaches one scroll-container padding step above it, because the
+  // stuck toolbar does not reach the scrollport's own top edge (#1186 — the
+  // exact height is asserted against AppLayout in scroll-padding-mask.test.ts).
+  // Overhang is block-start only: a block-end or inline overhang pushes the
+  // absolutely positioned mask past the scroll container's content edge and
+  // inflates its scrollable height, which is what caused /ai's phantom
+  // vertical scroll (#769).
+  describe('sticky edit-toolbar under-mask (#703, #769, #1186)', () => {
+    /**
+     * A negative offset on an edge that grows the scroll container's
+     * scrollable region, in the two spellings Tailwind accepts —
+     * `-bottom-4` / `-bottom-[4px]` (negative utility, any value) and
+     * `bottom-[-4px]` (arbitrary negative value) — under any variant prefix,
+     * which puts a ':' rather than whitespace in front of the class.
+     */
+    const NEGATIVE_UTILITY = /(^|[\s:])-(bottom|left|right|inset(-[xy])?)-/;
+    const ARBITRARY_NEGATIVE = /\b(bottom|left|right|inset(-[xy])?)-\[-/;
+
+    const renderEditing = () => {
+      render(<PageViewPage />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByText('Edit'));
+      return screen.getByTestId('edit-toolbar-mask');
+    };
+
+    it('renders an opaque under-mask behind the edit toolbar', () => {
       const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
       fireEvent.click(screen.getByText('Edit'));
 
@@ -841,27 +860,66 @@ describe('PageViewPage', () => {
       expect(toolbar).not.toBeNull();
       expect(toolbar!.className).toContain('isolate');
 
-      const mask = toolbar!.querySelector('[aria-hidden]');
-      expect(mask).not.toBeNull();
-      expect(mask!.className).toContain('bg-background');
-      expect(mask!.className).not.toContain('bg-background/');
-      expect(mask!.className).toContain('z-[-1]');
-      expect(mask!.className).toContain('inset-0');
-      expect(mask!.className).toContain('pointer-events-none');
+      const mask = screen.getByTestId('edit-toolbar-mask');
+      expect(toolbar!.contains(mask)).toBe(true);
+      expect(mask.className).toContain('bg-background');
+      expect(mask.className).not.toContain('bg-background/');
+      expect(mask.className).toContain('z-[-1]');
+      // Flush with the toolbar on every edge but the top.
+      expect(mask.className).toContain('inset-x-0');
+      expect(mask.className).toContain('bottom-0');
     });
 
-    it('the under-mask does not extend past the toolbar (regression: #769 phantom scroll)', () => {
-      const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
-      fireEvent.click(screen.getByText('Edit'));
+    it('the under-mask covers the scroll padding above the stuck toolbar (#1186)', () => {
+      const mask = renderEditing();
+      // A bare inset-0 leaves the padding strip above the stuck toolbar live,
+      // which is the bug: article content scrolls through it in full view.
+      expect(mask.className).not.toMatch(/(^|\s)inset-0(\s|$)/);
+      expect(mask.className).toMatch(/(^|\s)-top-\d/);
+    });
 
-      const mask = container.querySelector('.sticky.top-0 [aria-hidden]') as HTMLElement;
-      expect(mask).not.toBeNull();
-      // Forbid both negative-utility (-top-[100px]) and arbitrary-negative
-      // (top-[-100px]) spellings, plus inline style offsets.
-      expect(mask.className).not.toMatch(/-(top|bottom|left|right|inset(-[xy])?)-\[/);
-      expect(mask.className).not.toMatch(/\b(top|bottom|left|right|inset(-[xy])?)-\[-/);
+    it('the under-mask takes the clicks it occludes, rather than passing them to hidden content', () => {
+      const mask = renderEditing();
+      // The strip above the toolbar is paint with nothing else in it, so a
+      // pointer-events-none mask hands clicks straight to the editor content
+      // it just hid — measured in Chromium, a click 2px above the toolbar
+      // reached the prose and moved the caret. Over the toolbar's own box the
+      // card still wins on paint order, so nothing interactive is intercepted.
+      expect(mask.className).not.toContain('pointer-events-none');
+      expect(mask.style.pointerEvents).toBe('');
+    });
+
+    it('the under-mask does not overhang the block-end or inline edges (#769 phantom scroll)', () => {
+      const mask = renderEditing();
+      // The block-start edge is exempt: the scrollport clips it and it grows
+      // no scroll range. Every other edge would inflate the scrollable height.
+      expect(mask.className).not.toMatch(NEGATIVE_UTILITY);
+      expect(mask.className).not.toMatch(ARBITRARY_NEGATIVE);
       expect(mask.style.top).toBe('');
       expect(mask.style.bottom).toBe('');
+    });
+
+    it('the overhang guard catches the spellings that have evaded it', () => {
+      // Anti-vacuity: a guard anchored on /(^|\s)/ misses every variant-
+      // prefixed negative, and `sm:-bottom-[4px]` once escaped both patterns.
+      const caught = (className: string) =>
+        NEGATIVE_UTILITY.test(className) || ARBITRARY_NEGATIVE.test(className);
+
+      for (const evader of [
+        '-bottom-4',
+        'sm:-bottom-4',
+        'md:-inset-x-2',
+        '-bottom-[4px]',
+        'sm:-bottom-[4px]',
+        'bottom-[-4px]',
+        'sm:bottom-[-4px]',
+        'absolute inset-x-0 -top-5 lg:-right-2 z-[-1]',
+      ]) {
+        expect(caught(evader), `guard missed ${evader}`).toBe(true);
+      }
+
+      // …and stays off the shipped class list, block-start overhang included.
+      expect(caught('absolute inset-x-0 -top-5 bottom-0 z-[-1] bg-background rounded-b-xl')).toBe(false);
     });
   });
 
