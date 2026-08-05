@@ -1,7 +1,8 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { checkHealth, listModels, chat, streamChat, generateEmbedding, invalidateBreaker, __test_only__, LlmHttpError, type ProviderConfig } from './openai-compatible-client.js';
+import { ERROR_BODY_MAX_CHARS } from './llm-http-error.js';
 
 let srv: Server;
 let baseUrl: string;
@@ -39,6 +40,41 @@ describe('openai-compatible-client', () => {
   it('checkHealth returns connected:false on 401', async () => {
     const r = await checkHealth({ ...cfg, baseUrl, apiKey: null });
     expect(r.connected).toBe(false);
+  });
+});
+
+// ─── #1185: listModels finishes the LlmHttpError conversion started by #1181 ─
+describe('openai-compatible-client — listModels surfaces HTTP error as LlmHttpError (#1185)', () => {
+  let errSrv: Server;
+  let errBase: string;
+  beforeAll(async () => {
+    errSrv = createServer((req, res) => {
+      if (req.url === '/v1/models') {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'model registry unavailable' } }));
+        return;
+      }
+      res.writeHead(404); res.end();
+    });
+    await new Promise<void>((r) => errSrv.listen(0, r));
+    const { port } = errSrv.address() as AddressInfo;
+    errBase = `http://127.0.0.1:${port}/v1`;
+  });
+  afterAll(() => new Promise<void>((r) => errSrv.close(() => r())));
+
+  it('throws LlmHttpError carrying the status and the body as fields', async () => {
+    const err = await listModels({ ...cfg, providerId: 'listmodels-err-1185', baseUrl: errBase })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(LlmHttpError);
+    expect((err as LlmHttpError).status).toBe(503);
+    expect((err as LlmHttpError).detail).toMatch(/model registry unavailable/);
+  });
+
+  it('keeps the provider body out of the message', async () => {
+    const err = await listModels({ ...cfg, providerId: 'listmodels-err-msg-1185', baseUrl: errBase })
+      .catch((e: unknown) => e);
+    expect((err as Error).message).toBe('listModels HTTP 503');
+    expect((err as Error).message).not.toMatch(/model registry unavailable/);
   });
 });
 
@@ -86,6 +122,244 @@ describe('openai-compatible-client — chat', () => {
     }
     expect(out.filter(Boolean).join('')).toBe('hello');
     expect(done).toBe(true);
+  });
+});
+
+// ─── #1185: streamChat finishes the LlmHttpError conversion started by #1181 ─
+describe('openai-compatible-client — streamChat surfaces HTTP error as LlmHttpError (#1185)', () => {
+  let errSrv: Server;
+  let errBase: string;
+  beforeAll(async () => {
+    errSrv = createServer((req, res) => {
+      if (req.url === '/v1/chat/completions') {
+        let body = '';
+        req.on('data', (c) => (body += c));
+        req.on('end', () => {
+          res.writeHead(429, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: 'rate limited' } }));
+        });
+        return;
+      }
+      res.writeHead(404); res.end();
+    });
+    await new Promise<void>((r) => errSrv.listen(0, r));
+    const { port } = errSrv.address() as AddressInfo;
+    errBase = `http://127.0.0.1:${port}/v1`;
+  });
+  afterAll(() => new Promise<void>((r) => errSrv.close(() => r())));
+
+  // The generator body doesn't run until the first .next() call, so the
+  // dispatch-phase throw surfaces there rather than at streamChat() itself.
+  async function drainToError(providerId: string): Promise<unknown> {
+    const gen = streamChat({ ...cfg, providerId, baseUrl: errBase }, 'm1', [{ role: 'user', content: 'hi' }]);
+    try {
+      await gen.next();
+      throw new Error('expected streamChat to reject');
+    } catch (e) {
+      return e;
+    }
+  }
+
+  it('throws LlmHttpError carrying the status and the body as fields', async () => {
+    const err = await drainToError('streamchat-err-1185');
+    expect(err).toBeInstanceOf(LlmHttpError);
+    expect((err as LlmHttpError).status).toBe(429);
+    expect((err as LlmHttpError).detail).toMatch(/rate limited/);
+  });
+
+  it('keeps the provider body out of the message', async () => {
+    const err = await drainToError('streamchat-err-msg-1185');
+    expect((err as Error).message).toBe('streamChat HTTP 429');
+    expect((err as Error).message).not.toMatch(/rate limited/);
+  });
+});
+
+// ─── PR #1214 review: a stalled error body must not wedge the breaker ───────
+// Unlike chat/listModels/generateEmbedding, streamChat deliberately bypasses
+// enqueue() (see the doc comment on the function), so it gets no
+// LLM_STREAM_TIMEOUT_MS AbortController — 7 of its 8 production callers pass
+// no `signal` either. Reading the error body with `await errorDetail(r)`
+// inside `getProviderBreaker().execute()` before #1185 was instant (no body
+// read at all); after #1185 a peer that sends error headers and then stalls
+// the body (trickling bytes resets undici's default ~300s bodyTimeout) can
+// hold a HALF_OPEN breaker's single-probe gate open indefinitely, rejecting
+// every other request to that provider with "probe already in flight".
+describe('openai-compatible-client — streamChat bounds a stalled error-body read (#1214 review)', () => {
+  let stallSrv: Server;
+  let stallBase: string;
+  // Tracks whether the server observed the socket close — the stalled
+  // response never ends on its own (no res.end(), no [DONE]), so 'close' can
+  // only mean the client (our reader.cancel()) tore the connection down.
+  // Reset per-test in beforeEach below (mirrors the #868 leak test's pattern).
+  let serverSawClose = false;
+  let resolveClose: () => void;
+  beforeAll(async () => {
+    stallSrv = createServer((req, res) => {
+      if (req.url === '/v1/chat/completions') {
+        let body = '';
+        req.on('data', (c) => (body += c));
+        req.on('end', () => {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          // Partial body, deliberately never finished/ended — the read stalls
+          // until the client cancels (or the socket is force-closed by afterAll).
+          res.write('{"error":');
+          res.on('close', () => { serverSawClose = true; resolveClose?.(); });
+        });
+        return;
+      }
+      res.writeHead(404); res.end();
+    });
+    await new Promise<void>((r) => stallSrv.listen(0, r));
+    const { port } = stallSrv.address() as AddressInfo;
+    stallBase = `http://127.0.0.1:${port}/v1`;
+  });
+  // The stalled response is deliberately never ended, so the keep-alive
+  // socket never closes on its own — plain `server.close()` waits for every
+  // open connection to end first and hangs forever. `closeAllConnections()`
+  // (Node ≥18.2, and this repo requires Node ≥22) force-closes them.
+  afterAll(() => new Promise<void>((r) => {
+    stallSrv.closeAllConnections();
+    stallSrv.close(() => r());
+  }));
+  afterEach(() => {
+    __test_only__.resetStreamErrorDetailTimeoutMs();
+  });
+
+  it('throws within the bounded timeout instead of hanging on a stalled error body, and tears down the socket', async () => {
+    serverSawClose = false;
+    const closePromise = new Promise<void>((r) => { resolveClose = r; });
+
+    // Short test-only override — production defaults to a few seconds, which
+    // would make this test slow without proving anything more.
+    __test_only__.setStreamErrorDetailTimeoutMs(50);
+    const gen = streamChat(
+      { ...cfg, providerId: 'streamchat-stall-1214', baseUrl: stallBase }, 'm1', [{ role: 'user', content: 'hi' }],
+    );
+    const start = Date.now();
+    const err = await gen.next().then(
+      () => { throw new Error('expected streamChat to reject'); },
+      (e: unknown) => e,
+    );
+    const elapsed = Date.now() - start;
+
+    expect(err).toBeInstanceOf(LlmHttpError);
+    expect((err as LlmHttpError).status).toBe(500);
+    // The body never arrived within the bound — detail falls back to ''
+    // rather than the read hanging until the connection is torn down.
+    expect((err as LlmHttpError).detail).toBe('');
+    // Comfortably under undici's ~300s default bodyTimeout — proves the read
+    // was actually bounded rather than happening to finish fast.
+    expect(elapsed).toBeLessThan(1000);
+
+    // The fix is only real if the socket actually closes: reader.cancel()
+    // must tear down the connection, not just make our promise resolve while
+    // the read keeps running server-side (PR #1214 review, nit B).
+    await Promise.race([closePromise, new Promise<void>((r) => setTimeout(r, 1000))]);
+    expect(serverSawClose).toBe(true);
+  });
+
+  it('clears the bounded-read timer when the body arrives before the timeout (PR #1214 review, nit A)', async () => {
+    // A non-stalled 500 (headers + immediate small body) — errSrv from the
+    // sibling #1185 describe block above proves the happy path already; this
+    // asserts the specific cleanup nit: the losing `setTimeout` must be
+    // cleared, not left ref'd for the rest of the timeout's duration.
+    const clearTimeoutSpy = vi.spyOn(global, 'clearTimeout');
+    const fastSrv = createServer((req, res) => {
+      if (req.url === '/v1/chat/completions') {
+        let body = '';
+        req.on('data', (c) => (body += c));
+        req.on('end', () => {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: 'unavailable' } }));
+        });
+        return;
+      }
+      res.writeHead(404); res.end();
+    });
+    await new Promise<void>((r) => fastSrv.listen(0, r));
+    const { port } = fastSrv.address() as AddressInfo;
+    try {
+      const callsBefore = clearTimeoutSpy.mock.calls.length;
+      const gen = streamChat(
+        { ...cfg, providerId: 'streamchat-fast-1214', baseUrl: `http://127.0.0.1:${port}/v1` },
+        'm1', [{ role: 'user', content: 'hi' }],
+      );
+      const err = await gen.next().then(
+        () => { throw new Error('expected streamChat to reject'); },
+        (e: unknown) => e,
+      );
+      expect((err as LlmHttpError).status).toBe(503);
+      expect(clearTimeoutSpy.mock.calls.length).toBeGreaterThan(callsBefore);
+    } finally {
+      clearTimeoutSpy.mockRestore();
+      await new Promise<void>((r) => { fastSrv.closeAllConnections(); fastSrv.close(() => r()); });
+    }
+  });
+});
+
+// ─── PR #1214 review: an oversized error body must not be buffered whole ─────
+// boundedErrorDetail's timeout bounds *time*, not *memory*: before the byte
+// cap, a non-2xx response that streams fast for the full 5s window forced
+// buffering everything sent (hundreds of MB from a loopback provider) for a
+// value that is then sliced to ERROR_BODY_MAX_CHARS.
+describe('openai-compatible-client — streamChat bounds an oversized error-body read (#1214 review)', () => {
+  it('returns the truncated detail promptly and tears down the socket instead of buffering the whole body', async () => {
+    // The server streams far more than the byte cap and deliberately never
+    // ends the response, which makes the three outcomes distinguishable
+    // without timing luck:
+    //  - an unbounded read would sit on the never-ending body until the 5s
+    //    timer (deliberately NOT shrunk here) fires, and the timeout path
+    //    returns detail '' — so a truncated-body detail can only come from
+    //    the byte cap stopping the read;
+    //  - 'close' on a response that is never ended server-side can only mean
+    //    the client (our reader.cancel()) tore the connection down.
+    let serverSawClose = false;
+    let resolveClose!: () => void;
+    const closePromise = new Promise<void>((r) => { resolveClose = r; });
+    const chunk = 'x'.repeat(1024);
+    const chunkCount = 256; // 256 KiB ≫ the ERROR_BODY_MAX_CHARS * 4 byte cap
+    const bigSrv = createServer((req, res) => {
+      if (req.url === '/v1/chat/completions') {
+        let body = '';
+        req.on('data', (c) => (body += c));
+        req.on('end', () => {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          for (let i = 0; i < chunkCount; i++) res.write(chunk);
+          // Never res.end() — see the determinism note above.
+          res.on('close', () => { serverSawClose = true; resolveClose(); });
+        });
+        return;
+      }
+      res.writeHead(404); res.end();
+    });
+    await new Promise<void>((r) => bigSrv.listen(0, r));
+    const { port } = bigSrv.address() as AddressInfo;
+    try {
+      const start = Date.now();
+      const gen = streamChat(
+        { ...cfg, providerId: 'streamchat-big-error-1214', baseUrl: `http://127.0.0.1:${port}/v1` },
+        'm1', [{ role: 'user', content: 'hi' }],
+      );
+      const err = await gen.next().then(
+        () => { throw new Error('expected streamChat to reject'); },
+        (e: unknown) => e,
+      );
+      const elapsed = Date.now() - start;
+
+      expect(err).toBeInstanceOf(LlmHttpError);
+      expect((err as LlmHttpError).status).toBe(500);
+      // Truncated body text, not the timeout path's '' — the cap ended the read.
+      expect((err as LlmHttpError).detail).toBe('x'.repeat(ERROR_BODY_MAX_CHARS));
+      // Comfortably under the 5s default bounded-read timer: the byte cap,
+      // not the timer, is what returned.
+      expect(elapsed).toBeLessThan(2500);
+
+      // reader.cancel() must reach the server as a real socket teardown.
+      await Promise.race([closePromise, new Promise<void>((r) => setTimeout(r, 1000))]);
+      expect(serverSawClose).toBe(true);
+    } finally {
+      await new Promise<void>((r) => { bigSrv.closeAllConnections(); bigSrv.close(() => r()); });
+    }
   });
 });
 
@@ -383,12 +657,16 @@ describe('openai-compatible-client — embeddings', () => {
   });
 });
 
-// ─── #821: HTTP error body must reach the thrown Error ──────────────────────
+// ─── #821 / #1185: HTTP error body must reach the thrown error as a field ───
 // generateEmbedding used to throw `generateEmbedding HTTP 400` with the body
-// discarded, so `isContextLengthError` (embedding-service.ts) could never match
-// the oversized-input signal ("input length exceeds context length") and the
-// oversized-batch-skip / preserve-embeddings safeguards were dead code.
-describe('openai-compatible-client — generateEmbedding surfaces HTTP error body (#821)', () => {
+// folded into `.message` (or, pre-#821, discarded entirely), so
+// `isContextLengthError` (embedding-service.ts) could never reliably match the
+// oversized-input signal ("input length exceeds context length") without
+// parsing prose. #1185 finishes the LlmHttpError conversion #1181 started for
+// chat(): the body now lives on `.detail`, `.message` stays a bare
+// `generateEmbedding HTTP <status>`, and `.bypassCircuitBreaker` is a typed
+// field rather than a duck-typed property bolted onto a plain Error.
+describe('openai-compatible-client — generateEmbedding surfaces HTTP error body (#821, #1185)', () => {
   let errSrv: Server;
   let errBase: string;
   beforeAll(async () => {
@@ -406,12 +684,23 @@ describe('openai-compatible-client — generateEmbedding surfaces HTTP error bod
   });
   afterAll(() => new Promise<void>((r) => errSrv.close(() => r())));
 
-  it('includes the HTTP status and the response body in the thrown error', async () => {
+  it('throws LlmHttpError carrying the status and the body as fields', async () => {
     // Distinct providerId so this deliberate 400 does not trip a breaker shared
     // with the happy-path embedding tests.
-    await expect(
-      generateEmbedding({ ...cfg, providerId: 'emb-err-821', baseUrl: errBase }, 'bge-m3', ['too long']),
-    ).rejects.toThrow(/generateEmbedding HTTP 400.*input length exceeds the context length/s);
+    const err = await generateEmbedding(
+      { ...cfg, providerId: 'emb-err-821', baseUrl: errBase }, 'bge-m3', ['too long'],
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(LlmHttpError);
+    expect((err as LlmHttpError).status).toBe(400);
+    expect((err as LlmHttpError).detail).toMatch(/input length exceeds the context length/);
+  });
+
+  it('keeps the provider body out of the message', async () => {
+    const err = await generateEmbedding(
+      { ...cfg, providerId: 'emb-err-821-msg', baseUrl: errBase }, 'bge-m3', ['too long'],
+    ).catch((e: unknown) => e);
+    expect((err as Error).message).toBe('generateEmbedding HTTP 400');
+    expect((err as Error).message).not.toMatch(/input length exceeds/);
   });
 
   // ─── #867: deterministic 400s must NOT trip the provider breaker ──────────
@@ -435,6 +724,45 @@ describe('openai-compatible-client — generateEmbedding surfaces HTTP error bod
     }
     const { getProviderBreaker } = await import('../../../core/services/circuit-breaker.js');
     expect(getProviderBreaker(providerId).getStatus().state).toBe('CLOSED');
+  });
+
+  // #1185: the #867 behaviour above is now a typed field, not a duck-typed
+  // property on a plain re-thrown Error — assert it directly on the instance.
+  it('marks the typed error bypassCircuitBreaker on a 400 (#867)', async () => {
+    const err = await generateEmbedding(
+      { ...cfg, providerId: 'emb-err-821-bypass', baseUrl: errBase }, 'bge-m3', ['too long'],
+    ).catch((e: unknown) => e);
+    expect((err as LlmHttpError).bypassCircuitBreaker).toBe(true);
+  });
+});
+
+// #1185: a non-400 embedding failure is a real outage signal and must NOT
+// bypass the circuit breaker — only status 400 (a client-input error) does.
+describe('openai-compatible-client — generateEmbedding non-400 errors do not bypass the breaker (#1185)', () => {
+  let err500Srv: Server;
+  let err500Base: string;
+  beforeAll(async () => {
+    err500Srv = createServer((req, res) => {
+      if (req.url === '/v1/embeddings') {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'internal error' } }));
+        return;
+      }
+      res.writeHead(404); res.end();
+    });
+    await new Promise<void>((r) => err500Srv.listen(0, r));
+    const { port } = err500Srv.address() as AddressInfo;
+    err500Base = `http://127.0.0.1:${port}/v1`;
+  });
+  afterAll(() => new Promise<void>((r) => err500Srv.close(() => r())));
+
+  it('does not set bypassCircuitBreaker on a 500', async () => {
+    const err = await generateEmbedding(
+      { ...cfg, providerId: 'emb-500-nobypass', baseUrl: err500Base }, 'bge-m3', ['x'],
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(LlmHttpError);
+    expect((err as LlmHttpError).status).toBe(500);
+    expect((err as LlmHttpError).bypassCircuitBreaker).toBe(false);
   });
 });
 

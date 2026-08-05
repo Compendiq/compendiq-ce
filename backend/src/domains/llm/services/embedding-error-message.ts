@@ -9,13 +9,28 @@
  * what a user is allowed to see for a failed embedding.
  */
 
+import { LlmHttpError } from './llm-http-error.js';
+
 /**
  * Convert any thrown embedding error into a short, safe, user-facing message.
  * Never returns the raw upstream text — every branch, including the fallback,
  * yields a fixed constant string.
+ *
+ * #1185 moved the provider's body off `generateEmbedding`'s thrown `.message`
+ * (`generateEmbedding HTTP 400: <body>`) onto `LlmHttpError.detail`, leaving
+ * `.message` a bare `generateEmbedding HTTP 400`. Every needle below that
+ * comes from the *body* (LM Studio's "no models loaded", "too long",
+ * "context length", body-worded rate-limit/auth text) was going dead for the
+ * production error type because this function only ever read `.message`.
+ * Folding `.detail` in alongside `.message` for `LlmHttpError` restores that
+ * without duplicating the needle lists — a plain `Error` (e.g. a raw network
+ * failure from undici, thrown before `generateEmbedding` ever sees a
+ * response) still only has `.message`, so that fallback stays.
  */
 export function toUserFacingEmbeddingError(err: unknown): string {
-  const raw = err instanceof Error ? err.message : String(err);
+  const raw = err instanceof LlmHttpError
+    ? `${err.message} ${err.detail}`
+    : err instanceof Error ? err.message : String(err);
   const m = raw.toLowerCase();
 
   // Connectivity / circuit-breaker: the provider is unreachable.

@@ -2,6 +2,7 @@ import type { Job } from 'bullmq';
 import { query, getPool } from '../../../core/db/postgres.js';
 import { resolveUsecase } from './llm-provider-resolver.js';
 import { generateEmbedding } from './openai-compatible-client.js';
+import { LlmHttpError } from './llm-http-error.js';
 import { htmlToText } from '../../../core/services/content-converter.js';
 import { logger } from '../../../core/utils/logger.js';
 import { safeIntOr } from '../../../core/utils/safe-int.js';
@@ -104,8 +105,36 @@ export function isCircuitBreakerError(err: unknown): boolean {
 /**
  * Helper to detect HTTP 400 "input length exceeds context length" errors from
  * Ollama/OpenAI-compatible embedding endpoints.
+ *
+ * `generateEmbedding` throws `LlmHttpError` (#1185), whose `.message` is a
+ * bare `generateEmbedding HTTP 400` — the provider's body lives on `.detail`
+ * instead (see `llm-http-error.ts`). Branching on the typed `status`/`detail`
+ * fields is a field read instead of re-parsing them back out of a string that
+ * was only ever formatted for humans, and it keeps working now that the body
+ * is no longer folded into the message.
+ *
+ * The message-based fallback below stays for any caller or test double that
+ * still throws a plain `Error` with the pre-#1185 message shape.
+ *
+ * The `LlmHttpError` branch below must keep parity with the message-based
+ * fallback's three terms, not just the first two: a bare `'context'` check
+ * (PR #1214 review) is what catches OpenAI's machine code
+ * `context_length_exceeded` (underscored — contains neither `'input length
+ * exceeds'` nor `'context length'`) and prose like "exceeds the model's
+ * context window". Dropping it flips those providers from skip-and-preserve
+ * (#821/#867) to fail-the-page. The `LlmHttpError` branch is already gated on
+ * `status === 400` (the check right below), the same gate the fallback's
+ * third term applies via its own `'http 400'` substring check — its first two
+ * terms carry no status gate at all — so a bare `'context'` here has the same
+ * reach as that composite `('http 400' && 'context')` term. It subsumes
+ * `'context length'`, so that term isn't repeated separately.
  */
 export function isContextLengthError(err: unknown): boolean {
+  if (err instanceof LlmHttpError) {
+    if (err.status !== 400) return false;
+    const detail = err.detail.toLowerCase();
+    return detail.includes('input length exceeds') || detail.includes('context');
+  }
   if (!(err instanceof Error)) return false;
   const msg = err.message.toLowerCase();
   return (

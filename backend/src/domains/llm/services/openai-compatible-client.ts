@@ -1,4 +1,12 @@
 import { Agent, fetch as undiciFetch } from 'undici';
+// Named import, not the ambient global: `lib: ["ES2022"]` (no `dom`) means the
+// global `ReadableStream` comes from `@types/node`'s own declaration, which
+// TS treats as structurally incompatible with the `node:stream/web` type
+// undici's own `.d.ts` actually uses for `Response.body` (a `pipeThrough`
+// generic-variance mismatch) — importing the same module undici types
+// against is what makes `boundedErrorDetail`'s parameter type below actually
+// accept a real `Response`.
+import type { ReadableStream } from 'node:stream/web';
 import { enqueue } from './llm-queue.js';
 import {
   getProviderBreaker,
@@ -148,6 +156,8 @@ export const __test_only__ = {
   thinkingExtras,
   isStrictOpenAiCompatibleHost,
   isOpenAiReasoningModel,
+  setStreamErrorDetailTimeoutMs: (ms: number) => { streamErrorDetailTimeoutMs = ms; },
+  resetStreamErrorDetailTimeoutMs: () => { streamErrorDetailTimeoutMs = DEFAULT_STREAM_ERROR_DETAIL_TIMEOUT_MS; },
 };
 
 export interface StreamChatOptions {
@@ -173,7 +183,7 @@ export async function listModels(cfg: ProviderConfig): Promise<LlmModel[]> {
         const res = await undiciFetch(`${cfg.baseUrl}/models`, {
           headers: headers(cfg), dispatcher: dispatcherFor(cfg), signal,
         });
-        if (!res.ok) throw new Error(`listModels HTTP ${res.status}`);
+        if (!res.ok) throw new LlmHttpError('listModels', res.status, await errorDetail(res));
         const body = await res.json() as { data?: Array<{ id: string }> };
         return (body.data ?? []).map((m) => ({ name: m.id }));
       }),
@@ -202,6 +212,101 @@ export async function checkHealth(cfg: ProviderConfig): Promise<HealthResult> {
 async function errorDetail(res: { text(): Promise<string> }): Promise<string> {
   const body = await res.text().catch(() => '');
   return body.trim().slice(0, ERROR_BODY_MAX_CHARS);
+}
+
+/**
+ * Bound on `streamChat`'s error-body read (PR #1214 review). `chat` /
+ * `listModels` / `generateEmbedding` all run inside `enqueue()`, whose own
+ * `AbortController` fires — and, per the Fetch spec, aborts an in-progress
+ * body read tied to the same signal — after `LLM_STREAM_TIMEOUT_MS` (default
+ * 5 minutes). A stalled error body on those paths is therefore already
+ * bounded, and the breaker's `onFailure()`/`isProbing` cleanup still runs
+ * once the abort settles the read, just later than usual.
+ *
+ * `streamChat` deliberately bypasses `enqueue()` (see the doc comment on the
+ * function below) and 7 of its 8 production callers pass no `AbortSignal`,
+ * so its dispatch has no such backstop: undici's default `bodyTimeout`
+ * (~300s) resets on every received byte, so a peer that trickles bytes can
+ * hold the read open far longer than that — and since the read happens
+ * inside `getProviderBreaker().execute()`, a HALF_OPEN breaker's
+ * single-probe gate (`isProbing`) stays held for the same duration,
+ * rejecting every other request to that provider with "probe already in
+ * flight" instead of the normal fail-fast-and-retry cycle.
+ *
+ * `streamErrorDetailTimeoutMs` is a `let`, not a `const`, purely so tests can
+ * shrink it via `__test_only__` instead of waiting out the production value.
+ */
+const DEFAULT_STREAM_ERROR_DETAIL_TIMEOUT_MS = 5_000;
+let streamErrorDetailTimeoutMs = DEFAULT_STREAM_ERROR_DETAIL_TIMEOUT_MS;
+
+/** Sentinel for `boundedErrorDetail`'s race — distinct from any decoded body
+ * text, however unlikely a collision with a literal string would be. */
+const BOUNDED_READ_TIMED_OUT = Symbol('boundedErrorDetail timeout');
+
+/**
+ * Reads the error body directly off the stream's reader — not via
+ * `errorDetail()`'s `res.text()` — so a timeout can cancel the exact same
+ * reader that is mid-read. `res.body.cancel()` is NOT equivalent: once
+ * `.text()` has acquired its (implicit) reader the stream is locked, and
+ * cancelling the *stream* from outside that lock throws `"Invalid state:
+ * ReadableStream is locked"` (confirmed empirically against a real undici
+ * response) — a no-op that leaves the read running until undici's ~300s
+ * `bodyTimeout`. Cancelling through the reader we already own is well-defined
+ * mid-read: it resolves the pending `read()` with `done: true` and tears down
+ * the socket immediately (also confirmed empirically).
+ */
+async function boundedErrorDetail(res: { body?: ReadableStream | null }): Promise<string> {
+  if (!res.body) return '';
+  const reader = res.body.getReader();
+
+  // Byte cap on the read itself (PR #1214 review): the value is sliced to
+  // ERROR_BODY_MAX_CHARS below anyway, so buffering an arbitrarily large error
+  // body — a misbehaving loopback provider can stream hundreds of MB inside
+  // the 5s window — buys nothing but memory pressure. The ×4 is UTF-8's
+  // maximum bytes per code point, so the bytes we do keep always decode to at
+  // least ERROR_BODY_MAX_CHARS characters whenever the body has them: the
+  // truncated detail is byte-for-byte what the unbounded read would have
+  // produced, including for fully multibyte bodies.
+  const maxBytes = ERROR_BODY_MAX_CHARS * 4;
+
+  async function readAll(): Promise<string> {
+    // `res.body` is typed `ReadableStream` (undici's own declaration, no
+    // generic argument — see the type on this function's parameter), so
+    // `reader.read()`'s `value` comes back `any`. Every OpenAI-compatible
+    // `/chat/completions` body is bytes on the wire; the cast makes that
+    // assumption explicit rather than letting `any` flow silently into
+    // `chunks`.
+    const chunks: Uint8Array[] = [];
+    let totalBytes = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        chunks.push(value as Uint8Array);
+        totalBytes += (value as Uint8Array).byteLength;
+        if (totalBytes > maxBytes) {
+          // Already more than the slice below can use — stop buffering and
+          // tear the upstream connection down, mirroring the timeout path.
+          await reader.cancel().catch(() => { /* already closed / benign cancel race */ });
+          break;
+        }
+      }
+    }
+    return Buffer.concat(chunks).toString('utf8');
+  }
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<typeof BOUNDED_READ_TIMED_OUT>((resolve) => {
+    timer = setTimeout(() => resolve(BOUNDED_READ_TIMED_OUT), streamErrorDetailTimeoutMs);
+  });
+
+  const winner = await Promise.race([readAll().catch(() => ''), timeoutPromise]);
+  if (winner === BOUNDED_READ_TIMED_OUT) {
+    await reader.cancel().catch(() => { /* already closed / benign cancel race */ });
+    return '';
+  }
+  clearTimeout(timer);
+  return winner.trim().slice(0, ERROR_BODY_MAX_CHARS);
 }
 
 export async function chat(
@@ -260,7 +365,7 @@ export async function* streamChat(
         dispatcher: dispatcherFor(cfg),
         signal,
       });
-      if (!r.ok || !r.body) throw new Error(`streamChat HTTP ${r.status}`);
+      if (!r.ok || !r.body) throw new LlmHttpError('streamChat', r.status, await boundedErrorDetail(r));
       return r;
     }),
     { 'llm.provider_id': cfg.providerId, 'llm.model': model },
@@ -315,22 +420,20 @@ export async function generateEmbedding(
           signal,
         });
         if (!res.ok) {
-          // Include the response body so callers (embedding-service's
-          // isContextLengthError) can detect oversized-input errors such as
-          // Ollama's "input length exceeds context length". Cap the length so a
-          // verbose error page can't bloat logs.
-          const detail = await res.text().catch(() => '');
-          const err = new Error(
-            `generateEmbedding HTTP ${res.status}: ${detail.slice(0, 300)}`,
-          ) as Error & { bypassCircuitBreaker?: boolean };
-          // #867: a deterministic client-input 4xx (e.g. a context-length 400)
-          // proves the provider is reachable — it is NOT an outage. Mark it so
-          // the per-provider circuit breaker treats it as a healthy signal
-          // instead of a failure; otherwise one oversized page's repeated 400s
-          // open the breaker and abort the whole embedding run. The message is
-          // left unchanged so isContextLengthError still matches the skip path.
-          if (res.status === 400) err.bypassCircuitBreaker = true;
-          throw err;
+          // The response body is what lets callers (embedding-service's
+          // isContextLengthError) detect oversized-input errors such as
+          // Ollama's "input length exceeds context length" — it lives on
+          // `.detail`, not `.message`, per llm-http-error.ts.
+          //
+          // #867: a deterministic client-input 4xx (a context-length 400)
+          // proves the provider is reachable — it is NOT an outage.
+          // `bypassCircuitBreaker: true` on a 400 makes the per-provider
+          // circuit breaker treat it as a healthy signal instead of a
+          // failure; otherwise one oversized page's repeated 400s open the
+          // breaker and abort the whole embedding run.
+          throw new LlmHttpError(
+            'generateEmbedding', res.status, await errorDetail(res), res.status === 400,
+          );
         }
         const body = await res.json() as { data: Array<{ embedding: number[] }> };
         return body.data.map((d) => d.embedding);

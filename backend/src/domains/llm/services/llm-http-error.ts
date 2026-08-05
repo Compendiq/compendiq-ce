@@ -32,6 +32,23 @@ export class LlmHttpError extends Error {
      * none. Never part of `message` — see the note above.
      */
     public readonly detail: string = '',
+    /**
+     * #867: a deterministic client-input error (a context-length 400 from
+     * `generateEmbedding`) proves the provider is reachable — it is NOT an
+     * outage, so it must not count as a circuit-breaker failure. Otherwise one
+     * oversized page's repeated 400s open the breaker and abort a whole
+     * embedding run.
+     *
+     * A typed field rather than a duck-typed property bolted onto a re-thrown
+     * plain `Error` — the earlier shape (`Error & { bypassCircuitBreaker? }`)
+     * worked but had nothing tying the property to the class that always sets
+     * it. `circuit-breaker.ts` still reads it via a duck-typed cast rather
+     * than `instanceof LlmHttpError`, and that stays: it lives in `core`,
+     * which cannot import a domain type, so the property still has to be
+     * readable off an untyped `unknown`. This field is what makes that duck
+     * typing sound instead of hopeful.
+     */
+    public readonly bypassCircuitBreaker: boolean = false,
   ) {
     super(`${operation} HTTP ${status}`);
     this.name = 'LlmHttpError';

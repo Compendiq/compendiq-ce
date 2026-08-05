@@ -3,6 +3,9 @@ import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 import { ZodError } from 'zod';
 import { searchRoutes } from './search.js';
+// The real class, not the mocked client module below — llm-http-error.js
+// lives in its own module precisely so tests that mock the client keep it.
+import { LlmHttpError } from '../../domains/llm/services/llm-http-error.js';
 
 vi.mock('../../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
@@ -516,6 +519,54 @@ describe('Search Routes', () => {
       });
 
       expect(response.statusCode).toBe(502);
+    });
+
+    // ── #1214 regression: provider error bodies stay out of search 502s ──────
+    // Since #1185 generateEmbedding throws the real LlmHttpError: the
+    // provider's raw body (third-party text that can echo request fragments
+    // and internal topology) lives on `.detail`, and `.message` is the
+    // constant body-free `"generateEmbedding HTTP <status>"`. The route folds
+    // `err.message` into its client-visible 502 — these pin that the detail
+    // never rides along, whether a future change folds it back in at the
+    // LlmHttpError class or at the route's own formatting.
+    it('semantic mode 502 keeps the provider error body out of the client-visible message (#1214)', async () => {
+      mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] }); // embeddings exist
+      mockProviderGenerateEmbedding.mockRejectedValue(
+        new LlmHttpError('generateEmbedding', 500, 'SECRET_PROVIDER_BODY_XYZ internal-host=10.0.4.12'),
+      );
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/search?q=test&mode=semantic',
+      });
+
+      expect(response.statusCode).toBe(502);
+      const body = response.json();
+      expect(body.error).toBe('EmbeddingFailed');
+      // The constant sanitized wording, nothing appended.
+      expect(body.message).toBe('Embedding generation failed: generateEmbedding HTTP 500');
+      // Belt and braces: the marker appears nowhere in the raw payload.
+      expect(response.body).not.toContain('SECRET_PROVIDER_BODY_XYZ');
+    });
+
+    it('hybrid mode 502 keeps the provider error body out of the client-visible message (#1214)', async () => {
+      mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] }); // embeddings exist
+      // hybridSearch propagates the client's LlmHttpError unchanged; the
+      // route's hybrid catch formats the same client-visible 502.
+      mockHybridSearch.mockRejectedValue(
+        new LlmHttpError('generateEmbedding', 500, 'SECRET_PROVIDER_BODY_XYZ internal-host=10.0.4.12'),
+      );
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/search?q=test&mode=hybrid',
+      });
+
+      expect(response.statusCode).toBe(502);
+      const body = response.json();
+      expect(body.error).toBe('EmbeddingFailed');
+      expect(body.message).toBe('Embedding generation failed: generateEmbedding HTTP 500');
+      expect(response.body).not.toContain('SECRET_PROVIDER_BODY_XYZ');
     });
 
     it('recordSearchAnalytics is called once per request for semantic mode', async () => {
