@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { getDocumentProxy, extractText } from 'unpdf';
 import { generatePdf, closeBrowser } from './pdf-service.js';
 
 describe('pdf-service (pdf-lib)', () => {
@@ -100,6 +101,55 @@ describe('pdf-service (pdf-lib)', () => {
       const result = await generatePdf(html, { title: '<script>alert("xss")</script>' });
 
       expect(result).toBeInstanceOf(Buffer);
+    });
+  });
+
+  // ========================================================================
+  // #1227 — expand sections keep a title row in the export
+  // ========================================================================
+  //
+  // An untitled section stores no `title` parameter, and the label the app
+  // shows for one is a ProseMirror decoration — neither reaches a server-side
+  // pdf-lib render. Without a fallback here the section printed with no header
+  // row at all and its body ran straight on from the preceding paragraph.
+  //
+  // These assert the rendered TEXT rather than the buffer's shape: a label
+  // that is computed but never drawn is exactly the failure worth catching.
+  describe('expand sections (#1227)', () => {
+    async function pdfText(html: string): Promise<string> {
+      const buffer = await generatePdf(html, {});
+      const pdf = await getDocumentProxy(new Uint8Array(buffer));
+      const { text } = await extractText(pdf, { mergePages: true });
+      return (text as string).replace(/\s+/g, ' ');
+    }
+
+    it('labels an untitled native expand with Confluence\'s own default', async () => {
+      const text = await pdfText(
+        '<details data-macro-name="expand"><summary></summary><p>Section body</p></details>',
+      );
+      expect(text).toContain('Click here to expand...');
+      expect(text).toContain('Section body');
+    });
+
+    it('labels an untitled ui-expand with Refined\'s string, which has no ellipsis', async () => {
+      const text = await pdfText(
+        '<details data-macro-name="ui-expand"><summary></summary><p>B</p></details>',
+      );
+      expect(text).toContain('Click here to expand');
+      expect(text).not.toContain('Click here to expand...');
+    });
+
+    it('falls back to a generic label for an unstamped section', async () => {
+      const text = await pdfText('<details><summary></summary><p>B</p></details>');
+      expect(text).toContain('Click to expand');
+    });
+
+    it('prints a real title and no default label', async () => {
+      const text = await pdfText(
+        '<details data-macro-name="expand"><summary>Release notes</summary><p>B</p></details>',
+      );
+      expect(text).toContain('Release notes');
+      expect(text).not.toContain('Click here to expand');
     });
   });
 

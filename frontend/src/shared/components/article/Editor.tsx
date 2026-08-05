@@ -401,30 +401,34 @@ const PANEL_TYPES = [
 type PanelType = (typeof PANEL_TYPES)[number]['value'];
 
 /**
- * Inserts an empty panel and leaves the caret inside it, so the author types
- * straight into the box instead of clearing out placeholder copy first.
+ * Inserts `node` and leaves the caret inside its first child, so the author
+ * types straight into the new box instead of underneath it.
+ *
+ * `insertContent` parks the caret *after* the new block whenever content
+ * follows it. Finding the block again afterwards has one subtlety: both
+ * containers this is used for **nest** (`Panel.content` is 'block+',
+ * `Details.content` is 'detailsSummary block*'), so stopping descent at the
+ * first matching node lands the caret in the *outer* container when one is
+ * inserted inside an existing one (#1140). Visiting every descendant and
+ * keeping the last match at-or-before the selection finds the innermost
+ * instead: a nested node starts at a higher position than its parent, so it is
+ * visited — and overwrites the match — after it.
+ *
+ * `+ 2` is inside the first child: one past the container's own boundary is
+ * that child, one more is its text. Same transaction as the insert, so a
+ * single undo removes the whole thing.
  */
-function insertPanel(editor: EditorType, panelType: PanelType) {
+function insertBlockWithCaret(editor: EditorType, typeName: string, node: Record<string, unknown>) {
   editor
     .chain()
     .focus()
-    .insertContent({ type: 'panel', attrs: { panelType }, content: [{ type: 'paragraph' }] })
+    .insertContent(node)
     .command(({ tr, dispatch }) => {
       if (!dispatch) return true;
-      // insertContent parks the caret *after* the new block whenever content
-      // follows it, which would leave the author typing underneath the box
-      // rather than inside it. Panels *can* nest (Panel.content is 'block+'),
-      // so stopping descent at the first panel node meant one inserted
-      // inside an existing panel was never visited, landing the caret in the
-      // *outer* panel instead. Visiting every descendant and keeping the
-      // last match finds the innermost one instead: a nested panel starts at
-      // a higher position than its parent, so it's visited (and overwrites
-      // the match) after it. Same transaction, so a single undo removes the
-      // panel.
       const { from } = tr.selection;
       let caret: number | null = null;
-      tr.doc.descendants((node, pos) => {
-        if (node.type.name === 'panel' && pos <= from) {
+      tr.doc.descendants((child, pos) => {
+        if (child.type.name === typeName && pos <= from) {
           caret = pos + 2;
         }
         return true;
@@ -438,6 +442,18 @@ function insertPanel(editor: EditorType, panelType: PanelType) {
 }
 
 /**
+ * Inserts an empty panel and leaves the caret inside it, so the author types
+ * straight into the box instead of clearing out placeholder copy first.
+ */
+function insertPanel(editor: EditorType, panelType: PanelType) {
+  insertBlockWithCaret(editor, 'panel', {
+    type: 'panel',
+    attrs: { panelType },
+    content: [{ type: 'paragraph' }],
+  });
+}
+
+/**
  * Inserts an expand section with an EMPTY summary and leaves the caret in it.
  *
  * #1227: the summary used to be seeded with the literal `Click to expand`,
@@ -447,39 +463,15 @@ function insertPanel(editor: EditorType, panelType: PanelType) {
  * default label as a decoration (article-extensions.ts) and stores nothing, so
  * a user who types gets a real title and a user who moves on to the body gets a
  * genuinely untitled section.
- *
- * The caret placement is the same problem `insertPanel` solves, for the same
- * reason (`Details.content` is 'detailsSummary block*', and sections nest), so
- * it uses the same last-match-at-or-before walk. `+ 2` is inside the summary:
- * one past the <details> boundary is the summary itself, one more is its text.
  */
 function insertExpandSection(editor: EditorType) {
-  editor
-    .chain()
-    .focus()
-    .insertContent({
-      type: 'details',
-      content: [
-        { type: 'detailsSummary' },
-        { type: 'paragraph', content: [{ type: 'text', text: 'Content here...' }] },
-      ],
-    })
-    .command(({ tr, dispatch }) => {
-      if (!dispatch) return true;
-      const { from } = tr.selection;
-      let caret: number | null = null;
-      tr.doc.descendants((node, pos) => {
-        if (node.type.name === 'details' && pos <= from) {
-          caret = pos + 2;
-        }
-        return true;
-      });
-      if (caret !== null) {
-        tr.setSelection(TextSelection.create(tr.doc, caret));
-      }
-      return true;
-    })
-    .run();
+  insertBlockWithCaret(editor, 'details', {
+    type: 'details',
+    content: [
+      { type: 'detailsSummary' },
+      { type: 'paragraph', content: [{ type: 'text', text: 'Content here...' }] },
+    ],
+  });
 }
 
 function PanelInsert({ editor }: { editor: EditorType }) {

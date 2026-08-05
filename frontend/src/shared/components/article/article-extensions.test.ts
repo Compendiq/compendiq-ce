@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'fs';
+import { resolve } from 'path';
 import { Editor } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import { Image } from '@tiptap/extension-image';
@@ -162,6 +164,51 @@ describe('article-extensions', () => {
       expect(placeholderOf(editor)).toBeNull();
       expect(editor.getHTML()).toContain('<summary>Typed</summary>');
       editor.destroy();
+    });
+
+    // PDF export is the other renderer that has to supply these labels: it is
+    // server-side pdf-lib, so neither the decoration nor the stylesheet
+    // reaches it, and #1227 left it printing untitled sections with no header
+    // row at all. Backend and frontend share only `@compendiq/contracts`, so
+    // the map is duplicated in `pdf-service.ts` — parsed here so a change to
+    // one copy fails by name instead of drifting silently. (Same
+    // read-the-other-workspace idiom as `nginx-api-body-limit.test.ts`.)
+    it('agrees with the copy the PDF exporter renders from', () => {
+      const parseLabels = (source: string, mapName: string, fallbackName: string) => {
+        const body = new RegExp(`${mapName}[^=]*=\\s*\\{([^}]*)\\}`).exec(source)?.[1];
+        expect(body, `${mapName} is gone or no longer an object literal`).toBeTruthy();
+        const labels: Record<string, string> = {};
+        for (const [, key, value] of body!.matchAll(/'?([\w-]+)'?:\s*'([^']*)'/g)) {
+          labels[key] = value;
+        }
+        const fallback = new RegExp(`${fallbackName}\\s*=\\s*'([^']*)'`).exec(source)?.[1];
+        expect(fallback, `${fallbackName} is gone`).toBeTruthy();
+        return { labels, fallback };
+      };
+
+      const here = parseLabels(
+        readFileSync(resolve(__dirname, 'article-extensions.ts'), 'utf-8'),
+        'EXPAND_PLACEHOLDER_LABELS',
+        'DEFAULT_EXPAND_PLACEHOLDER',
+      );
+      const pdf = parseLabels(
+        readFileSync(
+          resolve(__dirname, '../../../../../backend/src/core/services/pdf-service.ts'),
+          'utf-8',
+        ),
+        'EXPAND_DEFAULT_LABELS',
+        'DEFAULT_EXPAND_LABEL',
+      );
+
+      // Not just equal to each other — equal to the measured strings, so a
+      // matching pair of wrong edits still fails.
+      expect(here.labels).toEqual({
+        expand: 'Click here to expand...',
+        'ui-expand': 'Click here to expand',
+      });
+      expect(pdf.labels).toEqual(here.labels);
+      expect(here.fallback).toBe('Click to expand');
+      expect(pdf.fallback).toBe(here.fallback);
     });
   });
 

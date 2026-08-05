@@ -171,7 +171,20 @@ Custom turndown rules handle Confluence-specific macros:
   its body is lifted out and left as a sibling of an emptied section, in read
   view as much as edit mode, and the next save pushes that loss to Confluence.
   An untitled section shows the macro's own default label — a ProseMirror
-  decoration on `detailsSummary`, rendered client-side and never stored.
+  decoration on `detailsSummary`, rendered client-side and never stored. The
+  label must render **out of flow** (`float: left; height: 0`, the same idiom
+  as the paragraph placeholder): the toolbar insert drops the caret in that
+  summary, and an in-flow `::before` puts the caret behind its own width —
+  measured at 178px from the summary's left edge against 17px out of flow.
+  Taking it out of flow costs no height, because ProseMirror's trailing `<br>`
+  is what gives an empty summary its line.
+
+  **PDF export supplies the same label from its own copy.** `pdf-service.ts`
+  is server-side pdf-lib — no stylesheet, no ProseMirror — so the decoration
+  never reaches it, and an untitled section printed with no header row at all.
+  Backend and frontend share only `@compendiq/contracts`, so the label map is
+  duplicated there deliberately; `article-extensions.test.ts` parses both
+  files and fails by name when they drift.
 - **Every reverse handler that rebuilds a body converts innermost-first**
   (#1216 for `<details>`, #1220 for the rest). The bodies are rebuilt by
   re-parsing the element's `innerHTML`, which produces *fresh* nodes, while the
