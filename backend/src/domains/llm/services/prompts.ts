@@ -47,7 +47,12 @@ export const LANGUAGE_PRESERVATION_INSTRUCTION = `IMPORTANT: Keep the text in it
 // intact. #781 hardened it with a few-shot example (models echo tokens far
 // more reliably when shown one) — and markdownToHtml() now recovers mangled
 // tokens against the known skeleton when the model still misbehaves.
-export const STRUCTURE_PRESERVATION_INSTRUCTION = `The text contains structural placeholder tokens: standalone lines like [[[LAYOUT]]], [[[LAYOUT-SECTION two_equal]]], [[[LAYOUT-CELL]]], [[[SECTION]]], [[[COLUMN width=50%]]] and their matching closing forms ([[[/LAYOUT]]], [[[/LAYOUT-SECTION]]], …), plus opaque CQ_MEDIA_PLACEHOLDER_N tokens. These mark page structure that must survive your edit. Keep every token EXACTLY as written — same UPPERCASE spelling, same triple brackets, each on its own line, in the same order and nesting. Improve only the prose between them. Never delete, rename, translate, reorder, or merge tokens, and never wrap them in code fences or quotes.
+//
+// The enumeration must name EVERY kind htmlToMarkdown({ layoutTokens: true })
+// can emit: a kind the model was never told to keep verbatim is the kind it
+// mangles, and since #781 that costs the user a 422 rather than a silent
+// flatten. Pinned by a test in content-converter.test.ts.
+export const STRUCTURE_PRESERVATION_INSTRUCTION = `The text contains structural placeholder tokens: standalone lines like [[[LAYOUT]]], [[[LAYOUT-SECTION two_equal]]], [[[LAYOUT-CELL]]], [[[SECTION]]], [[[COLUMN width=50%]]], [[[EXPAND name=expand open=0 title=Some%20Title params=]]] and their matching closing forms ([[[/LAYOUT]]], [[[/LAYOUT-SECTION]]], [[[/EXPAND]]], …), plus opaque CQ_MEDIA_PLACEHOLDER_N tokens. These mark page structure that must survive your edit. Keep every token EXACTLY as written — same UPPERCASE spelling, same triple brackets, each on its own line, in the same order and nesting. The text after a token's name is machine-encoded: copy it character for character and never decode, translate or tidy it. Improve only the prose between tokens. Never delete, rename, translate, reorder, or merge tokens, and never wrap them in code fences or quotes.
 
 Example. Given this input:
 [[[LAYOUT]]]
@@ -60,6 +65,9 @@ right text to improve
 [[[/LAYOUT-CELL]]]
 [[[/LAYOUT-SECTION]]]
 [[[/LAYOUT]]]
+[[[EXPAND name=expand open=0 title=Rollback%20runbook params=]]]
+collapsible text to improve
+[[[/EXPAND]]]
 
 A correct response keeps every token verbatim and edits only the prose:
 [[[LAYOUT]]]
@@ -71,7 +79,10 @@ The left text, improved.
 The right text, improved.
 [[[/LAYOUT-CELL]]]
 [[[/LAYOUT-SECTION]]]
-[[[/LAYOUT]]]`;
+[[[/LAYOUT]]]
+[[[EXPAND name=expand open=0 title=Rollback%20runbook params=]]]
+The collapsible text, improved. Note that title=Rollback%20runbook was copied character for character.
+[[[/EXPAND]]]`;
 
 const SYSTEM_PROMPTS = {
   improve_grammar: `You are a technical writing assistant. Improve the grammar, spelling, and punctuation of the following article while preserving its meaning and structure. Return the improved text in Markdown format. Only output the improved text, no explanations. ${LANGUAGE_PRESERVATION_INSTRUCTION}`,

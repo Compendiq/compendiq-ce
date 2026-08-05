@@ -172,13 +172,20 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     // no tokens survived) is re-appended, so media is never silently lost.
     const { html: protectedCurrentHtml, media } = protectMedia(existingPage.body_html ?? '');
 
-    // #781: derive the expected layout-token skeleton from the page's CURRENT
-    // body_html (deterministic, same re-derivation idea as the media tokens
-    // above) and let markdownToHtml align the LLM's — possibly mangled —
-    // boundary tokens against it. When the layout is unrecoverable (e.g. the
-    // model merged two cells' prose or dropped every token), the apply is
-    // REJECTED with a 422 instead of silently flattening the page and
-    // pushing the flattened body back to Confluence.
+    // #781: derive the expected layout-token skeleton and let markdownToHtml
+    // align the LLM's — possibly mangled — boundary tokens against it. When the
+    // layout is unrecoverable (e.g. the model merged two cells' prose or
+    // dropped every token), the apply is REJECTED with a 422 instead of
+    // silently flattening the page and pushing the flattened body back to
+    // Confluence.
+    //
+    // The source is `protectedCurrentHtml`, NOT `body_html`: whatever
+    // protectMedia froze emits no boundary tokens, so a skeleton derived from
+    // the raw document would expect tokens the markdown cannot carry and
+    // rebuild a duplicate macro around the frozen subtree. Deterministic either
+    // way — same re-derivation idea as the media tokens above — but only the
+    // protected form agrees with what the model was shown. Pinned by
+    // apply-improvement-media.test.ts.
     const layoutSkeleton = extractLayoutSkeleton(protectedCurrentHtml);
     let bodyHtml: string;
     try {
@@ -190,7 +197,9 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
           '#781: AI Improve output lost the page layout — apply rejected, page not modified',
         );
         throw fastify.httpErrors.unprocessableEntity(
-          "The AI response lost this page's column layout and it could not be recovered, so the change was not applied. The page is unchanged — run AI Improve again, or edit the page manually.",
+          // #1221: no longer only columns — an expand section is now the most
+          // likely way a user meets this, and an FAQ page has no columns at all.
+          "The AI response lost this page's structure (columns or collapsible sections) and it could not be recovered, so the change was not applied. The page is unchanged — run AI Improve again, or edit the page manually.",
         );
       }
       throw err;

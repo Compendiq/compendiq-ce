@@ -88,6 +88,16 @@ vi.mock('../../domains/confluence/services/subpage-context.js', () => ({
 }));
 
 import { llmConversationRoutes } from './llm-conversations.js';
+import { protectMedia, htmlToMarkdown } from '../../core/services/content-converter.js';
+
+/**
+ * The exact markdown the Improve route sends for a page — so a test can echo it
+ * back unchanged and mean "the model behaved perfectly". Mirrors
+ * assembleContextIfNeeded's main-page conversion (protectMedia + layoutTokens).
+ */
+function faithfulEcho(bodyHtml: string): string {
+  return htmlToMarkdown(protectMedia(bodyHtml).html, { layoutTokens: true });
+}
 
 describe('POST /api/llm/improvements/apply — drop-guard with REAL restoreMedia (#723)', () => {
   let app: ReturnType<typeof Fastify>;
@@ -205,13 +215,15 @@ describe('POST /api/llm/improvements/apply — drop-guard with REAL restoreMedia
     expect(savedHtml.split('/api/attachments/42/q.png').length - 1).toBe(1);
   });
 
-  it('#1221: an expand section survives apply, even when the LLM dropped its token', async () => {
-    // Before #1221 the section was flattened by the Markdown round-trip and the
-    // macro was deleted from the page on apply. It is now frozen like other
-    // media, so both the in-place path and the drop-guard preserve it.
+  it('#1221: an expand section inside a table cell rides the freeze through apply', async () => {
+    // A constrained section cannot use boundary tokens (markdownToHtml's token
+    // normalization would rip it out of the cell), so it stays opaquely frozen
+    // and the #723 drop-guard is what preserves it when the model drops the
+    // placeholder entirely.
     const expand =
       '<details data-macro-name="expand"><summary>Runbook</summary><p>step one</p></details>';
-    const bodyHtmlWithExpand = `<p>Old intro</p>${expand}`;
+    const bodyHtmlWithExpand =
+      `<p>Old intro</p><table><tbody><tr><td>${expand}</td></tr></tbody></table>`;
 
     mockQuery.mockImplementation((sql: string) => {
       if (sql.includes('SELECT id, version, title, space_key, source, confluence_id')) {
@@ -243,6 +255,413 @@ describe('POST /api/llm/improvements/apply — drop-guard with REAL restoreMedia
     // once, and it is still a <details>, not flattened prose.
     expect(savedHtml).toContain(expand);
     expect(savedHtml.split('data-macro-name="expand"').length - 1).toBe(1);
+  });
+});
+
+describe('POST /api/llm/improvements/apply — EXPAND boundary tokens (#1221 stage 2)', () => {
+  let app: ReturnType<typeof Fastify>;
+
+  beforeAll(async () => {
+    app = Fastify({ logger: false });
+    await app.register(sensible);
+    app.decorate('authenticate', async () => {});
+    app.decorate('requireAdmin', async () => {});
+    app.decorate('redis', {});
+    app.decorateRequest('userId', '');
+    app.addHook('onRequest', async (request) => {
+      request.userId = 'user-123';
+      request.userCan = async () => true;
+    });
+    await app.register(llmConversationRoutes, { prefix: '/api' });
+    await app.ready();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function mockPageWith(bodyHtml: string): void {
+    mockQuery.mockImplementation((sql: string) => {
+      if (sql.includes('SELECT id, version, title, space_key, source, confluence_id')) {
+        return Promise.resolve({
+          rows: [{
+            id: 42, version: 5, title: 'My Article', space_key: 'OPS',
+            source: 'standalone', confluence_id: null, body_html: bodyHtml,
+            created_by_user_id: 'user-123', visibility: 'private',
+          }],
+        });
+      }
+      return Promise.resolve({ rows: [] });
+    });
+  }
+
+  function findUpdateCall(): unknown[] | undefined {
+    return (mockQuery.mock.calls as unknown[][]).find(
+      (args) => typeof args[0] === 'string' && (args[0] as string).includes('UPDATE pages'),
+    );
+  }
+
+  function captureUpdatedBodyHtml(): string {
+    const updateCall = findUpdateCall();
+    expect(updateCall).toBeDefined();
+    return (updateCall as unknown[])[1]![2] as string;
+  }
+
+  async function apply(improvedMarkdown: string): Promise<Awaited<ReturnType<typeof app.inject>>> {
+    return app.inject({
+      method: 'POST',
+      url: '/api/llm/improvements/apply',
+      payload: { pageId: '42', improvedMarkdown, version: 5, title: 'My Article' },
+    });
+  }
+
+  it('rewrites the body of an unconstrained expand while keeping the macro', async () => {
+    mockPageWith(
+      '<p>Old intro</p>' +
+      '<details data-macro-name="expand"><summary>Runbook</summary><p>step one</p></details>',
+    );
+
+    const response = await apply([
+      '[[[EXPAND name=expand open=0 title=Runbook params=]]]', '',
+      'Step one, rewritten far more clearly.', '',
+      '[[[/EXPAND]]]',
+    ].join('\n'));
+
+    expect(response.statusCode).toBe(200);
+    const savedHtml = captureUpdatedBodyHtml();
+    expect(savedHtml).toContain('<details data-macro-name="expand">');
+    expect(savedHtml).toContain('<summary>Runbook</summary>');
+    // The body really was improved — this is the whole point of stage 2.
+    expect(savedHtml).toContain('Step one, rewritten far more clearly.');
+    expect(savedHtml).not.toContain('step one');
+    expect(savedHtml).not.toContain('[[[');
+    expect(savedHtml.split('<details').length - 1).toBe(1);
+  });
+
+  it('preserves ui-expand identity, open state and parameters through a full apply', async () => {
+    mockPageWith(
+      '<details data-macro-name="ui-expand" open data-macro-params="{&quot;class&quot;:&quot;team&quot;}">' +
+      '<summary>Dev Team</summary><p>owns platform services</p></details>',
+    );
+
+    const response = await apply([
+      '[[[EXPAND name=ui-expand open=1 title=Dev%20Team params=%7B%22class%22%3A%22team%22%7D]]]', '',
+      'Owns the platform services end to end.', '',
+      '[[[/EXPAND]]]',
+    ].join('\n'));
+
+    expect(response.statusCode).toBe(200);
+    const savedHtml = captureUpdatedBodyHtml();
+    expect(savedHtml).toContain('data-macro-name="ui-expand"');
+    expect(savedHtml).not.toContain('data-macro-name="expand"');
+    expect(savedHtml).toContain('<summary>Dev Team</summary>');
+    expect(savedHtml).toMatch(/<details[^>]*\bopen\b/);
+    expect(savedHtml).toContain('data-macro-params="{&quot;class&quot;:&quot;team&quot;}"');
+    // The identity was preserved by REBUILDING the section around improved
+    // prose, not by re-appending a frozen copy beside it: the old body is gone
+    // and there is exactly one section.
+    expect(savedHtml).not.toContain('owns platform services');
+    expect(savedHtml.split('<details').length - 1).toBe(1);
+    const improvedAt = savedHtml.indexOf('Owns the platform services end to end.');
+    expect(improvedAt).toBeGreaterThan(savedHtml.indexOf('</summary>'));
+    expect(improvedAt).toBeLessThan(savedHtml.indexOf('</details>'));
+  });
+
+  it('rejects an unrecoverable EXPAND mangling with 422 instead of flattening the page', async () => {
+    // Two sections (so the single-slot wrap cannot disambiguate), every token
+    // dropped, and both bodies reworded so no anchor survives. This 422 is the
+    // property that makes stage 2 safe at all: without it, a mangled token
+    // would be the silent macro deletion #1221 exists to prevent.
+    mockPageWith(
+      '<details data-macro-name="expand"><summary>One</summary><p>alpha body</p></details>' +
+      '<details data-macro-name="expand"><summary>Two</summary><p>beta body</p></details>',
+    );
+
+    const response = await apply(
+      'Abschnitt eins: voellig neu formuliert.\n\nAbschnitt zwei: ebenfalls neu formuliert.',
+    );
+
+    expect(response.statusCode).toBe(422);
+    expect(response.json().message).toContain('could not be recovered');
+    // Predictable failure: NO page write happened, so nothing flattened can be
+    // saved locally or pushed back to Confluence.
+    expect(findUpdateCall()).toBeUndefined();
+  });
+
+  it('recovers a case-mangled EXPAND close token against the page skeleton', async () => {
+    mockPageWith(
+      '<details data-macro-name="expand"><summary>Runbook</summary><p>step one</p></details>',
+    );
+
+    const response = await apply([
+      '[[[EXPAND name=expand open=0 title=Runbook params=]]]', '',
+      'Step one, clarified.', '',
+      '[[[/expand]]]',
+    ].join('\n'));
+
+    expect(response.statusCode).toBe(200);
+    const savedHtml = captureUpdatedBodyHtml();
+    expect(savedHtml).toContain('<details data-macro-name="expand">');
+    expect(savedHtml).toContain('<summary>Runbook</summary>');
+    expect(savedHtml).toContain('Step one, clarified.');
+    expect(savedHtml).not.toContain('[[[');
+  });
+
+  // --------------------------------------------------------------------
+  // Silent-deletion regressions found by adversarial review of #1232.
+  // Each one saved a page with the macro GONE at HTTP 200, and each is a
+  // regression against stage 1, where the blanket freeze made <details>
+  // immune. They are route-level on purpose: this is the path that writes
+  // the page and pushes it to Confluence.
+  // --------------------------------------------------------------------
+  it('keeps a real expand AND the literal token text when the page prose contains a token spelling', async () => {
+    // turndown escapes the prose to \[\[\[…\]\]\], so the markdown-side
+    // strict scan never sees it and #781 recovery passes. marked then
+    // UN-escapes it, and a rebuild that re-discovers tokens by regex counts
+    // three opens against one close, fails the balance check, and the
+    // all-or-nothing drop-guard strips every token — deleting the real
+    // section. The rebuild must consume the tokens recovery aligned, by
+    // identity, so prose that merely looks like a token is never structure.
+    mockPageWith(
+      '<p>We use [[[EXPAND name=expand open=0 title=Runbook params=]]] markers.</p>' +
+      '<details data-macro-name="expand"><summary>Runbook</summary><p>real body</p></details>',
+    );
+
+    const response = await apply([
+      'We use \\[\\[\\[EXPAND name=expand open=0 title=Runbook params=\\]\\]\\] markers.', '',
+      '[[[EXPAND name=expand open=0 title=Runbook params=]]]', '',
+      'real body, clarified', '',
+      '[[[/EXPAND]]]',
+    ].join('\n'));
+
+    expect(response.statusCode).toBe(200);
+    const savedHtml = captureUpdatedBodyHtml();
+    expect(savedHtml).toContain('<details data-macro-name="expand">');
+    expect(savedHtml).toContain('<summary>Runbook</summary>');
+    expect(savedHtml).toContain('real body, clarified');
+    // The user's own sentence survives verbatim — not stripped, not structure.
+    expect(savedHtml).toContain('[[[EXPAND name=expand open=0 title=Runbook params=]]]');
+    expect(savedHtml.split('<details').length - 1).toBe(1);
+  });
+
+  it('never fabricates a macro from a balanced token pair written in ordinary prose', async () => {
+    mockPageWith('<p>Use [[[EXPAND name=expand]]] then [[[/EXPAND]]].</p>');
+
+    const response = await apply(
+      'Use \\[\\[\\[EXPAND name=expand\\]\\]\\] then \\[\\[\\[/EXPAND\\]\\]\\].',
+    );
+
+    expect(response.statusCode).toBe(200);
+    const savedHtml = captureUpdatedBodyHtml();
+    expect(savedHtml).not.toContain('<details');
+    expect(savedHtml).toContain('[[[EXPAND name=expand]]]');
+    expect(savedHtml).toContain('[[[/EXPAND]]]');
+  });
+
+  it('preserves an expand containing a bare column macro on a verbatim echo', async () => {
+    // COLUMN may only open inside a SECTION, so expand > column emits a
+    // sequence the rebuild rejects — strip-all, macro deleted, on a model
+    // echo with zero mangling. Confluence permits a Column directly in an
+    // expand body; the freeze has to cover it.
+    const bodyHtml =
+      '<details data-macro-name="expand"><summary>Runbook steps</summary>' +
+      '<div class="confluence-column"><p>col body</p></div></details>';
+    mockPageWith(bodyHtml);
+
+    const response = await apply(faithfulEcho(bodyHtml));
+
+    expect(response.statusCode).toBe(200);
+    const savedHtml = captureUpdatedBodyHtml();
+    expect(savedHtml).toContain('data-macro-name="expand"');
+    expect(savedHtml).toContain('<summary>Runbook steps</summary>');
+    expect(savedHtml).toContain('confluence-column');
+    expect(savedHtml).toContain('col body');
+  });
+
+  it('preserves an expand sitting directly inside a layout wrapper on a verbatim echo', async () => {
+    // The mirror of the case above: EXPAND may not OPEN under LAYOUT, so the
+    // same strip-all deletes both the section and the layout div.
+    const bodyHtml =
+      '<div class="confluence-layout">' +
+      '<details data-macro-name="expand"><summary>Runbook</summary><p>step one</p></details>' +
+      '</div>';
+    mockPageWith(bodyHtml);
+
+    const response = await apply(faithfulEcho(bodyHtml));
+
+    expect(response.statusCode).toBe(200);
+    const savedHtml = captureUpdatedBodyHtml();
+    expect(savedHtml).toContain('data-macro-name="expand"');
+    expect(savedHtml).toContain('<summary>Runbook</summary>');
+    expect(savedHtml).toContain('step one');
+  });
+
+  it('refuses rather than swallowing the page into the section when an EXPAND pair is dropped', async () => {
+    // An expand is a page FRAGMENT with sibling prose, not a partition of the
+    // document the way a layout cell is. #785's single-slot wrap assumes the
+    // latter, so a one-expand page had its heading and every surrounding
+    // paragraph moved INSIDE the collapsed section and pushed to Confluence.
+    mockPageWith(
+      '<h2>Deployment guide</h2><p>Intro paragraph outside the section.</p>' +
+      '<details data-macro-name="expand"><summary>Rollback runbook</summary><p>step one</p></details>' +
+      '<p>Closing paragraph outside the section.</p>',
+    );
+
+    const response = await apply([
+      '## Deployment guide', '',
+      'Intro paragraph outside the section.', '',
+      'Step one, rewritten.', '',
+      'Closing paragraph outside the section.',
+    ].join('\n'));
+
+    expect(response.statusCode).toBe(422);
+    expect(response.json().message).toContain('could not be recovered');
+    expect(findUpdateCall()).toBeUndefined();
+  });
+
+  it('refuses rather than relocating between-section prose when a multi-expand page loses its tokens', async () => {
+    // The anchor-split path has the same false premise, and fires precisely
+    // when the model behaved well apart from the tokens: prose that sat
+    // BETWEEN two sections was pulled inside the preceding one.
+    mockPageWith(
+      '<p>Intro outside.</p>' +
+      '<details data-macro-name="expand"><summary>Q one</summary><p>Answer one body.</p></details>' +
+      '<p>Middle prose outside.</p>' +
+      '<details data-macro-name="expand"><summary>Q two</summary><p>Answer two body.</p></details>' +
+      '<p>Outro outside.</p>',
+    );
+
+    const response = await apply([
+      'Intro outside.', '',
+      'Answer one body.', '',
+      'Middle prose outside.', '',
+      'Answer two body.', '',
+      'Outro outside.',
+    ].join('\n'));
+
+    expect(response.statusCode).toBe(422);
+    expect(findUpdateCall()).toBeUndefined();
+  });
+
+  // --------------------------------------------------------------------
+  // Round-2 review: alignment identity. Greedy alignment matched on kind
+  // alone and the reconstruction re-emitted skeleton[i], so WHICH section a
+  // title belonged to was decided by position. Both of these saved a page
+  // with a real macro carrying the wrong identity, at HTTP 200.
+  // --------------------------------------------------------------------
+  it('keeps each title with its own body when the model reorders two sections', async () => {
+    // Nothing mangled: every token is canonical and carries its own correct
+    // attrs. Position-based reconstruction pinned "Rollback runbook" onto the
+    // deploy body and vice versa. Unlike an anonymous layout cell, an expand's
+    // title is user-visible identity.
+    mockPageWith(
+      '<details data-macro-name="expand"><summary>Deployment steps</summary><p>deploy body</p></details>' +
+      '<details data-macro-name="expand"><summary>Rollback runbook</summary><p>rollback body</p></details>',
+    );
+
+    const response = await apply([
+      '[[[EXPAND name=expand open=0 title=Rollback%20runbook params=]]]', '',
+      'rollback body', '',
+      '[[[/EXPAND]]]', '',
+      '[[[EXPAND name=expand open=0 title=Deployment%20steps params=]]]', '',
+      'deploy body', '',
+      '[[[/EXPAND]]]',
+    ].join('\n'));
+
+    expect(response.statusCode).toBe(200);
+    const savedHtml = captureUpdatedBodyHtml();
+    // Each summary is immediately followed by ITS OWN body.
+    expect(savedHtml).toMatch(/<summary>Rollback runbook<\/summary>\s*<p>rollback body<\/p>/);
+    expect(savedHtml).toMatch(/<summary>Deployment steps<\/summary>\s*<p>deploy body<\/p>/);
+  });
+
+  it('refuses when an escape-stripped prose literal would anchor a section boundary', async () => {
+    // Models routinely drop backslash escapes when echoing. The strict-span
+    // scan is the entire provenance signal, so an unescaped prose literal
+    // becomes a real token and greedy alignment anchors the skeleton at the
+    // PROSE position — pulling the page's own sentence inside the collapsed
+    // section and ejecting the real body.
+    mockPageWith(
+      '<p>Use [[[EXPAND name=expand open=0 title=Runbook params=]]] to open.</p>' +
+      '<details data-macro-name="expand"><summary>Runbook</summary><p>real body</p></details>',
+    );
+
+    const response = await apply([
+      'Use [[[EXPAND name=expand open=0 title=Runbook params=]]] to open.', '',
+      '[[[EXPAND name=expand open=0 title=Runbook params=]]]', '',
+      'real body, clarified', '',
+      '[[[/EXPAND]]]',
+    ].join('\n'));
+
+    expect(response.statusCode).toBe(422);
+    expect(findUpdateCall()).toBeUndefined();
+  });
+
+  it('refuses when a surplus token would redistribute bodies across a multi-section page', async () => {
+    mockPageWith(
+      '<p>Syntax: [[[EXPAND name=expand open=0 title=One params=]]]</p>' +
+      '<details data-macro-name="expand"><summary>One</summary><p>alpha body</p></details>' +
+      '<details data-macro-name="expand"><summary>Two</summary><p>beta body</p></details>',
+    );
+
+    const response = await apply([
+      'Syntax: [[[EXPAND name=expand open=0 title=One params=]]]', '',
+      '[[[EXPAND name=expand open=0 title=One params=]]]', '',
+      'alpha body', '',
+      '[[[/EXPAND]]]', '',
+      '[[[EXPAND name=expand open=0 title=Two params=]]]', '',
+      'beta body', '',
+      '[[[/EXPAND]]]',
+    ].join('\n'));
+
+    expect(response.statusCode).toBe(422);
+    expect(findUpdateCall()).toBeUndefined();
+  });
+
+  it('refuses a model-invented wrapper pair rather than relocating real prose into a real section', async () => {
+    // Same family: a surplus pair the model made up. Stripping it as debris
+    // moved prose that belonged at top level inside the page's real section.
+    mockPageWith(
+      '<p>Intro outside.</p>' +
+      '<details data-macro-name="expand"><summary>Real</summary><p>real body</p></details>',
+    );
+
+    const response = await apply([
+      '[[[EXPAND name=expand open=0 title=Invented params=]]]', '',
+      'Intro outside.', '',
+      '[[[/EXPAND]]]', '',
+      '[[[EXPAND name=expand open=0 title=Real params=]]]', '',
+      'real body', '',
+      '[[[/EXPAND]]]',
+    ].join('\n'));
+
+    expect(response.statusCode).toBe(422);
+    expect(findUpdateCall()).toBeUndefined();
+  });
+
+  it('derives the layout skeleton from the PROTECTED html, so a frozen subtree stays invisible', async () => {
+    // llm-conversations.ts must pass protectedCurrentHtml, not body_html:
+    // the raw document still shows the section/column inside the frozen
+    // expand, and the extra skeleton entries rebuild a SECOND macro around
+    // the table. Nothing pinned the route's choice before.
+    const bodyHtml =
+      '<table><tbody><tr><td>' +
+      '<details data-macro-name="expand"><summary>In cell</summary>' +
+      '<div class="confluence-section"><div class="confluence-column"><p>col</p></div></div>' +
+      '</details></td></tr></tbody></table>';
+    mockPageWith(bodyHtml);
+
+    const response = await apply(faithfulEcho(bodyHtml));
+
+    expect(response.statusCode).toBe(200);
+    const savedHtml = captureUpdatedBodyHtml();
+    expect(savedHtml.split('data-macro-name="expand"').length - 1).toBe(1);
+    expect(savedHtml.split('confluence-section').length - 1).toBe(1);
+    expect(savedHtml).toContain('<td>');
   });
 });
 
@@ -385,7 +804,7 @@ describe('POST /api/llm/improvements/apply — layout boundary tokens with REAL 
     });
 
     expect(response.statusCode).toBe(422);
-    expect(response.json().message).toContain('column layout');
+    expect(response.json().message).toContain('columns or collapsible sections');
     // Predictable failure: NO page write happened — flattened content can
     // never be saved locally nor pushed back to Confluence.
     const updateCall = (mockQuery.mock.calls as unknown[][]).find(

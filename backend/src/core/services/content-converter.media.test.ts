@@ -178,54 +178,95 @@ describe('atomic macro placeholders survive the AI-Improve round-trip (#901)', (
   });
 });
 
-describe('expand sections survive the AI-Improve round-trip (#1221 stage 1)', () => {
+describe('expand sections survive the AI-Improve round-trip (#1221)', () => {
   // Before #1221, `details` was absent from MEDIA_SELECTOR and has no turndown
   // rule, so the AI-Improve HTML→Markdown→HTML round-trip flattened an expand
   // section into bare paragraphs — <summary> became prose, the #1211 identity
   // stamp was lost, and htmlToConfluence rebuilt no macro at all. On apply that
   // deletion was pushed to the customer's Confluence page.
+  //
+  // Stage 1 froze every <details>. Stage 2 keeps that freeze only where a
+  // boundary token cannot survive — inside a markdown-constrained container —
+  // and lets every other section round-trip as [[[EXPAND …]]] tokens, which is
+  // what makes its body improvable again. These cases cover the freeze half;
+  // the token half lives in content-converter.test.ts.
   const EXPAND =
     '<details data-macro-name="expand"><summary>Secret</summary><p>hidden body</p></details>';
 
-  it('freezes an expand section as an opaque token', () => {
+  /** Wrap a section in each container that forces the opaque freeze. */
+  const CONSTRAINED: { name: string; wrap: (inner: string) => string }[] = [
+    { name: 'table cell', wrap: (i) => `<table><tbody><tr><td><p>Cell</p>${i}</td><td><p>Other</p></td></tr></tbody></table>` },
+    { name: 'table header cell', wrap: (i) => `<table><tbody><tr><th><p>Head</p>${i}</th><th><p>Other</p></th></tr></tbody></table>` },
+    { name: 'list item', wrap: (i) => `<ul><li><p>Item</p>${i}</li><li><p>Plain</p></li></ul>` },
+    { name: 'blockquote', wrap: (i) => `<blockquote><p>Quoted</p>${i}</blockquote>` },
+    { name: 'panel', wrap: (i) => `<div class="panel-info"><p>Panel</p>${i}</div>` },
+  ];
+
+  it('stays linear in nesting depth — a deep chain must not blow up protectMedia', () => {
+    // The freeze walk descended into a non-frozen child expand TWICE: once
+    // inside isFrozenExpand(child) and again directly, giving T(n)=2·T(n-1).
+    // Measured before the fix: depth 14 ≈ 0.7s, 16 ≈ 2.9s, 18 ≈ 12.5s, 20 ≈ 56s
+    // — synchronous on the Improve/apply request path, so a deep page written
+    // by any user blocks the whole backend. A nested <details> needs no walk at
+    // all: whatever it does, it is self-consistent (see expandTokenizesCleanly).
+    const depth = 18;
+    let html = '<p>core</p>';
+    for (let i = depth; i > 0; i--) {
+      html = `<details data-macro-name="expand"><summary>L${i}</summary>${html}</details>`;
+    }
+    const started = Date.now();
+    const { media } = protectMedia(html);
+    const elapsed = Date.now() - started;
+    expect(media).toHaveLength(0); // nothing constrained — every level tokenises
+    expect(elapsed).toBeLessThan(1000);
+  });
+
+  it('leaves an unconstrained section unfrozen so its body can be improved', () => {
     const { html: prot, media } = protectMedia(`<p>Intro</p>${EXPAND}<p>End</p>`);
-    expect(media).toHaveLength(1);
-    expect(prot).toContain('CQ_MEDIA_PLACEHOLDER_0');
-    expect(prot).not.toContain('<details');
-    expect(restoreMedia(prot, media)).toContain(EXPAND);
+    expect(media).toHaveLength(0);
+    expect(prot).toContain('<details');
+    expect(prot).not.toContain('CQ_MEDIA_PLACEHOLDER');
   });
 
-  it('survives htmlToMarkdown → markdownToHtml and rebuilds the macro on write-back', async () => {
-    const { html: prot, media } = protectMedia(`<p>Intro</p>${EXPAND}`);
-    const restored = restoreMedia(await markdownToHtml(htmlToMarkdown(prot)), media);
-    expect(restored).toContain(EXPAND);
-
-    const back = htmlToConfluence(restored);
-    expect(back).toContain('ac:name="expand"');
-    expect(back).toContain('>Secret<');
-    expect(back).toContain('hidden body');
-  });
-
-  it('freezes the outermost section only when expands are nested', () => {
+  it('tokenises nested sections separately instead of freezing the outer one whole', () => {
     const nested =
       '<details data-macro-name="expand"><summary>Outer</summary>' +
       '<p>outer body</p>' +
       '<details data-macro-name="expand"><summary>Inner</summary><p>inner body</p></details>' +
       '</details>';
     const { html: prot, media } = protectMedia(`<p>Intro</p>${nested}`);
-    // Outermost-first: one token for the whole tree, not one per <details>.
-    expect(media).toHaveLength(1);
-    expect(media[0]!.html).toBe(nested);
-    expect(restoreMedia(prot, media)).toContain(nested);
+    expect(media).toHaveLength(0);
+    const md = htmlToMarkdown(prot, { layoutTokens: true });
+    expect((md.match(/\[\[\[EXPAND /g) ?? []).length).toBe(2);
+    expect(md).toContain('outer body');
+    expect(md).toContain('inner body');
   });
 
-  it('freezes a media-bearing section whole rather than tokenising the image inside it', () => {
+  it('gives media inside an unconstrained section its own token, not one capture for the section', () => {
     const withImg = `<details data-macro-name="expand"><summary>Pics</summary>${IMG}${DRAWIO}</details>`;
     const { html: prot, media } = protectMedia(`<p>Intro</p>${withImg}`);
-    expect(media).toHaveLength(1);
-    expect(media[0]!.html).toBe(withImg);
-    expect(restoreMedia(prot, media)).toContain(withImg);
+    // The image and the drawio wrapper each get a token; the section does not.
+    expect(media).toHaveLength(2);
+    expect(media.every((m) => !m.html.includes('<details'))).toBe(true);
+    expect(prot).toContain('<details');
+    // Both originals come back verbatim, still inside the section. (The token
+    // swap pads with spaces, so the section is not byte-identical.)
+    const restored = restoreMedia(prot, media);
+    for (const m of media) expect(restored).toContain(m.html);
+    expect(restored.indexOf('data-confluence-filename')).toBeGreaterThan(restored.indexOf('<details'));
+    expect(restored.indexOf('confluence-drawio')).toBeLessThan(restored.indexOf('</details>'));
   });
+
+  for (const { name, wrap } of CONSTRAINED) {
+    it(`freezes a section inside a ${name} as an opaque token`, () => {
+      const { html: prot, media } = protectMedia(wrap(EXPAND));
+      expect(media).toHaveLength(1);
+      expect(media[0]!.html).toBe(EXPAND);
+      expect(prot).toContain('CQ_MEDIA_PLACEHOLDER_0');
+      expect(prot).not.toContain('<details');
+      expect(restoreMedia(prot, media)).toContain(EXPAND);
+    });
+  }
 
   it('freezes a section inside a table cell without breaking the table', async () => {
     const html =
@@ -235,7 +276,10 @@ describe('expand sections survive the AI-Improve round-trip (#1221 stage 1)', ()
     const { html: prot, media } = protectMedia(html);
     expect(media).toHaveLength(1);
 
-    const restored = restoreMedia(await markdownToHtml(htmlToMarkdown(prot)), media);
+    const restored = restoreMedia(
+      await markdownToHtml(htmlToMarkdown(prot, { layoutTokens: true })),
+      media,
+    );
     expect(restored).toContain('data-macro-name="expand"');
     expect(restored).toContain('<summary>In cell</summary>');
     // The token rode inside the cell — the table itself is still intact and the
@@ -244,22 +288,99 @@ describe('expand sections survive the AI-Improve round-trip (#1221 stage 1)', ()
     expect(restored).not.toContain('CQ_MEDIA_PLACEHOLDER_');
   });
 
+  it('freezes a section nested inside a constrained one, and only the outermost', () => {
+    // The outer section is inside a table cell, so it freezes; the inner one
+    // travels inside that capture rather than getting a token of its own.
+    const inner = '<details data-macro-name="expand"><summary>Inner</summary><p>inner body</p></details>';
+    const outer = `<details data-macro-name="expand"><summary>Outer</summary><p>outer body</p>${inner}</details>`;
+    const { html: prot, media } = protectMedia(`<table><tbody><tr><td>${outer}</td></tr></tbody></table>`);
+    expect(media).toHaveLength(1);
+    expect(media[0]!.html).toBe(outer);
+    expect(prot).not.toContain('<details');
+  });
+
+  it('protects an unfrozen section nested inside a frozen one at the right level', () => {
+    // Outer is NOT constrained, so it tokenises; the inner one sits in a table
+    // cell inside it and must still freeze. Freezing is decided per section, not
+    // inherited from the nearest <details>.
+    const inner = '<details data-macro-name="expand"><summary>Inner</summary><p>inner body</p></details>';
+    const outer =
+      '<details data-macro-name="expand"><summary>Outer</summary>' +
+      `<table><tbody><tr><td>${inner}</td></tr></tbody></table></details>`;
+    const { html: prot, media } = protectMedia(outer);
+    expect(media).toHaveLength(1);
+    expect(media[0]!.html).toBe(inner);
+    // The outer section survived as a real element for the token pass.
+    expect(prot).toContain('<summary>Outer</summary>');
+  });
+
+  it('freezes a section containing a modern layout grid, which cannot open inside an expand', () => {
+    // `ac:layout` is document-level in Confluence storage format, so [[[LAYOUT]]]
+    // is only valid at the top of the token stack. A grid nested inside a
+    // <details> (reachable in the editor — the layout node is `block` and the
+    // details accepts `block*`) would therefore emit a token sequence that
+    // rebuildLayoutStructure rejects, and the drop-guard would strip EVERY
+    // token — flattening the expand away, i.e. the exact silent macro deletion
+    // #1221 exists to prevent. Freeze the section instead: its body is not
+    // improvable, but it survives.
+    const grid =
+      '<div class="confluence-layout"><div class="confluence-layout-section" data-layout-type="two_equal">' +
+      '<div class="confluence-layout-cell"><p>L</p></div>' +
+      '<div class="confluence-layout-cell"><p>R</p></div>' +
+      '</div></div>';
+    const withGrid = `<details data-macro-name="expand"><summary>Grid</summary>${grid}</details>`;
+    const { html: prot, media } = protectMedia(withGrid);
+    expect(media).toHaveLength(1);
+    expect(media[0]!.html).toBe(withGrid);
+    // Symmetric: neither the skeleton nor the markdown carries a token for it.
+    expect(extractLayoutSkeleton(prot)).toEqual([]);
+    expect(htmlToMarkdown(prot, { layoutTokens: true })).not.toContain('[[[');
+    expect(restoreMedia(prot, media)).toContain(withGrid);
+  });
+
   it('keeps the #781 layout skeleton in step with what the markdown can carry', () => {
     // extractLayoutSkeleton runs over the PROTECTED html (llm-conversations.ts),
-    // so a legacy section frozen away inside an expand must not be expected as a
-    // boundary token — otherwise every apply on such a page 422s.
-    const html =
+    // so a legacy section frozen away inside a CONSTRAINED expand must not be
+    // expected as a boundary token — otherwise every apply on such a page 422s.
+    // Pinned rather than left to inspection: the failure would be a hard 422.
+    const frozen =
+      '<table><tbody><tr><td>' +
+      '<details data-macro-name="expand"><summary>Wrapper</summary>' +
+      '<div class="confluence-section"><div class="confluence-column"><p>col</p></div></div>' +
+      '</details></td></tr></tbody></table>';
+    const { html: prot, media } = protectMedia(frozen);
+    expect(media).toHaveLength(1);
+    // Symmetric: neither side sees the frozen subtree.
+    expect(extractLayoutSkeleton(prot)).toEqual([]);
+    expect(htmlToMarkdown(prot, { layoutTokens: true })).not.toContain('[[[');
+
+    // An UNCONSTRAINED expand around the same layout is visible to both sides.
+    const open =
       '<details data-macro-name="expand"><summary>Wrapper</summary>' +
       '<div class="confluence-section"><div class="confluence-column"><p>col</p></div></div>' +
       '</details>';
-    const { html: prot, media } = protectMedia(html);
-    expect(media).toHaveLength(1);
-    expect(extractLayoutSkeleton(prot)).toEqual([]);
+    const openProt = protectMedia(open).html;
+    expect(extractLayoutSkeleton(openProt).map((t) => t.kind)).toEqual([
+      'EXPAND', 'SECTION', 'COLUMN', 'COLUMN', 'SECTION', 'EXPAND',
+    ]);
+    const openMd = htmlToMarkdown(openProt, { layoutTokens: true });
+    for (const token of ['[[[EXPAND ', '[[[SECTION]]]', '[[[COLUMN]]]', '[[[/COLUMN]]]', '[[[/SECTION]]]', '[[[/EXPAND]]]']) {
+      expect(openMd).toContain(token);
+    }
     // A section OUTSIDE any expand still tokenises as before.
     expect(
       extractLayoutSkeleton(protectMedia('<div class="confluence-section"><p>x</p></div>').html)
         .map((t) => t.kind),
     ).toEqual(['SECTION', 'SECTION']);
+  });
+
+  it("anchors an expand slot on its body, never on the summary the model never sees", () => {
+    // The summary rides inside the token, so it can never appear in the model's
+    // prose — anchoring recovery on it would guarantee a 422.
+    const { html: prot } = protectMedia(EXPAND);
+    const [open] = extractLayoutSkeleton(prot);
+    expect(open!.kind).toBe('EXPAND');
+    expect(open!.anchor).toBe('hidden body');
   });
 });
 

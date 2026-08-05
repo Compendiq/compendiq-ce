@@ -153,15 +153,15 @@ describe('DockDiffCard (#1126)', () => {
   });
 
   it('keeps the 422 layout rejection on the card and offers a re-run', async () => {
-    // #781: the backend refused to flatten the page's column layout. The page
-    // is unchanged, so this must not read as "applied" and must not disappear.
-    failApplyWith(422, "The AI response lost this page's column layout and it could not be recovered, so the change was not applied.");
+    // #781: the backend refused to flatten the page's layout. The page is
+    // unchanged, so this must not read as "applied" and must not disappear.
+    failApplyWith(422, "The AI response lost this page's structure (columns or collapsible sections) and it could not be recovered, so the change was not applied.");
     renderDock();
     await produceDiff();
 
     fireEvent.click(screen.getByTestId('dock-diff-apply'));
 
-    expect(await screen.findByTestId('dock-diff-apply-error')).toHaveTextContent('column layout');
+    expect(await screen.findByTestId('dock-diff-apply-error')).toHaveTextContent('collapsible sections');
     expect(screen.getByTestId('dock-diff-card')).toBeInTheDocument();
     expect(screen.queryByTestId('dock-diff-apply')).not.toBeInTheDocument();
     expect(screen.getByTestId('dock-diff-rerun')).toBeInTheDocument();
