@@ -32,11 +32,13 @@ function sizedFile(name: string, type: string, size: number): File {
   return f;
 }
 
-/** A promise plus its resolver, for controlling `prepareImage` resolution order. */
+/** A promise plus its resolver/rejecter, for controlling `prepareImage`/`extractDocument`
+ *  resolution order and outcome. */
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((res) => { resolve = res; });
-  return { promise, resolve };
+  let reject!: (err: unknown) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
 }
 
 /**
@@ -464,6 +466,118 @@ describe('useAttachments object URL lifecycle', () => {
     });
 
     expect(revoke).toHaveBeenCalledWith('blob:inflight');
+  });
+});
+
+/**
+ * #1194: the stale-request guard (mount + request-id) was applied on the
+ * success path but not the failure path, for both slots. A superseded or
+ * post-unmount rejection therefore toasted anyway — a misleading message for
+ * a request nothing depends on any more, since the id guard already keeps
+ * its result from being stored.
+ */
+describe('useAttachments stale-request guard on failure', () => {
+  it('surfaces the image staging error and attaches nothing', async () => {
+    mockPrepare.mockRejectedValueOnce(new Error('Image staging failed'));
+    const { result } = renderHook(() => useAttachments({ imageEnabled: true }));
+    await act(async () => { await result.current.pickFile(file('shot.png', 'image/png')); });
+
+    expect(mockToastError).toHaveBeenCalledWith('Image staging failed');
+    expect(result.current.image).toBeNull();
+  });
+
+  it('does not toast an image failure superseded by a newer pick', async () => {
+    const first = deferred<PreparedImage>();
+    const second = deferred<PreparedImage>();
+    mockPrepare.mockImplementationOnce(() => first.promise).mockImplementationOnce(() => second.promise);
+
+    const { result } = renderHook(() => useAttachments({ imageEnabled: true }));
+
+    let firstPick!: Promise<void>;
+    let secondPick!: Promise<void>;
+    act(() => { firstPick = result.current.pickFile(file('one.png', 'image/png')); });
+    act(() => { secondPick = result.current.pickFile(file('two.png', 'image/png')); });
+
+    await act(async () => {
+      second.resolve({
+        handle: 'b'.repeat(64), format: 'webp', width: 1, height: 1, fileSize: 1, previewUrl: 'blob:second',
+      });
+      await secondPick;
+    });
+    expect(result.current.image).toMatchObject({ previewUrl: 'blob:second' });
+
+    await act(async () => {
+      first.reject(new Error('stale staging failure'));
+      await firstPick;
+    });
+
+    expect(mockToastError, 'the newer pick already won; the loser must stay silent').not.toHaveBeenCalled();
+    expect(result.current.image).toMatchObject({ previewUrl: 'blob:second' });
+  });
+
+  it('does not toast an image failure that rejects after unmount', async () => {
+    const pending = deferred<PreparedImage>();
+    mockPrepare.mockImplementationOnce(() => pending.promise);
+
+    const { result, unmount } = renderHook(() => useAttachments({ imageEnabled: true }));
+    let pick!: Promise<void>;
+    act(() => { pick = result.current.pickFile(file('shot.png', 'image/png')); });
+
+    unmount();
+
+    await act(async () => {
+      pending.reject(new Error('network blip'));
+      await pick;
+    });
+
+    expect(mockToastError).not.toHaveBeenCalled();
+  });
+
+  it('does not toast a document extraction failure superseded by a newer pick', async () => {
+    const first = deferred<{ text: string; format: string }>();
+    const second = deferred<{ text: string; format: string }>();
+    mockExtract
+      .mockImplementationOnce(() => first.promise as ReturnType<typeof mockExtract>)
+      .mockImplementationOnce(() => second.promise as ReturnType<typeof mockExtract>);
+
+    const { result } = renderHook(() => useAttachments({ imageEnabled: true }));
+
+    let firstPick!: Promise<void>;
+    let secondPick!: Promise<void>;
+    act(() => { firstPick = result.current.pickFile(file('one.pdf', 'application/pdf')); });
+    act(() => { secondPick = result.current.pickFile(file('two.pdf', 'application/pdf')); });
+
+    await act(async () => {
+      second.resolve({ text: 'second doc', format: 'pdf' });
+      await secondPick;
+    });
+    expect(result.current.document).toMatchObject({ filename: 'two.pdf' });
+
+    await act(async () => {
+      first.reject(new Error('stale extraction failure'));
+      await firstPick;
+    });
+
+    expect(mockToastError, 'the newer pick already won; the loser must stay silent').not.toHaveBeenCalled();
+    expect(result.current.document).toMatchObject({ filename: 'two.pdf' });
+  });
+
+  it('does not toast a document extraction failure that rejects after unmount', async () => {
+    const pending = deferred<{ text: string; format: string }>();
+    mockExtract.mockImplementationOnce(() => pending.promise as ReturnType<typeof mockExtract>);
+
+    const { result, unmount } = renderHook(() => useAttachments({ imageEnabled: true }));
+    let pick!: Promise<void>;
+    act(() => { pick = result.current.pickFile(file('spec.pdf', 'application/pdf')); });
+
+    unmount();
+
+    await act(async () => {
+      pending.reject(new Error('network blip'));
+      await pick;
+    });
+
+    expect(mockToastError).not.toHaveBeenCalled();
   });
 });
 
