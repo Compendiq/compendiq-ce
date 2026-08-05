@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, RouterProvider, createMemoryRouter, useLocation } from 'react-router-dom';
@@ -1181,7 +1181,7 @@ describe('PagesPage', () => {
 
     /** Extract the exact `search` param value from every GET /pages?… list
      *  request (ignores /pages/pinned, /pages/filters, /search, etc.). */
-    function pagesSearchValues(fetchSpy: ReturnType<typeof vi.spyOn>): string[] {
+    function pagesSearchValues(fetchSpy: MockInstance<typeof fetch>): string[] {
       return fetchSpy.mock.calls
         .map(([firstArg]) => (typeof firstArg === 'string' ? firstArg : (firstArg as Request).url))
         .filter((u) => /\/pages\?/.test(u))
@@ -1264,7 +1264,7 @@ describe('PagesPage', () => {
       /** Every GET /pages?… list request (not /pages/pinned|filters|tree, not
        *  /search), with its parsed `search` and `sort` params — including
        *  requests that carry NO search term (search === null). */
-      function pagesListRequests(fetchSpy: ReturnType<typeof vi.spyOn>) {
+      function pagesListRequests(fetchSpy: MockInstance<typeof fetch>) {
         return fetchSpy.mock.calls
           .map(([firstArg]) => (typeof firstArg === 'string' ? firstArg : (firstArg as Request).url))
           .filter((u) => /\/pages\?/.test(u))
@@ -1303,8 +1303,8 @@ describe('PagesPage', () => {
         await act(async () => { await vi.advanceTimersByTimeAsync(300); });
         const newRequests = pagesListRequests(fetchSpy).slice(baseline.length);
         expect(newRequests).toHaveLength(1);
-        expect(newRequests[0].search).toBe('k');
-        expect(newRequests[0].sort).toBe('relevance');
+        expect(newRequests[0]!.search).toBe('k');
+        expect(newRequests[0]!.sort).toBe('relevance');
       });
 
       it('clear button does not fire a request carrying the stale search term', async () => {

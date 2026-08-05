@@ -882,8 +882,15 @@ export function GraphFilterSidebar({
   };
 
   return (
+    // overflow-y-auto because this aside is a cross-axis-stretched flex item:
+    // its height is the row's, not its content's, and #1218's min-h-0 chain
+    // clamps that row to the scrollport. Without it the label chips paint
+    // straight through the nm-card border onto the page background once the
+    // filter list outgrows the graph area — measured at 1440x560 as a 29px
+    // spill. Scrolling inside the card is the fix; growing the page is not,
+    // since the graph canvas beside it is sized to the same clamped row.
     <aside
-      className="nm-card w-60 shrink-0 space-y-4 p-4 text-xs"
+      className="nm-card w-60 shrink-0 space-y-4 overflow-y-auto p-4 text-xs"
       role="complementary"
       aria-label="Graph filters"
       data-testid="graph-filter-sidebar"
