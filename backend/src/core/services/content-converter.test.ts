@@ -2842,7 +2842,9 @@ describe('content-converter: #1221 stage 2 expand boundary tokens', () => {
 
     it('omits the summary for a title-less section rather than inventing a blank title', async () => {
       const { md, html } = await tokenRoundTrip('<details data-macro-name="expand"><p>body only</p></details>');
-      expect(md).toContain('title= ');
+      // The `title` key is absent, not empty — presence is what distinguishes
+      // "no <summary>" from "<summary></summary>" (#1232 review).
+      expect(md).not.toContain('title=');
       expect(html).toContain('<details data-macro-name="expand">');
       expect(html).not.toContain('<summary>');
       const xhtml = htmlToConfluence(html);
@@ -2858,6 +2860,209 @@ describe('content-converter: #1221 stage 2 expand boundary tokens', () => {
       expect(md).toContain('[[[/EXPAND]]]');
       expect(html).toContain('<summary>Empty</summary>');
       expect(htmlToConfluence(html)).toContain('ac:name="expand"');
+    });
+  });
+
+  describe('token provenance on the skeleton path (#1232 review)', () => {
+    async function skeletonRoundTrip(bodyHtml: string): Promise<{ md: string; html: string; xhtml: string }> {
+      const { html: prot, media } = protectMedia(bodyHtml);
+      const md = htmlToMarkdown(prot, { layoutTokens: true });
+      const html = restoreMedia(
+        await markdownToHtml(md, { layoutSkeleton: extractLayoutSkeleton(prot) }),
+        media,
+      );
+      return { md, html, xhtml: htmlToConfluence(html) };
+    }
+
+    it('keeps token-shaped text inside an expand title instead of stripping it', async () => {
+      // The backstop strip ran over the rebuilt HTML, where layoutOpenTag had
+      // already decoded the title back to literal brackets — so a title that
+      // documented the token syntax was emptied on save.
+      const { xhtml } = await skeletonRoundTrip(
+        '<details data-macro-name="expand"><summary>[[[EXPAND name=expand]]] explained</summary><p>b</p></details>',
+      );
+      expect(xhtml).toContain('<ac:parameter ac:name="title">[[[EXPAND name=expand]]] explained</ac:parameter>');
+    });
+
+    it('keeps token-shaped text inside a macro parameter value', async () => {
+      const { xhtml } = await skeletonRoundTrip(
+        '<details data-macro-name="ui-expand" data-macro-params="{&quot;note&quot;:&quot;[[[LAYOUT]]] here&quot;}">' +
+        '<summary>T</summary><p>b</p></details>',
+      );
+      expect(xhtml).toContain('<ac:parameter ac:name="note">[[[LAYOUT]]] here</ac:parameter>');
+    });
+
+    it("strips a token shape the MODEL invented, while keeping the page's own", async () => {
+      // The two are distinguishable, and the distinction is the escape.
+      // Prose that was on the page reaches the model turndown-escaped
+      // (\[\[\[…), which the strict scanner cannot see, so it stays prose all
+      // the way to the saved page. An unescaped token shape the model typed
+      // itself is indistinguishable from a hallucinated marker, and #781
+      // strips those by design — keeping it would contradict the
+      // 'hallucinated layout tokens are stripped, never built' guarantee.
+      // Only the token shape goes; the surrounding words stay.
+      const bodyHtml =
+        '<p>Docs mention [[[EXPAND name=expand]]] here.</p>' +
+        '<details data-macro-name="expand"><summary>Runbook</summary><p>step one</p></details>';
+      const { html: prot } = protectMedia(bodyHtml);
+      const md = `${htmlToMarkdown(prot, { layoutTokens: true })}\n\nI preserved the [[[EXPAND]]] marker.`;
+      const html = await markdownToHtml(md, { layoutSkeleton: extractLayoutSkeleton(prot) });
+      // The page's own sentence survives verbatim …
+      expect(html).toContain('Docs mention [[[EXPAND name=expand]]] here.');
+      // … the model's invented marker is stripped, its words kept …
+      expect(html).toContain('marker.');
+      expect(html).not.toContain('the [[[EXPAND]]] marker');
+      // … and the real section is rebuilt.
+      expect(html).toContain('<summary>Runbook</summary>');
+    });
+
+    it('leaves literal token text in a fenced code block untouched on the skeleton path', async () => {
+      const bodyHtml = '<details data-macro-name="expand"><summary>Docs</summary><p>body</p></details>';
+      const { html: prot } = protectMedia(bodyHtml);
+      const md = `${htmlToMarkdown(prot, { layoutTokens: true })}\n\n\`\`\`\n[[[EXPAND name=expand]]]\n\`\`\`\n`;
+      const html = await markdownToHtml(md, { layoutSkeleton: extractLayoutSkeleton(prot) });
+      expect(html).toMatch(/<code>\[\[\[EXPAND name=expand\]\]\]/);
+      expect(html).toContain('<summary>Docs</summary>');
+    });
+
+    it('keeps literal token text belonging to a legacy SECTION page, macro included', async () => {
+      // The provenance fix is in the SHARED machinery, so it changes two things
+      // for non-expand pages too — both strictly safer, both deliberate. Here:
+      // a page documenting the token syntax used to lose the sentence AND the
+      // section macro; now both survive.
+      const bodyHtml = '<p>We document [[[SECTION]]] here.</p><div class="confluence-section"><p>real</p></div>';
+      const { html: prot, media } = protectMedia(bodyHtml);
+      const xhtml = htmlToConfluence(
+        restoreMedia(
+          await markdownToHtml(htmlToMarkdown(prot, { layoutTokens: true }), {
+            layoutSkeleton: extractLayoutSkeleton(prot),
+          }),
+          media,
+        ),
+      );
+      expect(xhtml).toContain('[[[SECTION]]]');
+      expect(xhtml).toContain('ac:name="section"');
+    });
+
+    it('fails closed for a stored column macro that never had its section', async () => {
+      // Not an expand shape, but the same class, and the one most likely to
+      // exist in the wild: a hand-authored `column` outside any `section`.
+      // Base stripped every token and saved the flattened body, deleting the
+      // macro; refusing is strictly safer, at the cost of that page not being
+      // improvable until its storage is fixed.
+      const skeleton = extractLayoutSkeleton('<div class="confluence-column"><p>orphan</p></div>');
+      expect(skeleton.map((t) => t.kind)).toEqual(['COLUMN', 'COLUMN']);
+      await expect(markdownToHtml('orphan', { layoutSkeleton: skeleton })).rejects.toThrow(LayoutRecoveryError);
+    });
+
+    it('fails closed when the page itself carries a nesting the storage format forbids', async () => {
+      // Reached only if the freeze misses a shape: strip-and-save would delete
+      // the macros, so the apply is refused instead.
+      const skeleton = extractLayoutSkeleton(
+        '<div class="confluence-section"><div class="confluence-layout"><div class="confluence-layout-section" data-layout-type="single">' +
+        '<div class="confluence-layout-cell"><p>x</p></div></div></div></div>',
+      );
+      expect(skeleton.map((t) => t.kind)).toContain('LAYOUT');
+      await expect(markdownToHtml('anything', { layoutSkeleton: skeleton })).rejects.toThrow(LayoutRecoveryError);
+    });
+  });
+
+  describe('shapes that must keep the opaque freeze (#1232 review)', () => {
+    const CASES: { name: string; bodyHtml: string; keep: string }[] = [
+      {
+        name: 'an expand containing a bare column macro',
+        bodyHtml:
+          '<details data-macro-name="expand"><summary>T</summary>' +
+          '<div class="confluence-column" data-cell-width="50%"><p>col body</p></div></details>',
+        keep: 'confluence-column',
+      },
+      {
+        name: 'an expand containing a layout cell without its grid',
+        bodyHtml:
+          '<details data-macro-name="expand"><summary>T</summary>' +
+          '<div class="confluence-layout-cell"><p>cell body</p></div></details>',
+        keep: 'confluence-layout-cell',
+      },
+      {
+        name: 'an expand sitting directly inside a layout wrapper',
+        bodyHtml:
+          '<div class="confluence-layout">' +
+          '<details data-macro-name="expand"><summary>T</summary><p>b</p></details></div>',
+        keep: 'data-macro-name="expand"',
+      },
+    ];
+
+    for (const { name, bodyHtml, keep } of CASES) {
+      it(`freezes ${name}`, async () => {
+        const { html: prot, media } = protectMedia(bodyHtml);
+        expect(media.some((m) => m.html.includes('<details'))).toBe(true);
+        const restored = restoreMedia(
+          await markdownToHtml(htmlToMarkdown(prot, { layoutTokens: true }), {
+            layoutSkeleton: extractLayoutSkeleton(prot),
+          }),
+          media,
+        );
+        expect(restored).toContain('data-macro-name="expand"');
+        expect(restored).toContain(keep);
+      });
+    }
+
+    it('still tokenises a section/column layout nested the legal way inside an expand', async () => {
+      const bodyHtml =
+        '<details data-macro-name="expand"><summary>T</summary>' +
+        '<div class="confluence-section"><div class="confluence-column"><p>col</p></div></div></details>';
+      const { html: prot, media } = protectMedia(bodyHtml);
+      expect(media).toHaveLength(0);
+      expect(htmlToMarkdown(prot, { layoutTokens: true })).toContain('[[[EXPAND ');
+    });
+
+    it('gives media exactly one token when a frozen expand holds an unfrozen nested one', async () => {
+      // The outer section freezes for a reason its descendants do not share, so
+      // frozen-ness is not inherited — the nearest-ancestor test handed the
+      // image a second token the apply drop-guard could re-append.
+      const bodyHtml =
+        '<details data-macro-name="expand"><summary>Outer</summary>' +
+        '<div class="confluence-column"><p>col</p></div>' +
+        '<details data-macro-name="expand"><summary>Inner</summary>' +
+        '<p><img src="/api/attachments/1/p.png" alt="P"></p></details></details>';
+      const { media } = protectMedia(bodyHtml);
+      expect(media).toHaveLength(1);
+      expect(media[0]!.html).toContain('<summary>Outer</summary>');
+    });
+  });
+
+  describe('anchors and titles (#1232 review)', () => {
+    it('anchors on body prose only, skipping a nested section\'s summary too', async () => {
+      // A nested <summary> rides in its own token and never reaches the
+      // markdown either, so anchoring on it searches for text the model was
+      // never shown — the same defect the direct-summary skip was written for.
+      const skeleton = extractLayoutSkeleton(
+        '<details data-macro-name="expand"><summary>Outer</summary>' +
+        '<details data-macro-name="expand"><summary>Inner</summary><p>inner prose</p></details></details>',
+      );
+      expect(skeleton[0]!.anchor).toBe('inner prose');
+    });
+
+    it('preserves an explicitly empty title instead of dropping the parameter', async () => {
+      // `title=` had to mean both "no <summary>" and "<summary></summary>", so
+      // storage carrying an empty title parameter lost it on write-back.
+      const { html: prot } = protectMedia(
+        '<details data-macro-name="expand"><summary></summary><p>b</p></details>',
+      );
+      const md = htmlToMarkdown(prot, { layoutTokens: true });
+      expect(md).toContain('title= ');
+      const html = await markdownToHtml(md, { layoutSkeleton: extractLayoutSkeleton(prot) });
+      expect(html).toContain('<summary></summary>');
+      expect(htmlToConfluence(html)).toContain('<ac:parameter ac:name="title"></ac:parameter>');
+    });
+
+    it('still omits the summary entirely for a section that never had one', async () => {
+      const { html: prot } = protectMedia('<details data-macro-name="expand"><p>body only</p></details>');
+      const md = htmlToMarkdown(prot, { layoutTokens: true });
+      expect(md).not.toContain('title=');
+      const html = await markdownToHtml(md, { layoutSkeleton: extractLayoutSkeleton(prot) });
+      expect(html).not.toContain('<summary>');
+      expect(htmlToConfluence(html)).not.toContain('ac:name="title"');
     });
   });
 
@@ -2957,6 +3162,19 @@ describe('content-converter: #1221 stage 2 expand boundary tokens', () => {
       for (const kind of ['LAYOUT-SECTION', 'LAYOUT-CELL', 'LAYOUT', 'SECTION', 'COLUMN', 'EXPAND']) {
         expect(STRUCTURE_PRESERVATION_INSTRUCTION).toContain(`[[[${kind}`);
       }
+    });
+
+    it('shows EXPAND in the worked example, not only in the enumeration', () => {
+      // #781 added the example because models echo tokens far more reliably
+      // when shown one, and EXPAND is the only kind carrying an opaque
+      // percent-encoded payload the model must copy byte-exact — so it is the
+      // kind that most needs the demonstration. Asserting on the example half
+      // specifically: the enumeration alone satisfies a `toContain('[[[EXPAND')`.
+      const example = STRUCTURE_PRESERVATION_INSTRUCTION.slice(
+        STRUCTURE_PRESERVATION_INSTRUCTION.indexOf('Example. Given this input:'),
+      );
+      expect(example).toContain('[[[EXPAND ');
+      expect(example).toContain('[[[/EXPAND]]]');
     });
 
     it('#781: an expand skeleton does not disturb hasRecoverableLayoutTokens', () => {

@@ -88,6 +88,16 @@ vi.mock('../../domains/confluence/services/subpage-context.js', () => ({
 }));
 
 import { llmConversationRoutes } from './llm-conversations.js';
+import { protectMedia, htmlToMarkdown } from '../../core/services/content-converter.js';
+
+/**
+ * The exact markdown the Improve route sends for a page — so a test can echo it
+ * back unchanged and mean "the model behaved perfectly". Mirrors
+ * assembleContextIfNeeded's main-page conversion (protectMedia + layoutTokens).
+ */
+function faithfulEcho(bodyHtml: string): string {
+  return htmlToMarkdown(protectMedia(bodyHtml).html, { layoutTokens: true });
+}
 
 describe('POST /api/llm/improvements/apply — drop-guard with REAL restoreMedia (#723)', () => {
   let app: ReturnType<typeof Fastify>;
@@ -400,6 +410,163 @@ describe('POST /api/llm/improvements/apply — EXPAND boundary tokens (#1221 sta
     expect(savedHtml).toContain('Step one, clarified.');
     expect(savedHtml).not.toContain('[[[');
   });
+
+  // --------------------------------------------------------------------
+  // Silent-deletion regressions found by adversarial review of #1232.
+  // Each one saved a page with the macro GONE at HTTP 200, and each is a
+  // regression against stage 1, where the blanket freeze made <details>
+  // immune. They are route-level on purpose: this is the path that writes
+  // the page and pushes it to Confluence.
+  // --------------------------------------------------------------------
+  it('keeps a real expand AND the literal token text when the page prose contains a token spelling', async () => {
+    // turndown escapes the prose to \[\[\[…\]\]\], so the markdown-side
+    // strict scan never sees it and #781 recovery passes. marked then
+    // UN-escapes it, and a rebuild that re-discovers tokens by regex counts
+    // three opens against one close, fails the balance check, and the
+    // all-or-nothing drop-guard strips every token — deleting the real
+    // section. The rebuild must consume the tokens recovery aligned, by
+    // identity, so prose that merely looks like a token is never structure.
+    mockPageWith(
+      '<p>We use [[[EXPAND name=expand open=0 title=Runbook params=]]] markers.</p>' +
+      '<details data-macro-name="expand"><summary>Runbook</summary><p>real body</p></details>',
+    );
+
+    const response = await apply([
+      'We use \\[\\[\\[EXPAND name=expand open=0 title=Runbook params=\\]\\]\\] markers.', '',
+      '[[[EXPAND name=expand open=0 title=Runbook params=]]]', '',
+      'real body, clarified', '',
+      '[[[/EXPAND]]]',
+    ].join('\n'));
+
+    expect(response.statusCode).toBe(200);
+    const savedHtml = captureUpdatedBodyHtml();
+    expect(savedHtml).toContain('<details data-macro-name="expand">');
+    expect(savedHtml).toContain('<summary>Runbook</summary>');
+    expect(savedHtml).toContain('real body, clarified');
+    // The user's own sentence survives verbatim — not stripped, not structure.
+    expect(savedHtml).toContain('[[[EXPAND name=expand open=0 title=Runbook params=]]]');
+    expect(savedHtml.split('<details').length - 1).toBe(1);
+  });
+
+  it('never fabricates a macro from a balanced token pair written in ordinary prose', async () => {
+    mockPageWith('<p>Use [[[EXPAND name=expand]]] then [[[/EXPAND]]].</p>');
+
+    const response = await apply(
+      'Use \\[\\[\\[EXPAND name=expand\\]\\]\\] then \\[\\[\\[/EXPAND\\]\\]\\].',
+    );
+
+    expect(response.statusCode).toBe(200);
+    const savedHtml = captureUpdatedBodyHtml();
+    expect(savedHtml).not.toContain('<details');
+    expect(savedHtml).toContain('[[[EXPAND name=expand]]]');
+    expect(savedHtml).toContain('[[[/EXPAND]]]');
+  });
+
+  it('preserves an expand containing a bare column macro on a verbatim echo', async () => {
+    // COLUMN may only open inside a SECTION, so expand > column emits a
+    // sequence the rebuild rejects — strip-all, macro deleted, on a model
+    // echo with zero mangling. Confluence permits a Column directly in an
+    // expand body; the freeze has to cover it.
+    const bodyHtml =
+      '<details data-macro-name="expand"><summary>Runbook steps</summary>' +
+      '<div class="confluence-column"><p>col body</p></div></details>';
+    mockPageWith(bodyHtml);
+
+    const response = await apply(faithfulEcho(bodyHtml));
+
+    expect(response.statusCode).toBe(200);
+    const savedHtml = captureUpdatedBodyHtml();
+    expect(savedHtml).toContain('data-macro-name="expand"');
+    expect(savedHtml).toContain('<summary>Runbook steps</summary>');
+    expect(savedHtml).toContain('confluence-column');
+    expect(savedHtml).toContain('col body');
+  });
+
+  it('preserves an expand sitting directly inside a layout wrapper on a verbatim echo', async () => {
+    // The mirror of the case above: EXPAND may not OPEN under LAYOUT, so the
+    // same strip-all deletes both the section and the layout div.
+    const bodyHtml =
+      '<div class="confluence-layout">' +
+      '<details data-macro-name="expand"><summary>Runbook</summary><p>step one</p></details>' +
+      '</div>';
+    mockPageWith(bodyHtml);
+
+    const response = await apply(faithfulEcho(bodyHtml));
+
+    expect(response.statusCode).toBe(200);
+    const savedHtml = captureUpdatedBodyHtml();
+    expect(savedHtml).toContain('data-macro-name="expand"');
+    expect(savedHtml).toContain('<summary>Runbook</summary>');
+    expect(savedHtml).toContain('step one');
+  });
+
+  it('refuses rather than swallowing the page into the section when an EXPAND pair is dropped', async () => {
+    // An expand is a page FRAGMENT with sibling prose, not a partition of the
+    // document the way a layout cell is. #785's single-slot wrap assumes the
+    // latter, so a one-expand page had its heading and every surrounding
+    // paragraph moved INSIDE the collapsed section and pushed to Confluence.
+    mockPageWith(
+      '<h2>Deployment guide</h2><p>Intro paragraph outside the section.</p>' +
+      '<details data-macro-name="expand"><summary>Rollback runbook</summary><p>step one</p></details>' +
+      '<p>Closing paragraph outside the section.</p>',
+    );
+
+    const response = await apply([
+      '## Deployment guide', '',
+      'Intro paragraph outside the section.', '',
+      'Step one, rewritten.', '',
+      'Closing paragraph outside the section.',
+    ].join('\n'));
+
+    expect(response.statusCode).toBe(422);
+    expect(response.json().message).toContain('could not be recovered');
+    expect(findUpdateCall()).toBeUndefined();
+  });
+
+  it('refuses rather than relocating between-section prose when a multi-expand page loses its tokens', async () => {
+    // The anchor-split path has the same false premise, and fires precisely
+    // when the model behaved well apart from the tokens: prose that sat
+    // BETWEEN two sections was pulled inside the preceding one.
+    mockPageWith(
+      '<p>Intro outside.</p>' +
+      '<details data-macro-name="expand"><summary>Q one</summary><p>Answer one body.</p></details>' +
+      '<p>Middle prose outside.</p>' +
+      '<details data-macro-name="expand"><summary>Q two</summary><p>Answer two body.</p></details>' +
+      '<p>Outro outside.</p>',
+    );
+
+    const response = await apply([
+      'Intro outside.', '',
+      'Answer one body.', '',
+      'Middle prose outside.', '',
+      'Answer two body.', '',
+      'Outro outside.',
+    ].join('\n'));
+
+    expect(response.statusCode).toBe(422);
+    expect(findUpdateCall()).toBeUndefined();
+  });
+
+  it('derives the layout skeleton from the PROTECTED html, so a frozen subtree stays invisible', async () => {
+    // llm-conversations.ts must pass protectedCurrentHtml, not body_html:
+    // the raw document still shows the section/column inside the frozen
+    // expand, and the extra skeleton entries rebuild a SECOND macro around
+    // the table. Nothing pinned the route's choice before.
+    const bodyHtml =
+      '<table><tbody><tr><td>' +
+      '<details data-macro-name="expand"><summary>In cell</summary>' +
+      '<div class="confluence-section"><div class="confluence-column"><p>col</p></div></div>' +
+      '</details></td></tr></tbody></table>';
+    mockPageWith(bodyHtml);
+
+    const response = await apply(faithfulEcho(bodyHtml));
+
+    expect(response.statusCode).toBe(200);
+    const savedHtml = captureUpdatedBodyHtml();
+    expect(savedHtml.split('data-macro-name="expand"').length - 1).toBe(1);
+    expect(savedHtml.split('confluence-section').length - 1).toBe(1);
+    expect(savedHtml).toContain('<td>');
+  });
 });
 
 describe('POST /api/llm/improvements/apply — layout boundary tokens with REAL markdownToHtml (#765)', () => {
@@ -541,7 +708,7 @@ describe('POST /api/llm/improvements/apply — layout boundary tokens with REAL 
     });
 
     expect(response.statusCode).toBe(422);
-    expect(response.json().message).toContain('column layout');
+    expect(response.json().message).toContain('columns or collapsible sections');
     // Predictable failure: NO page write happened — flattened content can
     // never be saved locally nor pushed back to Confluence.
     const updateCall = (mockQuery.mock.calls as unknown[][]).find(

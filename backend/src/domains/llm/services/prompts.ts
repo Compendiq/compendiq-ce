@@ -65,6 +65,9 @@ right text to improve
 [[[/LAYOUT-CELL]]]
 [[[/LAYOUT-SECTION]]]
 [[[/LAYOUT]]]
+[[[EXPAND name=expand open=0 title=Rollback%20runbook params=]]]
+collapsible text to improve
+[[[/EXPAND]]]
 
 A correct response keeps every token verbatim and edits only the prose:
 [[[LAYOUT]]]
@@ -76,7 +79,10 @@ The left text, improved.
 The right text, improved.
 [[[/LAYOUT-CELL]]]
 [[[/LAYOUT-SECTION]]]
-[[[/LAYOUT]]]`;
+[[[/LAYOUT]]]
+[[[EXPAND name=expand open=0 title=Rollback%20runbook params=]]]
+The collapsible text, improved. Note that title=Rollback%20runbook was copied character for character.
+[[[/EXPAND]]]`;
 
 const SYSTEM_PROMPTS = {
   improve_grammar: `You are a technical writing assistant. Improve the grammar, spelling, and punctuation of the following article while preserving its meaning and structure. Return the improved text in Markdown format. Only output the improved text, no explanations. ${LANGUAGE_PRESERVATION_INSTRUCTION}`,
