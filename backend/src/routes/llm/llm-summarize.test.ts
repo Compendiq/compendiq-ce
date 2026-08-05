@@ -412,6 +412,10 @@ describe('POST /api/llm/summarize - functionality', () => {
     expect(extras.sources).toHaveLength(1);
     expect(extras.sources[0].spaceKey).toBe('Web');
     expect(extras.sources[0].confluenceId).toBe('https://example.com');
+    // #1125: `url` is what tells the frontend this is a link, not a page —
+    // without it the citation navigated to `/pages/https://example.com`.
+    expect(extras.sources[0].url).toBe('https://example.com');
+    expect(extras.sources[0].pageId).toBe(0);
   });
 
   it('should not fetch web sources when searchWeb is not set', async () => {

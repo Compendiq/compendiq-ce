@@ -225,8 +225,9 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
     // when present, ride along in the same final SSE event.
     const improveExtras: Record<string, unknown> = { originalMarkdown: markdown };
     if (webSources.length > 0) {
+      // `url` marks these as links, not pages — see #1125 / llm-generate.ts.
       improveExtras.sources = webSources.map((s) => ({
-        pageTitle: s.title, spaceKey: 'Web', confluenceId: s.url, score: 1,
+        pageId: 0, pageTitle: s.title, spaceKey: 'Web', confluenceId: s.url, url: s.url, score: 1,
       }));
     }
 

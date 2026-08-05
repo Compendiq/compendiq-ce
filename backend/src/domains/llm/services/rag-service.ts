@@ -22,7 +22,9 @@ const RAG_EF_SEARCH = Number.isFinite(parsed) && parsed > 0 && parsed <= 10000 ?
 
 interface SearchResult {
   pageId: number;           // integer PK from pages table — used for dedup
-  confluenceId: string;
+  // NULL for locally-created (standalone) pages — they have no Confluence
+  // counterpart. Consumers must navigate/cite by `pageId`, never by this (#1125).
+  confluenceId: string | null;
   chunkText: string;
   pageTitle: string;
   sectionTitle: string;
@@ -50,9 +52,11 @@ export async function vectorSearch(userId: string, questionEmbedding: number[], 
 
     const result = await client.query<{
       page_id: number;
-      confluence_id: string;
+      confluence_id: string | null;
       chunk_text: string;
-      metadata: { page_title: string; section_title: string; space_key: string };
+      // `space_key` is NULL for locally-created (standalone) pages, same as
+      // `confluence_id` — `SearchResult.spaceKey` has always been nullable.
+      metadata: { page_title: string; section_title: string; space_key: string | null };
       distance: number;
     }>(
       `SELECT cp.id AS page_id, cp.confluence_id, pe.chunk_text, pe.metadata,
@@ -101,9 +105,9 @@ export async function keywordSearch(userId: string, questionText: string, limit 
   const kwSpaces = await getUserAccessibleSpaces(userId);
   const result = await query<{
     page_id: number;
-    confluence_id: string;
+    confluence_id: string | null;
     title: string;
-    space_key: string;
+    space_key: string | null;
     body_text: string;
     rank: number;
   }>(

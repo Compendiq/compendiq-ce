@@ -215,6 +215,43 @@ data: { "done": true, "conversationId": "…", "sources": [ … ] }
 On abort (client disconnect) the backend aborts the upstream LLM request —
 see `backend/src/routes/llm/sse-abort.test.ts` for the behaviour we rely on.
 
+### Source objects (#1125)
+
+Every entry in `sources` carries **both** identities, and the frontend picks
+the target from them — `ask`, `generate`, `improve` and `summarize` all emit
+the same shape:
+
+| Field | Knowledge-base hit | Web / external-docs hit |
+|-------|--------------------|-------------------------|
+| `pageId` | integer `pages.id` | `0` |
+| `confluenceId` | Confluence id, **`null` for locally-created pages** | the URL (legacy field, predates `url`) |
+| `spaceKey` | space key, **`null` for locally-created pages** | the `Web` / `External` display label |
+| `url` | absent | absolute http(s) URL |
+
+`frontend/src/features/ai/source-target.ts` is the single resolver: a `url`
+(or a URL found in `confluenceId`) opens in a new tab, otherwise navigation
+goes to `/pages/<pageId>`, otherwise the source renders as a **non-link**.
+**Never discriminate on `spaceKey === 'Web'`** — that is a display label and a
+real Confluence space could be keyed `Web`. Citing by `confluenceId` was
+#1125: web sources became `/pages/https://…` (multi-segment, so NotFoundPage)
+and standalone pages became `/pages/null`.
+
+**`confluenceId` is never a navigation target, and there is no fallback to
+it.** `GET /pages/:id` resolves a `/^\d+$/` id against the integer PK
+(`pages-crud.ts`), and Confluence content ids *are* numeric — so
+`/pages/<confluenceId>` does not 404, it silently opens whichever unrelated
+page holds that PK, which is worse than the not-found this issue fixed.
+Nothing needs the fallback: `/llm/ask` has always emitted `pageId` on
+knowledge-base hits, the other three routes emit only web sources (which carry
+the URL), and sources are **not persisted** with a conversation —
+`llm_conversations.messages` stores `{role, content}` only, so there is no
+back-catalogue of `pageId`-less sources to serve.
+
+For the same reason the RAG cache key's doc-id list uses `confluenceId`
+falling back to `page:<pageId>` — a set of NULL ids collapses to
+indistinguishable empty strings, and two different sets of standalone pages
+would otherwise share one key.
+
 ## Cache + stampede protection
 
 - **Key** = `hash(userId, model, normalizedQuestion, contextFingerprint)`.

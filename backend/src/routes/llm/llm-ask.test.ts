@@ -310,6 +310,81 @@ describe('POST /api/llm/ask', () => {
     expect(finalEvent!.conversationId).toBe('test-conv-id');
   });
 
+  // ─── Citation targets (#1125) ────────────────────────────────────────────
+
+  it('should emit `url` on web sources so the frontend links out instead of routing to /pages/', async () => {
+    mockHybridSearch.mockResolvedValue([]);
+    mockFetchWebSources.mockResolvedValue({
+      sources: [{ url: 'https://en.wikipedia.org/wiki/Linux', title: 'Linux', snippet: 'kernel' }],
+      injectionWarnings: [],
+    });
+    mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/llm/ask',
+      payload: { question: 'What is Linux?', model: 'llama3', searchWeb: true },
+    });
+
+    const events = parseSseBody(response.body);
+    const finalEvent = events.find((e) => (e as Record<string, unknown>).final === true) as Record<string, unknown>;
+    const sources = finalEvent.sources as Array<Record<string, unknown>>;
+
+    expect(sources).toHaveLength(1);
+    expect(sources[0].url).toBe('https://en.wikipedia.org/wiki/Linux');
+    expect(sources[0].pageId).toBe(0);
+  });
+
+  it('should emit pageId for a locally-created page whose confluenceId is NULL', async () => {
+    // Standalone pages are inserted with confluence_id NULL, so citing them by
+    // confluenceId navigated to the literal '/pages/null'.
+    mockHybridSearch.mockResolvedValue([{
+      pageId: 55,
+      confluenceId: null,
+      chunkText: 'Local article body.',
+      pageTitle: 'My Article',
+      sectionTitle: 'My Article',
+      spaceKey: null,
+      score: 0.8,
+    }]);
+    mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/llm/ask',
+      payload: { question: 'What does my article say?', model: 'llama3' },
+    });
+
+    const events = parseSseBody(response.body);
+    const finalEvent = events.find((e) => (e as Record<string, unknown>).final === true) as Record<string, unknown>;
+    const sources = finalEvent.sources as Array<Record<string, unknown>>;
+
+    expect(sources).toHaveLength(1);
+    expect(sources[0].pageId).toBe(55);
+    expect(sources[0].confluenceId).toBeNull();
+  });
+
+  it('should not collapse NULL confluence ids into the same RAG cache key', async () => {
+    // Two different standalone pages must not produce the same doc-id list —
+    // that would serve one question's cached answer for the other.
+    const { buildRagCacheKey } = await import('../../domains/llm/services/llm-cache.js');
+    mockHybridSearch.mockResolvedValue([
+      { pageId: 1, confluenceId: null, chunkText: 'a', pageTitle: 'A', sectionTitle: 'A', spaceKey: null, score: 0.9 },
+      { pageId: 2, confluenceId: null, chunkText: 'b', pageTitle: 'B', sectionTitle: 'B', spaceKey: null, score: 0.8 },
+    ]);
+    mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
+
+    await app.inject({
+      method: 'POST',
+      url: '/api/llm/ask',
+      payload: { question: 'q', model: 'llama3' },
+    });
+
+    expect(buildRagCacheKey).toHaveBeenCalledWith(
+      'm', 'q', ['page:1', 'page:2'], expect.anything(),
+    );
+  });
+
   it('should call hybridSearch with the user question', async () => {
     mockHybridSearch.mockResolvedValue([]);
     mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
@@ -585,6 +660,35 @@ describe('POST /api/llm/ask', () => {
       // The attacker-controlled title must pass through the prompt-injection
       // sanitizer before being embedded into the external-docs context.
       expect(vi.mocked(sanitizeLlmInput)).toHaveBeenCalledWith(maliciousTitle);
+    });
+
+    it('emits `url` and pageId 0 on external-docs sources too (#1125)', async () => {
+      mockHybridSearch.mockResolvedValue([]);
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
+      mockMcpIsEnabled.mockResolvedValueOnce(true);
+      mockMcpFetchDocumentation.mockResolvedValue({
+        url: 'https://docs.example.com/guide',
+        title: 'Guide',
+        markdown: 'body',
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/llm/ask',
+        payload: {
+          question: 'What is X?',
+          model: 'llama3',
+          externalUrls: ['https://docs.example.com/guide'],
+        },
+      });
+
+      const events = parseSseBody(response.body);
+      const finalEvent = events.find((e) => (e as Record<string, unknown>).final === true) as Record<string, unknown>;
+      const sources = finalEvent.sources as Array<Record<string, unknown>>;
+
+      expect(sources).toHaveLength(1);
+      expect(sources[0].url).toBe('https://docs.example.com/guide');
+      expect(sources[0].pageId).toBe(0);
     });
   });
 

@@ -27,17 +27,20 @@ const mockSources: Source[] = [
   {
     pageTitle: 'Getting Started Guide',
     spaceKey: 'DOCS',
+    pageId: 123,
     confluenceId: 'page-123',
     sectionTitle: 'Installation',
   },
   {
     pageTitle: 'API Reference',
     spaceKey: 'DEV',
+    pageId: 456,
     confluenceId: 'page-456',
   },
   {
     pageTitle: 'FAQ',
     spaceKey: 'HELP',
+    pageId: 789,
     confluenceId: 'page-789',
     sectionTitle: 'Common Issues',
   },
@@ -90,13 +93,84 @@ describe('SourceCitations', () => {
     expect(screen.getByText('Common Issues')).toBeInTheDocument();
   });
 
-  it('navigates to page when source card is clicked', () => {
+  it('navigates by internal page id when source card is clicked', () => {
     render(<SourceCitations sources={mockSources} />, { wrapper: Wrapper });
     fireEvent.click(screen.getByText('Sources (3)'));
 
     fireEvent.click(screen.getByText('Getting Started Guide'));
 
-    expect(mockNavigate).toHaveBeenCalledWith('/pages/page-123');
+    expect(mockNavigate).toHaveBeenCalledWith('/pages/123');
+  });
+
+  // ── #1125 ────────────────────────────────────────────────────────────────
+
+  it('navigates a locally-created page (null confluenceId) by page id', () => {
+    render(
+      <SourceCitations sources={[{ pageTitle: 'My Article', spaceKey: 'Local', pageId: 55, confluenceId: null }]} />,
+      { wrapper: Wrapper },
+    );
+    fireEvent.click(screen.getByText('Sources (1)'));
+    fireEvent.click(screen.getByText('My Article'));
+
+    expect(mockNavigate).toHaveBeenCalledWith('/pages/55');
+  });
+
+  it('omits the space chip for a standalone page (space_key is NULL)', () => {
+    // A page with a space is the control: exactly one of the two cards may
+    // carry the Layers chip, so the assertion can't pass vacuously.
+    const { container } = render(
+      <SourceCitations
+        sources={[
+          { pageTitle: 'My Article', spaceKey: null, pageId: 55, confluenceId: null },
+          { pageTitle: 'Synced Page', spaceKey: 'DOCS', pageId: 56, confluenceId: 'page-56' },
+        ]}
+      />,
+      { wrapper: Wrapper },
+    );
+    fireEvent.click(screen.getByText('Sources (2)'));
+
+    // The standalone card must not render a lone Layers icon with a blank label.
+    expect(screen.getByTestId('source-card-1')).toHaveTextContent('My Article');
+    expect(screen.getByTestId('source-card-1').querySelectorAll('.lucide-layers')).toHaveLength(0);
+    expect(container.querySelectorAll('.lucide-layers')).toHaveLength(1);
+  });
+
+  it('renders a web source as an external link instead of routing into /pages/', () => {
+    render(
+      <SourceCitations
+        sources={[{
+          pageTitle: 'Linux',
+          spaceKey: 'Web',
+          pageId: 0,
+          confluenceId: 'https://en.wikipedia.org/wiki/Linux',
+          url: 'https://en.wikipedia.org/wiki/Linux',
+        }]}
+      />,
+      { wrapper: Wrapper },
+    );
+    fireEvent.click(screen.getByText('Sources (1)'));
+
+    const card = screen.getByTestId('source-card-1');
+    expect(card.tagName).toBe('A');
+    expect(card).toHaveAttribute('href', 'https://en.wikipedia.org/wiki/Linux');
+    expect(card).toHaveAttribute('target', '_blank');
+    expect(card).toHaveAttribute('rel', 'noopener noreferrer');
+
+    fireEvent.click(card);
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  it('renders a source with no usable target as a non-link', () => {
+    render(
+      <SourceCitations sources={[{ pageTitle: 'Orphan', spaceKey: 'Web', confluenceId: null }]} />,
+      { wrapper: Wrapper },
+    );
+    fireEvent.click(screen.getByText('Sources (1)'));
+
+    const card = screen.getByTestId('source-card-1');
+    expect(card.tagName).toBe('DIV');
+    fireEvent.click(card);
+    expect(mockNavigate).not.toHaveBeenCalled();
   });
 
   it('collapses when clicked again', () => {

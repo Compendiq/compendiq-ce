@@ -433,6 +433,35 @@ describe('POST /api/llm/generate with documentText', () => {
     );
   });
 
+  it('emits web sources with `url` and pageId 0 so they open as links, not pages (#1125)', async () => {
+    async function* mockGenerator() {
+      yield { content: '# Article', done: true };
+    }
+    mockStreamChat.mockReturnValue(mockGenerator());
+    mockFetchWebSources.mockResolvedValue({
+      sources: [{ title: 'Linux', url: 'https://en.wikipedia.org/wiki/Linux', snippet: 'kernel' }],
+      injectionWarnings: [],
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/llm/generate',
+      payload: { prompt: 'Write about Linux', model: 'llama3', searchWeb: true, searchQuery: 'linux' },
+    });
+
+    const finalEvent = response.body
+      .split('\n')
+      .filter((line) => line.startsWith('data: '))
+      .map((line) => JSON.parse(line.replace('data: ', '')) as Record<string, unknown>)
+      .find((e) => e.final === true);
+
+    expect(finalEvent).toBeDefined();
+    const sources = finalEvent!.sources as Array<Record<string, unknown>>;
+    expect(sources).toHaveLength(1);
+    expect(sources[0].url).toBe('https://en.wikipedia.org/wiki/Linux');
+    expect(sources[0].pageId).toBe(0);
+  });
+
   it('should truncate documentText when it exceeds MAX_DOCUMENT_TEXT_FOR_LLM', async () => {
     async function* mockGenerator() {
       yield { content: '# Result', done: true };
