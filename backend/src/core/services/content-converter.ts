@@ -1281,8 +1281,12 @@ function expandTokenizesCleanly(el: Element): boolean {
     for (const child of Array.from(node.children)) {
       // Opaque subtrees emit no tokens, so nothing inside them can invalidate
       // the sequence: a frozen nested expand, a frozen legacy wrapper, and the
-      // media/unknown-macro placeholders all travel whole.
-      if (isExpandSection(child) && isConstrainedPosition(child)) continue;
+      // media/unknown-macro placeholders all travel whole. The nested-expand
+      // test is the FULL freeze verdict, not just position — a section frozen
+      // for its own shape is equally invisible, and testing only position made
+      // it freeze its parent too. The recursion terminates: each step descends
+      // strictly further into the tree.
+      if (isExpandSection(child) && isFrozenExpand(child)) continue;
       if (isFrozenLegacyWrapper(child)) continue;
       if (child.matches(OPAQUE_SUBTREE_SELECTOR)) continue;
 
@@ -1970,25 +1974,39 @@ function layoutSentinel(prefix: string, index: number): string {
  * already verified this stream against the skeleton, so sentinel N is
  * skeleton[N].
  */
-function sentinelizeLayoutTokens(markdown: string, prefix: string): { markdown: string; count: number } {
-  let count = 0;
-  const out = transformOutsideMarkdownCode(markdown, (segment) =>
-    segment.replace(
-      new RegExp(LAYOUT_TOKEN_CAPTURE, 'g'),
-      () => `\n\n${layoutSentinel(prefix, count++)}\n\n`,
-    ),
-  );
-  return { markdown: out, count };
-}
-
-/** Consume the sentinels marked wrapped in paragraphs, by index into the skeleton. */
-function rebuildLayoutFromSentinels(html: string, prefix: string, skeleton: LayoutSkeletonToken[]): string {
-  const pattern = new RegExp(
-    `<p>\\s*${prefix}(\\d+)E\\s*</p>|${prefix}(\\d+)E`,
+function sentinelizeLayoutTokens(markdown: string, prefix: string): { markdown: string; tokens: LayoutToken[] } {
+  const tokens: LayoutToken[] = [];
+  // A list marker immediately before a token is consumed with it: the token
+  // becomes its own paragraph, so leaving the `-` behind emits an empty list
+  // item. Safe to strip because only a token this pipeline is about to
+  // sentinelize can match here — a literal one in page prose reaches this
+  // point still turndown-escaped, which LAYOUT_TOKEN_CAPTURE does not match.
+  const tokenWithListMarker = new RegExp(
+    String.raw`(?:(?:^|\n)[ \t]*(?:[-*+]|\d+[.)])[ \t]+)?` + LAYOUT_TOKEN_CAPTURE,
     'g',
   );
+  const out = transformOutsideMarkdownCode(markdown, (segment) =>
+    segment.replace(tokenWithListMarker, (...args: unknown[]) => {
+      const m = args.slice(0, 4) as [string, string, string, string | undefined];
+      tokens.push({ isClose: m[1] === '/', kind: m[2], attrs: (m[3] ?? '').trim() });
+      return `\n\n${layoutSentinel(prefix, tokens.length - 1)}\n\n`;
+    }),
+  );
+  return { markdown: out, tokens };
+}
+
+/**
+ * Consume the sentinels marked wrapped in paragraphs.
+ *
+ * #1232 round 2: renders each token's OWN payload, not `skeleton[index]`. The
+ * recovered stream is a permutation of the skeleton whenever the model
+ * reordered sections, so indexing the skeleton here would put the first
+ * section's title on whichever body came first.
+ */
+function rebuildLayoutFromSentinels(html: string, prefix: string, tokens: LayoutToken[]): string {
+  const pattern = new RegExp(`<p>\\s*${prefix}(\\d+)E\\s*</p>|${prefix}(\\d+)E`, 'g');
   return html.replace(pattern, (matched, wrapped: string | undefined, bare: string | undefined) => {
-    const token = skeleton[Number(wrapped ?? bare)];
+    const token = tokens[Number(wrapped ?? bare)];
     if (!token) return matched;
     return token.isClose ? layoutCloseTag(token.kind) : layoutOpenTag(token.kind, token.attrs);
   });
@@ -2211,7 +2229,28 @@ const LAYOUT_TOKEN_LOOSE_SRC =
   String.raw`(?:\\?\]){2,4}` +
   String.raw`(?:\*{1,2}|_{1,2})?`;
 
-interface ScannedLayoutToken { start: number; end: number; kind: string; isClose: boolean; }
+/**
+ * `attrs` is the token's own payload as the model echoed it. It is what makes
+ * alignment able to follow IDENTITY rather than position (#1232 round 2) — a
+ * reordered expand must take its title with it. Empty when the spelling was
+ * too mangled to read one.
+ */
+interface ScannedLayoutToken { start: number; end: number; kind: string; isClose: boolean; attrs: string; }
+
+/** Kind + direction + payload — what makes two tokens the same section. */
+function tokenIdentity(t: { kind: string; isClose: boolean; attrs: string }): string {
+  return `${t.isClose ? '/' : ''}${t.kind}|${t.attrs}`;
+}
+
+function sameTokenMultiset(
+  found: { kind: string; isClose: boolean; attrs: string }[],
+  skeleton: LayoutSkeletonToken[],
+): boolean {
+  if (found.length !== skeleton.length) return false;
+  const a = found.map(tokenIdentity).sort();
+  const b = skeleton.map(tokenIdentity).sort();
+  return a.every((identity, i) => identity === b[i]);
+}
 
 /** Scan markdown (outside code constructs) for mangled-token candidates. */
 function scanLooseLayoutTokens(markdown: string): ScannedLayoutToken[] {
@@ -2229,6 +2268,9 @@ function scanLooseLayoutTokens(markdown: string): ScannedLayoutToken[] {
           end: offset + m.index + m[0].length,
           kind: rawKind.toUpperCase().replace(/[_ ]/g, '-'),
           isClose: m[2] !== undefined,
+          // Mangled spellings carry mangled payloads; read it anyway so an
+          // identity contradiction can still be detected, never trusted.
+          attrs: (m[4] ?? '').trim(),
         });
       }
     }
@@ -2261,6 +2303,7 @@ function scanStrictLayoutTokenSpans(markdown: string): ScannedLayoutToken[] {
           end: offset + m.index + m[0].length,
           kind: m[2]!,
           isClose: m[1] === '/',
+          attrs: (m[3] ?? '').trim(),
         });
       }
     }
@@ -2307,24 +2350,53 @@ function unwrapFullDocumentFence(markdown: string): string | null {
 // their first child), so their positions are re-derivable from neighbors.
 const PROSE_BEARING_KINDS = new Set(['LAYOUT-CELL', 'COLUMN', 'SECTION', 'EXPAND']);
 
-/** Greedy in-order alignment of scanned tokens onto the skeleton. */
+/**
+ * Greedy in-order alignment of scanned tokens onto the skeleton.
+ *
+ * #1232 round 2 added two rejections, because this function decides WHERE a
+ * section boundary lands and both failures put a real macro's identity on the
+ * wrong body at HTTP 200:
+ *
+ * - `surplus` counts echo tokens that matched nothing. They used to be
+ *   stripped as debris, which quietly let a token-shaped fragment ANCHOR the
+ *   alignment: an escape-stripped prose literal (models drop backslashes when
+ *   echoing) took the skeleton's first slot, and the real section's boundary
+ *   moved to the prose. On a non-empty skeleton the caller now refuses.
+ * - `identityConflict` is true when a matched echo token's own payload names a
+ *   DIFFERENT section of the same kind. Position said one thing and the token
+ *   said another, so positional assignment would swap two titles. A payload
+ *   that names no skeleton section at all is not a conflict — that is the
+ *   model editing a title, where the skeleton is meant to win.
+ */
 function alignLayoutTokens(
   found: ScannedLayoutToken[],
   skeleton: LayoutSkeletonToken[],
-): { matched: number[]; ok: boolean; matchedCount: number } {
+): { matched: number[]; ok: boolean; matchedCount: number; surplus: number; identityConflict: boolean } {
   const matched: number[] = new Array<number>(skeleton.length).fill(-1);
   let s = 0;
+  let surplus = 0;
   for (let f = 0; f < found.length; f++) {
     let k = s;
     while (k < skeleton.length && !(skeleton[k]!.kind === found[f]!.kind && skeleton[k]!.isClose === found[f]!.isClose)) k++;
     if (k < skeleton.length) {
       matched[k] = f;
       s = k + 1;
+    } else {
+      surplus++;
     }
-    // else: unmatched echo — debris, stripped during reconstruction.
   }
+  const identityConflict = matched.some((f, i) => {
+    if (f === -1) return false;
+    const echoed = found[f]!;
+    const target = skeleton[i]!;
+    if (!echoed.attrs || echoed.attrs === target.attrs) return false;
+    return skeleton.some(
+      (other, j) =>
+        j !== i && other.kind === target.kind && other.isClose === target.isClose && other.attrs === echoed.attrs,
+    );
+  });
   const ok = skeleton.every((t, i) => matched[i] !== -1 || t.isClose || !PROSE_BEARING_KINDS.has(t.kind));
-  return { matched, ok, matchedCount: matched.filter((f) => f !== -1).length };
+  return { matched, ok, matchedCount: matched.filter((f) => f !== -1).length, surplus, identityConflict };
 }
 
 function canonicalLayoutToken(t: LayoutSkeletonToken): string {
@@ -2595,6 +2667,22 @@ function recoverLayoutMarkdown(markdown: string, skeleton: LayoutSkeletonToken[]
   // Fast path: layout-free page and a clean echo — nothing to do.
   if (skeleton.length === 0 && rawFound.length === 0) return markdown;
 
+  // #1232 round 2: IDENTITY fast path. When the echo's canonical tokens are an
+  // exact permutation of the skeleton and nest validly, nothing was mangled —
+  // every token carries its own correct payload beside its own prose. Return it
+  // verbatim rather than rewriting it in skeleton ORDER, which is what pinned a
+  // reordered section's title onto the body that happened to come first.
+  // Duplicates inside the multiset are by definition indistinguishable, so
+  // whichever way they pair up is the same document.
+  const strictSpans = scanStrictLayoutTokenSpans(markdown);
+  if (
+    skeleton.length > 0 &&
+    sameTokenMultiset(strictSpans, skeleton) &&
+    layoutSequenceValid(strictSpans)
+  ) {
+    return markdown;
+  }
+
   const candidates: string[] = [markdown];
   const unwrappedCode = unwrapTokenOnlyCode(markdown);
   if (unwrappedCode !== markdown) candidates.push(unwrappedCode);
@@ -2621,6 +2709,12 @@ function recoverLayoutMarkdown(markdown: string, skeleton: LayoutSkeletonToken[]
       .sort((a, b) => b.matchedCount - a.matchedCount || a.order - b.order);
     for (const attempt of attempts) {
       if (!attempt.ok || attempt.matchedCount < minMatched) continue;
+      // #1232 round 2: never let an unreconciled token anchor the alignment,
+      // and never assign a token to a slot its own payload contradicts. Both
+      // are silent identity corruption on the persisting path; refusing is
+      // what the caller turns into a 422.
+      if (skeleton.length > 0 && attempt.surplus > 0) continue;
+      if (attempt.identityConflict) continue;
       const rebuilt = reconstructLayoutMarkdown(attempt.candidate, attempt.found, attempt.matched, skeleton);
       if (matchesSkeleton(rebuilt, skeleton)) return { rebuilt, bestMatched: attempt.matchedCount };
     }
@@ -2660,9 +2754,16 @@ function recoverLayoutMarkdown(markdown: string, skeleton: LayoutSkeletonToken[]
   // the outcome the user can actually recover from.
   const hasExpandSlot = skeleton.some((t) => !t.isClose && t.kind === 'EXPAND');
 
+  // #1232 round 2: both paths below strip every token-shaped fragment as
+  // debris and re-slot the remaining prose. With a surplus token in the echo
+  // that fragment may be the page's OWN prose, so stripping it deletes user
+  // text and the re-slotting is anchored on a document that no longer matches
+  // what the model returned. Refuse instead.
+  const hasSurplus = alignLayoutTokens(rawFound, skeleton).surplus > 0;
+
   // Single-slot wrap (#785 review): with exactly one prose-bearing open the
   // assignment is unambiguous even when nothing aligned at all.
-  if (!hasExpandSlot && proseSlots.length === 1) {
+  if (!hasExpandSlot && !hasSurplus && proseSlots.length === 1) {
     const wrapped = wrapProseInSingleSlot(markdown, skeleton);
     if (matchesSkeleton(wrapped, skeleton)) return wrapped;
   }
@@ -2670,7 +2771,7 @@ function recoverLayoutMarkdown(markdown: string, skeleton: LayoutSkeletonToken[]
   // Anchor split: multi-slot skeleton, every token dropped, but each cell's
   // leading prose survived the rewrite — split at the anchors instead of
   // rejecting. All-or-nothing; any ambiguity falls through to the error.
-  if (!hasExpandSlot && proseSlots.length > 1) {
+  if (!hasExpandSlot && !hasSurplus && proseSlots.length > 1) {
     const split = splitProseByAnchors(markdown, skeleton);
     if (split !== null && matchesSkeleton(split, skeleton)) return split;
   }
@@ -2699,38 +2800,41 @@ export interface MarkdownToHtmlOptions {
 export async function markdownToHtml(markdown: string, options?: MarkdownToHtmlOptions): Promise<string> {
   const skeleton = options?.layoutSkeleton;
 
-  // #781: with a known skeleton, align the LLM's echo against it first —
-  // throws LayoutRecoveryError when the layout is unrecoverable.
-  const input = skeleton ? recoverLayoutMarkdown(markdown, skeleton) : markdown;
-
   // #1221 review: on the persisting path the sequence is the PAGE's own, so an
   // invalid one means the stored document has a nesting the storage format
   // forbids (the freeze normally keeps those opaque — see expandTokenizesCleanly).
   // Fail closed. The alternative the rebuild uses elsewhere, stripping every
   // token and saving the flattened body, is exactly the silent macro loss this
   // envelope exists to prevent, and here it would be triggered by the page
-  // rather than by anything the model did.
+  // rather than by anything the model did. Checked before recovery runs: the
+  // verdict cannot change and the work would be wasted (#1232 round 2).
   if (skeleton && skeleton.length > 0 && !layoutSequenceValid(skeleton)) {
     throw new LayoutRecoveryError({ expectedTokens: skeleton.length, recoveredTokens: 0 });
   }
+
+  // #781: with a known skeleton, align the LLM's echo against it first —
+  // throws LayoutRecoveryError when the layout is unrecoverable.
+  const input = skeleton ? recoverLayoutMarkdown(markdown, skeleton) : markdown;
 
   // #1221 review: replace the verified tokens with opaque sentinels so the
   // HTML-side rebuild consumes THEM rather than re-discovering bracket runs
   // that marked un-escaped out of ordinary prose.
   const sentinelPrefix = skeleton ? layoutSentinelPrefix(input) : '';
   let prepared = input;
+  let sentinelTokens: LayoutToken[] = [];
   if (skeleton) {
     const sentinelled = sentinelizeLayoutTokens(input, sentinelPrefix);
-    if (sentinelled.count !== skeleton.length) {
-      // recoverLayoutMarkdown verified this stream against the skeleton, so a
-      // mismatch here is not reachable from model output — fail closed rather
-      // than emit a half-rebuilt document.
+    // The recovered stream is a permutation of the skeleton (the model may have
+    // reordered sections), so it is checked for COUNT and for its own validity
+    // rather than against the skeleton's order.
+    if (sentinelled.tokens.length !== skeleton.length || !layoutSequenceValid(sentinelled.tokens)) {
       throw new LayoutRecoveryError({
         expectedTokens: skeleton.length,
-        recoveredTokens: sentinelled.count,
+        recoveredTokens: sentinelled.tokens.length,
       });
     }
     prepared = sentinelled.markdown;
+    sentinelTokens = sentinelled.tokens;
   }
 
   // #765: force every layout boundary token onto its own paragraph so marked
@@ -2760,7 +2864,7 @@ export async function markdownToHtml(markdown: string, options?: MarkdownToHtmlO
     // skips them), so no masking is needed. Nothing else is touched: any
     // remaining [[[…]]] text is prose the strictness ladder deliberately kept,
     // and it now reaches the page verbatim instead of being stripped.
-    return rebuildLayoutFromSentinels(html, sentinelPrefix, skeleton);
+    return rebuildLayoutFromSentinels(html, sentinelPrefix, sentinelTokens);
   }
 
   html = transformOutsideHtmlCode(html, (segment) => {

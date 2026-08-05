@@ -538,6 +538,35 @@ Model-*invented* token text is still stripped as hallucinated debris — the
 escape is what tells the two apart, and #781's "hallucinated tokens are
 stripped, never built" guarantee depends on it.
 
+#### Alignment follows identity, and a surplus token is fatal
+
+Two more rules, both about **which** section a boundary belongs to rather than
+whether one survives.
+
+- **Identity fast path.** When the echo's canonical tokens are an exact
+  permutation of the skeleton and nest validly, the markdown is returned
+  verbatim and each token renders its own payload. Rewriting the stream in
+  *skeleton order* — which is what reconstruction does — pinned a reordered
+  section's title onto whichever body came first, so a model that merely
+  reorganised a page saved "Rollback runbook" over the deploy steps. The same
+  fix keeps a legacy column's width with its own prose.
+- **A surplus token refuses the apply.** A token that reconciles with no
+  skeleton entry used to be stripped as debris — but only *after* it had been
+  allowed to anchor the alignment. Models routinely drop backslash escapes when
+  echoing, so a page's own `\[\[\[EXPAND …\]\]\]` prose came back unescaped,
+  became a real token to the scan, and moved a real section's boundary onto the
+  prose. Anything the echo carries that the skeleton does not know is now
+  refused, which also covers a model-invented wrapper pair. Alignment
+  additionally rejects a match whose payload names a *different* section of the
+  same kind; a payload naming none is the model editing a title, where the
+  skeleton still wins.
+
+The cost is that a page whose prose contains token text cannot be improved
+while the model keeps stripping the escapes, and that a mangled echo carrying a
+lookalike is refused rather than rescued. Both were previously "succeed and
+delete something"; #785's note that a consumed lookalike is "the accepted price
+of recovering a mangled echo" no longer holds — the price was the user's words.
+
 #### Token-free recovery does not apply to expands
 
 `wrapProseInSingleSlot` and `splitProseByAnchors` both assume a prose-bearing

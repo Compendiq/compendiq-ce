@@ -2314,13 +2314,16 @@ describe('content-converter: #781 layout-token resilience', () => {
       expectTwoEqualRebuilt(html);
     });
 
-    it('strips duplicated/hallucinated extra tokens and still rebuilds per the skeleton', async () => {
-      const html = await recover(LAYOUT_TWO_EQUAL_PAGE, (md) =>
-        md.replace('[[[/LAYOUT]]]', '[[[/LAYOUT]]]\n\n[[[LAYOUT]]]\n\n[[[/LAYOUT]]]'),
-      );
-      // Exactly ONE layout — the duplicate echo is debris.
-      expect((html.match(/class="confluence-layout"/g) ?? []).length).toBe(1);
-      expectTwoEqualRebuilt(html);
+    it('refuses a duplicated/hallucinated extra token pair instead of stripping it as debris', async () => {
+      // Changed by the #1232 round-2 review. Stripping a surplus token as
+      // debris let it ANCHOR the alignment first: whichever occurrence came
+      // earlier took the skeleton's slot, so a real boundary could land on the
+      // wrong prose, and any page text caught in the "debris" span was deleted.
+      // A token that reconciles with nothing is no longer allowed to
+      // participate — the apply is refused so the user can re-run.
+      const { skeleton, md } = prepare(LAYOUT_TWO_EQUAL_PAGE);
+      const duplicated = md.replace('[[[/LAYOUT]]]', '[[[/LAYOUT]]]\n\n[[[LAYOUT]]]\n\n[[[/LAYOUT]]]');
+      await expect(markdownToHtml(duplicated, { layoutSkeleton: skeleton })).rejects.toThrow(LayoutRecoveryError);
     });
 
     it('keeps prose the LLM placed between cell boundaries out of the bare section (folds into the next cell)', async () => {
@@ -2405,18 +2408,27 @@ describe('content-converter: #781 layout-token resilience', () => {
       expect((html.match(/class="confluence-layout-cell"/g) ?? []).length).toBe(2);
     });
 
-    it('still escalates to loose matching when the echo is mangled (lookalike exposure accepted)', async () => {
+    it('still escalates to loose matching when the echo is mangled', async () => {
       const { skeleton, md } = prepare(LAYOUT_TWO_EQUAL_PAGE);
-      const mangled = md
-        .replace('[[[/LAYOUT-CELL]]]', '[[[/layout-cell]]]') // first close lower-cased by the model
-        .replace('Left column content', 'Left column content mentions [[[layout]]]');
+      const mangled = md.replace('[[[/LAYOUT-CELL]]]', '[[[/layout-cell]]]'); // close lower-cased
       const html = await markdownToHtml(mangled, { layoutSkeleton: skeleton });
-      // Loose escalation rescued the layout; the lookalike was consumed as
-      // token debris — the accepted price of recovering a mangled echo.
       expect(html).toContain('data-layout-type="two_equal"');
       expect((html.match(/class="confluence-layout-cell"/g) ?? []).length).toBe(2);
-      expect(html).toContain('Left column content mentions');
+      expect(html).toContain('Left column content');
       expect(html).not.toContain('[[[');
+    });
+
+    it('refuses when a mangled echo ALSO carries a lookalike, rather than eating the prose', async () => {
+      // #785 accepted "the lookalike is consumed as token debris" as the price
+      // of loose escalation. The #1232 round-2 review withdrew that: consuming
+      // it deletes words the user wrote, and the same surplus can anchor a real
+      // boundary onto the wrong prose (that is BC2, with an expand instead of a
+      // cell). Refusing costs a re-run; the old behaviour cost page content.
+      const { skeleton, md } = prepare(LAYOUT_TWO_EQUAL_PAGE);
+      const mangled = md
+        .replace('[[[/LAYOUT-CELL]]]', '[[[/layout-cell]]]')
+        .replace('Left column content', 'Left column content mentions [[[layout]]]');
+      await expect(markdownToHtml(mangled, { layoutSkeleton: skeleton })).rejects.toThrow(LayoutRecoveryError);
     });
   });
 
@@ -2892,31 +2904,33 @@ describe('content-converter: #1221 stage 2 expand boundary tokens', () => {
       expect(xhtml).toContain('<ac:parameter ac:name="note">[[[LAYOUT]]] here</ac:parameter>');
     });
 
-    it("strips a token shape the MODEL invented, while keeping the page's own", async () => {
-      // The two are distinguishable, and the distinction is the escape.
-      // Prose that was on the page reaches the model turndown-escaped
-      // (\[\[\[…), which the strict scanner cannot see, so it stays prose all
-      // the way to the saved page. An unescaped token shape the model typed
-      // itself is indistinguishable from a hallucinated marker, and #781
-      // strips those by design — keeping it would contradict the
-      // 'hallucinated layout tokens are stripped, never built' guarantee.
-      // Only the token shape goes; the surrounding words stay.
+    it("keeps the page's own escaped literal, and refuses a token the model added", async () => {
+      // Two different things, and the escape tells them apart. Prose that was
+      // on the page reaches the model turndown-escaped (\[\[\[…), which the
+      // strict scan cannot see, so it stays prose all the way to the saved
+      // page — no surplus, apply succeeds.
       const bodyHtml =
         '<p>Docs mention [[[EXPAND name=expand]]] here.</p>' +
         '<details data-macro-name="expand"><summary>Runbook</summary><p>step one</p></details>';
       const { html: prot } = protectMedia(bodyHtml);
-      const md = `${htmlToMarkdown(prot, { layoutTokens: true })}\n\nI preserved the [[[EXPAND]]] marker.`;
-      const html = await markdownToHtml(md, { layoutSkeleton: extractLayoutSkeleton(prot) });
-      // The page's own sentence survives verbatim …
+      const skeleton = extractLayoutSkeleton(prot);
+      const faithful = htmlToMarkdown(prot, { layoutTokens: true });
+      const html = await markdownToHtml(faithful, { layoutSkeleton: skeleton });
       expect(html).toContain('Docs mention [[[EXPAND name=expand]]] here.');
-      // … the model's invented marker is stripped, its words kept …
-      expect(html).toContain('marker.');
-      expect(html).not.toContain('the [[[EXPAND]]] marker');
-      // … and the real section is rebuilt.
       expect(html).toContain('<summary>Runbook</summary>');
+
+      // An UNESCAPED token the model typed itself is a surplus, and #1232
+      // round 2 established that a surplus may never take part in alignment —
+      // it is indistinguishable from the escape-stripped literal that anchored
+      // a real boundary onto the wrong prose. Refused, not silently stripped.
+      await expect(
+        markdownToHtml(`${faithful}\n\nI preserved the [[[EXPAND]]] marker.`, { layoutSkeleton: skeleton }),
+      ).rejects.toThrow(LayoutRecoveryError);
     });
 
     it('leaves literal token text in a fenced code block untouched on the skeleton path', async () => {
+      // Behaviour guard, not a pin on the provenance change: code regions were
+      // already masked from the old backstop strip, so this held before it too.
       const bodyHtml = '<details data-macro-name="expand"><summary>Docs</summary><p>body</p></details>';
       const { html: prot } = protectMedia(bodyHtml);
       const md = `${htmlToMarkdown(prot, { layoutTokens: true })}\n\n\`\`\`\n[[[EXPAND name=expand]]]\n\`\`\`\n`;
@@ -2944,6 +2958,39 @@ describe('content-converter: #1221 stage 2 expand boundary tokens', () => {
       expect(xhtml).toContain('ac:name="section"');
     });
 
+    it('keeps a column width with its own prose when the model reorders columns', async () => {
+      // The identity fix is in shared machinery, so it corrects the same class
+      // for legacy columns: base pinned `width=30%` onto whichever prose came
+      // first, because reconstruction re-emitted skeleton[i].
+      const bodyHtml =
+        '<div class="confluence-section">' +
+        '<div class="confluence-column" data-cell-width="30%"><p>Narrow prose</p></div>' +
+        '<div class="confluence-column" data-cell-width="70%"><p>Wide prose</p></div></div>';
+      const { html: prot } = protectMedia(bodyHtml);
+      const swapped = [
+        '[[[SECTION]]]', '',
+        '[[[COLUMN width=70%]]]', '', 'Wide prose', '', '[[[/COLUMN]]]', '',
+        '[[[COLUMN width=30%]]]', '', 'Narrow prose', '', '[[[/COLUMN]]]', '',
+        '[[[/SECTION]]]',
+      ].join('\n');
+      const xhtml = htmlToConfluence(
+        await markdownToHtml(swapped, { layoutSkeleton: extractLayoutSkeleton(prot) }),
+      );
+      expect(xhtml).toMatch(/width">70%[\s\S]*Wide prose/);
+      expect(xhtml).toMatch(/width">30%[\s\S]*Narrow prose/);
+    });
+
+    it('leaves no stray list marker when the model put a token on a list line', async () => {
+      const bodyHtml = '<details data-macro-name="expand"><summary>T</summary><p>body</p></details>';
+      const { html: prot } = protectMedia(bodyHtml);
+      const md = htmlToMarkdown(prot, { layoutTokens: true })
+        .replace('[[[EXPAND', '- [[[EXPAND');
+      const html = await markdownToHtml(md, { layoutSkeleton: extractLayoutSkeleton(prot) });
+      expect(html).toContain('<summary>T</summary>');
+      expect(html).not.toContain('<p>- </p>');
+      expect(html).not.toMatch(/<li>\s*<\/li>/);
+    });
+
     it('fails closed for a stored column macro that never had its section', async () => {
       // Not an expand shape, but the same class, and the one most likely to
       // exist in the wild: a hand-authored `column` outside any `section`.
@@ -2956,6 +3003,9 @@ describe('content-converter: #1221 stage 2 expand boundary tokens', () => {
     });
 
     it('fails closed when the page itself carries a nesting the storage format forbids', async () => {
+      // Behaviour guard: this threw before the explicit gate too (recovery
+      // could not align the unmatched prose-bearing opens). The gate makes the
+      // refusal deliberate and cheap rather than incidental.
       // Reached only if the freeze misses a shape: strip-and-save would delete
       // the macros, so the apply is refused instead.
       const skeleton = extractLayoutSkeleton(
@@ -2977,6 +3027,8 @@ describe('content-converter: #1221 stage 2 expand boundary tokens', () => {
         keep: 'confluence-column',
       },
       {
+        // Guard rather than pin: a stray cell was already covered by the first
+        // cut's class list. Kept because the derived check must not lose it.
         name: 'an expand containing a layout cell without its grid',
         bodyHtml:
           '<details data-macro-name="expand"><summary>T</summary>' +
@@ -3014,6 +3066,27 @@ describe('content-converter: #1221 stage 2 expand boundary tokens', () => {
       const { html: prot, media } = protectMedia(bodyHtml);
       expect(media).toHaveLength(0);
       expect(htmlToMarkdown(prot, { layoutTokens: true })).toContain('[[[EXPAND ');
+    });
+
+    it('freezes only the inner section when a nested one is shape-frozen', async () => {
+      // The walk skipped a nested expand only when it was frozen by POSITION,
+      // so a nested one frozen by SHAPE was descended into and its invalid
+      // sequence froze the outer section too — costing the outer body's
+      // improvability for no safety reason. A frozen section emits no tokens
+      // at all, so its subtree cannot invalidate anything.
+      const bodyHtml =
+        '<details data-macro-name="expand"><summary>Outer</summary><p>outer prose</p>' +
+        '<details data-macro-name="expand"><summary>Inner</summary>' +
+        '<div class="confluence-column"><p>col</p></div></details></details>';
+      const { html: prot, media } = protectMedia(bodyHtml);
+      // Exactly the inner section is captured …
+      expect(media).toHaveLength(1);
+      expect(media[0]!.html).toContain('<summary>Inner</summary>');
+      expect(media[0]!.html).not.toContain('<summary>Outer</summary>');
+      // … and the outer one tokenises, so its prose stays improvable.
+      const md = htmlToMarkdown(prot, { layoutTokens: true });
+      expect(md).toContain('[[[EXPAND name=expand open=0 title=Outer params=]]]');
+      expect(md).toContain('outer prose');
     });
 
     it('gives media exactly one token when a frozen expand holds an unfrozen nested one', async () => {

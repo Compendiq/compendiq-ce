@@ -547,6 +547,102 @@ describe('POST /api/llm/improvements/apply — EXPAND boundary tokens (#1221 sta
     expect(findUpdateCall()).toBeUndefined();
   });
 
+  // --------------------------------------------------------------------
+  // Round-2 review: alignment identity. Greedy alignment matched on kind
+  // alone and the reconstruction re-emitted skeleton[i], so WHICH section a
+  // title belonged to was decided by position. Both of these saved a page
+  // with a real macro carrying the wrong identity, at HTTP 200.
+  // --------------------------------------------------------------------
+  it('keeps each title with its own body when the model reorders two sections', async () => {
+    // Nothing mangled: every token is canonical and carries its own correct
+    // attrs. Position-based reconstruction pinned "Rollback runbook" onto the
+    // deploy body and vice versa. Unlike an anonymous layout cell, an expand's
+    // title is user-visible identity.
+    mockPageWith(
+      '<details data-macro-name="expand"><summary>Deployment steps</summary><p>deploy body</p></details>' +
+      '<details data-macro-name="expand"><summary>Rollback runbook</summary><p>rollback body</p></details>',
+    );
+
+    const response = await apply([
+      '[[[EXPAND name=expand open=0 title=Rollback%20runbook params=]]]', '',
+      'rollback body', '',
+      '[[[/EXPAND]]]', '',
+      '[[[EXPAND name=expand open=0 title=Deployment%20steps params=]]]', '',
+      'deploy body', '',
+      '[[[/EXPAND]]]',
+    ].join('\n'));
+
+    expect(response.statusCode).toBe(200);
+    const savedHtml = captureUpdatedBodyHtml();
+    // Each summary is immediately followed by ITS OWN body.
+    expect(savedHtml).toMatch(/<summary>Rollback runbook<\/summary>\s*<p>rollback body<\/p>/);
+    expect(savedHtml).toMatch(/<summary>Deployment steps<\/summary>\s*<p>deploy body<\/p>/);
+  });
+
+  it('refuses when an escape-stripped prose literal would anchor a section boundary', async () => {
+    // Models routinely drop backslash escapes when echoing. The strict-span
+    // scan is the entire provenance signal, so an unescaped prose literal
+    // becomes a real token and greedy alignment anchors the skeleton at the
+    // PROSE position — pulling the page's own sentence inside the collapsed
+    // section and ejecting the real body.
+    mockPageWith(
+      '<p>Use [[[EXPAND name=expand open=0 title=Runbook params=]]] to open.</p>' +
+      '<details data-macro-name="expand"><summary>Runbook</summary><p>real body</p></details>',
+    );
+
+    const response = await apply([
+      'Use [[[EXPAND name=expand open=0 title=Runbook params=]]] to open.', '',
+      '[[[EXPAND name=expand open=0 title=Runbook params=]]]', '',
+      'real body, clarified', '',
+      '[[[/EXPAND]]]',
+    ].join('\n'));
+
+    expect(response.statusCode).toBe(422);
+    expect(findUpdateCall()).toBeUndefined();
+  });
+
+  it('refuses when a surplus token would redistribute bodies across a multi-section page', async () => {
+    mockPageWith(
+      '<p>Syntax: [[[EXPAND name=expand open=0 title=One params=]]]</p>' +
+      '<details data-macro-name="expand"><summary>One</summary><p>alpha body</p></details>' +
+      '<details data-macro-name="expand"><summary>Two</summary><p>beta body</p></details>',
+    );
+
+    const response = await apply([
+      'Syntax: [[[EXPAND name=expand open=0 title=One params=]]]', '',
+      '[[[EXPAND name=expand open=0 title=One params=]]]', '',
+      'alpha body', '',
+      '[[[/EXPAND]]]', '',
+      '[[[EXPAND name=expand open=0 title=Two params=]]]', '',
+      'beta body', '',
+      '[[[/EXPAND]]]',
+    ].join('\n'));
+
+    expect(response.statusCode).toBe(422);
+    expect(findUpdateCall()).toBeUndefined();
+  });
+
+  it('refuses a model-invented wrapper pair rather than relocating real prose into a real section', async () => {
+    // Same family: a surplus pair the model made up. Stripping it as debris
+    // moved prose that belonged at top level inside the page's real section.
+    mockPageWith(
+      '<p>Intro outside.</p>' +
+      '<details data-macro-name="expand"><summary>Real</summary><p>real body</p></details>',
+    );
+
+    const response = await apply([
+      '[[[EXPAND name=expand open=0 title=Invented params=]]]', '',
+      'Intro outside.', '',
+      '[[[/EXPAND]]]', '',
+      '[[[EXPAND name=expand open=0 title=Real params=]]]', '',
+      'real body', '',
+      '[[[/EXPAND]]]',
+    ].join('\n'));
+
+    expect(response.statusCode).toBe(422);
+    expect(findUpdateCall()).toBeUndefined();
+  });
+
   it('derives the layout skeleton from the PROTECTED html, so a frozen subtree stays invisible', async () => {
     // llm-conversations.ts must pass protectedCurrentHtml, not body_html:
     // the raw document still shows the section/column inside the frozen
