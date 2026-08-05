@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'fs';
+import { resolve } from 'path';
 import { Editor } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import { Image } from '@tiptap/extension-image';
@@ -90,6 +92,152 @@ describe('article-extensions', () => {
       const parseRules = getParseRules(DetailsSummary);
       expect(parseRules).toBeDefined();
       expect(parseRules).toContainEqual(expect.objectContaining({ tag: 'summary' }));
+    });
+  });
+
+  // #1227: an untitled section stores nothing, so the label it shows has to be
+  // painted on. A ProseMirror decoration stamps `data-expand-placeholder` and
+  // CSS renders it — never a node attribute, or the label would serialize into
+  // body_html and become the fabricated `title` parameter all over again.
+  describe('DetailsSummary placeholder (#1227)', () => {
+    function mount(content: string, editable = true) {
+      return new Editor({ extensions: [StarterKit, Details, DetailsSummary], content, editable });
+    }
+    const placeholderOf = (editor: Editor) =>
+      editor.view.dom.querySelector('summary')?.getAttribute('data-expand-placeholder');
+
+    it('labels an empty summary with the native expand default', () => {
+      const editor = mount('<details data-macro-name="expand"><summary></summary><p>B</p></details>');
+      expect(placeholderOf(editor)).toBe('Click here to expand...');
+      editor.destroy();
+    });
+
+    it('labels an empty ui-expand summary with Refined\'s own string', () => {
+      // Measured on Refined's public DC demo: no ellipsis, unlike the native
+      // macro. The near-collision is real, so pin both.
+      const editor = mount('<details data-macro-name="ui-expand"><summary></summary><p>B</p></details>');
+      expect(placeholderOf(editor)).toBe('Click here to expand');
+      editor.destroy();
+    });
+
+    it('falls back to a generic label for an unstamped or unknown section', () => {
+      // Pre-#1211 body_html and editor-created sections carry no stamp;
+      // guessing a third-party macro's wording would be the same fabrication
+      // in the UI that this issue removed from the storage format.
+      for (const tag of ['<details>', '<details data-macro-name="some-vendor-expand">']) {
+        const editor = mount(`${tag}<summary></summary><p>B</p></details>`);
+        expect(placeholderOf(editor)).toBe('Click to expand');
+        editor.destroy();
+      }
+    });
+
+    it('leaves a titled summary alone', () => {
+      const editor = mount('<details data-macro-name="expand"><summary>Real</summary><p>B</p></details>');
+      expect(placeholderOf(editor)).toBeNull();
+      editor.destroy();
+    });
+
+    it('labels an empty summary in read view too', () => {
+      // ArticleViewer mounts the same node with `editable: false`, and an
+      // untitled section has to read the same on the page as it does in the
+      // editor. Decorations render in both modes; CSS `:empty` matches in
+      // neither, which is why this is not a stylesheet-only change.
+      const editor = mount(
+        '<details data-macro-name="expand"><summary></summary><p>B</p></details>',
+        false,
+      );
+      expect(placeholderOf(editor)).toBe('Click here to expand...');
+      editor.destroy();
+    });
+
+    it('never serializes the label into the document', () => {
+      const editor = mount('<details data-macro-name="expand"><summary></summary><p>B</p></details>');
+      expect(editor.getHTML()).not.toContain('data-expand-placeholder');
+      expect(editor.getHTML()).not.toContain('Click here to expand');
+      editor.destroy();
+    });
+
+    it('stops labelling as soon as the user types a title', () => {
+      const editor = mount('<details data-macro-name="expand"><summary></summary><p>B</p></details>');
+      expect(placeholderOf(editor)).toBe('Click here to expand...');
+      editor.commands.insertContentAt(2, 'Typed');
+      expect(placeholderOf(editor)).toBeNull();
+      expect(editor.getHTML()).toContain('<summary>Typed</summary>');
+      editor.destroy();
+    });
+
+    // PDF export is the other renderer that has to supply these labels: it is
+    // server-side pdf-lib, so neither the decoration nor the stylesheet
+    // reaches it, and #1227 left it printing untitled sections with no header
+    // row at all. Backend and frontend share only `@compendiq/contracts`, so
+    // the map is duplicated in `pdf-service.ts` — parsed here so a change to
+    // one copy fails by name instead of drifting silently. (Same
+    // read-the-other-workspace idiom as `nginx-api-body-limit.test.ts`.)
+    it('agrees with the copy the PDF exporter renders from', () => {
+      const parseLabels = (source: string, mapName: string, fallbackName: string) => {
+        const body = new RegExp(`${mapName}[^=]*=\\s*\\{([^}]*)\\}`).exec(source)?.[1];
+        expect(body, `${mapName} is gone or no longer an object literal`).toBeTruthy();
+        const labels: Record<string, string> = {};
+        for (const [, key, value] of body!.matchAll(/'?([\w-]+)'?:\s*'([^']*)'/g)) {
+          labels[key] = value;
+        }
+        const fallback = new RegExp(`${fallbackName}\\s*=\\s*'([^']*)'`).exec(source)?.[1];
+        expect(fallback, `${fallbackName} is gone`).toBeTruthy();
+        return { labels, fallback };
+      };
+
+      const here = parseLabels(
+        readFileSync(resolve(__dirname, 'article-extensions.ts'), 'utf-8'),
+        'EXPAND_PLACEHOLDER_LABELS',
+        'DEFAULT_EXPAND_PLACEHOLDER',
+      );
+      const pdf = parseLabels(
+        readFileSync(
+          resolve(__dirname, '../../../../../backend/src/core/services/pdf-service.ts'),
+          'utf-8',
+        ),
+        'EXPAND_DEFAULT_LABELS',
+        'DEFAULT_EXPAND_LABEL',
+      );
+
+      // Not just equal to each other — equal to the measured strings, so a
+      // matching pair of wrong edits still fails.
+      expect(here.labels).toEqual({
+        expand: 'Click here to expand...',
+        'ui-expand': 'Click here to expand',
+      });
+      expect(pdf.labels).toEqual(here.labels);
+      expect(here.fallback).toBe('Click to expand');
+      expect(pdf.fallback).toBe(here.fallback);
+    });
+  });
+
+  // #1227: this is why every <details> the backend produces carries a
+  // <summary>, empty or not. `Details.content` is 'detailsSummary block*' — a
+  // REQUIRED first child — so a summary-less section cannot parse as written
+  // and its body is lifted out to become a sibling of an emptied section. The
+  // next save would push that loss to Confluence. Characterizing it here keeps
+  // the invariant honest: if this ever stops ejecting, the backend's
+  // always-emit-a-summary rule can be revisited on evidence rather than memory.
+  describe('summary-less <details> ejects its body (#1227 invariant)', () => {
+    it('lifts the body out of a section with no summary', () => {
+      const editor = new Editor({
+        extensions: [StarterKit, Details, DetailsSummary],
+        content: '<details data-macro-name="expand"><p>body</p></details>',
+      });
+      const html = editor.getHTML();
+      expect(html).toContain('<summary></summary></details>');
+      expect(html).toMatch(/<\/details>\s*<p>body<\/p>/);
+      editor.destroy();
+    });
+
+    it('keeps the body inside when the summary is present but empty', () => {
+      const editor = new Editor({
+        extensions: [StarterKit, Details, DetailsSummary],
+        content: '<details data-macro-name="expand"><summary></summary><p>body</p></details>',
+      });
+      expect(editor.getHTML()).toMatch(/<summary><\/summary>\s*<p>body<\/p>\s*<\/details>/);
+      editor.destroy();
     });
   });
 

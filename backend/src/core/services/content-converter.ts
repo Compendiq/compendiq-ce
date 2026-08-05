@@ -239,7 +239,15 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey
   for (const macro of byTag(doc, 'ac:structured-macro')) {
     const macroName = getMacroName(macro);
     if (!EXPAND_MACRO_NAMES.has(macroName)) continue;
-    const title = getParamValue(macro, 'title') ?? 'Click to expand';
+    // #1227: no `?? 'Click to expand'` default. Substituting one made absence
+    // unrepresentable at the very first hop, and the reverse pass — which has
+    // only the summary to go on — then wrote the substituted label back as a
+    // real `title` parameter onto a customer page that never had one.
+    // getParamValue returns the parameter's textContent, so the three storage
+    // states arrive here already distinct: `null` (no parameter), `''`
+    // (`<ac:parameter ac:name="title"/>`, a real empty title #1232 preserves)
+    // and a string.
+    const title = getParamValue(macro, 'title');
     const bodyEl = byTag(macro, 'ac:rich-text-body')[0];
 
     const details = doc.createElement('details');
@@ -251,7 +259,12 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey
     // from there.
     details.setAttribute('data-macro-name', macroName);
     const extraParams = collectDirectTextParams(macro);
-    delete extraParams.title;
+    // …with one exception (#1227): an EMPTY title has no home in the summary,
+    // because a blank summary is also what an absent title looks like. Keep
+    // that one key so the two stay distinguishable; every non-empty title is
+    // still deleted here and rebuilt from the summary, so a typed title never
+    // has two homes to disagree.
+    if (extraParams.title !== '') delete extraParams.title;
     // #1129: `expanded` gets the same one-value-one-home treatment as `title`.
     // It is read from the direct-children map because it has to be deleted from
     // that map anyway. The two sources are not interchangeable even now that
@@ -268,8 +281,13 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey
     if (Object.keys(extraParams).length > 0) {
       details.setAttribute('data-macro-params', JSON.stringify(extraParams));
     }
+    // The <summary> is appended unconditionally even when it is empty. The
+    // TipTap `Details` node declares `content: 'detailsSummary block*'`, so a
+    // summary-less <details> cannot parse as written: the body is lifted out
+    // and left as a sibling of an emptied section, in the read view as much as
+    // the editor. Every <details> this codebase produces carries a <summary>.
     const summary = doc.createElement('summary');
-    summary.textContent = title;
+    summary.textContent = title ?? '';
     details.appendChild(summary);
     if (bodyEl) {
       // Move children directly to avoid nesting extra <div> on each round-trip
@@ -766,13 +784,26 @@ export function htmlToConfluence(html: string): string {
     const macroName = details.getAttribute('data-macro-name') || 'expand';
     macro.setAttribute('ac:name', macroName);
 
-    if (summary) {
+    // #1227: decide on the summary's TEXT, not on the summary's existence.
+    // The forward pass now emits an empty <summary> for an untitled section
+    // (it must emit one — see the schema note there), so "there is a summary"
+    // no longer means "there is a title", and treating it as one fabricated a
+    // `title` parameter on every untitled section that made the round-trip.
+    // Trimmed, so a whitespace-only summary counts as untitled; the parameter
+    // carries the UNtrimmed text, since a real title's own spacing is the
+    // user's.
+    const summaryText = summary?.textContent ?? '';
+    const hasTitle = summaryText.trim() !== '';
+    if (hasTitle) {
       const param = doc.createElement('ac:parameter');
       param.setAttribute('ac:name', 'title');
-      param.textContent = summary.textContent ?? '';
+      param.textContent = summaryText;
       macro.appendChild(param);
-      summary.remove();
     }
+    // Removal is unconditional wherever a summary exists: <summary> is an
+    // HTML5 element with no place in Confluence storage format, whether or not
+    // it carried a title.
+    summary?.remove();
 
     // #1129: rebuild the default-open parameter from the `open` attribute, its
     // single source of truth (the forward pass consumed the parameter into it).
@@ -802,18 +833,27 @@ export function htmlToConfluence(html: string): string {
     }
 
     // Re-emit parameters persisted by the forward pass (mirrors the
-    // unknown-macro handler below). A `title` key is skipped when <summary>
+    // unknown-macro handler below). A `title` key is skipped when the summary
     // provided the parameter above — the summary is its source of truth. So is
     // an `expanded` key on a macro that keeps that state in `open` (#1129): the
     // forward pass never writes one, but a stale copy from hand-edited or
     // pre-#1129 HTML must not resurrect a section the user has since closed.
+    //
+    // #1227: the `title` key is consulted EXACTLY when the summary is blank —
+    // which is why this is not the marker-attribute approach the issue rejected.
+    // There, a declared attribute survived a text edit verbatim and discarded
+    // the title the user had just typed; here the user's own text always wins,
+    // and the marker is unreachable while any is present. And it is honoured
+    // only for `''`, the one value the summary cannot carry: a stale non-empty
+    // `title` in the map — hand-edited or legacy HTML — must not resurrect a
+    // title the user has just cleared.
     const rawParams = details.getAttribute('data-macro-params');
     if (rawParams) {
       try {
         const params = JSON.parse(rawParams) as Record<string, unknown>;
         for (const [paramName, paramValue] of Object.entries(params)) {
           if (typeof paramValue !== 'string') continue;
-          if (paramName === 'title' && summary) continue;
+          if (paramName === 'title' && (hasTitle || paramValue !== '')) continue;
           if (paramName === 'expanded' && EXPANDED_PARAM_MACROS.has(macroName)) continue;
           const p = doc.createElement('ac:parameter');
           p.setAttribute('ac:name', paramName);
@@ -1476,10 +1516,12 @@ function expandTokenAttrs(el: Element): string {
   const open = el.hasAttribute('open') ? '1' : '0';
   const params = el.getAttribute('data-macro-params') ?? '';
   const attrs = [`name=${encodeTokenValue(name)}`, `open=${open}`];
-  // #1232 review: PRESENCE of the key carries whether there is a <summary> at
-  // all, so an explicitly empty one (`title=`) is not confused with none.
-  // Confluence storage distinguishes them — `<ac:parameter ac:name="title"/>`
-  // is a real, empty title — and spelling both as `title=` dropped it.
+  // PRESENCE of the key records whether the HTML had a <summary> at all — no
+  // more than that since #1227. The absent-vs-explicitly-empty title
+  // distinction Confluence storage draws now rides in `params`
+  // (`{"title":""}`), because a blank summary is what BOTH states look like.
+  // The guard stays anyway: this function also runs over HTML that never came
+  // from confluenceToHtml, and the rebuild is happy to be told there was none.
   if (summary) attrs.push(`title=${encodeTokenValue(summary.textContent ?? '')}`);
   attrs.push(`params=${encodeTokenValue(params)}`);
   return attrs.join(' ');
@@ -1930,10 +1972,15 @@ function layoutOpenTag(kind: string, attrs: string): string {
       if (open) tag += ' open';
       if (isMacroParamsObject(params)) tag += ` data-macro-params="${escapeHtmlAttr(params)}"`;
       tag += '>';
-      // No summary for a section that never had one: emitting an empty one
-      // would hand htmlToConfluence a blank `title` parameter the page never
-      // had. An explicitly empty title (`title=`) keeps its empty <summary>.
-      return title === null ? tag : `${tag}<summary>${escapeHtmlText(title)}</summary>`;
+      // #1227: always a summary, including for a token that carries no `title`
+      // attribute at all. A blank one no longer costs anything — htmlToConfluence
+      // now decides on the summary's text rather than its existence, so it emits
+      // no `title` parameter for one — while a summary-LESS <details> is not
+      // parseable by the TipTap schema (`content: 'detailsSummary block*'`) and
+      // ejects its own body out of the section. That was reachable from here:
+      // a model echoing `[[[EXPAND name=expand open=0 params=]]]` reaches this
+      // rebuild through Improve-apply.
+      return `${tag}<summary>${escapeHtmlText(title ?? '')}</summary>`;
     }
     // Unreachable: kinds are constrained by LAYOUT_TOKEN_KINDS in the regex.
     default:

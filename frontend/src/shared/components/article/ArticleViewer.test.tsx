@@ -468,7 +468,7 @@ describe('ArticleViewer', () => {
   });
 
   it('renders collapsible details/summary sections', async () => {
-    const html = '<details><summary>Click to expand</summary><p>Hidden content</p></details>';
+    const html = '<details><summary>Section title</summary><p>Hidden content</p></details>';
 
     const { container } = render(<ArticleViewer content={html} />);
 
@@ -476,7 +476,28 @@ describe('ArticleViewer', () => {
       expect(container.querySelector('details')).toBeTruthy();
     });
 
-    expect(container.querySelector('summary')?.textContent).toBe('Click to expand');
+    expect(container.querySelector('summary')?.textContent).toBe('Section title');
+  });
+
+  // #1227: an untitled section stores no title, so the read view has to supply
+  // the macro's own default label — that is what makes the page look the same
+  // in Compendiq as it does in Confluence. The label is a decoration, so it is
+  // present on the rendered element and absent from the content.
+  it('labels an untitled expand section without storing a title', async () => {
+    const html = '<details data-macro-name="expand"><summary></summary><p>Hidden content</p></details>';
+
+    const { container } = render(<ArticleViewer content={html} />);
+
+    await waitFor(() => {
+      expect(container.querySelector('summary')).toBeTruthy();
+    });
+
+    const summary = container.querySelector('summary')!;
+    expect(summary.getAttribute('data-expand-placeholder')).toBe('Click here to expand...');
+    expect(summary.textContent).toBe('');
+    // The body stayed inside the section — a summary-less <details> would have
+    // ejected it (see article-extensions.test.ts).
+    expect(container.querySelector('details')?.textContent).toContain('Hidden content');
   });
 
   it('adds copy buttons to code blocks', async () => {
