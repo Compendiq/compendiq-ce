@@ -6,6 +6,10 @@ import { searchRoutes } from './search.js';
 // The real class, not the mocked client module below — llm-http-error.js
 // lives in its own module precisely so tests that mock the client keep it.
 import { LlmHttpError } from '../../domains/llm/services/llm-http-error.js';
+// Same reasoning: circuit-breaker.js is never mocked, so instanceof checks
+// in the route (and here, to construct rejections) see the real class.
+import { CircuitBreakerOpenError } from '../../core/services/circuit-breaker.js';
+import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
 
 vi.mock('../../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
@@ -87,7 +91,19 @@ describe('Search Routes', () => {
         });
         return;
       }
-      reply.status(error.statusCode ?? 500).send({ error: error.message, statusCode: error.statusCode ?? 500 });
+      // Mirror app.ts:398's policy: a 500 never echoes the underlying
+      // error's message to the client — only non-500 statuses (deliberately
+      // thrown, e.g. Fastify sensible httpErrors) do. This route test
+      // registers its own minimal error handler rather than the app's real
+      // one, so it must reproduce that sanitization or a rethrown DB/unknown
+      // error (#1223) would leak here even though search.ts itself no
+      // longer formats it into the response.
+      const statusCode = error.statusCode ?? 500;
+      reply.status(statusCode).send({
+        error: statusCode === 500 ? 'InternalServerError' : error.name,
+        message: statusCode === 500 ? 'Internal Server Error' : error.message,
+        statusCode,
+      });
     });
 
     app.decorate('authenticate', async (request: { userId: string; username: string; userRole: string }) => {
@@ -524,12 +540,12 @@ describe('Search Routes', () => {
     // ── #1214 regression: provider error bodies stay out of search 502s ──────
     // Since #1185 generateEmbedding throws the real LlmHttpError: the
     // provider's raw body (third-party text that can echo request fragments
-    // and internal topology) lives on `.detail`, and `.message` is the
-    // constant body-free `"generateEmbedding HTTP <status>"`. The route folds
-    // `err.message` into its client-visible 502 — these pin that the detail
-    // never rides along, whether a future change folds it back in at the
-    // LlmHttpError class or at the route's own formatting.
-    it('semantic mode 502 keeps the provider error body out of the client-visible message (#1214)', async () => {
+    // and internal topology) lives on `.detail`, never on `.message`. #1223
+    // went further and replaced the route's own `err.message` formatting
+    // with `toUserFacingEmbeddingError` — a fixed, categorized constant —
+    // for genuine embedding-provider failures, so these now pin that no
+    // input to that helper can ever surface raw provider text either.
+    it('semantic mode 502 keeps the provider error body out of the client-visible message (#1214, #1223)', async () => {
       mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] }); // embeddings exist
       mockProviderGenerateEmbedding.mockRejectedValue(
         new LlmHttpError('generateEmbedding', 500, 'SECRET_PROVIDER_BODY_XYZ internal-host=10.0.4.12'),
@@ -543,16 +559,20 @@ describe('Search Routes', () => {
       expect(response.statusCode).toBe(502);
       const body = response.json();
       expect(body.error).toBe('EmbeddingFailed');
-      // The constant sanitized wording, nothing appended.
-      expect(body.message).toBe('Embedding generation failed: generateEmbedding HTTP 500');
+      // toUserFacingEmbeddingError's fixed fallback constant — nothing from
+      // the caught error is interpolated in.
+      expect(body.message).toBe('Embedding failed due to a provider error. See server logs for details.');
       // Belt and braces: the marker appears nowhere in the raw payload.
       expect(response.body).not.toContain('SECRET_PROVIDER_BODY_XYZ');
     });
 
-    it('hybrid mode 502 keeps the provider error body out of the client-visible message (#1214)', async () => {
+    // #1223: hybridSearch (rag-service.ts) rethrows only CircuitBreakerOpenError
+    // and swallows its own embedding failures internally, so an LlmHttpError
+    // reaching this catch is not the expected shape any more — treat it like
+    // any other non-circuit-breaker error and rethrow to the global handler
+    // for a sanitized 500, rather than re-labeling it EmbeddingFailed/502.
+    it('hybrid mode rethrows a non-circuit-breaker error to a sanitized 500, provider body absent (#1214, #1223)', async () => {
       mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] }); // embeddings exist
-      // hybridSearch propagates the client's LlmHttpError unchanged; the
-      // route's hybrid catch formats the same client-visible 502.
       mockHybridSearch.mockRejectedValue(
         new LlmHttpError('generateEmbedding', 500, 'SECRET_PROVIDER_BODY_XYZ internal-host=10.0.4.12'),
       );
@@ -562,11 +582,100 @@ describe('Search Routes', () => {
         url: '/api/search?q=test&mode=hybrid',
       });
 
-      expect(response.statusCode).toBe(502);
+      expect(response.statusCode).toBe(500);
       const body = response.json();
-      expect(body.error).toBe('EmbeddingFailed');
-      expect(body.message).toBe('Embedding generation failed: generateEmbedding HTTP 500');
+      expect(body.message).toBe('Internal Server Error');
       expect(response.body).not.toContain('SECRET_PROVIDER_BODY_XYZ');
+    });
+
+    // ── #1223: hybrid catch no longer echoes err.message into a 502 ──────────
+    // What actually reaches this catch in production is predominantly a
+    // DATABASE error (keywordSearch, the ACL post-filter — see rag-service.ts,
+    // which swallows only its own embedding-path failures). A raw Postgres
+    // connection-phase message (role names, pg_hba entries, internal hosts)
+    // must never reach the client; it should be rethrown and sanitized by the
+    // global handler exactly like any other uncaught DB error on this route.
+    it('hybrid mode: DB error reaching the catch is sanitized, marker absent (#1223)', async () => {
+      mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] }); // embeddings exist
+      mockHybridSearch.mockRejectedValue(
+        new Error('password authentication failed for user "SECRET_DB_MARKER_ROLE"'),
+      );
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/search?q=test&mode=hybrid',
+      });
+
+      expect(response.statusCode).toBe(500);
+      const body = response.json();
+      expect(body.message).toBe('Internal Server Error');
+      expect(response.body).not.toContain('SECRET_DB_MARKER_ROLE');
+    });
+
+    it('hybrid mode: CircuitBreakerOpenError → 503 with retry-shortly semantics (#1223)', async () => {
+      mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] }); // embeddings exist
+      mockHybridSearch.mockRejectedValue(new CircuitBreakerOpenError('breaker open for provider p1'));
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/search?q=test&mode=hybrid',
+      });
+
+      expect(response.statusCode).toBe(503);
+      const body = response.json();
+      expect(body.message).toContain('try again');
+      expect(response.body).not.toContain('breaker open for provider p1');
+    });
+
+    // ── semantic mode twin (search.ts:69, the AI review's required scope
+    // addition) — same class of leak, same fix. ────────────────────────────
+    it('semantic mode: embedding-path error carrying a marker stays out of the 502 (#1223)', async () => {
+      mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] }); // embeddings exist
+      mockProviderGenerateEmbedding.mockRejectedValue(
+        new Error('provider said SECRET_EMBED_MARKER_ABC while talking to internal-host'),
+      );
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/search?q=test&mode=semantic',
+      });
+
+      expect(response.statusCode).toBe(502);
+      expect(response.body).not.toContain('SECRET_EMBED_MARKER_ABC');
+    });
+
+    it('semantic mode: DB-shaped error resolving the embedding provider is sanitized to 500 (#1223)', async () => {
+      mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] }); // embeddings exist
+      vi.mocked(resolveUsecase).mockRejectedValueOnce(
+        new Error('no pg_hba.conf entry for host "SECRET_DB_HOST_MARKER"'),
+      );
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/search?q=test&mode=semantic',
+      });
+
+      expect(response.statusCode).toBe(500);
+      const body = response.json();
+      expect(body.message).toBe('Internal Server Error');
+      expect(response.body).not.toContain('SECRET_DB_HOST_MARKER');
+      // The provider call itself must never have been reached.
+      expect(mockProviderGenerateEmbedding).not.toHaveBeenCalled();
+    });
+
+    it('semantic mode: CircuitBreakerOpenError on the embedding call → 503 (#1223)', async () => {
+      mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] }); // embeddings exist
+      mockProviderGenerateEmbedding.mockRejectedValue(new CircuitBreakerOpenError('breaker open for provider p1'));
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/search?q=test&mode=semantic',
+      });
+
+      expect(response.statusCode).toBe(503);
+      const body = response.json();
+      expect(body.message).toContain('try again');
+      expect(response.body).not.toContain('breaker open for provider p1');
     });
 
     it('recordSearchAnalytics is called once per request for semantic mode', async () => {

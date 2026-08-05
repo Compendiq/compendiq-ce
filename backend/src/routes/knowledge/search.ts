@@ -1,4 +1,4 @@
-import { FastifyInstance } from 'fastify';
+import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { SearchHybridQuerySchema } from '@compendiq/contracts';
 import { query } from '../../core/db/postgres.js';
@@ -15,7 +15,8 @@ import {
 } from '../../domains/llm/services/rag-service.js';
 import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
 import { generateEmbedding } from '../../domains/llm/services/openai-compatible-client.js';
-import { logger } from '../../core/utils/logger.js';
+import { CircuitBreakerOpenError } from '../../core/services/circuit-breaker.js';
+import { toUserFacingEmbeddingError } from '../../domains/llm/services/embedding-error-message.js';
 
 /**
  * Fuzzy title similarity threshold for pg_trgm.
@@ -48,25 +49,53 @@ const SuggestionsQuerySchema = z.object({
 });
 
 /**
- * Generate a query embedding, returning a 502 error response on failure.
- * Shared by semantic and hybrid search modes to avoid duplicating the
- * try/catch + error-formatting logic.
+ * Generate a query embedding for semantic/hybrid search modes.
+ *
+ * Errors are handled separately by where they originate, because they carry
+ * very different disclosure risk:
+ *
+ * - `resolveUsecase` is a DB lookup and can also throw app-authored text
+ *   naming an internal provider UUID or the existence of an EE org policy
+ *   (see llm-provider-resolver.ts). Its failures are always rethrown so
+ *   app.ts's global handler answers a sanitized 500 — never shown to the
+ *   caller.
+ * - `generateEmbedding` actually calls the embedding provider. A
+ *   `CircuitBreakerOpenError` there becomes a 503 with retry-shortly
+ *   semantics (mirrors llm-ask.ts's hybridSearch handling). Any other
+ *   failure is a genuine embedding-provider error, categorized through
+ *   `toUserFacingEmbeddingError` into a fixed, non-sensitive message —
+ *   never the raw `err.message`.
  */
 async function generateSearchEmbedding(
-  userId: string,
+  request: FastifyRequest,
   q: string,
   modeName: string,
-  reply: import('fastify').FastifyReply,
+  reply: FastifyReply,
 ): Promise<number[] | null> {
+  let resolved: Awaited<ReturnType<typeof resolveUsecase>>;
   try {
-    const { config, model } = await resolveUsecase('embedding');
-    const embeddings = await generateEmbedding(config, model, q);
+    resolved = await resolveUsecase('embedding');
+  } catch (err) {
+    request.log.error({ err }, `Failed to resolve embedding provider for ${modeName} search`);
+    throw err;
+  }
+
+  try {
+    const embeddings = await generateEmbedding(resolved.config, resolved.model, q);
     return embeddings[0] ?? null;
   } catch (err) {
-    logger.warn({ err }, `Embedding generation failed for ${modeName} search`);
+    if (err instanceof CircuitBreakerOpenError) {
+      reply.status(503).send({
+        error: 'LLM service temporarily unavailable',
+        message: 'The AI service circuit breaker is open. Please try again later.',
+        statusCode: 503,
+      });
+      return null;
+    }
+    request.log.error({ err }, `Embedding generation failed for ${modeName} search`);
     reply.status(502).send({
       error: 'EmbeddingFailed',
-      message: `Embedding generation failed: ${err instanceof Error ? err.message : String(err)}`,
+      message: toUserFacingEmbeddingError(err),
       statusCode: 502,
     });
     return null;
@@ -111,7 +140,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
 
     // ── Semantic mode ─────────────────────────────────────────────────────────
     if (effectiveMode === 'semantic') {
-      const questionEmbedding = await generateSearchEmbedding(userId, q, 'semantic', reply);
+      const questionEmbedding = await generateSearchEmbedding(request, q, 'semantic', reply);
       if (!questionEmbedding) return;
 
       const vectorResults = await vectorSearch(userId, questionEmbedding, limit);
@@ -161,13 +190,23 @@ export async function searchRoutes(fastify: FastifyInstance) {
       try {
         deduped = await hybridSearch(userId, q, limit);
       } catch (err) {
-        logger.warn({ err }, 'Hybrid search failed (embedding generation error)');
-        reply.status(502).send({
-          error: 'EmbeddingFailed',
-          message: `Embedding generation failed: ${err instanceof Error ? err.message : String(err)}`,
-          statusCode: 502,
-        });
-        return;
+        if (err instanceof CircuitBreakerOpenError) {
+          reply.status(503).send({
+            error: 'LLM service temporarily unavailable',
+            message: 'The AI service circuit breaker is open. Please try again later.',
+            statusCode: 503,
+          });
+          return;
+        }
+        // hybridSearch (rag-service.ts) swallows its own embedding failures
+        // internally and rethrows only CircuitBreakerOpenError, so anything
+        // reaching here is predominantly a DATABASE error (keywordSearch,
+        // the ACL post-filter, etc. — see the #1223 AI review call-graph
+        // analysis). Never format err.message into the client-visible body:
+        // log it server-side and let app.ts's global handler answer a
+        // sanitized 500.
+        request.log.error({ err }, 'Hybrid search failed');
+        throw err;
       }
 
       const items = deduped.map((r) => ({
