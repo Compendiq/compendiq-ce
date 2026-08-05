@@ -39,7 +39,27 @@ function stripCdata(xhtml: string): string {
 // meant to contain children (ri:user, ri:page, ri:attachment, ri:url,
 // ac:emoticon). This is narrow and surgical — it does not touch container
 // elements like ac:structured-macro, ac:rich-text-body, ac:link, etc.
-const SELF_CLOSING_XHTML_TAGS = ['ri:user', 'ri:page', 'ri:attachment', 'ri:url', 'ac:emoticon'];
+//
+// `ac:parameter` is the one entry that CAN legitimately hold children (the
+// `<ac:parameter><ri:page/></ac:parameter>` that include / excerpt-include
+// use), and it is in the list anyway (#1222 review) because a *value-less*
+// parameter is empty, so an XML serializer may normalise it to `<ac:parameter
+// ac:name="subtle"/>`. Unexpanded, that element swallows every following
+// parameter AND the ac:rich-text-body as its own children: the macro's
+// remaining parameters became grandchildren (invisible to a direct-child
+// lookup) and an empty `title` parameter absorbed the body, titling the section
+// with its own opening prose. A parameter that really does carry content is
+// never written self-closing, so the rewrite cannot reach it. Expanding the tag
+// is what lets the rest of this file treat "parameter" and "direct
+// ac:parameter child" as the same thing.
+const SELF_CLOSING_XHTML_TAGS = [
+  'ri:user',
+  'ri:page',
+  'ri:attachment',
+  'ri:url',
+  'ac:emoticon',
+  'ac:parameter',
+];
 
 function expandSelfClosingXhtmlTags(xhtml: string): string {
   let out = xhtml;
@@ -68,15 +88,26 @@ function getMacroName(el: Element): string {
  * Read one named parameter from a macro's DIRECT ac:parameter children (#1222).
  *
  * `ac:parameter` is a direct child of `ac:structured-macro` by storage-format
- * schema, so scoping the lookup loses nothing legitimate. A descendant search
- * (what this did before) let a body-carrying macro read the first match
+ * schema, so scoping the lookup loses nothing legitimate — but that guarantee
+ * reaches the parsed DOM only because the tag is expanded out of self-closing
+ * form first (SELF_CLOSING_XHTML_TAGS above). Unexpanded, one value-less
+ * parameter makes every parameter after it a grandchild, invisible here.
+ *
+ * A descendant search (what this did before) let a macro read the first match
  * anywhere in its subtree — a NESTED macro's parameter — and the reverse pass
  * then persisted that value onto the outer macro as a parameter the Confluence
- * page never had. Verified thefts: an untitled `expand` took a nested expand's
- * `title`, or a nested `status` badge's (cross-type, because `status` is
- * processed later and its parameters are still ac:parameter elements when the
- * expand branch looks); `section` took a nested macro's `border`; `column` took
- * its `width`, which also landed in an inline flex style.
+ * page never had. Nothing limits that to the handlers that render a body: any
+ * macro whose source element contains another macro can be the victim, and
+ * storage XHTML is API-writable, so the nesting is reachable even where
+ * Confluence's own editor would not produce it. Every name resolved through
+ * this helper is exposed — `title`, `language`, `colour`, `border`, `width`,
+ * `key`, `diagramName`, `upload`/`old`, `depth`, `max`, `maxLevel`. Thefts
+ * verified on dev: an untitled `expand` took a nested expand's `title`, or a
+ * nested `status` badge's; `section` took a nested macro's `border`; `column`
+ * took its `width`, which also landed in an inline flex style. Which macros
+ * could donate a value was an accident of handler order, not a rule — a nested
+ * `code` macro is already replaced by the time the expand branch looks, a
+ * nested `status` macro is not.
  *
  * Keeps `textContent` semantics — an element-valued parameter contributes its
  * text — which is what separates this from `collectDirectTextParams` below,
@@ -223,11 +254,13 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey
     delete extraParams.title;
     // #1129: `expanded` gets the same one-value-one-home treatment as `title`.
     // It is read from the direct-children map because it has to be deleted from
-    // that map anyway — getParamValue is scoped to direct children too since
-    // #1222, so either source now answers the same. Read `=== 'true'` rather
-    // than testing for presence: Confluence DC omits the parameter entirely on
-    // a collapsed section and no `false` spelling was observed, so
-    // presence-testing would misread a hand-authored `expanded=false` as open.
+    // that map anyway. The two sources are not interchangeable even now that
+    // both are scoped to direct children (#1222): collectDirectTextParams skips
+    // an unnamed or element-valued parameter, getParamValue reads its text.
+    // Read `=== 'true'` rather than testing for presence: Confluence DC omits
+    // the parameter entirely on a collapsed section and no `false` spelling was
+    // observed, so presence-testing would misread a hand-authored
+    // `expanded=false` as open.
     if (EXPANDED_PARAM_MACROS.has(macroName)) {
       if (extraParams.expanded === 'true') details.setAttribute('open', '');
       delete extraParams.expanded;

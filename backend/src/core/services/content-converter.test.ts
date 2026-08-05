@@ -1418,6 +1418,64 @@ describe('content-converter: #1222 direct-child parameter resolution', () => {
     expect(summaries[0]).toBe('<summary>Outer</summary>');
     expect(summaries[1]).toBe('<summary>Inner</summary>');
   });
+
+  // A parameter is a direct child by storage-format schema — but the pipeline
+  // parses storage XHTML with an HTML parser, where `<ac:parameter …/>` does
+  // NOT self-close. Every following sibling parameter nests inside it and
+  // becomes a grandchild, so "direct child by schema" only holds in the parsed
+  // DOM because the tag is pre-expanded (SELF_CLOSING_XHTML_TAGS). Reachable
+  // the same way parameter-after-body above is: storage XHTML is API-writable,
+  // and an XML serializer in a third-party app normalises an empty element to
+  // self-closing form.
+  describe('self-closing ac:parameter', () => {
+    it('keeps reading a status macro\'s colour and title past a self-closed parameter', () => {
+      const storage =
+        '<ac:structured-macro ac:name="status"><ac:parameter ac:name="subtle"/>' +
+        '<ac:parameter ac:name="colour">Green</ac:parameter>' +
+        '<ac:parameter ac:name="title">DONE</ac:parameter></ac:structured-macro>';
+      const html = confluenceToHtml(storage);
+      expect(html).toContain('data-color="green"');
+      expect(html).toContain('>DONE<');
+      // Write-back must not persist a defaulted colour and an emptied title.
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).toContain('<ac:parameter ac:name="colour">Green</ac:parameter>');
+      expect(xhtml).toContain('<ac:parameter ac:name="title">DONE</ac:parameter>');
+    });
+
+    it('keeps an expand\'s own title past a self-closed parameter, and recovers that parameter', () => {
+      const storage =
+        '<ac:structured-macro ac:name="expand"><ac:parameter ac:name="breakout-mode"/>' +
+        '<ac:parameter ac:name="title">Real Title</ac:parameter>' +
+        '<ac:rich-text-body><p>body</p></ac:rich-text-body></ac:structured-macro>';
+      const html = confluenceToHtml(storage);
+      expect(html).toContain('<summary>Real Title</summary>');
+      // The self-closed parameter is a real parameter of this macro too — once
+      // it closes, the #865 net can carry it through the round-trip.
+      expect(html).toMatch(/data-macro-params="[^"]*breakout-mode/);
+    });
+
+    it('keeps a column\'s width past a self-closed parameter', () => {
+      const storage =
+        '<ac:structured-macro ac:name="column"><ac:parameter ac:name="subtle"/>' +
+        '<ac:parameter ac:name="width">30%</ac:parameter>' +
+        '<ac:rich-text-body><p>c</p></ac:rich-text-body></ac:structured-macro>';
+      const html = confluenceToHtml(storage);
+      expect(html).toContain('data-cell-width="30%"');
+      expect(html).toContain('style="flex: 0 0 30%"');
+    });
+
+    it('does not let a self-closed title parameter swallow the body as its title', () => {
+      // Pre-existing on dev, not introduced by the direct-child lookup: the
+      // unclosed parameter absorbs ac:rich-text-body, so textContent returned
+      // the body's prose and the section was titled with its own first words.
+      const storage =
+        '<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title"/>' +
+        '<ac:rich-text-body><p>body text</p></ac:rich-text-body></ac:structured-macro>';
+      const html = confluenceToHtml(storage);
+      expect(html).not.toContain('<summary>body text</summary>');
+      expect(html).toContain('<p>body text</p>');
+    });
+  });
 });
 
 // ========== Figure/Caption pass-through tests (#13) ==========

@@ -101,18 +101,31 @@ Custom turndown rules handle Confluence-specific macros:
 - **A macro's parameters are its direct `ac:parameter` children** (#1222).
   `ac:parameter` is a direct child of `ac:structured-macro` by storage-format
   schema, so the forward pass scopes every named-parameter lookup to direct
-  children. A descendant-wide search let a body-carrying macro read a *nested*
-  macro's parameter — an untitled `expand` took a nested expand's (or a nested
-  `status` badge's) `title`, `section` took a nested macro's `border`, `column`
-  its `width`, which also landed in an inline flex style — and the reverse pass
-  then persisted that value onto the outer macro as a parameter the Confluence
-  page never had. Which macros could donate a value was an accident of handler
-  order, not a rule: a nested `code` macro is already replaced by the time the
-  expand branch looks, a nested `status` macro is not. The anonymous
-  `<ac:parameter><ri:page/></ac:parameter>` inside `include` / `excerpt-include`
-  is unaffected — it is read by walking `ri:page`, not by name. The fix corrects
-  new conversions only; a stolen value already baked into stored `body_html`
-  stays until that page is re-synced.
+  children. A descendant-wide search let a macro read a *nested* macro's
+  parameter — an untitled `expand` took a nested expand's (or a nested `status`
+  badge's) `title`, `section` took a nested macro's `border`, `column` its
+  `width`, which also landed in an inline flex style — and the reverse pass then
+  persisted that value onto the outer macro as a parameter the Confluence page
+  never had. This was never limited to the handlers that render a body: any
+  macro whose source element contains another macro could be the victim (`toc`,
+  `jira`, `labels`, `attachments`, `children`, `drawio` and `status` were all
+  demonstrated), and storage XHTML is API-writable, so the nesting is reachable
+  even where Confluence's own editor would not produce it. Which macros could
+  *donate* a value was an accident of handler order, not a rule: a nested `code`
+  macro is already replaced by the time the expand branch looks, a nested
+  `status` macro is not. The anonymous `<ac:parameter><ri:page/></ac:parameter>`
+  inside `include` / `excerpt-include` is unaffected — it is read by walking
+  `ri:page`, not by name. The fix corrects new conversions only; a stolen value
+  already baked into stored `body_html` stays until that page is re-synced.
+- **`ac:parameter` is in the self-closing pre-expansion list** (#1222 review),
+  and the rule above depends on it. "Direct child by schema" is only a *DOM*
+  guarantee once the tag closes: a value-less parameter is empty, so an XML
+  serializer may write `<ac:parameter ac:name="subtle"/>`, and under the HTML
+  parser that element swallows every parameter after it — and the
+  `ac:rich-text-body` — as children. So the macro's remaining parameters became
+  grandchildren (dropped by a direct-child lookup, though the old descendant
+  search still found them), and an empty `title` parameter absorbed the body,
+  titling the section with its own opening prose. Expanding the tag closes both.
 - `<details>` carries its producing macro's identity (#1211):
   the forward expand branch stamps `data-macro-name="expand"` (plus
   non-`title` parameters as JSON `data-macro-params`; `title` lives in
