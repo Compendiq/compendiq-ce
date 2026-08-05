@@ -55,7 +55,7 @@ Custom turndown rules handle Confluence-specific macros:
 | `ac:structured-macro[code]`          | `<pre><code class="language-x">`                             | ` ```x … ``` ` fenced block   |
 | `ac:task-list`                       | `<ul data-task-list>`                                        | `- [ ]` / `- [x]`             |
 | `ac:panel` (info/note/warn)          | `<div class="panel panel-…">`                                | `> **INFO:** …` block-quote   |
-| `ac:structured-macro[expand]` and `[ui-expand]` (Refined) | `<details data-macro-name="expand\|ui-expand" data-macro-params="{…}">` + `<summary>` holding the `title` param (#1211: the identity stamp lets the reverse pass write back the producing macro's `ac:name` — absent defaults to `expand`, an unrecognised value passes through, never coerced — so both macros survive editor saves). `ui-expand`'s `expanded` param maps to the `open` attribute and lives there only (#1129) | flattened content by default; opaque-protected on Improve (#1221 stage 1 — `details` has no turndown rule, so without the freeze the Improve round-trip flattened the section to bare paragraphs and the macro was deleted on write-back) |
+| `ac:structured-macro[expand]` and `[ui-expand]` (Refined) | `<details data-macro-name="expand\|ui-expand" data-macro-params="{…}">` + `<summary>` holding the `title` param (#1211: the identity stamp lets the reverse pass write back the producing macro's `ac:name` — absent defaults to `expand`, an unrecognised value passes through, never coerced — so both macros survive editor saves). `ui-expand`'s `expanded` param maps to the `open` attribute and lives there only (#1129) | flattened content by default; on Improve (#1221) the section round-trips as `[[[EXPAND …]]]` boundary tokens so its **body prose stays improvable**, except when it sits in a markdown-constrained container (`td`/`th`/`li`/`blockquote`/panel) where it is opaque-protected instead. The `<summary>` is never improvable either way — it rides percent-encoded in the token |
 | `ri:user`                            | `<span class="confluence-user-mention" data-username="…">@user</span>` | `@user` (inline) |
 | `ri:page`                            | `<a data-page-link>`                                         | `[title](compendiq://page/ID)` |
 | `ac:structured-macro[drawio]`        | `<img data-drawio>`                                          | `![diagram](attachment-url)`  |
@@ -166,24 +166,53 @@ Custom turndown rules handle Confluence-specific macros:
   `rw_adf_text_strong`); that rides through as ordinary body HTML, but we have
   no rule for those classes, so `rw_adf_text_strong` renders as plain text
   rather than bold.
-- **`<details>` is frozen whole on the Improve path (#1221 stage 1).**
-  `MEDIA_SELECTOR` lists `details`, so `protectMedia` swaps each expand
-  section for an opaque token before the HTML→Markdown→HTML round-trip and
-  `restoreMedia` puts it back verbatim. Without it the section was flattened
-  into bare paragraphs — `<summary>` became prose, the `data-macro-name`
-  stamp was lost, and `htmlToConfluence` rebuilt no macro, so applying an
-  Improve permanently deleted the expand from the Confluence page. The freeze
-  is outermost-first: nested expands, and any media or macro placeholders
-  inside a section, ride along in the one capture (`details` is in
-  `protectMedia`'s descendant-skip list). The tradeoff is the one #865 already
-  accepted — **AI Improve no longer rewrites the prose inside a collapsible
-  section** — and it is strictly better than improving that prose and then
-  deleting the section holding it. A model that drops the token entirely is
-  caught by the apply route's drop-guard, which re-appends the section at the
-  end of the body: preserved, but relocated. Stage 2 (#1221) makes the freeze
-  conditional and carries expand boundaries as `[[[EXPAND …]]]` layout tokens
-  where the position allows, restoring improvability. Non-Improve flows never
-  call `protectMedia`, so they still flatten `<details>` as before.
+- **`<details>` survives the Improve path two different ways (#1221).**
+  Left alone, the section was flattened into bare paragraphs — `<summary>`
+  became prose, the `data-macro-name` stamp was lost, and `htmlToConfluence`
+  rebuilt no macro, so applying an Improve **permanently deleted the expand
+  from the Confluence page**. Stage 1 (#1225) stopped that by freezing every
+  `<details>` opaquely via `MEDIA_SELECTOR`; stage 2 keeps that freeze only
+  where a boundary token cannot survive and lets everything else round-trip
+  as tokens:
+  - **Unconstrained (the common case): `[[[EXPAND …]]]` boundary tokens.**
+    `htmlToMarkdown({ layoutTokens: true })` wraps the section and leaves its
+    body as ordinary Markdown, so **AI Improve rewrites prose inside
+    collapsible sections again**. Grammar and rebuild rules are in the
+    boundary-token section below.
+  - **Inside `td`/`th`/`li`/`blockquote`/`div.panel-*`: still frozen whole.**
+    Exactly the constraint legacy `section`/`column` wrappers have
+    (`isFrozenExpand` mirrors `isFrozenLegacyWrapper`): `markdownToHtml`'s
+    token normalization forces every token onto its own paragraph, which would
+    rip it out of the containing construct — a token inside a GFM table row
+    splits the row and leaks `| … |` as literal text. Those sections keep the
+    stage-1 behaviour, i.e. **their bodies are not improvable**, and a model
+    that drops the placeholder entirely is caught by the apply route's
+    drop-guard, which re-appends the section at the end of the body:
+    preserved, but relocated.
+  - **Wrapping a modern `ac:layout` grid: also still frozen.** `[[[LAYOUT]]]`
+    is only valid at the *top* of the token stack, because `ac:layout` is
+    document-level in storage format. A grid nested inside a `<details>` is
+    unreachable from Confluence itself but reachable in our editor (the layout
+    node is `block`, and `details` accepts `block*`), and it would emit a
+    sequence `rebuildLayoutStructure` rejects — after which the all-or-nothing
+    drop-guard strips *every* token and the expand is flattened away. Freezing
+    the section keeps it. (The same shape nested in a legacy
+    `div.confluence-section` still flattens; that is pre-existing and
+    untouched here.)
+
+  `details` is deliberately **not** added to `CONSTRAINED_ANCESTOR_SELECTOR` —
+  once an expand's boundary is a token, its own body is ordinary Markdown, so
+  nesting inside one constrains nothing (an expand inside an expand tokenises
+  at both levels). Freezing is decided per section rather than inherited: an
+  unconstrained expand containing a table cell containing another expand
+  tokenises the outer one and freezes the inner. Media inside an unconstrained
+  section now gets **its own** media token rather than riding inside one
+  capture of the whole section. Non-Improve flows never call `protectMedia`
+  and never request `layoutTokens`, so they still flatten `<details>` as
+  before.
+
+  Neither stage repairs pages already written back with their expand sections
+  flattened — this is **prevention only**.
 - **Editor schema must stay in sync with these placeholders (#857).**
   The round-trip only holds if the TipTap ProseMirror schema has a node
   whose `parseHTML` matches each placeholder (`panel-*`,
@@ -445,7 +474,34 @@ around the (still fully editable) cell content:
 
 [[[SECTION border=true]]] … [[[/SECTION]]]   ← legacy ac:section macro
 [[[COLUMN width=50%]]]    … [[[/COLUMN]]]    ← legacy ac:column macro
+
+[[[EXPAND name=expand open=0 title=FAQ%20entry params=]]]   ← expand macro (#1221)
+…normal editable Markdown…
+[[[/EXPAND]]]
 ```
+
+`EXPAND` (#1221 stage 2) is the same mechanism applied to collapsible
+sections, with one addition: its attrs carry values that are arbitrary user
+prose, so `name`, `title` and `params` are **percent-encoded**. The token
+grammar (`[ \t][^\]\n]*`) only forbids `]` and newline, but a value also has
+to survive turndown's output, marked's Markdown parse and marked's HTML
+escaping completely unchanged — the attrs are read back out of marked's HTML
+by a plain regex, where a raw `&` would return as `&amp;` and `_foo_` as
+`<em>foo</em>`. Everything outside `[A-Za-z0-9-]` is therefore encoded.
+`open=<0|1>` carries the `<details>` `open` attribute; on write-back it
+becomes an `expanded` parameter only for the macros that define one
+(`ui-expand`), never for a native `expand`. The `<summary>` rides opaquely
+in `title` and is **not improvable**: titles are short, rarely the thing
+needing a rewrite, and a second boundary pair around them would add three
+lines per section to the prompt and one more way into the 422 path. On
+rebuild every value is HTML-escaped (percent-encoding protects the token
+grammar; escaping protects the HTML), and a `params` value that is not a
+JSON object is dropped rather than persisted.
+
+An `EXPAND` may open at top level or anywhere prose may live — inside a
+`LAYOUT-CELL`, a `SECTION`, a `COLUMN`, or another `EXPAND` — and `SECTION`
+was widened to open inside an `EXPAND`, because Confluence permits a legacy
+section inside an expand body.
 
 `layoutTokens` is set solely by the Improve route
 (`assembleContextIfNeeded` in `routes/llm/_helpers.ts`). Every other
@@ -459,9 +515,12 @@ without its tokens an Improve of a multi-cell layout page with
 conversions stay token-free: a truncated sub-page token sequence could be
 echoed by the model into the parent page's output and build layout that
 never existed on the parent (truncation only ever affects sub-pages — the
-parent always goes first). Legacy sections/columns nested inside
-markdown-constrained containers (`td`/`th`/`li`/`blockquote`/panels) never
-emit tokens either — they stay opaque-frozen via `protectMedia` (see above).
+parent always goes first). Legacy sections/columns **and expand sections**
+nested inside markdown-constrained containers
+(`td`/`th`/`li`/`blockquote`/panels) never emit tokens either — they stay
+opaque-frozen via `protectMedia` (see above), and `extractLayoutSkeleton`
+runs over the **protected** HTML so a frozen subtree is invisible to both
+sides symmetrically (otherwise every apply on such a page would 422).
 
 Tokens carry the structural attributes (`data-layout-type`, `data-border`,
 `data-cell-width`). `markdownToHtml()` then:
@@ -474,8 +533,10 @@ Tokens carry the structural attributes (`data-layout-type`, `data-border`,
    only inside a `SECTION`, …);
 3. if valid, converts the token paragraphs back into the
    `div.confluence-layout*` / `div.confluence-section` /
-   `div.confluence-column` wrappers (which `htmlToConfluence()` already maps
-   losslessly to `ac:layout*` / `section` / `column`);
+   `div.confluence-column` wrappers, or a `<details>` + `<summary>` for
+   `EXPAND` (which `htmlToConfluence()` already maps losslessly to
+   `ac:layout*` / `section` / `column` / `expand` / `ui-expand`) — close-tag
+   emission is kind-aware for that reason;
 4. **drop-guard (no skeleton — markdown imports etc.):** if the LLM mangled
    the tokens (unbalanced, reordered, case-changed), ALL tokens are stripped
    instead — the content degrades to the old flattened form, but the page is
