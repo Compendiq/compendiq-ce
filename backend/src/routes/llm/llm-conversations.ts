@@ -190,7 +190,9 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
           '#781: AI Improve output lost the page layout — apply rejected, page not modified',
         );
         throw fastify.httpErrors.unprocessableEntity(
-          "The AI response lost this page's column layout and it could not be recovered, so the change was not applied. The page is unchanged — run AI Improve again, or edit the page manually.",
+          // #1221: no longer only columns — an expand section is now the most
+          // likely way a user meets this, and an FAQ page has no columns at all.
+          "The AI response lost this page's structure (columns or collapsible sections) and it could not be recovered, so the change was not applied. The page is unchanged — run AI Improve again, or edit the page manually.",
         );
       }
       throw err;
