@@ -6,6 +6,7 @@ import {
   markdownToHtml,
   confluenceToHtml,
   htmlToConfluence,
+  extractLayoutSkeleton,
 } from './content-converter.js';
 
 const DRAWIO = '<div class="confluence-drawio" data-diagram-name="Arch"><img src="/api/attachments/5/Arch.png" alt="d"><a class="drawio-edit-link" data-drawio="true" href="#">Edit</a></div>';
@@ -174,6 +175,91 @@ describe('atomic macro placeholders survive the AI-Improve round-trip (#901)', (
     expect(prot).not.toContain('confluence-toc');
     expect(prot).not.toContain('confluence-jira-issue');
     expect(prot).not.toContain('confluence-user-mention');
+  });
+});
+
+describe('expand sections survive the AI-Improve round-trip (#1221 stage 1)', () => {
+  // Before #1221, `details` was absent from MEDIA_SELECTOR and has no turndown
+  // rule, so the AI-Improve HTML→Markdown→HTML round-trip flattened an expand
+  // section into bare paragraphs — <summary> became prose, the #1211 identity
+  // stamp was lost, and htmlToConfluence rebuilt no macro at all. On apply that
+  // deletion was pushed to the customer's Confluence page.
+  const EXPAND =
+    '<details data-macro-name="expand"><summary>Secret</summary><p>hidden body</p></details>';
+
+  it('freezes an expand section as an opaque token', () => {
+    const { html: prot, media } = protectMedia(`<p>Intro</p>${EXPAND}<p>End</p>`);
+    expect(media).toHaveLength(1);
+    expect(prot).toContain('CQ_MEDIA_PLACEHOLDER_0');
+    expect(prot).not.toContain('<details');
+    expect(restoreMedia(prot, media)).toContain(EXPAND);
+  });
+
+  it('survives htmlToMarkdown → markdownToHtml and rebuilds the macro on write-back', async () => {
+    const { html: prot, media } = protectMedia(`<p>Intro</p>${EXPAND}`);
+    const restored = restoreMedia(await markdownToHtml(htmlToMarkdown(prot)), media);
+    expect(restored).toContain(EXPAND);
+
+    const back = htmlToConfluence(restored);
+    expect(back).toContain('ac:name="expand"');
+    expect(back).toContain('>Secret<');
+    expect(back).toContain('hidden body');
+  });
+
+  it('freezes the outermost section only when expands are nested', () => {
+    const nested =
+      '<details data-macro-name="expand"><summary>Outer</summary>' +
+      '<p>outer body</p>' +
+      '<details data-macro-name="expand"><summary>Inner</summary><p>inner body</p></details>' +
+      '</details>';
+    const { html: prot, media } = protectMedia(`<p>Intro</p>${nested}`);
+    // Outermost-first: one token for the whole tree, not one per <details>.
+    expect(media).toHaveLength(1);
+    expect(media[0]!.html).toBe(nested);
+    expect(restoreMedia(prot, media)).toContain(nested);
+  });
+
+  it('freezes a media-bearing section whole rather than tokenising the image inside it', () => {
+    const withImg = `<details data-macro-name="expand"><summary>Pics</summary>${IMG}${DRAWIO}</details>`;
+    const { html: prot, media } = protectMedia(`<p>Intro</p>${withImg}`);
+    expect(media).toHaveLength(1);
+    expect(media[0]!.html).toBe(withImg);
+    expect(restoreMedia(prot, media)).toContain(withImg);
+  });
+
+  it('freezes a section inside a table cell without breaking the table', async () => {
+    const html =
+      '<table><tbody><tr><td><p>Cell</p>' +
+      '<details data-macro-name="expand"><summary>In cell</summary><p>cell body</p></details>' +
+      '</td><td><p>Other</p></td></tr></tbody></table>';
+    const { html: prot, media } = protectMedia(html);
+    expect(media).toHaveLength(1);
+
+    const restored = restoreMedia(await markdownToHtml(htmlToMarkdown(prot)), media);
+    expect(restored).toContain('data-macro-name="expand"');
+    expect(restored).toContain('<summary>In cell</summary>');
+    // The token rode inside the cell — the table itself is still intact and the
+    // section did not leak out of it.
+    expect(restored).toContain('<td>');
+    expect(restored).not.toContain('CQ_MEDIA_PLACEHOLDER_');
+  });
+
+  it('keeps the #781 layout skeleton in step with what the markdown can carry', () => {
+    // extractLayoutSkeleton runs over the PROTECTED html (llm-conversations.ts),
+    // so a legacy section frozen away inside an expand must not be expected as a
+    // boundary token — otherwise every apply on such a page 422s.
+    const html =
+      '<details data-macro-name="expand"><summary>Wrapper</summary>' +
+      '<div class="confluence-section"><div class="confluence-column"><p>col</p></div></div>' +
+      '</details>';
+    const { html: prot, media } = protectMedia(html);
+    expect(media).toHaveLength(1);
+    expect(extractLayoutSkeleton(prot)).toEqual([]);
+    // A section OUTSIDE any expand still tokenises as before.
+    expect(
+      extractLayoutSkeleton(protectMedia('<div class="confluence-section"><p>x</p></div>').html)
+        .map((t) => t.kind),
+    ).toEqual(['SECTION', 'SECTION']);
   });
 });
 

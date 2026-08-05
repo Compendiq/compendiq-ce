@@ -204,6 +204,46 @@ describe('POST /api/llm/improvements/apply — drop-guard with REAL restoreMedia
     // Image present exactly once — restored in place, not also appended.
     expect(savedHtml.split('/api/attachments/42/q.png').length - 1).toBe(1);
   });
+
+  it('#1221: an expand section survives apply, even when the LLM dropped its token', async () => {
+    // Before #1221 the section was flattened by the Markdown round-trip and the
+    // macro was deleted from the page on apply. It is now frozen like other
+    // media, so both the in-place path and the drop-guard preserve it.
+    const expand =
+      '<details data-macro-name="expand"><summary>Runbook</summary><p>step one</p></details>';
+    const bodyHtmlWithExpand = `<p>Old intro</p>${expand}`;
+
+    mockQuery.mockImplementation((sql: string) => {
+      if (sql.includes('SELECT id, version, title, space_key, source, confluence_id')) {
+        return Promise.resolve({
+          rows: [{
+            id: 42, version: 5, title: 'My Article', space_key: 'OPS',
+            source: 'standalone', confluence_id: null, body_html: bodyHtmlWithExpand,
+            created_by_user_id: 'user-123', visibility: 'private',
+          }],
+        });
+      }
+      return Promise.resolve({ rows: [] });
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/llm/improvements/apply',
+      payload: {
+        pageId: '42',
+        improvedMarkdown: '## Rewritten\n\nFresh prose, no tokens at all.',
+        version: 5,
+        title: 'My Article',
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const savedHtml = captureUpdatedBodyHtml();
+    // The whole section came back — identity stamp, summary and body — exactly
+    // once, and it is still a <details>, not flattened prose.
+    expect(savedHtml).toContain(expand);
+    expect(savedHtml.split('data-macro-name="expand"').length - 1).toBe(1);
+  });
 });
 
 describe('POST /api/llm/improvements/apply — layout boundary tokens with REAL markdownToHtml (#765)', () => {
