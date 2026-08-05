@@ -661,6 +661,35 @@ describe('POST /api/llm/ask', () => {
       // sanitizer before being embedded into the external-docs context.
       expect(vi.mocked(sanitizeLlmInput)).toHaveBeenCalledWith(maliciousTitle);
     });
+
+    it('emits `url` and pageId 0 on external-docs sources too (#1125)', async () => {
+      mockHybridSearch.mockResolvedValue([]);
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
+      mockMcpIsEnabled.mockResolvedValueOnce(true);
+      mockMcpFetchDocumentation.mockResolvedValue({
+        url: 'https://docs.example.com/guide',
+        title: 'Guide',
+        markdown: 'body',
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/llm/ask',
+        payload: {
+          question: 'What is X?',
+          model: 'llama3',
+          externalUrls: ['https://docs.example.com/guide'],
+        },
+      });
+
+      const events = parseSseBody(response.body);
+      const finalEvent = events.find((e) => (e as Record<string, unknown>).final === true) as Record<string, unknown>;
+      const sources = finalEvent.sources as Array<Record<string, unknown>>;
+
+      expect(sources).toHaveLength(1);
+      expect(sources[0].url).toBe('https://docs.example.com/guide');
+      expect(sources[0].pageId).toBe(0);
+    });
   });
 
   describe('web-search injection audit (#835)', () => {

@@ -7,18 +7,23 @@ import { resolveSourceTarget } from './source-target';
 
 export interface Source {
   pageTitle: string;
-  spaceKey: string;
+  /**
+   * Confluence space key, or the `Web` / `External` display label. NULL for
+   * locally-created (standalone) pages, which belong to no Confluence space —
+   * `pages.space_key` is nullable and the RAG search result has always
+   * returned it as such.
+   */
+  spaceKey?: string | null;
   /**
    * Integer `pages.id` — the id every other navigation in the app uses, and
    * the only one a locally-created page has. 0/absent means the source is not
-   * a knowledge-base page at all (web or external docs). Absent entirely on
-   * conversations persisted before #1125.
+   * a knowledge-base page at all (web or external docs).
    */
   pageId?: number;
   /**
-   * Confluence page id. NULL for locally-created (standalone) pages, so it is
-   * only a usable navigation target as a legacy fallback — see
-   * {@link resolveSourceTarget}.
+   * Confluence page id. NULL for locally-created (standalone) pages, and
+   * **never a navigation target** — see {@link resolveSourceTarget} for why
+   * routing it can open the wrong page.
    */
   confluenceId?: string | null;
   /** Absolute http(s) URL — present only on web / external-docs sources. */
@@ -79,16 +84,20 @@ export function SourceCitations({ sources }: SourceCitationsProps) {
               const body = (
                 <>
                   {target.kind === 'external'
-                    ? <Globe size={14} className="mt-0.5 shrink-0 text-primary" />
-                    : <FileText size={14} className="mt-0.5 shrink-0 text-primary" />}
+                    ? <Globe size={14} aria-hidden className="mt-0.5 shrink-0 text-primary" />
+                    : <FileText size={14} aria-hidden className="mt-0.5 shrink-0 text-primary" />}
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-xs font-medium text-foreground">
                       {source.pageTitle}
                     </p>
                     <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
-                      <span className="flex items-center gap-0.5">
-                        <Layers size={10} /> {source.spaceKey}
-                      </span>
+                      {/* Standalone pages have no space — render nothing rather
+                          than an orphaned icon with a blank label. */}
+                      {source.spaceKey && (
+                        <span className="flex items-center gap-0.5">
+                          <Layers size={10} aria-hidden /> {source.spaceKey}
+                        </span>
+                      )}
                       {source.sectionTitle && (
                         <span className="truncate">
                           {source.sectionTitle}
@@ -97,11 +106,10 @@ export function SourceCitations({ sources }: SourceCitationsProps) {
                     </div>
                   </div>
                   {target.kind === 'external' && (
-                    <ExternalLink size={12} className="mt-0.5 shrink-0 text-muted-foreground" />
+                    <ExternalLink size={12} aria-hidden className="mt-0.5 shrink-0 text-muted-foreground" />
                   )}
                 </>
               );
-              const key = `${source.pageId ?? source.confluenceId ?? source.pageTitle}-${i}`;
               const testId = `source-card-${i + 1}`;
 
               // Web / external-docs sources are links, not routes. Navigating to
@@ -110,11 +118,14 @@ export function SourceCitations({ sources }: SourceCitationsProps) {
               if (target.kind === 'external') {
                 return (
                   <m.a
-                    key={key}
+                    key={i}
                     {...motionProps}
                     href={target.url}
                     target="_blank"
                     rel="noopener noreferrer"
+                    // The ExternalLink glyph is the sighted cue; it is
+                    // aria-hidden, so the new tab has to be named here.
+                    aria-label={`${source.pageTitle} (opens in a new tab)`}
                     className={cardClass}
                     data-testid={testId}
                   >
@@ -126,7 +137,7 @@ export function SourceCitations({ sources }: SourceCitationsProps) {
               if (target.kind === 'internal') {
                 return (
                   <m.button
-                    key={key}
+                    key={i}
                     {...motionProps}
                     onClick={() => navigate(target.path)}
                     className={cardClass}
@@ -141,7 +152,7 @@ export function SourceCitations({ sources }: SourceCitationsProps) {
               // referenced from the answer text) but don't offer a dead link.
               return (
                 <m.div
-                  key={key}
+                  key={i}
                   {...motionProps}
                   className={cardClass}
                   title="This source has no page that can be opened."

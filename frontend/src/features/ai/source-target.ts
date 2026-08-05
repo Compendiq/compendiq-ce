@@ -3,10 +3,9 @@ import type { Source } from './SourceCitations';
 /**
  * Where a citation actually points.
  *
- * `none` is a real outcome, not an error: a source can arrive with no usable
- * target (an old persisted conversation whose row predates `pageId`, or a
- * standalone page whose `confluenceId` is NULL). Rendering it as a dead link
- * into `/pages/` is what produced #1125 — the "page cannot be found" report.
+ * `none` is a real outcome, not an error: a source can arrive carrying neither
+ * a `pageId` nor a URL, and rendering that as a link into `/pages/` is what
+ * produced #1125 — the "page cannot be found" report.
  */
 export type SourceTarget =
   | { kind: 'internal'; path: string }
@@ -33,8 +32,18 @@ function parseAbsolute(value: string | null | undefined): URL | null {
  *     matches `/pages/:id`, and lands on NotFoundPage.
  *  2. The internal integer `pages.id`. This is what every other navigation in
  *     the app uses, and it is the only id a locally-created page has.
- *  3. `confluenceId`, for conversations persisted before the backend started
- *     emitting `pageId` on every source.
+ *  3. Nothing. **`confluenceId` is never a navigation target.** It is kept on
+ *     the type because it still arrives on the wire and case 1 reads a URL out
+ *     of it, but it must not be routed: `GET /pages/:id` resolves a
+ *     `/^\d+$/` id against the integer PK (`pages-crud.ts`), and Confluence
+ *     content ids *are* numeric — so `/pages/<confluenceId>` does not 404, it
+ *     silently opens whichever unrelated page happens to hold that PK. A
+ *     non-link is the safe outcome; a wrong page is worse than #1125's
+ *     not-found. Nothing is lost by refusing: `/llm/ask` has always emitted
+ *     `pageId` on knowledge-base hits, the other three routes only ever emit
+ *     web sources (which carry the URL), and sources are not persisted with a
+ *     conversation — `llm_conversations.messages` is `{role, content}` only,
+ *     so there is no stored back-catalogue of `pageId`-less sources to serve.
  *
  * Discrimination is deliberately **not** on `spaceKey === 'Web'`: that is a
  * display label rendered verbatim, and a real Confluence space could be keyed
@@ -54,9 +63,6 @@ export function resolveSourceTarget(source: Source): SourceTarget {
   if (typeof source.pageId === 'number' && Number.isInteger(source.pageId) && source.pageId > 0) {
     return { kind: 'internal', path: `/pages/${source.pageId}` };
   }
-
-  const legacyId = source.confluenceId?.trim();
-  if (legacyId) return { kind: 'internal', path: `/pages/${encodeURIComponent(legacyId)}` };
 
   return { kind: 'none' };
 }

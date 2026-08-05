@@ -44,21 +44,24 @@ describe('resolveSourceTarget', () => {
     }))).toEqual({ kind: 'external', url: 'https://example.com/a' });
   });
 
-  it('falls back to confluenceId when pageId is absent (legacy stored sources)', () => {
-    expect(resolveSourceTarget(source({ confluenceId: 'page-123' })))
-      .toEqual({ kind: 'internal', path: '/pages/page-123' });
+  it('never routes a confluenceId, because /pages/:id would resolve it as a PK', () => {
+    // `GET /pages/:id` sends a `/^\d+$/` id to `WHERE cp.id = $1`, and real
+    // Confluence content ids are numeric — routing one does not 404, it opens
+    // whichever unrelated page holds that PK. A non-link is the safe answer.
+    expect(resolveSourceTarget(source({ confluenceId: '393217' }))).toEqual({ kind: 'none' });
+    expect(resolveSourceTarget(source({ confluenceId: 'page-123' }))).toEqual({ kind: 'none' });
   });
 
-  it('percent-encodes a confluenceId fallback so it stays one path segment', () => {
-    expect(resolveSourceTarget(source({ confluenceId: 'a b/c' })))
-      .toEqual({ kind: 'internal', path: '/pages/a%20b%2Fc' });
+  it('routes by pageId even when spaceKey says Web', () => {
+    // The target is decided by `url`/`pageId` only. `spaceKey` is a display
+    // label rendered verbatim, and a real Confluence space could be keyed `Web`.
+    expect(resolveSourceTarget(source({ spaceKey: 'Web', pageId: 42 })))
+      .toEqual({ kind: 'internal', path: '/pages/42' });
   });
 
   it('ignores a zero or negative pageId', () => {
-    expect(resolveSourceTarget(source({ pageId: 0, confluenceId: 'page-abc' })))
-      .toEqual({ kind: 'internal', path: '/pages/page-abc' });
-    expect(resolveSourceTarget(source({ pageId: -1, confluenceId: null })))
-      .toEqual({ kind: 'none' });
+    expect(resolveSourceTarget(source({ pageId: 0, confluenceId: 'page-abc' }))).toEqual({ kind: 'none' });
+    expect(resolveSourceTarget(source({ pageId: -1, confluenceId: null }))).toEqual({ kind: 'none' });
   });
 
   it('has no target when neither a page id nor a confluence id is present', () => {

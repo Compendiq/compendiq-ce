@@ -115,6 +115,26 @@ describe('SourceCitations', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/pages/55');
   });
 
+  it('omits the space chip for a standalone page (space_key is NULL)', () => {
+    // A page with a space is the control: exactly one of the two cards may
+    // carry the Layers chip, so the assertion can't pass vacuously.
+    const { container } = render(
+      <SourceCitations
+        sources={[
+          { pageTitle: 'My Article', spaceKey: null, pageId: 55, confluenceId: null },
+          { pageTitle: 'Synced Page', spaceKey: 'DOCS', pageId: 56, confluenceId: 'page-56' },
+        ]}
+      />,
+      { wrapper: Wrapper },
+    );
+    fireEvent.click(screen.getByText('Sources (2)'));
+
+    // The standalone card must not render a lone Layers icon with a blank label.
+    expect(screen.getByTestId('source-card-1')).toHaveTextContent('My Article');
+    expect(screen.getByTestId('source-card-1').querySelectorAll('.lucide-layers')).toHaveLength(0);
+    expect(container.querySelectorAll('.lucide-layers')).toHaveLength(1);
+  });
+
   it('renders a web source as an external link instead of routing into /pages/', () => {
     render(
       <SourceCitations

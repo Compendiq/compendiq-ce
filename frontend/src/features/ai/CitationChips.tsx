@@ -31,13 +31,12 @@ export function CitationChips({ sources, className }: CitationChipsProps) {
     <span className={cn('inline-flex flex-wrap gap-1', className)} data-testid="citation-chips">
       {sources.map((source, i) => {
         const target = resolveSourceTarget(source);
-        const key = `${source.pageId ?? source.confluenceId ?? source.pageTitle}-${i}`;
         const testId = `citation-chip-${i + 1}`;
 
         if (target.kind === 'external') {
           return (
             <a
-              key={key}
+              key={i}
               href={target.url}
               target="_blank"
               rel="noopener noreferrer"
@@ -55,7 +54,7 @@ export function CitationChips({ sources, className }: CitationChipsProps) {
         if (target.kind === 'internal') {
           return (
             <button
-              key={key}
+              key={i}
               onClick={(e) => {
                 e.stopPropagation();
                 navigate(target.path);
@@ -73,7 +72,7 @@ export function CitationChips({ sources, className }: CitationChipsProps) {
         // but don't render a link that lands on the not-found page.
         return (
           <span
-            key={key}
+            key={i}
             title={`${source.pageTitle} — no page to open`}
             className={cn(CHIP_CLASS, 'opacity-60')}
             data-testid={testId}
