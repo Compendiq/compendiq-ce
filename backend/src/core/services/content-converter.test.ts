@@ -17,6 +17,8 @@ import {
   TASK_LIST_PAGE,
   PANELS_PAGE,
   EXPAND_PAGE,
+  UI_EXPAND_PAGE,
+  MIXED_EXPAND_PAGE,
   LINKS_PAGE,
   IMAGES_PAGE,
   CROSS_PAGE_IMAGES_PAGE,
@@ -618,26 +620,157 @@ describe('content-converter', () => {
       it('re-emits data-macro-params as ac:parameter entries, <summary> winning over a stale title param', () => {
         const xhtml = htmlToConfluence(
           '<details data-macro-name="ui-expand" ' +
-            'data-macro-params=\'{"expanded":"true","title":"stale"}\'>' +
+            'data-macro-params=\'{"breakout-mode":"wide","title":"stale"}\'>' +
             '<summary>Real Title</summary><p>B</p></details>',
         );
         expect(xhtml).toContain('ac:name="ui-expand"');
-        expect(xhtml).toContain('<ac:parameter ac:name="expanded">true</ac:parameter>');
+        expect(xhtml).toContain('<ac:parameter ac:name="breakout-mode">wide</ac:parameter>');
         expect(xhtml).toContain('<ac:parameter ac:name="title">Real Title</ac:parameter>');
         expect(xhtml).not.toContain('stale');
       });
 
-      it('preserves a foreign identity on the next sync via the unknown-macro net', () => {
-        // No forward branch maps ui-expand to <details> yet (that is #1129),
-        // so writing one back and re-importing must land it in the #865
-        // unknown-macro placeholder with its identity intact — not vanish and
-        // not become a native expand.
+      it('preserves a foreign identity on the next sync', () => {
+        // Writing a ui-expand back and re-importing must return it as a
+        // <details> with its identity intact — not vanish, and not become a
+        // native expand. Before #1129 the re-import landed in the #865
+        // unknown-macro placeholder instead (identity preserved, but opaque).
         const xhtml = htmlToConfluence(
           '<details data-macro-name="ui-expand"><summary>T</summary><p>B</p></details>',
         );
         const html = confluenceToHtml(xhtml);
-        expect(html).toContain('class="confluence-macro-unknown"');
+        expect(html).toContain('<details data-macro-name="ui-expand">');
+        expect(html).toContain('<summary>T</summary>');
+        expect(html).not.toContain('confluence-macro-unknown');
+      });
+    });
+
+    // ========== Refined "UI Expand" macro (#1129) ==========
+    //
+    // A second macro now maps onto <details>, which is what the #1211 identity
+    // stamp above exists for. Storage shape verified against a Confluence DC
+    // 9.2.19 instance with the Refined Macro Toolkit installed: same `title`
+    // parameter and ac:rich-text-body as the native macro, plus an `expanded`
+    // parameter present ONLY on default-open sections.
+    describe('Refined UI Expand macro (#1129)', () => {
+      it('converts ui-expand to <details> carrying its own identity', () => {
+        const html = confluenceToHtml(UI_EXPAND_PAGE);
         expect(html).toContain('data-macro-name="ui-expand"');
+        expect(html).toContain('<summary>Development Team</summary>');
+        expect(html).toContain('<summary>Support Team</summary>');
+        // Not the #865 opaque placeholder any more, and not a native expand.
+        expect(html).not.toContain('confluence-macro-unknown');
+        expect(html).not.toContain('data-macro-name="expand"');
+      });
+
+      it('maps expanded=true onto the open attribute and leaves a collapsed section closed', () => {
+        const html = confluenceToHtml(UI_EXPAND_PAGE);
+        const sections = [...html.matchAll(/<details[^>]*>/g)].map((m) => m[0]);
+        expect(sections).toHaveLength(2);
+        // First section is expanded=true in the fixture, second omits the param.
+        expect(sections[0]).toMatch(/\bopen\b/);
+        expect(sections[1]).not.toMatch(/\bopen\b/);
+      });
+
+      it('keeps `expanded` out of data-macro-params — open is its only home', () => {
+        // Otherwise a user toggling the section in the editor flips `open`
+        // while the stale string rides along, and the reverse pass emits both.
+        const html = confluenceToHtml(UI_EXPAND_PAGE);
+        expect(html).not.toMatch(/data-macro-params="[^"]*expanded/);
+      });
+
+      it('round-trips a default-open section back to expanded=true', () => {
+        const xhtml = htmlToConfluence(confluenceToHtml(UI_EXPAND_PAGE));
+        const open = xhtml.match(
+          /<ac:structured-macro ac:name="ui-expand">[\s\S]*?<\/ac:structured-macro>/,
+        )?.[0];
+        expect(open).toContain('<ac:parameter ac:name="expanded">true</ac:parameter>');
+        expect(open).toContain('<ac:parameter ac:name="title">Development Team</ac:parameter>');
+        expect(open).toContain('Development Team');
+      });
+
+      it('emits no expanded parameter at all for a collapsed section', () => {
+        // Confluence DC omits the parameter on collapsed sections rather than
+        // spelling expanded=false; emitting one would fabricate a parameter the
+        // page never had.
+        const xhtml = htmlToConfluence(
+          confluenceToHtml(
+            '<ac:structured-macro ac:name="ui-expand"><ac:parameter ac:name="title">Closed</ac:parameter>' +
+              '<ac:rich-text-body><p>body</p></ac:rich-text-body></ac:structured-macro>',
+          ),
+        );
+        expect(xhtml).toContain('ac:name="ui-expand"');
+        expect(xhtml).not.toContain('expanded');
+      });
+
+      it('never fabricates expanded on a native expand the editor left open', () => {
+        // Atlassian's expand macro has no such parameter. The editor forces
+        // every <details> open in edit mode and its summary click handler
+        // writes the attribute, so `open` on a native section is reachable and
+        // must stay inert on write-back.
+        const xhtml = htmlToConfluence(
+          '<details data-macro-name="expand" open><summary>T</summary><p>B</p></details>',
+        );
+        expect(xhtml).toContain('ac:name="expand"');
+        expect(xhtml).not.toContain('expanded');
+      });
+
+      it('rebuilds expanded from open alone, ignoring a stale params copy', () => {
+        const xhtml = htmlToConfluence(
+          '<details data-macro-name="ui-expand" data-macro-params=\'{"expanded":"true"}\'>' +
+            '<summary>T</summary><p>B</p></details>',
+        );
+        // The section is closed; the stale param must not resurrect it.
+        expect(xhtml).toContain('ac:name="ui-expand"');
+        expect(xhtml).not.toContain('expanded');
+      });
+
+      it('keeps a native expand and a ui-expand distinct across a full round-trip', () => {
+        const xhtml = htmlToConfluence(confluenceToHtml(MIXED_EXPAND_PAGE));
+        const native = xhtml.match(
+          /<ac:structured-macro ac:name="expand">[\s\S]*?<\/ac:structured-macro>/,
+        )?.[0];
+        expect(native).toContain('Native');
+        expect(native).toContain('<p>native body</p>');
+        expect(native).not.toContain('expanded');
+        const refined = xhtml.match(
+          /<ac:structured-macro ac:name="ui-expand">[\s\S]*?<\/ac:structured-macro>/,
+        )?.[0];
+        expect(refined).toContain('Refined');
+        expect(refined).toContain('<p>refined body</p>');
+        expect(refined).toContain('<ac:parameter ac:name="expanded">true</ac:parameter>');
+      });
+
+      it("carries Refined's own classed body markup through the round-trip", () => {
+        const xhtml = htmlToConfluence(confluenceToHtml(UI_EXPAND_PAGE));
+        expect(xhtml).toContain('rw_adf_text_strong');
+        expect(xhtml).toContain('ordered-list top_level');
+        expect(xhtml).toContain('<li>Backend</li>');
+      });
+
+      it('still writes back a pre-#1129 stored placeholder for the same macro', () => {
+        // body_html synced before this change holds the #865 unknown-macro
+        // placeholder, not a <details>. There is no migration — the shape
+        // changes on the next sync — so both must keep writing back to the same
+        // macro, and the placeholder path keeps `expanded` as an ordinary
+        // parameter (it has no `open` attribute to hold it).
+        const stored =
+          '<div class="confluence-macro-unknown" data-macro-name="ui-expand" ' +
+          'data-macro-params=\'{"title":"Old","expanded":"true"}\'><p>body</p></div>';
+        const xhtml = htmlToConfluence(stored);
+        expect(xhtml).toContain('ac:name="ui-expand"');
+        expect(xhtml).toContain('<ac:parameter ac:name="title">Old</ac:parameter>');
+        expect(xhtml).toContain('<ac:parameter ac:name="expanded">true</ac:parameter>');
+      });
+
+      it('is protected through AI Improve now that <details> is frozen (#1221 stage 1)', () => {
+        // The ordering constraint from #1221, pinned: before that fix a
+        // ui-expand mapped onto <details> would have moved from protected (the
+        // #865 unknown-macro freeze) to destroyed by the Markdown round-trip.
+        const html = confluenceToHtml(UI_EXPAND_PAGE);
+        const { html: prot, media } = protectMedia(html);
+        expect(media).toHaveLength(2);
+        expect(prot).not.toContain('<details');
+        expect(restoreMedia(prot, media)).toContain('data-macro-name="ui-expand"');
       });
     });
 

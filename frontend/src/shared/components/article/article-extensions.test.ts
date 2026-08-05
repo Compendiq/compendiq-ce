@@ -40,13 +40,13 @@ describe('article-extensions', () => {
     it('carries data-macro-name and data-macro-params through an editor round-trip', () => {
       const editor = createDetailsEditor(
         '<details data-macro-name="ui-expand" ' +
-          'data-macro-params="{&quot;expanded&quot;:&quot;true&quot;}">' +
+          'data-macro-params="{&quot;breakout-mode&quot;:&quot;wide&quot;}">' +
           '<summary>T</summary><p>B</p></details>',
       );
       const output = editor.getHTML();
       expect(output).toContain('data-macro-name="ui-expand"');
       expect(output).toContain('data-macro-params=');
-      expect(output).toContain('expanded');
+      expect(output).toContain('breakout-mode');
       editor.destroy();
     });
 
@@ -56,6 +56,27 @@ describe('article-extensions', () => {
       expect(output).toContain('<details');
       expect(output).not.toContain('data-macro-name');
       expect(output).not.toContain('data-macro-params');
+      editor.destroy();
+    });
+
+    // #1129: `open` is the SOLE carrier of Refined UI Expand's default-open
+    // state — the backend forward pass consumes the macro's `expanded`
+    // parameter into it and deletes it from data-macro-params, so nothing else
+    // holds that value. An editor save that dropped the attribute would write
+    // every default-open section back to Confluence collapsed.
+    it('carries the open attribute through an editor round-trip', () => {
+      const editor = createDetailsEditor(
+        '<details data-macro-name="ui-expand" open><summary>T</summary><p>B</p></details>',
+      );
+      expect(editor.getHTML()).toMatch(/<details[^>]*\sopen\b/);
+      editor.destroy();
+    });
+
+    it('leaves a collapsed section collapsed', () => {
+      const editor = createDetailsEditor(
+        '<details data-macro-name="ui-expand"><summary>T</summary><p>B</p></details>',
+      );
+      expect(editor.getHTML()).not.toMatch(/<details[^>]*\sopen\b/);
       editor.destroy();
     });
   });
