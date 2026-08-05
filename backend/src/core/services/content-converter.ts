@@ -1088,6 +1088,17 @@ const MEDIA_SELECTOR = [
   'span.confluence-jira-issue',
   'span.confluence-status',
   'span.confluence-user-mention',
+  // #1221 stage 1: freeze expand sections. `details` has no turndown rule, so
+  // without this the Improve round-trip flattened the section into bare
+  // paragraphs — <summary> became prose, the #1211 `data-macro-name` stamp was
+  // lost, and htmlToConfluence rebuilt no macro at all, permanently deleting it
+  // from the Confluence page on apply. Unlike the atomic placeholders above an
+  // expand body carries real prose, so this trades improvability for
+  // preservation (the same call #865 made): AI Improve no longer rewrites text
+  // inside collapsible sections. Strictly better than improving that prose and
+  // then deleting the section that held it. #1221 stage 2 makes the freeze
+  // conditional and restores improvability via layout boundary tokens.
+  'details',
 ].join(',');
 
 // #765 review follow-up: legacy section/column wrappers nested inside
@@ -1128,7 +1139,11 @@ export function protectMedia(html: string): { html: string; media: ProtectedMedi
       // Legacy section/column wrappers freeze ONLY when nested inside a
       // markdown-constrained container; elsewhere they use boundary tokens.
       if (isLegacyWrapper(n) && !isFrozenLegacyWrapper(n)) return false;
-      if (n.parentElement?.closest('div.confluence-drawio, div.confluence-mermaid, div.mermaid, div.confluence-macro-unknown')) return false;
+      // Descendants of an already-frozen node travel inside it. `details` joins
+      // this list with #1221: an expand section may contain images, drawio
+      // wrappers, unknown-macro placeholders or further nested expands, and the
+      // outermost capture already carries them.
+      if (n.parentElement?.closest('div.confluence-drawio, div.confluence-mermaid, div.mermaid, div.confluence-macro-unknown, details')) return false;
       // Skip descendants of a frozen wrapper — it is protected whole. If the
       // nearest wrapper ancestor is not frozen, no farther one can be either
       // (frozenness propagates downward: a frozen ancestor's constrained

@@ -55,7 +55,7 @@ Custom turndown rules handle Confluence-specific macros:
 | `ac:structured-macro[code]`          | `<pre><code class="language-x">`                             | ` ```x … ``` ` fenced block   |
 | `ac:task-list`                       | `<ul data-task-list>`                                        | `- [ ]` / `- [x]`             |
 | `ac:panel` (info/note/warn)          | `<div class="panel panel-…">`                                | `> **INFO:** …` block-quote   |
-| `ac:structured-macro[expand]`        | `<details data-macro-name="expand" data-macro-params="{…}">` + `<summary>` holding the `title` param (#1211: the identity stamp lets the reverse pass write back the producing macro's `ac:name` — absent defaults to `expand`, an unrecognised value passes through, never coerced — so a second `<details>`-producing macro (#1129) survives editor saves) | flattened content (`details` has no turndown rule and is absent from `MEDIA_SELECTOR` — pre-existing; #1129 must close this before mapping a foreign macro onto `<details>`) |
+| `ac:structured-macro[expand]`        | `<details data-macro-name="expand" data-macro-params="{…}">` + `<summary>` holding the `title` param (#1211: the identity stamp lets the reverse pass write back the producing macro's `ac:name` — absent defaults to `expand`, an unrecognised value passes through, never coerced — so a second `<details>`-producing macro (#1129) survives editor saves) | flattened content by default; opaque-protected on Improve (#1221 stage 1 — `details` has no turndown rule, so without the freeze the Improve round-trip flattened the section to bare paragraphs and the macro was deleted on write-back) |
 | `ri:user`                            | `<span class="confluence-user-mention" data-username="…">@user</span>` | `@user` (inline) |
 | `ri:page`                            | `<a data-page-link>`                                         | `[title](compendiq://page/ID)` |
 | `ac:structured-macro[drawio]`        | `<img data-drawio>`                                          | `![diagram](attachment-url)`  |
@@ -114,6 +114,24 @@ Custom turndown rules handle Confluence-specific macros:
   outer-first pass would ship the still-raw inner `<details>` to Confluence
   as a literal HTML element (and a summary-less outer could steal the
   nested section's title).
+- **`<details>` is frozen whole on the Improve path (#1221 stage 1).**
+  `MEDIA_SELECTOR` lists `details`, so `protectMedia` swaps each expand
+  section for an opaque token before the HTML→Markdown→HTML round-trip and
+  `restoreMedia` puts it back verbatim. Without it the section was flattened
+  into bare paragraphs — `<summary>` became prose, the `data-macro-name`
+  stamp was lost, and `htmlToConfluence` rebuilt no macro, so applying an
+  Improve permanently deleted the expand from the Confluence page. The freeze
+  is outermost-first: nested expands, and any media or macro placeholders
+  inside a section, ride along in the one capture (`details` is in
+  `protectMedia`'s descendant-skip list). The tradeoff is the one #865 already
+  accepted — **AI Improve no longer rewrites the prose inside a collapsible
+  section** — and it is strictly better than improving that prose and then
+  deleting the section holding it. A model that drops the token entirely is
+  caught by the apply route's drop-guard, which re-appends the section at the
+  end of the body: preserved, but relocated. Stage 2 (#1221) makes the freeze
+  conditional and carries expand boundaries as `[[[EXPAND …]]]` layout tokens
+  where the position allows, restoring improvability. Non-Improve flows never
+  call `protectMedia`, so they still flatten `<details>` as before.
 - **Editor schema must stay in sync with these placeholders (#857).**
   The round-trip only holds if the TipTap ProseMirror schema has a node
   whose `parseHTML` matches each placeholder (`panel-*`,
