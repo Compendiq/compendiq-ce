@@ -441,6 +441,68 @@ describe('Editor', () => {
     });
   });
 
+  // #1227: the toolbar used to seed the literal `Click to expand` into the
+  // summary, which an editor save then wrote to Confluence as a real `title`
+  // parameter — the same fabricated title the backend fix removes, just
+  // sourced from here instead. New sections are untitled, and the caret lands
+  // in the empty summary so typing a real one is the obvious next move.
+  describe('insert expand section (#1227)', () => {
+    async function renderEditorWithToolbar(content = '<p>Test</p>') {
+      let editor: EditorType | null = null;
+      render(
+        <Editor content={content} editable={true} onEditorReady={(e) => { editor = e; }} />,
+      );
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+      return editor!;
+    }
+
+    it('inserts a section with an empty summary and no fabricated title', async () => {
+      const editor = await renderEditorWithToolbar();
+
+      fireEvent.click(screen.getByTitle('Insert Expand/Collapse Section'));
+
+      const html = editor.getHTML();
+      expect(html).toContain('<summary></summary>');
+      expect(html).not.toContain('Click to expand');
+    });
+
+    it('places the caret inside the empty summary', async () => {
+      const editor = await renderEditorWithToolbar();
+
+      fireEvent.click(screen.getByTitle('Insert Expand/Collapse Section'));
+
+      expect(editor.state.selection.$from.parent.type.name).toBe('detailsSummary');
+      expect(editor.state.selection.$from.parent.textContent).toBe('');
+    });
+
+    it('turns the first keystrokes into a real title', async () => {
+      const editor = await renderEditorWithToolbar();
+
+      fireEvent.click(screen.getByTitle('Insert Expand/Collapse Section'));
+      editor.commands.insertContent('My section');
+
+      expect(editor.getHTML()).toContain('<summary>My section</summary>');
+    });
+
+    it('places the caret in the new section when inserting into an existing one', async () => {
+      // Details nests the same way Panel does (#1140), so the same
+      // last-match-at-or-before walk is needed to reach the inner section
+      // rather than the outer one the caret started in.
+      const editor = await renderEditorWithToolbar(
+        '<details><summary>Outer</summary><p>inner body</p></details>',
+      );
+      editor.commands.setTextSelection(11);
+
+      fireEvent.click(screen.getByTitle('Insert Expand/Collapse Section'));
+
+      expect(editor.state.selection.$from.parent.type.name).toBe('detailsSummary');
+      expect(editor.state.selection.$from.parent.textContent).toBe('');
+      expect(editor.getHTML()).toContain('<summary>Outer</summary>');
+    });
+  });
+
   describe('clipboard image paste (#17)', () => {
     it('renders and accepts the pageId prop', async () => {
       const { container } = render(

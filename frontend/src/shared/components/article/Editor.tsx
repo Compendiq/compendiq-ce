@@ -437,6 +437,51 @@ function insertPanel(editor: EditorType, panelType: PanelType) {
     .run();
 }
 
+/**
+ * Inserts an expand section with an EMPTY summary and leaves the caret in it.
+ *
+ * #1227: the summary used to be seeded with the literal `Click to expand`,
+ * which an editor save then wrote to Confluence as a real `title` parameter —
+ * the same fabricated title the backend fix removes, just sourced from the
+ * toolbar instead of the converter. An untitled section now shows the macro's
+ * default label as a decoration (article-extensions.ts) and stores nothing, so
+ * a user who types gets a real title and a user who moves on to the body gets a
+ * genuinely untitled section.
+ *
+ * The caret placement is the same problem `insertPanel` solves, for the same
+ * reason (`Details.content` is 'detailsSummary block*', and sections nest), so
+ * it uses the same last-match-at-or-before walk. `+ 2` is inside the summary:
+ * one past the <details> boundary is the summary itself, one more is its text.
+ */
+function insertExpandSection(editor: EditorType) {
+  editor
+    .chain()
+    .focus()
+    .insertContent({
+      type: 'details',
+      content: [
+        { type: 'detailsSummary' },
+        { type: 'paragraph', content: [{ type: 'text', text: 'Content here...' }] },
+      ],
+    })
+    .command(({ tr, dispatch }) => {
+      if (!dispatch) return true;
+      const { from } = tr.selection;
+      let caret: number | null = null;
+      tr.doc.descendants((node, pos) => {
+        if (node.type.name === 'details' && pos <= from) {
+          caret = pos + 2;
+        }
+        return true;
+      });
+      if (caret !== null) {
+        tr.setSelection(TextSelection.create(tr.doc, caret));
+      }
+      return true;
+    })
+    .run();
+}
+
 function PanelInsert({ editor }: { editor: EditorType }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -703,15 +748,7 @@ export function EditorToolbar({ editor, headerNumbering, onToggleHeaderNumbering
         </ToolbarButton>
         <StatusLabelInsert editor={editor} />
         <ToolbarButton
-          onClick={() => {
-            editor.chain().focus().insertContent({
-              type: 'details',
-              content: [
-                { type: 'detailsSummary', content: [{ type: 'text', text: 'Click to expand' }] },
-                { type: 'paragraph', content: [{ type: 'text', text: 'Content here...' }] },
-              ],
-            }).run();
-          }}
+          onClick={() => insertExpandSection(editor)}
           title="Insert Expand/Collapse Section"
         >
           <ChevronsUpDown size={16} />

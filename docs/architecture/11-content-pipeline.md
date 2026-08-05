@@ -55,7 +55,7 @@ Custom turndown rules handle Confluence-specific macros:
 | `ac:structured-macro[code]`          | `<pre><code class="language-x">`                             | ` ```x … ``` ` fenced block   |
 | `ac:task-list`                       | `<ul data-task-list>`                                        | `- [ ]` / `- [x]`             |
 | `ac:panel` (info/note/warn)          | `<div class="panel panel-…">`                                | `> **INFO:** …` block-quote   |
-| `ac:structured-macro[expand]` and `[ui-expand]` (Refined) | `<details data-macro-name="expand\|ui-expand" data-macro-params="{…}">` + `<summary>` holding the `title` param (#1211: the identity stamp lets the reverse pass write back the producing macro's `ac:name` — absent defaults to `expand`, an unrecognised value passes through, never coerced — so both macros survive editor saves). `ui-expand`'s `expanded` param maps to the `open` attribute and lives there only (#1129) | flattened content by default; on Improve (#1221) the section round-trips as `[[[EXPAND …]]]` boundary tokens so its **body prose stays improvable**, except when it sits in a markdown-constrained container (`td`/`th`/`li`/`blockquote`/panel) where it is opaque-protected instead. The `<summary>` is never improvable either way — it rides percent-encoded in the token |
+| `ac:structured-macro[expand]` and `[ui-expand]` (Refined) | `<details data-macro-name="expand\|ui-expand" data-macro-params="{…}">` + an always-present `<summary>` holding the `title` param — **empty when the macro had none, and it writes back with none** (#1227) (#1211: the identity stamp lets the reverse pass write back the producing macro's `ac:name` — absent defaults to `expand`, an unrecognised value passes through, never coerced — so both macros survive editor saves). `ui-expand`'s `expanded` param maps to the `open` attribute and lives there only (#1129) | flattened content by default; on Improve (#1221) the section round-trips as `[[[EXPAND …]]]` boundary tokens so its **body prose stays improvable**, except when it sits in a markdown-constrained container (`td`/`th`/`li`/`blockquote`/panel) where it is opaque-protected instead. The `<summary>` is never improvable either way — it rides percent-encoded in the token |
 | `ri:user`                            | `<span class="confluence-user-mention" data-username="…">@user</span>` | `@user` (inline) |
 | `ri:page`                            | `<a data-page-link>`                                         | `[title](compendiq://page/ID)` |
 | `ac:structured-macro[drawio]`        | `<img data-drawio>`                                          | `![diagram](attachment-url)`  |
@@ -142,6 +142,36 @@ Custom turndown rules handle Confluence-specific macros:
   outer-first pass would ship the still-raw inner `<details>` to Confluence
   as a literal HTML element (and a summary-less outer could steal the
   nested section's title).
+- **A `<details>` always carries a `<summary>`, and the title has three states
+  (#1227).** Confluence distinguishes *no* `title` parameter from an explicitly
+  empty `<ac:parameter ac:name="title"/>` from a real string, so `body_html`
+  has to distinguish them too:
+
+  | Confluence storage | `body_html` | back to storage |
+  |---|---|---|
+  | no `title` param | `<summary></summary>` | no `title` param |
+  | `<ac:parameter ac:name="title"/>` | `<summary></summary>` + `data-macro-params='{"title":""}'` | `<ac:parameter ac:name="title"/>` |
+  | `<ac:parameter ac:name="title">Foo</ac:parameter>` | `<summary>Foo</summary>` | `title=Foo` |
+
+  The forward pass used to substitute the literal `Click to expand` for an
+  absent parameter, and the reverse pass — which had only "is there a
+  `<summary>`" to decide on — wrote that label back as a genuine parameter, so
+  every write-back path put a title on a customer page that never had one. The
+  reverse pass now decides on the summary's **trimmed text** (a whitespace-only
+  summary is untitled; the parameter carries the untrimmed text), and consults
+  the `data-macro-params` marker **exactly when** that text is blank — and only
+  when its value is `''`, so a stale non-empty copy can never resurrect a title
+  the user just cleared. A typed title always wins, which is why this is not
+  the marker-attribute design the issue rejected.
+
+  The invariant is that **every `<details>` this codebase produces carries a
+  `<summary>`**, empty or not — `markdownToHtml`'s `EXPAND` rebuild included.
+  The editor's `Details` node declares `content: 'detailsSummary block*'`, a
+  *required* first child, so a summary-less section cannot parse as written:
+  its body is lifted out and left as a sibling of an emptied section, in read
+  view as much as edit mode, and the next save pushes that loss to Confluence.
+  An untitled section shows the macro's own default label — a ProseMirror
+  decoration on `detailsSummary`, rendered client-side and never stored.
 - **Every reverse handler that rebuilds a body converts innermost-first**
   (#1216 for `<details>`, #1220 for the rest). The bodies are rebuilt by
   re-parsing the element's `innerHTML`, which produces *fresh* nodes, while the

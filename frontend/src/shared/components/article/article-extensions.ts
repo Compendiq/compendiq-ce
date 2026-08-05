@@ -1,5 +1,6 @@
 import { Node, mergeAttributes, type Editor } from '@tiptap/core';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
+import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import { ReactNodeViewRenderer } from '@tiptap/react';
 import { DrawioDiagramNodeView } from './DrawioDiagramNodeView';
 import { StatusBadgeView } from './StatusBadgeView';
@@ -150,6 +151,43 @@ export const Details = Node.create({
 });
 
 /**
+ * Label an untitled expand section shows in place of its own title (#1227).
+ *
+ * These are Confluence's, not ours: an untitled section renders with the
+ * macro's own default label on the page, so mirroring it is what makes our
+ * read view match. Nothing is ever stored for it — the label is a decoration,
+ * so a section that arrived with no `title` parameter still writes back with
+ * none, which is the whole point of the issue.
+ *
+ * Both strings were measured, not recalled:
+ * - `expand` — `expand-macro.default-title` in the bundled
+ *   `confluence-expand-macro-19.2.44` plugin of a Confluence DC 9.2.14
+ *   container (the key `ExpandMacro` resolves when the parameter is absent).
+ *   Note the ellipsis; the mobile renderer says "Tap here to expand..." and is
+ *   deliberately not modelled here.
+ * - `ui-expand` — Refined's public DC demo (`confluence-dc-demo.refined.com`),
+ *   rendered through `/rest/api/contentbody/convert/view`. It has NO ellipsis;
+ *   the near-collision with the native string is real, not a typo.
+ */
+const EXPAND_PLACEHOLDER_LABELS: Record<string, string> = {
+  expand: 'Click here to expand...',
+  'ui-expand': 'Click here to expand',
+};
+
+/**
+ * Shown for a <details> carrying no identity stamp (pre-#1211 body_html, and
+ * editor-created sections) or an unrecognised one. Generic on purpose: guessing
+ * a third-party macro's label would be the same fabrication in the UI that this
+ * issue removed from the storage format.
+ */
+const DEFAULT_EXPAND_PLACEHOLDER = 'Click to expand';
+
+function expandPlaceholderLabel(macroName: unknown): string {
+  return (typeof macroName === 'string' && EXPAND_PLACEHOLDER_LABELS[macroName]) ||
+    DEFAULT_EXPAND_PLACEHOLDER;
+}
+
+/**
  * DetailsSummary node — renders <summary> inside <details>.
  */
 export const DetailsSummary = Node.create({
@@ -163,6 +201,50 @@ export const DetailsSummary = Node.create({
 
   renderHTML({ HTMLAttributes }) {
     return ['summary', mergeAttributes(HTMLAttributes), 0];
+  },
+
+  /**
+   * #1227: stamp `data-expand-placeholder` on an empty summary so CSS can show
+   * the macro's default label. A decoration rather than a stored attribute —
+   * nothing about this may reach `body_html`, or it becomes the fabricated
+   * title all over again.
+   *
+   * Not CSS `:empty`: ProseMirror renders an empty textblock as
+   * `<summary><br class="ProseMirror-trailingBreak"></summary>` in editable AND
+   * non-editable mode, so the selector never matches in either. A decoration
+   * also computes under jsdom, which a CSS-only form does not, so it is
+   * testable.
+   *
+   * Registered on the node, so `Editor` and `ArticleViewer` both get it from
+   * `article-extensions.ts` — one change covers edit mode and read view.
+   */
+  addProseMirrorPlugins() {
+    return [
+      new Plugin({
+        key: new PluginKey('detailsSummaryPlaceholder'),
+        props: {
+          decorations(state) {
+            const decorations: Decoration[] = [];
+            state.doc.descendants((node, pos, parent) => {
+              if (node.type.name !== 'detailsSummary') return undefined;
+              // Strictly empty, not trimmed-empty: a summary holding only
+              // spaces looks blank but has the user's own text in it, and
+              // prefixing a label onto it would read as their own typing.
+              // (htmlToConfluence trims, so such a section still writes back
+              // untitled — the label is the only thing that differs.)
+              if (node.content.size > 0) return false;
+              decorations.push(
+                Decoration.node(pos, pos + node.nodeSize, {
+                  'data-expand-placeholder': expandPlaceholderLabel(parent?.attrs.macroName),
+                }),
+              );
+              return false;
+            });
+            return DecorationSet.create(state.doc, decorations);
+          },
+        },
+      }),
+    ];
   },
 });
 

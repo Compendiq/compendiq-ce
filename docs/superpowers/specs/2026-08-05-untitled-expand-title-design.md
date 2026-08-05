@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-05
 **Issue:** #1227 (an untitled expand / ui-expand section acquires a fabricated `title` parameter on write-back)
-**Status:** approved, not yet implemented
+**Status:** implemented
 
 ## Problem
 
@@ -177,17 +177,32 @@ summary is the click target.
 
 | `data-macro-name` | label | source |
 |---|---|---|
-| `expand` | `Click here to expand...` | proposed — verify against the local vanilla Confluence DC container |
-| `ui-expand` | unknown | verify against the public Refined DC demo instance |
+| `expand` | `Click here to expand...` | **measured** — local vanilla Confluence DC 9.2.14 |
+| `ui-expand` | `Click here to expand` | **measured** — Refined's public DC demo |
 | anything else, or unstamped | `Click to expand` | fixed generic fallback |
 
 The intent is that Compendiq's read view matches what the page looks like in
-Confluence, so **neither macro-specific string is authoritative in this
-document** — both are measured against a real instance during implementation.
-The `expand` value above is the issue's claim and has not been confirmed;
-`ui-expand` needs the Refined demo because the local container carries no
-marketplace apps. If a string cannot be confirmed, that entry ships the generic
-fallback and the PR records which instance was consulted.
+Confluence, so neither macro-specific string was taken on trust. Both were
+measured during implementation:
+
+- **`expand`** — `expand-macro.default-title=Click here to expand...` in
+  `com/atlassian/confluence/plugins/expand/i18n/i18n.properties`, pulled out of
+  the `confluence-expand-macro-19.2.44` plugin bundled with the running local
+  DC 9.2.14 container. `ExpandMacro.class` references that exact key (and
+  `expand-macro.mobile.default-title`, "Tap here to expand...", which we do not
+  model). Note the **trailing ellipsis**.
+- **`ui-expand`** — rendered by the vendor's own instance. `POST
+  /rest/api/contentbody/convert/view` on `confluence-dc-demo.refined.com`
+  (anonymous, the same instance #1129 used for the storage format) with a
+  title-less `ui-expand` returns
+  `<button class="rwui_expandable_item_title rwui_expand" …> Click here to
+  expand </button>` — **no ellipsis**. The near-collision with the native
+  string is real, not a transcription slip, and both are pinned by test.
+  The demo's 17 existing `ui-expand` instances are all titled, so the convert
+  endpoint was the only way to see the default.
+
+The generic fallback is unchanged and deliberately not a guess at any
+third-party macro's wording.
 
 ### Insert (`Editor.tsx:710`)
 

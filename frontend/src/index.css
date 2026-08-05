@@ -1654,6 +1654,24 @@ h1, h2, h3, h4, h5, h6,
   text-decoration: underline;
 }
 
+/*
+ * #1227 — an untitled expand section shows the macro's own default label,
+ * rendered here and never stored. The attribute comes from a ProseMirror
+ * decoration on `detailsSummary` (article-extensions.ts), not from the
+ * document, so it cannot leak into body_html.
+ *
+ * Deliberately NOT the `float: left; height: 0` idiom the paragraph
+ * placeholder uses: the summary is the click target for the whole section, so
+ * the ::before has to contribute its height. A zero-height summary would leave
+ * an untitled section with nothing but the disclosure marker to aim at.
+ */
+.tiptap summary[data-expand-placeholder]::before {
+  content: attr(data-expand-placeholder);
+  color: var(--color-muted-foreground);
+  font-weight: 400;
+  pointer-events: none;
+}
+
 .prose :where(details[open] > summary) {
   margin-bottom: 0.5rem;
   padding-bottom: 0.5rem;

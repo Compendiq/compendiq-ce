@@ -1333,16 +1333,16 @@ describe('content-converter: #1222 direct-child parameter resolution', () => {
       (m) => m[0],
     );
     expect(summaries).toHaveLength(2);
-    expect(summaries[0]).toBe('<summary>Click to expand</summary>');
+    // Empty since #1227 — the untitled outer section no longer gets a
+    // substituted label either.
+    expect(summaries[0]).toBe('<summary></summary>');
     expect(summaries[1]).toBe('<summary>Inner</summary>');
   });
 
   it('write-back does not persist the stolen title onto the outer macro', () => {
-    // The outer section still round-trips with the placeholder summary as its
-    // title parameter — the forward pass always emits a <summary> and the
-    // reverse pass always turns one into a `title`. That half is #1227 and is
-    // deliberately untouched here. What must not survive is the *inner*
-    // macro's real string being written onto a page that never had it.
+    // What must not survive is the *inner* macro's real string being written
+    // onto a page that never had it. Since #1227 the untitled outer section
+    // emits no `title` parameter of its own either.
     const storage =
       '<ac:structured-macro ac:name="expand"><ac:rich-text-body>' +
       '<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Inner</ac:parameter>' +
@@ -1364,7 +1364,7 @@ describe('content-converter: #1222 direct-child parameter resolution', () => {
       '<ac:parameter ac:name="title">DONE</ac:parameter></ac:structured-macro>' +
       '</p></ac:rich-text-body></ac:structured-macro>';
     const html = confluenceToHtml(storage);
-    expect(html).toContain('<summary>Click to expand</summary>');
+    expect(html).toContain('<summary></summary>');
     expect(html).not.toContain('<summary>DONE</summary>');
 
     const xhtml = htmlToConfluence(html);
@@ -1483,6 +1483,135 @@ describe('content-converter: #1222 direct-child parameter resolution', () => {
       expect(html).not.toContain('<summary>body text</summary>');
       expect(html).toContain('<p>body text</p>');
     });
+  });
+});
+
+// ==========================================================================
+// #1227 — an untitled expand section must stay untitled
+// ==========================================================================
+//
+// The forward pass substituted `Click to expand` for an absent `title`
+// parameter, and the reverse pass — which had only "is there a <summary>" to
+// go on — wrote that label back as a real parameter. Every write-back path
+// (editor save, Improve-apply, draft publish, version restore) put a parameter
+// on the customer's Confluence page that the page never had, changing how it
+// renders and taking the label out of the vendor's hands.
+//
+// Three storage states, three distinct HTML shapes, and every one of them
+// carries a <summary> — a summary-less <details> is unparseable by the
+// editor's schema (`content: 'detailsSummary block*'`) and ejects its own body
+// out of the section, in read view as much as edit mode.
+describe('content-converter: #1227 untitled expand sections', () => {
+  const untitled = (name: string) =>
+    `<ac:structured-macro ac:name="${name}"><ac:rich-text-body><p>body</p></ac:rich-text-body></ac:structured-macro>`;
+
+  for (const macroName of ['expand', 'ui-expand']) {
+    it(`converts an untitled ${macroName} to an empty summary, storing no title`, () => {
+      const html = confluenceToHtml(untitled(macroName));
+      expect(html).toContain('<summary></summary>');
+      expect(html).not.toContain('Click to expand');
+      // Not smuggled into the #865 parameter net either — absence has to stay
+      // absence, or the reverse pass rebuilds it from there instead.
+      expect(html).not.toMatch(/data-macro-params="[^"]*title/);
+      // …and the body is still inside the section.
+      expect(html).toMatch(/<summary><\/summary><p>body<\/p>/);
+    });
+
+    it(`round-trips an untitled ${macroName} without inventing a title parameter`, () => {
+      const xhtml = htmlToConfluence(confluenceToHtml(untitled(macroName)));
+      expect(xhtml).not.toContain('ac:name="title"');
+      expect(xhtml).toContain(`ac:name="${macroName}"`);
+      expect(xhtml).toContain('<p>body</p>');
+    });
+  }
+
+  it('preserves an explicitly empty title parameter, which is a different thing', () => {
+    // #1232 drew this distinction deliberately: `<ac:parameter ac:name="title"/>`
+    // is a real, empty title, and dropping it would be the same fabrication
+    // class inverted. A blank summary is what BOTH states look like, so the
+    // empty one rides in data-macro-params — the one value the summary cannot
+    // carry.
+    const storage =
+      '<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title"/>' +
+      '<ac:rich-text-body><p>body</p></ac:rich-text-body></ac:structured-macro>';
+    const html = confluenceToHtml(storage);
+    expect(html).toContain('<summary></summary>');
+    expect(html).toMatch(/data-macro-params="[^"]*title/);
+    expect(htmlToConfluence(html)).toContain('<ac:parameter ac:name="title"></ac:parameter>');
+  });
+
+  it('emits a title the user typed onto a previously untitled section', () => {
+    // The self-correcting half: absence is representable, so filling it in is
+    // an ordinary edit rather than something the converter has to guess at.
+    const html = confluenceToHtml(untitled('expand')).replace(
+      '<summary></summary>',
+      '<summary>Typed</summary>',
+    );
+    expect(htmlToConfluence(html)).toContain('<ac:parameter ac:name="title">Typed</ac:parameter>');
+  });
+
+  it('lets a typed title win over an empty-title marker', () => {
+    // This is why the marker is not the attribute approach the issue rejected:
+    // it is consulted EXACTLY when the summary is blank, so the user's own
+    // text is never in a position to be discarded by it.
+    const storage =
+      '<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title"/>' +
+      '<ac:rich-text-body><p>body</p></ac:rich-text-body></ac:structured-macro>';
+    const html = confluenceToHtml(storage).replace('<summary></summary>', '<summary>Typed</summary>');
+    const xhtml = htmlToConfluence(html);
+    expect(xhtml).toContain('<ac:parameter ac:name="title">Typed</ac:parameter>');
+    expect(xhtml.match(/ac:name="title"/g)).toHaveLength(1);
+  });
+
+  it('drops the parameter when the user clears a real title', () => {
+    const storage =
+      '<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Was Here</ac:parameter>' +
+      '<ac:rich-text-body><p>body</p></ac:rich-text-body></ac:structured-macro>';
+    const html = confluenceToHtml(storage).replace('<summary>Was Here</summary>', '<summary></summary>');
+    expect(htmlToConfluence(html)).not.toContain('ac:name="title"');
+  });
+
+  it('ignores a stale NON-empty title marker under a blank summary', () => {
+    // Hand-edited or legacy HTML. Honouring it would resurrect the title the
+    // user just cleared — the summary stays the source of truth for any real
+    // string, and only `''` is taken from the marker.
+    const html =
+      '<details data-macro-name="expand" data-macro-params=\'{"title":"Stale"}\'>' +
+      '<summary></summary><p>body</p></details>';
+    expect(htmlToConfluence(html)).not.toContain('ac:name="title"');
+  });
+
+  it('treats a whitespace-only summary as untitled', () => {
+    const html = '<details data-macro-name="expand"><summary>   </summary><p>body</p></details>';
+    const xhtml = htmlToConfluence(html);
+    expect(xhtml).not.toContain('ac:name="title"');
+    // The <summary> tag itself is still gone — it has no place in storage
+    // format whether or not it carried a title.
+    expect(xhtml).not.toContain('<summary');
+  });
+
+  it('carries a real title\'s own leading and trailing spaces', () => {
+    // Trimming decides *whether* there is a title; the parameter carries the
+    // untrimmed text, because a real title's spacing is the user's.
+    const html = '<details data-macro-name="expand"><summary> Spaced </summary><p>b</p></details>';
+    expect(htmlToConfluence(html)).toContain('<ac:parameter ac:name="title"> Spaced </ac:parameter>');
+  });
+
+  it('writes no title for a <details> that reaches the reverse pass with no summary', () => {
+    // Improve-apply feeds model-produced HTML through htmlToConfluence with no
+    // tag allow-list, so this shape is reachable without the editor.
+    const xhtml = htmlToConfluence('<details data-macro-name="expand"><p>body</p></details>');
+    expect(xhtml).not.toContain('ac:name="title"');
+    expect(xhtml).toContain('<p>body</p>');
+  });
+
+  it('keeps the title parameter stable across a double round-trip', () => {
+    // The fabricated label was self-consistent once written, which is exactly
+    // what made it easy to miss. Untitled must now be the stable state.
+    const once = htmlToConfluence(confluenceToHtml(untitled('expand')));
+    const twice = htmlToConfluence(confluenceToHtml(once));
+    expect(once).not.toContain('ac:name="title"');
+    expect(twice).toBe(once);
   });
 });
 
@@ -2857,16 +2986,19 @@ describe('content-converter: #1221 stage 2 expand boundary tokens', () => {
       expect(htmlToConfluence(html)).toContain('old body');
     });
 
-    it('omits the summary for a title-less section rather than inventing a blank title', async () => {
+    it('rebuilds a title-less section WITH an empty summary, and still invents no title', async () => {
       const { md, html } = await tokenRoundTrip('<details data-macro-name="expand"><p>body only</p></details>');
-      // The `title` key is absent, not empty — presence is what distinguishes
-      // "no <summary>" from "<summary></summary>" (#1232 review).
+      // The `title` key is absent from the token: it records whether the HTML
+      // had a <summary> at all, and this one did not.
       expect(md).not.toContain('title=');
-      expect(html).toContain('<details data-macro-name="expand">');
-      expect(html).not.toContain('<summary>');
+      // #1227: the rebuild supplies one regardless. A summary-less <details>
+      // is unparseable by the editor's schema and ejects its own body; a blank
+      // summary costs nothing, because the reverse pass reads the text.
+      expect(html).toContain('<details data-macro-name="expand"><summary></summary>');
       const xhtml = htmlToConfluence(html);
       expect(xhtml).toContain('ac:name="expand"');
       expect(xhtml).not.toContain('ac:name="title"');
+      expect(xhtml).toContain('body only');
     });
 
     it('still emits tokens for a section with an empty body', async () => {
@@ -3196,24 +3328,28 @@ describe('content-converter: #1221 stage 2 expand boundary tokens', () => {
     });
 
     it('preserves an explicitly empty title instead of dropping the parameter', async () => {
-      // `title=` had to mean both "no <summary>" and "<summary></summary>", so
-      // storage carrying an empty title parameter lost it on write-back.
+      // Since #1227 the empty-vs-absent distinction rides in `params`, not in
+      // the presence of the `title` key — a blank summary is what BOTH states
+      // look like in the HTML. The marker has to survive the token layer or
+      // storage carrying an empty title parameter loses it on write-back.
       const { html: prot } = protectMedia(
-        '<details data-macro-name="expand"><summary></summary><p>b</p></details>',
+        '<details data-macro-name="expand" data-macro-params="{&quot;title&quot;:&quot;&quot;}">' +
+        '<summary></summary><p>b</p></details>',
       );
       const md = htmlToMarkdown(prot, { layoutTokens: true });
-      expect(md).toContain('title= ');
       const html = await markdownToHtml(md, { layoutSkeleton: extractLayoutSkeleton(prot) });
       expect(html).toContain('<summary></summary>');
       expect(htmlToConfluence(html)).toContain('<ac:parameter ac:name="title"></ac:parameter>');
     });
 
-    it('still omits the summary entirely for a section that never had one', async () => {
+    it('gives a section that never had a summary an empty one rather than none', async () => {
+      // #1227: this is the path that made the ejection hole reachable — a
+      // model echoing `[[[EXPAND … params=]]]` with no `title` attribute.
       const { html: prot } = protectMedia('<details data-macro-name="expand"><p>body only</p></details>');
       const md = htmlToMarkdown(prot, { layoutTokens: true });
       expect(md).not.toContain('title=');
       const html = await markdownToHtml(md, { layoutSkeleton: extractLayoutSkeleton(prot) });
-      expect(html).not.toContain('<summary>');
+      expect(html).toContain('<summary></summary>');
       expect(htmlToConfluence(html)).not.toContain('ac:name="title"');
     });
   });
