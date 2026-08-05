@@ -671,8 +671,26 @@ export function htmlToConfluence(html: string): string {
     pre.replaceWith(macro);
   }
 
-  // Convert task lists back
-  for (const ul of doc.querySelectorAll('ul[data-type="taskList"]')) {
+  // Convert task lists back — innermost-first (#1220). Every macro body below
+  // is rebuilt by re-parsing the element's innerHTML (transferInnerHtml), which
+  // produces FRESH nodes, while the querySelectorAll snapshot driving the loop
+  // is static: converting an outer placeholder before a nested one of the same
+  // class leaves the inner element behind in the discarded original subtree
+  // (still in the snapshot, no longer in the document) while its live clone in
+  // the new body was never in the snapshot at all. querySelectorAll returns
+  // document order (outer before inner), so iterating it reversed converts each
+  // inner element in place first and the outer's later re-parse copies an
+  // already-converted, inert ac: element. Same fix shape as the <details> loop
+  // below (#1216); see it for the reachability argument.
+  //
+  // Task lists corrupt rather than leak: the inner li query below is unscoped,
+  // so an outer-first pass ALSO matched the nested items and hoisted them into
+  // sibling ac:task elements — the subtask shipped twice, once as a literal
+  // <ul> inside the outer task body and once as a sibling. Innermost-first the
+  // nested <ul> is already an ac:task-list by the time the outer runs, so the
+  // query no longer finds its items. Confluence nests task lists natively
+  // (subtasks), so this is the most reachable shape of the set.
+  for (const ul of [...doc.querySelectorAll('ul[data-type="taskList"]')].reverse()) {
     const taskList = doc.createElement('ac:task-list');
 
     for (const li of ul.querySelectorAll('li[data-type="taskItem"]')) {
@@ -693,9 +711,18 @@ export function htmlToConfluence(html: string): string {
     ul.replaceWith(taskList);
   }
 
-  // Convert panels back
+  // Convert panels back — innermost-first (#1220), per the stale-snapshot
+  // reasoning on the task-list loop above; panel-in-panel is schema-legal in
+  // the editor and reachable from improve-apply, which feeds model-produced
+  // HTML through here with no tag allow-list. Cross-TYPE nesting (an info panel
+  // around a warning one) has a second, independent guarantee: each type takes
+  // its OWN fresh snapshot after the previous type's re-parses, so a clone an
+  // earlier type created is still found by a later one. Collapsing the four
+  // selectors into one (`.panel-info, .panel-warning, …`, deriving the type per
+  // element) removes that guarantee and leaves this reversal as the only thing
+  // keeping cross-type nesting intact — hence the regression pins in the tests.
   for (const panelType of ['info', 'warning', 'note', 'tip']) {
-    for (const div of doc.querySelectorAll(`.panel-${panelType}`)) {
+    for (const div of [...doc.querySelectorAll(`.panel-${panelType}`)].reverse()) {
       const macro = doc.createElement('ac:structured-macro');
       macro.setAttribute('ac:name', panelType);
       const body = doc.createElement('ac:rich-text-body');
@@ -800,8 +827,14 @@ export function htmlToConfluence(html: string): string {
     details.replaceWith(macro);
   }
 
-  // Convert section divs back to ac:structured-macro[name=section] (outside-in: sections before columns)
-  for (const div of doc.querySelectorAll('div.confluence-section')) {
+  // Convert section divs back to ac:structured-macro[name=section] (sections
+  // before columns), each snapshot innermost-first (#1220) per the stale-snapshot
+  // reasoning on the task-list loop above. BOTH this loop and the columns loop
+  // below must be reversed: `section > column > section > column` (schema-legal
+  // in the editor) leaks the whole inner subtree if either one still runs
+  // outside-in, because the outer section's re-parse clones the outer column,
+  // which an outside-in columns loop then clones again.
+  for (const div of [...doc.querySelectorAll('div.confluence-section')].reverse()) {
     const macro = doc.createElement('ac:structured-macro');
     macro.setAttribute('ac:name', 'section');
     const border = div.getAttribute('data-border');
@@ -817,8 +850,10 @@ export function htmlToConfluence(html: string): string {
     div.replaceWith(macro);
   }
 
-  // Convert column divs back to ac:structured-macro[name=column] (inside sections)
-  for (const div of doc.querySelectorAll('div.confluence-column')) {
+  // Convert column divs back to ac:structured-macro[name=column] (inside
+  // sections), innermost-first (#1220) — the second half of the pair described
+  // on the sections loop above.
+  for (const div of [...doc.querySelectorAll('div.confluence-column')].reverse()) {
     const macro = doc.createElement('ac:structured-macro');
     macro.setAttribute('ac:name', 'column');
     // Prefer data-cell-width; fall back to extracting width from inline style
@@ -905,7 +940,15 @@ export function htmlToConfluence(html: string): string {
   // Convert unknown-macro placeholders back to their original
   // ac:structured-macro (#865) so write-back doesn't permanently delete the
   // macro from the Confluence page. Mirrors the #765 labels handler above.
-  for (const div of doc.querySelectorAll('div.confluence-macro-unknown')) {
+  //
+  // Innermost-first (#1220) per the stale-snapshot reasoning on the task-list
+  // loop — the shape this matters most for, since a third-party macro whose
+  // rich-text body holds another unrecognised macro is ordinary Confluence
+  // content. Reverse order also feeds the isPlaceholderOnly check below a
+  // truer reading: a nested macro is an inert ac: element by then, contributing
+  // no text, where outside-in an outer macro containing only a body-less nested
+  // one of the same name read as placeholder-only and dropped it entirely.
+  for (const div of [...doc.querySelectorAll('div.confluence-macro-unknown')].reverse()) {
     const name = div.getAttribute('data-macro-name') || 'unknown';
     const macro = doc.createElement('ac:structured-macro');
     macro.setAttribute('ac:name', name);
@@ -1055,6 +1098,10 @@ export function htmlToConfluence(html: string): string {
 
   // Convert layout divs back to ac:layout / ac:layout-section / ac:layout-cell
   // Process outside-in: layout wrapper first, then sections, then cells.
+  // Deliberately NOT innermost-first like the loops above (#1220): these MOVE
+  // the existing child nodes (`while (div.firstChild)`) instead of re-parsing
+  // innerHTML, so a nested placeholder is carried over as the very node the
+  // snapshot holds and stays reachable. No stale-snapshot exposure to fix here.
   for (const div of doc.querySelectorAll('div.confluence-layout')) {
     const layout = doc.createElement('ac:layout');
     while (div.firstChild) layout.appendChild(div.firstChild);

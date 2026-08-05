@@ -3369,3 +3369,230 @@ describe('content-converter: #1221 stage 2 expand boundary tokens', () => {
     }
   });
 });
+
+// ========== #1220 self-nested placeholders on write-back ==========
+//
+// htmlToConfluence rebuilds every macro body with transferInnerHtml — an
+// innerHTML serialize/re-parse that produces FRESH nodes — while iterating a
+// STATIC querySelectorAll snapshot. Converting an outer placeholder before a
+// same-class inner one therefore leaves the inner element behind in the
+// discarded original subtree (still in the snapshot, no longer in the
+// document) while its live clone inside the new ac:rich-text-body was never in
+// the snapshot at all. The clone ships to Confluence as a literal <div>. The
+// task-list handler corrupts differently: its unscoped `li[data-type=taskItem]`
+// query also matches nested items, so the inner task is DUPLICATED — once as a
+// literal <ul> inside the outer task body, once hoisted to a sibling ac:task.
+// PR #1216 fixed the <details> loop by iterating innermost-first; these cases
+// pin the same reversal for the remaining loops.
+//
+// Every input below is fed to htmlToConfluence DIRECTLY, in the editor /
+// LLM-produced shape. Building it via confluenceToHtml would be vacuous: the
+// forward pass never emits a self-nested same-class placeholder (a nested info
+// panel comes back as div.confluence-macro-unknown, and a nested unknown macro
+// stays raw ac: markup), so such a test passes on unpatched code. Both shapes
+// are reachable without the sync: improve-apply runs markdownToHtml →
+// htmlToConfluence with no tag allow-list, and the editor schema permits
+// panel-in-panel, unknown-in-unknown and section > column > section > column.
+describe('content-converter: #1220 self-nested placeholders on write-back', () => {
+  describe('self-nesting per handler', () => {
+    it('converts a panel nested in a same-type panel without leaking a literal div', () => {
+      const xhtml = htmlToConfluence(
+        '<div class="panel-info"><p>outer</p><div class="panel-info"><p>inner</p></div></div>',
+      );
+      expect(xhtml).not.toContain('<div');
+      expect(xhtml).toBe(
+        '<ac:structured-macro ac:name="info"><ac:rich-text-body><p>outer</p>' +
+          '<ac:structured-macro ac:name="info"><ac:rich-text-body><p>inner</p></ac:rich-text-body></ac:structured-macro>' +
+          '</ac:rich-text-body></ac:structured-macro>',
+      );
+    });
+
+    it('converts a section nested in a section without leaking a literal div', () => {
+      const xhtml = htmlToConfluence(
+        '<div class="confluence-section"><p>outer</p>' +
+          '<div class="confluence-section"><p>inner</p></div>' +
+          '</div>',
+      );
+      expect(xhtml).not.toContain('<div');
+      expect(xhtml).toBe(
+        '<ac:structured-macro ac:name="section"><ac:rich-text-body><p>outer</p>' +
+          '<ac:structured-macro ac:name="section"><ac:rich-text-body><p>inner</p></ac:rich-text-body></ac:structured-macro>' +
+          '</ac:rich-text-body></ac:structured-macro>',
+      );
+    });
+
+    it('converts a column nested in a column without leaking a literal div', () => {
+      const xhtml = htmlToConfluence(
+        '<div class="confluence-column"><p>outer</p>' +
+          '<div class="confluence-column"><p>inner</p></div>' +
+          '</div>',
+      );
+      expect(xhtml).not.toContain('<div');
+      expect(xhtml).toBe(
+        '<ac:structured-macro ac:name="column"><ac:rich-text-body><p>outer</p>' +
+          '<ac:structured-macro ac:name="column"><ac:rich-text-body><p>inner</p></ac:rich-text-body></ac:structured-macro>' +
+          '</ac:rich-text-body></ac:structured-macro>',
+      );
+    });
+
+    it('converts an unknown macro nested in an unknown macro without leaking a literal div', () => {
+      // The most plausible shape in practice (#1220): a third-party macro whose
+      // rich-text body holds another unrecognised macro.
+      const xhtml = htmlToConfluence(
+        '<div class="confluence-macro-unknown" data-macro-name="outer-macro"><p>outer</p>' +
+          '<div class="confluence-macro-unknown" data-macro-name="inner-macro"><p>inner</p></div>' +
+          '</div>',
+      );
+      expect(xhtml).not.toContain('<div');
+      expect(xhtml).toBe(
+        '<ac:structured-macro ac:name="outer-macro"><ac:rich-text-body><p>outer</p>' +
+          '<ac:structured-macro ac:name="inner-macro"><ac:rich-text-body><p>inner</p></ac:rich-text-body></ac:structured-macro>' +
+          '</ac:rich-text-body></ac:structured-macro>',
+      );
+    });
+  });
+
+  describe('nested task lists', () => {
+    it('nests a subtask instead of duplicating it', () => {
+      // Confluence task lists nest natively (subtasks), so this is the most
+      // reachable shape of the set — and it corrupts rather than leaks: the
+      // outer handler's unscoped li query hoists the nested item into a second
+      // ac:task while the raw <ul> is also copied into the outer task body.
+      const xhtml = htmlToConfluence(
+        '<ul data-type="taskList">' +
+          '<li data-type="taskItem" data-checked="false"><p>outer</p>' +
+          '<ul data-type="taskList">' +
+          '<li data-type="taskItem" data-checked="true"><p>inner</p></li>' +
+          '</ul>' +
+          '</li>' +
+          '</ul>',
+      );
+      expect(xhtml).not.toContain('<ul');
+      expect(xhtml.match(/<ac:task>/g)).toHaveLength(2);
+      // The inner task appears exactly once — as a nested ac:task-list inside
+      // the outer ac:task-body, never also hoisted as a sibling ac:task.
+      expect(xhtml.match(/<p>inner<\/p>/g)).toHaveLength(1);
+      expect(xhtml.match(/<ac:task-status>complete<\/ac:task-status>/g)).toHaveLength(1);
+      // Task ids are random; normalise them to compare the whole structure.
+      expect(xhtml.replace(/<ac:task-id>\d+<\/ac:task-id>/g, '<ac:task-id>#</ac:task-id>')).toBe(
+        '<ac:task-list><ac:task><ac:task-id>#</ac:task-id>' +
+          '<ac:task-status>incomplete</ac:task-status>' +
+          '<ac:task-body><p>outer</p>' +
+          '<ac:task-list><ac:task><ac:task-id>#</ac:task-id>' +
+          '<ac:task-status>complete</ac:task-status>' +
+          '<ac:task-body><p>inner</p></ac:task-body>' +
+          '</ac:task></ac:task-list>' +
+          '</ac:task-body></ac:task></ac:task-list>',
+      );
+    });
+  });
+
+  describe('cross-type nesting regression pins', () => {
+    // These round-trip cleanly today, but only because each type/selector takes
+    // a FRESH querySelectorAll after the previous loop's re-parses, so a clone
+    // an earlier loop created is still found by a later one. Collapsing the four
+    // panel types into one selector (`.panel-info, .panel-warning, …`) — a
+    // plausible tidy-up — would silently break every cross-type panel nesting.
+    it('keeps a warning panel nested inside an info panel', () => {
+      const xhtml = htmlToConfluence(
+        '<div class="panel-info"><p>outer</p><div class="panel-warning"><p>inner</p></div></div>',
+      );
+      expect(xhtml).not.toContain('<div');
+      expect(xhtml).toBe(
+        '<ac:structured-macro ac:name="info"><ac:rich-text-body><p>outer</p>' +
+          '<ac:structured-macro ac:name="warning"><ac:rich-text-body><p>inner</p></ac:rich-text-body></ac:structured-macro>' +
+          '</ac:rich-text-body></ac:structured-macro>',
+      );
+    });
+
+    it('keeps an info panel nested inside a warning panel', () => {
+      const xhtml = htmlToConfluence(
+        '<div class="panel-warning"><p>outer</p><div class="panel-info"><p>inner</p></div></div>',
+      );
+      expect(xhtml).not.toContain('<div');
+      expect(xhtml).toBe(
+        '<ac:structured-macro ac:name="warning"><ac:rich-text-body><p>outer</p>' +
+          '<ac:structured-macro ac:name="info"><ac:rich-text-body><p>inner</p></ac:rich-text-body></ac:structured-macro>' +
+          '</ac:rich-text-body></ac:structured-macro>',
+      );
+    });
+
+    it('keeps a column nested inside a section', () => {
+      const xhtml = htmlToConfluence(
+        '<div class="confluence-section"><div class="confluence-column"><p>cell</p></div></div>',
+      );
+      expect(xhtml).not.toContain('<div');
+      expect(xhtml).toBe(
+        '<ac:structured-macro ac:name="section"><ac:rich-text-body>' +
+          '<ac:structured-macro ac:name="column"><ac:rich-text-body><p>cell</p></ac:rich-text-body></ac:structured-macro>' +
+          '</ac:rich-text-body></ac:structured-macro>',
+      );
+    });
+  });
+
+  it('survives section > column > section > column (both loops must be innermost-first)', () => {
+    // Reversing only one of the two loops is not enough: the outer section's
+    // re-parse clones the outer column, which an outer-first columns loop then
+    // clones again, leaking the entire inner subtree as literal divs.
+    const xhtml = htmlToConfluence(
+      '<div class="confluence-section"><div class="confluence-column">' +
+        '<div class="confluence-section"><div class="confluence-column"><p>deep</p></div></div>' +
+        '</div></div>',
+    );
+    expect(xhtml).not.toContain('<div');
+    expect(xhtml).toBe(
+      '<ac:structured-macro ac:name="section"><ac:rich-text-body>' +
+        '<ac:structured-macro ac:name="column"><ac:rich-text-body>' +
+        '<ac:structured-macro ac:name="section"><ac:rich-text-body>' +
+        '<ac:structured-macro ac:name="column"><ac:rich-text-body><p>deep</p></ac:rich-text-body></ac:structured-macro>' +
+        '</ac:rich-text-body></ac:structured-macro>' +
+        '</ac:rich-text-body></ac:structured-macro>' +
+        '</ac:rich-text-body></ac:structured-macro>',
+    );
+  });
+
+  it('survives same-type nesting through an intervening element (panel > details > panel)', () => {
+    // The <details> in between does not save the per-type snapshot: both tip
+    // panels are in the same panels-loop snapshot, so an outer-first pass still
+    // clones the inner one out of the document.
+    const xhtml = htmlToConfluence(
+      '<div class="panel-tip"><p>outer</p>' +
+        '<details data-macro-name="expand"><summary>S</summary>' +
+        '<div class="panel-tip"><p>inner</p></div>' +
+        '</details>' +
+        '</div>',
+    );
+    expect(xhtml).not.toContain('<div');
+    expect(xhtml).not.toContain('<details');
+    expect(xhtml).toBe(
+      '<ac:structured-macro ac:name="tip"><ac:rich-text-body><p>outer</p>' +
+        '<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">S</ac:parameter>' +
+        '<ac:rich-text-body>' +
+        '<ac:structured-macro ac:name="tip"><ac:rich-text-body><p>inner</p></ac:rich-text-body></ac:structured-macro>' +
+        '</ac:rich-text-body></ac:structured-macro>' +
+        '</ac:rich-text-body></ac:structured-macro>',
+    );
+  });
+
+  it('never mistakes a nested placeholder for the outer unknown macro being body-less', () => {
+    // isPlaceholderOnly compares div.textContent against the exact
+    // `[Confluence macro: {name}]` string the forward pass fabricates for a
+    // body-less macro. Outer-first, an outer macro whose only content is a
+    // body-less nested macro of the SAME name reads as placeholder-only and
+    // emits no body at all — silently DELETING the nested macro. Innermost-first
+    // the inner is already an inert ac:structured-macro (no text), so the outer
+    // is never placeholder-only and the nesting survives.
+    const xhtml = htmlToConfluence(
+      '<div class="confluence-macro-unknown" data-macro-name="anchor">' +
+        '<div class="confluence-macro-unknown" data-macro-name="anchor">[Confluence macro: anchor]</div>' +
+        '</div>',
+    );
+    expect(xhtml.match(/ac:name="anchor"/g)).toHaveLength(2);
+    expect(xhtml).not.toContain('[Confluence macro:');
+    expect(xhtml).toBe(
+      '<ac:structured-macro ac:name="anchor"><ac:rich-text-body>' +
+        '<ac:structured-macro ac:name="anchor"></ac:structured-macro>' +
+        '</ac:rich-text-body></ac:structured-macro>',
+    );
+  });
+});

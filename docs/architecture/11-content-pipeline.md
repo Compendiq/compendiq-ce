@@ -142,6 +142,27 @@ Custom turndown rules handle Confluence-specific macros:
   outer-first pass would ship the still-raw inner `<details>` to Confluence
   as a literal HTML element (and a summary-less outer could steal the
   nested section's title).
+- **Every reverse handler that rebuilds a body converts innermost-first**
+  (#1216 for `<details>`, #1220 for the rest). The bodies are rebuilt by
+  re-parsing the element's `innerHTML`, which produces *fresh* nodes, while the
+  `querySelectorAll` snapshot driving each loop is static. An outer-first pass
+  therefore left a same-class inner placeholder behind in the discarded
+  original subtree — its live clone inside the new `ac:rich-text-body` was never
+  in the snapshot — and shipped that clone to Confluence as a literal `<div>`
+  (panels, `section`, `column`, unknown macros). Task lists corrupted instead of
+  leaking: the outer handler's unscoped `li[data-type="taskItem"]` query also
+  matched the nested items, so a subtask arrived twice — once as a literal
+  `<ul>` inside the outer `ac:task-body`, once hoisted to a sibling `ac:task`.
+  Reversing each snapshot converts the inner element in place first, so the
+  outer's re-parse copies an inert `ac:` element. Two corollaries: cross-*type*
+  nesting (info panel > warning panel, `section` > `column`) is safe for a
+  different reason — each selector takes a **fresh** snapshot after the previous
+  loop's re-parses — so collapsing the four panel selectors into one would
+  reintroduce the leak for panel-in-panel of different types; and the
+  `ac:layout` / `ac:layout-section` / `ac:layout-cell` handlers **move** child
+  nodes rather than re-parsing, so they are immune and stay outside-in.
+  Prevention only: pages already written back carrying a literal placeholder
+  div are not repaired by this.
 - **Refined's "UI Expand" is the second macro on `<details>` (#1129).**
   `ui-expand` comes from the Refined Macro Toolkit and is a different macro
   from Atlassian's native `expand`, not a rename. Verified against a
