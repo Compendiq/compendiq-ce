@@ -3,37 +3,49 @@ import { readFileSync } from 'fs';
 import { resolve } from 'path';
 
 /**
- * The under-masks that hide article content in the app's scroll padding (#1186).
+ * The strip of scroll padding that a sticky box does not reach (#1186, #1218).
  *
- * AppLayout's main scroll container carries top padding. A `position: sticky`
- * box inside it does NOT come to rest against the scrollport's top edge: it is
- * clamped to its containing block, and that block begins *after* the padding.
- * Measured in Chromium at a 1440x900 viewport, a `sticky top-0` toolbar stops
- * at the scroll container's content-box top — one padding step below the edge
- * where the scrollport finally clips — so article content scrolls up through
- * that strip in full view, between the app header and the stuck toolbar.
+ * AppLayout's main scroll container carries padding. A `position: sticky` box
+ * inside it does NOT come to rest against the scrollport's edge: it is clamped
+ * to its containing block, and that block begins *after* the padding. Measured
+ * in Chromium at a 1440x900 viewport, a `sticky top-0` toolbar stops at the
+ * scroll container's content-box top — one padding step below the edge where
+ * the scrollport finally clips — so content scrolls up through that strip in
+ * full view, between the app header and the stuck toolbar. The same gap exists
+ * at the block-end, below a `sticky bottom-0` bar (#1218).
  *
- * A surface that covers the strip does it by reaching one padding step above
- * its own box with an opaque under-mask. The height of that reach is not a
- * free choice: it is AppLayout's padding, in another file. It has already
- * drifted once (pt-4 to pt-5), and a mask that no longer matches fails
- * silently — the bleed simply returns, thinner. These invariants read both
- * numbers out of the sources rather than restating them, the same approach as
- * `nginx-api-body-limit.test.ts`.
+ * There are two ways to keep content out of it, and this file enforces both:
  *
- * Exactly two surfaces are enforced here, and this file claims nothing about
- * any other:
- *   - PageViewPage's sticky edit toolbar (fixed in #1186);
- *   - NewPagePage's sticky header group, which never lost its mask.
- * `/ai` is knowingly NOT covered: both of AiAssistantPage's bars sit in this
- * same scroll container with `inset-0` masks and keep the live strip, tracked
- * in #1218. Its bottom bar cannot take the mirrored fix — a block-end overhang
- * grows the scrollable region, which is #769's phantom scroll — so covering it
- * needs a different mechanism, and adding it to this list needs that work
- * first, not a wider regex.
+ *   (a) COVER IT — reach one padding step past your own box with an opaque
+ *       under-mask. PageViewPage's edit toolbar (fixed in #1186) and
+ *       NewPagePage's sticky header, which never lost its mask. The height of
+ *       that reach is not a free choice: it is AppLayout's padding, in another
+ *       file. It has already drifted once (pt-4 to pt-5), and a mask that no
+ *       longer matches fails silently — the bleed simply returns, thinner. The
+ *       invariants below read both numbers out of the sources rather than
+ *       restating them, the same approach as `nginx-api-body-limit.test.ts`.
  *
- * There is no unit test that can catch this by rendering: jsdom performs no
- * layout, so the strip has no height and nothing scrolls through it.
+ *   (b) NEVER SCROLL INTO IT — leave the scroll container with no overflow at
+ *       all, so nothing ever passes through either strip. `/ai` (#1218): its
+ *       message pane owns the scroller, reached by carrying `min-h-0` down
+ *       every wrapper between the scroll container and the pane. Its two bars
+ *       keep plain `inset-0` under-masks, which are belt-and-braces from that
+ *       point on rather than the thing holding the strip shut.
+ *
+ * Strategy (b) is not open to every surface: covering the block-end strip the
+ * way (a) covers the block-start one is what #769 forbids — an absolutely
+ * positioned mask overflowing the block-end edge grows the scrollable overflow
+ * region, adding phantom scroll. A surface with a sticky bottom bar therefore
+ * has to stop scrolling rather than mask its way out.
+ *
+ * The chain itself is pinned in `ai-scroll-chain.test.ts`, not here — one
+ * invariant, one file, so the two cannot drift apart. What this file asserts
+ * about `/ai` is that the delegation is real: strategy (b) is only a strategy
+ * while something enforces it.
+ *
+ * There is no unit test that can catch any of this by rendering: jsdom
+ * performs no layout, so the strip has no height and nothing scrolls through
+ * it.
  */
 
 const SRC = __dirname;
@@ -104,7 +116,7 @@ function editToolbarMaskClasses(): string {
   return classes[1]!;
 }
 
-describe('sticky under-masks cover the scroll container padding (#1186)', () => {
+describe('nothing shows in the scroll container padding (#1186, #1218)', () => {
   it('the scroll container declares one unconditional top padding', () => {
     // A breakpoint variant (sm:pt-8) would give the padding two heights while
     // every mask below can only track one, so the taller one would bleed.
@@ -135,5 +147,23 @@ describe('sticky under-masks cover the scroll container padding (#1186)', () => 
     const reach = header![1]!.match(/before:-top-\[(\d+)px\]/);
     expect(reach, `sticky header has no upward mask: ${header![1]}`).not.toBeNull();
     expect(Number(reach![1])).toBeGreaterThanOrEqual(scrollPaddingTopSteps() * SPACING_STEP_PX);
+  });
+
+  it('/ai takes the other strategy, and something enforces it', () => {
+    // Strategy (b) has no mask to measure: the evidence that /ai stays out of
+    // both strips is that its wrapper chain still shrinks, and that is pinned
+    // one file over. Deleting or gutting that guard would leave this file's
+    // header describing a strategy nothing holds anyone to — so the pointer
+    // itself is asserted, rather than the chain being re-asserted here.
+    const guard = read('ai-scroll-chain.test.ts');
+
+    expect(guard, 'the /ai chain guard no longer pins min-h-0').toContain('min-h-0');
+    for (const row of [
+      'shared/components/layout/AppLayout.tsx',
+      'shared/components/layout/PageTransition.tsx',
+      'features/ai/AiAssistantPage.tsx',
+    ]) {
+      expect(guard, `the /ai chain guard no longer covers ${row}`).toContain(row);
+    }
   });
 });

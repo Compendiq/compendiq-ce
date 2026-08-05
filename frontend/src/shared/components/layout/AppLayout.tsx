@@ -508,8 +508,36 @@ export function AppLayout({ children }: { children: ReactNode }) {
                 {/* flex flex-1 flex-col so pages that opt in (e.g. /ai) can use
                     flex-1 on a child to fill the available scroll height
                     without resorting to a `calc(100vh - chrome)` magic number.
-                    Pages that don't opt in render with natural flow as before. */}
-                <div className={cn('mx-auto flex w-full flex-1 flex-col', isArticleRoute ? 'max-w-[1400px]' : 'max-w-7xl')}>
+                    Pages that don't opt in render with natural flow as before.
+
+                    min-h-0 is one link of a four-link chain (#1218): a flex
+                    item's automatic minimum size refuses to shrink below its
+                    content, so this wrapper alone kept /ai's column growing to
+                    its content and left this scroll container — not the
+                    message pane — as the thing that scrolls. The chain is
+                    scroll container -> PageTransition -> this wrapper ->
+                    AiAssistantPage's page root -> the pane's own scroller;
+                    every link is load-bearing, three of four fixes nothing.
+                    It stays out of the max-width ternary on purpose: a link
+                    that only holds on one route is not a link. Guarded by name
+                    in `src/ai-scroll-chain.test.ts`.
+
+                    One measured side effect, on every route that does NOT cap
+                    its own height: their content now overflows this clamped
+                    box with `overflow: visible` instead of sizing it, and a
+                    scroll container's end padding is not part of the
+                    scrollable overflow an overflowing descendant contributes.
+                    So the last 20px of `pb-5` below is no longer reachable at
+                    the scroll end — measured in Chromium as a trailing gap of
+                    36px before and 16px after, at 1440x900, 1366x768 and
+                    390x844 alike. Scrolling, reachability of the last element
+                    and #1186's toolbar mask are all unchanged. The same clamp
+                    means a page-level box that carries a visible border and
+                    lets its content exceed it would now spill past that
+                    border; every such surface in the app either clips
+                    (GraphPage's canvas is overflow-hidden) or scrolls (/ai's
+                    message pane), which is what makes the clamp safe here. */}
+                <div className={cn('mx-auto flex w-full min-h-0 flex-1 flex-col', isArticleRoute ? 'max-w-[1400px]' : 'max-w-7xl')}>
                   {children}
                 </div>
               </PageTransition>

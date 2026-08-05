@@ -237,18 +237,39 @@ export function AiAssistantPage() {
       // available scroll height without depending on a `calc(100vh - chrome)`
       // magic number that would drift if the header / service-status banner
       // height changes.
-      className="flex flex-1 flex-col gap-3"
+      //
+      // min-h-0 is the last link of a four-link chain (#1218). A flex item's
+      // automatic minimum size (`min-height: auto`) refuses to shrink below
+      // its content, so any link keeping it stops the whole chain and this
+      // column grows to its messages — leaving AppLayout's padded scroll
+      // container as the thing that scrolls, with live message text passing
+      // through the padding strip above the top bar and below the input bar.
+      // The chain is AppLayout's scroll container -> PageTransition ->
+      // AppLayout's max-width wrapper -> this root -> the message pane's own
+      // scroller below. All four are load-bearing; three of four fixes
+      // nothing. Guarded by name in `src/ai-scroll-chain.test.ts`.
+      className="flex min-h-0 flex-1 flex-col gap-3"
     >
       {/* Sticky sub-header: mode selector | context + options.
-          Sits at top-0 of the scroll container so it stays visible as
-          messages grow. backdrop-blur on the inner card keeps the surface
-          legible against the live content scrolling under it. An opaque
-          UNDER-mask (bg-background, z-[-1]) sits behind the translucent bar
-          so chat content scrolling up is fully occluded above the tab row
-          (#703). The mask covers exactly the bar's box (inset-0): the bar
-          pins flush at the scrollport top, so there is no gap above it to
-          mask, and extending past the bar's box adds absolute overflow that
-          inflates the page's scrollable height (#769).
+          Sits at top-0 of the column so it stays visible as messages grow.
+
+          The opaque UNDER-mask (bg-background, z-[-1]) behind the translucent
+          bar is now belt-and-braces, not load-bearing. It was what occluded
+          chat content scrolling up behind the bar (#703) — but since #1218 the
+          message pane owns the scroller and this column no longer scrolls at
+          all, so nothing passes behind the bar to occlude. Do not read a live
+          mask as evidence that it still does. It stays because it costs one
+          div, and because it is what keeps #703 from returning if a future
+          change re-engages the outer scroll container.
+
+          It covers exactly the bar's box (inset-0), and that constraint still
+          binds: an absolutely positioned mask overflowing the block-end edge
+          creates scrollable overflow in a container that now has none, which
+          is #769's phantom scroll re-opened on a page that had stopped
+          scrolling entirely. Note the bar does NOT pin flush at the scrollport
+          edge — a sticky box is clamped to its containing block, which begins
+          after the scroll container's padding (#1186). What removed the live
+          strip that gap used to expose is the min-h-0 chain, not this mask.
 
           Visual grammar: two clear groups separated by a thin divider.
           Group A (left): which mode are we in. Inset segmented control.
@@ -577,16 +598,24 @@ export function AiAssistantPage() {
         </div>
       </div>
 
-      {/* Mode-specific input bar — sticky at the bottom of the scroll
-          container, with a translucent backdrop so chat content scrolls
-          legibly behind it. An opaque UNDER-mask (bg-background, z-[-1]) sits
-          behind the translucent bar so chat content scrolling down is fully
-          occluded below the input field + submit button (#703). The mask
-          covers exactly the bar's box (inset-0): the bar pins flush at the
-          scrollport bottom, so nothing can show below it, and an absolutely
-          positioned mask overflowing the block-end edge grows the scroll
-          container's scrollable overflow region — the former -bottom-[100px]
-          extension added ~100px of phantom scroll on every mode (#769). */}
+      {/* Mode-specific input bar — sticky at the bottom of the column, with a
+          translucent backdrop.
+
+          Its opaque UNDER-mask (bg-background, z-[-1]) is belt-and-braces for
+          the same reason as the sub-header's above: it occluded chat content
+          scrolling down behind the bar (#703), but since #1218 the message
+          pane owns the scroller and this column no longer scrolls, so nothing
+          reaches behind it. Kept because it costs one div and it is what stops
+          #703 returning if outer scrolling is ever re-engaged.
+
+          inset-0, and no overhang in either direction. The block-end rule is
+          the sharp one: an absolutely positioned mask past that edge grows the
+          scroll container's scrollable overflow — the former -bottom-[100px]
+          extension added ~100px of phantom scroll on every mode (#769) — and
+          it would now do that to a container whose overflow is zero. The
+          mirrored -bottom-5 this bug was originally filed with is exactly that
+          mistake; the strip it aimed at is gone because nothing scrolls into
+          it, not because something covers it. */}
       <div className="sticky bottom-0 z-20 isolate -mx-1 bg-background/85 px-1 py-1 backdrop-blur">
         <div
           aria-hidden

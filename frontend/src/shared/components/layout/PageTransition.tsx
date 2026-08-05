@@ -39,7 +39,22 @@ interface PageTransitionProps {
  * reproduced, behavioral test that asserts the exit layer unmounts.
  */
 export function PageTransition({ children }: PageTransitionProps) {
-  return <div className="flex flex-1 flex-col">{children}</div>;
+  // min-h-0 is one link of a four-link chain (#1218). A flex item's automatic
+  // minimum size (`min-height: auto`) refuses to shrink below its content, so
+  // this wrapper alone kept the /ai column growing to its content and made
+  // AppLayout's scroll container — not the message pane — the thing that
+  // scrolls. The chain is:
+  //   AppLayout scroll container -> PageTransition -> AppLayout's max-width
+  //   wrapper -> AiAssistantPage's page root -> the pane's own scroller.
+  // Every link is load-bearing; three of four fixes nothing. Guarded by name
+  // in `src/ai-scroll-chain.test.ts`.
+  //
+  // Routes that don't cap their own height still scroll: their content
+  // overflows this box with `overflow: visible`, which still contributes to
+  // the scroll container's scrollable overflow. The one measured difference
+  // there is the container's end padding, written up where that padding is
+  // declared, in AppLayout.
+  return <div className="flex min-h-0 flex-1 flex-col">{children}</div>;
 }
 
 // eslint-disable-next-line react-refresh/only-export-components
