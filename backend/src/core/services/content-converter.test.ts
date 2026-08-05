@@ -1303,6 +1303,181 @@ describe('content-converter', () => {
   });
 });
 
+// ==========================================================================
+// #1222 — a macro's parameters are its DIRECT ac:parameter children
+// ==========================================================================
+//
+// getParamValue used to search all descendants, so a body-carrying macro read
+// the first matching parameter anywhere in its subtree — a nested macro's. The
+// forward pass then rendered that value, and write-back persisted it as the
+// outer macro's own parameter on the user's Confluence page. Three thefts were
+// verified on dev: expand→title (including cross-type, from a nested status
+// badge), section→border and column→width.
+describe('content-converter: #1222 direct-child parameter resolution', () => {
+  it('does not give an untitled expand a nested expand\'s title', () => {
+    const storage =
+      '<ac:structured-macro ac:name="expand"><ac:rich-text-body>' +
+      '<p>before</p>' +
+      '<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Inner</ac:parameter>' +
+      '<ac:rich-text-body><p>deep</p></ac:rich-text-body></ac:structured-macro>' +
+      '</ac:rich-text-body></ac:structured-macro>';
+    const summaries = [...confluenceToHtml(storage).matchAll(/<summary>[^<]*<\/summary>/g)].map(
+      (m) => m[0],
+    );
+    expect(summaries).toHaveLength(2);
+    expect(summaries[0]).toBe('<summary>Click to expand</summary>');
+    expect(summaries[1]).toBe('<summary>Inner</summary>');
+  });
+
+  it('write-back does not persist the stolen title onto the outer macro', () => {
+    // The outer section still round-trips with the placeholder summary as its
+    // title parameter — the forward pass always emits a <summary> and the
+    // reverse pass always turns one into a `title`. That half is #1227 and is
+    // deliberately untouched here. What must not survive is the *inner*
+    // macro's real string being written onto a page that never had it.
+    const storage =
+      '<ac:structured-macro ac:name="expand"><ac:rich-text-body>' +
+      '<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Inner</ac:parameter>' +
+      '<ac:rich-text-body><p>deep</p></ac:rich-text-body></ac:structured-macro>' +
+      '</ac:rich-text-body></ac:structured-macro>';
+    const xhtml = htmlToConfluence(confluenceToHtml(storage));
+    expect(
+      xhtml.match(/<ac:parameter ac:name="title">Inner<\/ac:parameter>/g),
+    ).toHaveLength(1);
+    expect(xhtml.match(/ac:name="expand"/g)).toHaveLength(2);
+  });
+
+  it('does not give an untitled expand a nested status badge\'s title', () => {
+    // Cross-type theft: `status` is processed after `expand`, so its title is
+    // still an ac:parameter in the subtree when the expand branch looks.
+    const storage =
+      '<ac:structured-macro ac:name="expand"><ac:rich-text-body><p>' +
+      '<ac:structured-macro ac:name="status"><ac:parameter ac:name="colour">Green</ac:parameter>' +
+      '<ac:parameter ac:name="title">DONE</ac:parameter></ac:structured-macro>' +
+      '</p></ac:rich-text-body></ac:structured-macro>';
+    const html = confluenceToHtml(storage);
+    expect(html).toContain('<summary>Click to expand</summary>');
+    expect(html).not.toContain('<summary>DONE</summary>');
+
+    const xhtml = htmlToConfluence(html);
+    // Exactly one DONE title parameter, and it belongs to the status macro.
+    expect(xhtml.match(/<ac:parameter ac:name="title">DONE<\/ac:parameter>/g)).toHaveLength(1);
+    const status = xhtml.match(
+      /<ac:structured-macro ac:name="status">[\s\S]*?<\/ac:structured-macro>/,
+    )?.[0];
+    expect(status).toContain('<ac:parameter ac:name="title">DONE</ac:parameter>');
+  });
+
+  it('does not let a section inherit a nested macro\'s border', () => {
+    // The donor is a third-party macro: an unknown macro's parameter names are
+    // arbitrary (#865 persists them generically), and its handler runs after
+    // the section loop, so its parameters are still ac:parameter elements in
+    // the subtree when the section branch looks for `border`.
+    const storage =
+      '<ac:structured-macro ac:name="section"><ac:rich-text-body>' +
+      '<ac:structured-macro ac:name="bordered-widget"><ac:parameter ac:name="border">true</ac:parameter>' +
+      '<ac:rich-text-body><p>widget</p></ac:rich-text-body></ac:structured-macro>' +
+      '</ac:rich-text-body></ac:structured-macro>';
+    const html = confluenceToHtml(storage);
+    expect(html.match(/<div class="confluence-section"[^>]*>/)?.[0]).toBe(
+      '<div class="confluence-section">',
+    );
+    // …and the donor still carries the parameter it was never asked to share.
+    expect(html).toContain('data-macro-name="bordered-widget"');
+    expect(html).toMatch(/data-macro-params="[^"]*border/);
+  });
+
+  it('does not let a column inherit a nested macro\'s width', () => {
+    const storage =
+      '<ac:structured-macro ac:name="section"><ac:rich-text-body>' +
+      '<ac:structured-macro ac:name="column"><ac:rich-text-body>' +
+      '<ac:structured-macro ac:name="chart"><ac:parameter ac:name="width">400px</ac:parameter>' +
+      '<ac:rich-text-body><p>chart body</p></ac:rich-text-body></ac:structured-macro>' +
+      '</ac:rich-text-body></ac:structured-macro>' +
+      '</ac:rich-text-body></ac:structured-macro>';
+    const html = confluenceToHtml(storage);
+    const column = html.match(/<div class="confluence-column"[^>]*>/)?.[0];
+    expect(column).toBe('<div class="confluence-column">');
+    // The stolen width was also written into an inline style.
+    expect(html).not.toContain('flex: 0 0 400px');
+  });
+
+  it('resolves an expand\'s own title when its parameter follows the body', () => {
+    // Storage XHTML is API-writable, so parameter-after-body is reachable even
+    // though Confluence's own serializer emits parameters first. Descendant
+    // search returned the first match in document order, which here is the
+    // nested macro's — turning fabrication into overwrite of a real title.
+    const storage =
+      '<ac:structured-macro ac:name="expand"><ac:rich-text-body>' +
+      '<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Inner</ac:parameter>' +
+      '<ac:rich-text-body><p>deep</p></ac:rich-text-body></ac:structured-macro>' +
+      '</ac:rich-text-body><ac:parameter ac:name="title">Outer</ac:parameter></ac:structured-macro>';
+    const summaries = [...confluenceToHtml(storage).matchAll(/<summary>[^<]*<\/summary>/g)].map(
+      (m) => m[0],
+    );
+    expect(summaries[0]).toBe('<summary>Outer</summary>');
+    expect(summaries[1]).toBe('<summary>Inner</summary>');
+  });
+
+  // A parameter is a direct child by storage-format schema — but the pipeline
+  // parses storage XHTML with an HTML parser, where `<ac:parameter …/>` does
+  // NOT self-close. Every following sibling parameter nests inside it and
+  // becomes a grandchild, so "direct child by schema" only holds in the parsed
+  // DOM because the tag is pre-expanded (SELF_CLOSING_XHTML_TAGS). Reachable
+  // the same way parameter-after-body above is: storage XHTML is API-writable,
+  // and an XML serializer in a third-party app normalises an empty element to
+  // self-closing form.
+  describe('self-closing ac:parameter', () => {
+    it('keeps reading a status macro\'s colour and title past a self-closed parameter', () => {
+      const storage =
+        '<ac:structured-macro ac:name="status"><ac:parameter ac:name="subtle"/>' +
+        '<ac:parameter ac:name="colour">Green</ac:parameter>' +
+        '<ac:parameter ac:name="title">DONE</ac:parameter></ac:structured-macro>';
+      const html = confluenceToHtml(storage);
+      expect(html).toContain('data-color="green"');
+      expect(html).toContain('>DONE<');
+      // Write-back must not persist a defaulted colour and an emptied title.
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).toContain('<ac:parameter ac:name="colour">Green</ac:parameter>');
+      expect(xhtml).toContain('<ac:parameter ac:name="title">DONE</ac:parameter>');
+    });
+
+    it('keeps an expand\'s own title past a self-closed parameter, and recovers that parameter', () => {
+      const storage =
+        '<ac:structured-macro ac:name="expand"><ac:parameter ac:name="breakout-mode"/>' +
+        '<ac:parameter ac:name="title">Real Title</ac:parameter>' +
+        '<ac:rich-text-body><p>body</p></ac:rich-text-body></ac:structured-macro>';
+      const html = confluenceToHtml(storage);
+      expect(html).toContain('<summary>Real Title</summary>');
+      // The self-closed parameter is a real parameter of this macro too — once
+      // it closes, the #865 net can carry it through the round-trip.
+      expect(html).toMatch(/data-macro-params="[^"]*breakout-mode/);
+    });
+
+    it('keeps a column\'s width past a self-closed parameter', () => {
+      const storage =
+        '<ac:structured-macro ac:name="column"><ac:parameter ac:name="subtle"/>' +
+        '<ac:parameter ac:name="width">30%</ac:parameter>' +
+        '<ac:rich-text-body><p>c</p></ac:rich-text-body></ac:structured-macro>';
+      const html = confluenceToHtml(storage);
+      expect(html).toContain('data-cell-width="30%"');
+      expect(html).toContain('style="flex: 0 0 30%"');
+    });
+
+    it('does not let a self-closed title parameter swallow the body as its title', () => {
+      // Pre-existing on dev, not introduced by the direct-child lookup: the
+      // unclosed parameter absorbs ac:rich-text-body, so textContent returned
+      // the body's prose and the section was titled with its own first words.
+      const storage =
+        '<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title"/>' +
+        '<ac:rich-text-body><p>body text</p></ac:rich-text-body></ac:structured-macro>';
+      const html = confluenceToHtml(storage);
+      expect(html).not.toContain('<summary>body text</summary>');
+      expect(html).toContain('<p>body text</p>');
+    });
+  });
+});
+
 // ========== Figure/Caption pass-through tests (#13) ==========
 
 // ==========================================================================
