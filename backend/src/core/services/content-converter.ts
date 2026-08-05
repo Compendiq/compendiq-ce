@@ -688,8 +688,13 @@ export function htmlToConfluence(html: string): string {
   // sibling ac:task elements — the subtask shipped twice, once as a literal
   // <ul> inside the outer task body and once as a sibling. Innermost-first the
   // nested <ul> is already an ac:task-list by the time the outer runs, so the
-  // query no longer finds its items. Confluence nests task lists natively
-  // (subtasks), so this is the most reachable shape of the set.
+  // query no longer finds its items. The producer is the EDITOR, not the sync:
+  // TipTap's TaskItem runs `nested: true` (Editor.tsx, ArticleViewer.tsx), so
+  // Tab on a task creates exactly this HTML — which is what makes it the most
+  // reachable shape of the set. A subtask coming *from* Confluence never
+  // arrives here in this shape: the forward pass has the mirror-image
+  // stale-snapshot bug and hands over an already-duplicated list (pre-existing,
+  // unchanged by #1220, out of its scope).
   for (const ul of [...doc.querySelectorAll('ul[data-type="taskList"]')].reverse()) {
     const taskList = doc.createElement('ac:task-list');
 

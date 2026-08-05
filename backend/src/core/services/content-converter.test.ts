@@ -3386,13 +3386,17 @@ describe('content-converter: #1221 stage 2 expand boundary tokens', () => {
 // pin the same reversal for the remaining loops.
 //
 // Every input below is fed to htmlToConfluence DIRECTLY, in the editor /
-// LLM-produced shape. Building it via confluenceToHtml would be vacuous: the
-// forward pass never emits a self-nested same-class placeholder (a nested info
-// panel comes back as div.confluence-macro-unknown, and a nested unknown macro
-// stays raw ac: markup), so such a test passes on unpatched code. Both shapes
-// are reachable without the sync: improve-apply runs markdownToHtml →
-// htmlToConfluence with no tag allow-list, and the editor schema permits
-// panel-in-panel, unknown-in-unknown and section > column > section > column.
+// LLM-produced shape. Building it via confluenceToHtml would be vacuous for
+// undamaged storage: from well-formed storage the forward pass never emits a
+// self-nested same-class placeholder (a nested info panel comes back as
+// div.confluence-macro-unknown, and a nested unknown macro stays raw ac:
+// markup), so such a test passes on unpatched code. Storage ALREADY damaged by
+// this bug is the exception — a stored literal placeholder div survives the
+// forward pass verbatim and does arrive self-nested, which is how a damaged
+// page heals itself on its next save. The shapes below are reachable without
+// the sync either way: improve-apply runs markdownToHtml → htmlToConfluence
+// with no tag allow-list, and the editor schema permits panel-in-panel,
+// unknown-in-unknown and section > column > section > column.
 describe('content-converter: #1220 self-nested placeholders on write-back', () => {
   describe('self-nesting per handler', () => {
     it('converts a panel nested in a same-type panel without leaking a literal div', () => {

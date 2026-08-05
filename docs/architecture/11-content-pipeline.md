@@ -155,14 +155,21 @@ Custom turndown rules handle Confluence-specific macros:
   `<ul>` inside the outer `ac:task-body`, once hoisted to a sibling `ac:task`.
   Reversing each snapshot converts the inner element in place first, so the
   outer's re-parse copies an inert `ac:` element. Two corollaries: cross-*type*
-  nesting (info panel > warning panel, `section` > `column`) is safe for a
-  different reason — each selector takes a **fresh** snapshot after the previous
-  loop's re-parses — so collapsing the four panel selectors into one would
-  reintroduce the leak for panel-in-panel of different types; and the
-  `ac:layout` / `ac:layout-section` / `ac:layout-cell` handlers **move** child
-  nodes rather than re-parsing, so they are immune and stay outside-in.
-  Prevention only: pages already written back carrying a literal placeholder
-  div are not repaired by this.
+  nesting (info panel > warning panel, `section` > `column`) has a **second,
+  independent** guarantee — each selector takes a fresh snapshot after the
+  previous loop's re-parses — so collapsing the four panel selectors into one
+  removes that guarantee and leaves the reversal as the only thing keeping
+  cross-type nesting intact (consolidation *with* the reversal stays correct;
+  consolidation without it is what leaks); and the `ac:layout` /
+  `ac:layout-section` / `ac:layout-cell` handlers **move** child nodes rather
+  than re-parsing, so they are immune and stay outside-in.
+  No background repair ships with this — nothing rewrites stored pages — but a
+  damaged page **heals itself on its next save**: a stored literal placeholder
+  div survives the forward pass verbatim, arrives self-nested in the editor
+  HTML, and the reversed loop converts it (verified for panels, sections,
+  columns and unknown macros). The one exception is a duplicate sibling
+  `ac:task` an earlier write-back already created: by then it is a real,
+  well-formed task, indistinguishable from one the author typed, so it stays.
 - **Refined's "UI Expand" is the second macro on `<details>` (#1129).**
   `ui-expand` comes from the Refined Macro Toolkit and is a different macro
   from Atlassian's native `expand`, not a rename. Verified against a
