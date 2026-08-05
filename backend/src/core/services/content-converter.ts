@@ -1198,16 +1198,13 @@ const MEDIA_SELECTOR = [
   'span.confluence-jira-issue',
   'span.confluence-status',
   'span.confluence-user-mention',
-  // #1221 stage 1: freeze expand sections. `details` has no turndown rule, so
-  // without this the Improve round-trip flattened the section into bare
-  // paragraphs — <summary> became prose, the #1211 `data-macro-name` stamp was
-  // lost, and htmlToConfluence rebuilt no macro at all, permanently deleting it
-  // from the Confluence page on apply. Unlike the atomic placeholders above an
-  // expand body carries real prose, so this trades improvability for
-  // preservation (the same call #865 made): AI Improve no longer rewrites text
-  // inside collapsible sections. Strictly better than improving that prose and
-  // then deleting the section that held it. #1221 stage 2 makes the freeze
-  // conditional and restores improvability via layout boundary tokens.
+  // #1221: expand sections. Stage 1 froze every `<details>` here — `details`
+  // has no turndown rule, so the Improve round-trip flattened the section into
+  // bare paragraphs, the #1211 `data-macro-name` stamp was lost, and
+  // htmlToConfluence rebuilt no macro at all, permanently deleting it from the
+  // Confluence page on apply. Stage 2 keeps that freeze only where a boundary
+  // token cannot survive (see isFrozenExpand); everywhere else the section
+  // round-trips as [[[EXPAND …]]] tokens and its body stays improvable.
   'details',
 ].join(',');
 
@@ -1231,6 +1228,159 @@ function isFrozenLegacyWrapper(el: Element): boolean {
   return isLegacyWrapper(el) && el.parentElement?.closest(CONSTRAINED_ANCESTOR_SELECTOR) != null;
 }
 
+const EXPAND_SELECTOR = 'details';
+
+function isExpandSection(el: Element): boolean {
+  return el.nodeName === 'DETAILS';
+}
+
+// A modern `ac:layout` grid is DOCUMENT-level in Confluence storage format, so
+// [[[LAYOUT]]] is only ever valid at the top of the token stack (see
+// layoutOpenAllowed). One nested inside a `<details>` — unreachable from
+// Confluence itself, but reachable in our editor, where the layout node is
+// `block` and the details accepts `block*` — would emit a sequence
+// rebuildLayoutStructure rejects, and the all-or-nothing drop-guard would then
+// strip EVERY token, flattening the expand away. That is precisely the silent
+// macro deletion #1221 exists to prevent, so such a section keeps the stage-1
+// freeze instead: its body is not improvable, but it survives.
+const LAYOUT_WRAPPER_SELECTOR =
+  'div.confluence-layout, div.confluence-layout-section, div.confluence-layout-cell';
+
+/**
+ * #1221 stage 2: an expand section freezes for exactly the reason a legacy
+ * section/column does — a boundary token inside a markdown-constrained
+ * container is ripped out of that construct by markdownToHtml's token
+ * normalization. `details` is deliberately NOT part of
+ * CONSTRAINED_ANCESTOR_SELECTOR: an expand's own body is ordinary markdown
+ * once its boundary is a token, so nesting inside one constrains nothing.
+ */
+function isFrozenExpand(el: Element): boolean {
+  if (!isExpandSection(el)) return false;
+  if (el.parentElement?.closest(CONSTRAINED_ANCESTOR_SELECTOR) != null) return true;
+  return el.querySelector(LAYOUT_WRAPPER_SELECTOR) != null;
+}
+
+/** The expand's title element — direct child only, mirroring htmlToConfluence. */
+function firstDirectSummary(el: Element): Element | null {
+  for (const child of Array.from(el.childNodes)) {
+    if (child.nodeName === 'SUMMARY') return child as Element;
+  }
+  return null;
+}
+
+/**
+ * Fallback macro identity for a `<details>` carrying no `data-macro-name`.
+ * Same value and same reasoning as htmlToConfluence's reverse pass: sections
+ * predating the #1211 stamp, and editor-created ones, genuinely are native
+ * expands.
+ */
+const DEFAULT_EXPAND_MACRO_NAME = 'expand';
+
+/**
+ * #1221 stage 2: percent-encode a token attribute value.
+ *
+ * The token grammar allows `[ \t][^\]\n]*`, so `]`, newline and the separating
+ * space must be encoded — but that is only the floor. A token value is arbitrary
+ * user prose that has to survive turndown's output, marked's markdown parse and
+ * marked's HTML escaping completely unchanged, because the value is read back
+ * out of marked's HTML by a plain regex. `&` would come back as `&amp;`, `_foo_`
+ * as `<em>foo</em>`, `*` as emphasis. So everything outside `[A-Za-z0-9-]` is
+ * encoded: encodeURIComponent handles UTF-8 (surrogate pairs included) and the
+ * follow-up pass removes the characters it leaves unescaped. `-` is kept because
+ * it is inert mid-line and keeps `name=ui-expand` readable.
+ */
+function encodeTokenValue(value: string): string {
+  return encodeURIComponent(value).replace(
+    /[_.!~*'()]/g,
+    (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0')}`,
+  );
+}
+
+/**
+ * Inverse of encodeTokenValue. Falls back to the raw text on malformed input:
+ * with a #781 skeleton every attrs string is canonical (written from the
+ * skeleton), but the skeleton-less paths read whatever the model echoed, and a
+ * stray `%` there must not throw.
+ */
+function decodeTokenValue(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function escapeHtmlText(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function escapeHtmlAttr(value: string): string {
+  return escapeHtmlText(value).replace(/"/g, '&quot;');
+}
+
+/**
+ * Canonical `EXPAND` token attrs for a `<details>`: the macro identity, open
+ * state, summary and remaining parameters — everything the reverse pass needs
+ * and none of it improvable. htmlToMarkdown and extractLayoutSkeleton MUST
+ * derive them from here alone, or the #781 skeleton check would compare two
+ * different spellings of the same section.
+ *
+ * The summary rides opaquely and is deliberately NOT improvable: titles are
+ * short, rarely the thing needing a rewrite, and a second boundary pair around
+ * them would add three lines per section to the prompt and one more way into
+ * the 422 path.
+ */
+function expandTokenAttrs(el: Element): string {
+  const summary = firstDirectSummary(el);
+  const name = el.getAttribute('data-macro-name') || DEFAULT_EXPAND_MACRO_NAME;
+  const open = el.hasAttribute('open') ? '1' : '0';
+  const params = el.getAttribute('data-macro-params') ?? '';
+  return [
+    `name=${encodeTokenValue(name)}`,
+    `open=${open}`,
+    `title=${encodeTokenValue(summary?.textContent ?? '')}`,
+    `params=${encodeTokenValue(params)}`,
+  ].join(' ');
+}
+
+interface ExpandTokenAttrs { name: string; open: boolean; title: string; params: string; }
+
+function parseExpandTokenAttrs(attrs: string): ExpandTokenAttrs {
+  const parsed: ExpandTokenAttrs = { name: DEFAULT_EXPAND_MACRO_NAME, open: false, title: '', params: '' };
+  for (const part of attrs.split(/[ \t]+/)) {
+    const eq = part.indexOf('=');
+    if (eq === -1) continue;
+    const raw = part.slice(eq + 1);
+    switch (part.slice(0, eq)) {
+      case 'name': {
+        const name = decodeTokenValue(raw);
+        if (name) parsed.name = name;
+        break;
+      }
+      case 'open': parsed.open = raw === '1'; break;
+      case 'title': parsed.title = decodeTokenValue(raw); break;
+      case 'params': parsed.params = decodeTokenValue(raw); break;
+    }
+  }
+  return parsed;
+}
+
+/**
+ * data-macro-params is a JSON object written by the forward pass. A value that
+ * does not parse as one came from a model-invented token (the skeleton-guided
+ * paths always supply the page's own attrs), so it is dropped rather than
+ * persisted — htmlToConfluence would ignore it anyway.
+ */
+function isMacroParamsObject(raw: string): boolean {
+  if (!raw) return false;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * #723: Replace rich/media nodes with opaque text tokens before the lossy
  * HTML→Markdown→HTML round-trip used by AI Improve. Document order makes the
@@ -1249,17 +1399,23 @@ export function protectMedia(html: string): { html: string; media: ProtectedMedi
       // Legacy section/column wrappers freeze ONLY when nested inside a
       // markdown-constrained container; elsewhere they use boundary tokens.
       if (isLegacyWrapper(n) && !isFrozenLegacyWrapper(n)) return false;
-      // Descendants of an already-frozen node travel inside it. `details` joins
-      // this list with #1221: an expand section may contain images, drawio
-      // wrappers, unknown-macro placeholders or further nested expands, and the
-      // outermost capture already carries them.
-      if (n.parentElement?.closest('div.confluence-drawio, div.confluence-mermaid, div.mermaid, div.confluence-macro-unknown, details')) return false;
+      // #1221 stage 2: expand sections follow the same rule — a constrained one
+      // freezes, everywhere else it round-trips as [[[EXPAND …]]] tokens.
+      if (isExpandSection(n) && !isFrozenExpand(n)) return false;
+      // Descendants of an already-frozen node travel inside it.
+      if (n.parentElement?.closest('div.confluence-drawio, div.confluence-mermaid, div.mermaid, div.confluence-macro-unknown')) return false;
       // Skip descendants of a frozen wrapper — it is protected whole. If the
       // nearest wrapper ancestor is not frozen, no farther one can be either
       // (frozenness propagates downward: a frozen ancestor's constrained
       // container is an ancestor of every nested wrapper too).
       const wrapperAncestor = n.parentElement?.closest(LEGACY_WRAPPER_SELECTOR);
       if (wrapperAncestor && isFrozenLegacyWrapper(wrapperAncestor)) return false;
+      // Same test for expands, and it must be the FROZEN-ness that decides, not
+      // the mere presence of a `<details>` ancestor: media inside an
+      // unconstrained expand now needs its own token, because that section's
+      // body travels as markdown rather than inside one opaque capture.
+      const expandAncestor = n.parentElement?.closest(EXPAND_SELECTOR);
+      if (expandAncestor && isFrozenExpand(expandAncestor)) return false;
       return true;
     });
   for (const node of nodes) {
@@ -1433,6 +1589,28 @@ export function htmlToMarkdown(html: string, options?: HtmlToMarkdownOptions): s
         return `\n\n[[[COLUMN${attrs}]]]\n\n${content.trim()}\n\n[[[/COLUMN]]]\n\n`;
       },
     });
+
+    // #1221 stage 2: expand sections — same boundary-token treatment, so the
+    // body prose inside a collapsible section is editable again. The title is
+    // NOT: it rides percent-encoded in the token's `title` attr, so the summary
+    // must be dropped from the converted content or it would be emitted twice
+    // (once opaquely, once as prose the model would then rewrite into a body
+    // paragraph). Only the FIRST direct-child summary is the section's title —
+    // htmlToConfluence applies exactly that rule, and unwraps any other.
+    // (A constrained expand never reaches turndown: protectMedia froze it.)
+    turndownService.addRule('confluenceExpandSummary', {
+      filter: (node) =>
+        node.nodeName === 'SUMMARY' &&
+        node.parentNode?.nodeName === 'DETAILS' &&
+        firstDirectSummary(node.parentNode as Element) === (node as Element),
+      replacement: () => '',
+    });
+
+    turndownService.addRule('confluenceExpand', {
+      filter: (node) => node.nodeName === 'DETAILS',
+      replacement: (content, node) =>
+        `\n\n[[[EXPAND ${expandTokenAttrs(node as Element)}]]]\n\n${content.trim()}\n\n[[[/EXPAND]]]\n\n`,
+    });
   } else {
     // Default (all non-Improve flows): pre-#765 flattened output — wrapper
     // structure is dropped, only the inner content survives. Modern
@@ -1525,7 +1703,8 @@ export function htmlToMarkdown(html: string, options?: HtmlToMarkdownOptions): s
 // ---------------------------------------------------------------------------
 
 // Longest-first so LAYOUT never shadows LAYOUT-SECTION / LAYOUT-CELL.
-const LAYOUT_TOKEN_KINDS = 'LAYOUT-SECTION|LAYOUT-CELL|LAYOUT|SECTION|COLUMN';
+// EXPAND (#1221 stage 2) shares no prefix with any of the others.
+const LAYOUT_TOKEN_KINDS = 'LAYOUT-SECTION|LAYOUT-CELL|LAYOUT|SECTION|COLUMN|EXPAND';
 const LAYOUT_TOKEN_BARE = String.raw`\[\[\[\/?(?:${LAYOUT_TOKEN_KINDS})(?:[ \t][^\]\n]*)?\]\]\]`;
 const LAYOUT_TOKEN_CAPTURE = String.raw`\[\[\[(\/?)(${LAYOUT_TOKEN_KINDS})((?:[ \t][^\]\n]*)?)\]\]\]`;
 
@@ -1558,8 +1737,13 @@ function layoutOpenAllowed(kind: string, stack: string[]): boolean {
     case 'LAYOUT': return stack.length === 0;
     case 'LAYOUT-SECTION': return top === 'LAYOUT';
     case 'LAYOUT-CELL': return top === 'LAYOUT-SECTION';
-    case 'SECTION': return top === undefined || top === 'LAYOUT-CELL' || top === 'COLUMN';
+    // #1221: Confluence permits a legacy section inside an expand body.
+    case 'SECTION': return top === undefined || top === 'LAYOUT-CELL' || top === 'COLUMN' || top === 'EXPAND';
     case 'COLUMN': return top === 'SECTION';
+    // #1221: an expand may sit at top level or anywhere prose may — including
+    // inside another expand, which Confluence supports natively.
+    case 'EXPAND':
+      return top === undefined || top === 'LAYOUT-CELL' || top === 'SECTION' || top === 'COLUMN' || top === 'EXPAND';
     default: return false;
   }
 }
@@ -1586,10 +1770,30 @@ function layoutOpenTag(kind: string, attrs: string): string {
       const style = /^\d+(%|px|em|rem)$/.test(width) ? ` style="flex: 0 0 ${width}"` : '';
       return `<div class="confluence-column" data-cell-width="${width}"${style}>`;
     }
+    case 'EXPAND': {
+      // #1221 stage 2. Attribute order mirrors confluenceToHtml's forward pass
+      // so a section that made the round-trip untouched serializes identically.
+      // Every value is HTML-escaped: percent-encoding protects the TOKEN
+      // grammar, escaping protects the HTML — a token echoed by a model can
+      // carry raw `<script>` in its attrs.
+      const { name, open, title, params } = parseExpandTokenAttrs(attrs);
+      let tag = `<details data-macro-name="${escapeHtmlAttr(name)}"`;
+      if (open) tag += ' open';
+      if (isMacroParamsObject(params)) tag += ` data-macro-params="${escapeHtmlAttr(params)}"`;
+      tag += '>';
+      // No summary for a title-less section: emitting an empty one would hand
+      // htmlToConfluence a blank `title` parameter the page never had.
+      return title ? `${tag}<summary>${escapeHtmlText(title)}</summary>` : tag;
+    }
     // Unreachable: kinds are constrained by LAYOUT_TOKEN_KINDS in the regex.
     default:
       return '<div>';
   }
+}
+
+/** #1221: close tags stopped being uniform once EXPAND rebuilt a `<details>`. */
+function layoutCloseTag(kind: string): string {
+  return kind === 'EXPAND' ? '</details>' : '</div>';
 }
 
 /**
@@ -1620,7 +1824,7 @@ function rebuildLayoutStructure(html: string): string {
   return html.replace(layoutTokenRegex(), () => {
     const t = tokens[i++]!;
     if (!valid) return ''; // drop-guard: strip the token, keep the prose
-    return t.isClose ? '</div>' : layoutOpenTag(t.kind, t.attrs);
+    return t.isClose ? layoutCloseTag(t.kind) : layoutOpenTag(t.kind, t.attrs);
   });
 }
 
@@ -1730,6 +1934,12 @@ const COLUMN_WIDTH_RE = /^[\d.]+(%|px|em|rem)?$/;
 
 /** Token kind + canonical attrs for a layout wrapper element (else null). */
 function layoutWrapperKind(el: Element): { kind: string; attrs: string } | null {
+  // #1221 stage 2: every `<details>` is an expand macro — `data-macro-name` is
+  // only the identity STAMP, and a section predating it (or created in the
+  // editor) carries none. Requiring the attribute here would leave those
+  // sections without a token AND without the freeze, i.e. back to the silent
+  // macro deletion this issue is about.
+  if (isExpandSection(el)) return { kind: 'EXPAND', attrs: expandTokenAttrs(el) };
   const cls = el.classList;
   if (cls.contains('confluence-layout')) return { kind: 'LAYOUT', attrs: '' };
   if (cls.contains('confluence-layout-section')) {
@@ -1757,11 +1967,18 @@ const ANCHOR_MAX_CHARS = 80;
 
 /** First non-empty block text of a cell — the anchor for token-free recovery. */
 function leadingAnchorText(el: Element): string | undefined {
-  for (const child of Array.from(el.children)) {
-    const t = (child.textContent ?? '').replace(/\s+/g, ' ').trim();
+  const collapse = (s: string | null): string => (s ?? '').replace(/\s+/g, ' ').trim();
+  // #1221: an expand's <summary> is its TITLE — it rides inside the EXPAND
+  // token and never reaches the markdown, so anchoring on it would search the
+  // model's prose for text the model was never shown.
+  const summary = firstDirectSummary(el);
+  const nodes = Array.from(el.childNodes).filter((n) => n !== summary);
+  for (const child of nodes) {
+    if (child.nodeType !== 1 /* ELEMENT_NODE */) continue;
+    const t = collapse(child.textContent);
     if (t) return t.slice(0, ANCHOR_MAX_CHARS);
   }
-  const own = (el.textContent ?? '').replace(/\s+/g, ' ').trim();
+  const own = collapse(nodes.map((n) => n.textContent ?? '').join(''));
   return own ? own.slice(0, ANCHOR_MAX_CHARS) : undefined;
 }
 
@@ -1800,7 +2017,12 @@ export function extractLayoutSkeleton(html: string): LayoutSkeletonToken[] {
 // case. Prose collisions (e.g. "[[Section 2]]" wiki-style links) are kept
 // out by requiring EXACTLY three brackets for case-insensitive matches —
 // other bracket counts only count when the kind is spelled all-uppercase.
-const LAYOUT_KIND_LOOSE = 'LAYOUT[-_ ]SECTION|LAYOUT[-_ ]CELL|LAYOUT|SECTION|COLUMN';
+// #1221 stage 2: EXPAND joins the tolerant set for the same reason the other
+// prose-bearing kinds are in it. Left out, a routinely-mangled spelling (a
+// lower-cased close, a fenced token) would make the most common macro on a
+// page the ONLY kind the loose pass cannot rescue, turning ordinary local-model
+// churn into a 422.
+const LAYOUT_KIND_LOOSE = 'LAYOUT[-_ ]SECTION|LAYOUT[-_ ]CELL|LAYOUT|SECTION|COLUMN|EXPAND';
 const LAYOUT_TOKEN_LOOSE_SRC =
   String.raw`(?:\*{1,2}|_{1,2})?` +
   String.raw`((?:\\?\[){2,4})` +
@@ -1904,7 +2126,7 @@ function unwrapFullDocumentFence(markdown: string): string | null {
 // is genuinely lost and recovery must fail. LAYOUT / LAYOUT-SECTION opens
 // are pure containers (the storage format puts nothing between them and
 // their first child), so their positions are re-derivable from neighbors.
-const PROSE_BEARING_KINDS = new Set(['LAYOUT-CELL', 'COLUMN', 'SECTION']);
+const PROSE_BEARING_KINDS = new Set(['LAYOUT-CELL', 'COLUMN', 'SECTION', 'EXPAND']);
 
 /** Greedy in-order alignment of scanned tokens onto the skeleton. */
 function alignLayoutTokens(
@@ -1930,10 +2152,12 @@ function canonicalLayoutToken(t: LayoutSkeletonToken): string {
   return t.isClose ? `[[[/${t.kind}]]]` : `[[[${t.kind}${t.attrs ? ` ${t.attrs}` : ''}]]]`;
 }
 
-/** Prose may live at top level and inside cells/columns/legacy sections. */
+/** Prose may live at top level and inside cells/columns/sections/expands. */
 function proseAllowedIn(stack: string[]): boolean {
   const top = stack[stack.length - 1];
-  return top === undefined || top === 'LAYOUT-CELL' || top === 'COLUMN' || top === 'SECTION';
+  return (
+    top === undefined || top === 'LAYOUT-CELL' || top === 'COLUMN' || top === 'SECTION' || top === 'EXPAND'
+  );
 }
 
 /**
