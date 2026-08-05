@@ -678,6 +678,46 @@ describe('Search Routes', () => {
       expect(response.body).not.toContain('breaker open for provider p1');
     });
 
+    // #1223 review follow-up: a provider that "succeeds" with an empty
+    // embeddings array previously fell through `embeddings[0] ?? null` to
+    // `null`, which the caller treats as "already replied" and returns
+    // without ever calling reply.send — a 200 with an empty body, not an
+    // error at all. Empty/missing is a failed embedding: reply the existing
+    // 502 EmbeddingFailed shape with a fixed constant (there is no error
+    // object here, so nothing is interpolated and toUserFacingEmbeddingError
+    // is not involved).
+    it('semantic mode: empty embeddings array from the provider is a 502, not a bodiless 200 (#1223)', async () => {
+      mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] }); // embeddings exist
+      mockProviderGenerateEmbedding.mockResolvedValue([]);
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/search?q=test&mode=semantic',
+      });
+
+      expect(response.statusCode).toBe(502);
+      const body = response.json();
+      expect(body.error).toBe('EmbeddingFailed');
+      expect(body.message).toBe('Embedding generation returned no result.');
+    });
+
+    it('semantic mode: a zero-length inner vector is also treated as no result (#1223)', async () => {
+      mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] }); // embeddings exist
+      // Outer array has an entry, but it is itself an empty vector — `!embedding`
+      // alone would miss this since `[]` is truthy in JS.
+      mockProviderGenerateEmbedding.mockResolvedValue([[]]);
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/search?q=test&mode=semantic',
+      });
+
+      expect(response.statusCode).toBe(502);
+      const body = response.json();
+      expect(body.error).toBe('EmbeddingFailed');
+      expect(body.message).toBe('Embedding generation returned no result.');
+    });
+
     it('recordSearchAnalytics is called once per request for semantic mode', async () => {
       mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] }); // embeddings exist
       mockProviderGenerateEmbedding.mockResolvedValue([[new Array(768).fill(0.1)]]);

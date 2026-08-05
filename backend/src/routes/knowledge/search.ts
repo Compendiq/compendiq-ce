@@ -65,6 +65,13 @@ const SuggestionsQuerySchema = z.object({
  *   failure is a genuine embedding-provider error, categorized through
  *   `toUserFacingEmbeddingError` into a fixed, non-sensitive message —
  *   never the raw `err.message`.
+ * - A provider can also "succeed" with an empty (or missing) embeddings
+ *   array. That is not an exception, so it does not hit the catch above,
+ *   but returning `null` for it is indistinguishable from this function's
+ *   own "already replied" sentinel — the caller would return having sent
+ *   nothing, a 200 with an empty body. Treated as a failed embedding: a 502
+ *   with a fixed constant message (there is no error object here, so
+ *   nothing is interpolated and `toUserFacingEmbeddingError` does not apply).
  */
 async function generateSearchEmbedding(
   request: FastifyRequest,
@@ -82,7 +89,19 @@ async function generateSearchEmbedding(
 
   try {
     const embeddings = await generateEmbedding(resolved.config, resolved.model, q);
-    return embeddings[0] ?? null;
+    const embedding = embeddings[0];
+    // `!embedding` alone would miss a zero-length inner vector ([[]]) — an
+    // empty array is truthy in JS — so check length explicitly too.
+    if (!embedding || embedding.length === 0) {
+      request.log.error({ modeName }, `Embedding provider returned no result for ${modeName} search`);
+      reply.status(502).send({
+        error: 'EmbeddingFailed',
+        message: 'Embedding generation returned no result.',
+        statusCode: 502,
+      });
+      return null;
+    }
+    return embedding;
   } catch (err) {
     if (err instanceof CircuitBreakerOpenError) {
       reply.status(503).send({
