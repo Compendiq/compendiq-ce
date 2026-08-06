@@ -235,27 +235,30 @@ export function ArticleRightPane({
   const setWidth = useUiStore((s) => s.setArticleSidebarWidth);
   const reduceEffects = useReducedMotion();
 
-  // The docked assistant (#1126) needs this pane in its 40px rail so the three
-  // columns fit. It is ORed in rather than written into the store: forcing the
-  // pane by calling setArticleSidebarCollapsed(true) would overwrite the user's
-  // persisted preference (zustand `persist`, key `compendiq-ui`), so closing the
-  // dock would leave their outline collapsed for good and the `.` shortcut would
-  // have quietly changed meaning.
+  // `collapsed` is the user's preference and nothing else now.
+  //
+  // #1126 ORed `dockOpen` in, because the assistant was a third column and this
+  // pane had to fall back to its 40px rail to make room. The assistant is a tab
+  // *inside* this pane now, so there is nothing to make room for — and leaving
+  // the OR in place was actively harmful. `openDock()` is still raised by Alt+I
+  // and the AI preset; `AppLayout` consumes it above `md` and re-expresses it as
+  // a tab request, but effects run after commit, so `open` is true for a frame
+  // and this pane starts collapsing.
+  //
+  // It does not cost one frame, because the width is a framer spring: sampling
+  // per rAF across the keystroke, the pane ran 280 → 1 → back to 280 over ~30
+  // frames, overshooting to 288 on the way. Half a second of the panel slamming
+  // shut and springing open on the shortcut that exists to open it.
+  //
+  // Below `md` the flag still means the bottom sheet, and the guard further down
+  // (`dockOpen && !dockLayoutIsWide`) unmounts the pane for it — which is also
+  // why the OR is not needed for that case either.
   const dockOpen = useAiDockStore((s) => s.open);
-  const closeDock = useAiDockStore((s) => s.closeDock);
   const dockLayoutIsWide = useIsDockWideLayout();
-  const collapsed = userCollapsed || dockOpen;
+  const collapsed = userCollapsed;
   const handleExpandSidebar = useCallback(() => {
-    if (dockOpen) {
-      closeDock();
-      // The dock may be the only reason the rail is collapsed. Preserve an
-      // already-expanded preference, but honor an explicit Expand action when
-      // the user had previously collapsed the sidebar themselves.
-      if (userCollapsed) toggleSidebar();
-      return;
-    }
     toggleSidebar();
-  }, [closeDock, dockOpen, toggleSidebar, userCollapsed]);
+  }, [toggleSidebar]);
 
   const headings = useArticleViewStore((s) => s.headings);
   const editing = useArticleViewStore((s) => s.editing);

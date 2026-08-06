@@ -317,29 +317,39 @@ describe('ArticleRightPane', () => {
     expect(mockNavigate).not.toHaveBeenCalled();
   });
 
-  it('collapses itself to the rail while the dock is open, without touching the saved preference', () => {
+  // These two cells asserted the opposite until the assistant became a tab: the
+  // pane used to collapse to its rail whenever `dockOpen` was set, because the
+  // assistant was a third column that needed the room. There is no column now.
+  //
+  // Re-adding the OR is not a cosmetic regression. `AppLayout` consumes the flag
+  // in an effect — after commit — so the pane starts collapsing, and its width is
+  // a framer spring: measured per rAF, it ran 280 → 1 → 280 over ~30 frames on
+  // the very keystroke meant to open it. jsdom performs no layout, so that is
+  // invisible here; what these cells can pin is the cause, which is whether the
+  // pane consults `dockOpen` at all.
+  it('does not collapse for the dock flag on a wide layout — the assistant is a tab', () => {
     window.innerWidth = 1400;
     useAiDockStore.setState({ open: true });
 
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    expect(screen.getByTestId('article-right-pane-rail')).toBeInTheDocument();
-    expect(screen.queryByTestId('article-right-pane')).not.toBeInTheDocument();
-    // The user's own collapse preference is untouched, so closing the dock
-    // restores whatever they had chosen and `.` keeps its meaning.
+    expect(screen.getByTestId('article-right-pane')).toBeInTheDocument();
+    expect(screen.queryByTestId('article-right-pane-rail')).not.toBeInTheDocument();
     expect(useUiStore.getState().articleSidebarCollapsed).toBe(false);
   });
 
-  it('closes the dock to expand its forced rail without changing an expanded preference', () => {
+  it('expands on its own preference alone, without consulting the dock', () => {
     window.innerWidth = 1400;
+    useUiStore.setState({ articleSidebarCollapsed: true });
     useAiDockStore.setState({ open: true });
 
     render(<ArticleRightPane />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByLabelText('Expand page sidebar'));
 
-    expect(useAiDockStore.getState().open).toBe(false);
     expect(useUiStore.getState().articleSidebarCollapsed).toBe(false);
-    expect(screen.getByTestId('article-right-pane')).toBeInTheDocument();
+    // Untouched: closing the sheet is `AppLayout`'s job and the `.` shortcut's,
+    // not something this pane's expand control reaches sideways to do.
+    expect(useAiDockStore.getState().open).toBe(true);
   });
 
   it('steps aside entirely below the wide breakpoint while the dock is open', () => {
