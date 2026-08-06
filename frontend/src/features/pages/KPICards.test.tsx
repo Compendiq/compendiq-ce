@@ -327,7 +327,7 @@ describe('KPICards', () => {
   // this test asserted each carried `rounded-xl bg-card h-full` — the tile
   // styling — which is exactly what a strip must not have: three bordered
   // panes inside a bordered pane is the nested-card shape.
-  it('renders one bordered strip with all three segments inside it', () => {
+  it('renders one separated strip with all three segments inside it', () => {
     render(
       <KPICards
         embeddingStatus={mockEmbeddingStatus}
@@ -337,9 +337,15 @@ describe('KPICards', () => {
       { wrapper: Wrapper },
     );
 
+    // Separated by a rule, not boxed. The strip is ambient status — a caption
+    // on the page rather than an object on it — so it carries a bottom hairline
+    // and no fill. It used to assert `bg-card`, which pinned the container the
+    // destacking pass removed; the intent was always "one strip, and the
+    // segments own no pane styling", which the loop below is what actually
+    // tests.
     const strip = screen.getByTestId('kpi-cards');
-    expect(strip.className).toContain('border');
-    expect(strip.className).toContain('bg-card');
+    expect(strip.className).toContain('border-b');
+    expect(strip.className).not.toContain('bg-card');
 
     for (const testId of ['kpi-total-articles', 'kpi-embedded-pages', 'kpi-last-sync']) {
       const segment = screen.getByTestId(testId);

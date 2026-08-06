@@ -175,6 +175,19 @@ const PageListItem = memo(function PageListItem({
               for assistive tech, and so the same row markup serves both widths.
               The facts are not lost on mobile: every one of them is on the page
               itself, which is one tap away. */}
+          {/* Embedding state survives at every width; quality, summary and
+              labels are desktop-only.
+
+              Hiding all four below `sm` left mobile with no page state at all.
+              Which one survives needs no new semantics: embedding is the only
+              one that changes what the product can DO with a page — an
+              unembedded page is invisible to semantic search — while quality
+              and summary are advisory. Collapsing the three into a single
+              indicator is still open, and still a product decision; this is
+              the half of it that was not. */}
+          <div className="flex shrink-0 items-center gap-2">
+            <EmbeddingStatusBadge embeddingDirty={pageItem.embeddingDirty} />
+          </div>
           <div className="hidden shrink-0 items-center gap-2 sm:flex">
             <QualityScoreBadge
               qualityScore={pageItem.qualityScore}
@@ -189,7 +202,8 @@ const PageListItem = memo(function PageListItem({
               qualityError={pageItem.qualityError}
             />
             <SummaryStatusBadge status={pageItem.summaryStatus} />
-            <EmbeddingStatusBadge embeddingDirty={pageItem.embeddingDirty} />
+            {/* EmbeddingStatusBadge is NOT here — it moved to the always-visible
+                cluster above. Leaving it in both rendered it twice on desktop. */}
             {/* No FreshnessBadge here: it is derived purely from lastModifiedAt,
                 which this row already prints as a date three lines above. Two
                 renderings of one field read as two facts. It stays on the page
@@ -688,7 +702,14 @@ export function PagesPage() {
       <PinnedArticlesSection />
 
       {/* Filters */}
-      <section aria-labelledby="kb-filters-heading" className="rounded-xl border border-border bg-card space-y-3 p-4">
+      {/* A control row, not a pane. This was a bordered `bg-card` box with
+          `p-4`, stacked directly under another bordered box (the status strip)
+          and above the list's own bordered rows — three nested container
+          levels before the first page. Controls do not need a container: they
+          are already legible as controls, and the box was spending ~90px of the
+          first viewport to say "these things belong together", which their
+          adjacency already said. */}
+      <section aria-labelledby="kb-filters-heading" className="space-y-3">
         <h2 id="kb-filters-heading" className="sr-only">Search and filter pages</h2>
         <div className="flex flex-wrap items-center gap-3">
           {/* Search */}

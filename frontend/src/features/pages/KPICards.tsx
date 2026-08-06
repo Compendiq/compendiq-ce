@@ -135,7 +135,12 @@ export function KPICards({ embeddingStatus, spacesCount, lastSynced, onSync, isS
       variants={stagger}
       initial="initial"
       animate="animate"
-      className="flex flex-wrap items-center gap-x-5 gap-y-2 rounded-md border border-border bg-card px-3 py-2"
+      // No container. The strip already replaced three tiles with one row; the
+      // remaining border and fill made that row a third bordered box stacked
+      // above the controls and the list. Ambient status is a caption on the
+      // page, not an object on it — a bottom hairline separates it from the
+      // controls and nothing else is needed.
+      className="flex flex-wrap items-center gap-x-5 gap-y-2 border-b border-border px-0.5 pb-2.5"
       data-testid="kpi-cards"
     >
       {/* Total pages, qualified by the spaces they came from. */}

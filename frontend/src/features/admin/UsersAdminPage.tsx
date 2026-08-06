@@ -215,10 +215,15 @@ export function UsersAdminPage() {
 
       {isLoading && <p className="text-sm text-muted-foreground">Loading users…</p>}
 
+      {/* The table carries no box of its own: it already sits inside the
+          settings pane, so a border here made a bordered box inside a bordered
+          box — the nesting the finish review flagged. A table is legible as a
+          table from its own rules; the header rule separates it from the
+          heading above, and the row rules do the rest. */}
       {data?.users && (
-        <div className="overflow-hidden rounded-md border">
+        <div className="overflow-hidden">
           <table className="w-full text-sm">
-            <thead className="bg-muted/40 text-left text-xs uppercase tracking-wide">
+            <thead className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
               <tr>
                 {bulkEnabled && (
                   <th className="w-10 p-3">
