@@ -34,11 +34,23 @@ vi.mock('../../core/db/postgres.js', () => ({
 const mockVectorSearch = vi.fn();
 const mockHybridSearch = vi.fn();
 const mockRecordAnalytics = vi.fn();
-vi.mock('../../domains/llm/services/rag-service.js', () => ({
-  vectorSearch: (...args: unknown[]) => mockVectorSearch(...args),
-  hybridSearch: (...args: unknown[]) => mockHybridSearch(...args),
-  recordSearchAnalytics: (...args: unknown[]) => mockRecordAnalytics(...args),
-}));
+const mockGetEmbeddingCoverage = vi.fn();
+vi.mock('../../domains/llm/services/rag-service.js', async () => {
+  // Keep the pure helpers real: the route derives its degraded verdict with
+  // deriveDegradedReason, and stubbing that here would let route and service
+  // drift apart on the one semantic they must share.
+  const actual = await vi.importActual<typeof import('../../domains/llm/services/rag-service.js')>(
+    '../../domains/llm/services/rag-service.js',
+  );
+  return {
+    vectorSearch: (...args: unknown[]) => mockVectorSearch(...args),
+    hybridSearch: (...args: unknown[]) => mockHybridSearch(...args),
+    recordSearchAnalytics: (...args: unknown[]) => mockRecordAnalytics(...args),
+    getEmbeddingCoverage: (...args: unknown[]) => mockGetEmbeddingCoverage(...args),
+    deriveDegradedReason: actual.deriveDegradedReason,
+    DEGRADED_COVERAGE_THRESHOLD: actual.DEGRADED_COVERAGE_THRESHOLD,
+  };
+});
 
 const mockProviderGenerateEmbedding = vi.fn();
 
@@ -140,6 +152,9 @@ describe('Search Routes', () => {
     vi.clearAllMocks();
     // Default: recordAnalytics is a no-op
     mockRecordAnalytics.mockResolvedValue(undefined);
+    // Default: fully-embedded corpus (healthy). Tests for the degraded signal
+    // override this per case.
+    mockGetEmbeddingCoverage.mockResolvedValue({ embeddedPages: 3, totalPages: 3, coverage: 1 });
   });
 
   describe('GET /api/search', () => {
@@ -419,7 +434,7 @@ describe('Search Routes', () => {
 
     it('semantic mode calls providerGenerateEmbedding + vectorSearch', async () => {
       // Embeddings exist check → EXISTS = true
-      mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] });
+      mockQueryFn.mockResolvedValue({ rows: [] });
 
       const fakeEmbedding = new Array(768).fill(0.1);
       mockProviderGenerateEmbedding.mockResolvedValue([[...fakeEmbedding]]);
@@ -444,11 +459,9 @@ describe('Search Routes', () => {
     });
 
     it('semantic mode with no embeddings → falls back to keyword', async () => {
-      // Embeddings exist check → EXISTS = false
+      // Coverage probe: embeddable pages exist, none embedded (#1117)
+      mockGetEmbeddingCoverage.mockResolvedValue({ embeddedPages: 0, totalPages: 3, coverage: 0 });
       mockQueryFn.mockImplementation((sql: string) => {
-        if (typeof sql === 'string' && sql.includes('page_embeddings')) {
-          return { rows: [{ exists: false }] };
-        }
         if (typeof sql === 'string' && sql.includes('COUNT(*)')) {
           return { rows: [{ count: '1' }] };
         }
@@ -493,30 +506,41 @@ describe('Search Routes', () => {
     });
 
 
-    it('semantic/hybrid mode uses EXISTS instead of COUNT(*) for embeddings check', async () => {
-      mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] });
-      mockProviderGenerateEmbedding.mockResolvedValue([[new Array(768).fill(0.1)]]);
+    it('semantic/hybrid mode consults the coverage probe, not a first-page EXISTS (#1117)', async () => {
+      // The old boolean EXISTS probe flipped healthy the moment ONE visible
+      // page had an embedding row, so 1% coverage looked like 100%. The route
+      // must consult getEmbeddingCoverage and must not run its own probe SQL.
+      mockProviderGenerateEmbedding.mockResolvedValue([new Array(768).fill(0.1)]);
       mockVectorSearch.mockResolvedValue([]);
+      mockQueryFn.mockResolvedValue({ rows: [] });
 
       await app.inject({
         method: 'GET',
         url: '/api/search?q=test&mode=semantic',
       });
 
-      const embCall = mockQueryFn.mock.calls.find(
+      expect(mockGetEmbeddingCoverage).toHaveBeenCalledWith('test-user-id');
+      const probeCall = mockQueryFn.mock.calls.find(
         (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('page_embeddings'),
       );
-      expect(embCall).toBeDefined();
-      const sql = embCall![0] as string;
-      // Should use EXISTS, not COUNT(*)
-      expect(sql).toContain('SELECT EXISTS');
-      expect(sql).not.toContain('COUNT(*)');
+      expect(probeCall).toBeUndefined();
+    });
+
+    it('keyword mode skips the coverage probe entirely', async () => {
+      mockQueryFn.mockResolvedValue({ rows: [] });
+
+      await app.inject({
+        method: 'GET',
+        url: '/api/search?q=test&mode=keyword',
+      });
+
+      expect(mockGetEmbeddingCoverage).not.toHaveBeenCalled();
     });
 
     // ── hybrid mode ──────────────────────────────────────────────────────────
 
     it('hybrid mode calls hybridSearch from rag-service', async () => {
-      mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] }); // embeddings exist
+      mockQueryFn.mockResolvedValue({ rows: [] }); // embeddings exist
 
       mockHybridSearch.mockResolvedValue([
         makeSearchResult(1, 'Vector Result'),
@@ -536,6 +560,94 @@ describe('Search Routes', () => {
       expect(body.items).toHaveLength(2);
     });
 
+    // ── Degraded-retrieval signal on the wire (#1117 stage 2) ────────────
+
+    it('reports full coverage as healthy: embeddingCoverage 1, no degradedReason', async () => {
+      mockQueryFn.mockResolvedValue({ rows: [] });
+      mockHybridSearch.mockResolvedValue([makeSearchResult(1, 'Hit')]);
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/search?q=test&mode=hybrid',
+      });
+
+      const body = response.json();
+      expect(body.hasEmbeddings).toBe(true);
+      expect(body.embeddingCoverage).toBe(1);
+      expect(body.degradedReason).toBeNull();
+    });
+
+    it('reports partial coverage without downgrading the mode', async () => {
+      mockGetEmbeddingCoverage.mockResolvedValue({ embeddedPages: 5, totalPages: 10, coverage: 0.5 });
+      mockQueryFn.mockResolvedValue({ rows: [] });
+      mockHybridSearch.mockResolvedValue([makeSearchResult(1, 'Hit')]);
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/search?q=test&mode=hybrid',
+      });
+
+      const body = response.json();
+      // Half the corpus still answers — the mode must keep running, degraded,
+      // not silently fall back to keyword.
+      expect(body.mode).toBe('hybrid');
+      expect(body.hasEmbeddings).toBe(true);
+      expect(body.embeddingCoverage).toBe(0.5);
+      expect(body.degradedReason).toBe('partial_embeddings');
+      expect(mockHybridSearch).toHaveBeenCalled();
+    });
+
+    it('reports zero coverage as no_embeddings and downgrades to keyword', async () => {
+      mockGetEmbeddingCoverage.mockResolvedValue({ embeddedPages: 0, totalPages: 4, coverage: 0 });
+      mockQueryFn.mockResolvedValue({ rows: [] });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/search?q=test&mode=hybrid',
+      });
+
+      const body = response.json();
+      expect(body.mode).toBe('keyword');
+      expect(body.hasEmbeddings).toBe(false);
+      expect(body.embeddingCoverage).toBe(0);
+      expect(body.degradedReason).toBe('no_embeddings');
+      expect(body.warning).toContain('No embeddings');
+      expect(mockHybridSearch).not.toHaveBeenCalled();
+    });
+
+    it('keyword mode reports the signal as unmeasured, not healthy', async () => {
+      mockQueryFn.mockResolvedValue({ rows: [] });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/search?q=test&mode=keyword',
+      });
+
+      const body = response.json();
+      expect(body.embeddingCoverage).toBeNull();
+      expect(body.degradedReason).toBeNull();
+    });
+
+    it('semantic mode records coverage extras on the analytics row', async () => {
+      mockGetEmbeddingCoverage.mockResolvedValue({ embeddedPages: 5, totalPages: 10, coverage: 0.5 });
+      mockProviderGenerateEmbedding.mockResolvedValue([new Array(768).fill(0.1)]);
+      mockVectorSearch.mockResolvedValue([makeSearchResult(1, 'Vector Result')]);
+
+      await app.inject({
+        method: 'GET',
+        url: '/api/search?q=test&mode=semantic',
+      });
+
+      expect(mockRecordAnalytics).toHaveBeenCalledWith(
+        'test-user-id',
+        'test',
+        1,
+        expect.any(Number),
+        'semantic',
+        { degradedReason: 'partial_embeddings', embeddingCoverage: 0.5 },
+      );
+    });
+
     // ── Score semantics (#1117) ──────────────────────────────────────────
     //
     // `rank` carries whatever unit the mode produced; `similarity` is the
@@ -544,7 +656,7 @@ describe('Search Routes', () => {
     // artefact as a percentage.
 
     it('hybrid mode: exposes the cosine as `similarity`, distinct from the fusion `rank`', async () => {
-      mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] });
+      mockQueryFn.mockResolvedValue({ rows: [] });
       mockHybridSearch.mockResolvedValue([
         makeSearchResult(1, 'Both legs', { score: 0.0328, vectorScore: 0.74, keywordRank: 0.09 }),
       ]);
@@ -558,7 +670,7 @@ describe('Search Routes', () => {
     });
 
     it('hybrid mode: a full-text-only row reports a null similarity, not a zero', async () => {
-      mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] });
+      mockQueryFn.mockResolvedValue({ rows: [] });
       mockHybridSearch.mockResolvedValue([
         makeSearchResult(2, 'Keyword only', { score: 0.0164, vectorScore: null, keywordRank: 0.12 }),
       ]);
@@ -571,7 +683,7 @@ describe('Search Routes', () => {
     });
 
     it('semantic mode: `similarity` is present and equals the cosine', async () => {
-      mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] });
+      mockQueryFn.mockResolvedValue({ rows: [] });
       // The suite's beforeEach only calls vi.clearAllMocks(), which clears calls
       // but not implementations — so a semantic test that omits this silently
       // inherits whichever embedding mock an earlier test happened to leave
@@ -592,7 +704,7 @@ describe('Search Routes', () => {
       // Guards the fixture trap this suite fell into: the rag-service mocks are
       // untyped, so a fixture missing `vectorScore` makes the route emit
       // `undefined` and every other assertion here still passes.
-      mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] });
+      mockQueryFn.mockResolvedValue({ rows: [] });
       mockProviderGenerateEmbedding.mockResolvedValue([[new Array(768).fill(0.1)]]);
       mockVectorSearch.mockResolvedValue([makeSearchResult(4, 'Present')]);
 
@@ -605,7 +717,7 @@ describe('Search Routes', () => {
     });
 
     it('semantic mode: providerGenerateEmbedding failure → 502', async () => {
-      mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] }); // embeddings exist
+      mockQueryFn.mockResolvedValue({ rows: [] }); // embeddings exist
       mockProviderGenerateEmbedding.mockRejectedValue(new Error('Ollama unreachable'));
 
       const response = await app.inject({
@@ -625,7 +737,7 @@ describe('Search Routes', () => {
     // for genuine embedding-provider failures, so these now pin that no
     // input to that helper can ever surface raw provider text either.
     it('semantic mode 502 keeps the provider error body out of the client-visible message (#1214, #1223)', async () => {
-      mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] }); // embeddings exist
+      mockQueryFn.mockResolvedValue({ rows: [] }); // embeddings exist
       mockProviderGenerateEmbedding.mockRejectedValue(
         new LlmHttpError('generateEmbedding', 500, 'SECRET_PROVIDER_BODY_XYZ internal-host=10.0.4.12'),
       );
@@ -651,7 +763,7 @@ describe('Search Routes', () => {
     // any other non-circuit-breaker error and rethrow to the global handler
     // for a sanitized 500, rather than re-labeling it EmbeddingFailed/502.
     it('hybrid mode rethrows a non-circuit-breaker error to a sanitized 500, provider body absent (#1214, #1223)', async () => {
-      mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] }); // embeddings exist
+      mockQueryFn.mockResolvedValue({ rows: [] }); // embeddings exist
       mockHybridSearch.mockRejectedValue(
         new LlmHttpError('generateEmbedding', 500, 'SECRET_PROVIDER_BODY_XYZ internal-host=10.0.4.12'),
       );
@@ -675,7 +787,7 @@ describe('Search Routes', () => {
     // must never reach the client; it should be rethrown and sanitized by the
     // global handler exactly like any other uncaught DB error on this route.
     it('hybrid mode: DB error reaching the catch is sanitized, marker absent (#1223)', async () => {
-      mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] }); // embeddings exist
+      mockQueryFn.mockResolvedValue({ rows: [] }); // embeddings exist
       mockHybridSearch.mockRejectedValue(
         new Error('password authentication failed for user "SECRET_DB_MARKER_ROLE"'),
       );
@@ -692,7 +804,7 @@ describe('Search Routes', () => {
     });
 
     it('hybrid mode: CircuitBreakerOpenError → 503 with retry-shortly semantics (#1223)', async () => {
-      mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] }); // embeddings exist
+      mockQueryFn.mockResolvedValue({ rows: [] }); // embeddings exist
       mockHybridSearch.mockRejectedValue(new CircuitBreakerOpenError('breaker open for provider p1'));
 
       const response = await app.inject({
@@ -709,7 +821,7 @@ describe('Search Routes', () => {
     // ── semantic mode twin (search.ts:69, the AI review's required scope
     // addition) — same class of leak, same fix. ────────────────────────────
     it('semantic mode: embedding-path error carrying a marker stays out of the 502 (#1223)', async () => {
-      mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] }); // embeddings exist
+      mockQueryFn.mockResolvedValue({ rows: [] }); // embeddings exist
       mockProviderGenerateEmbedding.mockRejectedValue(
         new Error('provider said SECRET_EMBED_MARKER_ABC while talking to internal-host'),
       );
@@ -724,7 +836,7 @@ describe('Search Routes', () => {
     });
 
     it('semantic mode: DB-shaped error resolving the embedding provider is sanitized to 500 (#1223)', async () => {
-      mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] }); // embeddings exist
+      mockQueryFn.mockResolvedValue({ rows: [] }); // embeddings exist
       vi.mocked(resolveUsecase).mockRejectedValueOnce(
         new Error('no pg_hba.conf entry for host "SECRET_DB_HOST_MARKER"'),
       );
@@ -743,7 +855,7 @@ describe('Search Routes', () => {
     });
 
     it('semantic mode: CircuitBreakerOpenError on the embedding call → 503 (#1223)', async () => {
-      mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] }); // embeddings exist
+      mockQueryFn.mockResolvedValue({ rows: [] }); // embeddings exist
       mockProviderGenerateEmbedding.mockRejectedValue(new CircuitBreakerOpenError('breaker open for provider p1'));
 
       const response = await app.inject({
@@ -766,7 +878,7 @@ describe('Search Routes', () => {
     // object here, so nothing is interpolated and toUserFacingEmbeddingError
     // is not involved).
     it('semantic mode: empty embeddings array from the provider is a 502, not a bodiless 200 (#1223)', async () => {
-      mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] }); // embeddings exist
+      mockQueryFn.mockResolvedValue({ rows: [] }); // embeddings exist
       mockProviderGenerateEmbedding.mockResolvedValue([]);
 
       const response = await app.inject({
@@ -781,7 +893,7 @@ describe('Search Routes', () => {
     });
 
     it('semantic mode: a zero-length inner vector is also treated as no result (#1223)', async () => {
-      mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] }); // embeddings exist
+      mockQueryFn.mockResolvedValue({ rows: [] }); // embeddings exist
       // Outer array has an entry, but it is itself an empty vector — `!embedding`
       // alone would miss this since `[]` is truthy in JS.
       mockProviderGenerateEmbedding.mockResolvedValue([[]]);
@@ -798,7 +910,7 @@ describe('Search Routes', () => {
     });
 
     it('recordSearchAnalytics is called once per request for semantic mode', async () => {
-      mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] }); // embeddings exist
+      mockQueryFn.mockResolvedValue({ rows: [] }); // embeddings exist
       mockProviderGenerateEmbedding.mockResolvedValue([[new Array(768).fill(0.1)]]);
       mockVectorSearch.mockResolvedValue([]);
 

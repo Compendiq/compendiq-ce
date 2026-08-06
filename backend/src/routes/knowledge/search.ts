@@ -12,6 +12,9 @@ import {
   vectorSearch,
   hybridSearch,
   recordSearchAnalytics,
+  getEmbeddingCoverage,
+  deriveDegradedReason,
+  type DegradedReason,
 } from '../../domains/llm/services/rag-service.js';
 import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
 import { generateEmbedding } from '../../domains/llm/services/openai-compatible-client.js';
@@ -134,26 +137,29 @@ export async function searchRoutes(fastify: FastifyInstance) {
     const ftsLang = await getFtsLanguage();
 
     // ── Embeddings availability check (only needed for semantic/hybrid) ──────
+    // Coverage-aware since #1117 stage 2: the old boolean EXISTS probe flipped
+    // healthy the moment ONE visible page had an embedding row, so a re-embed
+    // in progress (or a 1%-embedded corpus) looked identical to full coverage.
+    // `embeddingCoverage`/`degradedReason` stay null in keyword mode — the
+    // signal is unmeasured there, not healthy.
     let hasEmbeddings = true;
     let effectiveMode = mode;
     let warning: string | undefined;
+    let embeddingCoverage: number | null = null;
+    let degradedReason: DegradedReason | null = null;
 
     if (mode !== 'keyword') {
-      const embResult = await query<{ exists: boolean }>(
-        `SELECT EXISTS(
-           SELECT 1
-           FROM page_embeddings pe
-           JOIN pages cp ON pe.page_id = cp.id
-           WHERE ${visiblePagesPredicate(1, 2)}
-           AND cp.deleted_at IS NULL
-           LIMIT 1
-         ) AS exists`,
-        [searchSpaces, userId],
-      );
-      if (!embResult.rows[0]?.exists) {
+      const cov = await getEmbeddingCoverage(userId);
+      embeddingCoverage = cov.coverage;
+      degradedReason = deriveDegradedReason(false, cov);
+      if (cov.embeddedPages === 0) {
         hasEmbeddings = false;
         effectiveMode = 'keyword';
         warning = 'No embeddings found — falling back to keyword search. Embed your pages to enable semantic search.';
+      } else if (degradedReason === 'partial_embeddings') {
+        // Keep the mode running — half a vector index still beats none — but
+        // say so. The frontend banner keys on `degradedReason`, not this text.
+        warning = `Semantic search is degraded — ${Math.round(cov.coverage * 100)}% of pages are embedded. Results may be incomplete until embedding completes.`;
       }
     }
 
@@ -173,7 +179,10 @@ export async function searchRoutes(fastify: FastifyInstance) {
       });
 
       const maxScore = deduped.length > 0 ? Math.max(...deduped.map((r) => r.score)) : null;
-      recordSearchAnalytics(userId, q, deduped.length, maxScore, 'semantic').catch(() => {});
+      recordSearchAnalytics(userId, q, deduped.length, maxScore, 'semantic', {
+        degradedReason,
+        embeddingCoverage,
+      }).catch(() => {});
 
       const items = deduped.map((r) => ({
         id: r.pageId,
@@ -205,6 +214,8 @@ export async function searchRoutes(fastify: FastifyInstance) {
         mode: effectiveMode,
         hasEmbeddings,
         warning,
+        embeddingCoverage,
+        degradedReason,
       };
     }
 
@@ -261,6 +272,8 @@ export async function searchRoutes(fastify: FastifyInstance) {
         mode: effectiveMode,
         hasEmbeddings,
         warning,
+        embeddingCoverage,
+        degradedReason,
       };
     }
 
@@ -506,6 +519,8 @@ export async function searchRoutes(fastify: FastifyInstance) {
       mode: effectiveMode,
       hasEmbeddings,
       warning,
+      embeddingCoverage,
+      degradedReason,
     };
   });
 

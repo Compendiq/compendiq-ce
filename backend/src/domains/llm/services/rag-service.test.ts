@@ -340,19 +340,27 @@ describe('RAG Service', () => {
       mocks.mockGenerateEmbedding.mockRejectedValue(new Error('Ollama unreachable'));
       mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
 
-      // keyword search returns results
-      mocks.mockQuery.mockResolvedValueOnce({
-        rows: [{
-          page_id: 1,
-          confluence_id: 'page-1',
-          title: 'Test Page',
-          space_key: 'DEV',
-          body_text: 'Some text content for search',
-          rank: 0.5,
-        }],
+      // Route on SQL text, not call order: since #1117 the coverage probe runs
+      // concurrently with keywordSearch, so a queued mockResolvedValueOnce can
+      // be consumed by either.
+      mocks.mockQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes('ts_rank')) {
+          return {
+            rows: [{
+              page_id: 1,
+              confluence_id: 'page-1',
+              title: 'Test Page',
+              space_key: 'DEV',
+              body_text: 'Some text content for search',
+              rank: 0.5,
+            }],
+          };
+        }
+        if (sql.includes('COUNT(*)')) {
+          return { rows: [{ embedded: 1, total: 1 }] };
+        }
+        return { rows: [] };
       });
-      // analytics insert
-      mocks.mockQuery.mockResolvedValue({ rows: [] });
 
       const results = await hybridSearch('user-1', 'test query');
       expect(results.length).toBeGreaterThanOrEqual(1);
@@ -406,19 +414,25 @@ describe('RAG Service', () => {
       mocks.mockGenerateEmbedding.mockRejectedValue(new Error('Ollama unreachable'));
       mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
 
-      // keyword search returns results
-      mocks.mockQuery.mockResolvedValueOnce({
-        rows: [{
-          page_id: 1,
-          confluence_id: 'page-1',
-          title: 'Fallback Page',
-          space_key: 'DEV',
-          body_text: 'Fallback content',
-          rank: 0.4,
-        }],
+      // Route on SQL text, not call order — see the fallback test above.
+      mocks.mockQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes('ts_rank')) {
+          return {
+            rows: [{
+              page_id: 1,
+              confluence_id: 'page-1',
+              title: 'Fallback Page',
+              space_key: 'DEV',
+              body_text: 'Fallback content',
+              rank: 0.4,
+            }],
+          };
+        }
+        if (sql.includes('COUNT(*)')) {
+          return { rows: [{ embedded: 1, total: 1 }] };
+        }
+        return { rows: [] };
       });
-      // analytics insert
-      mocks.mockQuery.mockResolvedValue({ rows: [] });
 
       await hybridSearch('user-1', 'test query');
 
@@ -429,9 +443,12 @@ describe('RAG Service', () => {
           (call[0] as string).includes('search_analytics'),
       );
       expect(analyticsCalls.length).toBeGreaterThanOrEqual(1);
-      // The 5th parameter should be 'keyword_fallback'
+      // The 5th parameter should be 'keyword_fallback', and the degraded
+      // reason (#1117) 'embedding_failed' — the provider threw, whatever the
+      // corpus coverage says.
       const analyticsParams = analyticsCalls[0][1] as unknown[];
       expect(analyticsParams[4]).toBe('keyword_fallback');
+      expect(analyticsParams[6]).toBe('embedding_failed');
     });
 
     it('should record hybrid search type when both vector and keyword succeed', async () => {

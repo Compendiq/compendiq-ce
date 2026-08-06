@@ -1,14 +1,23 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { initTelemetry, getTracer, withSpan, shutdownTelemetry } from './telemetry.js';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import {
+  initTelemetry,
+  getTracer,
+  getMeter,
+  withSpan,
+  recordHistogram,
+  shutdownTelemetry,
+} from './telemetry.js';
 
 describe('Telemetry', () => {
   beforeEach(() => {
-    // Clean up any previous tracer
+    // Clean up any previous tracer/meter
     delete (globalThis as Record<string, unknown>).__otelTracer;
+    delete (globalThis as Record<string, unknown>).__otelMeter;
   });
 
   afterEach(async () => {
     delete (globalThis as Record<string, unknown>).__otelTracer;
+    delete (globalThis as Record<string, unknown>).__otelMeter;
     await shutdownTelemetry();
   });
 
@@ -76,6 +85,31 @@ describe('Telemetry', () => {
       await shutdownTelemetry();
     });
 
+    it('passes the live span into the callback so attributes can be set post-hoc', async () => {
+      // Results-derived attributes (hit counts, degraded verdicts) only exist
+      // AFTER the work ran — the upfront `attributes` param cannot carry them.
+      const recorded: Record<string, unknown> = {};
+      (globalThis as Record<string, unknown>).__otelTracer = {
+        startActiveSpan<T>(_name: string, fn: (span: unknown) => T): T {
+          return fn({
+            setAttribute(key: string, value: unknown) {
+              recorded[key] = value;
+            },
+            setStatus() {},
+            recordException() {},
+            end() {},
+          });
+        },
+      };
+
+      await withSpan('op', async (span) => {
+        span?.setAttribute('rag.hits', 3);
+        return 1;
+      });
+
+      expect(recorded['rag.hits']).toBe(3);
+    });
+
     it('should handle errors properly when tracing', async () => {
       process.env.OTEL_ENABLED = 'true';
       await initTelemetry();
@@ -95,6 +129,80 @@ describe('Telemetry', () => {
     it('should be safe to call when not initialized', async () => {
       // Should not throw
       await shutdownTelemetry();
+    });
+  });
+
+  // ── Metrics (#1117 stage 2) ────────────────────────────────────────────
+  //
+  // Tracing existed since #922; the metrics half is new. `getMeter` mirrors
+  // `getTracer` (globalThis seam, undefined when disabled) and
+  // `recordHistogram` mirrors `withSpan` (transparent no-op when disabled).
+
+  describe('getMeter', () => {
+    it('returns undefined when OTel is not initialized', () => {
+      expect(getMeter()).toBeUndefined();
+    });
+
+    it('returns a meter when OTEL_ENABLED is true', async () => {
+      process.env.OTEL_ENABLED = 'true';
+      await initTelemetry();
+
+      expect(getMeter()).toBeDefined();
+
+      delete process.env.OTEL_ENABLED;
+      await shutdownTelemetry();
+    });
+
+    it('is cleared by shutdownTelemetry', async () => {
+      process.env.OTEL_ENABLED = 'true';
+      await initTelemetry();
+      await shutdownTelemetry();
+
+      expect(getMeter()).toBeUndefined();
+
+      delete process.env.OTEL_ENABLED;
+    });
+  });
+
+  describe('recordHistogram', () => {
+    interface FakeHistogram {
+      record: ReturnType<typeof vi.fn>;
+    }
+
+    function installFakeMeter(): { createHistogram: ReturnType<typeof vi.fn>; histogram: FakeHistogram } {
+      const histogram: FakeHistogram = { record: vi.fn() };
+      const createHistogram = vi.fn().mockReturnValue(histogram);
+      (globalThis as Record<string, unknown>).__otelMeter = { createHistogram };
+      return { createHistogram, histogram };
+    }
+
+    it('is a safe no-op when OTel is disabled', () => {
+      expect(() =>
+        recordHistogram('compendiq.retrieval.stage.duration', 12.5, { stage: 'vector_search' }),
+      ).not.toThrow();
+    });
+
+    it('records the value with attributes on the named instrument', () => {
+      const { histogram } = installFakeMeter();
+
+      recordHistogram(
+        'compendiq.retrieval.stage.duration',
+        12.5,
+        { stage: 'vector_search' },
+        { unit: 'ms', description: 'Retrieval stage latency' },
+      );
+
+      expect(histogram.record).toHaveBeenCalledWith(12.5, { stage: 'vector_search' });
+    });
+
+    it('creates each instrument once, not per record', () => {
+      const { createHistogram, histogram } = installFakeMeter();
+
+      recordHistogram('compendiq.retrieval.stage.duration', 1, { stage: 'vector_search' });
+      recordHistogram('compendiq.retrieval.stage.duration', 2, { stage: 'keyword_search' });
+
+      expect(createHistogram).toHaveBeenCalledTimes(1);
+      expect(histogram.record).toHaveBeenCalledTimes(2);
     });
   });
 });

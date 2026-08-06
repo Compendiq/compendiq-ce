@@ -18,8 +18,16 @@ import { logger } from './core/utils/logger.js';
 
 const SDK_KEY = '__otelSdk';
 const TRACER_KEY = '__otelTracer';
+const METER_KEY = '__otelMeter';
 
 type OtelSdk = { shutdown: () => Promise<void> };
+
+// Instrument cache for recordHistogram: OTel meters return a NEW histogram on
+// every createHistogram call, so instruments must be created once and reused.
+// Keyed by the meter itself, not module state — an instrument belongs to the
+// meter that created it, and a restart of the SDK (or a test swapping the
+// globalThis seam) must not serve instruments bound to a dead meter.
+const histogramCaches = new WeakMap<object, Map<string, import('@opentelemetry/api').Histogram>>();
 
 /**
  * Construct and start the OpenTelemetry NodeSDK.
@@ -70,6 +78,25 @@ export async function startTelemetry(): Promise<void> {
       sdkConfig.traceExporter = new ConsoleSpanExporter();
     }
 
+    // Metrics (#1117): the NodeSDK only registers a global MeterProvider when
+    // given a metric reader — without this block getMeter() would hand out
+    // no-op meters and every histogram would silently record into the void.
+    // Mirrors the trace-exporter policy above: OTLP when the endpoint is set,
+    // console otherwise.
+    const { PeriodicExportingMetricReader, ConsoleMetricExporter } = await import(
+      '@opentelemetry/sdk-metrics'
+    );
+    if (process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
+      const { OTLPMetricExporter } = await import('@opentelemetry/exporter-metrics-otlp-http');
+      sdkConfig.metricReader = new PeriodicExportingMetricReader({
+        exporter: new OTLPMetricExporter(),
+      });
+    } else {
+      sdkConfig.metricReader = new PeriodicExportingMetricReader({
+        exporter: new ConsoleMetricExporter(),
+      });
+    }
+
     const sdk = new NodeSDK(sdkConfig);
     sdk.start();
     (globalThis as Record<string, unknown>)[SDK_KEY] = sdk;
@@ -79,6 +106,10 @@ export async function startTelemetry(): Promise<void> {
 
     // Make the tracer available globally for custom spans
     (globalThis as Record<string, unknown>)[TRACER_KEY] = tracer;
+
+    // Same seam for application-level metrics. metrics.getMeter delegates to
+    // the MeterProvider the SDK just registered.
+    (globalThis as Record<string, unknown>)[METER_KEY] = otelApi.metrics.getMeter(serviceName);
 
     logger.info(
       {
@@ -113,12 +144,55 @@ export function getTracer(): import('@opentelemetry/api').Tracer | undefined {
 }
 
 /**
+ * Get the application meter for creating custom metrics.
+ * Returns undefined if OTel is not initialized.
+ */
+export function getMeter(): import('@opentelemetry/api').Meter | undefined {
+  return (globalThis as Record<string, unknown>)[METER_KEY] as
+    | import('@opentelemetry/api').Meter
+    | undefined;
+}
+
+/**
+ * Record a value on a named histogram. Transparent no-op when OTel is
+ * disabled, mirroring {@link withSpan}. The instrument is created on first
+ * use and cached — `options` (unit/description) therefore only take effect
+ * on that first call for a given name.
+ */
+export function recordHistogram(
+  name: string,
+  value: number,
+  attributes?: Record<string, string | number | boolean>,
+  options?: { unit?: string; description?: string },
+): void {
+  const meter = getMeter();
+  if (!meter) {
+    return;
+  }
+  let cache = histogramCaches.get(meter);
+  if (!cache) {
+    cache = new Map();
+    histogramCaches.set(meter, cache);
+  }
+  let histogram = cache.get(name);
+  if (!histogram) {
+    histogram = meter.createHistogram(name, options);
+    cache.set(name, histogram);
+  }
+  histogram.record(value, attributes);
+}
+
+/**
  * Create a custom span for a named operation.
  * If OTel is not enabled, the function is called directly without tracing.
+ *
+ * The live span is passed to `fn` (undefined when tracing is off) so callers
+ * can set attributes that only exist AFTER the work ran — hit counts, degraded
+ * verdicts — which the upfront `attributes` parameter cannot carry.
  */
 export async function withSpan<T>(
   name: string,
-  fn: () => Promise<T>,
+  fn: (span?: import('@opentelemetry/api').Span) => Promise<T>,
   attributes?: Record<string, string | number | boolean>,
 ): Promise<T> {
   const tracer = getTracer();
@@ -133,7 +207,7 @@ export async function withSpan<T>(
           span.setAttribute(key, value);
         }
       }
-      const result = await fn();
+      const result = await fn(span);
       span.setStatus({ code: 1 }); // OK
       return result;
     } catch (err) {
@@ -161,6 +235,7 @@ export async function shutdownTelemetry(): Promise<void> {
     } finally {
       delete store[SDK_KEY];
       delete store[TRACER_KEY];
+      delete store[METER_KEY];
     }
   }
 }
