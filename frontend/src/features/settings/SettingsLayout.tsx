@@ -32,13 +32,25 @@ export function SettingsLayout() {
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.18 }}
+      // Settings is a reading-and-editing column, not a dashboard: capped at
+      // 896px it stays a coherent shape instead of a pane stretched to whatever
+      // the monitor happens to be, with its content stranded on the left.
+      // Wide enough that the tabs carrying tables (audit, users) still breathe.
+      className="max-w-4xl"
     >
-      <h1 className="mb-6 text-2xl font-bold tracking-[-0.01em]">Settings</h1>
+      {/* Matches the route-title scale used across the app. */}
+      <h1 className="mb-3 text-lg font-semibold">Settings</h1>
 
-      {/* nm-card gives a proper neumorphic border + shadow recipe that holds
-          up in both themes — replaces the previous border/40 wash that read
-          ~1.1:1 against linen and disappeared entirely on white card backs. */}
-      <div className="nm-card p-6">
+      {/* The pane spans the content column, but its FORM does not: `max-w-2xl`
+          caps the fields at a usable measure. Without it a "Confluence URL"
+          input stretched the full ~1160px of a desktop pane — a single-line
+          field eleven times longer than anything anyone types into it, with
+          its label stranded at the far left of its own help text.
+
+          The cap lives here rather than in each tab so every settings surface
+          inherits it; a tab needing full width (tables, audit logs) opts out
+          with `max-w-none` on its own root. */}
+      <div className="nm-card p-5 [&_form]:max-w-2xl">
         <Suspense fallback={<SkeletonFormFields />}>
           <Outlet
             context={

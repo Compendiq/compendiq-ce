@@ -583,12 +583,12 @@ function ImprovementTypeDrawer({ id, value, onChange, disabled, onKeyDown }: Imp
 function DockEmptyState({ pageTitle }: { pageTitle: string | undefined }) {
   return (
     <div className="flex h-full flex-col items-center justify-center px-2 text-center" data-testid="ai-dock-empty">
-      <div className="relative mb-4 flex h-14 w-14 items-center justify-center">
-        <div className="absolute inset-0 rounded-full bg-status-ai/10 blur-2xl" aria-hidden />
-        <div className="relative flex h-11 w-11 items-center justify-center rounded-full bg-status-ai/12 ring-1 ring-status-ai/25">
-          <Sparkles size={22} className="text-status-ai" aria-hidden />
-        </div>
-      </div>
+      {/* A plain glyph, not a glowing disc. This was a 56px blurred halo behind
+          a ringed circle behind the icon — three stacked decorations to say
+          "AI", in the one panel whose job is to get out of the way until it has
+          something to show. Violet still marks AI (ADR-010); it just does not
+          need a light source to do it. */}
+      <Sparkles size={20} className="mb-3 text-status-ai" aria-hidden />
       {/* The headline names the scope rather than repeating the composer's
           own placeholder back at the reader. On a 420px column the page title
           is the one piece of orientation worth spending two lines on: it is

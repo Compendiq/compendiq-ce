@@ -1098,7 +1098,13 @@ function VerifyButton({ pageId }: { pageId: string | undefined }) {
       disabled={verifyMutation.isPending}
       title="Mark this page as up-to-date. Resets the next review reminder based on the configured review interval."
       aria-label="Mark page as verified"
-      className="rounded-md px-2.5 py-1 text-xs text-emerald-500 transition-colors hover:bg-emerald-500/10 disabled:opacity-50"
+      // Neutral, like every other action in this toolbar. It was
+      // `text-emerald-500`, which collides with the status vocabulary: green
+      // means "connected / healthy" throughout the app, so a green control read
+      // as a state readout rather than a thing you press — and it was the only
+      // coloured item in a row of otherwise neutral actions, which made the
+      // least consequential one the most prominent.
+      className="rounded-md px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
       data-testid="verify-btn"
     >
       <ShieldCheck size={12} className="mr-1 inline" />
