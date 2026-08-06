@@ -4,6 +4,7 @@ import { query } from '../../core/db/postgres.js';
 import { encryptPat, isEncryptedSecretFormat, reEncryptPat } from '../../core/utils/crypto.js';
 import { getAuditLog, logAuditEvent } from '../../core/services/audit-service.js';
 import { listErrors, resolveError, getErrorSummary } from '../../core/services/error-tracker.js';
+import { assertNoShadowMigration } from '../../domains/llm/services/embedding-service.js';
 import { logger } from '../../core/utils/logger.js';
 import { UpdateAdminSettingsSchema } from '@compendiq/contracts';
 import {
@@ -552,6 +553,11 @@ export async function adminRoutes(fastify: FastifyInstance) {
 
     // Only mark pages dirty for re-embedding when chunk settings changed — NOT for drawioEmbedUrl
     if (hasChunkChanges) {
+      // Re-chunking dirties the whole corpus, which the normal pipeline then
+      // re-embeds page by page — during a shadow migration's `swapped` phase
+      // that leaves every row without an `embedding_prev`, and a rollback
+      // deleting NULL-vector rows would empty the corpus (review r8).
+      await assertNoShadowMigration();
       await query('UPDATE pages SET embedding_dirty = TRUE');
       logger.info({ userId: request.userId, updates }, 'Admin chunk settings changed, all pages marked dirty');
     }

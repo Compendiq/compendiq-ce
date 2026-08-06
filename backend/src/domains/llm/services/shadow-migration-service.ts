@@ -366,6 +366,12 @@ export async function getShadowMigrationStatus(): Promise<ShadowMigrationStatus 
     if (await abortedOutFromUnder(err)) {
       const now = await getShadowMigrationState();
       if (!now) return null;
+      // A SWAP raises the same 42703 — it renames `embedding_next` away, so a
+      // status poll queued behind its lock re-plans after the commit and finds
+      // the column gone. Reporting that as 'aborting' put the card's "a
+      // previous abort did not finish — retry it" panel in front of an admin,
+      // whose button POSTs /rollback and would REVERT the swap (review r8).
+      if (now.status !== 'aborting') return readShadowMigrationStatus();
       return { ...now, phase: 'aborting', totalPages: 0, backfilledPages: 0, stragglerPages: 0, indexReady: false };
     }
     throw err;
@@ -554,17 +560,30 @@ async function buildShadowIndexes(state: ShadowMigrationState): Promise<void> {
     return;
   }
   const { opclass } = columnTypeFor(state.dimensions);
-  // Plain CREATE INDEX (not CONCURRENTLY): blocks WRITES to page_embeddings
-  // for the build, never reads — search stays on the live index throughout.
-  // Documented in the runbook; sync writes queue behind it briefly.
-  await query(
-    `CREATE INDEX IF NOT EXISTS idx_page_embeddings_hnsw_next
-     ON page_embeddings USING hnsw (embedding_next ${opclass}) WITH (m = 16, ef_construction = 200)`,
-  );
-  await query(
-    `CREATE INDEX IF NOT EXISTS idx_pages_page_avg_embedding_hnsw_next
-     ON pages USING hnsw (page_avg_embedding_next ${opclass}) WITH (m = 16, ef_construction = 200)`,
-  );
+  // Same exemption as the DDL transactions: an HNSW build over a real corpus
+  // outruns any sane PG_STATEMENT_TIMEOUT, and being cancelled here means the
+  // backfill can never reach `ready` (review r8). Session-scoped, so it is
+  // reset before the connection returns to the pool.
+  const idxClient = await getPool().connect();
+  try {
+    await idxClient.query('SET statement_timeout = 0');
+    // Plain CREATE INDEX (not CONCURRENTLY): blocks WRITES to page_embeddings
+    // for the build, never reads — search stays on the live index throughout.
+    // Documented in the runbook; sync writes queue behind it briefly.
+    await idxClient.query(
+      `CREATE INDEX IF NOT EXISTS idx_page_embeddings_hnsw_next
+       ON page_embeddings USING hnsw (embedding_next ${opclass}) WITH (m = 16, ef_construction = 200)`,
+    );
+    await idxClient.query(
+      `CREATE INDEX IF NOT EXISTS idx_pages_page_avg_embedding_hnsw_next
+       ON pages USING hnsw (page_avg_embedding_next ${opclass}) WITH (m = 16, ef_construction = 200)`,
+    );
+  } finally {
+    // RESET restores the pool's startup value, not Postgres' default — the
+    // same discipline runMigrations uses before returning its client.
+    await idxClient.query('RESET statement_timeout').catch(() => {});
+    idxClient.release();
+  }
 }
 
 const LOCK_NOT_AVAILABLE = '55P03';
@@ -635,6 +654,15 @@ async function withLockRetry(
     try {
       await client.query('BEGIN');
       await client.query(`SET LOCAL lock_timeout = '${Number(opts.lockTimeoutMs)}ms'`);
+      // A deployment that sets PG_STATEMENT_TIMEOUT applies it to every pooled
+      // connection, and these transactions run genuinely long statements: the
+      // re-dirty scan, the NULL-row DELETE and the SET NOT NULL validation
+      // scan. 57014 is neither a lock code nor retried, so it aborted the
+      // transaction and propagated — cleanup and rollback would fail EVERY
+      // time, stranding the instance in `swapped` with no way out of the UI
+      // (review r8). SET LOCAL, so it lasts exactly this transaction; the
+      // lock_timeout above still bounds the wait that could hurt others.
+      await client.query('SET LOCAL statement_timeout = 0');
       await fn(client as unknown as { query: (sql: string, params?: unknown[]) => Promise<{ rows: Array<Record<string, unknown>> }> });
       await client.query('COMMIT');
       return;
@@ -773,6 +801,13 @@ export async function rollbackShadowMigration(opts?: {
   lockTimeoutMs?: number;
   maxAttempts?: number;
 }): Promise<'aborted' | 'reverted'> {
+  // The detached edge rebuild reads `pages` and `page_embeddings` for as long
+  // as a whole-corpus recompute takes, while both of these open with LOCK
+  // TABLE … ACCESS EXCLUSIVE on a ~27s total budget — so a rollback clicked
+  // right after a swap would exhaust its retries against our OWN background
+  // work and report a lock failure. Wait it out instead of racing it; it
+  // never rejects (review r8).
+  await pendingEdgeRefresh;
   const state = await getShadowMigrationState();
   if (!state) {
     throw new Error('No shadow migration to roll back');
@@ -924,6 +959,13 @@ export async function cleanupShadowMigration(opts?: {
   lockTimeoutMs?: number;
   maxAttempts?: number;
 }): Promise<void> {
+  // The detached edge rebuild reads `pages` and `page_embeddings` for as long
+  // as a whole-corpus recompute takes, while both of these open with LOCK
+  // TABLE … ACCESS EXCLUSIVE on a ~27s total budget — so a rollback clicked
+  // right after a swap would exhaust its retries against our OWN background
+  // work and report a lock failure. Wait it out instead of racing it; it
+  // never rejects (review r8).
+  await pendingEdgeRefresh;
   const state = await getShadowMigrationState();
   if (!state || state.status !== 'swapped') {
     throw new Error('Cleanup only applies after a swap — nothing to clean up');

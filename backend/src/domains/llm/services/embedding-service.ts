@@ -1314,9 +1314,33 @@ export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatu
 }
 
 /**
+ * #1116 mutual exclusion for EVERY whole-corpus re-embed, whatever the
+ * entrypoint. Round 7 guarded `enqueueReembedAll`; round 8 found three more
+ * doors to the same room — `reEmbedAll()` (the embedding-rescan admin
+ * routes) and the chunk-settings change that marks the whole corpus dirty.
+ *
+ * During `swapped` any of them replaces every row with one whose
+ * `embedding_prev` is NULL, and the rollback that deletes NULL-vector rows
+ * would then EMPTY the corpus rather than restore it — the exact opposite of
+ * the runbook's promise. During `active` they race the backfill for the same
+ * rows. The refusal carries a statusCode because these routes have no error
+ * mapping of their own, so it answers 409 instead of a masked 500.
+ */
+export async function assertNoShadowMigration(): Promise<void> {
+  if (await getShadowMigrationState()) {
+    const err = new Error(
+      'A shadow migration is in progress — swap, roll it back or clean it up before re-embedding the corpus (#1116)',
+    ) as Error & { statusCode: number };
+    err.statusCode = 409;
+    throw err;
+  }
+}
+
+/**
  * Re-embed all pages (admin action).
  */
 export async function reEmbedAll(): Promise<void> {
+  await assertNoShadowMigration();
   // Issue #917 — do NOT wipe the whole index up front. `embedPage` atomically
   // replaces each page's embeddings inside its own transaction (Phase 2), so
   // marking every page dirty and re-embedding page by page shrinks-then-grows
@@ -1353,22 +1377,7 @@ export async function enqueueReembedAll(
   // Fixed id — concurrent POSTs collapse onto the same BullMQ record.
   const jobId = 'reembed-all';
 
-  // #1116 mutual exclusion, for EVERY reembed-all and not just a dimension
-  // change (review r7). The same-dimension re-embed TRUNCATEs and rebuilds
-  // `embedding` too, so during `swapped` it fills the table with rows whose
-  // `embedding_prev` is NULL — and the rollback that deletes NULL-vector rows
-  // would then empty the corpus, turning the advertised "old model serves
-  // again immediately" into a full re-embed from nothing. During `active` it
-  // races the backfill for the same rows.
-  if (await getShadowMigrationState()) {
-    const err = new Error(
-      'A shadow migration is in progress — swap, roll it back or clean it up before re-embedding the corpus',
-    ) as Error & { statusCode: number };
-    // The destructive route has no error mapping; the statusCode rides on
-    // the error so the refusal answers 409, not a masked 500 (review r1).
-    err.statusCode = 409;
-    throw err;
-  }
+  await assertNoShadowMigration();
 
   if (opts.newDimensions !== undefined) {
     // pgvector type args must be literal — validate strictly before interpolation.

@@ -67,11 +67,13 @@ assignment **or** the rollback target resolves through it. An interrupted
 abort parks the migration in an `aborting` state; retrying the abort is
 idempotent and completes it.
 
-**The destructive re-embed is refused outright while a migration exists** —
-both the dimension-change form and the plain same-dimension one. During
-`swapped` it would fill the table with rows that have no `embedding_prev`,
-and the rollback that deletes NULL-vector rows would then empty the corpus
-instead of restoring it.
+**Every whole-corpus re-embed is refused while a migration exists** — the
+dimension-change form, the plain same-dimension one, the embedding-rescan
+admin routes (`reEmbedAll`), and a chunk-size/overlap change, which marks the
+whole corpus dirty. During `swapped` any of them would fill the table with
+rows that have no `embedding_prev`, and the rollback that deletes NULL-vector
+rows would then empty the corpus instead of restoring it. Finish or abort the
+migration first.
 
 **Provider-edit caveat.** A `baseUrl` / `apiKey` patch on the migration's
 target provider is *not* refused — it repoints the shadow model mid-backfill
@@ -83,6 +85,19 @@ frozen for the duration; if it must move, abort and restart.
 nothing, so the start-time guards against a *running* destructive re-embed or
 a *queued* previous backfill are inert — the state-row exclusion still holds,
 but operators must not fire both paths simultaneously by hand.
+
+**Rollback and cleanup wait for the background edge rebuild** rather than
+compete with it for the table lock — clicking either right after a swap can
+therefore sit for as long as the recompute takes before it starts.
+
+**`PG_STATEMENT_TIMEOUT` does not apply to this lifecycle's long statements.**
+The HNSW build, the re-dirty scan, the NULL-row delete and the `SET NOT NULL`
+validation each exempt themselves (`SET LOCAL statement_timeout = 0`, the same
+discipline `runMigrations` uses); without that, a deployment which sets the
+variable could never reach `ready`, and once swapped, both cleanup and
+rollback would abort every time — stranding the instance in `swapped` with no
+way out through the UI. `lock_timeout` still bounds every wait that could
+affect other sessions.
 
 ## Expected duration
 

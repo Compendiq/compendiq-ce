@@ -89,7 +89,7 @@ const {
   rollbackShadowMigration,
   cleanupShadowMigration,
 } = await import('./shadow-migration-service.js');
-const { embedPage, enqueueReembedAll } = await import('./embedding-service.js');
+const { embedPage, enqueueReembedAll, reEmbedAll } = await import('./embedding-service.js');
 const { resetUsecaseCache } = await import('./llm-provider-resolver.js');
 
 const dbAvailable = await isDbAvailable();
@@ -529,6 +529,22 @@ describe.skipIf(!dbAvailable)('#1116 shadow migration service', () => {
       await runShadowBackfillJob();
       return pageId;
     }
+
+    it('refuses reEmbedAll(), the OTHER whole-corpus door into the same hazard (review r8)', async () => {
+      // enqueueReembedAll was guarded in r7, but reEmbedAll() — behind the
+      // embedding-rescan admin routes — reaches the same corpus by a
+      // different path, and the chunk-settings change reaches it by a third.
+      await seedEmbeddedPage('Doc A');
+      await startShadowMigration({ providerId: shadowProviderId, model: SHADOW_MODEL });
+
+      await expect(reEmbedAll()).rejects.toMatchObject({ statusCode: 409 });
+
+      // Nothing was dirtied on the way to the refusal.
+      const dirty = await query<{ n: number }>(
+        `SELECT COUNT(*)::int AS n FROM pages WHERE embedding_dirty = TRUE`,
+      );
+      expect(dirty.rows[0]!.n).toBe(0);
+    });
 
     it('refuses a SAME-dimension destructive re-embed too, not only a dimension change (review r7)', async () => {
       // The same-dimension path TRUNCATEs and rebuilds `embedding` as well.

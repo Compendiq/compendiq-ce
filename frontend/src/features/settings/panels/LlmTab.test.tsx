@@ -212,6 +212,68 @@ describe('LlmTab', () => {
     expect(card.queryByText('bge-m3')).toBeNull();
   });
 
+  it('a completed swap does not re-raise the destructive re-embed banner (review r8)', async () => {
+    // The r7 fix reset the hydration guard synchronously, before the
+    // invalidated query had refetched — so the form re-seeded from the STALE
+    // document, re-armed the guard against it, and the banner came back over
+    // a migration that had just succeeded. This drives the real integration:
+    // swap, then assert the banner stays away.
+    const Wrapper = createWrapper();
+    const swapped = {
+      ...assignments,
+      embedding: {
+        providerId: providerB.id,
+        model: providerB.defaultModel,
+        resolved: { providerId: providerB.id, providerName: 'OpenAI', model: providerB.defaultModel },
+      },
+    };
+    let usecasesBody = assignments;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init = {}) => {
+      const url = typeof input === 'string' ? input : (input as URL).toString();
+      const method = (init as RequestInit).method;
+      if (url.endsWith('/admin/llm-providers') && method !== 'POST') {
+        return new Response(JSON.stringify([providerA, providerB]), { headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.includes('/admin/embedding/shadow-migration') && method === 'POST') {
+        usecasesBody = swapped; // the swap repoints the assignment server-side
+        return new Response('{"swapped":true}', { headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.includes('/admin/embedding/shadow-migration')) {
+        return new Response(
+          JSON.stringify({
+            active: true,
+            migration: { phase: 'ready', model: providerB.defaultModel, dimensions: 1024, totalPages: 3, backfilledPages: 3, stragglerPages: 0, indexed: true },
+          }),
+          { headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      if (url.endsWith('/admin/llm-usecases')) {
+        return new Response(JSON.stringify(usecasesBody), { headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.endsWith('/admin/settings')) {
+        return new Response(
+          JSON.stringify({ ftsLanguage: 'simple', embeddingChunkSize: 500, embeddingChunkOverlap: 50, drawioEmbedUrl: null, llmMaxConcurrentStreamsPerUser: 3, embeddingDimensions: 1024 }),
+          { headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      return new Response('[]', { headers: { 'Content-Type': 'application/json' } });
+    });
+
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByText('Use case assignments');
+
+    fireEvent.click(await screen.findByRole('button', { name: /Swap to the new model/i }));
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Swap to the new model/i })).toBeNull());
+    // Positive control: the form must show the pair the swap wrote. Asserting
+    // only the banner's absence would pass on a harness where it never
+    // renders at all.
+    await waitFor(() =>
+      expect((screen.getByTestId('usecase-embedding-provider') as HTMLSelectElement).value).toBe(providerB.id),
+    );
+    expect(screen.queryByText(/Embedding (provider\/model|model) changed/i)).toBeNull();
+  });
+
   // #949: a background refetch (window focus, or a concurrent admin save)
   // returns a new object whenever its payload differs from cache. The old
   // no-guard hydration effect re-ran setAssignments on every reference change,

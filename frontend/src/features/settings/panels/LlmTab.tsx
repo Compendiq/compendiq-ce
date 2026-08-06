@@ -196,13 +196,24 @@ export function LlmTab() {
       <ProviderListSection />
       <EmbeddingShadowMigrationCard
         pending={embeddingPending}
-        // A swap writes an EXPLICIT (provider, model) pair server-side. The
-        // card can invalidate the query, but only this guard reset makes the
-        // form re-seed from it — otherwise the local copy stays frozen on the
-        // admin's pre-start edit, and an inherit-shaped one then reads as a
-        // fresh "model changed" the moment the swap succeeds, re-raising the
-        // destructive re-embed banner over a completed migration (review r7).
-        onLifecycleChange={() => setAssignmentsInitialized(false)}
+        // A swap writes an EXPLICIT (provider, model) pair server-side, and
+        // without re-seeding, the local copy stays frozen on the admin's
+        // pre-start edit — an inherit-shaped one then reads as a fresh "model
+        // changed" the moment the swap succeeds, re-raising the destructive
+        // re-embed banner over a completed migration (review r7).
+        //
+        // Only the EMBEDDING row is re-seeded, not the whole document
+        // (review r8): dropping the #949 hydration guard wholesale would
+        // silently revert unsaved edits to the other four use cases, which is
+        // the exact invariant that guard exists to protect. The embedding row
+        // has no unsaved edits worth keeping — it is pinned server-side for
+        // the duration, so a PUT touching it is refused with a 409.
+        onLifecycleChange={() => {
+          const fresh = qc.getQueryData<UsecaseAssignments>(['llm-usecases']);
+          if (fresh) {
+            setAssignments((prev) => (prev ? { ...prev, embedding: fresh.embedding } : prev));
+          }
+        }}
       />
       <EmbeddingReembedBanner
         // Legacy 1024-dim default while settings load or on older backends

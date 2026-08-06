@@ -78,7 +78,13 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange }: Pro
       // dimensions server-side — the sibling panels (assignments section,
       // destructive banner) read them through these caches and would keep
       // showing pre-migration state until a full reload otherwise.
-      void queryClient.invalidateQueries({ queryKey: ['llm-usecases'] });
+      // AWAITED, and the callback runs after it: invalidate() only marks the
+      // entry stale, so a parent re-seeding synchronously would read the OLD
+      // document and re-arm its hydration guard against it — leaving the form
+      // on the pre-swap pair and re-raising the destructive banner over a
+      // migration that just succeeded (review r8). This is the same ordering
+      // LlmTab's own save.onSuccess uses, and for the same reason.
+      await queryClient.invalidateQueries({ queryKey: ['llm-usecases'] });
       void queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
       void queryClient.invalidateQueries({ queryKey: ['llm', 'usecase-default'] });
       onLifecycleChange?.();
