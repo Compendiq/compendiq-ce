@@ -1,5 +1,6 @@
 import { getShortcutHint, formatKeysForPlatform } from '../lib/shortcut-registry';
 import { isMac } from '../lib/platform';
+import { cn } from '../lib/cn';
 
 interface ShortcutHintProps {
   /** Shortcut id from the registry (e.g. "search", "new-page"). */
@@ -28,7 +29,15 @@ export function ShortcutHint({ shortcutId, className = '' }: ShortcutHintProps) 
       // an input the user does not have, and at 11px in a 390px row it read as
       // punctuation rather than a key. Hidden, not removed — the shortcut still
       // works for anyone with a keyboard at any width.
-      className={`ml-1.5 hidden items-center rounded border border-border bg-background/50 px-1.5 py-0.5 text-[11px] font-mono text-muted-foreground sm:inline-flex ${className}`.trim()}
+      // `cn` (twMerge), not string concatenation. The defaults below are tuned
+      // for a neutral surface; on a filled primary button the caller must be
+      // able to replace the colour trio. With plain concatenation whether the
+      // override won depended on Tailwind's emit order rather than the call
+      // site, so `bg-transparent` alongside `bg-background/50` was a coin flip.
+      className={cn(
+        'ml-1.5 hidden items-center rounded border border-border bg-background/50 px-1.5 py-0.5 text-[11px] font-mono text-muted-foreground sm:inline-flex',
+        className,
+      )}
     >
       {formatted}
     </kbd>

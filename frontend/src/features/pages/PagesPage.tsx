@@ -616,8 +616,18 @@ export function PagesPage() {
             className="nm-button-primary"
           >
             <Plus size={16} />
-            <span className="hidden sm:inline">New Page</span>
-            <span className="hidden sm:inline"><ShortcutHint shortcutId="new-page" className="border-primary-foreground/25 text-primary-foreground/80" /></span>
+            {/* Labelled at every width. `hidden sm:inline` was survivable while
+                this was an outline square matching the one beside it; filling it
+                aimed the eye at the only control on the page whose meaning was
+                unstated. A saturated icon-only square is a worse affordance than
+                a quiet one. */}
+            <span>New Page</span>
+            {/* Full-opacity ink. At /80 on the indigo fill this chip became the
+                lowest-contrast text in the frame — the theme guard measures
+                `primary-foreground` on `primary`, but nothing measures a
+                translucent variant of it, so the alpha put 11px text somewhere
+                no test was looking. */}
+            <ShortcutHint shortcutId="new-page" className="border-primary-foreground/30 bg-transparent text-primary-foreground" />
           </button>
         </div>
       </div>

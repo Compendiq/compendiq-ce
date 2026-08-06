@@ -738,7 +738,16 @@ export function PageViewPage() {
               className="nm-button-primary shrink-0"
             >
               {updateMutation.isPending ? 'Saving…' : 'Save'}
-              {!updateMutation.isPending && <ShortcutHint shortcutId="save" />}
+              {/* Ink that belongs to the fill. The default chip is
+                  `text-muted-foreground` on `bg-background/50`, tuned for a
+                  neutral surface — on the filled primary it is the
+                  lowest-contrast text in the frame. */}
+              {!updateMutation.isPending && (
+                <ShortcutHint
+                  shortcutId="save"
+                  className="border-primary-foreground/30 bg-transparent text-primary-foreground"
+                />
+              )}
             </button>
           </div>
         </div>
