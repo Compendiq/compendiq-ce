@@ -934,34 +934,30 @@ export function ArticleRightPane({
       )}
       data-testid="article-right-pane"
     >
-      {/* Pane bar — orientation and pane-level controls only. */}
-      <div className="panel-toolbar flex h-12 shrink-0 items-center justify-between border-b px-3">
-        <div className="min-w-0">
-          <span className="block text-xs font-semibold text-foreground/90">Page context</span>
-          <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
-            {page?.title ?? 'Current page'}
-          </span>
-        </div>
-        <button
-          onClick={toggleSidebar}
-          className="flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
-          aria-label="Collapse page sidebar"
-          title="Collapse sidebar (.)"
-        >
-          <PanelRightClose size={14} />
-        </button>
-      </div>
+      {/* Pane bar — the view switcher IS the header row.
+          It used to sit under a two-line label reading "Page context" over the
+          page title. Both were redundant: the article's own H1 is a few pixels
+          to the left and never scrolls out from under the context strip, so the
+          pane was spending 48px restating it. The tabs are the only thing in
+          this chrome anyone operates, so they take the row, and the rule under
+          it now lands on the same y as the sidebar's and the article strip's —
+          one line across the app instead of three near-misses.
 
-      {/* Two stable views replace one long mixed-purpose column. */}
-      <div
-        // Same segmented-control shape as the main nav and the search-mode
-        // toggle: `rounded-md` track, `border-border`, `bg-muted`, 2px inset.
-        // This was `rounded-xl` on `bg-foreground/[0.045]` with a 4px inset —
-        // a third distinct treatment for the same interaction.
-        className="mx-2 mt-2 grid shrink-0 grid-cols-3 gap-0.5 rounded-md border border-border bg-muted p-0.5"
-        role="tablist"
-        aria-label="Page context views"
-      >
+          `h-12` is the shared height of that line (see SidebarTreeView and
+          PageViewPage's context strip). It is not free space: the segmented
+          control is 34px (28px segments + 2px track inset + 1px borders), so
+          the row has ~7px of breathing room and no more. */}
+      <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 border-b px-2">
+        {/* Two stable views replace one long mixed-purpose column.
+            Same segmented-control shape as the main nav and the search-mode
+            toggle: `rounded-md` track, `border-border`, `bg-muted`, 2px inset.
+            This was `rounded-xl` on `bg-foreground/[0.045]` with a 4px inset —
+            a third distinct treatment for the same interaction. */}
+        <div
+          className="grid min-w-0 flex-1 grid-cols-3 gap-0.5 rounded-md border border-border bg-muted p-0.5"
+          role="tablist"
+          aria-label="Page context views"
+        >
         {/* First, and deliberately: the assistant is the thing people reach for
             most on a page, and it used to be the one behind an extra step. */}
         <button
@@ -1031,6 +1027,16 @@ export function ArticleRightPane({
         >
           <FileText size={13} />
           Details
+        </button>
+        </div>
+
+        <button
+          onClick={toggleSidebar}
+          className="flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
+          aria-label="Collapse page sidebar"
+          title="Collapse sidebar (.)"
+        >
+          <PanelRightClose size={14} />
         </button>
       </div>
 

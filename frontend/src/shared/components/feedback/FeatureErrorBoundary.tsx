@@ -53,7 +53,7 @@ export class FeatureErrorBoundary extends Component<
     if (this.state.hasError) {
       return (
         <div
-          className="rounded-xl border border-white/10 bg-card p-6 text-center"
+          className="rounded-lg border border-border bg-card p-6 text-center"
           data-testid="feature-error-fallback"
         >
           <div className="mb-3 flex justify-center">

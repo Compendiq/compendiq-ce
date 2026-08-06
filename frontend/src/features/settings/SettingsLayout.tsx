@@ -53,7 +53,12 @@ export function SettingsLayout() {
             run its rule edge to edge, so it adds the same amount back: 896 + 48
             = 944 at the same `px-6`, which puts both content edges on the same
             x. Measured, not eyeballed. */}
-        <div className="mx-auto max-w-[928px] px-4 py-2 sm:max-w-[944px] sm:px-6">
+        {/* Same 48px line as the settings sidebar's nav row beside it, and as
+            the article route's three rules — `calc(3rem-1px)` because the
+            hairline is on the sticky parent rather than on this row, so the
+            subtraction is what keeps the two rules meeting at the same y
+            instead of the title strip finishing 3px high. */}
+        <div className="mx-auto flex min-h-[calc(3rem-1px)] max-w-[928px] items-center px-4 py-2 sm:max-w-[944px] sm:px-6">
           <h1 className="text-lg font-semibold">Settings</h1>
         </div>
       </div>

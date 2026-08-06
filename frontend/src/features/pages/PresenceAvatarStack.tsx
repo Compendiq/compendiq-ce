@@ -45,7 +45,12 @@ export function PresenceAvatarStack({
     <div
       data-testid="presence-avatar-stack"
       className={cn(
-        'inline-flex items-center gap-1 rounded-full bg-card border border-white/10 px-2 py-1 shadow-sm',
+        // Flat: a token hairline, no shadow. `border-white/10` was a hardcoded
+        // white that Paper renders as white-on-white — the pill lost its edge
+        // entirely in the light theme. `py-0.5` with a 24px avatar keeps the
+        // whole pill at 30px so the article context strip stays on the 48px
+        // line it shares with the sidebar and the inspector.
+        'inline-flex items-center gap-1 rounded-full border border-border bg-card px-2 py-0.5',
         className,
       )}
     >
@@ -60,8 +65,11 @@ export function PresenceAvatarStack({
             data-user-id={viewer.userId}
             data-is-editing={viewer.isEditing ? 'true' : 'false'}
             className={cn(
-              'relative flex h-7 w-7 items-center justify-center rounded-full border-2 border-card text-[11px] font-semibold text-foreground',
-              'bg-gradient-to-br from-primary/30 to-primary/10',
+              'relative flex h-6 w-6 items-center justify-center rounded-full border-2 border-card text-[11px] font-semibold text-foreground',
+              // Flat tint, not a gradient — surfaces in this system are plain
+              // values. The 2px ring stays `border-card`: it is the cut-out
+              // that separates overlapping avatars from the pill behind them.
+              'bg-primary/20',
               idx > 0 && '-ml-2',
             )}
             style={{ zIndex: visible.length - idx }}

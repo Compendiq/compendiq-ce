@@ -783,7 +783,20 @@ export function PageViewPage() {
             it wedged a strip of read-only status between the save controls and
             the title you are typing into. The badges return on save. */}
         <div className={cn('sticky -top-5 z-20 -mx-4 -mt-5 border-b border-border bg-card sm:-mx-6', editing && 'hidden')}>
-        <div className="mx-auto flex max-w-[1248px] flex-wrap items-center justify-between gap-x-4 gap-y-1.5 px-9 py-2 sm:px-16">
+        {/* A fixed minimum rather than "whatever the content plus padding came
+            out to": this rule, the left sidebar's and the inspector's are one
+            line running across the app, so all three are pinned to the same
+            48px. `min-h` not `h`, because this row wraps at narrow widths (the
+            badge cluster and the action cluster each take a line) and a fixed
+            height would clip the second one.
+
+            The `-1px` is not a fudge. The sidebar and inspector rows put their
+            `border-b` on the same element as their `h-12`, so under border-box
+            the hairline is *inside* the 48. Here the border is on the sticky
+            parent and the height is on this inner row, so without subtracting
+            it the strip measures 49 and its rule sits one pixel below the other
+            two — which is exactly the seam this alignment exists to remove. */}
+        <div className="mx-auto flex min-h-[calc(3rem-1px)] max-w-[1248px] flex-wrap items-center justify-between gap-x-4 gap-y-1.5 px-9 py-2 sm:px-16">
           <span className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-muted-foreground/60">
             <FileText size={12} className="shrink-0" />
             {page.spaceKey !== '__local__' && <span className="truncate">{page.spaceKey}</span>}

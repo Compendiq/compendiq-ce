@@ -170,7 +170,13 @@ describe('ArticleRightPane', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
     expect(screen.getByTestId('article-right-pane')).toBeInTheDocument();
-    expect(screen.getByText('Page context')).toBeInTheDocument();
+    // The "Page context" label and the page title under it are gone: the view
+    // switcher is the header row now. Both were redundant — the article's own
+    // H1 sits a few pixels to the left and never scrolls out from under the
+    // context strip. What the header must still carry is the tablist and the
+    // collapse control, which is what this asserts instead.
+    expect(screen.getByRole('tablist', { name: 'Page context views' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Collapse page sidebar')).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Details' })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByText('AI Assistant')).toBeInTheDocument();
     expect(screen.getByText('Pin')).toBeInTheDocument();

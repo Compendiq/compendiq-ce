@@ -561,8 +561,12 @@ export function SidebarTreeView({
         isResizing && 'select-none',
       )}
     >
-      {/* Global destinations remain visually separate from workspace content. */}
-      <div className="panel-toolbar flex shrink-0 items-center gap-1 border-b px-2 py-2">
+      {/* Global destinations remain visually separate from workspace content.
+          `h-12` rather than `py-2`: this rule, the article context strip's and
+          the inspector's header rule are one line running across the app, so
+          all three are pinned to the same 48px border-box height instead of
+          each being however tall its own content plus padding came out. */}
+      <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 border-b px-2">
           <MainNavStripExpanded onNavigate={onNavigate} />
           <button
             onClick={toggleTreeSidebar}
