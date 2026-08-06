@@ -369,6 +369,14 @@ export async function adminRoutes(fastify: FastifyInstance) {
     const hasChunkChanges =
       body.embeddingChunkSize !== undefined || body.embeddingChunkOverlap !== undefined;
 
+    // Refused BEFORE anything is written (review r9): a chunk change dirties
+    // the whole corpus, which a shadow migration forbids — and throwing after
+    // the settings upsert would leave the new chunk size persisted with the
+    // corpus never re-chunked, i.e. a silently mixed index.
+    if (hasChunkChanges) {
+      await assertNoShadowMigration();
+    }
+
     // Validate chunk overlap does not exceed 25% of chunk size (only when chunk settings change)
     if (hasChunkChanges) {
       let effectiveChunkSize = body.embeddingChunkSize;
@@ -553,11 +561,6 @@ export async function adminRoutes(fastify: FastifyInstance) {
 
     // Only mark pages dirty for re-embedding when chunk settings changed — NOT for drawioEmbedUrl
     if (hasChunkChanges) {
-      // Re-chunking dirties the whole corpus, which the normal pipeline then
-      // re-embeds page by page — during a shadow migration's `swapped` phase
-      // that leaves every row without an `embedding_prev`, and a rollback
-      // deleting NULL-vector rows would empty the corpus (review r8).
-      await assertNoShadowMigration();
       await query('UPDATE pages SET embedding_dirty = TRUE');
       logger.info({ userId: request.userId, updates }, 'Admin chunk settings changed, all pages marked dirty');
     }
