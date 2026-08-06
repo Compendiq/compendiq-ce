@@ -203,6 +203,29 @@ describe('Telemetry', () => {
       }
     });
 
+    it('respects a signal-specific OTLP metrics endpoint instead of forcing the console reader (review r2)', async () => {
+      // OTEL_EXPORTER_OTLP_METRICS_ENDPOINT alone is a standard setup (metrics
+      // to a collector, traces elsewhere or nowhere). Forcing the console
+      // reader would silently discard the operator's named destination.
+      process.env.OTEL_ENABLED = 'true';
+      delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+      delete process.env.OTEL_METRICS_EXPORTER;
+      process.env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT = 'http://127.0.0.1:9/v1/metrics';
+      const cap = captureConsole();
+      try {
+        await initTelemetry();
+        recordHistogram('compendiq.retrieval.stage.duration', 5, { stage: 'total' }, { unit: 'ms' });
+        await shutdownTelemetry();
+        const hit = cap.calls.some((c) => c.includes('compendiq.retrieval.stage.duration'));
+        expect(hit).toBe(false);
+      } finally {
+        cap.restore();
+        delete process.env.OTEL_ENABLED;
+        delete process.env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT;
+        await shutdownTelemetry();
+      }
+    }, 20_000);
+
     it('respects OTEL_METRICS_EXPORTER=none instead of forcing the console reader', async () => {
       // Standard OTel env config must win: an operator disabling metrics gets
       // no console dumps, not our hardcoded reader.

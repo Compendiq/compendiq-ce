@@ -983,11 +983,12 @@ export function PagesPage() {
           <span>
             {/* floor, not round: 94.9% must not display as the 95% threshold
                 that would have made this healthy, and near-zero coverage says
-                "less than 1%" rather than the sibling banner's 0% state. */}
+                "less than 1%" rather than the sibling banner's 0% state. The
+                epsilon corrects binary floating point (0.29*100 = 28.999…). */}
             Semantic search is degraded — only{' '}
-            {Math.floor((searchResults.embeddingCoverage ?? 0) * 100) === 0
+            {Math.floor((searchResults.embeddingCoverage ?? 0) * 100 + 1e-9) === 0
               ? 'less than 1%'
-              : `${Math.floor((searchResults.embeddingCoverage ?? 0) * 100)}%`}{' '}
+              : `${Math.floor((searchResults.embeddingCoverage ?? 0) * 100 + 1e-9)}%`}{' '}
             of pages are embedded. Results may miss pages that are not embedded yet.
           </span>
         </div>

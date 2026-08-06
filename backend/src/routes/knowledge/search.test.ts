@@ -635,6 +635,23 @@ describe('Search Routes', () => {
       expect(body.degradedReason).toBeNull();
     });
 
+    it('the degraded warning never claims 0% and floors true percentages (review r2)', async () => {
+      // Near-zero coverage must read "less than 1%" (0% is the sibling
+      // no-embeddings state), and 29/100 embedded must say 29%, not 28 —
+      // Math.floor(0.29 * 100) is 28 in binary floating point.
+      mockGetEmbeddingCoverage.mockResolvedValue({ embeddedPages: 1, totalPages: 300, coverage: 1 / 300 });
+      mockQueryFn.mockResolvedValue({ rows: [] });
+      mockHybridSearch.mockResolvedValue([makeSearchResult(1, 'Hit')]);
+
+      let response = await app.inject({ method: 'GET', url: '/api/search?q=test&mode=hybrid' });
+      expect(response.json().warning).toContain('less than 1%');
+      expect(response.json().warning).not.toContain(' 0%');
+
+      mockGetEmbeddingCoverage.mockResolvedValue({ embeddedPages: 29, totalPages: 100, coverage: 0.29 });
+      response = await app.inject({ method: 'GET', url: '/api/search?q=test&mode=hybrid' });
+      expect(response.json().warning).toContain('29%');
+    });
+
     it('a probe failure degrades the signal to null, never the search (review r1)', async () => {
       // The design contract in 09-flow-rag-chat.md — hybridSearchInner already
       // honors it; the route must too, not answer a 500 for the whole search.

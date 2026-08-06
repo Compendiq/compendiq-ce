@@ -838,6 +838,15 @@ describe('PagesPage', () => {
       const banner2 = await screen.findByTestId('degraded-embeddings-warning', undefined, { timeout: 2000 });
       expect(banner2).toHaveTextContent('94%');
       expect(banner2).not.toHaveTextContent('95%');
+      cleanup();
+
+      // 29/100 embedded must say 29%, not 28 — Math.floor(0.29 * 100) is 28
+      // in binary floating point (review r2).
+      vi.restoreAllMocks();
+      mockFetchWithCoverage({ hasEmbeddings: true, embeddingCoverage: 0.29, degradedReason: 'partial_embeddings' });
+      renderSemanticSearch();
+      const banner3 = await screen.findByTestId('degraded-embeddings-warning', undefined, { timeout: 2000 });
+      expect(banner3).toHaveTextContent('29%');
     });
 
     it('full coverage: no degraded banner, no zero-embeddings banner (#1117)', async () => {

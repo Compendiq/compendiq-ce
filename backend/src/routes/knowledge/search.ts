@@ -174,7 +174,11 @@ export async function searchRoutes(fastify: FastifyInstance) {
         } else if (degradedReason === 'partial_embeddings') {
           // Keep the mode running — half a vector index still beats none — but
           // say so. The frontend banner keys on `degradedReason`, not this text.
-          warning = `Semantic search is degraded — ${Math.floor(cov.coverage * 100)}% of pages are embedded. Results may be incomplete until embedding completes.`;
+          // Floor with an epsilon (0.29*100 is 28.999… in binary floating
+          // point) and never claim 0% — that is the sibling no-embeddings
+          // state's copy. Mirrors the PagesPage banner exactly.
+          const pct = Math.floor(cov.coverage * 100 + 1e-9);
+          warning = `Semantic search is degraded — ${pct === 0 ? 'less than 1%' : `${pct}%`} of pages are embedded. Results may be incomplete until embedding completes.`;
         }
       }
     }

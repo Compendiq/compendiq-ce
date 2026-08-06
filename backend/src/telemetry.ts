@@ -82,17 +82,24 @@ export async function startTelemetry(): Promise<void> {
     // and every histogram records into the void. When no explicit reader is
     // passed, sdk-node already builds an env-driven one (OTEL_METRICS_EXPORTER
     // et al., defaulting to OTLP at the configured endpoint) — respect that
-    // config wherever the operator expressed it, including 'none'. The one
-    // gap is the dev default: enabled, no OTLP endpoint, nothing configured —
-    // there the env default would export OTLP into nowhere, so mirror the
-    // trace fallback above and print to console instead.
-    if (!process.env.OTEL_EXPORTER_OTLP_ENDPOINT && !process.env.OTEL_METRICS_EXPORTER) {
+    // config wherever the operator expressed it: the general endpoint, the
+    // signal-specific metrics endpoint, or an explicit exporter choice
+    // (including 'none'). The one remaining gap is the dev default — enabled,
+    // nothing configured — where the env default would export OTLP into
+    // nowhere, so mirror the trace fallback above and print to console.
+    if (
+      !process.env.OTEL_EXPORTER_OTLP_ENDPOINT
+      && !process.env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT
+      && !process.env.OTEL_METRICS_EXPORTER
+    ) {
       const { PeriodicExportingMetricReader, ConsoleMetricExporter } = await import(
         '@opentelemetry/sdk-metrics'
       );
-      sdkConfig.metricReader = new PeriodicExportingMetricReader({
-        exporter: new ConsoleMetricExporter(),
-      });
+      sdkConfig.metricReaders = [
+        new PeriodicExportingMetricReader({
+          exporter: new ConsoleMetricExporter(),
+        }),
+      ];
     }
 
     const sdk = new NodeSDK(sdkConfig);
@@ -117,7 +124,12 @@ export async function startTelemetry(): Promise<void> {
       'OpenTelemetry initialized',
     );
   } catch (err) {
-    logger.warn({ err }, 'Failed to initialize OpenTelemetry - continuing without tracing');
+    // error, not warn: the operator explicitly asked for telemetry
+    // (OTEL_ENABLED=true), and the historical failure mode here is the OTel
+    // packages missing from the runtime image (hoisting regression — see the
+    // root package.json deps-note), which otherwise leaves a deployment
+    // silently blind while looking configured.
+    logger.error({ err }, 'Failed to initialize OpenTelemetry - continuing without tracing/metrics');
   }
 }
 
