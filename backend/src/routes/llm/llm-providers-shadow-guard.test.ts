@@ -114,6 +114,44 @@ describe('provider default repoint guard during shadow migration (#1116 r2)', ()
     expect(svc.update).not.toHaveBeenCalled();
   });
 
+  it('refuses a defaultModel patch when embedding is {provider: this, model: NULL} (review r3)', async () => {
+    shadowStateMock.mockResolvedValue({ status: 'active' });
+    dbQuery.mockResolvedValue({ rows: [{ provider_id: PROVIDER_ID, model: null }] });
+
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/api/admin/llm-providers/${PROVIDER_ID}`,
+      payload: { defaultModel: 'other-embedder' },
+    });
+
+    expect(res.statusCode).toBe(409);
+  });
+
+  it('allows a defaultModel patch on an UNRELATED provider when embedding pins another explicitly', async () => {
+    shadowStateMock.mockResolvedValue({ status: 'active' });
+    dbQuery.mockResolvedValue({ rows: [{ provider_id: 'ffffffff-0000-4000-8000-000000000009', model: null }] });
+
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/api/admin/llm-providers/${PROVIDER_ID}`,
+      payload: { defaultModel: 'chat-model' },
+    });
+
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('refuses deleting the migration target or rollback provider (review r3)', async () => {
+    shadowStateMock.mockResolvedValue({ status: 'swapped', providerId: PROVIDER_ID, prev: { providerId: 'ffffffff-0000-4000-8000-000000000009' } });
+
+    let res = await app.inject({ method: 'DELETE', url: `/api/admin/llm-providers/${PROVIDER_ID}` });
+    expect(res.statusCode).toBe(409);
+    res = await app.inject({ method: 'DELETE', url: '/api/admin/llm-providers/ffffffff-0000-4000-8000-000000000009' });
+    expect(res.statusCode).toBe(409);
+    // An uninvolved provider stays deletable.
+    res = await app.inject({ method: 'DELETE', url: '/api/admin/llm-providers/eeeeeeee-0000-4000-8000-000000000001' });
+    expect(res.statusCode).toBe(200);
+  });
+
   it('allows unrelated provider patches during a migration', async () => {
     shadowStateMock.mockResolvedValue({ status: 'active' });
 

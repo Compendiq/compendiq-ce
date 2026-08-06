@@ -732,6 +732,45 @@ describe.skipIf(!dbAvailable)('#1116 shadow migration service', () => {
       expect(await getShadowMigrationState()).toBeNull();
     });
 
+    it("a rollback landing during cleanup's lock wait is caught by cleanup's in-lock recheck (review r3)", async () => {
+      // cleanup-vs-rollback: if the rollback wins the lock and reverts the
+      // schema to 'active', cleanup's IF EXISTS drops would silently no-op
+      // and its DELETE would erase the ACTIVE migration's state row —
+      // stranding the _next columns and wedging every future start.
+      await seedEmbeddedPage('Doc A');
+      await startShadowMigration({ providerId: shadowProviderId, model: SHADOW_MODEL });
+      await runShadowBackfillJob();
+      await performShadowSwap();
+
+      const blocker = await getPool().connect();
+      try {
+        await blocker.query('BEGIN');
+        await blocker.query('SELECT 1 FROM page_embeddings LIMIT 1');
+
+        const cleanupPromise = cleanupShadowMigration({ lockTimeoutMs: 3000, maxAttempts: 2 }).then(
+          () => 'cleaned' as const,
+          (e: unknown) => e as Error,
+        );
+        await new Promise((r) => setTimeout(r, 300)); // cleanup queued on the lock
+        // The rollback wins conceptually: simulate its committed end-state.
+        const state = await getShadowMigrationState();
+        await query(
+          `UPDATE admin_settings SET setting_value = $1 WHERE setting_key = 'embedding_shadow_migration'`,
+          [JSON.stringify({ ...state, status: 'active' })],
+        );
+        await blocker.query('ROLLBACK');
+
+        const result = await cleanupPromise;
+        expect(result).toBeInstanceOf(Error);
+        expect((result as Error).message).toMatch(/changed mid-cleanup/i);
+        // The state row survived:
+        expect(await getShadowMigrationState()).not.toBeNull();
+      } finally {
+        await blocker.query('ROLLBACK').catch(() => {});
+        blocker.release();
+      }
+    }, 20_000);
+
     it('cleanup drops the prev columns, restores NOT NULL, clears state', async () => {
       await seedEmbeddedPage('Doc A');
       await startShadowMigration({ providerId: shadowProviderId, model: SHADOW_MODEL });

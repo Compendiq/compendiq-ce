@@ -18,9 +18,12 @@ vectors throughout; the old model stays recoverable until the final cleanup.
 
 ## Go / no-go
 
-- **Go** when: the probe measures the expected dimension (start refuses
-  otherwise — the server probes, nothing client-supplied is trusted); straggler
-  count is 0 (`GET …/shadow-migration` → `stragglerPages`); disk headroom ≥
+- **Go** when: the dimension the server MEASURED (start's response and the
+  status card show it — the server probes; nothing client-supplied is trusted,
+  and only unusable values ≤0/>16000 are refused, not unexpected ones, so
+  **verify the reported dimension matches your expectation before letting the
+  backfill spend provider budget**); straggler count is 0
+  (`GET …/shadow-migration` → `stragglerPages`); disk headroom ≥
   2× current `page_embeddings` size plus the second HNSW index.
 - **No-go / wait** when: a destructive re-embed job is queued (start refuses);
   a previous shadow backfill job is still queued (start refuses — BullMQ's

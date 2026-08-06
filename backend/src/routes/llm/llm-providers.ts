@@ -80,12 +80,32 @@ const IdParamsSchema = z.object({ id: z.string().uuid() });
  * set-default or a defaultModel patch changes the live model just the same.
  * True exactly when a migration exists AND embedding resolves via default.
  */
+async function embeddingAssignmentRow(): Promise<{ provider_id: string | null; model: string | null } | null> {
+  const r = await query<{ provider_id: string | null; model: string | null }>(
+    `SELECT provider_id, model FROM llm_usecase_assignments WHERE usecase = 'embedding'`,
+  );
+  return r.rows[0] ?? null;
+}
+
 async function embeddingInheritsDefaultDuringMigration(): Promise<boolean> {
   if ((await getShadowMigrationState()) === null) return false;
-  const r = await query<{ provider_id: string | null }>(
-    `SELECT provider_id FROM llm_usecase_assignments WHERE usecase = 'embedding'`,
-  );
-  return !r.rows[0] || r.rows[0].provider_id === null;
+  const row = await embeddingAssignmentRow();
+  return !row || row.provider_id === null;
+}
+
+/**
+ * Review r3: an assignment of {provider: P, model: NULL} resolves its live
+ * model from P.default_model — so patching P's defaultModel mid-migration
+ * repoints the live embedding model exactly like the inherit case. True when
+ * a migration runs AND this provider's default_model is what embedding
+ * resolves through (either full inherit, or explicit-provider-with-NULL-model
+ * pointing at this id).
+ */
+async function embeddingResolvesThroughProviderDefault(providerId: string): Promise<boolean> {
+  if ((await getShadowMigrationState()) === null) return false;
+  const row = await embeddingAssignmentRow();
+  if (!row || row.provider_id === null) return true; // full inherit — any default change can matter
+  return row.model === null && row.provider_id === providerId;
 }
 
 const EMBEDDING_PINNED_MSG =
@@ -174,9 +194,9 @@ export async function llmProviderRoutes(fastify: FastifyInstance) {
       const patch = LlmProviderUpdateSchema.parse(request.body);
       if (
         Object.prototype.hasOwnProperty.call(patch, 'defaultModel')
-        && (await embeddingInheritsDefaultDuringMigration())
+        && (await embeddingResolvesThroughProviderDefault(id))
       ) {
-        return reply.code(409).send({ error: EMBEDDING_PINNED_MSG, statusCode: 409 });
+        return reply.code(409).send({ error: EMBEDDING_PINNED_MSG, message: EMBEDDING_PINNED_MSG, statusCode: 409 });
       }
       // Capture the previous baseUrl BEFORE we mutate state so a baseUrl
       // change can revoke the OLD origin's allowlist entry once it's no
@@ -232,6 +252,18 @@ export async function llmProviderRoutes(fastify: FastifyInstance) {
     { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT },
     async (request, reply) => {
       const { id } = IdParamsSchema.parse(request.params);
+      // Review r3: the shadow target (pre-swap) and the previous provider
+      // (post-swap, the rollback target) live only in the migration-state
+      // JSON — no FK protects them. Deleting the former 500s every swap
+      // attempt; deleting the latter silently and permanently kills the
+      // advertised rollback window (provider ids are generated UUIDs, so no
+      // recreated provider can ever satisfy the stored id).
+      const migration = await getShadowMigrationState();
+      if (migration && (migration.providerId === id || migration.prev?.providerId === id)) {
+        const msg =
+          'This provider is part of the in-flight shadow embedding migration (target or rollback provider) — finish, roll back or clean up the migration first (#1116).';
+        return reply.code(409).send({ error: msg, message: msg, statusCode: 409 });
+      }
       try {
         await deleteProvider(id);
       } catch (err) {
@@ -262,7 +294,7 @@ export async function llmProviderRoutes(fastify: FastifyInstance) {
     async (request, reply) => {
       const { id } = IdParamsSchema.parse(request.params);
       if (await embeddingInheritsDefaultDuringMigration()) {
-        return reply.code(409).send({ error: EMBEDDING_PINNED_MSG, statusCode: 409 });
+        return reply.code(409).send({ error: EMBEDDING_PINNED_MSG, message: EMBEDDING_PINNED_MSG, statusCode: 409 });
       }
       try {
         await setDefaultProvider(id);

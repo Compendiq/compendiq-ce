@@ -609,9 +609,12 @@ export async function rollbackShadowMigration(opts?: {
     await withLockRetry(
       { lockTimeoutMs: opts?.lockTimeoutMs ?? 5000, maxAttempts: opts?.maxAttempts ?? 5 },
       async (client) => {
-        // Re-verify through THIS transaction (review r2): the drops are
-        // IF EXISTS and would silently no-op against a post-swap schema,
-        // after which the DELETE below would erase the swap's state row.
+        // Lock FIRST, then re-verify (review r2+r3): the drops are IF EXISTS
+        // and would silently no-op against a post-swap schema, after which
+        // the DELETE below would erase the swap's state row — and a
+        // pre-lock state read cannot see a DDL transaction that currently
+        // holds the table lock.
+        await client.query(`LOCK TABLE page_embeddings, pages IN ACCESS EXCLUSIVE MODE`);
         const rows = await client.query(
           `SELECT setting_value FROM admin_settings WHERE setting_key = '${SHADOW_MIGRATION_STATE_KEY}'`,
         );
@@ -707,6 +710,21 @@ export async function cleanupShadowMigration(opts?: {
   await withLockRetry(
     { lockTimeoutMs: opts?.lockTimeoutMs ?? 5000, maxAttempts: opts?.maxAttempts ?? 5 },
     async (client) => {
+      // Lock FIRST, re-verify second (review r3, same discipline as the
+      // swap): a state SELECT holds no conflicting lock, so it would read
+      // before this transaction queues behind a concurrent rollback — and a
+      // rollback that wins reverses the renames and sets the state back to
+      // 'active', after which these IF EXISTS drops silently no-op and the
+      // DELETE below would erase the ACTIVE migration's state row.
+      await client.query(`LOCK TABLE page_embeddings, pages IN ACCESS EXCLUSIVE MODE`);
+      const rows = await client.query(
+        `SELECT setting_value FROM admin_settings WHERE setting_key = '${SHADOW_MIGRATION_STATE_KEY}'`,
+      );
+      const raw = (rows.rows[0] as { setting_value?: string } | undefined)?.setting_value;
+      const current = raw ? (JSON.parse(raw) as ShadowMigrationState) : null;
+      if (!current || current.status !== 'swapped') {
+        throw new Error(`Migration state changed mid-cleanup (now ${current?.status ?? 'absent'}) — cleanup refused`);
+      }
       await client.query(`DROP INDEX IF EXISTS idx_page_embeddings_hnsw_prev`);
       await client.query(`DROP INDEX IF EXISTS idx_pages_page_avg_embedding_hnsw_prev`);
       await client.query(`ALTER TABLE page_embeddings DROP COLUMN IF EXISTS embedding_prev`);

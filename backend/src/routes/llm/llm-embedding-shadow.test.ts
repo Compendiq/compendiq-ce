@@ -184,6 +184,24 @@ describe('#1116 shadow-migration routes', () => {
     expect(res.statusCode).toBe(409);
   });
 
+  it('the race refusals arrive as 409s carrying their guidance, not masked 500s (review r3)', async () => {
+    for (const [target, msg] of [
+      [svc.swap, 'Migration state changed mid-swap (now aborting) — swap refused'],
+      [svc.rollback, 'The swap completed while the abort was queued — use rollback to revert it, or cleanup to keep it'],
+      [svc.cleanup, 'Migration state changed mid-cleanup (now active) — cleanup refused'],
+    ] as const) {
+      target.mockRejectedValue(new Error(msg));
+      const url = target === svc.swap
+        ? '/api/admin/embedding/shadow-migration/swap'
+        : target === svc.rollback
+          ? '/api/admin/embedding/shadow-migration/rollback'
+          : '/api/admin/embedding/shadow-migration/cleanup';
+      const res = await app.inject({ method: 'POST', url });
+      expect(res.statusCode).toBe(409);
+      expect(res.json().error).toBe(msg);
+    }
+  });
+
   it('backfill re-run: 200 when active, 409 when nothing to backfill (review r1)', async () => {
     svc.rerun.mockResolvedValue({ jobId: 'shadow-reembed' });
     let res = await app.inject({ method: 'POST', url: '/api/admin/embedding/shadow-migration/backfill' });

@@ -40,6 +40,11 @@ export async function llmEmbeddingShadowRoutes(fastify: FastifyInstance) {
     if (/not ready to swap|No active shadow migration|No shadow migration|nothing to clean up|nothing to backfill|still (running|queued)/i.test(message)) {
       return { statusCode: 409, message };
     }
+    // The r2/r3 race refusals: safe, deliberate, and carrying the admin's
+    // next step — they must arrive as 409s, not masked 500s (review r3).
+    if (/changed mid-(swap|abort|cleanup)|swap completed while the abort/i.test(message)) {
+      return { statusCode: 409, message };
+    }
     if (/Provider not found/i.test(message)) return { statusCode: 404, message };
     if (/unusable dimension/i.test(message)) return { statusCode: 422, message };
     if (/Could not acquire the table lock/i.test(message)) return { statusCode: 503, message };
