@@ -191,14 +191,29 @@ backfilled (on pre-088 rows NULL means "not recorded", not "healthy"):
 
 **The coverage probe** (`getEmbeddingCoverage`) counts ground truth from
 `page_embeddings` — deliberately not `pages.embedding_status`, which a failed
-run can leave stale — over the caller-visible embeddable universe (non-deleted,
-non-folder, `body_html` present). It replaced a boolean EXISTS probe that
-flipped healthy the moment ONE visible page had an embedding row, so 1%
-coverage rendered identically to 100%. `/api/search` runs it for
-semantic/hybrid modes and exposes `embeddingCoverage` + `degradedReason` on
-the response (`null` in keyword mode: unmeasured, not healthy); `hybridSearch`
-runs it in parallel with the retrieval legs for the analytics row. A probe
-failure degrades the *signal* to null, never the search.
+run can leave stale — over what `embedPage` will actually embed: non-deleted,
+non-folder, `body_html` present, and at least `MIN_EMBEDDABLE_TEXT_CHARS` (20)
+of extracted text. That last filter matters: `embedPage` permanently settles
+shorter pages with zero embedding rows, so counting them would leave a corpus
+with a few structural stub pages "degraded" forever. It replaced a boolean
+EXISTS probe that flipped healthy the moment ONE visible page had an embedding
+row, so 1% coverage rendered identically to 100%. `/api/search` runs it once
+for semantic/hybrid modes, exposes `embeddingCoverage` + `degradedReason` on
+the response (`null` in keyword mode: unmeasured, not healthy), and **hands
+its reading to `hybridSearch`** so a hybrid request never counts twice;
+`hybridSearch` self-probes (in parallel with the legs) only when nothing was
+handed over — the chat path. A probe failure degrades the *signal* to null,
+never the search, on both paths: the route catches and proceeds in the
+requested mode, `hybridSearch` catches inside its coverage promise.
+
+Two deliberate asymmetries. A semantic/hybrid request downgraded to keyword
+for zero coverage still carries the measured `degradedReason`/coverage onto
+its (`search_type = 'keyword'`) analytics row — during a re-embed window every
+search lands there, and dropping the extras would record the outage as healthy
+keyword traffic. And the **wire** fields describe corpus state measured before
+retrieval ran: an embedding provider failing mid-request degrades that request
+only, which the analytics row (`embedding_failed`) and the span record — the
+response's `degradedReason` deliberately does not flip for it.
 
 The frontend derives the signal from the **enhanced** (probed) response —
 `use-search.ts` deriving `hasEmbeddings` from the immediate keyword response,
@@ -216,8 +231,13 @@ via the same `withSpan` seam as the `llm.*` spans. `withSpan` now passes the
 live span into its callback so results-derived attributes can be set.
 
 **Metrics.** `telemetry.ts` gained the metrics half (`getMeter` /
-`recordHistogram`, wired through a `PeriodicExportingMetricReader` — OTLP when
-`OTEL_EXPORTER_OTLP_ENDPOINT` is set, console otherwise). One instrument:
+`recordHistogram`). Export follows the standard OTel env config
+(`OTEL_METRICS_EXPORTER` et al. — sdk-node builds the reader, defaulting to
+OTLP at the configured endpoint, and `none` is honored); only the unconfigured
+dev default (enabled, no endpoint, no exporter set) is overridden to a console
+reader, mirroring the trace fallback. `shutdownTelemetry` also disables the
+write-once api globals so a start→shutdown→start cycle hands out live
+instruments, not meters bound to a dead provider. One instrument:
 `compendiq.retrieval.stage.duration` (ms), attribute `stage` ∈
 `vector_search` | `keyword_search` | `total` — `rerank` joins when #1104
 lands, which is what makes rerank latency measurable before that stage ships.

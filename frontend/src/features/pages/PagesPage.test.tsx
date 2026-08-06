@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act, cleanup } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, RouterProvider, createMemoryRouter, useLocation } from 'react-router-dom';
 import { PagesPage } from './PagesPage';
@@ -818,6 +818,26 @@ describe('PagesPage', () => {
       expect(banner).toHaveTextContent('42%');
       // The zero-embeddings banner is a different state and must not stack.
       expect(screen.queryByTestId('no-embeddings-warning')).not.toBeInTheDocument();
+    });
+
+    it('degraded banner never claims 0% or the threshold value at the edges (review r1)', async () => {
+      // 0.0033 coverage must not render "only 0%" (that state is the sibling
+      // zero-embeddings banner's), and 0.949 must not render "95%" — the copy
+      // would contradict the <95% threshold that made it degraded.
+      vi.restoreAllMocks();
+      mockFetchWithCoverage({ hasEmbeddings: true, embeddingCoverage: 0.0033, degradedReason: 'partial_embeddings' });
+      renderSemanticSearch();
+      const banner = await screen.findByTestId('degraded-embeddings-warning', undefined, { timeout: 2000 });
+      expect(banner).toHaveTextContent('less than 1%');
+      expect(banner).not.toHaveTextContent('only 0%');
+      cleanup();
+
+      vi.restoreAllMocks();
+      mockFetchWithCoverage({ hasEmbeddings: true, embeddingCoverage: 0.949, degradedReason: 'partial_embeddings' });
+      renderSemanticSearch();
+      const banner2 = await screen.findByTestId('degraded-embeddings-warning', undefined, { timeout: 2000 });
+      expect(banner2).toHaveTextContent('94%');
+      expect(banner2).not.toHaveTextContent('95%');
     });
 
     it('full coverage: no degraded banner, no zero-embeddings banner (#1117)', async () => {

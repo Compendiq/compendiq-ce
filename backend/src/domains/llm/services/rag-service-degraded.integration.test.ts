@@ -46,6 +46,20 @@ vi.mock('./llm-provider-resolver.js', () => ({
   })),
 }));
 
+// Mutable EE flag so the ACL post-filter branch's analytics write is covered
+// too — it duplicates the non-ACL branch deliberately and must not drift.
+let ragPermissionEnforcementEnabled = false;
+vi.mock('../../../core/enterprise/loader.js', async () => {
+  const actual = await vi.importActual<typeof import('../../../core/enterprise/loader.js')>(
+    '../../../core/enterprise/loader.js',
+  );
+  return {
+    ...actual,
+    isFeatureEnabled: (feature: string): boolean =>
+      feature === 'rag_permission_enforcement' ? ragPermissionEnforcementEnabled : false,
+  };
+});
+
 const {
   hybridSearch,
   getEmbeddingCoverage,
@@ -97,7 +111,9 @@ async function seedPage(opts: {
   const {
     spaceKey = SPACE,
     title,
-    bodyHtml = '<p>content</p>',
+    // Long enough that the page clears embedPage's 20-char minimum — the
+    // coverage denominator excludes pages below it (they can never embed).
+    bodyHtml = '<p>content long enough to clear the embeddable minimum</p>',
     pageType,
     embedded = false,
     vecSeed = 7,
@@ -113,7 +129,7 @@ async function seedPage(opts: {
       visibility !== undefined ? 'standalone' : 'confluence',
       visibility !== undefined ? null : spaceKey,
       title,
-      `${title} body text`,
+      `${title} body text with enough characters to embed`,
       bodyHtml,
       pageType ?? 'page',
       visibility ?? null,
@@ -174,6 +190,7 @@ describe.skipIf(!dbAvailable)('#1117 degraded-retrieval signal', () => {
     await seedSpaceForUser(USER, SPACE);
     generateEmbeddingMock.mockClear();
     generateEmbeddingMock.mockImplementation(async () => [fakeVec(7)]);
+    ragPermissionEnforcementEnabled = false;
   });
   afterEach(async () => {
     await flushSearchAnalytics();
@@ -221,6 +238,25 @@ describe.skipIf(!dbAvailable)('#1117 degraded-retrieval signal', () => {
       const cov = await getEmbeddingCoverage(USER);
       expect(cov.embeddedPages).toBe(0);
       expect(cov.totalPages).toBe(0);
+      expect(cov.coverage).toBe(1);
+    });
+
+    it('excludes pages the pipeline permanently refuses — under 20 chars of text (review r1)', async () => {
+      // embedPage skips any page whose plain text is under 20 characters and
+      // settles it with zero embedding rows. Counting such pages in the
+      // denominator would make a corpus with >5% structural stubs read
+      // "degraded" forever — a cry-wolf banner with no recovery action.
+      await seedPage({ title: 'Real page', embedded: true });
+      const stub = await query<{ id: number }>(
+        `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html, page_type)
+         VALUES (gen_random_uuid()::text, 'confluence', $1, 'Stub', 'short', '', '<p>short</p>', 'page')
+         RETURNING id`,
+        [SPACE],
+      );
+      expect(stub.rows[0]!.id).toBeGreaterThan(0);
+
+      const cov = await getEmbeddingCoverage(USER);
+      expect(cov.totalPages).toBe(1);
       expect(cov.coverage).toBe(1);
     });
   });
@@ -280,6 +316,37 @@ describe.skipIf(!dbAvailable)('#1117 degraded-retrieval signal', () => {
       expect(row.search_type).toBe('keyword_fallback');
       expect(row.degraded_reason).toBe('no_embeddings');
       expect(row.embedding_coverage).toBe(0);
+    });
+
+    it('uses an injected coverage reading instead of probing again (review r1)', async () => {
+      // /api/search hands its own probe result over so a hybrid request never
+      // counts twice. Prove the injected value wins: the DB is fully embedded,
+      // but the caller injects a partial reading and the row must carry it.
+      await seedPage({ title: 'Runbook', embedded: true });
+
+      await hybridSearch(USER, 'Runbook body', 5, {
+        embeddedPages: 1,
+        totalPages: 4,
+        coverage: 0.25,
+      });
+
+      const row = await lastAnalyticsRow();
+      expect(row.degraded_reason).toBe('partial_embeddings');
+      expect(row.embedding_coverage).toBeCloseTo(0.25, 5);
+    });
+
+    it('records the extras on the EE ACL branch too (review r1)', async () => {
+      ragPermissionEnforcementEnabled = true;
+      await seedPage({ title: 'Runbook', embedded: true });
+      await seedPage({ title: 'Second doc', embedded: false });
+      await seedPage({ title: 'Third doc', embedded: false });
+      await seedPage({ title: 'Fourth doc', embedded: false });
+
+      await hybridSearch(USER, 'Runbook body');
+
+      const row = await lastAnalyticsRow();
+      expect(row.degraded_reason).toBe('partial_embeddings');
+      expect(row.embedding_coverage).toBeCloseTo(0.25, 5);
     });
 
     it('records embedding_failed when the provider throws, alongside keyword_fallback', async () => {

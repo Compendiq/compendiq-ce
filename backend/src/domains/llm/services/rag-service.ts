@@ -15,6 +15,7 @@ import { ENTERPRISE_FEATURES } from '../../../core/enterprise/features.js';
 import pgvector from 'pgvector';
 import { logger } from '../../../core/utils/logger.js';
 import { withSpan, recordHistogram } from '../../../telemetry.js';
+import { MIN_EMBEDDABLE_TEXT_CHARS } from './embedding-service.js';
 
 /**
  * Latency histogram for retrieval pipeline stages (#1117). `stage` is the one
@@ -358,9 +359,12 @@ export interface SearchAnalyticsExtras {
  * Ground truth from `page_embeddings`, deliberately NOT `pages.embedding_status`
  * — a failed or interrupted run can leave the status column stale, and the
  * destructive re-embed window (TRUNCATE → gradual refill) is exactly when this
- * number must not lie. The denominator matches the re-embed's own universe
- * (processDirtyPages): non-deleted, non-folder pages with content, visible to
- * the caller.
+ * number must not lie. The denominator is what embedPage will actually embed:
+ * non-deleted, non-folder pages with content, visible to the caller, and at
+ * least MIN_EMBEDDABLE_TEXT_CHARS of extracted text — `body_text` is the
+ * stored htmlToText output, so `char_length(body_text)` tracks embedPage's
+ * own skip check. Without that last filter a corpus with a few structural
+ * stub pages would read "degraded" forever.
  */
 export interface EmbeddingCoverage {
   embeddedPages: number;
@@ -391,7 +395,8 @@ export async function getEmbeddingCoverage(userId: string): Promise<EmbeddingCov
      WHERE ${visiblePagesPredicate(1, 2)}
        AND cp.deleted_at IS NULL
        AND COALESCE(cp.page_type, 'page') != 'folder'
-       AND cp.body_html IS NOT NULL`,
+       AND cp.body_html IS NOT NULL
+       AND char_length(cp.body_text) >= ${Number(MIN_EMBEDDABLE_TEXT_CHARS)}`,
     [covSpaces, userId],
   );
   const embedded = result.rows[0]?.embedded ?? 0;
@@ -497,13 +502,14 @@ export async function hybridSearch(
   userId: string,
   question: string,
   topK = 5,
+  precomputedCoverage?: EmbeddingCoverage | null,
 ): Promise<SearchResult[]> {
   return withSpan(
     'rag.hybrid_search',
     async (span) => {
       const started = performance.now();
       try {
-        return await hybridSearchInner(userId, question, topK, span);
+        return await hybridSearchInner(userId, question, topK, span, precomputedCoverage);
       } finally {
         // 'total' records failed retrievals too — an error's latency is still
         // latency the caller waited out. The per-leg stages record successful
@@ -525,6 +531,7 @@ async function hybridSearchInner(
   question: string,
   topK: number,
   span?: import('@opentelemetry/api').Span,
+  precomputedCoverage?: EmbeddingCoverage | null,
 ): Promise<SearchResult[]> {
   logger.info({ userId, question: question.slice(0, 100) }, 'Running hybrid RAG search');
 
@@ -558,13 +565,16 @@ async function hybridSearchInner(
 
   // Coverage probe for the degraded-retrieval signal (#1117), in parallel with
   // both legs. Best-effort: a probe failure degrades the *signal* to
-  // "unmeasured" (null), never the search itself.
-  const coveragePromise: Promise<EmbeddingCoverage | null> = getEmbeddingCoverage(userId).catch(
-    (err) => {
-      logger.warn({ err }, 'Embedding-coverage probe failed');
-      return null;
-    },
-  );
+  // "unmeasured" (null), never the search itself. `/api/search` hands its own
+  // reading over (`null` = its probe already failed — don't retry) so a hybrid
+  // request never counts twice; `undefined` (the chat path) means self-probe.
+  const coveragePromise: Promise<EmbeddingCoverage | null> =
+    precomputedCoverage !== undefined
+      ? Promise.resolve(precomputedCoverage)
+      : getEmbeddingCoverage(userId).catch((err) => {
+          logger.warn({ err }, 'Embedding-coverage probe failed');
+          return null;
+        });
 
   try {
     // Resolve the `embedding` use-case to the provider+model that generated

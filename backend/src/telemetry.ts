@@ -78,20 +78,18 @@ export async function startTelemetry(): Promise<void> {
       sdkConfig.traceExporter = new ConsoleSpanExporter();
     }
 
-    // Metrics (#1117): the NodeSDK only registers a global MeterProvider when
-    // given a metric reader — without this block getMeter() would hand out
-    // no-op meters and every histogram would silently record into the void.
-    // Mirrors the trace-exporter policy above: OTLP when the endpoint is set,
-    // console otherwise.
-    const { PeriodicExportingMetricReader, ConsoleMetricExporter } = await import(
-      '@opentelemetry/sdk-metrics'
-    );
-    if (process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
-      const { OTLPMetricExporter } = await import('@opentelemetry/exporter-metrics-otlp-http');
-      sdkConfig.metricReader = new PeriodicExportingMetricReader({
-        exporter: new OTLPMetricExporter(),
-      });
-    } else {
+    // Metrics (#1117): without a reader the SDK registers no MeterProvider
+    // and every histogram records into the void. When no explicit reader is
+    // passed, sdk-node already builds an env-driven one (OTEL_METRICS_EXPORTER
+    // et al., defaulting to OTLP at the configured endpoint) — respect that
+    // config wherever the operator expressed it, including 'none'. The one
+    // gap is the dev default: enabled, no OTLP endpoint, nothing configured —
+    // there the env default would export OTLP into nowhere, so mirror the
+    // trace fallback above and print to console instead.
+    if (!process.env.OTEL_EXPORTER_OTLP_ENDPOINT && !process.env.OTEL_METRICS_EXPORTER) {
+      const { PeriodicExportingMetricReader, ConsoleMetricExporter } = await import(
+        '@opentelemetry/sdk-metrics'
+      );
       sdkConfig.metricReader = new PeriodicExportingMetricReader({
         exporter: new ConsoleMetricExporter(),
       });
@@ -221,7 +219,7 @@ export async function withSpan<T>(
 }
 
 /**
- * Gracefully shut down the OTel SDK (flushes pending spans).
+ * Gracefully shut down the OTel SDK (flushes pending spans and metrics).
  */
 export async function shutdownTelemetry(): Promise<void> {
   const store = globalThis as Record<string, unknown>;
@@ -236,6 +234,19 @@ export async function shutdownTelemetry(): Promise<void> {
       delete store[SDK_KEY];
       delete store[TRACER_KEY];
       delete store[METER_KEY];
+      try {
+        // The api globals are write-once: NodeSDK.shutdown() stops the
+        // providers but leaves the DEAD ones registered, and a later
+        // startTelemetry cannot re-register over them — every tracer/meter
+        // handed out after a restart would silently point at a stopped
+        // provider. Disabling here is what makes start→shutdown→start cycles
+        // (tests, and any future hot-reconfigure) hand out live instruments.
+        const otelApi = await import('@opentelemetry/api');
+        otelApi.trace.disable();
+        otelApi.metrics.disable();
+      } catch {
+        // api not loadable here means it was never loaded — nothing to clear.
+      }
     }
   }
 }

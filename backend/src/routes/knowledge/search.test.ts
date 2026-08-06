@@ -553,7 +553,14 @@ describe('Search Routes', () => {
       });
 
       expect(response.statusCode).toBe(200);
-      expect(mockHybridSearch).toHaveBeenCalledWith('test-user-id', 'test', 10);
+      // 4th arg: the route's own coverage reading, handed over so hybridSearch
+      // does not probe a second time (review r1).
+      expect(mockHybridSearch).toHaveBeenCalledWith(
+        'test-user-id',
+        'test',
+        10,
+        { embeddedPages: 3, totalPages: 3, coverage: 1 },
+      );
       const body = response.json();
       expect(body.mode).toBe('hybrid');
       expect(body.hasEmbeddings).toBe(true);
@@ -626,6 +633,69 @@ describe('Search Routes', () => {
       const body = response.json();
       expect(body.embeddingCoverage).toBeNull();
       expect(body.degradedReason).toBeNull();
+    });
+
+    it('a probe failure degrades the signal to null, never the search (review r1)', async () => {
+      // The design contract in 09-flow-rag-chat.md — hybridSearchInner already
+      // honors it; the route must too, not answer a 500 for the whole search.
+      mockGetEmbeddingCoverage.mockRejectedValue(new Error('statement timeout'));
+      mockQueryFn.mockResolvedValue({ rows: [] });
+      mockHybridSearch.mockResolvedValue([makeSearchResult(1, 'Hit')]);
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/search?q=test&mode=hybrid',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      // Unmeasured, not healthy and not fatal: optimistic mode keeps running.
+      expect(body.mode).toBe('hybrid');
+      expect(body.hasEmbeddings).toBe(true);
+      expect(body.embeddingCoverage).toBeNull();
+      expect(body.degradedReason).toBeNull();
+      expect(mockHybridSearch).toHaveBeenCalled();
+    });
+
+    it('a downgraded-to-keyword search still records the measured signal (review r1)', async () => {
+      // The zero-coverage downgrade is the WORST degradation state — during a
+      // re-embed window every hybrid search lands here. Recording it as a
+      // plain healthy 'keyword' row would hide exactly what migration 088
+      // exists to make visible.
+      mockGetEmbeddingCoverage.mockResolvedValue({ embeddedPages: 0, totalPages: 4, coverage: 0 });
+      mockQueryFn.mockResolvedValue({ rows: [] });
+
+      await app.inject({
+        method: 'GET',
+        url: '/api/search?q=test&mode=hybrid',
+      });
+
+      expect(mockRecordAnalytics).toHaveBeenCalledWith(
+        'test-user-id',
+        'test',
+        expect.any(Number),
+        null,
+        'keyword',
+        { degradedReason: 'no_embeddings', embeddingCoverage: 0 },
+      );
+    });
+
+    it('hybrid mode probes coverage once and hands the reading to hybridSearch (review r1)', async () => {
+      mockQueryFn.mockResolvedValue({ rows: [] });
+      mockHybridSearch.mockResolvedValue([makeSearchResult(1, 'Hit')]);
+
+      await app.inject({
+        method: 'GET',
+        url: '/api/search?q=test&mode=hybrid',
+      });
+
+      expect(mockGetEmbeddingCoverage).toHaveBeenCalledTimes(1);
+      expect(mockHybridSearch).toHaveBeenCalledWith(
+        'test-user-id',
+        'test',
+        10,
+        { embeddedPages: 3, totalPages: 3, coverage: 1 },
+      );
     });
 
     it('semantic mode records coverage extras on the analytics row', async () => {

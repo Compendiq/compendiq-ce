@@ -981,7 +981,13 @@ export function PagesPage() {
         >
           <AlertTriangle size={16} className="mt-0.5 shrink-0" />
           <span>
-            Semantic search is degraded — only {Math.round((searchResults.embeddingCoverage ?? 0) * 100)}%
+            {/* floor, not round: 94.9% must not display as the 95% threshold
+                that would have made this healthy, and near-zero coverage says
+                "less than 1%" rather than the sibling banner's 0% state. */}
+            Semantic search is degraded — only{' '}
+            {Math.floor((searchResults.embeddingCoverage ?? 0) * 100) === 0
+              ? 'less than 1%'
+              : `${Math.floor((searchResults.embeddingCoverage ?? 0) * 100)}%`}{' '}
             of pages are embedded. Results may miss pages that are not embedded yet.
           </span>
         </div>

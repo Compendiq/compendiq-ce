@@ -164,6 +164,67 @@ describe('Telemetry', () => {
     });
   });
 
+  describe('metrics export wiring (review r1)', () => {
+    function captureConsole(): { calls: string[]; restore: () => void } {
+      const calls: string[] = [];
+      const dirSpy = vi.spyOn(console, 'dir').mockImplementation((...args: unknown[]) => {
+        calls.push(JSON.stringify(args));
+      });
+      const logSpy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+        calls.push(JSON.stringify(args));
+      });
+      return {
+        calls,
+        restore: () => {
+          dirSpy.mockRestore();
+          logSpy.mockRestore();
+        },
+      };
+    }
+
+    it('recorded histograms actually reach the console exporter in the dev default', async () => {
+      // The regression this pins: delete the metricReader wiring from
+      // startTelemetry and every suite stays green while histograms record
+      // into the void (the SDK registers no MeterProvider without a reader).
+      process.env.OTEL_ENABLED = 'true';
+      delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+      delete process.env.OTEL_METRICS_EXPORTER;
+      const cap = captureConsole();
+      try {
+        await initTelemetry();
+        recordHistogram('compendiq.retrieval.stage.duration', 5, { stage: 'total' }, { unit: 'ms' });
+        await shutdownTelemetry(); // flushes the periodic reader
+        const hit = cap.calls.some((c) => c.includes('compendiq.retrieval.stage.duration'));
+        expect(hit).toBe(true);
+      } finally {
+        cap.restore();
+        delete process.env.OTEL_ENABLED;
+        await shutdownTelemetry();
+      }
+    });
+
+    it('respects OTEL_METRICS_EXPORTER=none instead of forcing the console reader', async () => {
+      // Standard OTel env config must win: an operator disabling metrics gets
+      // no console dumps, not our hardcoded reader.
+      process.env.OTEL_ENABLED = 'true';
+      delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+      process.env.OTEL_METRICS_EXPORTER = 'none';
+      const cap = captureConsole();
+      try {
+        await initTelemetry();
+        recordHistogram('compendiq.retrieval.stage.duration', 5, { stage: 'total' }, { unit: 'ms' });
+        await shutdownTelemetry();
+        const hit = cap.calls.some((c) => c.includes('compendiq.retrieval.stage.duration'));
+        expect(hit).toBe(false);
+      } finally {
+        cap.restore();
+        delete process.env.OTEL_ENABLED;
+        delete process.env.OTEL_METRICS_EXPORTER;
+        await shutdownTelemetry();
+      }
+    });
+  });
+
   describe('recordHistogram', () => {
     interface FakeHistogram {
       record: ReturnType<typeof vi.fn>;

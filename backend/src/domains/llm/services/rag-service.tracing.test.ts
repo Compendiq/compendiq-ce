@@ -208,6 +208,25 @@ describe.skipIf(!dbAvailable)('#1117 retrieval spans + stage histogram', () => {
     }
   });
 
+  it("records the 'total' stage even when retrieval throws (review r1)", async () => {
+    // The documented invariant: per-leg stages record successes only, but
+    // 'total' records failures too — an error's latency is still latency the
+    // caller waited out. CircuitBreakerOpenError is the rethrow path.
+    const { CircuitBreakerOpenError } = await import('../../../core/services/circuit-breaker.js');
+    generateEmbeddingMock.mockImplementationOnce(async () => {
+      throw new CircuitBreakerOpenError('breaker open');
+    });
+
+    await expect(hybridSearch(USER, 'restart the queue')).rejects.toThrow('breaker open');
+
+    const stages = stagesRecorded();
+    expect(stages).toContain('total');
+    const hybrid = spanByName('rag.hybrid_search');
+    expect(hybrid).toBeDefined();
+    expect(hybrid!.ended).toBe(true);
+    expect(hybrid!.status?.code).toBe(2); // ERROR
+  });
+
   it('marks the hybrid span degraded and skips the vector stage when the provider fails', async () => {
     generateEmbeddingMock.mockImplementationOnce(async () => {
       throw new Error('provider exploded');
