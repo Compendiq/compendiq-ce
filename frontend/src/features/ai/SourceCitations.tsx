@@ -31,9 +31,11 @@ export interface Source {
   sectionTitle?: string;
   /**
    * Retrieval ORDERING value, in whichever unit produced it — an RRF fusion
-   * score for a hybrid answer (typically ~0.033, up to ~0.17 when one page fills
-   * the vector leg), or a flat `1` for web and external sources, which never
-   * went through retrieval. Kept because it orders the array.
+   * score for a hybrid answer (typically ~0.033, up to ~0.17 on this path when
+   * one page fills the vector leg), or a flat `1` for web and external sources,
+   * which never went through retrieval. Kept because it orders the array. The
+   * ~0.17 figure is the chat path's; see `SearchResult.score` in
+   * `rag-service.ts` for why it is not a global bound.
    *
    * @deprecated Never render or threshold this. Use {@link Source.similarity}.
    */

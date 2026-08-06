@@ -38,9 +38,19 @@ interface SearchResult {
    * The fusion value is ~0.016 for a single rank in one leg and ~0.033 for the
    * common two-leg case, but it is **not** bounded there: the vector leg is
    * per-CHUNK, so one page occupying several of the top slots has its
-   * contributions summed (that is why the best-chunk rule below exists). At the
-   * default per-stage limit of 10 the worst case is ~0.17. Still an order of
-   * magnitude below anything a similarity threshold expects — see `vectorScore`.
+   * contributions summed (that is why the best-chunk rule below exists). The
+   * worst case is therefore a function of the per-stage limit, and it is easy to
+   * underestimate — `rrfWorstCase` below computes it, and a test pins the two
+   * figures that matter rather than leaving them as prose:
+   *
+   * - chat path (`/llm/ask`, topK 5 → stage limit 10, or 8 under EE ACL):
+   *   at most ~0.17, comfortably under ConfidenceBadge's 0.4 threshold, which
+   *   is why reading this field as a cosine produced "Low confidence" every time.
+   * - `/api/search` under EE ACL with `limit=20` → stage limit 30: up to ~0.42,
+   *   which is **over** that threshold. Nothing thresholds it on that path, but
+   *   do not restate the chat-path bound as a global one.
+   *
+   * Either way it is not a similarity — see `vectorScore`.
    */
   score: number;
   /**
@@ -166,6 +176,21 @@ export async function keywordSearch(userId: string, questionText: string, limit 
     vectorScore: null,
     keywordRank: row.rank,
   }));
+}
+
+/**
+ * Largest RRF score a single page can reach when it occupies every one of
+ * `stageLimit` vector slots, optionally plus the top keyword slot.
+ *
+ * Exported for the test that pins `SearchResult.score`'s documented bounds. The
+ * prose version of this has been wrong twice, in both directions, because the
+ * per-CHUNK vector leg lets one page's contributions sum — so the numbers live
+ * here where they can be asserted instead of in a comment.
+ */
+function rrfWorstCase(stageLimit: number, withKeywordHit = false, k = 60): number {
+  let total = 0;
+  for (let rank = 0; rank < stageLimit; rank++) total += 1 / (k + rank + 1);
+  return withKeywordHit ? total + 1 / (k + 1) : total;
 }
 
 /**
@@ -423,5 +448,5 @@ export function buildRagContext(results: SearchResult[]): string {
     .join('\n\n---\n\n');
 }
 
-export { RAG_EF_SEARCH, reciprocalRankFusion };
+export { RAG_EF_SEARCH, reciprocalRankFusion, rrfWorstCase };
 export type { SearchResult };

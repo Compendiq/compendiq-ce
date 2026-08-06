@@ -115,14 +115,27 @@ to a user.
 
 RRF fusion previously *overwrote* `score` with the fusion value and discarded
 the cosine. That value is ~0.016 for a single rank in one leg and ~0.033 for the
-common two-leg case; it is **not** bounded there, because the vector leg is
-per-chunk and one page occupying several top slots has its contributions summed
-(worst case ~0.17 at the default per-stage limit of 10). Either way it sits an
-order of magnitude below what `ConfidenceBadge` thresholds it as — a cosine,
-`>= 0.7` high and `>= 0.4` medium — so every hybrid knowledge-base answer
-rendered "Low confidence", and web sources, handed a flat `score: 1`, were the
-only ones that could raise the average. Fusion now carries the per-leg values
-alongside the fused score instead of replacing them; ordering is unchanged.
+common two-leg case, and it is **not** bounded there: the vector leg is
+per-chunk, so one page occupying several top slots has its contributions summed.
+The worst case is a function of the per-stage limit, which differs by caller:
+
+| Path | topK | stage limit | worst-case fusion score |
+|---|---|---|---|
+| `/llm/ask` (chat) | 5 | 10 (CE) | ~0.169 |
+| `/llm/ask` under EE ACL | 5 | `ceil(5×1.5)` = 8 | ~0.141 |
+| `/api/search` under EE ACL | 20 | `ceil(20×1.5)` = 30 | ~0.419 |
+
+`ConfidenceBadge` sits on the chat path only and reads the value as a cosine
+(`>= 0.7` high, `>= 0.4` medium). The chat-path maximum of ~0.169 is well under
+that floor, which is why **every** hybrid knowledge-base answer rendered "Low
+confidence" — and web sources, handed a flat `score: 1`, were the only ones that
+could raise the average. Note the chat-path bound is *not* global: the
+`/api/search` figure clears 0.4, and nothing thresholds it there. `rrfWorstCase`
+in `rag-service.ts` computes these and a test pins them, because the prose
+version of this table has been wrong twice.
+
+Fusion now carries the per-leg values alongside the fused score instead of
+replacing them; ordering is unchanged.
 
 On the wire, `/llm/ask` sources and `/api/search` items expose the cosine as
 **`similarity`** (`null` when none was measured). `score` is retained because it

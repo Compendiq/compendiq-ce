@@ -79,7 +79,7 @@ vi.mock('../../../core/services/fts-language.js', () => ({
   getFtsLanguage: vi.fn().mockResolvedValue('simple'),
 }));
 
-import { buildRagContext, hybridSearch, RAG_EF_SEARCH, reciprocalRankFusion, vectorSearch, keywordSearch, recordSearchAnalytics } from './rag-service.js';
+import { buildRagContext, hybridSearch, RAG_EF_SEARCH, reciprocalRankFusion, rrfWorstCase, vectorSearch, keywordSearch, recordSearchAnalytics } from './rag-service.js';
 import type { SearchResult } from './rag-service.js';
 import { CircuitBreakerOpenError } from '../../../core/services/circuit-breaker.js';
 
@@ -607,6 +607,44 @@ describe('RAG Service', () => {
       const combined = reciprocalRankFusion([], [standalone1, standalone2]);
       // Both should survive because RRF key uses pageId, not confluenceId
       expect(combined).toHaveLength(2);
+    });
+
+    // ── #1117: the documented bounds on `score`, made executable ─────────────
+    //
+    // `SearchResult.score`'s JSDoc quotes worst-case fusion values, and the
+    // prose version has been wrong twice — once too low (it assumed one rank per
+    // leg, ignoring that the vector leg is per-CHUNK so one page's contributions
+    // sum) and once too narrow (it quoted the chat-path limit as if it were
+    // global). These pin the figures so the next edit has to agree with
+    // arithmetic rather than with a comment.
+    describe('documented fusion bounds', () => {
+      it('matches the closed form for a page occupying every vector slot', () => {
+        // Ten chunks of ONE page is what `rrfWorstCase(10)` describes; assert the
+        // helper against the function it documents rather than against itself.
+        const chunks = Array.from({ length: 10 }, (_, i) =>
+          makeResult('bound-page', `chunk ${i}`, { score: 0.5 - i * 0.01 }),
+        );
+        const combined = reciprocalRankFusion(chunks, []);
+        expect(combined).toHaveLength(1);
+        expect(combined[0].score).toBeCloseTo(rrfWorstCase(10), 12);
+      });
+
+      it('caps the chat path below the 0.4 confidence threshold', () => {
+        // /llm/ask uses topK=5, so the stage limit is the legs' default 10 (CE)
+        // or ceil(5*1.5)=8 under EE ACL. This is the bound that makes "reading
+        // the fusion score as a cosine always yields Low confidence" true.
+        expect(rrfWorstCase(10, true)).toBeLessThan(0.4);
+        expect(rrfWorstCase(8, true)).toBeLessThan(0.4);
+        expect(rrfWorstCase(10, true)).toBeCloseTo(0.1694, 3);
+      });
+
+      it('exceeds that threshold on /api/search under EE ACL at limit=20', () => {
+        // stageLimit = ceil(20*1.5) = 30. Nothing thresholds the fusion score on
+        // that path, but the chat-path bound must not be restated as a global
+        // one — this test is the reason that distinction stays in the JSDoc.
+        expect(rrfWorstCase(30, true)).toBeGreaterThan(0.4);
+        expect(rrfWorstCase(30, true)).toBeCloseTo(0.4191, 3);
+      });
     });
 
     // ── #1117 stage 1: raw per-leg scores survive fusion ─────────────────────
