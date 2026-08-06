@@ -616,7 +616,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 8 }}
             transition={{ duration: 0.15 }}
-            className="fixed bottom-4 right-4 z-50 flex items-center gap-1.5 rounded-lg bg-card border border-border px-3 py-1.5 shadow-lg"
+            className="fixed bottom-4 right-4 z-50 flex items-center gap-1.5 nm-card-elevated px-3 py-1.5"
             role="status"
             aria-live="polite"
           >

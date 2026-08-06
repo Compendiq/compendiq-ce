@@ -357,12 +357,13 @@ export function AiAssistantPage() {
               className={cn(
                 'flex h-7 shrink-0 snap-start items-center gap-1.5 rounded-md px-2.5 text-sm transition-colors',
                 mode === key
-                  // Inset steel-tinted surface (not filled) so the active tab
-                  // doesn't compete with the steel-filled primary CTA in the
-                  // mode's input bar. Steel rather than the AI violet on
-                  // purpose: a mode tab is something you operate, and under
-                  // ADR-010 v0.5 that is exactly what steel means.
-                  ? 'bg-card text-primary-ink shadow-sm ring-1 ring-primary/35 font-medium'
+                  // `panel-tab-active` is the one active-segment treatment in
+                  // the system, shared with the inspector's view switcher, the
+                  // main nav and Settings' sub-tabs. This was a second copy of
+                  // the retired v0.5 shape — a tinted pane carrying `shadow-sm`
+                  // and a primary ring — which is how the same control ended up
+                  // looking different on four routes.
+                  ? 'panel-tab-active font-medium'
                   : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
               )}
             >

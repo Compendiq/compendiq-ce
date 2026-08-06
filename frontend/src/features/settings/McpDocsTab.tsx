@@ -122,7 +122,7 @@ export function McpDocsTab() {
           aria-checked={form.enabled}
           data-testid="mcp-docs-toggle"
         >
-          <span className={`absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${form.enabled ? 'translate-x-5' : ''}`} />
+          <span className={`absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white transition-transform ${form.enabled ? 'translate-x-5' : ''}`} />
         </button>
       </div>
 

@@ -127,7 +127,7 @@ export function NotificationBell() {
         <Popover.Content
           align="end"
           sideOffset={8}
-          className="z-50 w-[360px] rounded-xl border border-border bg-card shadow-2xl"
+          className="z-50 w-[360px] nm-card-elevated"
         >
           {/* Title bar */}
           <div className="flex items-center justify-between border-b border-border px-3 py-2.5">

@@ -98,7 +98,7 @@ function ParentPagePicker({
       </button>
 
       {isOpen && (
-        <div className="absolute z-50 mt-1 w-full rounded-lg border border-border bg-card shadow-lg">
+        <div className="absolute z-50 mt-1 w-full nm-card-elevated">
           <div className="flex items-center gap-2 border-b border-border px-3 py-2">
             <Search size={14} className="text-muted-foreground" />
             <input

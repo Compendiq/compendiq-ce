@@ -116,7 +116,7 @@ export function SpaceHomePicker({
           align="end"
           sideOffset={6}
           onClick={(e) => e.stopPropagation()}
-          className="z-50 w-80 rounded-lg border border-border bg-card p-3 shadow-lg outline-none"
+          className="z-50 w-80 nm-card-elevated p-3 outline-none"
           data-testid={`space-home-picker-content-${spaceKey}`}
         >
           <div className="mb-2 flex items-start justify-between gap-2">

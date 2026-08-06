@@ -87,7 +87,7 @@ export function SpaceSettingsPage() {
         Back
       </button>
 
-      <div className="rounded-xl border border-border bg-card p-6 shadow-lg">
+      <div className="rounded-xl border border-border bg-card p-6">
         <div className="mb-6 flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-action/10">
             <Settings size={20} className="text-action" />

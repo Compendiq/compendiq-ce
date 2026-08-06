@@ -542,7 +542,7 @@ function RejectDialog({ reviewId, onClose, onDone }: RejectDialogProps) {
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
       data-testid="ai-review-detail-reject-dialog"
     >
-      <div className="w-full max-w-md rounded-xl border border-border bg-background p-5 shadow-2xl">
+      <div className="w-full max-w-md nm-card-elevated p-5">
         <h2 className="text-base font-semibold">Reject AI output</h2>
         <p className="mt-1 text-xs text-muted-foreground">
           Optional: leave a short note for the author so they can re-run
@@ -638,7 +638,7 @@ function EditAndApproveDialog({
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
       data-testid="ai-review-detail-edit-dialog"
     >
-      <div className="grid h-[90vh] w-full max-w-4xl grid-rows-[auto_1fr_auto] gap-3 rounded-xl border border-border bg-background p-5 shadow-2xl">
+      <div className="grid h-[90vh] w-full max-w-4xl grid-rows-[auto_1fr_auto] gap-3 nm-card-elevated p-5">
         <div>
           <h2 className="text-base font-semibold">Edit & approve</h2>
           <p className="mt-1 text-xs text-muted-foreground">

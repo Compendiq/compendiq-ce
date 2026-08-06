@@ -2734,68 +2734,12 @@ pre:focus-within .code-copy-btn,
   animation: ripple-expand 0.6s ease-out forwards;
 }
 
-/* ===========================
-   DIRECTION-AWARE HOVER
-   =========================== */
-
-.direction-aware-hover {
-  position: relative;
-  overflow: hidden;
-}
-
-.direction-aware-hover .hover-bloom {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 0.3s ease;
-  z-index: 0;
-}
-
-.direction-aware-hover:hover .hover-bloom {
-  opacity: 1;
-}
-
-/* ===========================
-   CARD STACK EFFECT
-   =========================== */
-
-.card-stack {
-  position: relative;
-}
-
-.card-stack::before,
-.card-stack::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--glass-border);
-  background: oklch(from var(--color-card) l c h / 0.4);
-  transition: transform 0.3s ease, opacity 0.3s ease;
-  z-index: -1;
-  pointer-events: none;
-}
-
-.card-stack::before {
-  transform: translate(2px, 2px);
-  opacity: 0.5;
-}
-
-.card-stack::after {
-  transform: translate(4px, 4px);
-  opacity: 0.3;
-}
-
-.card-stack:hover::before {
-  transform: translate(3px, 3px) rotate(0.5deg);
-  opacity: 0.6;
-}
-
-.card-stack:hover::after {
-  transform: translate(6px, 6px) rotate(-0.5deg);
-  opacity: 0.4;
-}
+/* `.direction-aware-hover` / `.hover-bloom` and `.card-stack` lived here.
+   The first two were already dead. `.card-stack` had one caller — the pinned
+   article cards — where it drew two offset ghost layers behind the card that
+   rotated on hover to fake a stack of paper, under a `TiltCard` that rotated
+   the card itself in 3D. Both are the retired neumorphic world; depth in this
+   system is a value step plus a hairline, never a simulated object. */
 
 /* Reduced motion */
 @media (prefers-reduced-motion: reduce) {

@@ -190,7 +190,7 @@ export function SearchAndReplace({ editor }: SearchAndReplaceProps) {
       data-testid="search-and-replace"
       className={cn(
         'absolute right-4 top-1 z-40',
-        'rounded-lg border border-border bg-card shadow-lg',
+        'nm-card-elevated',
         'flex flex-col gap-1.5 p-2',
         'min-w-[320px]',
       )}

@@ -160,7 +160,7 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
         >
           <span
             className={cn(
-              'pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow-sm transition-transform',
+              'pointer-events-none inline-block h-5 w-5 rounded-full bg-white transition-transform',
               showSpaceHomeContent ? 'translate-x-5' : 'translate-x-0',
             )}
           />

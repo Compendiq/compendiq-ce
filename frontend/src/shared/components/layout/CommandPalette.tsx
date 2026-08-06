@@ -231,7 +231,7 @@ export function CommandPalette() {
           >
             <Dialog.Title className="sr-only">Command palette</Dialog.Title>
             <div className={cn(
-              'nm-card overflow-hidden shadow-2xl transition-shadow duration-200',
+              'nm-card-elevated overflow-hidden',
               isAiMode && 'shadow-[0_0_30px_-5px_rgba(168,85,247,0.4)] ring-1 ring-purple-500/30',
             )}>
               {/* Search input */}

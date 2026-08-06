@@ -418,7 +418,7 @@ function UserCreateDialog({ onClose, onSubmit, isSubmitting }: UserCreateDialogP
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
       <form
         onSubmit={handleSubmit}
-        className="w-full max-w-md space-y-4 rounded-md bg-background p-6 shadow-lg"
+        className="w-full max-w-md space-y-4 nm-card-elevated p-6"
       >
         <h3 className="text-lg font-semibold">Create user</h3>
         <div className="space-y-3">

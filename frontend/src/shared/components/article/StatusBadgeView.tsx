@@ -72,7 +72,7 @@ export function StatusBadgeView({ node, updateAttributes, editor }: NodeViewProp
         {isEditable && (
           <Popover.Portal>
             <Popover.Content
-              className="z-50 w-56 rounded-lg border border-border bg-card p-3 shadow-lg"
+              className="z-50 w-56 nm-card-elevated p-3"
               sideOffset={6}
               align="start"
               data-testid="status-badge-popover"

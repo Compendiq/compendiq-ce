@@ -67,7 +67,7 @@ export function SyncConflictResolveDialog({ conflict, onClose, onResolved }: Pro
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm" />
         <Dialog.Content
-          className="fixed left-1/2 top-1/2 z-50 grid h-[85vh] w-[95vw] max-w-5xl -translate-x-1/2 -translate-y-1/2 grid-rows-[auto_1fr_auto] overflow-hidden rounded-xl border border-border bg-background shadow-2xl"
+          className="fixed left-1/2 top-1/2 z-50 grid h-[85vh] w-[95vw] max-w-5xl -translate-x-1/2 -translate-y-1/2 grid-rows-[auto_1fr_auto] overflow-hidden nm-card-elevated"
           data-testid="sync-conflict-resolve-dialog"
         >
           <div className="flex items-start justify-between border-b border-border p-4">

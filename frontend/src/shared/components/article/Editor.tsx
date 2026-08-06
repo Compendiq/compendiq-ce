@@ -348,7 +348,7 @@ function StatusLabelInsert({ editor }: { editor: EditorType }) {
         <Badge size={16} />
       </ToolbarButton>
       {open && (
-        <div className="absolute top-full left-0 z-50 mt-1 w-52 rounded-lg border border-border bg-card p-3 shadow-lg">
+        <div className="absolute top-full left-0 z-50 mt-1 w-52 nm-card-elevated p-3">
           <div className="mb-2 flex gap-1">
             {STATUS_COLORS.map((c) => (
               <button
@@ -493,7 +493,7 @@ function PanelInsert({ editor }: { editor: EditorType }) {
         <Info size={16} />
       </ToolbarButton>
       {open && (
-        <div className="absolute top-full left-0 z-50 mt-1 rounded-lg border border-border bg-card p-2 shadow-lg min-w-max">
+        <div className="absolute top-full left-0 z-50 mt-1 nm-card-elevated p-2 min-w-max">
           <p className="mb-1.5 px-1 text-[12px] font-medium text-muted-foreground uppercase tracking-wider">Panel</p>
           <div className="grid grid-cols-2 gap-1">
             {PANEL_TYPES.map(({ value, label, Icon, swatch }) => (
@@ -583,7 +583,7 @@ function ColorPickerDropdown({
           align="start"
           sideOffset={4}
           aria-label={`${title} swatches`}
-          className="z-50 rounded-lg border border-border bg-card p-2.5 shadow-lg outline-none"
+          className="z-50 nm-card-elevated p-2.5 outline-none"
         >
           <div className="grid grid-cols-4 gap-1.5">
             {PRESET_COLORS.map((c) => (
@@ -1023,7 +1023,7 @@ function LayoutPresetPicker({ editor }: { editor: EditorType }) {
         <Columns2 size={16} />
       </ToolbarButton>
       {open && (
-        <div className="absolute top-full left-0 z-50 mt-1 rounded-lg border border-border bg-card p-2 shadow-lg min-w-max">
+        <div className="absolute top-full left-0 z-50 mt-1 nm-card-elevated p-2 min-w-max">
           <p className="mb-1.5 px-1 text-[12px] font-medium text-muted-foreground uppercase tracking-wider">Page Layout</p>
           <div className="flex gap-1">
             {LAYOUT_PRESETS.map((preset) => (

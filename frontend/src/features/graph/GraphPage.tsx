@@ -617,7 +617,7 @@ export function GraphPage() {
           <div
             className={cn(
               'pointer-events-none fixed z-50 max-w-xs rounded-lg border border-border',
-              'bg-card px-3 py-2 text-xs shadow-lg',
+              'nm-card-elevated px-3 py-2 text-xs',
               'max-h-64 overflow-y-auto',
             )}
             style={{
