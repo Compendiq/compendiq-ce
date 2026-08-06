@@ -120,11 +120,17 @@ describe('SidebarTreeView', () => {
     expect(screen.getByRole('link', { name: /AI/ })).toBeInTheDocument();
   });
 
-  it('active nav tab uses the quiet steel selection treatment', () => {
+  // The main nav is a segmented control, the same shape as the article
+  // inspector's Outline/Details tabs and the search-mode toggle. It used
+  // `nav-selection` (an accent-tinted field), which was a fourth treatment for
+  // "one of N is selected"; the raised neutral segment is the shared one.
+  // `bg-action` stays asserted-against: a near-black fill would make the nav
+  // the heaviest thing in the rail.
+  it('active nav tab uses the shared segmented-control treatment', () => {
     // location.pathname === '/' => Pages tab is active.
     render(<SidebarTreeView />, { wrapper: createWrapper('/') });
     const pagesLink = screen.getByRole('link', { name: /Pages/ });
-    expect(pagesLink.className).toContain('nav-selection');
+    expect(pagesLink.className).toContain('nm-pill-active');
     expect(pagesLink.className).not.toContain('bg-action');
   });
 

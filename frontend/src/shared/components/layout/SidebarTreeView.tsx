@@ -15,7 +15,6 @@ import {
   Settings,
 } from 'lucide-react';
 import { m, AnimatePresence, useReducedMotion } from 'framer-motion';
-import { ShortcutHint } from '../ShortcutHint';
 import { MainNavStripExpanded, MainNavStripCollapsed } from './MainNavStrip';
 import { usePageTree, useCreatePage, usePinnedPages } from '../../hooks/use-pages';
 import { useSpaces } from '../../hooks/use-spaces';
@@ -529,12 +528,14 @@ export function SidebarTreeView({
                 toggleTreeSidebar();
               }
             }}
-            className="mt-2 flex items-center gap-0.5 rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
+            className="mt-2 flex items-center rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
             aria-label="Expand sidebar"
             title="Expand sidebar (,)"
           >
+            {/* Shortcut in the tooltip, not glued to the icon — see the twin in
+                ArticleRightPane. A "," rendered as a bordered chip beside a
+                rail icon reads as stray punctuation, not a key. */}
             <PanelLeft size={16} />
-            <ShortcutHint shortcutId="toggle-sidebar" />
           </button>
 
           {/* Nav icons */}
@@ -565,12 +566,11 @@ export function SidebarTreeView({
           <MainNavStripExpanded onNavigate={onNavigate} />
           <button
             onClick={toggleTreeSidebar}
-            className="flex shrink-0 items-center gap-0.5 rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
+            className="flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
             aria-label="Collapse sidebar"
             title="Collapse sidebar (,)"
           >
             <PanelLeftClose size={14} />
-            <ShortcutHint shortcutId="toggle-sidebar" />
           </button>
       </div>
 

@@ -24,7 +24,6 @@ import { FreshnessBadge } from '../badges/FreshnessBadge';
 import { EmbeddingStatusBadge } from '../badges/EmbeddingStatusBadge';
 import { QualityScoreBadge } from '../badges/QualityScoreBadge';
 import { m, AnimatePresence, useReducedMotion } from 'framer-motion';
-import { ShortcutHint } from '../ShortcutHint';
 import { getShortcutHint, formatKeysForPlatform } from '../../lib/shortcut-registry';
 import { isMac as detectMac } from '../../lib/platform';
 import { toast } from 'sonner';
@@ -653,7 +652,14 @@ export function ArticleRightPane({
           className="app-sidebar flex flex-col items-center border-l overflow-hidden"
           data-testid="article-right-pane-rail"
         >
-          <div className="flex h-12 w-full flex-col items-center justify-center gap-0.5">
+          {/* The shortcut lives in the tooltip (and the title below), not glued
+              to the icon. A one-character hint like "." rendered as a bordered
+              chip beside a rail icon reads as stray punctuation rather than a
+              key — worst of all in the 40px collapsed rail, where it is the
+              only other mark on screen. The `title` already carries it, so
+              nothing is lost for a mouse user, and `aria-label` for everyone
+              else. */}
+          <div className="flex h-12 w-full flex-col items-center justify-center">
             <button
               onClick={handleExpandSidebar}
               className={railIconBtn}
@@ -662,7 +668,6 @@ export function ArticleRightPane({
             >
               <PanelRight size={16} />
             </button>
-            <ShortcutHint shortcutId="toggle-right-panel" />
           </div>
 
           {/* Outline flyout trigger. Hover OR focus opens it — a hover-only
@@ -918,18 +923,21 @@ export function ArticleRightPane({
         </div>
         <button
           onClick={toggleSidebar}
-          className="flex shrink-0 items-center gap-0.5 rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
+          className="flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
           aria-label="Collapse page sidebar"
           title="Collapse sidebar (.)"
         >
           <PanelRightClose size={14} />
-          <ShortcutHint shortcutId="toggle-right-panel" />
         </button>
       </div>
 
       {/* Two stable views replace one long mixed-purpose column. */}
       <div
-        className="mx-2 mt-2 grid shrink-0 grid-cols-2 gap-1 rounded-xl bg-foreground/[0.045] p-1"
+        // Same segmented-control shape as the main nav and the search-mode
+        // toggle: `rounded-md` track, `border-border`, `bg-muted`, 2px inset.
+        // This was `rounded-xl` on `bg-foreground/[0.045]` with a 4px inset —
+        // a third distinct treatment for the same interaction.
+        className="mx-2 mt-2 grid shrink-0 grid-cols-2 gap-0.5 rounded-md border border-border bg-muted p-0.5"
         role="tablist"
         aria-label="Page context views"
       >
@@ -944,7 +952,7 @@ export function ArticleRightPane({
             setActiveInspectorView('outline');
           }}
           className={cn(
-            'flex h-8 items-center justify-center gap-1.5 rounded-lg px-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
+            'flex h-7 items-center justify-center gap-1.5 rounded-sm px-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
             activeInspectorView === 'outline'
               ? 'panel-tab-active'
               : 'text-muted-foreground hover:text-foreground',
@@ -967,7 +975,7 @@ export function ArticleRightPane({
             setActiveInspectorView('details');
           }}
           className={cn(
-            'flex h-8 items-center justify-center gap-1.5 rounded-lg px-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
+            'flex h-7 items-center justify-center gap-1.5 rounded-sm px-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
             activeInspectorView === 'details'
               ? 'panel-tab-active'
               : 'text-muted-foreground hover:text-foreground',

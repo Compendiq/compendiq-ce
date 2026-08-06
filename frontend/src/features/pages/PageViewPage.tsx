@@ -782,7 +782,7 @@ export function PageViewPage() {
             (Cancel/Save take over in the bar above), leaving only badges — so
             it wedged a strip of read-only status between the save controls and
             the title you are typing into. The badges return on save. */}
-        <div className={cn('sticky top-0 z-20 -mx-4 border-b border-border bg-card sm:-mx-6', editing && 'hidden')}>
+        <div className={cn('sticky -top-5 z-20 -mx-4 -mt-5 border-b border-border bg-card sm:-mx-6', editing && 'hidden')}>
         <div className="mx-auto flex max-w-[1248px] flex-wrap items-center justify-between gap-x-4 gap-y-1.5 px-9 py-2 sm:px-16">
           <span className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-muted-foreground/60">
             <FileText size={12} className="shrink-0" />
