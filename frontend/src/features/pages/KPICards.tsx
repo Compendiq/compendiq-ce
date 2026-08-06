@@ -3,7 +3,6 @@ import { m } from 'framer-motion';
 import { FileText, Clock, RefreshCw } from 'lucide-react';
 import { formatRelativeTime } from '../../shared/lib/format-relative-time';
 import { AnimatedCounter } from '../../shared/components/effects/AnimatedCounter';
-import { TiltCard } from '../../shared/components/effects/TiltCard';
 
 interface KPICardsProps {
   embeddingStatus?: {
@@ -31,8 +30,8 @@ const fadeUp = {
 
 // ---------- Embedding Coverage Ring ----------
 
-const RING_SIZE = 48;
-const RING_STROKE = 5;
+const RING_SIZE = 28;
+const RING_STROKE = 3;
 const RING_RADIUS = (RING_SIZE - RING_STROKE) / 2;
 const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
 
@@ -94,7 +93,11 @@ function EmbeddingCoverageRing({ percent, isProcessing }: EmbeddingCoverageRingP
           } : undefined}
         />
       </svg>
-      <span className="absolute text-xs font-semibold">{percent}%</span>
+      {/* No number inside the ring. At 28px it would have to set below the
+          11px legibility floor, and the exact figure is already spelled out
+          immediately beside it as "of N (X%)". The ring is the glyph that
+          reads the ratio at a glance; the text is what reads it precisely.
+          Screen readers get the value from the svg's aria-label. */}
     </div>
   );
 }
@@ -102,17 +105,23 @@ function EmbeddingCoverageRing({ percent, isProcessing }: EmbeddingCoverageRingP
 // ---------- KPICards ----------
 
 /**
- * Three tiles, one dominant — down from five equal ones.
+ * One status strip, not a row of tiles.
  *
- * The old row spent five equal-weight cards to say very little: "Embedding
- * Coverage" was `embedded / total * 100` computed from the two tiles sitting
- * immediately to its left, so a fresh install read "5 / 0 / 0%" — one fact,
- * three times — before the user reached a single page. Coverage now lives
- * inside the Embedded tile as "0 of 5 (0%)", where it is a qualifier rather
- * than a headline; the space count rides along with Total Pages, which is the
- * number it qualifies. That frees Last Sync to span two columns and carry the
- * Sync action, so the one tile that implies a next step is also the one the
- * eye lands on first.
+ * These are three small facts about the corpus — how much of it there is, how
+ * much is embedded, when it last synced. As `p-4` cards on a 4-column grid
+ * they cost ~96px of the first viewport and read as the page's headline, which
+ * is the hero-metric template: a big number, a small label, an icon chip, and
+ * no next step except the one button hiding in the third tile.
+ *
+ * As a single ~52px strip the same facts read left to right in one pass, and
+ * the pages list — the actual content of this route — starts a full card
+ * higher up. Nothing was dropped: total, spaces, embedded, coverage, last sync
+ * and the Sync action are all still here, and the coverage ring survives as
+ * the one glyph that reads a ratio faster than its text does.
+ *
+ * The tiles were also `TiltCard`s, which rotated in 3D under the cursor. That
+ * is the clearest surviving gesture of the retired neumorphic world and it had
+ * no counterpart anywhere else in the app.
  */
 export function KPICards({ embeddingStatus, spacesCount, lastSynced, onSync, isSyncing }: KPICardsProps) {
   const totalPages = embeddingStatus?.totalPages ?? 0;
@@ -126,87 +135,66 @@ export function KPICards({ embeddingStatus, spacesCount, lastSynced, onSync, isS
       variants={stagger}
       initial="initial"
       animate="animate"
-      className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4"
+      className="flex flex-wrap items-center gap-x-5 gap-y-2 rounded-md border border-border bg-card px-3 py-2"
       data-testid="kpi-cards"
     >
       {/* Total pages, qualified by the spaces they came from. */}
-      <m.div variants={fadeUp} className="h-full">
-        <TiltCard className="rounded-xl border border-border bg-card p-4 h-full" maxTilt={10} data-testid="kpi-total-articles">
-          <div className="flex items-center gap-3">
-            <div className="rounded-lg bg-foreground/5 p-2 text-success">
-              <FileText size={16} />
-            </div>
-            <div className="min-w-0">
-              <p className="text-xs text-muted-foreground">Total Pages</p>
-              <p className="text-base font-semibold">
-                {embeddingStatus ? <AnimatedCounter value={totalPages} /> : '--'}
-              </p>
-              <p className="text-xs text-muted-foreground" data-testid="kpi-spaces-synced">
-                across {spacesCount} {spacesCount === 1 ? 'space' : 'spaces'}
-              </p>
-            </div>
-          </div>
-        </TiltCard>
+      <m.div variants={fadeUp} className="flex items-center gap-2" data-testid="kpi-total-articles">
+        <FileText size={14} className="shrink-0 text-muted-foreground" />
+        <span className="text-[13px] text-muted-foreground">Total Pages</span>
+        <span className="text-[13px] font-semibold tabular-nums">
+          {embeddingStatus ? <AnimatedCounter value={totalPages} /> : '--'}
+        </span>
+        <span className="text-xs text-muted-foreground" data-testid="kpi-spaces-synced">
+          across {spacesCount} {spacesCount === 1 ? 'space' : 'spaces'}
+        </span>
       </m.div>
+
+      <span aria-hidden className="hidden h-4 w-px bg-border sm:block" />
 
       {/* Embedded pages, with coverage folded in as the qualifier it always
-          was. The ring stays as the tile's icon — it reads the ratio faster
-          than the text does. */}
-      <m.div variants={fadeUp} className="h-full">
-        <TiltCard className="rounded-xl border border-border bg-card p-4 h-full" maxTilt={10} data-testid="kpi-embedded-pages">
-          <div className="flex items-center gap-3">
-            <EmbeddingCoverageRing
-              percent={embeddingStatus ? coveragePercent : 0}
-              isProcessing={embeddingStatus?.isProcessing ?? false}
-            />
-            <div className="min-w-0">
-              <p className="text-xs text-muted-foreground">Embedded</p>
-              <p className="text-base font-semibold">
-                {embeddingStatus ? <AnimatedCounter value={embeddedPages} /> : '--'}
-              </p>
-              <p className="text-xs text-muted-foreground" data-testid="kpi-embedding-coverage">
-                {embeddingStatus ? `of ${totalPages} (${coveragePercent}%)` : 'of --'}
-              </p>
-            </div>
-          </div>
-        </TiltCard>
+          was. The ring reads the ratio faster than the text does. */}
+      <m.div variants={fadeUp} className="flex items-center gap-2" data-testid="kpi-embedded-pages">
+        <EmbeddingCoverageRing
+          percent={embeddingStatus ? coveragePercent : 0}
+          isProcessing={embeddingStatus?.isProcessing ?? false}
+        />
+        <span className="text-[13px] text-muted-foreground">Embedded</span>
+        <span className="text-[13px] font-semibold tabular-nums">
+          {embeddingStatus ? <AnimatedCounter value={embeddedPages} /> : '--'}
+        </span>
+        <span className="text-xs text-muted-foreground" data-testid="kpi-embedding-coverage">
+          {embeddingStatus ? `of ${totalPages} (${coveragePercent}%)` : 'of --'}
+        </span>
       </m.div>
 
-      {/* Double-width and action-bearing: the only tile that implies a next
-          step should be the one that gets the visual weight. */}
-      <m.div variants={fadeUp} className="h-full sm:col-span-2">
-        <TiltCard className="rounded-xl border border-border bg-card p-4 h-full" maxTilt={6} data-testid="kpi-last-sync">
-          <div className="flex h-full items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <div className="rounded-lg bg-foreground/5 p-2 text-muted-foreground">
-                <Clock size={16} />
-              </div>
-              <div className="min-w-0">
-                <p className="text-xs text-muted-foreground">Last Sync</p>
-                <p className="text-lg font-semibold">
-                  {lastSynced ? formatRelativeTime(lastSynced) : 'Never'}
-                </p>
-                {!lastSynced && (
-                  <p className="text-xs text-muted-foreground">
-                    Nothing has been mirrored from Confluence yet.
-                  </p>
-                )}
-              </div>
-            </div>
-            {onSync && (
-              <button
-                type="button"
-                onClick={onSync}
-                disabled={isSyncing}
-                className="shrink-0 inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-3 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:opacity-50"
-                data-testid="kpi-sync-btn"
-              >
-                <RefreshCw size={15} className={isSyncing ? 'animate-spin' : undefined} />
-                {isSyncing ? 'Syncing...' : 'Sync now'}
-              </button>
-            )}
-          </div>
-        </TiltCard>
+      <span aria-hidden className="hidden h-4 w-px bg-border sm:block" />
+
+      {/* Last sync carries the only next step on the strip, so it sits at the
+          end where the eye finishes rather than buried mid-row. */}
+      <m.div variants={fadeUp} className="flex min-w-0 flex-1 items-center gap-2" data-testid="kpi-last-sync">
+        <Clock size={14} className="shrink-0 text-muted-foreground" />
+        <span className="text-[13px] text-muted-foreground">Last Sync</span>
+        <span className="text-[13px] font-semibold">
+          {lastSynced ? formatRelativeTime(lastSynced) : 'Never'}
+        </span>
+        {!lastSynced && (
+          <span className="hidden truncate text-xs text-muted-foreground lg:inline">
+            Nothing has been mirrored from Confluence yet.
+          </span>
+        )}
+        {onSync && (
+          <button
+            type="button"
+            onClick={onSync}
+            disabled={isSyncing}
+            className="nm-button-ghost ml-auto shrink-0 gap-1.5 disabled:opacity-50"
+            data-testid="kpi-sync-btn"
+          >
+            <RefreshCw size={13} className={isSyncing ? 'animate-spin' : undefined} />
+            {isSyncing ? 'Syncing...' : 'Sync now'}
+          </button>
+        )}
       </m.div>
     </m.div>
   );

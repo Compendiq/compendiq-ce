@@ -115,7 +115,9 @@ const PageListItem = memo(function PageListItem({
         >
           <div className="min-w-0 flex-1 text-left">
             <div className="flex items-center gap-2">
-              <p className="truncate font-medium">{pageItem.title}</p>
+              {/* 13px medium. At 16px the title read as a card heading, which
+                  is what made forty rows look like forty cards. */}
+              <p className="truncate text-[13px] font-medium">{pageItem.title}</p>
               {/* Source badge */}
               {pageItem.source === 'standalone' ? (
                 <span
@@ -569,12 +571,14 @@ export function PagesPage() {
   });
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Pages</h1>
-          <p className="text-sm text-muted-foreground">
+    <div className="space-y-3">
+      {/* Header. 18px semibold, not 24px bold: this is a route label, and the
+          sidebar already says where you are. The old scale plus a subtitle plus
+          `space-y-6` spent ~110px of the first viewport restating the nav. */}
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="text-lg font-semibold">Pages</h1>
+          <p className="text-[13px] text-muted-foreground">
             Browse and manage your knowledge base
           </p>
         </div>
@@ -700,8 +704,21 @@ export function PagesPage() {
             )}
           </div>
 
-          {/* Search mode toggle — keyword / semantic / hybrid */}
-          <div className="flex items-center gap-1.5" data-testid="search-mode-toggle">
+          {/* Search mode toggle — keyword / semantic / hybrid.
+
+              A segmented control on a recessed track, not three loose pills.
+              The active segment used to be a near-black `bg-action` fill with a
+              coloured shadow and a ring, which read as the most important
+              control on the page — louder than "New Page", the actual primary
+              action — when all it does is pick a retrieval strategy. Neutral
+              fill plus weight carries "selected" here; the accent stays spent
+              on actions. */}
+          <div
+            className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-border bg-muted p-0.5"
+            data-testid="search-mode-toggle"
+            role="group"
+            aria-label="Search mode"
+          >
               {(['keyword', 'semantic', 'hybrid'] as const).map((m) => (
                 <button
                   key={m}
@@ -709,10 +726,10 @@ export function PagesPage() {
                   onClick={() => setFilters({ mode: m, page: 1 })}
                   aria-pressed={searchMode === m}
                   className={cn(
-                    'rounded-full px-3 py-1 text-xs font-medium transition-all capitalize',
+                    'rounded-sm px-2.5 py-1 text-xs font-medium capitalize transition-colors',
                     searchMode === m
-                      ? 'bg-action text-action-foreground shadow-md shadow-action/25 ring-1 ring-action/50'
-                      : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10 border border-transparent hover:border-border',
+                      ? 'nm-pill-active'
+                      : 'text-muted-foreground hover:text-foreground',
                   )}
                 >
                   {m}
