@@ -759,10 +759,37 @@ content. Its left rule carries meaning from the source document, and "the source
 of record wins" outranks our surface conventions. The equivalent decoration on
 app chrome stays refused.
 
-**Known consequence, carried forward:** cross-surface parity with
-`compendiq-landing` has now been broken across two palette generations — the
-landing page never adopted the steel tokens either. The app is the source of
-truth; port Graphite/Paper outward when that work is scheduled.
+**Cross-surface parity — closed, and the shape of the fix is the point.**
+`compendiq-landing` carries Graphite/Paper: same chassis, same teal, same Inter,
+`paper`/`graphite` theme IDs. The app is the source of truth and the port went
+outward.
+
+Parity is **brand-deep, not rule-deep**. v0.6's flat surfaces, its 10/8/6/4
+radii and its single shadow are answers to being a workspace that recedes behind
+a document; a marketing page has the opposite job and keeps its radial backdrop
+and softer radii. The two surfaces share an identity, not a density.
+
+Three things a token port structurally cannot reach, all of which had silently
+survived at least one rebrand:
+
+- **The mark.** Its colours must be literals, because four of its five files are
+  static SVGs rendering with no custom properties available (a favicon has no
+  document; a maskable icon is rasterised by the OS). Honey survived into steel
+  and steel survived into Graphite the same way. `logo-color-parity.test.ts` now
+  ties the literals back to `--color-card` / `--color-foreground` /
+  `--color-primary` parsed out of `index.css`.
+- **A second mark.** The landing page had its own honey raster of a *visually
+  different* mark serving as header, footer and favicon. It now serves the app's
+  SVGs.
+- **The social card.** A PNG, so it stayed honey through two rebrands — cream
+  ground, honey underline, serif headline — as the first thing anyone sees when
+  a link is shared. It is now generated (`npm run og`) from a template carrying
+  the palette literals, and guarded (`npm run og:check`) by content hash rather
+  than mtime, since git does not preserve mtimes.
+
+The general lesson: a palette guard that reads only the stylesheet certifies the
+part of the brand that was never at risk. Rasters, static SVGs and anything with
+a baked literal need their own tie back to the tokens.
 
 ---
 
