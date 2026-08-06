@@ -1058,9 +1058,17 @@ export function PagesPage() {
                             <span className="mt-1 inline-block text-xs text-muted-foreground">{item.spaceKey}</span>
                           )}
                         </div>
-                        {item.score > 0 && (
-                          <span className="shrink-0 rounded-full bg-foreground/5 px-2 py-0.5 text-xs text-muted-foreground">
-                            {(item.score * 100).toFixed(0)}%
+                        {/* Similarity only — `score` carries whatever unit the
+                            mode produced, so rendering it showed the same page
+                            at ~87% in semantic and ~2% in hybrid (#1117). Null
+                            (keyword mode, or a full-text-only hybrid row) shows
+                            nothing rather than "0%". */}
+                        {item.similarity !== null && (
+                          <span
+                            title="Semantic similarity to your query"
+                            className="shrink-0 rounded-full bg-foreground/5 px-2 py-0.5 text-xs text-muted-foreground"
+                          >
+                            {(item.similarity * 100).toFixed(0)}%
                           </span>
                         )}
                       </button>

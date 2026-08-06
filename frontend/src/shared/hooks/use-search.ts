@@ -8,8 +8,20 @@ interface SearchResultItem {
   spaceKey: string | null;
   /** Short excerpt / snippet from the matching content */
   excerpt: string;
-  /** Relevance score (ts_rank for keyword, cosine similarity for semantic, RRF for hybrid) */
+  /**
+   * Relevance score in whatever unit the mode produced — ts_rank for keyword,
+   * cosine for semantic, an RRF fusion value for hybrid. Comparable *within* one
+   * result list and meaningless between modes, so it orders rows and nothing
+   * else. Rendering it as a percentage is what showed the same page at ~87% in
+   * semantic and ~2% in hybrid (#1117).
+   */
   score: number;
+  /**
+   * Cosine similarity in [0,1], or `null` when no vector leg contributed — a
+   * keyword-mode search, or a hybrid row matched only by full-text. The only
+   * figure here that is safe to show a user.
+   */
+  similarity: number | null;
 }
 
 interface SearchApiResponse {
@@ -20,6 +32,7 @@ interface SearchApiResponse {
     snippet?: string;
     rank?: number;
     score?: number;
+    similarity?: number | null;
   }>;
   total: number;
   page: number;
@@ -37,6 +50,9 @@ function mapItems(response: SearchApiResponse): SearchResultItem[] {
     spaceKey: item.spaceKey,
     excerpt: item.snippet ?? '',
     score: item.score ?? item.rank ?? 0,
+    // Absent (keyword mode never sends it) stays null rather than collapsing to
+    // 0 — a page nobody measured must render no figure, not "0%".
+    similarity: item.similarity ?? null,
   }));
 }
 

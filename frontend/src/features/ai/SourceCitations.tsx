@@ -29,8 +29,22 @@ export interface Source {
   /** Absolute http(s) URL — present only on web / external-docs sources. */
   url?: string;
   sectionTitle?: string;
-  /** RAG similarity score (0-1 scale), used for confidence badges */
+  /**
+   * Retrieval ORDERING value, in whichever unit produced it — an RRF fusion
+   * score for a hybrid answer (bounded near 0.033), or a flat `1` for web and
+   * external sources, which never went through retrieval. Kept because
+   * conversations persisted before #1117 carry it.
+   *
+   * @deprecated Never render or threshold this. Use {@link Source.similarity}.
+   */
   score?: number;
+  /**
+   * Cosine similarity in [0,1] — the only score field with one meaning. `null`
+   * or absent when none was measured: a keyword-only retrieval hit, a web or
+   * external source, or a conversation persisted before #1117. Absent must
+   * render no confidence badge rather than a zero (#1117).
+   */
+  similarity?: number | null;
 }
 
 interface SourceCitationsProps {

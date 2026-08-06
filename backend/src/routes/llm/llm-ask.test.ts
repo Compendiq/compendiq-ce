@@ -310,6 +310,103 @@ describe('POST /api/llm/ask', () => {
     expect(finalEvent!.conversationId).toBe('test-conv-id');
   });
 
+  // ─── Score semantics (#1117) ─────────────────────────────────────────────
+  //
+  // Note the fixture above uses `score: 0.9`, which the real hybrid pipeline
+  // cannot produce: after RRF fusion with k=60 over two legs the value is
+  // bounded by 1/61 + 1/61 ≈ 0.0328. These tests use realistic values so a
+  // regression in the plumbing is visible here rather than only in production.
+
+  it('emits the cosine similarity as `similarity`, not the RRF fusion score', async () => {
+    mockHybridSearch.mockResolvedValue([
+      {
+        pageId: 42,
+        confluenceId: 'page-abc',
+        chunkText: 'Deployment is done via CI/CD pipeline.',
+        pageTitle: 'Deployment Guide',
+        sectionTitle: 'Overview',
+        spaceKey: 'OPS',
+        score: 0.0328,      // what fusion actually returns
+        vectorScore: 0.82,  // what the vector leg measured
+        keywordRank: 0.07,
+      },
+    ]);
+    mockStreamChatClient.mockReturnValue(singleChunkGenerator('CI/CD.'));
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/llm/ask',
+      payload: { question: 'What is the deployment process?', model: 'llama3' },
+    });
+
+    const events = parseSseBody(response.body);
+    const finalEvent = events.find((e: unknown) => (e as Record<string, unknown>).final === true) as Record<string, unknown>;
+    const sources = finalEvent.sources as Array<Record<string, unknown>>;
+
+    // The value a confidence badge reads must be the measured similarity.
+    expect(sources[0].similarity).toBe(0.82);
+    // The fusion score still travels, for ordering and wire compatibility.
+    expect(sources[0].score).toBe(0.0328);
+  });
+
+  it('emits a null similarity for a keyword-only hit rather than a zero', async () => {
+    // A page matched only by full-text has no measured similarity. Zero would
+    // read as "measured, and terrible" and paint the badge red.
+    mockHybridSearch.mockResolvedValue([
+      {
+        pageId: 43,
+        confluenceId: 'page-def',
+        chunkText: 'Body text excerpt.',
+        pageTitle: 'Runbook',
+        sectionTitle: 'Runbook',
+        spaceKey: 'OPS',
+        score: 0.0164,
+        vectorScore: null,
+        keywordRank: 0.11,
+      },
+    ]);
+    mockStreamChatClient.mockReturnValue(singleChunkGenerator('See the runbook.'));
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/llm/ask',
+      payload: { question: 'runbook', model: 'llama3' },
+    });
+
+    const events = parseSseBody(response.body);
+    const finalEvent = events.find((e: unknown) => (e as Record<string, unknown>).final === true) as Record<string, unknown>;
+    const sources = finalEvent.sources as Array<Record<string, unknown>>;
+
+    expect(sources[0].similarity).toBeNull();
+    expect(sources[0].score).toBe(0.0164);
+  });
+
+  it('emits a null similarity on web sources so they cannot inflate confidence', async () => {
+    // These carry `score: 1` as a sort key and never went through retrieval.
+    // Before #1117 they were the only sources scoring 1.0, so a web-grounded
+    // answer outranked one grounded in the knowledge base.
+    mockHybridSearch.mockResolvedValue([]);
+    mockFetchWebSources.mockResolvedValue({
+      sources: [{ url: 'https://example.com/a', title: 'A', snippet: 's' }],
+      injectionWarnings: [],
+    });
+    mockStreamChatClient.mockReturnValue(singleChunkGenerator('Answer.'));
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/llm/ask',
+      payload: { question: 'what is a?', model: 'llama3', searchWeb: true },
+    });
+
+    const events = parseSseBody(response.body);
+    const finalEvent = events.find((e: unknown) => (e as Record<string, unknown>).final === true) as Record<string, unknown>;
+    const sources = finalEvent.sources as Array<Record<string, unknown>>;
+
+    expect(sources).toHaveLength(1);
+    expect(sources[0].similarity).toBeNull();
+    expect(sources[0].score).toBe(1);
+  });
+
   // ─── Citation targets (#1125) ────────────────────────────────────────────
 
   it('should emit `url` on web sources so the frontend links out instead of routing to /pages/', async () => {

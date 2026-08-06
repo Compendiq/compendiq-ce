@@ -222,6 +222,12 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       thinking: body.thinking,
     });
 
+    // `score` is the retrieval ORDERING value — an RRF fusion score from
+    // hybridSearch, which with k=60 over two legs cannot exceed ~0.0328. It is
+    // kept for wire compatibility with conversations already persisted in
+    // `llm_conversations.messages`, and must never be rendered or thresholded.
+    // `similarity` is the cosine similarity in [0,1], or null when the page was
+    // found only by keyword search and no similarity was ever measured (#1117).
     const sources = [
       ...searchResults.map((r) => ({
         pageId: r.pageId,
@@ -230,11 +236,16 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         confluenceId: r.confluenceId,
         sectionTitle: r.sectionTitle,
         score: r.score,
+        similarity: r.vectorScore,
       })),
       // `url` is the discriminator the frontend keys on: these are links, not
       // pages, and routing them through `/pages/:id` lands on the not-found
       // page (#1125). `confluenceId` keeps carrying the URL for conversations
       // persisted before this field existed.
+      // `score: 1` is a sort key, not a measurement — these never went through
+      // retrieval. `similarity: null` keeps them out of any confidence average:
+      // previously they were the only sources scoring 1.0, so a web-grounded
+      // answer outranked one grounded in the knowledge base (#1117).
       ...externalDocs.map((d) => ({
         pageId: 0,
         pageTitle: d.title,
@@ -243,6 +254,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         url: d.url,
         sectionTitle: d.title,
         score: 1,
+        similarity: null,
       })),
       ...askWebSources.map((s) => ({
         pageId: 0,
@@ -252,6 +264,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         url: s.url,
         sectionTitle: s.title,
         score: 1,
+        similarity: null,
       })),
     ];
 

@@ -183,9 +183,15 @@ export async function searchRoutes(fastify: FastifyInstance) {
         author: null as string | null,
         lastModifiedAt: null as Date | null,
         labels: [] as string[],
+        // `rank` is the ordering quantity in whatever unit this mode produced
+        // (cosine for semantic, RRF fusion for hybrid). `similarity` is the
+        // cosine in [0,1], or null when no vector leg contributed — it is the
+        // only field with one meaning across modes, and the only one safe to
+        // render (#1117).
         rank: r.score,
         snippet: r.chunkText.slice(0, 300),
         score: r.score,
+        similarity: r.vectorScore,
       }));
 
       return {
@@ -236,9 +242,15 @@ export async function searchRoutes(fastify: FastifyInstance) {
         author: null as string | null,
         lastModifiedAt: null as Date | null,
         labels: [] as string[],
+        // `rank` is the ordering quantity in whatever unit this mode produced
+        // (cosine for semantic, RRF fusion for hybrid). `similarity` is the
+        // cosine in [0,1], or null when no vector leg contributed — it is the
+        // only field with one meaning across modes, and the only one safe to
+        // render (#1117).
         rank: r.score,
         snippet: r.chunkText.slice(0, 300),
         score: r.score,
+        similarity: r.vectorScore,
       }));
 
       return {

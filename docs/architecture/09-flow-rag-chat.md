@@ -102,6 +102,38 @@ an await would leave the route handler without the scope and the memo dead at
 runtime (#899). The memoised wrapper falls back to the raw resolver outside a
 scope (background workers, tests that skip the opt-in).
 
+### Score semantics (#1117)
+
+A retrieval result carries three numbers, and only one of them means anything
+to a user.
+
+| Field | Unit | Produced by | Safe to show? |
+|---|---|---|---|
+| `score` | whatever the producer used | cosine from `vectorSearch`, `ts_rank` from `keywordSearch`, RRF fusion from `reciprocalRankFusion` | **No** — ordering only |
+| `vectorScore` | cosine similarity, `[0,1]` | the vector leg; `null` when the page was matched only by full-text | **Yes** |
+| `keywordRank` | raw `ts_rank`, unbounded | the keyword leg; `null` when matched only by vector | No — corpus-dependent |
+
+RRF fusion previously *overwrote* `score` with the fusion value and discarded
+the cosine. With `k = 60` over two legs that value cannot exceed
+`1/61 + 1/61 ≈ 0.0328`, while `ConfidenceBadge` thresholds it as a cosine
+(`>= 0.7` high, `>= 0.4` medium) — so every hybrid knowledge-base answer
+rendered "Low confidence", and web sources, handed a flat `score: 1`, were the
+only ones that could raise the average. Fusion now carries the per-leg values
+alongside the fused score instead of replacing them; ordering is unchanged.
+
+On the wire, `/llm/ask` sources and `/api/search` items expose the cosine as
+**`similarity`** (`null` when none was measured). `score` is retained for
+compatibility with conversations already persisted in
+`llm_conversations.messages` and must never be rendered — a `null` similarity
+renders **no** badge and **no** percentage, because a keyword-only hit has no
+similarity rather than a similarity of zero.
+
+`search_analytics.max_score` deliberately still stores the **fusion** value for
+`hybrid` and `keyword_fallback` rows. Repointing it at `vectorScore` would make
+new rows silently incomparable with historical ones, and the table has no column
+to distinguish them; that change belongs with the analytics migration in #1117's
+second half.
+
 Per ADR-023 (EE — `RAG_PERMISSION_ENFORCEMENT`), a second post-filter runs
 after the RRF merge when the feature is active. It calls
 `userCanAccessPage(userId, pageId)` for each merged candidate, gating

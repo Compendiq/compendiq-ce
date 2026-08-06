@@ -29,7 +29,26 @@ interface SearchResult {
   pageTitle: string;
   sectionTitle: string;
   spaceKey: string | null;
+  /**
+   * Ranking quantity. **The unit depends on who produced it** — cosine
+   * similarity from `vectorSearch`, raw `ts_rank` from `keywordSearch`, and an
+   * RRF fusion score from `reciprocalRankFusion` (which with k=60 over two legs
+   * cannot exceed ~0.0328). Use it to ORDER results. Never display it, never
+   * threshold it, and never compare it across producers — see `vectorScore`.
+   */
   score: number;
+  /**
+   * Cosine similarity in [0,1] from the vector leg, or `null` when this page was
+   * found only by keyword search. **This is the only score field with a stable
+   * unit**, and the one a confidence display or threshold must read (#1117).
+   */
+  vectorScore: number | null;
+  /**
+   * Raw `ts_rank` from the keyword leg, or `null` when this page was found only
+   * by vector search. Unbounded and corpus-dependent: comparable between rows of
+   * one query, meaningless as an absolute figure.
+   */
+  keywordRank: number | null;
 }
 
 /**
@@ -80,6 +99,8 @@ export async function vectorSearch(userId: string, questionEmbedding: number[], 
       sectionTitle: row.metadata.section_title,
       spaceKey: row.metadata.space_key,
       score: 1 - row.distance, // Convert distance to similarity
+      vectorScore: 1 - row.distance,
+      keywordRank: null,
     }));
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
@@ -131,6 +152,8 @@ export async function keywordSearch(userId: string, questionText: string, limit 
     sectionTitle: row.title,
     spaceKey: row.space_key,
     score: row.rank,
+    vectorScore: null,
+    keywordRank: row.rank,
   }));
 }
 
@@ -143,7 +166,15 @@ function reciprocalRankFusion(
   keywordResults: SearchResult[],
   k = 60,
 ): SearchResult[] {
-  const scoreMap = new Map<string, { result: SearchResult; score: number }>();
+  // The per-leg raw values are taken from WHICH ARGUMENT a result arrived in,
+  // not from the fields already on it: `score` is the leg's own native unit
+  // (cosine from the vector query, ts_rank from the FTS query), and reading it
+  // positionally is what keeps a keyword-only hit from reporting a similarity
+  // it never had (#1117).
+  const scoreMap = new Map<
+    string,
+    { result: SearchResult; score: number; vectorScore: number | null; keywordRank: number | null }
+  >();
 
   // Score from vector search
   vectorResults.forEach((result, rank) => {
@@ -156,8 +187,14 @@ function reciprocalRankFusion(
       if (result.score > existing.result.score) {
         existing.result = result;
       }
+      // Report the best chunk's similarity — the same chunk the rule above
+      // picks as representative, so the number describes the text that is
+      // actually sent to the model.
+      if (existing.vectorScore === null || result.score > existing.vectorScore) {
+        existing.vectorScore = result.score;
+      }
     } else {
-      scoreMap.set(key, { result, score: rrf });
+      scoreMap.set(key, { result, score: rrf, vectorScore: result.score, keywordRank: null });
     }
   });
 
@@ -170,14 +207,26 @@ function reciprocalRankFusion(
       existing.score += rrf;
       // Do NOT replace a vector chunk with a keyword body excerpt:
       // vector chunks are purpose-built for LLM context, body text is not.
+      // The rank still travels, so a page found by both legs reports both.
+      if (existing.keywordRank === null || result.score > existing.keywordRank) {
+        existing.keywordRank = result.score;
+      }
     } else {
-      scoreMap.set(key, { result, score: rrf });
+      scoreMap.set(key, { result, score: rrf, vectorScore: null, keywordRank: result.score });
     }
   });
 
+  // `score` stays the RRF fusion value: it is what the sort below consumes, and
+  // what every caller's ordering already depends on. Only the two per-leg fields
+  // are added — this function's output ORDER is unchanged.
   return Array.from(scoreMap.values())
     .sort((a, b) => b.score - a.score)
-    .map((entry) => ({ ...entry.result, score: entry.score }));
+    .map((entry) => ({
+      ...entry.result,
+      score: entry.score,
+      vectorScore: entry.vectorScore,
+      keywordRank: entry.keywordRank,
+    }));
 }
 
 /**
@@ -323,7 +372,17 @@ export async function hybridSearch(
 
     // Record search analytics (non-blocking)
     const searchType = vectorResults.length === 0 && keywordResults.length > 0 ? 'keyword_fallback' : 'hybrid';
-    const maxScore = topResults.length > 0 ? Math.max(...topResults.map((r) => r.score)) : null;
+    // Deliberately still the RRF fusion value, NOT `vectorScore`. Changing what
+    // this column means would silently make new rows incomparable with every
+    // historical one, and `search_analytics` has no column to tell them apart.
+    // That belongs with the migration in #1117's analytics half — see the
+    // score-semantics note in docs/architecture/09-flow-rag-chat.md.
+    // Deliberately still the RRF fusion value, NOT `vectorScore`. Changing what
+  // this column means would silently make new rows incomparable with every
+  // historical one, and `search_analytics` has no column to tell them apart.
+  // That belongs with the migration in #1117's analytics half — see the
+  // score-semantics note in docs/architecture/09-flow-rag-chat.md.
+  const maxScore = topResults.length > 0 ? Math.max(...topResults.map((r) => r.score)) : null;
     trackSearchAnalytics(userId, question, topResults.length, maxScore, searchType);
 
     return topResults;
