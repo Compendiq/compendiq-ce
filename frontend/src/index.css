@@ -166,14 +166,14 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      buttons, links, active nav, focus ring. One hue carries both identity and
      every actionable affordance, so "is this clickable?" never depends on
      telling two similar accents apart. */
-  --color-primary: #8b93f8;
-  --color-primary-foreground: #12131c;  /* ink on the indigo fill */
-  --color-primary-gradient-start: #8b93f8;
-  --color-primary-gradient-end: #8b93f8; /* flat: the canon has no gradient fills */
-  --color-primary-glow: rgba(139, 147, 248, 0.28);
+  --color-primary: #4dd0e1;
+  --color-primary-foreground: #05242b;  /* ink on the teal fill */
+  --color-primary-gradient-start: #4dd0e1;
+  --color-primary-gradient-end: #4dd0e1; /* flat: the canon has no gradient fills */
+  --color-primary-glow: rgba(77, 208, 225, 0.26);
   /* Indigo clears AA as text on every dark surface unaided, so ink and fill
      are the same value here (the light theme needs a darkened sibling). */
-  --color-primary-ink: #8b93f8;
+  --color-primary-ink: #4dd0e1;
   /* Action ink — the neutral affordance for non-accent buttons: light fill,
      dark text. Leaves indigo free to mean "primary action". */
   --color-action: #eceef2;             /* matches --color-foreground */
@@ -202,7 +202,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
                          border for both jobs and did not meet 1.4.11.) */
   --color-border: #26282f;
   --color-border-interactive: #6b707b;
-  --color-ring: #8b93f8;
+  --color-ring: #4dd0e1;
   --color-success: #4ade80;
   /* Amber is NOT the brand here — it is reserved for warning and attention,
      which is what makes it readable as a signal when it appears. */
@@ -218,7 +218,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      affordance. All ≥4.5:1 on both --color-background and --color-card. */
   --color-status-connected: #4ade80;
   --color-status-syncing: #fbbf24;
-  --color-status-embedding: #8b93f8;
+  --color-status-embedding: #4dd0e1;
   --color-status-ai: #c084fc;
   --color-status-disconnected: #f87171;
   --color-status-inactive: #8b8f99;
@@ -409,11 +409,15 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
    surface, ink and status hue is the counterpart of the dark token above it,
    which is what lets both themes share one set of shell utilities. */
 [data-theme="paper"] {
-  /* The ground sits a real step below the pane. At #f7f7f8 the gap to white
-     was ~1.4% luminance: "chrome is the ground, content is the pane" is the
-     system's central move and it only rendered in Graphite, leaving Paper's
-     pane boundary carried by the hairline alone. */
-  --color-background: #f1f1f3;          /* paper chassis / sidebar ground */
+  /* A light ground, not a grey one. This went #f7f7f8 -> #f1f1f3 to widen the
+     ground-to-pane step, which the finish review was right to ask for — but at
+     #f1f1f3 the app read as grey rather than light, which is the opposite of
+     the named craft bar. Linear and Plane both sit near-white and carry the
+     pane edge on the HAIRLINE instead of a value step; `--color-border` below
+     is tuned to do that work here.
+     Owner decision (2026-08-06), taste over the reviewer's measurement: the
+     step is deliberately small again, and the border is what separates. */
+  --color-background: #fbfbfc;          /* paper chassis / sidebar ground */
   --color-foreground: #17181a;          /* ink */
   --color-card: #ffffff;                /* content pane */
   --color-card-foreground: #17181a;
@@ -422,17 +426,17 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      on nothing at all. Slightly cool rather than brighter: white is already
      the ceiling on this side, so elevation reads as a cleaner surface. */
   --color-card-elevated: #fdfdfe;
-  --color-primary: #4a55c9;             /* indigo — the light-theme sibling */
+  --color-primary: #0e7490;             /* teal — the light-theme sibling */
   --color-primary-foreground: #ffffff;
-  --color-primary-gradient-start: #4a55c9;
-  --color-primary-gradient-end: #4a55c9; /* flat: the canon has no gradient fills */
-  --color-primary-glow: rgba(74, 85, 201, 0.22);
+  --color-primary-gradient-start: #0e7490;
+  --color-primary-gradient-end: #0e7490; /* flat: the canon has no gradient fills */
+  --color-primary-glow: rgba(14, 116, 144, 0.22);
   /* Unlike dark — where fill and ink are one value — the light theme keeps a
      darkened sibling for TEXT. --color-primary clears 5.39:1 on the background;
      this text-specific ink lands at 6.30:1.
      Use it for links, eyebrow labels, and anywhere steel is a text color;
      keep --color-primary for fills (buttons, pills, borders). */
-  --color-primary-ink: #3f49b8;
+  --color-primary-ink: #0b6378;
   /* Action ink — the neutral affordance for non-accent buttons. Deep ink on
      paper, mirroring dark's inverted pair; leaves indigo free for "primary". */
   --color-action: #17181a;             /* matches --color-foreground */
@@ -449,13 +453,18 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   --color-destructive: #c03434;
   --color-destructive-foreground: #ffffff;
   /* Same two-weight split as dark: a quiet hairline for structure, and an
-     interactive edge that clears 1.4.11's 3:1 on both background and card. */
-  --color-border: #e2e2e6;
+     interactive edge that clears 1.4.11's 3:1 on both background and card.
+     The hairline is a step stronger than it would otherwise be (#e2e2e6 ->
+     #dcdce1): with the ground moved to near-white, the pane boundary rests on
+     this border rather than on a value step, so it has to actually be visible.
+     It is still a separator, NOT an operable edge — that stays
+     --color-border-interactive, which the 3:1 test measures. */
+  --color-border: #dcdce1;
   /* Darkened with the chassis. At #8b8f98 it measured 2.87:1 on the new
      ground — under 1.4.11's 3:1 floor, caught by workspace-themes.test.ts
      rather than by eye. */
   --color-border-interactive: #848892;
-  --color-ring: #4a55c9;
+  --color-ring: #0e7490;
   --color-success: #16794a;
   --color-warning: #8a5a00;
   --color-info: #3f49b8;
@@ -464,7 +473,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      and card. Same role assignment as dark: steel = embedding, violet = AI. */
   --color-status-connected: #16794a;
   --color-status-syncing: #8a5a00;
-  --color-status-embedding: #3f49b8;
+  --color-status-embedding: #0b6378;
   --color-status-ai: #7041a8;
   --color-status-disconnected: #c03434;
   --color-status-inactive: #63666d;

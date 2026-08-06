@@ -54,19 +54,19 @@ export const THEMES: ThemeMeta[] = [
   {
     id: 'graphite',
     label: 'Graphite',
-    description: 'Neutral graphite surfaces with one indigo accent',
+    description: 'Neutral graphite surfaces with one teal accent',
     category: 'dark',
     // Hex values must match the rendered surfaces in index.css — the picker
     // chip is the only way users see a surface before applying the theme, and
     // a test compares these against the tokens rather than trusting either.
-    preview: { bg: '#0d0e11', card: '#16181d', primary: '#8b93f8', accent: '#eceef2' },
+    preview: { bg: '#0d0e11', card: '#16181d', primary: '#4dd0e1', accent: '#eceef2' },
   },
   {
     id: 'paper',
     label: 'Paper',
-    description: 'Neutral paper surfaces with one indigo accent',
+    description: 'Neutral paper surfaces with one teal accent',
     category: 'light',
-    preview: { bg: '#f1f1f3', card: '#ffffff', primary: '#4a55c9', accent: '#17181a' },
+    preview: { bg: '#fbfbfc', card: '#ffffff', primary: '#0e7490', accent: '#17181a' },
   },
 ];
 
