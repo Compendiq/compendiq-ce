@@ -19,6 +19,7 @@ import {
   History,
 } from 'lucide-react';
 import { AutoTagger } from '../../../features/pages/AutoTagger';
+import { DockPanel } from '../../../features/ai/dock/DockPanel';
 import { VersionHistory } from '../../../features/pages/VersionHistory';
 import { FreshnessBadge } from '../badges/FreshnessBadge';
 import { EmbeddingStatusBadge } from '../badges/EmbeddingStatusBadge';
@@ -192,7 +193,20 @@ const OutlineNodeItem = memo(function OutlineNodeItem({
 
 // ---------- ArticleRightPane ----------
 
-export type InspectorView = 'outline' | 'details';
+/**
+ * `assistant` joins the inspector's views (owner decision, 2026-08-06),
+ * superseding #1126's third-column dock on desktop.
+ *
+ * The dock was a separate column beside this pane, opened by a trigger with its
+ * own animation. It is now the FIRST tab in this control, and switching to it
+ * is the same instant switch as Outline <-> Details — one pane, three views,
+ * one interaction. The old arrangement asked the user to learn two different
+ * things about the same right-hand edge.
+ *
+ * Below `md` the assistant is still `AiDockSheet` (a bottom sheet), because
+ * this pane does not render at all there — see AppLayout.
+ */
+export type InspectorView = 'assistant' | 'outline' | 'details';
 
 export interface InspectorViewRequest {
   view: InspectorView;
@@ -228,7 +242,6 @@ export function ArticleRightPane({
   // dock would leave their outline collapsed for good and the `.` shortcut would
   // have quietly changed meaning.
   const dockOpen = useAiDockStore((s) => s.open);
-  const openDock = useAiDockStore((s) => s.openDock);
   const closeDock = useAiDockStore((s) => s.closeDock);
   const dockLayoutIsWide = useIsDockWideLayout();
   const collapsed = userCollapsed || dockOpen;
@@ -724,7 +737,15 @@ export function ArticleRightPane({
                   // #1176: opening is all it does. It used to start a full-page
                   // rewrite on the same click, which is why it was called "AI
                   // Improve" and drew a wand.
-                  onClick={() => openDock()}
+                  // Expands the pane onto its Assistant tab. This used to call
+                  // `openDock()`, which after the tab move opened a column that
+                  // no longer renders — a live control that silently did
+                  // nothing.
+                  onClick={() => {
+                    inspectorViewTouchedRef.current = true;
+                    setActiveInspectorView('assistant');
+                    handleExpandSidebar();
+                  }}
                   className={railIconBtn}
                   aria-label="AI Assistant"
                   title={`AI Assistant (${formatKeysForPlatform(getShortcutHint('ai-assistant') ?? '', detectMac())})`}
@@ -937,10 +958,37 @@ export function ArticleRightPane({
         // toggle: `rounded-md` track, `border-border`, `bg-muted`, 2px inset.
         // This was `rounded-xl` on `bg-foreground/[0.045]` with a 4px inset —
         // a third distinct treatment for the same interaction.
-        className="mx-2 mt-2 grid shrink-0 grid-cols-2 gap-0.5 rounded-md border border-border bg-muted p-0.5"
+        className="mx-2 mt-2 grid shrink-0 grid-cols-3 gap-0.5 rounded-md border border-border bg-muted p-0.5"
         role="tablist"
         aria-label="Page context views"
       >
+        {/* First, and deliberately: the assistant is the thing people reach for
+            most on a page, and it used to be the one behind an extra step. */}
+        <button
+          type="button"
+          role="tab"
+          id="page-context-tab-assistant"
+          aria-controls="page-context-panel-assistant"
+          aria-selected={activeInspectorView === 'assistant'}
+          onClick={() => {
+            inspectorViewTouchedRef.current = true;
+            setActiveInspectorView('assistant');
+          }}
+          className={cn(
+            'flex h-7 items-center justify-center gap-1.5 rounded-sm px-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
+            activeInspectorView === 'assistant'
+              ? 'panel-tab-active'
+              : 'text-muted-foreground hover:text-foreground',
+          )}
+          data-ai-assistant-trigger
+          data-testid="page-context-tab-assistant"
+        >
+          {/* Violet marks AI (ADR-010) — on the tab's glyph only, so the
+              control still reads as one of three peers rather than the
+              coloured one. */}
+          <Sparkles size={13} className={cn(activeInspectorView === 'assistant' && 'text-status-ai')} />
+          Assistant
+        </button>
         <button
           type="button"
           role="tab"
@@ -986,6 +1034,27 @@ export function ArticleRightPane({
         </button>
       </div>
 
+      {activeInspectorView === 'assistant' && (
+        <div
+          id="page-context-panel-assistant"
+          role="tabpanel"
+          aria-labelledby="page-context-tab-assistant"
+          className="flex min-h-0 flex-1 flex-col"
+        >
+          {/* `DockPanel` keeps its own composer, chips and thread; only its
+              chrome changes. `variant="tab"` drops the header and close button
+              it needed as a standalone column — this pane already has both, and
+              two headers stacked was the giveaway that a column had been
+              stuffed into a tab.
+
+              Mounting it here also preserves #1126's provider economy: the
+              panel is the only `AiContext` consumer, and it still only mounts
+              while its view is selected, so the provider stays inert on an
+              article the user never asks about. */}
+          <DockPanel variant="tab" onClose={() => setActiveInspectorView('outline')} />
+        </div>
+      )}
+
       {activeInspectorView === 'details' && (
       <div
         id="page-context-panel-details"
@@ -1018,10 +1087,17 @@ export function ArticleRightPane({
             Page actions
           </div>
           <button
-            // #1126: opens the assistant beside the document. Opening it also
-            // forces this pane into its rail, so this button is the last thing
-            // the user sees of the expanded pane before it collapses.
-            onClick={() => openDock()}
+            // Switches this pane to its Assistant tab. It used to call
+            // `openDock()` and collapse the pane to a rail; after the tab move
+            // that opened a column that no longer renders, so the control was
+            // live and inert. Kept rather than deleted because Details is where
+            // the other page actions live and this is one of them — it is now a
+            // shortcut to a sibling tab rather than a second way to open a
+            // different surface.
+            onClick={() => {
+              inspectorViewTouchedRef.current = true;
+              setActiveInspectorView('assistant');
+            }}
             className="panel-context flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-sm font-medium text-primary-ink transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:border-primary/55"
             title={`AI Assistant (${formatKeysForPlatform(getShortcutHint('ai-assistant') ?? '', detectMac())})`}
             data-ai-assistant-trigger

@@ -31,7 +31,17 @@ import { useDockActions } from './use-dock-actions';
  * keeps the hoisted provider inert on article routes where the assistant was
  * never opened.
  */
-export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void; variant?: 'column' | 'sheet' }) {
+/**
+ * `variant`:
+ *  - `column` — the standalone right-hand column (retired on desktop, kept for
+ *    any caller that still wants a self-contained panel)
+ *  - `sheet`  — the mobile bottom sheet
+ *  - `tab`    — mounted inside ArticleRightPane as one of its three views. The
+ *    pane supplies the header and the collapse control, so this variant renders
+ *    neither; two stacked headers were the tell that a column had been stuffed
+ *    into a tab.
+ */
+export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void; variant?: 'column' | 'sheet' | 'tab' }) {
   const {
     page, pageId, messages, messagesEndRef, isStreaming, isThinking, thinkingElapsed,
     streamingContent, input, setInput, modelsError, refetchModels, model, chatVision,
@@ -189,7 +199,12 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
     >
       {/* Header — h-10 and px-3 exactly matching ArticleRightPane's
           "Properties" header, so the two panels share a baseline. Violet marks
-          the surface as the AI one (ADR-010 v0.5); it never fills a control. */}
+          the surface as the AI one (ADR-010 v0.5); it never fills a control.
+
+          Not rendered in the `tab` variant: the inspector already has a header
+          naming the page and a collapse control, and the tab itself says
+          "Assistant". */}
+      {variant !== 'tab' && (
       <div className="flex h-10 shrink-0 items-center justify-between gap-2 px-3">
         <span className="flex min-w-0 items-center gap-1.5">
           <Sparkles size={13} className="shrink-0 text-status-ai" aria-hidden />
@@ -209,6 +224,7 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
           {variant === 'sheet' ? <X size={15} /> : <PanelRightClose size={14} />}
         </button>
       </div>
+      )}
 
       {/* Streaming indicator: a violet hairline under the header, visible even
           when the thread is scrolled away from the in-flight answer. */}

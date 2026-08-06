@@ -17,7 +17,7 @@ import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { AiProvider } from '../AiContext';
-import { AiDock } from './AiDock';
+import { DockPanel } from './DockPanel';
 import { useAiDockStore } from '../../../stores/ai-dock-store';
 import { useUiStore } from '../../../stores/ui-store';
 import { IMPROVEMENT_DESCRIPTIONS } from '../improvement-types';
@@ -68,7 +68,12 @@ function refetchModels() {
   void queryClient.invalidateQueries({ queryKey: ['llm', 'models', 'chat'] });
 }
 
+// Shared spy so a test can assert the panel asked its host to close, which is
+// what Escape does now that the assistant is a tabpanel rather than a column.
+let onCloseSpy = vi.fn();
+
 function renderDock() {
+  onCloseSpy = vi.fn();
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
@@ -79,7 +84,7 @@ function renderDock() {
             <Routes>
               <Route path="/pages/:id" element={<div>article</div>} />
             </Routes>
-            <AiDock />
+            <DockPanel variant="tab" onClose={onCloseSpy} />
           </AiProvider>
         </MemoryRouter>
       </LazyMotion>
@@ -301,14 +306,16 @@ describe('AiDock improvement type (#1177)', () => {
     await waitFor(() => {
       expect(screen.queryByTestId('ai-dock-improve-types')).not.toBeInTheDocument();
     });
-    // The assistant — and the conversation in it — survives.
-    expect(screen.getByTestId('ai-dock')).toBeInTheDocument();
+    // The assistant — and the conversation in it — survives. Proven by the
+    // composer rather than the retired column's `ai-dock` wrapper.
+    expect(screen.getByTestId('ai-dock-input')).toBeInTheDocument();
     expect(document.activeElement).toBe(toggle());
 
-    // The next one is the dock's again.
+    // The next one is the assistant's again. As a tabpanel it does not
+    // unmount itself — it asks its host to show another view.
     fireEvent.keyDown(toggle(), { key: 'Escape' });
     await waitFor(() => {
-      expect(screen.queryByTestId('ai-dock')).not.toBeInTheDocument();
+      expect(onCloseSpy).toHaveBeenCalled();
     });
   });
 
@@ -325,7 +332,7 @@ describe('AiDock improvement type (#1177)', () => {
     await waitFor(() => {
       expect(screen.queryByTestId('ai-dock-improve-types')).not.toBeInTheDocument();
     });
-    expect(screen.getByTestId('ai-dock')).toBeInTheDocument();
+    expect(screen.getByTestId('ai-dock-input')).toBeInTheDocument();
     // Focus cannot be left on an element that just unmounted.
     expect(document.activeElement).toBe(toggle());
   });

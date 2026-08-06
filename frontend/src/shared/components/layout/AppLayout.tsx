@@ -588,11 +588,13 @@ export function AppLayout({ children }: { children: ReactNode }) {
               <ArticleRightPane inspectorViewRequest={inspectorViewRequest} />
             </div>
           )}
-          {isArticleRoute && (
-            <div className="hidden md:flex">
-              <AiDock />
-            </div>
-          )}
+          {/* No desktop dock column any more: at md and up the assistant is a
+              tab inside ArticleRightPane (owner decision, superseding #1126's
+              third column). `AiDock` still renders here for its MOBILE form —
+              it returns the bottom sheet below md and nothing above it — which
+              is the only reachable assistant on a phone, since the inspector
+              pane itself is `hidden md:flex`. */}
+          {isArticleRoute && <AiDock />}
         </div>
       </div>
 

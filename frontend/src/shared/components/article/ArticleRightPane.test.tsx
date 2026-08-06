@@ -94,6 +94,13 @@ vi.mock('../../../features/pages/AutoTagger', () => ({
   ),
 }));
 
+// The pane hosts the assistant as a tab now. DockPanel consumes AiContext and
+// the whole AI data stack; this file is about the PANE, so the panel is stubbed
+// the same way AutoTagger and the badges are. AiDock.test.tsx covers the panel.
+vi.mock('../../../features/ai/dock/DockPanel', () => ({
+  DockPanel: () => <div data-testid="dock-panel-stub" />,
+}));
+
 vi.mock('../badges/FreshnessBadge', () => ({
   FreshnessBadge: ({ lastModified }: { lastModified: string }) => <span>{lastModified}</span>,
 }));
@@ -288,12 +295,19 @@ describe('ArticleRightPane', () => {
   // the document off screen to operate on it. It opens the assistant beside the
   // document instead. #1176: and only opens it — it queues no work, so the
   // control is "AI Assistant" rather than a rewrite that starts on click.
-  it('opens the docked assistant instead of navigating away, and starts nothing', () => {
+  // The assistant is this pane's first TAB now, not a separate dock column, so
+  // the Details action switches views instead of setting `aiDockStore.open`.
+  // The half of this test that still matters — it does not navigate away, and
+  // opening starts no request (#1176) — is unchanged.
+  it('shows the assistant in this pane instead of navigating away, and starts nothing', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
     fireEvent.click(screen.getByText('AI Assistant'));
 
-    expect(useAiDockStore.getState().open).toBe(true);
+    expect(screen.getByTestId('page-context-tab-assistant')).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
     expect(mockNavigate).not.toHaveBeenCalled();
   });
 
