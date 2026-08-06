@@ -151,14 +151,19 @@ export function UsersAdminPage() {
   return (
     <section className="space-y-6">
       <header className="flex items-start justify-between gap-4">
-        <div>
-          <h2 className="text-xl font-semibold tracking-[-0.01em]">Users</h2>
-          <p className="text-sm text-muted-foreground">
+        {/* `min-w-0` on the prose, `shrink-0` on the actions. Without it the
+            description refused to wrap, pushed the button group past the
+            available width, and stacked "Bulk import" above "Create user" in a
+            column — two peer actions reading as a hierarchy. Prose is the thing
+            that should reflow; controls are not. */}
+        <div className="min-w-0">
+          <h2 className="text-[15px] font-semibold">Users</h2>
+          <p className="text-[13px] text-muted-foreground">
             Lifecycle management for user accounts. Role assignment and space permissions live under{' '}
             <a className="underline" href="/settings/security/rbac">RBAC</a>.
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
           {bulkEnabled && someSelected && (
             <button
               type="button"
