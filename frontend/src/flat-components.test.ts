@@ -40,39 +40,119 @@ function sources(dir: string, out: string[] = []): string[] {
  * Comments are stripped before anything is scanned, and it has to be a real
  * strip rather than a per-line `^\s*(\*|//)` test: several of these files
  * explain at length why an effect was removed, quoting the class name that was
- * removed. A continuation line inside a `/* … *\/` block need not start with an
+ * removed. A continuation line inside a block comment need not start with an
  * asterisk, so the naive test reads the rationale as a callsite and the sweep
- * fails on its own documentation. Blank the comment spans, keep the line count.
+ * fails on its own documentation.
+ *
+ * It must also be QUOTE-AWARE. A regex `//` strip blanks the rest of the line
+ * from inside `href="https://…"` — and there are ~18 such lines in this tree —
+ * so a class sitting after a URL on the same line became invisible to the whole
+ * sweep. That is a silent hole in a guard, which is worse than no guard.
+ *
+ * Known limitation: a regex literal containing a quote (`/["']/`) can desync the
+ * scanner. Accepted — it costs at most a spurious finding, never a missed one,
+ * and a missed one is the failure mode that matters here.
  */
 function stripComments(text: string): string {
-  return text
-    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
-    .replace(/\/\/[^\n]*/g, (m) => ' '.repeat(m.length));
+  let out = '';
+  let quote: string | null = null;
+  let i = 0;
+  while (i < text.length) {
+    const c = text[i]!;
+    const n = text[i + 1];
+    if (quote) {
+      if (c === '\\') {
+        out += c + (text[i + 1] ?? '');
+        i += 2;
+        continue;
+      }
+      if (c === quote) quote = null;
+      out += c;
+      i += 1;
+      continue;
+    }
+    if (c === '/' && n === '/') {
+      while (i < text.length && text[i] !== '\n') {
+        out += ' ';
+        i += 1;
+      }
+      continue;
+    }
+    if (c === '/' && n === '*') {
+      while (i < text.length && !(text[i] === '*' && text[i + 1] === '/')) {
+        out += text[i] === '\n' ? '\n' : ' ';
+        i += 1;
+      }
+      out += '  ';
+      i += 2;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === '`') quote = c;
+    out += c;
+    i += 1;
+  }
+  return out;
 }
 
-const FILES = sources(SRC).map((f) => ({
-  path: relative(SRC, f),
-  text: stripComments(readFileSync(f, 'utf8')),
-}));
+/**
+ * Every string and template-literal body in the file.
+ *
+ * Classes only ever live inside one, so this is what the sweep should look at.
+ * The previous version filtered LINES that contained a quote character, which
+ * silently skipped any class on its own line inside a multi-line template —
+ * a second way to evade the guard without trying. Scanning literal bodies
+ * closes that and drops the false positives from bare identifiers at once.
+ */
+function stringBodies(text: string): string[] {
+  const out: string[] = [];
+  let quote: string | null = null;
+  let start = 0;
+  let i = 0;
+  while (i < text.length) {
+    const c = text[i]!;
+    if (quote) {
+      if (c === '\\') {
+        i += 2;
+        continue;
+      }
+      if (c === quote) {
+        out.push(text.slice(start, i));
+        quote = null;
+      }
+      i += 1;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === '`') {
+      quote = c;
+      start = i + 1;
+    }
+    i += 1;
+  }
+  return out;
+}
 
-/** Class utilities only — the text is already comment-free. */
-function callsites(text: string, pattern: RegExp): string[] {
-  return text
-    .split('\n')
-    .filter((line) => pattern.test(line) && /["'`]/.test(line))
-    .map((l) => l.trim().slice(0, 100));
+const FILES = sources(SRC).map((f) => {
+  const stripped = stripComments(readFileSync(f, 'utf8'));
+  return { path: relative(SRC, f), text: stripped, strings: stringBodies(stripped) };
+});
+
+/** Matches inside string/template bodies only — never bare identifiers. */
+function callsites(file: { strings: string[] }, pattern: RegExp): string[] {
+  return file.strings
+    .filter((s) => pattern.test(s))
+    .map((s) => s.replace(/\s+/g, ' ').trim().slice(0, 100));
 }
 
 describe('the component layer is as flat as the token layer', () => {
   it('no Tailwind shadow utility survives — the system has one shadow', () => {
     const offenders: string[] = [];
-    for (const { path, text } of FILES) {
+    for (const file of FILES) {
       // `shadow-[var(--shadow-overlay)]` is the system shadow spelled as an
       // arbitrary value, for the two overlays that are not `nm-card-elevated`
       // (a drawer on `nm-sidebar`, a round floating button). Allowed by name.
-      for (const hit of callsites(text, /\bshadow(-(sm|md|lg|xl|2xl|inner))?(?=["'\s])/)) {
+      for (const hit of callsites(file, /\bshadow(-(sm|md|lg|xl|2xl|inner))?(?=["'\s]|$)/)) {
         if (hit.includes('shadow-[var(--shadow-overlay)]')) continue;
-        offenders.push(`${path}: ${hit}`);
+        offenders.push(`${file.path}: ${hit}`);
       }
     }
     expect(
@@ -102,29 +182,29 @@ describe('the component layer is as flat as the token layer', () => {
 
   it('no gradient is used as a surface', () => {
     const offenders: string[] = [];
-    for (const { path, text } of FILES) {
-      for (const hit of callsites(text, /\bbg-gradient-to-[a-z]+/)) offenders.push(`${path}: ${hit}`);
+    for (const file of FILES) {
+      for (const hit of callsites(file, /\bbg-gradient-to-[a-z]+/)) offenders.push(`${file.path}: ${hit}`);
     }
     expect(offenders, 'surfaces are flat values in this system, not gradients').toEqual([]);
   });
 
   it('no hover lift or press scale', () => {
     const offenders: string[] = [];
-    for (const { path, text } of FILES) {
-      for (const hit of callsites(text, /\b(hover|active|group-hover):(scale-|-?translate-y-)/))
-        offenders.push(`${path}: ${hit}`);
+    for (const file of FILES) {
+      for (const hit of callsites(file, /\b(hover|active|group-hover):(scale-|-?translate-y-)/))
+        offenders.push(`${file.path}: ${hit}`);
     }
     expect(offenders, 'hover and press are background/border changes, not motion').toEqual([]);
   });
 
   it('borders come from tokens, not literal white', () => {
     const offenders: string[] = [];
-    for (const { path, text } of FILES) {
-      for (const hit of callsites(text, /\bborder-white\//)) {
+    for (const file of FILES) {
+      for (const hit of callsites(file, /\bborder-white\//)) {
         // The draw.io overlay is a deliberate black panel, not a themed surface;
         // a white hairline is the coherent choice there and tracks nothing.
-        if (path.includes('DrawioEditor')) continue;
-        offenders.push(`${path}: ${hit}`);
+        if (file.path.includes('DrawioEditor')) continue;
+        offenders.push(`${file.path}: ${hit}`);
       }
     }
     expect(
