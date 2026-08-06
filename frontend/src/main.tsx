@@ -6,7 +6,7 @@ import { QueryClientProvider } from '@tanstack/react-query';
 import { Toaster } from 'sonner';
 import { App } from './App';
 import { EnterpriseProvider } from './shared/enterprise/context';
-import { useThemeStore, isLightTheme } from './stores/theme-store';
+import { useThemeStore, isLightTheme, startSystemThemeSync } from './stores/theme-store';
 import { createQueryClient } from './shared/lib/query-client';
 import { installPointerEventBridge } from './shared/lib/pointer-event-bridge';
 import './index.css';
@@ -15,9 +15,19 @@ import './index.css';
 // that emit only legacy mouse events and no Pointer Events. Tears itself down the
 // moment any real pointer event is seen, so normal input is entirely unaffected.
 const teardownPointerBridge = installPointerEventBridge();
-// Vite HMR re-runs this module on edit; dispose the previous bridge first so its
-// document listeners and the shared capture-patch ref-count don't accumulate.
-import.meta.hot?.dispose(() => teardownPointerBridge());
+
+// Keep the painted palette following the OS for as long as the user's
+// preference is `system` (the default). Installed here rather than in a
+// component effect so it survives regardless of what is mounted, and so a
+// StrictMode double-invoke cannot register two listeners.
+const teardownThemeSync = startSystemThemeSync();
+
+// Vite HMR re-runs this module on edit; dispose the previous listeners first so
+// they and the shared capture-patch ref-count don't accumulate.
+import.meta.hot?.dispose(() => {
+  teardownPointerBridge();
+  teardownThemeSync();
+});
 
 const queryClient = createQueryClient();
 

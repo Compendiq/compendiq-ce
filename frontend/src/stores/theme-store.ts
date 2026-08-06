@@ -6,13 +6,27 @@ migrateStorageKey('kb-theme', 'compendiq-theme');
 migrateStorageKey('atlasmind-theme', 'compendiq-theme');
 
 export const THEME_IDS = [
-  'slate-steel',
-  'frost-steel',
+  'graphite',
+  'paper',
 ] as const;
 
 export type ThemeId = (typeof THEME_IDS)[number];
 
 type ThemeCategory = 'dark' | 'light';
+
+/**
+ * What the user actually chooses. `system` is the default and is NOT a third
+ * palette — it resolves to `graphite` or `paper` from the OS setting and keeps
+ * tracking it for the life of the session.
+ *
+ * Preference and resolved theme are stored separately on purpose: persisting
+ * only the resolved ThemeId would silently convert "follow my OS" into a fixed
+ * choice the first time the store rehydrated.
+ */
+export const THEME_PREFERENCES = ['system', 'dark', 'light'] as const;
+export type ThemePreference = (typeof THEME_PREFERENCES)[number];
+
+export const DEFAULT_THEME_PREFERENCE: ThemePreference = 'system';
 
 interface ThemeMeta {
   id: ThemeId;
@@ -27,10 +41,10 @@ interface ThemeMeta {
   };
 }
 
-export const DEFAULT_DARK_THEME: ThemeId = 'slate-steel';
-export const DEFAULT_LIGHT_THEME: ThemeId = 'frost-steel';
+export const DEFAULT_DARK_THEME: ThemeId = 'graphite';
+export const DEFAULT_LIGHT_THEME: ThemeId = 'paper';
 
-export const LIGHT_THEMES: ReadonlySet<ThemeId> = new Set(['frost-steel']);
+export const LIGHT_THEMES: ReadonlySet<ThemeId> = new Set(['paper']);
 
 export function isLightTheme(theme: ThemeId): boolean {
   return LIGHT_THEMES.has(theme);
@@ -38,23 +52,21 @@ export function isLightTheme(theme: ThemeId): boolean {
 
 export const THEMES: ThemeMeta[] = [
   {
-    id: 'slate-steel',
-    label: 'Slate Steel',
-    description: 'Deep mineral ink with a crisp steel accent',
+    id: 'graphite',
+    label: 'Graphite',
+    description: 'Neutral graphite surfaces with one indigo accent',
     category: 'dark',
-    // Hex values must match the actual rendered surfaces in index.css — the
-    // picker chip is the only way users see the surface color before applying
-    // the theme. `bg` is the flat --color-background rather than the lightest
-    // stop of --surface-backdrop: the chip is too small to read a gradient,
-    // and the flat value is what the majority of the viewport settles to.
-    preview: { bg: '#0b121c', card: '#111a27', primary: '#74aefc', accent: '#e8f1f2' },
+    // Hex values must match the rendered surfaces in index.css — the picker
+    // chip is the only way users see a surface before applying the theme, and
+    // a test compares these against the tokens rather than trusting either.
+    preview: { bg: '#0d0e11', card: '#16181d', primary: '#8b93f8', accent: '#eceef2' },
   },
   {
-    id: 'frost-steel',
-    label: 'Frost Steel',
-    description: 'Soft frost paper with a grounded steel accent',
+    id: 'paper',
+    label: 'Paper',
+    description: 'Neutral paper surfaces with one indigo accent',
     category: 'light',
-    preview: { bg: '#f4f5f7', card: '#ffffff', primary: '#2b63b7', accent: '#1a1d20' },
+    preview: { bg: '#f7f7f8', card: '#ffffff', primary: '#4a55c9', accent: '#17181a' },
   },
 ];
 
@@ -64,8 +76,33 @@ export const THEME_CATEGORIES: { key: ThemeCategory; label: string }[] = [
 ];
 
 interface ThemeState {
+  /** What the user chose. `system` tracks the OS for the whole session. */
+  preference: ThemePreference;
+  /** The palette actually painted right now — always a real ThemeId. */
   theme: ThemeId;
+  setPreference: (preference: ThemePreference) => void;
+  /** Explicit palette pick; implies a non-system preference. */
   setTheme: (theme: ThemeId) => void;
+}
+
+const DARK_QUERY = '(prefers-color-scheme: dark)';
+
+/** The OS's current answer. Defaults to dark where matchMedia is unavailable. */
+export function systemPrefersDark(): boolean {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return true;
+  return window.matchMedia(DARK_QUERY).matches;
+}
+
+export function resolvePreference(preference: ThemePreference): ThemeId {
+  if (preference === 'dark') return DEFAULT_DARK_THEME;
+  if (preference === 'light') return DEFAULT_LIGHT_THEME;
+  return systemPrefersDark() ? DEFAULT_DARK_THEME : DEFAULT_LIGHT_THEME;
+}
+
+export function validateThemePreference(value: unknown): ThemePreference {
+  return (THEME_PREFERENCES as readonly string[]).includes(value as string)
+    ? (value as ThemePreference)
+    : DEFAULT_THEME_PREFERENCE;
 }
 
 /**
@@ -85,6 +122,9 @@ const RETIRED_LIGHT_THEME_IDS: ReadonlySet<string> = new Set([
   'sunrise-cream',
   'cloud-white',
   'honey-linen',
+  // Light half of the retired Slate Steel / Frost Steel pair. Its dark sibling
+  // (`slate-steel`) needs no entry: it falls through to DEFAULT_DARK_THEME.
+  'frost-steel',
 ]);
 
 export function validateThemeId(id: string): ThemeId {
@@ -110,25 +150,91 @@ export function applyThemeToDocument(theme: ThemeId): void {
 export const useThemeStore = create<ThemeState>()(
   persist(
     (set) => ({
-      theme: DEFAULT_DARK_THEME,
+      preference: DEFAULT_THEME_PREFERENCE,
+      theme: resolvePreference(DEFAULT_THEME_PREFERENCE),
+      setPreference: (preference: ThemePreference) => {
+        const theme = resolvePreference(preference);
+        applyThemeToDocument(theme);
+        set({ preference, theme });
+      },
       setTheme: (theme: ThemeId) => {
         applyThemeToDocument(theme);
-        set({ theme });
+        set({ preference: isLightTheme(theme) ? 'light' : 'dark', theme });
       },
     }),
     {
       name: 'compendiq-theme',
+      // `theme` is derived state and is deliberately NOT persisted: writing it
+      // would let a stale resolved value win over the live OS reading on the
+      // next boot, which is how "follow the OS" quietly stops following.
+      partialize: (state) => ({ preference: state.preference }),
       onRehydrateStorage: () => {
         return (state?: ThemeState) => {
-          if (state?.theme) {
-            const validated = validateThemeId(state.theme);
-            if (validated !== state.theme) {
-              state.theme = validated;
-            }
-            applyThemeToDocument(state.theme);
-          }
+          if (!state) return;
+          const preference = validateThemePreference(state.preference);
+          state.preference = preference;
+          state.theme = resolvePreference(preference);
+          applyThemeToDocument(state.theme);
         };
       },
     },
   ),
 );
+
+/**
+ * Track the OS setting for as long as the user's preference is `system`.
+ * Called once at boot. Returns a teardown for tests.
+ *
+ * Reading the preference off the store at event time (rather than closing over
+ * it) is what lets a user switch to `system` mid-session and have the next OS
+ * flip take effect without a reload.
+ */
+export function startSystemThemeSync(): () => void {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+    return () => {};
+  }
+  const query = window.matchMedia(DARK_QUERY);
+
+  const onChange = () => {
+    // Do nothing until the persisted preference has been read back. Any write
+    // before that point re-serializes the store's INITIAL state — `system` —
+    // straight over the user's stored choice, so an OS event arriving in the
+    // gap silently converts "dark" into "follow the OS" and the palette flips
+    // on the next reload. The listener is only attached post-hydration, and
+    // this guard covers the synchronous-rehydrate case where a change can
+    // still land inside the same tick.
+    if (!useThemeStore.persist.hasHydrated()) return;
+
+    const { preference, theme } = useThemeStore.getState();
+    if (preference !== 'system') return;
+    const next = resolvePreference('system');
+    if (next === theme) return;
+    applyThemeToDocument(next);
+    useThemeStore.setState({ theme: next });
+  };
+
+  // Re-resolve once hydration lands: the OS may disagree with whatever the
+  // pre-React inline script painted, and with `system` the OS is the authority.
+  const settle = () => {
+    const { preference, theme } = useThemeStore.getState();
+    if (preference !== 'system') return;
+    const next = resolvePreference('system');
+    if (next === theme) return;
+    applyThemeToDocument(next);
+    useThemeStore.setState({ theme: next });
+  };
+
+  query.addEventListener('change', onChange);
+
+  let unsubHydrate = () => {};
+  if (useThemeStore.persist.hasHydrated()) {
+    settle();
+  } else {
+    unsubHydrate = useThemeStore.persist.onFinishHydration(settle);
+  }
+
+  return () => {
+    query.removeEventListener('change', onChange);
+    unsubHydrate();
+  };
+}

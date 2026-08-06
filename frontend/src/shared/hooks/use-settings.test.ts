@@ -31,12 +31,12 @@ describe('useUpdateSettings', () => {
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
 
     const { result } = renderHook(() => useUpdateSettings(), { wrapper });
-    result.current.mutate({ theme: 'frost-steel' });
+    result.current.mutate({ theme: 'paper' });
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(apiFetchMock).toHaveBeenCalledWith('/settings', {
       method: 'PUT',
-      body: JSON.stringify({ theme: 'frost-steel' }),
+      body: JSON.stringify({ theme: 'paper' }),
     });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['settings'] });
   });
@@ -74,7 +74,7 @@ describe('useUpdateSettings', () => {
     });
 
     const { result } = renderHook(() => useUpdateSettings(), { wrapper });
-    result.current.mutate({ theme: 'slate-steel' });
+    result.current.mutate({ theme: 'graphite' });
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(queryClient.getQueryState(['pages', 'page-1', 'versions'])?.isInvalidated).toBe(false);

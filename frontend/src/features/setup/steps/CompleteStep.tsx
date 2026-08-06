@@ -25,7 +25,7 @@ export function CompleteStep() {
       >
         {/* Same semantic status tokens as the connection banners in the steps
             before this one (#1168): literal emerald is dark-theme tuned and is
-            not remapped for Frost Steel, so this checkmark — a meaningful state
+            not remapped for Paper, so this checkmark — a meaningful state
             graphic under WCAG 1.4.11's 3:1 floor — measured 1.55:1 on its own
             disc in the light theme. */}
         <div className="flex h-16 w-16 items-center justify-center rounded-full bg-status-connected/20">

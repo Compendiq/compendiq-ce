@@ -109,7 +109,7 @@ export function ConfluenceStep({ onNext, onBack }: ConfluenceStepProps) {
 
         {/* Test result indicator. Uses the semantic status tokens rather than
             literal Tailwind emerald/red: those shades are dark-theme tuned and
-            (unlike the amber ones) are not remapped for Frost Steel, so they
+            (unlike the amber ones) are not remapped for Paper, so they
             rendered at ~1.6:1 on the light surface. The status tokens carry an
             AA-passing value per theme, and match the sync banners below. */}
         {testSuccess !== null && (

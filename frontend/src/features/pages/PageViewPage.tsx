@@ -660,7 +660,7 @@ export function PageViewPage() {
               stays flat bg-background rather than a copy of the gradient
               --surface-backdrop: at this height the radial has all but
               resolved to --color-background (measured max delta 3/255 in
-              Slate Steel, 2/255 in Frost Steel, and exact at the column
+              Graphite, 2/255 in Paper, and exact at the column
               edges), while a re-declared gradient can only line up with the
               app shell's via background-attachment: fixed, which silently
               re-anchors to the framer-motion transform on this very element.

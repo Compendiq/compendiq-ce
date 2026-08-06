@@ -94,22 +94,22 @@ interface GraphCanvasColors {
 function getCanvasColors(isLight: boolean): GraphCanvasColors {
   return isLight
     ? {
-        // Frost Steel --color-foreground #171c2c
-        label: 'rgba(23,28,44,0.85)',
-        title: 'rgba(23,28,44,0.95)',
-        badge: 'rgba(23,28,44,0.7)',
-        border: 'rgba(23,28,44,0.4)',
-        borderHover: 'rgba(23,28,44,0.9)',
-        hoverStroke: 'rgba(23,28,44,0.8)',
+        // Paper --color-foreground #17181a
+        label: 'rgba(23,24,26,0.85)',
+        title: 'rgba(23,24,26,0.95)',
+        badge: 'rgba(23,24,26,0.7)',
+        border: 'rgba(23,24,26,0.4)',
+        borderHover: 'rgba(23,24,26,0.9)',
+        hoverStroke: 'rgba(23,24,26,0.8)',
       }
     : {
-        // Slate Steel --color-foreground #e8ecf5
-        label: 'rgba(232,236,245,0.85)',
-        title: 'rgba(232,236,245,0.95)',
-        badge: 'rgba(232,236,245,0.7)',
-        border: 'rgba(232,236,245,0.4)',
-        borderHover: 'rgba(232,236,245,0.9)',
-        hoverStroke: 'rgba(232,236,245,0.8)',
+        // Graphite --color-foreground #eceef2
+        label: 'rgba(236,238,242,0.85)',
+        title: 'rgba(236,238,242,0.95)',
+        badge: 'rgba(236,238,242,0.7)',
+        border: 'rgba(236,238,242,0.4)',
+        borderHover: 'rgba(236,238,242,0.9)',
+        hoverStroke: 'rgba(236,238,242,0.8)',
       };
 }
 
@@ -197,7 +197,7 @@ export function GraphPage() {
   const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
 
   // #941: derive theme-aware canvas colours so node labels/borders stay
-  // legible on both the dark (Slate Steel) and light (Frost Steel) themes.
+  // legible on both the dark (Graphite) and light (Paper) themes.
   const isLight = useIsLightTheme();
   const canvasColors = useMemo(() => getCanvasColors(isLight), [isLight]);
 

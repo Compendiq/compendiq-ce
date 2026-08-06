@@ -365,7 +365,7 @@ describe('SetupWizard', () => {
 
     // #1168: the banner must carry the semantic status tokens, not the literal
     // emerald shades — those are dark-theme tuned and are not remapped for
-    // Frost Steel, where they measured 1.33:1 (label) and 1.69:1 (icon).
+    // Paper, where they measured 1.33:1 (label) and 1.69:1 (icon).
     const banner = screen.getByTestId('llm-test-result');
     expect(banner).toHaveClass('border-status-connected/30', 'bg-status-connected/10');
     expect(banner.className).not.toMatch(/emerald/);
