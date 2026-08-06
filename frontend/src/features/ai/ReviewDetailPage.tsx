@@ -276,7 +276,7 @@ function ReviewDetailContent({
         </button>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h1 className="flex items-center gap-2 text-2xl font-bold">
+            <h1 className="flex items-center gap-2 text-lg font-semibold">
               <FileText size={20} className="text-muted-foreground" />
               {review.page_title ?? `Page #${review.page_id}`}
             </h1>

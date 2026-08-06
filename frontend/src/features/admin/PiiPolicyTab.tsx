@@ -194,7 +194,7 @@ function PiiPolicyTabInner() {
       data-testid="pii-policy-tab"
     >
       <div>
-        <h1 className="flex items-center gap-2 text-2xl font-bold">
+        <h1 className="flex items-center gap-2 text-lg font-semibold">
           <ShieldCheck size={20} className="text-muted-foreground" />
           PII detection policy
         </h1>

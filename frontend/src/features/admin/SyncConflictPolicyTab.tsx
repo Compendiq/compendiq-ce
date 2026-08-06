@@ -176,7 +176,7 @@ function SyncConflictPolicyTabInner() {
       data-testid="sync-conflict-policy-tab"
     >
       <div>
-        <h1 className="flex items-center gap-2 text-2xl font-bold">
+        <h1 className="flex items-center gap-2 text-lg font-semibold">
           <GitMerge size={20} className="text-muted-foreground" />
           Sync conflict resolution
         </h1>

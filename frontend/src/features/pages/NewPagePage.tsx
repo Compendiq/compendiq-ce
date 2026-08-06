@@ -302,15 +302,18 @@ export function NewPagePage() {
       >
         {/* Panel 1: Actions + Settings */}
         <div className="nm-card space-y-3 p-3">
-          {/* Action bar */}
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
+          {/* Action bar. Wraps at both levels: at 390px the title, Import
+              Markdown, Use Template and Create could not all fit one line, and
+              the row clipped its right edge — losing Create, the only control
+              that completes the task this route exists for. */}
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+            <div className="flex shrink-0 items-center gap-3">
               <button onClick={() => navigate('/pages')} aria-label="Back to pages" className="nm-icon-button">
                 <ArrowLeft size={18} />
               </button>
-              <h1 className="text-xl font-bold">New Page</h1>
+              <h1 className="text-lg font-semibold">New Page</h1>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 onClick={() => fileInputRef.current?.click()}
                 disabled={importMarkdownMutation.isPending}

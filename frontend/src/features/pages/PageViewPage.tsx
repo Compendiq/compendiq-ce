@@ -611,7 +611,7 @@ export function PageViewPage() {
     return (
       <div className="nm-card flex min-h-[18rem] flex-col items-center justify-center gap-3 py-16 text-center">
         <FileText size={42} className="text-muted-foreground" />
-        <h1 className="text-xl font-semibold text-foreground">Page not found</h1>
+        <h1 className="text-lg font-semibold text-foreground">Page not found</h1>
         <p className="max-w-md text-sm text-muted-foreground">
           The selected page is unavailable or no longer accessible in the synced space tree.
         </p>

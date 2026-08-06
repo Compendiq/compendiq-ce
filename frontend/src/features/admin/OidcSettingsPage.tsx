@@ -679,7 +679,7 @@ export function OidcSettingsPage() {
 
       {/* Header */}
       <div>
-        <h1 className="text-2xl font-bold">SSO / OIDC</h1>
+        <h1 className="text-lg font-semibold">SSO / OIDC</h1>
         <p className="text-sm text-muted-foreground">
           Configure single sign-on with your identity provider
         </p>

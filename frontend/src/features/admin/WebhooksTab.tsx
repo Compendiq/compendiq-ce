@@ -191,7 +191,7 @@ function WebhooksTabInner() {
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="flex items-center gap-2 text-2xl font-bold">
+          <h1 className="flex items-center gap-2 text-lg font-semibold">
             <Webhook size={22} className="text-action" />
             Webhook endpoints
           </h1>

@@ -37,7 +37,7 @@ export function NotFoundPage() {
         <Compass size={32} aria-hidden="true" />
       </div>
 
-      <h1 className="text-2xl font-semibold tracking-[-0.01em]" tabIndex={-1}>
+      <h1 className="text-lg font-semibold tracking-[-0.01em]" tabIndex={-1}>
         This page doesn&apos;t exist
       </h1>
 

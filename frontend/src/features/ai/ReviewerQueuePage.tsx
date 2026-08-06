@@ -137,7 +137,7 @@ function ReviewerQueuePageInner() {
       data-testid="ai-review-queue-page"
     >
       <div>
-        <h1 className="flex items-center gap-2 text-2xl font-bold">
+        <h1 className="flex items-center gap-2 text-lg font-semibold">
           <ListChecks size={20} className="text-muted-foreground" />
           AI review queue
         </h1>

@@ -306,7 +306,7 @@ export function IpAllowlistTab() {
     >
       {/* Header */}
       <div>
-        <h1 className="text-2xl font-bold">IP allowlist</h1>
+        <h1 className="text-lg font-semibold">IP allowlist</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Restrict API access to specific IP ranges. When enabled, requests from
           non-matching IPs are rejected with 403 at the edge, before any route

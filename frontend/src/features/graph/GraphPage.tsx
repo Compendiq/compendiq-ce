@@ -452,7 +452,7 @@ export function GraphPage() {
       {/* Header bar */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold">Knowledge Graph</h1>
+          <h1 className="text-lg font-semibold">Knowledge Graph</h1>
           <p className="text-sm text-muted-foreground">
             {data.nodes.length} {viewMode === 'clustered' ? 'clusters' : 'pages'}, {data.edges.length} connections
             {focusPageId && ' (local view)'}

@@ -184,7 +184,7 @@ function AiReviewPolicyTabInner() {
       data-testid="ai-review-policy-tab"
     >
       <div>
-        <h1 className="flex items-center gap-2 text-2xl font-bold">
+        <h1 className="flex items-center gap-2 text-lg font-semibold">
           <ShieldCheck size={20} className="text-muted-foreground" />
           AI review policy
         </h1>
