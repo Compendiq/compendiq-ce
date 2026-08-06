@@ -1095,26 +1095,14 @@ export function ArticleRightPane({
           <div className="mb-1.5 px-1 text-[11px] font-semibold text-muted-foreground">
             Page actions
           </div>
-          <button
-            // Switches this pane to its Assistant tab. It used to call
-            // `openDock()` and collapse the pane to a rail; after the tab move
-            // that opened a column that no longer renders, so the control was
-            // live and inert. Kept rather than deleted because Details is where
-            // the other page actions live and this is one of them — it is now a
-            // shortcut to a sibling tab rather than a second way to open a
-            // different surface.
-            onClick={() => {
-              inspectorViewTouchedRef.current = true;
-              setActiveInspectorView('assistant');
-            }}
-            className="panel-context flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-sm font-medium text-primary-ink transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:border-primary/55"
-            title={`AI Assistant (${formatKeysForPlatform(getShortcutHint('ai-assistant') ?? '', detectMac())})`}
-            data-ai-assistant-trigger
-          >
-            <Sparkles size={15} className="shrink-0 opacity-70" />
-            <span className="truncate">AI Assistant</span>
-          </button>
-
+          {/* No "AI Assistant" action here. It was a page action when the
+              assistant was a separate column — something this pane could open.
+              Now the assistant is the tab immediately to the left of Details,
+              so the button was a control that switched to its own sibling: it
+              duplicated the tablist one row below it, and it made "Page
+              actions" mean two different things (act on the page vs. change
+              which panel you are looking at). The tab, the rail icon and Alt+I
+              are the three ways in, and they are enough. */}
           <button
             onClick={handleExportPdf}
             disabled={exportPdf.isPending}

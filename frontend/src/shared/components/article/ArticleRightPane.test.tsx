@@ -178,7 +178,6 @@ describe('ArticleRightPane', () => {
     expect(screen.getByRole('tablist', { name: 'Page context views' })).toBeInTheDocument();
     expect(screen.getByLabelText('Collapse page sidebar')).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Details' })).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getByText('AI Assistant')).toBeInTheDocument();
     expect(screen.getByText('Pin')).toBeInTheDocument();
     expect(screen.getByText('Open in Confluence')).toBeInTheDocument();
     expect(screen.getByText('Delete')).toBeInTheDocument();
@@ -187,7 +186,6 @@ describe('ArticleRightPane', () => {
   it('keeps primary actions visible and tucks maintenance and deletion behind disclosures', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    expect(screen.getByText('AI Assistant').closest('details')).toBeNull();
     expect(screen.getByText('Export PDF').closest('details')).toBeNull();
     expect(screen.getByText('Pin').closest('details')).toBeNull();
 
@@ -259,7 +257,9 @@ describe('ArticleRightPane', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
     expect(screen.queryByTestId('article-actions')).not.toBeInTheDocument();
-    expect(screen.queryByText('AI Assistant')).not.toBeInTheDocument();
+    // No "AI Assistant" assertion here any more: that control was removed from
+    // Page actions, so asserting its absence would pass whether or not editing
+    // hides anything — a green cell testing nothing.
   });
 
   it('keeps AI-Tagging available in edit mode (#354)', () => {
@@ -297,18 +297,19 @@ describe('ArticleRightPane', () => {
     expect(screen.queryByText('Version history')).not.toBeInTheDocument();
   });
 
-  // #1126: this button used to navigate to /ai?mode=improve&pageId=…, which took
-  // the document off screen to operate on it. It opens the assistant beside the
-  // document instead. #1176: and only opens it — it queues no work, so the
-  // control is "AI Assistant" rather than a rewrite that starts on click.
-  // The assistant is this pane's first TAB now, not a separate dock column, so
-  // the Details action switches views instead of setting `aiDockStore.open`.
-  // The half of this test that still matters — it does not navigate away, and
-  // opening starts no request (#1176) — is unchanged.
+  // #1126: the way in used to navigate to /ai?mode=improve&pageId=…, taking the
+  // document off screen to operate on it. It shows the assistant beside the
+  // document instead. #1176: and only shows it — it queues no work.
+  //
+  // The trigger under test is now the TAB. There was also an "AI Assistant"
+  // button in Page actions, which this test used to click; it was removed once
+  // the assistant became the tab immediately to its left, since it duplicated
+  // the tablist one row below it. Both halves that matter are unchanged: no
+  // navigation, and nothing starts on open.
   it('shows the assistant in this pane instead of navigating away, and starts nothing', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    fireEvent.click(screen.getByText('AI Assistant'));
+    fireEvent.click(screen.getByTestId('page-context-tab-assistant'));
 
     expect(screen.getByTestId('page-context-tab-assistant')).toHaveAttribute(
       'aria-selected',
