@@ -600,14 +600,32 @@ describe('PagesPage', () => {
   // --- Similarity percentage on search results (#1117) ---
 
   describe('search result similarity percentage (#1117)', () => {
-    /** Mock fetch where /search returns the given items. */
+    /**
+     * Mock fetch where /search returns the given items.
+     *
+     * `useSearch` fires two requests — a keyword one (phase 1, immediateResults)
+     * and a semantic one (phase 2, enhancedResults) — and the component renders
+     * `enhancedResults ?? immediateResults`. The real keyword branch never emits
+     * `similarity` (routes/knowledge/search.ts builds those items with `rank`
+     * and `snippet` only), so this mock strips it from the keyword reply too.
+     * Serving it on both legs would let these tests pass with the semantic query
+     * failing outright, or with the `??` fallback deleted — a green suite for a
+     * feature that renders nothing in production.
+     */
     function mockFetchWithSearchItems(items: unknown[]) {
       return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
         const url = typeof input === 'string' ? input : (input as Request).url;
         if (url.includes('/search?')) {
           const mode = new URL(url, 'http://localhost').searchParams.get('mode') ?? 'keyword';
+          const body = mode === 'keyword'
+            ? items.map((it) =>
+                Object.fromEntries(
+                  Object.entries(it as Record<string, unknown>).filter(([k]) => k !== 'similarity'),
+                ),
+              )
+            : items;
           return new Response(
-            JSON.stringify({ items, total: items.length, page: 1, limit: 10, totalPages: 1, mode, hasEmbeddings: true }),
+            JSON.stringify({ items: body, total: body.length, page: 1, limit: 10, totalPages: 1, mode, hasEmbeddings: true }),
             { headers: { 'Content-Type': 'application/json' } },
           );
         }
@@ -637,8 +655,10 @@ describe('PagesPage', () => {
       vi.restoreAllMocks();
       mockFetchWithSearchItems(items);
       render(<PagesPage />, { wrapper: createWrapper() });
-      // Semantic mode: the similarity badge only has a value to show when a
-      // vector leg ran, and this mirrors the empty-state suite above.
+      // Semantic mode is load-bearing, but not because of the similarity:
+      // `useSemanticSearch = !!(search && searchMode !== 'keyword')` gates the
+      // whole search-results section, so keyword mode never renders a result
+      // row at all.
       fireEvent.click(screen.getByTestId('search-mode-semantic'));
       fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
         target: { value: 'redis' },
@@ -677,7 +697,11 @@ describe('PagesPage', () => {
       ]);
 
       expect(await screen.findByText('Opposing Page', undefined, { timeout: 2000 })).toBeInTheDocument();
-      expect(screen.queryByText('-40%')).not.toBeInTheDocument();
+      // Assert the badge is ABSENT, not merely that "-40%" is missing: an
+      // implementation that clamped to 0 would render "0%" and satisfy the
+      // weaker check while still showing a figure for a chunk pointing away
+      // from the query.
+      expect(screen.queryByTitle('Semantic similarity to your query')).not.toBeInTheDocument();
     });
   });
 

@@ -2179,7 +2179,10 @@ describe('AiAssistantPage', () => {
       expect(screen.queryByTestId('confidence-badge')).not.toBeInTheDocument();
     });
 
-    it('renders no badge for sources persisted before the similarity field existed', () => {
+    it('renders no badge when a source carries score but no similarity at all', () => {
+      // Not a persistence case: sources are never stored (saveConversation
+      // writes `ChatMessage[]`). This is the absent-field state the Source type
+      // permits — an older client, or any frame built without the field.
       seedAssistantMessage([{ pageTitle: 'Old', pageId: 1, score: 0.0164 }]);
 
       expect(screen.queryByTestId('confidence-badge')).not.toBeInTheDocument();

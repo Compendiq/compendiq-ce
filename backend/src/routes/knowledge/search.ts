@@ -185,9 +185,10 @@ export async function searchRoutes(fastify: FastifyInstance) {
         labels: [] as string[],
         // `rank` is the ordering quantity in whatever unit this mode produced
         // (cosine for semantic, RRF fusion for hybrid). `similarity` is the
-        // cosine in [0,1], or null when no vector leg contributed — it is the
-        // only field with one meaning across modes, and the only one safe to
-        // render (#1117).
+        // cosine — the only field with one meaning across modes, and the only
+        // one safe to render — or null when no vector leg contributed. Its
+        // range is [-1,1], not [0,1]; see `SearchResult.vectorScore` in
+        // rag-service.ts (#1117).
         rank: r.score,
         snippet: r.chunkText.slice(0, 300),
         score: r.score,
@@ -242,11 +243,8 @@ export async function searchRoutes(fastify: FastifyInstance) {
         author: null as string | null,
         lastModifiedAt: null as Date | null,
         labels: [] as string[],
-        // `rank` is the ordering quantity in whatever unit this mode produced
-        // (cosine for semantic, RRF fusion for hybrid). `similarity` is the
-        // cosine in [0,1], or null when no vector leg contributed — it is the
-        // only field with one meaning across modes, and the only one safe to
-        // render (#1117).
+        // Same three-field contract as the semantic branch above: `rank` orders,
+        // `similarity` is the renderable cosine or null (#1117).
         rank: r.score,
         snippet: r.chunkText.slice(0, 300),
         score: r.score,

@@ -218,39 +218,49 @@ describe('useSearch', () => {
     expect(result.current.immediateResults[0].score).toBe(0.9);
   });
 
+  // These two go through the HYBRID leg deliberately. Only the semantic and
+  // hybrid branches of /api/search emit `similarity` at all — a keyword-mode
+  // fixture carrying one would contradict the contract the same PR documented,
+  // and would exercise a response the server cannot produce.
   it('maps similarity through, distinct from the fusion score', async () => {
-    mockFetch(makeSearchResponse({
-      items: [{ id: 7, title: 'Hybrid Hit', spaceKey: 'DEV', snippet: '', rank: 0.0328, score: 0.0328, similarity: 0.71 }],
-      mode: 'keyword',
-      hasEmbeddings: true,
-    }));
+    mockFetch(
+      makeSearchResponse({ items: [{ id: 1, title: 'Keyword Hit', spaceKey: 'DEV', snippet: '', rank: 0.5 }], mode: 'keyword' }),
+      makeSearchResponse({
+        items: [{ id: 7, title: 'Hybrid Hit', spaceKey: 'DEV', snippet: '', rank: 0.0328, score: 0.0328, similarity: 0.71 }],
+        mode: 'hybrid',
+        hasEmbeddings: true,
+      }),
+    );
 
     const { result } = renderHook(
-      () => useSearch({ query: 'redis', mode: 'keyword' }),
+      () => useSearch({ query: 'redis', mode: 'hybrid' }),
       { wrapper: createWrapper() },
     );
 
-    await waitFor(() => expect(result.current.isLoadingImmediate).toBe(false));
+    await waitFor(() => expect(result.current.isLoadingEnhanced).toBe(false));
 
-    expect(result.current.immediateResults[0].similarity).toBe(0.71);
-    expect(result.current.immediateResults[0].score).toBe(0.0328);
+    expect(result.current.enhancedResults![0].similarity).toBe(0.71);
+    expect(result.current.enhancedResults![0].score).toBe(0.0328);
   });
 
   it('preserves an explicit null similarity from a full-text-only hybrid row', async () => {
-    mockFetch(makeSearchResponse({
-      items: [{ id: 8, title: 'FTS only', spaceKey: 'DEV', snippet: '', rank: 0.0164, score: 0.0164, similarity: null }],
-      mode: 'keyword',
-      hasEmbeddings: true,
-    }));
+    mockFetch(
+      makeSearchResponse({ items: [{ id: 1, title: 'Keyword Hit', spaceKey: 'DEV', snippet: '', rank: 0.5 }], mode: 'keyword' }),
+      makeSearchResponse({
+        items: [{ id: 8, title: 'FTS only', spaceKey: 'DEV', snippet: '', rank: 0.0164, score: 0.0164, similarity: null }],
+        mode: 'hybrid',
+        hasEmbeddings: true,
+      }),
+    );
 
     const { result } = renderHook(
-      () => useSearch({ query: 'redis', mode: 'keyword' }),
+      () => useSearch({ query: 'redis', mode: 'hybrid' }),
       { wrapper: createWrapper() },
     );
 
-    await waitFor(() => expect(result.current.isLoadingImmediate).toBe(false));
+    await waitFor(() => expect(result.current.isLoadingEnhanced).toBe(false));
 
-    expect(result.current.immediateResults[0].similarity).toBeNull();
+    expect(result.current.enhancedResults![0].similarity).toBeNull();
   });
 
   it('returns enhancedResults from hybrid endpoint response', async () => {

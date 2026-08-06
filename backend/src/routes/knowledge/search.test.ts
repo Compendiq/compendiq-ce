@@ -572,6 +572,11 @@ describe('Search Routes', () => {
 
     it('semantic mode: `similarity` is present and equals the cosine', async () => {
       mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] });
+      // The suite's beforeEach only calls vi.clearAllMocks(), which clears calls
+      // but not implementations — so a semantic test that omits this silently
+      // inherits whichever embedding mock an earlier test happened to leave
+      // behind, and fails the moment the file is run with a -t filter.
+      mockProviderGenerateEmbedding.mockResolvedValue([[new Array(768).fill(0.1)]]);
       mockVectorSearch.mockResolvedValue([
         makeSearchResult(3, 'Semantic', { score: 0.66, vectorScore: 0.66 }),
       ]);
@@ -588,10 +593,14 @@ describe('Search Routes', () => {
       // untyped, so a fixture missing `vectorScore` makes the route emit
       // `undefined` and every other assertion here still passes.
       mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] });
+      mockProviderGenerateEmbedding.mockResolvedValue([[new Array(768).fill(0.1)]]);
       mockVectorSearch.mockResolvedValue([makeSearchResult(4, 'Present')]);
 
       const response = await app.inject({ method: 'GET', url: '/api/search?q=test&mode=semantic' });
 
+      // Assert the status first: without it a 502 surfaces as an opaque
+      // TypeError on items[0] rather than naming the real failure.
+      expect(response.statusCode).toBe(200);
       expect(Object.keys(response.json().items[0])).toContain('similarity');
     });
 

@@ -223,8 +223,9 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     });
 
     // `score` is the retrieval ORDERING value — an RRF fusion score from
-    // hybridSearch, typically ~0.033 and never near the [0,1] range a similarity
-    // threshold expects. It is kept because it is what orders the array and what
+    // hybridSearch, typically ~0.033 and bounded on this path at ~0.17 — never
+    // near what a similarity threshold expects. It is kept because it orders
+    // the array and is what
     // any existing consumer of this frame reads; it must never be rendered or
     // thresholded. `similarity` is the cosine, or null when the page was found
     // only by keyword search and none was ever measured (#1117).

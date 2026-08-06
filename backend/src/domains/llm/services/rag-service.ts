@@ -68,6 +68,14 @@ interface SearchResult {
    * Raw `ts_rank` from the keyword leg, or `null` when this page was found only
    * by vector search. Unbounded and corpus-dependent: comparable between rows of
    * one query, meaningless as an absolute figure.
+   *
+   * **Deliberately has no reader yet.** #1117's scope is to carry *both* per-leg
+   * values rather than let fusion discard them, and this is the half nothing
+   * consumes today: it is not exposed on the wire (only `vectorScore` is, as
+   * `similarity`) and no ranking reads it. It exists so #1105's confidence
+   * formula and #1106's page-merge can blend the legs without another change to
+   * this shape. If those land without needing it, delete it — an unread number
+   * is a maintenance cost, not an asset.
    */
   keywordRank: number | null;
 }

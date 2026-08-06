@@ -147,8 +147,9 @@ Two range traps. `vectorScore` is `1 - (embedding <=> query)` and pgvector's
 cosine distance runs to 2, so the true range is `[-1,1]`; the `/pages` search
 list therefore renders a percentage only for a **positive** similarity. And
 `sources` are never persisted — `saveConversation` writes `ChatMessage[]`, i.e.
-`{role, content}` (see line ~279) — so a replayed conversation carries no
-sources and shows no badge regardless of any of this.
+`{role, content}` (see the source-objects note later in this document) — so a
+replayed conversation carries no sources and shows no badge regardless of any
+of this.
 
 `search_analytics.max_score` deliberately still stores the **fusion** value for
 `hybrid` and `keyword_fallback` rows. Repointing it at `vectorScore` would make
