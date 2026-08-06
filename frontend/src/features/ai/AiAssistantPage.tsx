@@ -13,6 +13,7 @@ import { AIThinkingBlob } from '../../shared/components/feedback/AIThinkingBlob'
 import { TypingIndicator } from '../../shared/components/feedback/TypingIndicator';
 import { SourceCitations } from './SourceCitations';
 import { CitationChips } from './CitationChips';
+import { averageSourceSimilarity } from './source-confidence';
 import { StreamingMessage } from './StreamingMessage';
 import { useAiContext, type Mode, type Message } from './AiContext';
 import {
@@ -115,10 +116,12 @@ const MessageBubble = memo(function MessageBubble({
           <div className="mt-3 space-y-2">
             <div className="flex items-center gap-2">
               {(() => {
-                const scores = msg.sources!.filter((s) => s.score != null).map((s) => s.score!);
-                if (scores.length === 0) return null;
-                const avgScore = scores.reduce((a, b) => a + b, 0) / scores.length;
-                return <ConfidenceBadge score={avgScore} />;
+                // null means no similarity was measured (keyword-only hit, a
+                // web source, or a pre-#1117 conversation) — render no badge
+                // rather than a zero, which paints it red.
+                const avgSimilarity = averageSourceSimilarity(msg.sources!);
+                if (avgSimilarity === null) return null;
+                return <ConfidenceBadge score={avgSimilarity} />;
               })()}
               <CitationChips sources={msg.sources!} />
             </div>

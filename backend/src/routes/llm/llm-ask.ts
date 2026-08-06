@@ -222,6 +222,18 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       thinking: body.thinking,
     });
 
+    // `score` is the retrieval ORDERING value — an RRF fusion score from
+    // hybridSearch, typically ~0.033 and bounded on this path at ~0.17 — never
+    // near what a similarity threshold expects. It is kept because it orders
+    // the array and is what
+    // any existing consumer of this frame reads; it must never be rendered or
+    // thresholded. `similarity` is the cosine, or null when the page was found
+    // only by keyword search and none was ever measured (#1117).
+    //
+    // Note the two are separate FIELDS rather than one redefined field purely
+    // for legibility — `sources` is never persisted (saveConversation below
+    // writes `ChatMessage[]`, i.e. `{role, content}`), so a replayed
+    // conversation carries no sources at all and renders no badge regardless.
     const sources = [
       ...searchResults.map((r) => ({
         pageId: r.pageId,
@@ -230,11 +242,16 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         confluenceId: r.confluenceId,
         sectionTitle: r.sectionTitle,
         score: r.score,
+        similarity: r.vectorScore,
       })),
       // `url` is the discriminator the frontend keys on: these are links, not
       // pages, and routing them through `/pages/:id` lands on the not-found
       // page (#1125). `confluenceId` keeps carrying the URL for conversations
       // persisted before this field existed.
+      // `score: 1` is a sort key, not a measurement — these never went through
+      // retrieval. `similarity: null` keeps them out of any confidence average:
+      // previously they were the only sources scoring 1.0, so a web-grounded
+      // answer outranked one grounded in the knowledge base (#1117).
       ...externalDocs.map((d) => ({
         pageId: 0,
         pageTitle: d.title,
@@ -243,6 +260,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         url: d.url,
         sectionTitle: d.title,
         score: 1,
+        similarity: null,
       })),
       ...askWebSources.map((s) => ({
         pageId: 0,
@@ -252,6 +270,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         url: s.url,
         sectionTitle: s.title,
         score: 1,
+        similarity: null,
       })),
     ];
 

@@ -75,7 +75,7 @@ jobs:
         run: |
           docker pull "$IMAGE"
           docker run --rm --entrypoint node "$IMAGE" --input-type=module -e \
-            "await import('p-limit'); await import('ipaddr.js'); console.log('runtime require smoke ok');"
+            "await import('p-limit'); await import('ipaddr.js'); await import('@opentelemetry/sdk-node'); await import('@opentelemetry/sdk-metrics'); console.log('runtime require smoke ok');"
 
   docker-frontend:
     name: Frontend Image

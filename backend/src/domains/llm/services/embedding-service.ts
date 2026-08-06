@@ -321,6 +321,15 @@ async function getAdminChunkSettings(): Promise<{ chunkSize: number; chunkOverla
 }
 
 /**
+ * Pages whose extracted plain text is shorter than this never embed:
+ * embedPage settles them with zero `page_embeddings` rows and un-dirties
+ * them. Exported so the coverage probe (#1117, rag-service.ts) can exclude
+ * them from its denominator — counting the permanently-unembeddable would
+ * make a corpus with a few structural stub pages read "degraded" forever.
+ */
+export const MIN_EMBEDDABLE_TEXT_CHARS = 20;
+
+/**
  * Embed a single page's content.
  * Tables are shared (no user_id); access control is at the query layer.
  * @param pageId - The integer primary key of the page in the `pages` table (pages.id)
@@ -334,7 +343,7 @@ export async function embedPage(
   opts?: { chunkSize?: number; chunkOverlap?: number },
 ): Promise<number> {
   const plainText = htmlToText(bodyHtml);
-  if (!plainText || plainText.length < 20) {
+  if (!plainText || plainText.length < MIN_EMBEDDABLE_TEXT_CHARS) {
     logger.debug({ pageId, pageTitle }, 'Skipping empty/short page for embedding');
     await query(
       `UPDATE pages SET embedding_dirty = FALSE, embedding_status = 'not_embedded', embedding_error = NULL WHERE id = $1`,

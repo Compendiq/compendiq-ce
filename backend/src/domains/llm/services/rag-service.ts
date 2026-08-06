@@ -14,6 +14,23 @@ import { isFeatureEnabled } from '../../../core/enterprise/loader.js';
 import { ENTERPRISE_FEATURES } from '../../../core/enterprise/features.js';
 import pgvector from 'pgvector';
 import { logger } from '../../../core/utils/logger.js';
+import { withSpan, recordHistogram } from '../../../telemetry.js';
+import { MIN_EMBEDDABLE_TEXT_CHARS } from './embedding-service.js';
+
+/**
+ * Latency histogram for retrieval pipeline stages (#1117). `stage` is the one
+ * attribute: 'vector_search' | 'keyword_search' | 'total' today; 'rerank'
+ * joins when #1104 lands (this instrument existing first is what makes rerank
+ * latency measurable before that stage ships). Per-leg stages record
+ * successful runs only; 'total' records failures too — an error's latency is
+ * still latency the caller waited out.
+ */
+export const RETRIEVAL_STAGE_DURATION_METRIC = 'compendiq.retrieval.stage.duration';
+
+const STAGE_DURATION_OPTS = {
+  unit: 'ms',
+  description: 'Latency of retrieval pipeline stages (vector/keyword legs, rerank once #1104 lands, total)',
+};
 
 // Configurable ef_search: higher = better recall, slower query.
 // Default 100 provides good recall/latency tradeoff for ~10K embeddings.
@@ -29,7 +46,55 @@ interface SearchResult {
   pageTitle: string;
   sectionTitle: string;
   spaceKey: string | null;
+  /**
+   * Ranking quantity. **The unit depends on who produced it** — cosine
+   * similarity from `vectorSearch`, raw `ts_rank` from `keywordSearch`, and an
+   * RRF fusion score from `reciprocalRankFusion`. Use it to ORDER results.
+   * Never display it, never threshold it, never compare it across producers.
+   *
+   * The fusion value is ~0.016 for a single rank in one leg and ~0.033 for the
+   * common two-leg case, but it is **not** bounded there: the vector leg is
+   * per-CHUNK, so one page occupying several of the top slots has its
+   * contributions summed (that is why the best-chunk rule below exists). The
+   * worst case is therefore a function of the per-stage limit, and it is easy to
+   * underestimate — `rrfWorstCase` below computes it, and a test pins the two
+   * figures that matter rather than leaving them as prose:
+   *
+   * - chat path (`/llm/ask`, topK 5 → stage limit 10, or 8 under EE ACL):
+   *   at most ~0.17, comfortably under ConfidenceBadge's 0.4 threshold, which
+   *   is why reading this field as a cosine produced "Low confidence" every time.
+   * - `/api/search` under EE ACL with `limit=20` → stage limit 30: up to ~0.42,
+   *   which is **over** that threshold. Nothing thresholds it on that path, but
+   *   do not restate the chat-path bound as a global one.
+   *
+   * Either way it is not a similarity — see `vectorScore`.
+   */
   score: number;
+  /**
+   * Cosine similarity from the vector leg, or `null` when this page was found
+   * only by keyword search. **This is the only score field with a stable unit**,
+   * and the one a confidence display or threshold must read (#1117).
+   *
+   * Range is [-1,1], not [0,1]: it is `1 - (embedding <=> query)`, and pgvector's
+   * cosine distance runs to 2, so a chunk pointing away from the query scores
+   * negative. Normalised embeddings on real content make that rare, not
+   * impossible — display sites must not assume a percentage in [0,100].
+   */
+  vectorScore: number | null;
+  /**
+   * Raw `ts_rank` from the keyword leg, or `null` when this page was found only
+   * by vector search. Unbounded and corpus-dependent: comparable between rows of
+   * one query, meaningless as an absolute figure.
+   *
+   * **Deliberately has no reader yet.** #1117's scope is to carry *both* per-leg
+   * values rather than let fusion discard them, and this is the half nothing
+   * consumes today: it is not exposed on the wire (only `vectorScore` is, as
+   * `similarity`) and no ranking reads it. It exists so #1105's confidence
+   * formula and #1106's page-merge can blend the legs without another change to
+   * this shape. If those land without needing it, delete it — an unread number
+   * is a maintenance cost, not an asset.
+   */
+  keywordRank: number | null;
 }
 
 /**
@@ -42,51 +107,68 @@ interface SearchResult {
  * Default PostgreSQL ef_search is 40; we use 100 for better RAG recall.
  */
 export async function vectorSearch(userId: string, questionEmbedding: number[], limit = 10): Promise<SearchResult[]> {
-  const vecSpaces = await getUserAccessibleSpaces(userId);
-  // Use the dedicated vector pool so long-running similarity queries
-  // do not starve the main pool used by CRUD routes.
-  const client = await getVectorPool().connect();
-  try {
-    await client.query('BEGIN');
-    await client.query(`SET LOCAL hnsw.ef_search = ${Number(RAG_EF_SEARCH)}`);
+  return withSpan(
+    'rag.vector_search',
+    async (span) => {
+      const started = performance.now();
+      const vecSpaces = await getUserAccessibleSpaces(userId);
+      // Use the dedicated vector pool so long-running similarity queries
+      // do not starve the main pool used by CRUD routes.
+      const client = await getVectorPool().connect();
+      try {
+        await client.query('BEGIN');
+        await client.query(`SET LOCAL hnsw.ef_search = ${Number(RAG_EF_SEARCH)}`);
 
-    const result = await client.query<{
-      page_id: number;
-      confluence_id: string | null;
-      chunk_text: string;
-      // `space_key` is NULL for locally-created (standalone) pages, same as
-      // `confluence_id` — `SearchResult.spaceKey` has always been nullable.
-      metadata: { page_title: string; section_title: string; space_key: string | null };
-      distance: number;
-    }>(
-      `SELECT cp.id AS page_id, cp.confluence_id, pe.chunk_text, pe.metadata,
-              pe.embedding <=> $2 AS distance
-       FROM page_embeddings pe
-       JOIN pages cp ON pe.page_id = cp.id
-       WHERE ${visiblePagesPredicate(1, 4)}
-       AND cp.deleted_at IS NULL
-       ORDER BY pe.embedding <=> $2
-       LIMIT $3`,
-      [vecSpaces, pgvector.toSql(questionEmbedding), limit, userId],
-    );
+        const result = await client.query<{
+          page_id: number;
+          confluence_id: string | null;
+          chunk_text: string;
+          // `space_key` is NULL for locally-created (standalone) pages, same as
+          // `confluence_id` — `SearchResult.spaceKey` has always been nullable.
+          metadata: { page_title: string; section_title: string; space_key: string | null };
+          distance: number;
+        }>(
+          `SELECT cp.id AS page_id, cp.confluence_id, pe.chunk_text, pe.metadata,
+                  pe.embedding <=> $2 AS distance
+           FROM page_embeddings pe
+           JOIN pages cp ON pe.page_id = cp.id
+           WHERE ${visiblePagesPredicate(1, 4)}
+           AND cp.deleted_at IS NULL
+           ORDER BY pe.embedding <=> $2
+           LIMIT $3`,
+          [vecSpaces, pgvector.toSql(questionEmbedding), limit, userId],
+        );
 
-    await client.query('COMMIT');
+        await client.query('COMMIT');
 
-    return result.rows.map((row) => ({
-      pageId: row.page_id,
-      confluenceId: row.confluence_id,
-      chunkText: row.chunk_text,
-      pageTitle: row.metadata.page_title,
-      sectionTitle: row.metadata.section_title,
-      spaceKey: row.metadata.space_key,
-      score: 1 - row.distance, // Convert distance to similarity
-    }));
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw err;
-  } finally {
-    client.release();
-  }
+        const mapped = result.rows.map((row) => ({
+          pageId: row.page_id,
+          confluenceId: row.confluence_id,
+          chunkText: row.chunk_text,
+          pageTitle: row.metadata.page_title,
+          sectionTitle: row.metadata.section_title,
+          spaceKey: row.metadata.space_key,
+          score: 1 - row.distance, // Convert distance to similarity
+          vectorScore: 1 - row.distance,
+          keywordRank: null,
+        }));
+        span?.setAttribute('rag.hits', mapped.length);
+        recordHistogram(
+          RETRIEVAL_STAGE_DURATION_METRIC,
+          performance.now() - started,
+          { stage: 'vector_search' },
+          STAGE_DURATION_OPTS,
+        );
+        return mapped;
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw err;
+      } finally {
+        client.release();
+      }
+    },
+    { 'rag.limit': limit },
+  );
 }
 
 /**
@@ -98,40 +180,74 @@ export async function keywordSearch(userId: string, questionText: string, limit 
   // Use plainto_tsquery which safely handles arbitrary user input
   // (no need to manually sanitize or construct tsquery syntax)
   const trimmed = questionText.trim();
+  // Before the span on purpose: an empty query is not a retrieval, and a
+  // 0ms sample for it would only pollute the stage histogram.
   if (!trimmed) return [];
 
-  const ftsLang = await getFtsLanguage();
+  return withSpan(
+    'rag.keyword_search',
+    async (span) => {
+      const started = performance.now();
+      const ftsLang = await getFtsLanguage();
 
-  const kwSpaces = await getUserAccessibleSpaces(userId);
-  const result = await query<{
-    page_id: number;
-    confluence_id: string | null;
-    title: string;
-    space_key: string | null;
-    body_text: string;
-    rank: number;
-  }>(
-    `SELECT cp.id AS page_id, cp.confluence_id, cp.title, cp.space_key,
-            substring(cp.body_text, 1, 500) as body_text,
-            ts_rank(cp.tsv, plainto_tsquery('${ftsLang}', $2)) AS rank
-     FROM pages cp
-     WHERE cp.tsv @@ plainto_tsquery('${ftsLang}', $2)
-       AND ${visiblePagesPredicate(1, 4)}
-       AND cp.deleted_at IS NULL
-     ORDER BY rank DESC
-     LIMIT $3`,
-    [kwSpaces, trimmed, limit, userId],
+      const kwSpaces = await getUserAccessibleSpaces(userId);
+      const result = await query<{
+        page_id: number;
+        confluence_id: string | null;
+        title: string;
+        space_key: string | null;
+        body_text: string;
+        rank: number;
+      }>(
+        `SELECT cp.id AS page_id, cp.confluence_id, cp.title, cp.space_key,
+                substring(cp.body_text, 1, 500) as body_text,
+                ts_rank(cp.tsv, plainto_tsquery('${ftsLang}', $2)) AS rank
+         FROM pages cp
+         WHERE cp.tsv @@ plainto_tsquery('${ftsLang}', $2)
+           AND ${visiblePagesPredicate(1, 4)}
+           AND cp.deleted_at IS NULL
+         ORDER BY rank DESC
+         LIMIT $3`,
+        [kwSpaces, trimmed, limit, userId],
+      );
+
+      const mapped = result.rows.map((row) => ({
+        pageId: row.page_id,
+        confluenceId: row.confluence_id,
+        chunkText: row.body_text,
+        pageTitle: row.title,
+        sectionTitle: row.title,
+        spaceKey: row.space_key,
+        score: row.rank,
+        vectorScore: null,
+        keywordRank: row.rank,
+      }));
+      span?.setAttribute('rag.hits', mapped.length);
+      recordHistogram(
+        RETRIEVAL_STAGE_DURATION_METRIC,
+        performance.now() - started,
+        { stage: 'keyword_search' },
+        STAGE_DURATION_OPTS,
+      );
+      return mapped;
+    },
+    { 'rag.limit': limit },
   );
+}
 
-  return result.rows.map((row) => ({
-    pageId: row.page_id,
-    confluenceId: row.confluence_id,
-    chunkText: row.body_text,
-    pageTitle: row.title,
-    sectionTitle: row.title,
-    spaceKey: row.space_key,
-    score: row.rank,
-  }));
+/**
+ * Largest RRF score a single page can reach when it occupies every one of
+ * `stageLimit` vector slots, optionally plus the top keyword slot.
+ *
+ * Exported for the test that pins `SearchResult.score`'s documented bounds. The
+ * prose version of this has been wrong twice, in both directions, because the
+ * per-CHUNK vector leg lets one page's contributions sum — so the numbers live
+ * here where they can be asserted instead of in a comment.
+ */
+function rrfWorstCase(stageLimit: number, withKeywordHit = false, k = 60): number {
+  let total = 0;
+  for (let rank = 0; rank < stageLimit; rank++) total += 1 / (k + rank + 1);
+  return withKeywordHit ? total + 1 / (k + 1) : total;
 }
 
 /**
@@ -143,7 +259,15 @@ function reciprocalRankFusion(
   keywordResults: SearchResult[],
   k = 60,
 ): SearchResult[] {
-  const scoreMap = new Map<string, { result: SearchResult; score: number }>();
+  // The per-leg raw values are taken from WHICH ARGUMENT a result arrived in,
+  // not from the fields already on it: `score` is the leg's own native unit
+  // (cosine from the vector query, ts_rank from the FTS query), and reading it
+  // positionally is what keeps a keyword-only hit from reporting a similarity
+  // it never had (#1117).
+  const scoreMap = new Map<
+    string,
+    { result: SearchResult; score: number; vectorScore: number | null; keywordRank: number | null }
+  >();
 
   // Score from vector search
   vectorResults.forEach((result, rank) => {
@@ -156,8 +280,14 @@ function reciprocalRankFusion(
       if (result.score > existing.result.score) {
         existing.result = result;
       }
+      // Report the best chunk's similarity — the same chunk the rule above
+      // picks as representative, so the number describes the text that is
+      // actually sent to the model.
+      if (existing.vectorScore === null || result.score > existing.vectorScore) {
+        existing.vectorScore = result.score;
+      }
     } else {
-      scoreMap.set(key, { result, score: rrf });
+      scoreMap.set(key, { result, score: rrf, vectorScore: result.score, keywordRank: null });
     }
   });
 
@@ -170,14 +300,129 @@ function reciprocalRankFusion(
       existing.score += rrf;
       // Do NOT replace a vector chunk with a keyword body excerpt:
       // vector chunks are purpose-built for LLM context, body text is not.
+      // The rank still travels, so a page found by both legs reports both.
+      if (existing.keywordRank === null || result.score > existing.keywordRank) {
+        existing.keywordRank = result.score;
+      }
     } else {
-      scoreMap.set(key, { result, score: rrf });
+      scoreMap.set(key, { result, score: rrf, vectorScore: null, keywordRank: result.score });
     }
   });
 
+  // `score` stays the RRF fusion value: it is what the sort below consumes, and
+  // what every caller's ordering already depends on. Only the two per-leg fields
+  // are added — this function's output ORDER is unchanged.
   return Array.from(scoreMap.values())
     .sort((a, b) => b.score - a.score)
-    .map((entry) => ({ ...entry.result, score: entry.score }));
+    .map((entry) => ({
+      ...entry.result,
+      score: entry.score,
+      vectorScore: entry.vectorScore,
+      keywordRank: entry.keywordRank,
+    }));
+}
+
+/**
+ * The de-facto unit tag for `search_analytics.max_score` — each value has ONE
+ * documented score unit (#1117): `hybrid` and `keyword_fallback` store the RRF
+ * fusion value, `semantic` the cosine, `keyword` the raw ts_rank, `faceted`
+ * NULL. Future retrieval stages add members here TOGETHER with their writers
+ * (reranked paths in #1104, MMR in #1109, multi-query expansion in #1112) —
+ * never pass a value this union does not carry, and never repoint an existing
+ * value at a different unit: rows are only comparable within one value.
+ */
+export type SearchAnalyticsType = 'hybrid' | 'keyword_fallback' | 'semantic' | 'keyword' | 'faceted';
+
+/**
+ * Why the vector leg under-delivered on this search. NULL on a healthy row —
+ * and on every row written before migration 088, where NULL means
+ * "not recorded", not "healthy".
+ */
+export type DegradedReason = 'no_embeddings' | 'partial_embeddings' | 'embedding_failed';
+
+/** Observability fields added by migration 088 (#1117 stage 2). */
+export interface SearchAnalyticsExtras {
+  /**
+   * Max rerank score of the returned set, [0,1]. Reserved for the #1104
+   * reranker — nothing writes it yet; the column exists now so rerank scores
+   * get their own unit instead of overloading `max_score`.
+   */
+  rerankScore?: number | null;
+  degradedReason?: DegradedReason | null;
+  /** Measured coverage at query time, [0,1] — recorded degraded or not. */
+  embeddingCoverage?: number | null;
+}
+
+/**
+ * How much of the caller-visible embeddable corpus actually has embeddings.
+ *
+ * Ground truth from `page_embeddings`, deliberately NOT `pages.embedding_status`
+ * — a failed or interrupted run can leave the status column stale, and the
+ * destructive re-embed window (TRUNCATE → gradual refill) is exactly when this
+ * number must not lie. The denominator is what embedPage will actually embed:
+ * non-deleted, non-folder pages with content, visible to the caller, and at
+ * least MIN_EMBEDDABLE_TEXT_CHARS of extracted text — `body_text` is the
+ * stored htmlToText output, so `char_length(body_text)` tracks embedPage's
+ * own skip check. Without that last filter a corpus with a few structural
+ * stub pages would read "degraded" forever.
+ */
+export interface EmbeddingCoverage {
+  embeddedPages: number;
+  totalPages: number;
+  /** `embeddedPages / totalPages`; 1 when there is nothing to embed. */
+  coverage: number;
+}
+
+/**
+ * Coverage below this fraction marks retrieval as degraded
+ * (`degraded_reason = 'partial_embeddings'`). The boundary is `<`, not `<=`:
+ * a few transiently-dirty pages (fresh edits awaiting the embedding worker)
+ * must not raise a corpus-level alarm, while a re-embed in progress — which
+ * starts from zero and climbs — must. Pinned by test; changing it is an
+ * observability decision, not a tuning knob.
+ */
+export const DEGRADED_COVERAGE_THRESHOLD = 0.95;
+
+export async function getEmbeddingCoverage(userId: string): Promise<EmbeddingCoverage> {
+  const covSpaces = await getUserAccessibleSpaces(userId);
+  const result = await query<{ embedded: number; total: number }>(
+    `SELECT
+       COUNT(*) FILTER (WHERE EXISTS (
+         SELECT 1 FROM page_embeddings pe WHERE pe.page_id = cp.id
+       ))::int AS embedded,
+       COUNT(*)::int AS total
+     FROM pages cp
+     WHERE ${visiblePagesPredicate(1, 2)}
+       AND cp.deleted_at IS NULL
+       AND COALESCE(cp.page_type, 'page') != 'folder'
+       AND cp.body_html IS NOT NULL
+       AND char_length(cp.body_text) >= ${Number(MIN_EMBEDDABLE_TEXT_CHARS)}`,
+    [covSpaces, userId],
+  );
+  const embedded = result.rows[0]?.embedded ?? 0;
+  const total = result.rows[0]?.total ?? 0;
+  return {
+    embeddedPages: embedded,
+    totalPages: total,
+    coverage: total === 0 ? 1 : embedded / total,
+  };
+}
+
+/**
+ * Derive the degraded-retrieval verdict for one search. Precedence: a failed
+ * embedding call beats the coverage-derived reasons — the vector leg is
+ * missing *entirely*, whatever the corpus looks like — and the measured
+ * coverage still travels separately on the analytics row.
+ */
+export function deriveDegradedReason(
+  embeddingFailed: boolean,
+  coverage: EmbeddingCoverage | null,
+): DegradedReason | null {
+  if (embeddingFailed) return 'embedding_failed';
+  if (!coverage) return null;
+  if (coverage.totalPages > 0 && coverage.embeddedPages === 0) return 'no_embeddings';
+  if (coverage.coverage < DEGRADED_COVERAGE_THRESHOLD) return 'partial_embeddings';
+  return null;
 }
 
 /**
@@ -188,13 +433,25 @@ export async function recordSearchAnalytics(
   queryText: string,
   resultCount: number,
   maxScore: number | null,
-  searchType: string,
+  searchType: SearchAnalyticsType,
+  extras: SearchAnalyticsExtras = {},
 ): Promise<void> {
   try {
     await query(
-      `INSERT INTO search_analytics (user_id, query, result_count, max_score, search_type)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [userId, queryText, resultCount, maxScore, searchType],
+      `INSERT INTO search_analytics
+         (user_id, query, result_count, max_score, search_type,
+          rerank_score, degraded_reason, embedding_coverage)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [
+        userId,
+        queryText,
+        resultCount,
+        maxScore,
+        searchType,
+        extras.rerankScore ?? null,
+        extras.degradedReason ?? null,
+        extras.embeddingCoverage ?? null,
+      ],
     );
   } catch (err) {
     // Never let analytics tracking break the search flow
@@ -216,9 +473,10 @@ export function trackSearchAnalytics(
   queryText: string,
   resultCount: number,
   maxScore: number | null,
-  searchType: string,
+  searchType: SearchAnalyticsType,
+  extras: SearchAnalyticsExtras = {},
 ): void {
-  const p = recordSearchAnalytics(userId, queryText, resultCount, maxScore, searchType)
+  const p = recordSearchAnalytics(userId, queryText, resultCount, maxScore, searchType, extras)
     .catch(() => {})
     .finally(() => {
       inFlightAnalytics.delete(p);
@@ -244,6 +502,36 @@ export async function hybridSearch(
   userId: string,
   question: string,
   topK = 5,
+  precomputedCoverage?: EmbeddingCoverage | null,
+): Promise<SearchResult[]> {
+  return withSpan(
+    'rag.hybrid_search',
+    async (span) => {
+      const started = performance.now();
+      try {
+        return await hybridSearchInner(userId, question, topK, span, precomputedCoverage);
+      } finally {
+        // 'total' records failed retrievals too — an error's latency is still
+        // latency the caller waited out. The per-leg stages record successful
+        // runs only (see RETRIEVAL_STAGE_DURATION_METRIC).
+        recordHistogram(
+          RETRIEVAL_STAGE_DURATION_METRIC,
+          performance.now() - started,
+          { stage: 'total' },
+          STAGE_DURATION_OPTS,
+        );
+      }
+    },
+    { 'rag.top_k': topK },
+  );
+}
+
+async function hybridSearchInner(
+  userId: string,
+  question: string,
+  topK: number,
+  span?: import('@opentelemetry/api').Span,
+  precomputedCoverage?: EmbeddingCoverage | null,
 ): Promise<SearchResult[]> {
   logger.info({ userId, question: question.slice(0, 100) }, 'Running hybrid RAG search');
 
@@ -264,6 +552,7 @@ export async function hybridSearch(
   const stageLimit = aclEnforced ? Math.ceil(topK * 1.5) : undefined;
 
   let vectorResults: SearchResult[] = [];
+  let embeddingFailed = false;
 
   // Start keyword search outside the try block so DB errors in keyword
   // search are not silently caught as "embedding failures".
@@ -273,6 +562,19 @@ export async function hybridSearch(
   // `await keywordPromise` below runs. This no-op observer does not consume the
   // result — the await at the end still throws/propagates in the normal path.
   keywordPromise.catch(() => {});
+
+  // Coverage probe for the degraded-retrieval signal (#1117), in parallel with
+  // both legs. Best-effort: a probe failure degrades the *signal* to
+  // "unmeasured" (null), never the search itself. `/api/search` hands its own
+  // reading over (`null` = its probe already failed — don't retry) so a hybrid
+  // request never counts twice; `undefined` (the chat path) means self-probe.
+  const coveragePromise: Promise<EmbeddingCoverage | null> =
+    precomputedCoverage !== undefined
+      ? Promise.resolve(precomputedCoverage)
+      : getEmbeddingCoverage(userId).catch((err) => {
+          logger.warn({ err }, 'Embedding-coverage probe failed');
+          return null;
+        });
 
   try {
     // Resolve the `embedding` use-case to the provider+model that generated
@@ -286,10 +588,33 @@ export async function hybridSearch(
     if (err instanceof CircuitBreakerOpenError) {
       throw err;
     }
+    embeddingFailed = true;
     logger.warn({ err }, 'Embedding failed, falling back to keyword-only');
   }
 
   const keywordResults = await keywordPromise;
+  const coverage = await coveragePromise;
+  const degradedReason = deriveDegradedReason(embeddingFailed, coverage);
+  const analyticsExtras: SearchAnalyticsExtras = {
+    degradedReason,
+    embeddingCoverage: coverage?.coverage ?? null,
+  };
+  // Distinguish keyword-fallback (vector leg contributed nothing) from true
+  // hybrid; `degraded_reason` in the extras records WHY (#1117). Derived once
+  // so the two ACL branches below can never disagree.
+  const searchType: SearchAnalyticsType =
+    vectorResults.length === 0 && keywordResults.length > 0 ? 'keyword_fallback' : 'hybrid';
+
+  span?.setAttribute('rag.vector_hits', vectorResults.length);
+  span?.setAttribute('rag.keyword_hits', keywordResults.length);
+  span?.setAttribute('rag.search_type', searchType);
+  if (coverage) {
+    span?.setAttribute('rag.embedding_coverage', coverage.coverage);
+  }
+  // Absence is the healthy signal — no attribute rather than a null-ish value.
+  if (degradedReason) {
+    span?.setAttribute('rag.degraded_reason', degradedReason);
+  }
 
   logger.debug({
     vectorHits: vectorResults.length,
@@ -322,9 +647,14 @@ export async function hybridSearch(
     const topResults = filtered.slice(0, topK);
 
     // Record search analytics (non-blocking)
-    const searchType = vectorResults.length === 0 && keywordResults.length > 0 ? 'keyword_fallback' : 'hybrid';
+    // Deliberately still the RRF fusion value, NOT `vectorScore`. Repointing
+    // this column would silently make new rows incomparable with every
+    // historical one — migration 088 added `rerank_score` for the #1104 stage
+    // precisely so this value never changes meaning. See the score-semantics
+    // note in docs/architecture/09-flow-rag-chat.md.
+    // Keep this branch and the non-ACL one below in step.
     const maxScore = topResults.length > 0 ? Math.max(...topResults.map((r) => r.score)) : null;
-    trackSearchAnalytics(userId, question, topResults.length, maxScore, searchType);
+    trackSearchAnalytics(userId, question, topResults.length, maxScore, searchType, analyticsExtras);
 
     return topResults;
   }
@@ -332,10 +662,10 @@ export async function hybridSearch(
   const topResults = merged.slice(0, topK);
 
   // Record search analytics (non-blocking)
-  // Distinguish keyword-fallback (embedding failed) from true hybrid
-  const searchType = vectorResults.length === 0 && keywordResults.length > 0 ? 'keyword_fallback' : 'hybrid';
+  // Deliberately still the RRF fusion value, NOT `vectorScore` — see the ACL
+  // branch above for why, and keep the two in step.
   const maxScore = topResults.length > 0 ? Math.max(...topResults.map((r) => r.score)) : null;
-  trackSearchAnalytics(userId, question, topResults.length, maxScore, searchType);
+  trackSearchAnalytics(userId, question, topResults.length, maxScore, searchType, analyticsExtras);
 
   return topResults;
 }
@@ -355,5 +685,5 @@ export function buildRagContext(results: SearchResult[]): string {
     .join('\n\n---\n\n');
 }
 
-export { RAG_EF_SEARCH, reciprocalRankFusion };
+export { RAG_EF_SEARCH, reciprocalRankFusion, rrfWorstCase };
 export type { SearchResult };

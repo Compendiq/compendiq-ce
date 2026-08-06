@@ -1022,6 +1022,31 @@ export function PagesPage() {
         </div>
       )}
 
+      {/* Degraded-coverage warning (#1117): semantic search runs, but over a
+          partial vector index — during a re-embed, or after failed embedding
+          runs. Amber per ADR-010: this is attention, not decoration. The page's
+          embedding-status card carries progress and recovery. */}
+      {search && searchMode !== 'keyword' && searchResults.hasEmbeddings
+        && searchResults.degradedReason === 'partial_embeddings' && (
+        <div
+          className="flex items-start gap-3 rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm text-warning"
+          data-testid="degraded-embeddings-warning"
+        >
+          <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+          <span>
+            {/* floor, not round: 94.9% must not display as the 95% threshold
+                that would have made this healthy, and near-zero coverage says
+                "less than 1%" rather than the sibling banner's 0% state. The
+                epsilon corrects binary floating point (0.29*100 = 28.999…). */}
+            Semantic search is degraded — only{' '}
+            {Math.floor((searchResults.embeddingCoverage ?? 0) * 100 + 1e-9) === 0
+              ? 'less than 1%'
+              : `${Math.floor((searchResults.embeddingCoverage ?? 0) * 100 + 1e-9)}%`}{' '}
+            of pages are embedded. Results may miss pages that are not embedded yet.
+          </span>
+        </div>
+      )}
+
       {/* Space home content (when enabled and a space is selected) */}
       {showHomeContent && !forcePageList ? (
         homePageLoading ? (
@@ -1111,9 +1136,21 @@ export function PagesPage() {
                             <span className="mt-1 inline-block text-xs text-muted-foreground">{item.spaceKey}</span>
                           )}
                         </div>
-                        {item.score > 0 && (
-                          <span className="shrink-0 rounded-full bg-foreground/5 px-2 py-0.5 text-xs text-muted-foreground">
-                            {(item.score * 100).toFixed(0)}%
+                        {/* Similarity only — `score` carries whatever unit the
+                            mode produced, so rendering it showed the same page
+                            at ~87% in semantic and ~2% in hybrid (#1117). Null
+                            (keyword mode, or a full-text-only hybrid row) shows
+                            nothing rather than "0%". The `> 0` half is the
+                            pre-#1117 guard, kept: cosine distance runs to 2, so
+                            `1 - distance` can be negative for a chunk pointing
+                            away from the query, and "-23%" is not a useful
+                            badge. */}
+                        {item.similarity !== null && item.similarity > 0 && (
+                          <span
+                            title="Semantic similarity to your query"
+                            className="shrink-0 rounded-full bg-foreground/5 px-2 py-0.5 text-xs text-muted-foreground"
+                          >
+                            {(item.similarity * 100).toFixed(0)}%
                           </span>
                         )}
                       </button>

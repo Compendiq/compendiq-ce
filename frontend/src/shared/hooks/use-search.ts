@@ -8,8 +8,24 @@ interface SearchResultItem {
   spaceKey: string | null;
   /** Short excerpt / snippet from the matching content */
   excerpt: string;
-  /** Relevance score (ts_rank for keyword, cosine similarity for semantic, RRF for hybrid) */
+  /**
+   * Relevance score in whatever unit the mode produced — ts_rank for keyword,
+   * cosine for semantic, an RRF fusion value for hybrid. Comparable *within* one
+   * result list and meaningless between modes, so it orders rows and nothing
+   * else. Rendering it as a percentage is what showed the same page at ~87% in
+   * semantic and ~2% in hybrid (#1117).
+   */
   score: number;
+  /**
+   * Cosine similarity, or `null` when no vector leg contributed — a keyword-mode
+   * search, or a hybrid row matched only by full-text. The only figure here that
+   * is safe to show a user.
+   *
+   * Nominally [0,1], genuinely [-1,1]: it is `1 - (embedding <=> query)` and
+   * pgvector's cosine distance runs to 2. Render sites must not assume a
+   * percentage in [0,100] — `/pages` shows it only when positive.
+   */
+  similarity: number | null;
 }
 
 interface SearchApiResponse {
@@ -20,6 +36,7 @@ interface SearchApiResponse {
     snippet?: string;
     rank?: number;
     score?: number;
+    similarity?: number | null;
   }>;
   total: number;
   page: number;
@@ -28,6 +45,13 @@ interface SearchApiResponse {
   mode: string;
   hasEmbeddings: boolean;
   warning?: string;
+  /**
+   * Embedded fraction of the caller-visible embeddable corpus, [0,1] — or
+   * null when the mode never measured it (keyword mode skips the probe).
+   */
+  embeddingCoverage?: number | null;
+  /** Why the vector leg under-delivered; null on a healthy, probed response. */
+  degradedReason?: 'no_embeddings' | 'partial_embeddings' | null;
 }
 
 function mapItems(response: SearchApiResponse): SearchResultItem[] {
@@ -37,6 +61,9 @@ function mapItems(response: SearchApiResponse): SearchResultItem[] {
     spaceKey: item.spaceKey,
     excerpt: item.snippet ?? '',
     score: item.score ?? item.rank ?? 0,
+    // Absent (keyword mode never sends it) stays null rather than collapsing to
+    // 0 — a page nobody measured must render no figure, not "0%".
+    similarity: item.similarity ?? null,
   }));
 }
 
@@ -64,8 +91,19 @@ interface UseSearchResult {
   enhancedResults: SearchResultItem[] | undefined;
   isLoadingImmediate: boolean;
   isLoadingEnhanced: boolean;
-  /** Whether the user has any page embeddings (derived from the immediate query response) */
+  /**
+   * Whether the user has any page embeddings. Derived from the ENHANCED
+   * response: the immediate query is always mode=keyword, where the backend
+   * skips the coverage probe and reports true unconditionally — deriving from
+   * it is why the no-embeddings banner could never fire in production (#1117).
+   * Optimistically true before the enhanced response lands, and always true
+   * in keyword mode (unmeasured).
+   */
   hasEmbeddings: boolean;
+  /** Embedded fraction [0,1] from the enhanced response; null when unmeasured. */
+  embeddingCoverage: number | null;
+  /** Degraded-retrieval verdict from the enhanced response; null when healthy or unmeasured. */
+  degradedReason: 'no_embeddings' | 'partial_embeddings' | null;
   /** Server-provided total number of matching results */
   total: number;
   /** Current page number (1-based) */
@@ -155,8 +193,13 @@ export function useSearch({ query, mode, spaceKey, page: requestedPage = 1, sort
   // can be disabled on the next render cycle.
   enhancedHasData.current = mode !== 'keyword' && !!enhancedQuery.data && !enhancedQuery.isLoading;
 
-  // Derive hasEmbeddings from the immediate response (optimistic: true before first response)
-  const hasEmbeddings = immediateQuery.data?.hasEmbeddings ?? true;
+  // The degraded-retrieval signal comes from the ENHANCED response only: the
+  // immediate query is always mode=keyword, where the backend skips the
+  // coverage probe and answers hasEmbeddings: true with null coverage (#1117).
+  const signalResponse = mode !== 'keyword' ? enhancedQuery.data : undefined;
+  const hasEmbeddings = signalResponse?.hasEmbeddings ?? true;
+  const embeddingCoverage = signalResponse?.embeddingCoverage ?? null;
+  const degradedReason = signalResponse?.degradedReason ?? null;
 
   // Use the active response for pagination metadata
   const activeResponse = (mode !== 'keyword' && enhancedQuery.data) ? enhancedQuery.data : immediateQuery.data;
@@ -167,6 +210,8 @@ export function useSearch({ query, mode, spaceKey, page: requestedPage = 1, sort
     isLoadingImmediate: immediateQuery.isLoading,
     isLoadingEnhanced: enhancedQuery.isLoading,
     hasEmbeddings,
+    embeddingCoverage,
+    degradedReason,
     total: activeResponse?.total ?? 0,
     page: activeResponse?.page ?? 1,
     totalPages: activeResponse?.totalPages ?? 1,

@@ -12,6 +12,10 @@ import {
   vectorSearch,
   hybridSearch,
   recordSearchAnalytics,
+  getEmbeddingCoverage,
+  deriveDegradedReason,
+  type DegradedReason,
+  type EmbeddingCoverage,
 } from '../../domains/llm/services/rag-service.js';
 import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
 import { generateEmbedding } from '../../domains/llm/services/openai-compatible-client.js';
@@ -134,26 +138,48 @@ export async function searchRoutes(fastify: FastifyInstance) {
     const ftsLang = await getFtsLanguage();
 
     // ── Embeddings availability check (only needed for semantic/hybrid) ──────
+    // Coverage-aware since #1117 stage 2: the old boolean EXISTS probe flipped
+    // healthy the moment ONE visible page had an embedding row, so a re-embed
+    // in progress (or a 1%-embedded corpus) looked identical to full coverage.
+    // `embeddingCoverage`/`degradedReason` stay null in keyword mode — the
+    // signal is unmeasured there, not healthy. This one probe reading is also
+    // handed to hybridSearch below so a hybrid request never counts twice.
+    //
+    // The wire fields describe CORPUS state measured before retrieval ran. A
+    // provider failing mid-request degrades that request only — hybridSearch
+    // records it on the analytics row and its span; the response's
+    // `degradedReason` deliberately does not flip for it.
     let hasEmbeddings = true;
     let effectiveMode = mode;
     let warning: string | undefined;
+    let embeddingCoverage: number | null = null;
+    let degradedReason: DegradedReason | null = null;
+    let cov: EmbeddingCoverage | null = null;
 
     if (mode !== 'keyword') {
-      const embResult = await query<{ exists: boolean }>(
-        `SELECT EXISTS(
-           SELECT 1
-           FROM page_embeddings pe
-           JOIN pages cp ON pe.page_id = cp.id
-           WHERE ${visiblePagesPredicate(1, 2)}
-           AND cp.deleted_at IS NULL
-           LIMIT 1
-         ) AS exists`,
-        [searchSpaces, userId],
-      );
-      if (!embResult.rows[0]?.exists) {
-        hasEmbeddings = false;
-        effectiveMode = 'keyword';
-        warning = 'No embeddings found — falling back to keyword search. Embed your pages to enable semantic search.';
+      // Best-effort, matching hybridSearch's own probe handling: a probe
+      // failure degrades the *signal* to "unmeasured" (null), never the
+      // search — the requested mode keeps running optimistically.
+      cov = await getEmbeddingCoverage(userId).catch((err) => {
+        request.log.warn({ err }, 'Embedding-coverage probe failed');
+        return null;
+      });
+      if (cov) {
+        embeddingCoverage = cov.coverage;
+        degradedReason = deriveDegradedReason(false, cov);
+        if (cov.embeddedPages === 0) {
+          hasEmbeddings = false;
+          effectiveMode = 'keyword';
+          warning = 'No embeddings found — falling back to keyword search. Embed your pages to enable semantic search.';
+        } else if (degradedReason === 'partial_embeddings') {
+          // Keep the mode running — half a vector index still beats none — but
+          // say so. The frontend banner keys on `degradedReason`, not this text.
+          // Floor with an epsilon (0.29*100 is 28.999… in binary floating
+          // point) and never claim 0% — that is the sibling no-embeddings
+          // state's copy. Mirrors the PagesPage banner exactly.
+          const pct = Math.floor(cov.coverage * 100 + 1e-9);
+          warning = `Semantic search is degraded — ${pct === 0 ? 'less than 1%' : `${pct}%`} of pages are embedded. Results may be incomplete until embedding completes.`;
+        }
       }
     }
 
@@ -173,7 +199,10 @@ export async function searchRoutes(fastify: FastifyInstance) {
       });
 
       const maxScore = deduped.length > 0 ? Math.max(...deduped.map((r) => r.score)) : null;
-      recordSearchAnalytics(userId, q, deduped.length, maxScore, 'semantic').catch(() => {});
+      recordSearchAnalytics(userId, q, deduped.length, maxScore, 'semantic', {
+        degradedReason,
+        embeddingCoverage,
+      }).catch(() => {});
 
       const items = deduped.map((r) => ({
         id: r.pageId,
@@ -183,9 +212,16 @@ export async function searchRoutes(fastify: FastifyInstance) {
         author: null as string | null,
         lastModifiedAt: null as Date | null,
         labels: [] as string[],
+        // `rank` is the ordering quantity in whatever unit this mode produced
+        // (cosine for semantic, RRF fusion for hybrid). `similarity` is the
+        // cosine — the only field with one meaning across modes, and the only
+        // one safe to render — or null when no vector leg contributed. Its
+        // range is [-1,1], not [0,1]; see `SearchResult.vectorScore` in
+        // rag-service.ts (#1117).
         rank: r.score,
         snippet: r.chunkText.slice(0, 300),
         score: r.score,
+        similarity: r.vectorScore,
       }));
 
       return {
@@ -198,6 +234,8 @@ export async function searchRoutes(fastify: FastifyInstance) {
         mode: effectiveMode,
         hasEmbeddings,
         warning,
+        embeddingCoverage,
+        degradedReason,
       };
     }
 
@@ -207,7 +245,10 @@ export async function searchRoutes(fastify: FastifyInstance) {
     if (effectiveMode === 'hybrid') {
       let deduped;
       try {
-        deduped = await hybridSearch(userId, q, limit);
+        // Hand over this request's coverage reading (null = probe failed) so
+        // hybridSearch skips its own probe — one COUNT per request, and the
+        // wire and analytics describe the same measurement.
+        deduped = await hybridSearch(userId, q, limit, cov);
       } catch (err) {
         if (err instanceof CircuitBreakerOpenError) {
           reply.status(503).send({
@@ -236,9 +277,12 @@ export async function searchRoutes(fastify: FastifyInstance) {
         author: null as string | null,
         lastModifiedAt: null as Date | null,
         labels: [] as string[],
+        // Same three-field contract as the semantic branch above: `rank` orders,
+        // `similarity` is the renderable cosine or null (#1117).
         rank: r.score,
         snippet: r.chunkText.slice(0, 300),
         score: r.score,
+        similarity: r.vectorScore,
       }));
 
       return {
@@ -251,6 +295,8 @@ export async function searchRoutes(fastify: FastifyInstance) {
         mode: effectiveMode,
         hasEmbeddings,
         warning,
+        embeddingCoverage,
+        degradedReason,
       };
     }
 
@@ -462,7 +508,15 @@ export async function searchRoutes(fastify: FastifyInstance) {
     const totalPages = Math.ceil(adjustedTotal / limit);
 
     const maxFtsScore = ftsItems.length > 0 ? Math.max(...ftsItems.map((r) => r.rank)) : null;
-    recordSearchAnalytics(userId, q, ftsItems.length, maxFtsScore, 'keyword').catch(() => {});
+    // A semantic/hybrid request downgraded here for zero coverage is the WORST
+    // degradation state — during a re-embed window every hybrid search lands
+    // on this line. Carry the measured signal onto the row (both fields are
+    // null for a genuine keyword-mode request, whose probe never ran) or the
+    // outage records as healthy user-chosen keyword searches.
+    recordSearchAnalytics(userId, q, ftsItems.length, maxFtsScore, 'keyword', {
+      degradedReason,
+      embeddingCoverage,
+    }).catch(() => {});
 
     // Parse facets from result
     const facets: Record<string, Array<{ value: string; count: number }>> = {
@@ -496,6 +550,8 @@ export async function searchRoutes(fastify: FastifyInstance) {
       mode: effectiveMode,
       hasEmbeddings,
       warning,
+      embeddingCoverage,
+      degradedReason,
     };
   });
 
