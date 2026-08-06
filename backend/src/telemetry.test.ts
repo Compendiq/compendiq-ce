@@ -248,6 +248,84 @@ describe('Telemetry', () => {
     });
   });
 
+  describe('trace export wiring (review r3)', () => {
+    function captureConsole(): { calls: string[]; restore: () => void } {
+      const calls: string[] = [];
+      const dirSpy = vi.spyOn(console, 'dir').mockImplementation((...args: unknown[]) => {
+        calls.push(JSON.stringify(args));
+      });
+      const logSpy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+        calls.push(JSON.stringify(args));
+      });
+      return {
+        calls,
+        restore: () => {
+          dirSpy.mockRestore();
+          logSpy.mockRestore();
+        },
+      };
+    }
+
+    it('spans reach the console exporter in the dev default', async () => {
+      process.env.OTEL_ENABLED = 'true';
+      delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+      delete process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT;
+      delete process.env.OTEL_TRACES_EXPORTER;
+      const cap = captureConsole();
+      try {
+        await initTelemetry();
+        await withSpan('rag.console-smoke', async () => 1);
+        await shutdownTelemetry(); // flushes the batch processor
+        expect(cap.calls.some((c) => c.includes('rag.console-smoke'))).toBe(true);
+      } finally {
+        cap.restore();
+        delete process.env.OTEL_ENABLED;
+        await shutdownTelemetry();
+      }
+    });
+
+    it('respects a signal-specific OTLP traces endpoint instead of forcing the console exporter', async () => {
+      // Same defect class the metrics guard fixed: a traces-only collector
+      // configured via OTEL_EXPORTER_OTLP_TRACES_ENDPOINT must not have its
+      // spans silently redirected to stdout.
+      process.env.OTEL_ENABLED = 'true';
+      delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+      delete process.env.OTEL_TRACES_EXPORTER;
+      process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT = 'http://127.0.0.1:9/v1/traces';
+      const cap = captureConsole();
+      try {
+        await initTelemetry();
+        await withSpan('rag.console-smoke', async () => 1);
+        await shutdownTelemetry();
+        expect(cap.calls.some((c) => c.includes('rag.console-smoke'))).toBe(false);
+      } finally {
+        cap.restore();
+        delete process.env.OTEL_ENABLED;
+        delete process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT;
+        await shutdownTelemetry();
+      }
+    }, 20_000);
+
+    it('respects OTEL_TRACES_EXPORTER=none instead of forcing the console exporter', async () => {
+      process.env.OTEL_ENABLED = 'true';
+      delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+      delete process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT;
+      process.env.OTEL_TRACES_EXPORTER = 'none';
+      const cap = captureConsole();
+      try {
+        await initTelemetry();
+        await withSpan('rag.console-smoke', async () => 1);
+        await shutdownTelemetry();
+        expect(cap.calls.some((c) => c.includes('rag.console-smoke'))).toBe(false);
+      } finally {
+        cap.restore();
+        delete process.env.OTEL_ENABLED;
+        delete process.env.OTEL_TRACES_EXPORTER;
+        await shutdownTelemetry();
+      }
+    });
+  });
+
   describe('recordHistogram', () => {
     interface FakeHistogram {
       record: ReturnType<typeof vi.fn>;

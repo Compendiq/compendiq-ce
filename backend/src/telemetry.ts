@@ -71,9 +71,17 @@ export async function startTelemetry(): Promise<void> {
       ],
     };
 
-    // If OTLP endpoint is configured, the SDK auto-picks it up from env vars
-    // (OTEL_EXPORTER_OTLP_ENDPOINT). Otherwise, it defaults to console exporter.
-    if (!process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
+    // Traces: same policy as the metrics block below (review r3 — the two
+    // guards must stay twins). When any standard trace destination is
+    // expressed — the general OTLP endpoint, the signal-specific traces
+    // endpoint, or an explicit exporter choice including 'none' — pass no
+    // exporter and let sdk-node's env-driven span-processor construction
+    // honor it. Only the unconfigured dev default gets the console fallback.
+    if (
+      !process.env.OTEL_EXPORTER_OTLP_ENDPOINT
+      && !process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+      && !process.env.OTEL_TRACES_EXPORTER
+    ) {
       const { ConsoleSpanExporter } = await import('@opentelemetry/sdk-trace-node' as string);
       sdkConfig.traceExporter = new ConsoleSpanExporter();
     }
@@ -119,7 +127,18 @@ export async function startTelemetry(): Promise<void> {
     logger.info(
       {
         serviceName,
-        otlpEndpoint: process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? 'console',
+        // Per-signal resolution mirrors the guards above: signal-specific
+        // endpoint, general endpoint, explicit exporter choice, else console.
+        tracesDestination:
+          process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+          ?? process.env.OTEL_EXPORTER_OTLP_ENDPOINT
+          ?? process.env.OTEL_TRACES_EXPORTER
+          ?? 'console',
+        metricsDestination:
+          process.env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT
+          ?? process.env.OTEL_EXPORTER_OTLP_ENDPOINT
+          ?? process.env.OTEL_METRICS_EXPORTER
+          ?? 'console',
       },
       'OpenTelemetry initialized',
     );
