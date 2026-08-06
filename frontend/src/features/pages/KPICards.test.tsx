@@ -64,7 +64,9 @@ describe('KPICards', () => {
     );
 
     const lastSync = screen.getByTestId('kpi-last-sync');
-    expect(lastSync.className).toContain('flex-1');
+    // Own line on mobile (it carries a button), remaining width from sm up.
+    expect(lastSync.className).toContain('basis-full');
+    expect(lastSync.className).toContain('sm:flex-1');
 
     const segments = Array.from(screen.getByTestId('kpi-cards').children);
     expect(segments.indexOf(lastSync)).toBe(segments.length - 1);

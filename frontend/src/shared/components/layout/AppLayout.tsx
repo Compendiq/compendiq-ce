@@ -567,8 +567,23 @@ export function AppLayout({ children }: { children: ReactNode }) {
               editor column flex-shrinks around them and each panel scrolls
               independently — the dock is part of the layout, not an overlay
               floating above it (#1126). */}
-          {isArticleRoute && <ArticleRightPane inspectorViewRequest={inspectorViewRequest} />}
-          {isArticleRoute && <AiDock />}
+          {/* Both side columns are desktop-only, matching the left rail's own
+              `hidden md:flex`. Below md they were still laid out as flex
+              siblings of <main>: at 390px the inspector held ~280px of a
+              390px viewport and the document flex-shrank to ~90px, rendering
+              a heading one letter per line. A third column cannot be a column
+              on a phone — and the reading surface is the whole point of the
+              route, so it is the one thing that must not yield. */}
+          {isArticleRoute && (
+            <div className="hidden md:flex">
+              <ArticleRightPane inspectorViewRequest={inspectorViewRequest} />
+            </div>
+          )}
+          {isArticleRoute && (
+            <div className="hidden md:flex">
+              <AiDock />
+            </div>
+          )}
         </div>
       </div>
 

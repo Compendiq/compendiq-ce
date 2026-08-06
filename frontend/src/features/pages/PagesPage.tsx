@@ -166,37 +166,48 @@ const PageListItem = memo(function PageListItem({
               )}
             </div>
           </div>
-          <QualityScoreBadge
-            qualityScore={pageItem.qualityScore}
-            qualityStatus={pageItem.qualityStatus}
-            qualityCompleteness={pageItem.qualityCompleteness}
-            qualityClarity={pageItem.qualityClarity}
-            qualityStructure={pageItem.qualityStructure}
-            qualityAccuracy={pageItem.qualityAccuracy}
-            qualityReadability={pageItem.qualityReadability}
-            qualitySummary={pageItem.qualitySummary}
-            qualityAnalyzedAt={pageItem.qualityAnalyzedAt}
-            qualityError={pageItem.qualityError}
-          />
-          <SummaryStatusBadge status={pageItem.summaryStatus} />
-          <EmbeddingStatusBadge embeddingDirty={pageItem.embeddingDirty} />
-          {/* No FreshnessBadge here: it is derived purely from lastModifiedAt,
-              which this row already prints as a date three lines above. Two
-              renderings of one field read as two facts. It stays on the page
-              detail and preview surfaces, where no raw date sits beside it. */}
-          {pageItem.labels.length > 0 && (
-            <div className="flex gap-1">
-              {pageItem.labels.slice(0, 3).map((label) => (
-                <span
-                  key={label}
-                  className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground"
-                  data-testid="label-chip"
-                >
-                  {label}
-                </span>
-              ))}
-            </div>
-          )}
+          {/* Trailing status cluster. `hidden sm:flex` because none of these
+              can shrink: at 390px they held their width, drove the title's
+              `min-w-0` block to zero, and rendered on top of the badges inside
+              it — the row showed five overlapping pills and no title.
+
+              Hidden rather than dropped, so they stay in the DOM for tests and
+              for assistive tech, and so the same row markup serves both widths.
+              The facts are not lost on mobile: every one of them is on the page
+              itself, which is one tap away. */}
+          <div className="hidden shrink-0 items-center gap-2 sm:flex">
+            <QualityScoreBadge
+              qualityScore={pageItem.qualityScore}
+              qualityStatus={pageItem.qualityStatus}
+              qualityCompleteness={pageItem.qualityCompleteness}
+              qualityClarity={pageItem.qualityClarity}
+              qualityStructure={pageItem.qualityStructure}
+              qualityAccuracy={pageItem.qualityAccuracy}
+              qualityReadability={pageItem.qualityReadability}
+              qualitySummary={pageItem.qualitySummary}
+              qualityAnalyzedAt={pageItem.qualityAnalyzedAt}
+              qualityError={pageItem.qualityError}
+            />
+            <SummaryStatusBadge status={pageItem.summaryStatus} />
+            <EmbeddingStatusBadge embeddingDirty={pageItem.embeddingDirty} />
+            {/* No FreshnessBadge here: it is derived purely from lastModifiedAt,
+                which this row already prints as a date three lines above. Two
+                renderings of one field read as two facts. It stays on the page
+                detail and preview surfaces, where no raw date sits beside it. */}
+            {pageItem.labels.length > 0 && (
+              <div className="flex gap-1">
+                {pageItem.labels.slice(0, 3).map((label) => (
+                  <span
+                    key={label}
+                    className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground"
+                    data-testid="label-chip"
+                  >
+                    {label}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
         </button>
       </div>
     </m.div>

@@ -731,8 +731,14 @@ export function PageViewPage() {
         )}
       >
         {/* Breadcrumb / action strip */}
-        <div className="flex items-center justify-between gap-4 border-b border-border px-5 py-2 sm:px-7">
-          <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground/60">
+        {/* `flex-wrap`: the badge cluster and the action cluster are both
+            unshrinkable, so at 390px they overlapped — "Local / Shared /
+            Skipped" rendered on top of "Move to Confluence / Verify / Graph".
+            Wrapping drops the actions onto their own line instead of hiding
+            either group; on this surface both are worth their vertical space,
+            unlike the list row where the same badges are one tap from here. */}
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5 border-b border-border px-5 py-2 sm:px-7">
+          <span className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-muted-foreground/60">
             <FileText size={12} className="shrink-0" />
             {page.spaceKey !== '__local__' && <span className="truncate">{page.spaceKey}</span>}
             {/* Source badge */}
@@ -793,7 +799,10 @@ export function PageViewPage() {
             />
           </span>
 
-          <div className="flex shrink-0 items-center gap-1.5">
+          {/* Wraps internally as well. Wrapping the outer row alone still left
+              the actions on one unshrinkable line, so "Edit" — the most used
+              control on the page — was the part clipped off the right edge. */}
+          <div className="flex flex-wrap items-center gap-1.5">
             <PresenceAvatarStack viewers={presenceViewers} className="mr-1" />
             {editing ? null : (
               <>

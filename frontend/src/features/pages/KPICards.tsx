@@ -172,7 +172,15 @@ export function KPICards({ embeddingStatus, spacesCount, lastSynced, onSync, isS
 
       {/* Last sync carries the only next step on the strip, so it sits at the
           end where the eye finishes rather than buried mid-row. */}
-      <m.div variants={fadeUp} className="flex min-w-0 flex-1 items-center gap-2" data-testid="kpi-last-sync">
+      {/* `basis-full` below sm: this segment carries a label, a value, prose and
+          a button, so sharing a wrapped line with "Embedded" pushed the Sync
+          button off the right edge at 390px. It takes its own line on mobile
+          and the remaining width from sm up. */}
+      <m.div
+        variants={fadeUp}
+        className="flex min-w-0 basis-full items-center gap-2 sm:basis-auto sm:flex-1"
+        data-testid="kpi-last-sync"
+      >
         <Clock size={14} className="shrink-0 text-muted-foreground" />
         <span className="text-[13px] text-muted-foreground">Last Sync</span>
         <span className="text-[13px] font-semibold">
