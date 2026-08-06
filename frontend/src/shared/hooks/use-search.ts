@@ -17,9 +17,13 @@ interface SearchResultItem {
    */
   score: number;
   /**
-   * Cosine similarity in [0,1], or `null` when no vector leg contributed — a
-   * keyword-mode search, or a hybrid row matched only by full-text. The only
-   * figure here that is safe to show a user.
+   * Cosine similarity, or `null` when no vector leg contributed — a keyword-mode
+   * search, or a hybrid row matched only by full-text. The only figure here that
+   * is safe to show a user.
+   *
+   * Nominally [0,1], genuinely [-1,1]: it is `1 - (embedding <=> query)` and
+   * pgvector's cosine distance runs to 2. Render sites must not assume a
+   * percentage in [0,100] — `/pages` shows it only when positive.
    */
   similarity: number | null;
 }

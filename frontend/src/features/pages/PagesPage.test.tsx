@@ -597,6 +597,90 @@ describe('PagesPage', () => {
     });
   });
 
+  // --- Similarity percentage on search results (#1117) ---
+
+  describe('search result similarity percentage (#1117)', () => {
+    /** Mock fetch where /search returns the given items. */
+    function mockFetchWithSearchItems(items: unknown[]) {
+      return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+        const url = typeof input === 'string' ? input : (input as Request).url;
+        if (url.includes('/search?')) {
+          const mode = new URL(url, 'http://localhost').searchParams.get('mode') ?? 'keyword';
+          return new Response(
+            JSON.stringify({ items, total: items.length, page: 1, limit: 10, totalPages: 1, mode, hasEmbeddings: true }),
+            { headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+        if (url.includes('/embeddings/status')) {
+          return new Response(JSON.stringify(mockEmbeddingStatusIdle), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/pages/filters')) {
+          return new Response(JSON.stringify(mockFilterOptions), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/spaces')) {
+          return new Response(JSON.stringify(mockSpaces), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/sync/status')) {
+          return new Response(JSON.stringify({ status: 'idle' }), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/pages/pinned')) {
+          return new Response(JSON.stringify({ items: [], total: 0 }), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/settings')) {
+          return new Response(JSON.stringify({}), { headers: { 'Content-Type': 'application/json' } });
+        }
+        return new Response(JSON.stringify(mockPagesResponse), { headers: { 'Content-Type': 'application/json' } });
+      });
+    }
+
+    function renderSearchWith(items: unknown[]) {
+      vi.restoreAllMocks();
+      mockFetchWithSearchItems(items);
+      render(<PagesPage />, { wrapper: createWrapper() });
+      // Semantic mode: the similarity badge only has a value to show when a
+      // vector leg ran, and this mirrors the empty-state suite above.
+      fireEvent.click(screen.getByTestId('search-mode-semantic'));
+      fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+        target: { value: 'redis' },
+      });
+    }
+
+    it('renders the similarity, not the ranking score', async () => {
+      // `rank`/`score` here are an RRF fusion value. Rendering those produced
+      // "2%" for a strong match; the similarity is 0.74 -> "74%".
+      renderSearchWith([
+        { id: 1, title: 'Redis Guide', spaceKey: 'DEV', snippet: 'x', rank: 0.0328, score: 0.0328, similarity: 0.74 },
+      ]);
+
+      expect(await screen.findByText('Redis Guide', undefined, { timeout: 2000 })).toBeInTheDocument();
+      expect(screen.getByText('74%')).toBeInTheDocument();
+      expect(screen.queryByText('3%')).not.toBeInTheDocument();
+    });
+
+    it('renders no percentage when no similarity was measured', async () => {
+      // Keyword mode, or a hybrid row matched only by full-text. A page nobody
+      // measured must show nothing rather than "0%".
+      renderSearchWith([
+        { id: 2, title: 'Keyword Only', spaceKey: 'DEV', snippet: 'x', rank: 0.5, similarity: null },
+      ]);
+
+      expect(await screen.findByText('Keyword Only', undefined, { timeout: 2000 })).toBeInTheDocument();
+      expect(screen.queryByText('50%')).not.toBeInTheDocument();
+      expect(screen.queryByText('0%')).not.toBeInTheDocument();
+    });
+
+    it('renders no percentage for a negative similarity', async () => {
+      // pgvector cosine distance runs to 2, so `1 - distance` can be negative.
+      // "-40%" is not a useful badge.
+      renderSearchWith([
+        { id: 3, title: 'Opposing Page', spaceKey: 'DEV', snippet: 'x', rank: 0.1, similarity: -0.4 },
+      ]);
+
+      expect(await screen.findByText('Opposing Page', undefined, { timeout: 2000 })).toBeInTheDocument();
+      expect(screen.queryByText('-40%')).not.toBeInTheDocument();
+    });
+  });
+
   // --- Semantic search empty state (#938, review follow-up on #993) ---
 
   describe('semantic search empty state (#938)', () => {

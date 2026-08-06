@@ -314,7 +314,7 @@ describe('POST /api/llm/ask', () => {
   //
   // Note the fixture above uses `score: 0.9`, which the real hybrid pipeline
   // cannot produce: after RRF fusion with k=60 over two legs the value is
-  // bounded by 1/61 + 1/61 ≈ 0.0328. These tests use realistic values so a
+  // ~0.033 for the common two-leg case. These tests use realistic values so a
   // regression in the plumbing is visible here rather than only in production.
 
   it('emits the cosine similarity as `similarity`, not the RRF fusion score', async () => {

@@ -64,8 +64,16 @@ vi.mock('../../domains/llm/services/openai-compatible-client.js', () => ({
   invalidateDispatcher: vi.fn(),
 }));
 
-// Shared SearchResult shape from rag-service
-const makeSearchResult = (pageId: number, title: string) => ({
+// Shared SearchResult shape from rag-service. The mocks below are bare
+// `vi.fn()`s, so nothing type-checks this against the real interface — keep the
+// per-leg fields present by hand or the route's `similarity` silently
+// serializes to `undefined` and every assertion here passes against a body the
+// real pipeline cannot produce (#1117).
+const makeSearchResult = (
+  pageId: number,
+  title: string,
+  overrides?: { score?: number; vectorScore?: number | null; keywordRank?: number | null },
+) => ({
   pageId,
   confluenceId: `page-${pageId}`,
   chunkText: `Excerpt for ${title}`,
@@ -73,6 +81,9 @@ const makeSearchResult = (pageId: number, title: string) => ({
   sectionTitle: title,
   spaceKey: 'TEST',
   score: 0.8,
+  vectorScore: 0.8,
+  keywordRank: null,
+  ...overrides,
 });
 
 describe('Search Routes', () => {
@@ -523,6 +534,65 @@ describe('Search Routes', () => {
       expect(body.mode).toBe('hybrid');
       expect(body.hasEmbeddings).toBe(true);
       expect(body.items).toHaveLength(2);
+    });
+
+    // ── Score semantics (#1117) ──────────────────────────────────────────
+    //
+    // `rank` carries whatever unit the mode produced; `similarity` is the
+    // cosine and is the only field a UI may render. Before #1117 both `rank`
+    // and `score` were fed the identical value, so hybrid rows reported an RRF
+    // artefact as a percentage.
+
+    it('hybrid mode: exposes the cosine as `similarity`, distinct from the fusion `rank`', async () => {
+      mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] });
+      mockHybridSearch.mockResolvedValue([
+        makeSearchResult(1, 'Both legs', { score: 0.0328, vectorScore: 0.74, keywordRank: 0.09 }),
+      ]);
+
+      const response = await app.inject({ method: 'GET', url: '/api/search?q=test&mode=hybrid' });
+
+      expect(response.statusCode).toBe(200);
+      const item = response.json().items[0];
+      expect(item.similarity).toBe(0.74);
+      expect(item.rank).toBe(0.0328);
+    });
+
+    it('hybrid mode: a full-text-only row reports a null similarity, not a zero', async () => {
+      mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] });
+      mockHybridSearch.mockResolvedValue([
+        makeSearchResult(2, 'Keyword only', { score: 0.0164, vectorScore: null, keywordRank: 0.12 }),
+      ]);
+
+      const response = await app.inject({ method: 'GET', url: '/api/search?q=test&mode=hybrid' });
+
+      const item = response.json().items[0];
+      expect(item.similarity).toBeNull();
+      expect(item.rank).toBe(0.0164);
+    });
+
+    it('semantic mode: `similarity` is present and equals the cosine', async () => {
+      mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] });
+      mockVectorSearch.mockResolvedValue([
+        makeSearchResult(3, 'Semantic', { score: 0.66, vectorScore: 0.66 }),
+      ]);
+
+      const response = await app.inject({ method: 'GET', url: '/api/search?q=test&mode=semantic' });
+
+      expect(response.statusCode).toBe(200);
+      const item = response.json().items[0];
+      expect(item.similarity).toBe(0.66);
+    });
+
+    it('semantic mode: `similarity` is really emitted, not silently undefined', async () => {
+      // Guards the fixture trap this suite fell into: the rag-service mocks are
+      // untyped, so a fixture missing `vectorScore` makes the route emit
+      // `undefined` and every other assertion here still passes.
+      mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] });
+      mockVectorSearch.mockResolvedValue([makeSearchResult(4, 'Present')]);
+
+      const response = await app.inject({ method: 'GET', url: '/api/search?q=test&mode=semantic' });
+
+      expect(Object.keys(response.json().items[0])).toContain('similarity');
     });
 
     it('semantic mode: providerGenerateEmbedding failure → 502', async () => {

@@ -31,18 +31,20 @@ export interface Source {
   sectionTitle?: string;
   /**
    * Retrieval ORDERING value, in whichever unit produced it — an RRF fusion
-   * score for a hybrid answer (bounded near 0.033), or a flat `1` for web and
-   * external sources, which never went through retrieval. Kept because
-   * conversations persisted before #1117 carry it.
+   * score for a hybrid answer (typically ~0.033, up to ~0.17 when one page fills
+   * the vector leg), or a flat `1` for web and external sources, which never
+   * went through retrieval. Kept because it orders the array.
    *
    * @deprecated Never render or threshold this. Use {@link Source.similarity}.
    */
   score?: number;
   /**
-   * Cosine similarity in [0,1] — the only score field with one meaning. `null`
-   * or absent when none was measured: a keyword-only retrieval hit, a web or
-   * external source, or a conversation persisted before #1117. Absent must
-   * render no confidence badge rather than a zero (#1117).
+   * Cosine similarity — the only score field with one meaning. `null` or absent
+   * when none was measured: a keyword-only retrieval hit, or a web/external
+   * source. Absent must render no confidence badge rather than a zero (#1117).
+   *
+   * Nominally [0,1] but genuinely [-1,1] — see `SearchResult.vectorScore` in
+   * `rag-service.ts`. Display sites must not assume a percentage in [0,100].
    */
   similarity?: number | null;
 }

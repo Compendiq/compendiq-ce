@@ -32,15 +32,26 @@ interface SearchResult {
   /**
    * Ranking quantity. **The unit depends on who produced it** — cosine
    * similarity from `vectorSearch`, raw `ts_rank` from `keywordSearch`, and an
-   * RRF fusion score from `reciprocalRankFusion` (which with k=60 over two legs
-   * cannot exceed ~0.0328). Use it to ORDER results. Never display it, never
-   * threshold it, and never compare it across producers — see `vectorScore`.
+   * RRF fusion score from `reciprocalRankFusion`. Use it to ORDER results.
+   * Never display it, never threshold it, never compare it across producers.
+   *
+   * The fusion value is ~0.016 for a single rank in one leg and ~0.033 for the
+   * common two-leg case, but it is **not** bounded there: the vector leg is
+   * per-CHUNK, so one page occupying several of the top slots has its
+   * contributions summed (that is why the best-chunk rule below exists). At the
+   * default per-stage limit of 10 the worst case is ~0.17. Still an order of
+   * magnitude below anything a similarity threshold expects — see `vectorScore`.
    */
   score: number;
   /**
-   * Cosine similarity in [0,1] from the vector leg, or `null` when this page was
-   * found only by keyword search. **This is the only score field with a stable
-   * unit**, and the one a confidence display or threshold must read (#1117).
+   * Cosine similarity from the vector leg, or `null` when this page was found
+   * only by keyword search. **This is the only score field with a stable unit**,
+   * and the one a confidence display or threshold must read (#1117).
+   *
+   * Range is [-1,1], not [0,1]: it is `1 - (embedding <=> query)`, and pgvector's
+   * cosine distance runs to 2, so a chunk pointing away from the query scores
+   * negative. Normalised embeddings on real content make that rare, not
+   * impossible — display sites must not assume a percentage in [0,100].
    */
   vectorScore: number | null;
   /**
@@ -377,12 +388,8 @@ export async function hybridSearch(
     // historical one, and `search_analytics` has no column to tell them apart.
     // That belongs with the migration in #1117's analytics half — see the
     // score-semantics note in docs/architecture/09-flow-rag-chat.md.
-    // Deliberately still the RRF fusion value, NOT `vectorScore`. Changing what
-  // this column means would silently make new rows incomparable with every
-  // historical one, and `search_analytics` has no column to tell them apart.
-  // That belongs with the migration in #1117's analytics half — see the
-  // score-semantics note in docs/architecture/09-flow-rag-chat.md.
-  const maxScore = topResults.length > 0 ? Math.max(...topResults.map((r) => r.score)) : null;
+    // Keep this branch and the non-ACL one below in step.
+    const maxScore = topResults.length > 0 ? Math.max(...topResults.map((r) => r.score)) : null;
     trackSearchAnalytics(userId, question, topResults.length, maxScore, searchType);
 
     return topResults;
@@ -393,6 +400,8 @@ export async function hybridSearch(
   // Record search analytics (non-blocking)
   // Distinguish keyword-fallback (embedding failed) from true hybrid
   const searchType = vectorResults.length === 0 && keywordResults.length > 0 ? 'keyword_fallback' : 'hybrid';
+  // Deliberately still the RRF fusion value, NOT `vectorScore` — see the ACL
+  // branch above for why, and keep the two in step.
   const maxScore = topResults.length > 0 ? Math.max(...topResults.map((r) => r.score)) : null;
   trackSearchAnalytics(userId, question, topResults.length, maxScore, searchType);
 

@@ -1062,8 +1062,12 @@ export function PagesPage() {
                             mode produced, so rendering it showed the same page
                             at ~87% in semantic and ~2% in hybrid (#1117). Null
                             (keyword mode, or a full-text-only hybrid row) shows
-                            nothing rather than "0%". */}
-                        {item.similarity !== null && (
+                            nothing rather than "0%". The `> 0` half is the
+                            pre-#1117 guard, kept: cosine distance runs to 2, so
+                            `1 - distance` can be negative for a chunk pointing
+                            away from the query, and "-23%" is not a useful
+                            badge. */}
+                        {item.similarity !== null && item.similarity > 0 && (
                           <span
                             title="Semantic similarity to your query"
                             className="shrink-0 rounded-full bg-foreground/5 px-2 py-0.5 text-xs text-muted-foreground"

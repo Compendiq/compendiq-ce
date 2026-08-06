@@ -7,7 +7,7 @@ import type { Source } from './SourceCitations';
  * `null` is not zero. A keyword-only retrieval measures no similarity at all,
  * and neither do web or external-doc sources, which never went through
  * retrieval. Averaging those in as 0 — or reading the `score` field, which
- * after RRF fusion is a fusion value capped near 0.033 — is what made
+ * after RRF fusion is a fusion value typically near 0.033 — is what made
  * ConfidenceBadge render "Low confidence" on every knowledge-base answer
  * (#1117). Callers must render no badge when this returns `null`.
  */

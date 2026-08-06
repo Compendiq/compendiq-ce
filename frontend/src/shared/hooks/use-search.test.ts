@@ -192,6 +192,67 @@ describe('useSearch', () => {
     expect(result.current.immediateResults[0].title).toBe('Redis Guide');
   });
 
+  // ── Score semantics (#1117) ────────────────────────────────────────────
+  //
+  // `score` carries whatever unit the mode produced (ts_rank / cosine / RRF
+  // fusion) and must not be rendered. `similarity` is the cosine, and its
+  // absence must survive as null rather than collapsing to 0 — a 0 renders as
+  // "0%" for a page nobody ever measured.
+
+  it('keeps similarity null when the response omits it (keyword mode)', async () => {
+    mockFetch(makeSearchResponse({
+      items: [{ id: 42, title: 'Redis Guide', spaceKey: 'DEV', snippet: '', rank: 0.9 }],
+      mode: 'keyword',
+      hasEmbeddings: true,
+    }));
+
+    const { result } = renderHook(
+      () => useSearch({ query: 'redis', mode: 'keyword' }),
+      { wrapper: createWrapper() },
+    );
+
+    await waitFor(() => expect(result.current.isLoadingImmediate).toBe(false));
+
+    expect(result.current.immediateResults[0].similarity).toBeNull();
+    // `score` still falls back to rank so ordering is preserved.
+    expect(result.current.immediateResults[0].score).toBe(0.9);
+  });
+
+  it('maps similarity through, distinct from the fusion score', async () => {
+    mockFetch(makeSearchResponse({
+      items: [{ id: 7, title: 'Hybrid Hit', spaceKey: 'DEV', snippet: '', rank: 0.0328, score: 0.0328, similarity: 0.71 }],
+      mode: 'keyword',
+      hasEmbeddings: true,
+    }));
+
+    const { result } = renderHook(
+      () => useSearch({ query: 'redis', mode: 'keyword' }),
+      { wrapper: createWrapper() },
+    );
+
+    await waitFor(() => expect(result.current.isLoadingImmediate).toBe(false));
+
+    expect(result.current.immediateResults[0].similarity).toBe(0.71);
+    expect(result.current.immediateResults[0].score).toBe(0.0328);
+  });
+
+  it('preserves an explicit null similarity from a full-text-only hybrid row', async () => {
+    mockFetch(makeSearchResponse({
+      items: [{ id: 8, title: 'FTS only', spaceKey: 'DEV', snippet: '', rank: 0.0164, score: 0.0164, similarity: null }],
+      mode: 'keyword',
+      hasEmbeddings: true,
+    }));
+
+    const { result } = renderHook(
+      () => useSearch({ query: 'redis', mode: 'keyword' }),
+      { wrapper: createWrapper() },
+    );
+
+    await waitFor(() => expect(result.current.isLoadingImmediate).toBe(false));
+
+    expect(result.current.immediateResults[0].similarity).toBeNull();
+  });
+
   it('returns enhancedResults from hybrid endpoint response', async () => {
     mockFetch(
       makeSearchResponse({ items: [{ id: 1, title: 'Keyword Result', spaceKey: 'DEV', snippet: '', rank: 0.5 }], mode: 'keyword' }),

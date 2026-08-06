@@ -223,11 +223,16 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     });
 
     // `score` is the retrieval ORDERING value — an RRF fusion score from
-    // hybridSearch, which with k=60 over two legs cannot exceed ~0.0328. It is
-    // kept for wire compatibility with conversations already persisted in
-    // `llm_conversations.messages`, and must never be rendered or thresholded.
-    // `similarity` is the cosine similarity in [0,1], or null when the page was
-    // found only by keyword search and no similarity was ever measured (#1117).
+    // hybridSearch, typically ~0.033 and never near the [0,1] range a similarity
+    // threshold expects. It is kept because it is what orders the array and what
+    // any existing consumer of this frame reads; it must never be rendered or
+    // thresholded. `similarity` is the cosine, or null when the page was found
+    // only by keyword search and none was ever measured (#1117).
+    //
+    // Note the two are separate FIELDS rather than one redefined field purely
+    // for legibility — `sources` is never persisted (saveConversation below
+    // writes `ChatMessage[]`, i.e. `{role, content}`), so a replayed
+    // conversation carries no sources at all and renders no badge regardless.
     const sources = [
       ...searchResults.map((r) => ({
         pageId: r.pageId,

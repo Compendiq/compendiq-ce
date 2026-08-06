@@ -613,7 +613,8 @@ describe('RAG Service', () => {
     //
     // Fusion overwrote `score` with the RRF value and discarded the cosine the
     // vector leg had measured. With k=60 over two legs the RRF value maxes out
-    // near 1/61 + 1/61 ≈ 0.0328, and ConfidenceBadge reads that field as a
+    // near 1/61 + 1/61 ≈ 0.0328 for the common case — more when one page fills
+    // several vector slots — and ConfidenceBadge reads that field as a
     // cosine similarity (>= 0.7 high / >= 0.4 medium) — so every hybrid answer
     // rendered "Low confidence". The fix carries the per-leg values alongside
     // the fusion score rather than replacing them.
@@ -735,6 +736,11 @@ describe('RAG Service', () => {
         score: 0.75,
       });
       expect(results[0].chunkText).toBe('First 500 chars of body text here.');
+      // #1117: the keyword leg declares its provenance. `vectorScore: null` is
+      // load-bearing — a keyword hit measured no similarity, and a 0 here would
+      // reach ConfidenceBadge as "measured, and terrible".
+      expect(results[0].keywordRank).toBe(0.75);
+      expect(results[0].vectorScore).toBeNull();
     });
   });
 
@@ -783,6 +789,33 @@ describe('RAG Service', () => {
       expect(results[0].pageId).toBe(7);
       expect(results[0].score).toBeCloseTo(0.7); // 1 - 0.3
       expect(results[0].chunkText).toBe('Sample chunk content');
+      // #1117: the vector leg reports the cosine in its own field too, so the
+      // value survives RRF fusion overwriting `score`.
+      expect(results[0].vectorScore).toBeCloseTo(0.7);
+      expect(results[0].keywordRank).toBeNull();
+    });
+
+    it('reports a negative vectorScore rather than clamping it', async () => {
+      // pgvector's `<=>` is a cosine DISTANCE with range [0,2], so `1 - distance`
+      // is [-1,1]. Nothing clamps it; display sites must not assume [0,1].
+      mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
+      mocks.mockClientQuery.mockResolvedValueOnce(undefined); // BEGIN
+      mocks.mockClientQuery.mockResolvedValueOnce(undefined); // SET LOCAL
+      mocks.mockClientQuery.mockResolvedValueOnce({
+        rows: [
+          {
+            page_id: 8,
+            confluence_id: 'PAGE-8',
+            chunk_text: 'Opposing chunk',
+            metadata: { page_title: 'Opposite', section_title: 'x', space_key: 'DEV' },
+            distance: 1.4,
+          },
+        ],
+      }); // SELECT
+      mocks.mockClientQuery.mockResolvedValueOnce(undefined); // COMMIT
+
+      const results = await vectorSearch('user-1', new Array(1024).fill(0.1), 5);
+      expect(results[0].vectorScore).toBeCloseTo(-0.4);
     });
 
     it('calls client.release() even on error', async () => {
