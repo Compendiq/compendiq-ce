@@ -969,6 +969,31 @@ export function PagesPage() {
         </div>
       )}
 
+      {/* Degraded-coverage warning (#1117): semantic search runs, but over a
+          partial vector index — during a re-embed, or after failed embedding
+          runs. Amber per ADR-010: this is attention, not decoration. The page's
+          embedding-status card carries progress and recovery. */}
+      {search && searchMode !== 'keyword' && searchResults.hasEmbeddings
+        && searchResults.degradedReason === 'partial_embeddings' && (
+        <div
+          className="flex items-start gap-3 rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm text-warning"
+          data-testid="degraded-embeddings-warning"
+        >
+          <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+          <span>
+            {/* floor, not round: 94.9% must not display as the 95% threshold
+                that would have made this healthy, and near-zero coverage says
+                "less than 1%" rather than the sibling banner's 0% state. The
+                epsilon corrects binary floating point (0.29*100 = 28.999…). */}
+            Semantic search is degraded — only{' '}
+            {Math.floor((searchResults.embeddingCoverage ?? 0) * 100 + 1e-9) === 0
+              ? 'less than 1%'
+              : `${Math.floor((searchResults.embeddingCoverage ?? 0) * 100 + 1e-9)}%`}{' '}
+            of pages are embedded. Results may miss pages that are not embedded yet.
+          </span>
+        </div>
+      )}
+
       {/* Space home content (when enabled and a space is selected) */}
       {showHomeContent && !forcePageList ? (
         homePageLoading ? (

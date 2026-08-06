@@ -1,14 +1,23 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { initTelemetry, getTracer, withSpan, shutdownTelemetry } from './telemetry.js';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import {
+  initTelemetry,
+  getTracer,
+  getMeter,
+  withSpan,
+  recordHistogram,
+  shutdownTelemetry,
+} from './telemetry.js';
 
 describe('Telemetry', () => {
   beforeEach(() => {
-    // Clean up any previous tracer
+    // Clean up any previous tracer/meter
     delete (globalThis as Record<string, unknown>).__otelTracer;
+    delete (globalThis as Record<string, unknown>).__otelMeter;
   });
 
   afterEach(async () => {
     delete (globalThis as Record<string, unknown>).__otelTracer;
+    delete (globalThis as Record<string, unknown>).__otelMeter;
     await shutdownTelemetry();
   });
 
@@ -76,6 +85,31 @@ describe('Telemetry', () => {
       await shutdownTelemetry();
     });
 
+    it('passes the live span into the callback so attributes can be set post-hoc', async () => {
+      // Results-derived attributes (hit counts, degraded verdicts) only exist
+      // AFTER the work ran — the upfront `attributes` param cannot carry them.
+      const recorded: Record<string, unknown> = {};
+      (globalThis as Record<string, unknown>).__otelTracer = {
+        startActiveSpan<T>(_name: string, fn: (span: unknown) => T): T {
+          return fn({
+            setAttribute(key: string, value: unknown) {
+              recorded[key] = value;
+            },
+            setStatus() {},
+            recordException() {},
+            end() {},
+          });
+        },
+      };
+
+      await withSpan('op', async (span) => {
+        span?.setAttribute('rag.hits', 3);
+        return 1;
+      });
+
+      expect(recorded['rag.hits']).toBe(3);
+    });
+
     it('should handle errors properly when tracing', async () => {
       process.env.OTEL_ENABLED = 'true';
       await initTelemetry();
@@ -95,6 +129,242 @@ describe('Telemetry', () => {
     it('should be safe to call when not initialized', async () => {
       // Should not throw
       await shutdownTelemetry();
+    });
+  });
+
+  // ── Metrics (#1117 stage 2) ────────────────────────────────────────────
+  //
+  // Tracing existed since #922; the metrics half is new. `getMeter` mirrors
+  // `getTracer` (globalThis seam, undefined when disabled) and
+  // `recordHistogram` mirrors `withSpan` (transparent no-op when disabled).
+
+  describe('getMeter', () => {
+    it('returns undefined when OTel is not initialized', () => {
+      expect(getMeter()).toBeUndefined();
+    });
+
+    it('returns a meter when OTEL_ENABLED is true', async () => {
+      process.env.OTEL_ENABLED = 'true';
+      await initTelemetry();
+
+      expect(getMeter()).toBeDefined();
+
+      delete process.env.OTEL_ENABLED;
+      await shutdownTelemetry();
+    });
+
+    it('is cleared by shutdownTelemetry', async () => {
+      process.env.OTEL_ENABLED = 'true';
+      await initTelemetry();
+      await shutdownTelemetry();
+
+      expect(getMeter()).toBeUndefined();
+
+      delete process.env.OTEL_ENABLED;
+    });
+  });
+
+  describe('metrics export wiring (review r1)', () => {
+    function captureConsole(): { calls: string[]; restore: () => void } {
+      const calls: string[] = [];
+      const dirSpy = vi.spyOn(console, 'dir').mockImplementation((...args: unknown[]) => {
+        calls.push(JSON.stringify(args));
+      });
+      const logSpy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+        calls.push(JSON.stringify(args));
+      });
+      return {
+        calls,
+        restore: () => {
+          dirSpy.mockRestore();
+          logSpy.mockRestore();
+        },
+      };
+    }
+
+    it('recorded histograms actually reach the console exporter in the dev default', async () => {
+      // The regression this pins: delete the metricReader wiring from
+      // startTelemetry and every suite stays green while histograms record
+      // into the void (the SDK registers no MeterProvider without a reader).
+      process.env.OTEL_ENABLED = 'true';
+      delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+      delete process.env.OTEL_METRICS_EXPORTER;
+      const cap = captureConsole();
+      try {
+        await initTelemetry();
+        recordHistogram('compendiq.retrieval.stage.duration', 5, { stage: 'total' }, { unit: 'ms' });
+        await shutdownTelemetry(); // flushes the periodic reader
+        const hit = cap.calls.some((c) => c.includes('compendiq.retrieval.stage.duration'));
+        expect(hit).toBe(true);
+      } finally {
+        cap.restore();
+        delete process.env.OTEL_ENABLED;
+        await shutdownTelemetry();
+      }
+    });
+
+    it('respects a signal-specific OTLP metrics endpoint instead of forcing the console reader (review r2)', async () => {
+      // OTEL_EXPORTER_OTLP_METRICS_ENDPOINT alone is a standard setup (metrics
+      // to a collector, traces elsewhere or nowhere). Forcing the console
+      // reader would silently discard the operator's named destination.
+      process.env.OTEL_ENABLED = 'true';
+      delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+      delete process.env.OTEL_METRICS_EXPORTER;
+      process.env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT = 'http://127.0.0.1:9/v1/metrics';
+      const cap = captureConsole();
+      try {
+        await initTelemetry();
+        recordHistogram('compendiq.retrieval.stage.duration', 5, { stage: 'total' }, { unit: 'ms' });
+        await shutdownTelemetry();
+        const hit = cap.calls.some((c) => c.includes('compendiq.retrieval.stage.duration'));
+        expect(hit).toBe(false);
+      } finally {
+        cap.restore();
+        delete process.env.OTEL_ENABLED;
+        delete process.env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT;
+        await shutdownTelemetry();
+      }
+    }, 20_000);
+
+    it('respects OTEL_METRICS_EXPORTER=none instead of forcing the console reader', async () => {
+      // Standard OTel env config must win: an operator disabling metrics gets
+      // no console dumps, not our hardcoded reader.
+      process.env.OTEL_ENABLED = 'true';
+      delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+      process.env.OTEL_METRICS_EXPORTER = 'none';
+      const cap = captureConsole();
+      try {
+        await initTelemetry();
+        recordHistogram('compendiq.retrieval.stage.duration', 5, { stage: 'total' }, { unit: 'ms' });
+        await shutdownTelemetry();
+        const hit = cap.calls.some((c) => c.includes('compendiq.retrieval.stage.duration'));
+        expect(hit).toBe(false);
+      } finally {
+        cap.restore();
+        delete process.env.OTEL_ENABLED;
+        delete process.env.OTEL_METRICS_EXPORTER;
+        await shutdownTelemetry();
+      }
+    });
+  });
+
+  describe('trace export wiring (review r3)', () => {
+    function captureConsole(): { calls: string[]; restore: () => void } {
+      const calls: string[] = [];
+      const dirSpy = vi.spyOn(console, 'dir').mockImplementation((...args: unknown[]) => {
+        calls.push(JSON.stringify(args));
+      });
+      const logSpy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+        calls.push(JSON.stringify(args));
+      });
+      return {
+        calls,
+        restore: () => {
+          dirSpy.mockRestore();
+          logSpy.mockRestore();
+        },
+      };
+    }
+
+    it('spans reach the console exporter in the dev default', async () => {
+      process.env.OTEL_ENABLED = 'true';
+      delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+      delete process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT;
+      delete process.env.OTEL_TRACES_EXPORTER;
+      const cap = captureConsole();
+      try {
+        await initTelemetry();
+        await withSpan('rag.console-smoke', async () => 1);
+        await shutdownTelemetry(); // flushes the batch processor
+        expect(cap.calls.some((c) => c.includes('rag.console-smoke'))).toBe(true);
+      } finally {
+        cap.restore();
+        delete process.env.OTEL_ENABLED;
+        await shutdownTelemetry();
+      }
+    });
+
+    it('respects a signal-specific OTLP traces endpoint instead of forcing the console exporter', async () => {
+      // Same defect class the metrics guard fixed: a traces-only collector
+      // configured via OTEL_EXPORTER_OTLP_TRACES_ENDPOINT must not have its
+      // spans silently redirected to stdout.
+      process.env.OTEL_ENABLED = 'true';
+      delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+      delete process.env.OTEL_TRACES_EXPORTER;
+      process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT = 'http://127.0.0.1:9/v1/traces';
+      const cap = captureConsole();
+      try {
+        await initTelemetry();
+        await withSpan('rag.console-smoke', async () => 1);
+        await shutdownTelemetry();
+        expect(cap.calls.some((c) => c.includes('rag.console-smoke'))).toBe(false);
+      } finally {
+        cap.restore();
+        delete process.env.OTEL_ENABLED;
+        delete process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT;
+        await shutdownTelemetry();
+      }
+    }, 20_000);
+
+    it('respects OTEL_TRACES_EXPORTER=none instead of forcing the console exporter', async () => {
+      process.env.OTEL_ENABLED = 'true';
+      delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+      delete process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT;
+      process.env.OTEL_TRACES_EXPORTER = 'none';
+      const cap = captureConsole();
+      try {
+        await initTelemetry();
+        await withSpan('rag.console-smoke', async () => 1);
+        await shutdownTelemetry();
+        expect(cap.calls.some((c) => c.includes('rag.console-smoke'))).toBe(false);
+      } finally {
+        cap.restore();
+        delete process.env.OTEL_ENABLED;
+        delete process.env.OTEL_TRACES_EXPORTER;
+        await shutdownTelemetry();
+      }
+    });
+  });
+
+  describe('recordHistogram', () => {
+    interface FakeHistogram {
+      record: ReturnType<typeof vi.fn>;
+    }
+
+    function installFakeMeter(): { createHistogram: ReturnType<typeof vi.fn>; histogram: FakeHistogram } {
+      const histogram: FakeHistogram = { record: vi.fn() };
+      const createHistogram = vi.fn().mockReturnValue(histogram);
+      (globalThis as Record<string, unknown>).__otelMeter = { createHistogram };
+      return { createHistogram, histogram };
+    }
+
+    it('is a safe no-op when OTel is disabled', () => {
+      expect(() =>
+        recordHistogram('compendiq.retrieval.stage.duration', 12.5, { stage: 'vector_search' }),
+      ).not.toThrow();
+    });
+
+    it('records the value with attributes on the named instrument', () => {
+      const { histogram } = installFakeMeter();
+
+      recordHistogram(
+        'compendiq.retrieval.stage.duration',
+        12.5,
+        { stage: 'vector_search' },
+        { unit: 'ms', description: 'Retrieval stage latency' },
+      );
+
+      expect(histogram.record).toHaveBeenCalledWith(12.5, { stage: 'vector_search' });
+    });
+
+    it('creates each instrument once, not per record', () => {
+      const { createHistogram, histogram } = installFakeMeter();
+
+      recordHistogram('compendiq.retrieval.stage.duration', 1, { stage: 'vector_search' });
+      recordHistogram('compendiq.retrieval.stage.duration', 2, { stage: 'keyword_search' });
+
+      expect(createHistogram).toHaveBeenCalledTimes(1);
+      expect(histogram.record).toHaveBeenCalledTimes(2);
     });
   });
 });

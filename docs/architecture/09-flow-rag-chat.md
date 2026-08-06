@@ -153,9 +153,97 @@ of this.
 
 `search_analytics.max_score` deliberately still stores the **fusion** value for
 `hybrid` and `keyword_fallback` rows. Repointing it at `vectorScore` would make
-new rows silently incomparable with historical ones, and the table has no column
-to distinguish them; that change belongs with the analytics migration in #1117's
-second half.
+new rows silently incomparable with historical ones. Since migration 088
+(#1117 stage 2) `search_type` is the documented unit tag for `max_score` —
+one unit per value, pinned by the table below — and rerank scores get their
+own `rerank_score` column instead of ever overloading this one:
+
+| `search_type` | `max_score` unit | writer |
+|---|---|---|
+| `hybrid` | RRF fusion value | `hybridSearch` (rag-service) |
+| `keyword_fallback` | RRF fusion value (keyword-only leg) | `hybridSearch` (rag-service) |
+| `semantic` | cosine similarity | `/api/search` semantic mode |
+| `keyword` | raw `ts_rank` | `/api/search` keyword mode |
+| `faceted` | NULL | `POST /api/search/log` |
+
+Values are enforced by the `SearchAnalyticsType` union in `rag-service.ts`,
+not a CHECK constraint; future stages (#1104 rerank, #1109 MMR, #1112
+expansion) add members **with** their writers. Note the admin analytics
+routes (`knowledge-gaps`, `content-gaps`) still apply one `max_score < 0.3`
+threshold across all rows regardless of unit — a pre-existing defect this
+table documents but #1117 did not change.
+
+## Retrieval observability (#1117 stage 2)
+
+Migration 088 added three nullable columns to `search_analytics`, none
+backfilled (on pre-088 rows NULL means "not recorded", not "healthy"):
+
+- **`rerank_score`** — reserved for #1104; max rerank score of the returned
+  set in [0,1], so rerank never changes `max_score`'s meaning.
+- **`degraded_reason`** — why the vector leg under-delivered:
+  `embedding_failed` (provider call threw; beats the coverage-derived reasons
+  because the leg is missing entirely), `no_embeddings` (embeddable pages
+  exist, zero embedded), `partial_embeddings` (coverage below
+  `DEGRADED_COVERAGE_THRESHOLD`, 0.95). NULL = healthy.
+- **`embedding_coverage`** — measured coverage in [0,1] at query time,
+  recorded degraded or not, so the destructive re-embed window (#1116) is
+  visible in analytics after the fact.
+
+**The coverage probe** (`getEmbeddingCoverage`) counts ground truth from
+`page_embeddings` — deliberately not `pages.embedding_status`, which a failed
+run can leave stale — over what `embedPage` will actually embed: non-deleted,
+non-folder, `body_html` present, and at least `MIN_EMBEDDABLE_TEXT_CHARS` (20)
+of extracted text. That last filter matters: `embedPage` permanently settles
+shorter pages with zero embedding rows, so counting them would leave a corpus
+with a few structural stub pages "degraded" forever. It replaced a boolean
+EXISTS probe that flipped healthy the moment ONE visible page had an embedding
+row, so 1% coverage rendered identically to 100%. `/api/search` runs it once
+for semantic/hybrid modes, exposes `embeddingCoverage` + `degradedReason` on
+the response (`null` in keyword mode: unmeasured, not healthy), and **hands
+its reading to `hybridSearch`** so a hybrid request never counts twice;
+`hybridSearch` self-probes (in parallel with the legs) only when nothing was
+handed over — the chat path. A probe failure degrades the *signal* to null,
+never the search, on both paths: the route catches and proceeds in the
+requested mode, `hybridSearch` catches inside its coverage promise.
+
+Two deliberate asymmetries. A semantic/hybrid request downgraded to keyword
+for zero coverage still carries the measured `degradedReason`/coverage onto
+its (`search_type = 'keyword'`) analytics row — during a re-embed window every
+search lands there, and dropping the extras would record the outage as healthy
+keyword traffic. And the **wire** fields describe corpus state measured before
+retrieval ran: an embedding provider failing mid-request degrades that request
+only, which the analytics row (`embedding_failed`) and the span record — the
+response's `degradedReason` deliberately does not flip for it.
+
+The frontend derives the signal from the **enhanced** (probed) response —
+`use-search.ts` deriving `hasEmbeddings` from the immediate keyword response,
+where the probe never runs and the flag is unconditionally true, is why the
+`/pages` no-embeddings banner could never fire in production before #1117.
+`PagesPage` shows the amber zero-embeddings banner on `hasEmbeddings: false`
+and a degraded-coverage banner (with the measured percentage) on
+`degradedReason: 'partial_embeddings'`.
+
+**Spans.** `rag.hybrid_search` (attributes: `rag.top_k`, `rag.vector_hits`,
+`rag.keyword_hits`, `rag.search_type`, `rag.embedding_coverage`, and
+`rag.degraded_reason` only when degraded — absence is the healthy signal) with
+`rag.vector_search` / `rag.keyword_search` children (`rag.limit`, `rag.hits`),
+via the same `withSpan` seam as the `llm.*` spans. `withSpan` now passes the
+live span into its callback so results-derived attributes can be set.
+
+**Metrics.** `telemetry.ts` gained the metrics half (`getMeter` /
+`recordHistogram`). Export follows the standard OTel env config
+(`OTEL_METRICS_EXPORTER` et al. — sdk-node builds the reader, defaulting to
+OTLP at the configured endpoint, and `none` is honored); only the unconfigured
+dev default (enabled, no endpoint, no exporter set) is overridden to a console
+reader, mirroring the trace fallback. `shutdownTelemetry` also disables the
+write-once api globals so a start→shutdown→start cycle hands out live
+instruments, not meters bound to a dead provider. One instrument:
+`compendiq.retrieval.stage.duration` (ms), attribute `stage` ∈
+`vector_search` | `keyword_search` | `total` — `rerank` joins when #1104
+lands, which is what makes rerank latency measurable before that stage ships.
+Per-leg stages record successful runs only; `total` records failures too. The
+`rerank_bypassed` counter from the issue was deliberately dropped: nothing to
+instrument until #1104 exists.
 
 Per ADR-023 (EE — `RAG_PERMISSION_ENFORCEMENT`), a second post-filter runs
 after the RRF merge when the feature is active. It calls

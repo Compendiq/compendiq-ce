@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act, cleanup } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, RouterProvider, createMemoryRouter, useLocation } from 'react-router-dom';
 import { PagesPage } from './PagesPage';
@@ -754,6 +754,111 @@ describe('PagesPage', () => {
       });
       return fetchSpy;
     }
+
+    /** Mock fetch where /search answers mode-aware, production-realistic
+     *  responses: keyword mode never carries the coverage signal, the
+     *  semantic/hybrid response does (#1117). */
+    function mockFetchWithCoverage(opts: {
+      hasEmbeddings: boolean;
+      embeddingCoverage: number | null;
+      degradedReason: 'no_embeddings' | 'partial_embeddings' | null;
+    }) {
+      return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+        const url = typeof input === 'string' ? input : (input as Request).url;
+        if (url.includes('/search?')) {
+          const mode = new URL(url, 'http://localhost').searchParams.get('mode') ?? 'keyword';
+          const signal =
+            mode === 'keyword'
+              ? { hasEmbeddings: true, embeddingCoverage: null, degradedReason: null }
+              : opts;
+          return new Response(
+            JSON.stringify({
+              items: [{ id: 7, title: 'Runbook', spaceKey: 'DEV', snippet: 'restart', rank: 0.5, similarity: 0.9 }],
+              total: 1, page: 1, limit: 10, totalPages: 1, mode, ...signal,
+            }),
+            { headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+        if (url.includes('/embeddings/status')) {
+          return new Response(JSON.stringify(mockEmbeddingStatusIdle), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/pages/filters')) {
+          return new Response(JSON.stringify(mockFilterOptions), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/spaces')) {
+          return new Response(JSON.stringify(mockSpaces), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/sync/status')) {
+          return new Response(JSON.stringify({ status: 'idle' }), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/pages/pinned')) {
+          return new Response(JSON.stringify({ items: [], total: 0 }), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/settings')) {
+          return new Response(JSON.stringify({}), { headers: { 'Content-Type': 'application/json' } });
+        }
+        return new Response(JSON.stringify(mockPagesResponse), { headers: { 'Content-Type': 'application/json' } });
+      });
+    }
+
+    function renderSemanticSearch() {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('search-mode-semantic'));
+      fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+        target: { value: 'runbook' },
+      });
+    }
+
+    it('partial coverage: degraded banner names the measured percentage (#1117)', async () => {
+      vi.restoreAllMocks();
+      mockFetchWithCoverage({ hasEmbeddings: true, embeddingCoverage: 0.42, degradedReason: 'partial_embeddings' });
+      renderSemanticSearch();
+
+      const banner = await screen.findByTestId('degraded-embeddings-warning', undefined, { timeout: 2000 });
+      expect(banner).toHaveTextContent('42%');
+      // The zero-embeddings banner is a different state and must not stack.
+      expect(screen.queryByTestId('no-embeddings-warning')).not.toBeInTheDocument();
+    });
+
+    it('degraded banner never claims 0% or the threshold value at the edges (review r1)', async () => {
+      // 0.0033 coverage must not render "only 0%" (that state is the sibling
+      // zero-embeddings banner's), and 0.949 must not render "95%" — the copy
+      // would contradict the <95% threshold that made it degraded.
+      vi.restoreAllMocks();
+      mockFetchWithCoverage({ hasEmbeddings: true, embeddingCoverage: 0.0033, degradedReason: 'partial_embeddings' });
+      renderSemanticSearch();
+      const banner = await screen.findByTestId('degraded-embeddings-warning', undefined, { timeout: 2000 });
+      expect(banner).toHaveTextContent('less than 1%');
+      expect(banner).not.toHaveTextContent('only 0%');
+      cleanup();
+
+      vi.restoreAllMocks();
+      mockFetchWithCoverage({ hasEmbeddings: true, embeddingCoverage: 0.949, degradedReason: 'partial_embeddings' });
+      renderSemanticSearch();
+      const banner2 = await screen.findByTestId('degraded-embeddings-warning', undefined, { timeout: 2000 });
+      expect(banner2).toHaveTextContent('94%');
+      expect(banner2).not.toHaveTextContent('95%');
+      cleanup();
+
+      // 29/100 embedded must say 29%, not 28 — Math.floor(0.29 * 100) is 28
+      // in binary floating point (review r2).
+      vi.restoreAllMocks();
+      mockFetchWithCoverage({ hasEmbeddings: true, embeddingCoverage: 0.29, degradedReason: 'partial_embeddings' });
+      renderSemanticSearch();
+      const banner3 = await screen.findByTestId('degraded-embeddings-warning', undefined, { timeout: 2000 });
+      expect(banner3).toHaveTextContent('29%');
+    });
+
+    it('full coverage: no degraded banner, no zero-embeddings banner (#1117)', async () => {
+      vi.restoreAllMocks();
+      mockFetchWithCoverage({ hasEmbeddings: true, embeddingCoverage: 1, degradedReason: null });
+      renderSemanticSearch();
+
+      // Wait for results to land, then pin the absence of both banners.
+      await screen.findAllByText('Runbook', undefined, { timeout: 2000 });
+      expect(screen.queryByTestId('degraded-embeddings-warning')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('no-embeddings-warning')).not.toBeInTheDocument();
+    });
 
     it('zero embeddings + zero results: empty state acknowledges the keyword fallback and the missing embeddings', async () => {
       renderSemanticSearchWithNoResults(false);
