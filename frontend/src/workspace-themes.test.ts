@@ -318,9 +318,25 @@ describe('Measured contrast — Paper (light)', () => {
     }
   });
 
-  it('the interactive border clears the 3:1 non-text floor', () => {
+  it('the interactive border clears the 3:1 non-text floor on every surface', () => {
+    // Not `surfaces` — that is `{ bg, card }`, and measuring an operable edge
+    // against only those two is how this test carried the name "every surface"
+    // while the ADR's "≥3:1 on every surface" went unchecked. The border was
+    // 2.90:1 on the hovered `accent` fill: under the floor exactly when the
+    // pointer is on the control, which is when the edge matters most.
+    //
+    // A control can sit on any of these four in Paper, so all four are the
+    // claim. `accent` is the hover/selected fill, `muted` the quiet field fill,
+    // `elevated` the popover surface.
+    const controlGrounds = {
+      bg,
+      card,
+      elevated: token(lightBlock, '--color-card-elevated'),
+      accent: token(lightBlock, '--color-accent'),
+      muted: token(lightBlock, '--color-muted'),
+    };
     const border = token(lightBlock, '--color-border-interactive');
-    for (const [name, surface] of Object.entries(surfaces)) {
+    for (const [name, surface] of Object.entries(controlGrounds)) {
       expectContrast(`border-interactive on ${name}`, border, surface, 3);
     }
   });

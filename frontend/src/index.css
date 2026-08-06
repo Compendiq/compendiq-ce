@@ -460,10 +460,17 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      It is still a separator, NOT an operable edge — that stays
      --color-border-interactive, which the 3:1 test measures. */
   --color-border: #dcdce1;
-  /* Darkened with the chassis. At #8b8f98 it measured 2.87:1 on the new
-     ground — under 1.4.11's 3:1 floor, caught by workspace-themes.test.ts
-     rather than by eye. */
-  --color-border-interactive: #848892;
+  /* Darkened twice. First with the chassis: at #8b8f98 it measured 2.87:1 on
+     the new ground, under 1.4.11's 3:1 floor. Then again, because #848892
+     cleared the chassis and the card but measured **2.90:1 on the hovered
+     `accent` fill (#e8e8eb)** — and an operable edge is at its most load-
+     bearing exactly when the pointer is on it.
+     The guard had been measuring against the chassis and the card only, so
+     the ADR's "≥3:1 on every surface" was a claim no test checked. It checks
+     all four Paper surfaces now. #7d818b is the value with headroom rather
+     than the first that squeaks past: 3.19 accent / 3.90 card / 3.77 bg /
+     3.46 muted. */
+  --color-border-interactive: #7d818b;
   --color-ring: #0e7490;
   --color-success: #16794a;
   --color-warning: #8a5a00;
