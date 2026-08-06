@@ -667,6 +667,86 @@ the steel tokens. The brand mark itself was retinted (tile `#151B2C`, glyph
 `#E8ECF5`, magnifier strokes steel) across the React `Logo`, the standalone
 SVGs, and the generated favicons.
 
+### v0.6 — Graphite / Paper, a flat workspace system (supersedes neumorphism)
+
+**Owner decision (2026-08-06).** Presented with four distinct visual worlds
+against the category convention, the owner chose **the convention, executed at
+full fidelity**, with **Linear, Plane and Notion** named as the craft bar. This
+is recorded as a durable brand commitment in `PRODUCT.md`, not a one-off: future
+work does not re-open it with a concept round.
+
+This retires the **neumorphic depth model** that v0.4 introduced and v0.5 kept.
+What survives from v0.4/v0.5 and is still binding: Radix primitives, Framer
+Motion `LazyMotion`, `:focus-visible` rings with offset, `prefers-reduced-motion`
+honoured, the `--color-status-*` semantic tokens, the split border roles, and
+the mandatory 1px border on every operable surface for WCAG 1.4.11 and
+`forced-colors: active`. **The 1px border matters more now, not less** — there is
+no shadow left to fall back on.
+
+- **Themes.** `slate-steel` → **`graphite`** (dark, `#0d0e11`); `frost-steel` →
+  **`paper`** (light, `#f7f7f8`). Both are neutral. Retired IDs migrate on read
+  in `validateThemeId` *and* the `index.html` FOUC script, preserving brightness
+  so a light-theme user does not flash dark before React mounts.
+- **Accent.** Steel → **indigo** (`#8b93f8` dark / `#4a55c9` light), still the
+  single brand *and* interaction colour. Amber stays warning-only; violet stays
+  AI. The v0.5 rule that an AI-labelled *control* takes the interaction accent
+  (not violet) is unchanged.
+- **Depth is a value step plus a hairline.** The two-light-source extrusion
+  recipe is gone. `--nm-shadow-*` / `--nm-highlight-*` remain declared but
+  resolve to `transparent`, so a missed callsite renders flat rather than
+  leaving one embossed control behind. Exactly one real shadow exists —
+  `--shadow-overlay`, carried by `nm-card-elevated` alone, for content that
+  genuinely floats above the page.
+- **Chrome is the ground, content is the pane.** Sidebar, header and toolbars
+  paint `--color-background`; the content pane sits one step up. This inverts
+  v0.4/v0.5, where chrome was the lighter card colour. It is why the document is
+  the brightest thing on screen. Consequence: the six
+  `[data-theme-type="light"]` shell overrides are deleted — both themes are one
+  token-driven ladder, and a light-only override was the mechanism by which the
+  two themes drifted apart.
+- **Surfaces are flat colours.** The gradient chassis is reverted. A gradient
+  under dense 13px text means the same row measures differently at the top of a
+  pane than at the bottom, and every surface needs measuring twice. **This also
+  reverses v0.5's "card surfaces are background images" consequence**: a
+  Tailwind `hover:bg-*` composes normally again, and the trap is designed out
+  rather than documented around.
+- **No lift, no scale, no glass.** `translateY` on hover and `scale` on press
+  are removed from both the utilities and the components. The `--glass-*` tokens
+  resolve onto `--color-*`; `backdrop-blur` survives **only** on modal scrims,
+  where it is a specific effect rather than decoration standing in for
+  hierarchy. 307 fractional `border-border/NN` opacities collapse to one
+  measurable hairline, and 56 translucent `bg-card/NN` panes become opaque —
+  a translucent pane's text contrast cannot be computed, which is the thing the
+  theme tests exist to guarantee.
+- **Typography.** Space Grotesk is retired; there is **no display face**. Inter
+  carries everything, JetBrains Mono carries code and data figures.
+  `--font-display` is an alias onto Inter so existing callsites cannot drift.
+  Both remain variable builds for the `font-synthesis: style` reason above.
+- **Density.** 32px controls, 28px/13px tree rows, 48px header, 10/8/6/4 corner
+  scale, 18px semibold route titles, list rows as rows (`px-3 py-2`) rather than
+  cards.
+- **Theme preference follows the OS by default** (`system | dark | light`). The
+  *preference* is persisted; the resolved palette is not, so a stale value
+  cannot win over the live OS reading. `startSystemThemeSync` is gated on
+  hydration — an OS event in the gap re-serialised the initial `system` over the
+  user's stored choice.
+- **Regression guard retargeted.** `neumorphic-themes.test.ts` →
+  `workspace-themes.test.ts`. Its computed-WCAG machinery is carried over
+  intact; the structural half now fails on a reintroduced shadow, `transform`,
+  gradient surface, or light-theme shell override — drift that looks like polish
+  in review. `ui-text-legibility.test.ts` enforces an 11px floor.
+
+**Accepted exception:** the 3px `border-left` on `.panel-*` in `.prose` /
+`.tiptap` is the rendering of a Confluence panel macro in *document body*
+content. Its left rule carries meaning from the source document, and "the source
+of record wins" outranks our surface conventions. The equivalent decoration on
+app chrome stays refused.
+
+**Known consequence, carried forward:** cross-surface parity with
+`compendiq-landing` has now been broken across two palette generations — the
+landing page never adopted the steel tokens either. The app is the source of
+truth; port Graphite/Paper outward when that work is scheduled.
+
 ---
 
 ## ADR-011: Docker Deployment Architecture

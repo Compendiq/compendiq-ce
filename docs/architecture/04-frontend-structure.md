@@ -261,30 +261,40 @@ the backend side.
 ## Styling
 
 - **TailwindCSS 4** with CSS variables for theming. Two themes ship —
-  **Slate Steel** (dark, default, navy `#0E1220`) and **Frost Steel** (light,
-  `#F4F6FA`) — a cool slate-and-steel system in one hue family, with steel
-  (`#6EA8FF` / `#2F6BD8`) as the single brand and interaction accent, amber
-  reserved for warning/attention, and violet for AI ornament (operable
-  things stay steel). Both themes are gradient-lit via `--surface-backdrop`,
-  `--surface-card` and `--surface-card-elevated`. Those are background
-  *images*, so a `hover:bg-*` utility on a card surface is a silent no-op —
-  use `nm-card-hover`. See ADR-010 v0.5 for the palette, and v0.4
-  for the neumorphic surface rationale and the migration away from the
-  v0.3-era glassmorphic surfaces. This palette replaces the Graphite Honey /
-  Honey Linen pair and no longer mirrors the landing page's honey tokens.
+  **Graphite** (dark, `#0d0e11`) and **Paper** (light, `#f7f7f8`) — a neutral
+  flat system carrying one indigo accent (`#8b93f8` / `#4a55c9`) as the single
+  brand and interaction colour, amber reserved for warning/attention, and
+  violet for AI ornament (operable things stay indigo). Surfaces are **flat
+  colours**: `--surface-backdrop`, `--surface-card` and
+  `--surface-card-elevated` are plain values, so a `hover:bg-*` utility
+  composes normally — the gradient-as-background-image trap of the previous
+  palette is designed out. See ADR-010 v0.6 for the decision, which supersedes
+  the neumorphic depth model of v0.4/v0.5 and the v0.3-era glassmorphic
+  surfaces before it.
+- **Chrome is the ground, content is the pane.** Sidebar, header and toolbars
+  paint `--color-background`; the content pane sits one value step up. This is
+  why the document is the brightest thing on screen and navigation recedes.
+  Both themes are the same token-driven ladder — there are deliberately **no**
+  `[data-theme-type="light"]` shell overrides, and a test fails if one returns.
 - **Two border weights, split by role.** `--color-border` is the quiet
   hairline for separators, panes and prose rules;
   `--color-border-interactive` is the visible edge of anything operable and
-  is measured ≥3:1 against every surface it lands on (WCAG 1.4.11). The
-  neumorphic recipe leans on shadow for depth, and forced-colors mode
-  discards shadow — this border is what survives.
-- **Neumorphic** surface system (ADR-010 v0.4): sixteen `nm-*` `@utility`
-  classes (`nm-card`, `nm-card-elevated`, `nm-card-interactive`,
-  `nm-card-hover`, `nm-toolbar`, `nm-sidebar`, `nm-header`, `nm-pill-active`,
-  `nm-button-primary`, `nm-button-destructive`, `nm-button-ghost`,
-  `nm-icon-button`, `nm-composer`, `nm-input`, `nm-select`, `nm-select-md`)
-  built on theme-tinted shadow recipes plus a mandatory 1px solid border
-  for visibility under WCAG 1.4.11 and `forced-colors: active`.
+  is measured ≥3:1 against every surface it lands on (WCAG 1.4.11). With the
+  extrusion gone there is no shadow to fall back on, so this border is the
+  whole of what survives `forced-colors: active`.
+- **Flat surface system** (ADR-010 v0.6): the sixteen `nm-*` `@utility`
+  classes are kept by name — `nm-card`, `nm-card-elevated`,
+  `nm-card-interactive`, `nm-card-hover`, `nm-toolbar`, `nm-sidebar`,
+  `nm-header`, `nm-pill-active`, `nm-button-primary`, `nm-button-destructive`,
+  `nm-button-ghost`, `nm-icon-button`, `nm-composer`, `nm-input`, `nm-select`,
+  `nm-select-md` — because 107 files reference them and redefining them in
+  place reskins every route at once. Each is now a flat definition: value step
+  plus 1px border, no extrusion, no lift, no press scale. **Exactly one real
+  shadow exists** (`--shadow-overlay`, on `nm-card-elevated` only) for content
+  that genuinely floats above the page: popovers, dialogs, the command palette.
+- **Theme preference follows the OS by default** (`system | dark | light`). The
+  preference is persisted; the resolved palette is not, so a stale value cannot
+  outrank the live OS reading.
 - **Framer Motion** for entrance animations, wrapped in `LazyMotion`;
   all animations respect `prefers-reduced-motion`.
 - **Radix UI** primitives for all interactive elements (menus, dialogs,
