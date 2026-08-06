@@ -6,6 +6,7 @@ import { bumpProviderCacheVersion } from './cache-bus.js';
 import { enqueueJob, getJobStatus } from '../../../core/services/queue-service.js';
 import { getReembedHistoryRetention } from '../../../core/services/admin-settings-service.js';
 import { logger } from '../../../core/utils/logger.js';
+import { getEnterprisePlugin } from '../../../core/enterprise/loader.js';
 import pgvector from 'pgvector';
 
 /**
@@ -186,6 +187,25 @@ export async function getActiveShadowTarget(): Promise<{
   return { cfg, model: state.model, dimensions: state.dimensions };
 }
 
+/**
+ * Review r6 — the one assumption the whole design rests on: that after the
+ * rename, `resolveUsecase('embedding')` returns the pair this migration
+ * embedded with. The swap guarantees that by writing
+ * `llm_usecase_assignments`, but an enterprise org LLM policy is consulted
+ * BEFORE that table and short-circuits it (llm-provider-resolver.ts), so on
+ * such an instance the repoint is a no-op for every consumer: the corpus
+ * would carry the migration's model while embedPage and every query resolve
+ * the policy's. Equal dimensions makes that a silently mixed vector space;
+ * unequal makes every embed and search fail on vector length. CE's noop
+ * answers null, so this is inert in community mode.
+ */
+async function embeddingPolicyOverride(): Promise<{ providerId: string; model: string } | null> {
+  return (await getEnterprisePlugin().resolveUsecaseOverride?.('embedding')) ?? null;
+}
+
+const POLICY_OVERRIDE_MSG =
+  'An organization LLM policy pins the embedding use case, and it outranks the assignment a swap writes — the corpus would be re-embedded with one model while every query resolves another. Point the policy at the new model (or disable it) before migrating (#1116).';
+
 export async function startShadowMigration(opts: {
   providerId: string;
   model: string;
@@ -212,6 +232,10 @@ export async function startShadowMigration(opts: {
   const previous = await getJobStatus(SHADOW_JOB_QUEUE, SHADOW_JOB_QUEUE);
   if (previous && ['active', 'waiting', 'delayed'].includes(previous.state ?? '')) {
     throw new Error('The previous shadow backfill job is still running or queued — wait for it to finish before starting a new migration');
+  }
+
+  if (await embeddingPolicyOverride()) {
+    throw new Error(POLICY_OVERRIDE_MSG);
   }
 
   const cfg = await providerConfigFor(opts.providerId);
@@ -355,6 +379,22 @@ const EMBED_BATCH = 16;
  * left as stragglers (the swap gate refuses while any remain). Aborts cleanly
  * when the state row disappears (rollback-before-swap).
  */
+/**
+ * Review r6: an abort drops the shadow columns, and both the batch SELECT and
+ * the final straggler recount name `embedding_next` — an abort committing
+ * between pages takes the job's own queries out from under it and Postgres
+ * answers 42703. That is this job losing a race it is MEANT to lose, so it
+ * exits the way the in-loop state re-read does, instead of marking the BullMQ
+ * record failed with a raw DB error that reads like a genuine backfill
+ * failure. Confirmed against the state row, so a 42703 with the migration
+ * still active stays the bug it would be.
+ */
+async function abortedOutFromUnder(err: unknown): Promise<boolean> {
+  if ((err as { code?: string })?.code !== '42703') return false;
+  const now = await getShadowMigrationState();
+  return !now || now.status !== 'active';
+}
+
 export async function runShadowBackfillJob(job?: {
   updateProgress?: (p: number | object) => Promise<void>;
 }): Promise<{ processed: number; failed: number } | 'no-active-migration' | 'aborted'> {
@@ -378,13 +418,19 @@ export async function runShadowBackfillJob(job?: {
 
   for (;;) {
     const exclude = [...failedPages].filter((n) => Number.isInteger(n));
-    const batch = await query<{ page_id: number }>(
-      `SELECT DISTINCT page_id FROM page_embeddings
-       WHERE embedding_next IS NULL
-       ${exclude.length > 0 ? `AND page_id NOT IN (${exclude.join(',')})` : ''}
-       ORDER BY page_id LIMIT $1`,
-      [BACKFILL_PAGE_BATCH],
-    );
+    let batch: { rows: Array<{ page_id: number }> };
+    try {
+      batch = await query<{ page_id: number }>(
+        `SELECT DISTINCT page_id FROM page_embeddings
+         WHERE embedding_next IS NULL
+         ${exclude.length > 0 ? `AND page_id NOT IN (${exclude.join(',')})` : ''}
+         ORDER BY page_id LIMIT $1`,
+        [BACKFILL_PAGE_BATCH],
+      );
+    } catch (err) {
+      if (await abortedOutFromUnder(err)) return 'aborted';
+      throw err;
+    }
     if (batch.rows.length === 0) break;
 
     for (const { page_id } of batch.rows) {
@@ -406,9 +452,14 @@ export async function runShadowBackfillJob(job?: {
     }
   }
 
-  if ((await countStragglerPages()) === 0) {
-    await buildShadowIndexes(state);
-    await job?.updateProgress?.({ total, processed, failed, phase: 'complete' });
+  try {
+    if ((await countStragglerPages()) === 0) {
+      await buildShadowIndexes(state);
+      await job?.updateProgress?.({ total, processed, failed, phase: 'complete' });
+    }
+  } catch (err) {
+    if (await abortedOutFromUnder(err)) return 'aborted';
+    throw err;
   }
 
   return { processed, failed };
@@ -612,6 +663,12 @@ export async function performShadowSwap(opts?: {
         throw new Error(
           `Migration state changed mid-swap (now ${state?.status ?? 'absent'}) — swap refused`,
         );
+      }
+      // Re-checked here as well as at start: a policy switched on during the
+      // backfill would make this write cosmetic, and the swap is the moment
+      // the corpus becomes the one the queries disagree with (review r6).
+      if (await embeddingPolicyOverride()) {
+        throw new Error(POLICY_OVERRIDE_MSG);
       }
       await client.query(
         `INSERT INTO llm_usecase_assignments (usecase, provider_id, model, updated_at)

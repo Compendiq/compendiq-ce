@@ -160,6 +160,23 @@ describe('#1116 shadow-migration routes', () => {
     expect(res.json().error).toContain('nomic-embed-text');
   });
 
+  it('start/swap: an org-policy refusal is a 409 carrying its remedy (review r6)', async () => {
+    const msg =
+      'An organization LLM policy pins the embedding use case, and it outranks the assignment a swap writes — the corpus would be re-embedded with one model while every query resolves another. Point the policy at the new model (or disable it) before migrating (#1116).';
+    svc.start.mockRejectedValue(new Error(msg));
+    let res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/embedding/shadow-migration',
+      payload: { providerId: '2c0c8a92-98a8-4f8c-a6a1-000000000001', model: 'm' },
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toBe(msg);
+
+    svc.swap.mockRejectedValue(new Error(msg));
+    res = await app.inject({ method: 'POST', url: '/api/admin/embedding/shadow-migration/swap' });
+    expect(res.statusCode).toBe(409);
+  });
+
   it('status: returns the live status, or active:false when none', async () => {
     svc.status.mockResolvedValue({ phase: 'backfilling', totalPages: 10, backfilledPages: 4, stragglerPages: 6 });
     let res = await app.inject({ method: 'GET', url: '/api/admin/embedding/shadow-migration' });

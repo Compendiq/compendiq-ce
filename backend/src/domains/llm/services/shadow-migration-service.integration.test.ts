@@ -46,6 +46,24 @@ vi.mock('./openai-compatible-client.js', async () => {
 
 // The queue is Redis-backed infrastructure, unavailable in local tests (same
 // boundary CI mocks). Record enqueues; tests drive the job runner directly.
+// The EE org-LLM-policy hook. CE's real noop answers null; tests flip it to
+// exercise the guard that keeps a policy-pinned instance from migrating.
+const enterpriseOverride = vi.hoisted(() =>
+  vi.fn(async (): Promise<{ providerId: string; model: string } | null> => null),
+);
+vi.mock('../../../core/enterprise/loader.js', async () => {
+  const actual = await vi.importActual<typeof import('../../../core/enterprise/loader.js')>(
+    '../../../core/enterprise/loader.js',
+  );
+  return {
+    ...actual,
+    getEnterprisePlugin: () => ({
+      ...actual.getEnterprisePlugin(),
+      resolveUsecaseOverride: enterpriseOverride,
+    }),
+  };
+});
+
 const enqueueJobMock = vi.hoisted(() => vi.fn(async () => 'job-1'));
 const getJobStatusMock = vi.hoisted(() => vi.fn(async (): Promise<{ state: string } | null> => null));
 vi.mock('../../../core/services/queue-service.js', async () => {
@@ -201,6 +219,8 @@ describe.skipIf(!dbAvailable)('#1116 shadow migration service', () => {
     enqueueJobMock.mockClear();
     getJobStatusMock.mockReset();
     getJobStatusMock.mockResolvedValue(null);
+    enterpriseOverride.mockReset();
+    enterpriseOverride.mockResolvedValue(null);
   });
   afterEach(async () => {
     await resetCanonicalSchema();
@@ -507,6 +527,50 @@ describe.skipIf(!dbAvailable)('#1116 shadow migration service', () => {
       await runShadowBackfillJob();
       return pageId;
     }
+
+    it('refuses to start while an org LLM policy pins the embedding use case (review r6)', async () => {
+      // The policy is consulted BEFORE llm_usecase_assignments, so the swap's
+      // repoint would be cosmetic: corpus on one model, every query on
+      // another. Inert in CE, where the noop plugin answers null.
+      enterpriseOverride.mockResolvedValue({ providerId: liveProviderId, model: 'policy-pinned-model' });
+
+      await expect(
+        startShadowMigration({ providerId: shadowProviderId, model: SHADOW_MODEL }),
+      ).rejects.toThrow(/organization LLM policy/i);
+
+      expect(await getShadowMigrationState()).toBeNull();
+    });
+
+    it('refuses to swap when a policy is switched on mid-backfill (review r6)', async () => {
+      await seedEmbeddedPage('Doc A');
+      await startShadowMigration({ providerId: shadowProviderId, model: SHADOW_MODEL });
+      await runShadowBackfillJob();
+      enterpriseOverride.mockResolvedValue({ providerId: liveProviderId, model: 'policy-pinned-model' });
+
+      await expect(performShadowSwap()).rejects.toThrow(/organization LLM policy/i);
+
+      // Nothing renamed: the live column is still the 1024-dim original, not
+      // the 8-dim shadow.
+      const live = await columnInfo('page_embeddings', 'embedding');
+      expect(live?.udt).toBe('vector(1024)');
+      expect(await columnInfo('page_embeddings', 'embedding_prev')).toBeUndefined();
+    });
+
+    it('an abort that lands between batches ends the job cleanly, not on a raw undefined-column error (review r6)', async () => {
+      // The batch SELECT names embedding_next; an abort committing after the
+      // last page of a batch pulls the column out from under the job's own
+      // query. That is a race the job is meant to lose.
+      await seedEmbeddedPage('Doc A');
+      await startShadowMigration({ providerId: shadowProviderId, model: SHADOW_MODEL });
+      generateEmbeddingMock.mockImplementationOnce(async () => {
+        await query(`ALTER TABLE page_embeddings DROP COLUMN embedding_next`);
+        await query(`ALTER TABLE pages DROP COLUMN page_avg_embedding_next`);
+        await query(`DELETE FROM admin_settings WHERE setting_key = 'embedding_shadow_migration'`);
+        return [vecOf(8, 1)];
+      });
+
+      await expect(runShadowBackfillJob()).resolves.toBe('aborted');
+    });
 
     it('a start racing another start\'s probe window is refused, not a raw duplicate-column error (review r5)', async () => {
       // The pre-probe check is stale by the time the DDL runs — the probe is

@@ -46,6 +46,9 @@ export async function llmEmbeddingShadowRoutes(fastify: FastifyInstance) {
     if (/changed mid-(swap|abort|cleanup|rollback)|swap completed while the abort/i.test(message)) {
       return { statusCode: 409, message };
     }
+    // The EE org-policy refusal is a conflict with instance configuration,
+    // not a server fault — and its text is the admin's next step (review r6).
+    if (/organization LLM policy/i.test(message)) return { statusCode: 409, message };
     if (/Provider not found/i.test(message)) return { statusCode: 404, message };
     if (/unusable dimension/i.test(message)) return { statusCode: 422, message };
     if (/Could not acquire the table lock/i.test(message)) return { statusCode: 503, message };

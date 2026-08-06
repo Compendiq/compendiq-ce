@@ -13,8 +13,19 @@ vectors throughout; the old model stays recoverable until the final cleanup.
 | 3. Index build | HNSW indexes built on **both** shadow columns at the end of the backfill — unless the model's dimension exceeds 4000, which pgvector cannot index at all (the status card says so instead of claiming an index, and post-swap vector search scans sequentially) | Yes | none for reads; **writes to `page_embeddings` AND to `pages` queue for the build duration** (minutes) — the second index is on `pages`, so sync upserts, editor saves and embedding-status updates stall too |
 | 4. Swap | **Swap to the new model** (`POST …/swap`) — one transaction of column/index renames under `lock_timeout 5s`, ≤5 attempts | Yes (Roll back) | sub-second on success. While a lock attempt waits behind a long reader, **new searches queue behind the pending exclusive lock** — each failed attempt can stall them up to 5s (≤5 attempts), so run the swap when long queries have drained |
 | 5. Validate | run real searches; the quality gate is #1102's eval rig | — | new model serving |
-| 6a. Cleanup | **Clean up** (`POST …/cleanup`) — drops the `_prev` columns, restores NOT NULL | **No — old vectors deleted** | none |
-| 6b. Rollback | **Roll back** (`POST …/rollback`) — reverse renames, restore the old assignment; pages embedded post-swap are re-dirtied for the normal pipeline | back to step 4 | sub-second |
+| 6a. Cleanup | **Clean up** (`POST …/cleanup`) — drops the `_prev` columns, restores NOT NULL | **No — old vectors deleted** | **search and page reads are down for the duration** — see below |
+| 6b. Rollback | **Roll back** (`POST …/rollback`) — reverse renames, restore the old assignment; pages embedded post-swap are re-dirtied for the normal pipeline | back to step 4 | same as 6a |
+
+**Only the swap is sub-second.** `lock_timeout` bounds how long a step waits
+*to acquire* the table lock, never how long it holds it — so the discipline
+that makes step 4 quick does not transfer to cleanup and post-swap rollback.
+Both hold `ACCESS EXCLUSIVE` on `page_embeddings` **and** `pages` across a
+re-dirty scan, a `DELETE … WHERE embedding IS NULL` scan and a `SET NOT NULL`
+that Postgres validates with a full table scan. Every read and write to both
+tables queues behind them: search, page views, sync. Treat 6a/6b as a
+maintenance window sized to a few full scans of `page_embeddings`, not as the
+swap's sibling. The swap itself renames metadata only and is genuinely
+sub-second.
 
 ## Go / no-go
 
@@ -25,6 +36,11 @@ vectors throughout; the old model stays recoverable until the final cleanup.
   backfill spend provider budget**); straggler count is 0
   (`GET …/shadow-migration` → `stragglerPages`); disk headroom ≥
   2× current `page_embeddings` size plus the second HNSW index.
+- **Enterprise instances:** an active **org LLM policy** pinning the embedding
+  use case outranks the assignment a swap writes — the resolver consults the
+  policy first — so the corpus would end up on one model while every query
+  resolves another. Start and swap both refuse with a 409 in that case (CE
+  never has one). Point the policy at the new model, or disable it, first.
 - **No-go / wait** when: a destructive re-embed job is queued (start refuses);
   a previous shadow backfill job is still queued (start refuses — BullMQ's
   fixed job id would silently swallow the new enqueue); sustained
