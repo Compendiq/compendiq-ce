@@ -92,10 +92,16 @@ export function LlmTab() {
     const nowE = assignments.embedding;
     if (origE.providerId === nowE.providerId && origE.model === nowE.model) return null;
     const providerId = nowE.providerId ?? nowE.resolved.providerId;
-    const model = nowE.model ?? nowE.resolved.model;
+    // `resolved` is the SERVER's resolution of the saved assignment, so it
+    // still names the old provider's model after an unsaved provider switch
+    // with the model left on inherit. Resolve through the provider actually
+    // selected; the shadow path makes this load-bearing — it pins whatever
+    // model name it is handed into the assignment at swap (review r5).
+    const selectedDefault = providers.find((p) => p.id === providerId)?.defaultModel ?? null;
+    const model = nowE.model ?? selectedDefault ?? nowE.resolved.model;
     if (!providerId || !model) return null;
     return { providerId, model };
-  }, [rawAssignments, assignments]);
+  }, [rawAssignments, assignments, providers]);
 
   const save = useMutation({
     mutationFn: (diff: UpdateUsecaseAssignmentsInput) =>

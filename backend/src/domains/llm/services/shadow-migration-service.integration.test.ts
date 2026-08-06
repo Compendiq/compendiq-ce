@@ -508,6 +508,38 @@ describe.skipIf(!dbAvailable)('#1116 shadow migration service', () => {
       return pageId;
     }
 
+    it('a start racing another start\'s probe window is refused, not a raw duplicate-column error (review r5)', async () => {
+      // The pre-probe check is stale by the time the DDL runs — the probe is
+      // a provider round-trip. Simulate the loser: the winner's state row
+      // lands WHILE our probe is in flight.
+      generateEmbeddingMock.mockImplementationOnce(async () => {
+        await query(
+          `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
+           VALUES ('embedding_shadow_migration', $1, NOW())`,
+          [JSON.stringify({ status: 'active', providerId: shadowProviderId, model: SHADOW_MODEL, dimensions: 8, columnType: 'vector(8)', indexed: true, startedAt: new Date().toISOString() })],
+        );
+        return [vecOf(8, 1)];
+      });
+
+      await expect(
+        startShadowMigration({ providerId: shadowProviderId, model: SHADOW_MODEL }),
+      ).rejects.toThrow(/already active/i);
+    });
+
+    it('a provider deleted during the probe window refuses instead of creating a dangling migration (review r5)', async () => {
+      generateEmbeddingMock.mockImplementationOnce(async () => {
+        await query(`DELETE FROM llm_providers WHERE id = $1`, [shadowProviderId]);
+        return [vecOf(8, 1)];
+      });
+
+      await expect(
+        startShadowMigration({ providerId: shadowProviderId, model: SHADOW_MODEL }),
+      ).rejects.toThrow(/Provider not found/i);
+
+      expect(await getShadowMigrationState()).toBeNull();
+      expect(await columnInfo('page_embeddings', 'embedding_next')).toBeUndefined();
+    });
+
     it('refuses while stragglers remain', async () => {
       await seedEmbeddedPage('Doc A');
       await startShadowMigration({ providerId: shadowProviderId, model: SHADOW_MODEL });
@@ -556,6 +588,23 @@ describe.skipIf(!dbAvailable)('#1116 shadow migration service', () => {
       await readyMigration();
       await query(`DROP INDEX IF EXISTS idx_page_embeddings_hnsw_next`);
       await expect(performShadowSwap()).rejects.toThrow(/index/i);
+    });
+
+    it('ignores a same-named index living in another schema (review r5)', async () => {
+      // pg_indexes spans the whole database; a restored clone schema keeps the
+      // original index names, so an unfiltered count of 2 can be reached with
+      // one real shadow index and one impostor.
+      await readyMigration();
+      await query(`DROP INDEX IF EXISTS idx_pages_page_avg_embedding_hnsw_next`);
+      await query(`CREATE SCHEMA IF NOT EXISTS r5_clone`);
+      try {
+        await query(`CREATE TABLE r5_clone.decoy (id int)`);
+        await query(`CREATE INDEX idx_pages_page_avg_embedding_hnsw_next ON r5_clone.decoy (id)`);
+
+        await expect(performShadowSwap()).rejects.toThrow(/index/i);
+      } finally {
+        await query(`DROP SCHEMA r5_clone CASCADE`);
+      }
     });
 
     it('refuses when only the pages avg shadow index is missing (review r4)', async () => {
@@ -675,6 +724,41 @@ describe.skipIf(!dbAvailable)('#1116 shadow migration service', () => {
         [fresh.rows[0]!.id],
       );
       expect(dirty.rows[0]!.embedding_dirty).toBe(true);
+    });
+
+    it('the revert restores the state it verified under the lock, not the pre-lock snapshot (review r5)', async () => {
+      // A rollback can wait seconds on the table lock. Whatever else commits
+      // in that window is what the DB now holds — restoring the snapshot read
+      // BEFORE the wait would write back a superseded rollback target.
+      await seedEmbeddedPage('Doc A');
+      await startShadowMigration({ providerId: shadowProviderId, model: SHADOW_MODEL });
+      await runShadowBackfillJob();
+      await performShadowSwap();
+
+      const blocker = await getPool().connect();
+      let rollbackPromise: Promise<'aborted' | 'reverted'>;
+      try {
+        await blocker.query('BEGIN');
+        await blocker.query('SELECT 1 FROM page_embeddings LIMIT 1'); // ACCESS SHARE queues the AEL
+
+        rollbackPromise = rollbackShadowMigration({ lockTimeoutMs: 3000, maxAttempts: 3 });
+        await new Promise((r) => setTimeout(r, 300));
+
+        const live = await getShadowMigrationState();
+        await query(
+          `UPDATE admin_settings SET setting_value = $1 WHERE setting_key = 'embedding_shadow_migration'`,
+          [JSON.stringify({ ...live, prev: { providerId: shadowProviderId, model: 'succeeding-model', dimensions: 8 } })],
+        );
+      } finally {
+        await blocker.query('ROLLBACK');
+        blocker.release();
+      }
+      await rollbackPromise;
+
+      const assign = await query<{ provider_id: string; model: string }>(
+        `SELECT provider_id, model FROM llm_usecase_assignments WHERE usecase = 'embedding'`,
+      );
+      expect(assign.rows[0]).toEqual({ provider_id: shadowProviderId, model: 'succeeding-model' });
     });
 
     it('rollback restores a partially-pinned embedding assignment verbatim (review r4)', async () => {

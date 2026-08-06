@@ -17,6 +17,14 @@ const svc = vi.hoisted(() => ({
   rerun: vi.fn(),
 }));
 vi.mock('../../domains/llm/services/shadow-migration-service.js', () => ({
+  // The route narrows on this class, so the test must throw the very same
+  // constructor the route imports — i.e. this one.
+  ShadowProbeError: class ShadowProbeError extends Error {
+    constructor(public readonly detail: string) {
+      super(`Probe failed before the provider answered: ${detail}`);
+      this.name = 'ShadowProbeError';
+    }
+  },
   startShadowMigration: (...a: unknown[]) => svc.start(...a),
   getShadowMigrationStatus: (...a: unknown[]) => svc.status(...a),
   performShadowSwap: (...a: unknown[]) => svc.swap(...a),
@@ -31,6 +39,7 @@ vi.mock('../../core/services/rate-limit-service.js', () => ({
 
 const { llmEmbeddingShadowRoutes } = await import('./llm-embedding-shadow.js');
 const { LlmHttpError } = await import('../../domains/llm/services/llm-http-error.js');
+const { ShadowProbeError } = await import('../../domains/llm/services/shadow-migration-service.js');
 
 let isAdmin = true;
 
@@ -133,6 +142,22 @@ describe('#1116 shadow-migration routes', () => {
     expect(res.json().error).toContain('typo-model');
     // The provider's raw body must stay out of the response (#1185 policy).
     expect(JSON.stringify(res.json())).not.toContain('unauthorized body');
+  });
+
+  it('start: a provider that never answers is 502, not a masked 500 (review r5)', async () => {
+    // No HTTP response means no LlmHttpError — the wrong port / stopped
+    // service / open breaker case, which is the one an admin can actually fix.
+    svc.start.mockRejectedValue(new ShadowProbeError('fetch failed'));
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/embedding/shadow-migration',
+      payload: { providerId: '2c0c8a92-98a8-4f8c-a6a1-000000000001', model: 'nomic-embed-text' },
+    });
+
+    expect(res.statusCode).toBe(502);
+    expect(res.json().error).toContain('fetch failed');
+    expect(res.json().error).toContain('nomic-embed-text');
   });
 
   it('status: returns the live status, or active:false when none', async () => {

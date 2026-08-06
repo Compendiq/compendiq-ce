@@ -10,7 +10,7 @@ vectors throughout; the old model stays recoverable until the final cleanup.
 |---|---|---|---|
 | 1. Start | Settings → LLM → change the embedding assignment → **Start zero-downtime re-embed** (or `POST /api/admin/embedding/shadow-migration {providerId, model}`) | Yes (Abort) | none |
 | 2. Backfill | background job embeds every existing chunk with the new model into `embedding_next`; edited pages dual-write both models | Yes (Abort) | none (background embedding load only) |
-| 3. Index build | HNSW index built on the shadow column at the end of the backfill | Yes | none for reads; **writes to `page_embeddings` queue for the build duration** (minutes) |
+| 3. Index build | HNSW indexes built on **both** shadow columns at the end of the backfill — unless the model's dimension exceeds 4000, which pgvector cannot index at all (the status card says so instead of claiming an index, and post-swap vector search scans sequentially) | Yes | none for reads; **writes to `page_embeddings` AND to `pages` queue for the build duration** (minutes) — the second index is on `pages`, so sync upserts, editor saves and embedding-status updates stall too |
 | 4. Swap | **Swap to the new model** (`POST …/swap`) — one transaction of column/index renames under `lock_timeout 5s`, ≤5 attempts | Yes (Roll back) | sub-second on success. While a lock attempt waits behind a long reader, **new searches queue behind the pending exclusive lock** — each failed attempt can stall them up to 5s (≤5 attempts), so run the swap when long queries have drained |
 | 5. Validate | run real searches; the quality gate is #1102's eval rig | — | new model serving |
 | 6a. Cleanup | **Clean up** (`POST …/cleanup`) — drops the `_prev` columns, restores NOT NULL | **No — old vectors deleted** | none |
@@ -39,11 +39,22 @@ the status; the swap refuses while any remain) — the backfill terminates
 rather than retrying them forever. Fix the provider/content issue, then
 **Re-run backfill** (`POST …/shadow-migration/backfill`); it only re-embeds
 rows still missing shadow vectors. The same re-run recovers a crashed worker
-or a start whose enqueue never landed. While a migration is active the
-embedding use-case assignment is **pinned** (`PUT /admin/llm-usecases`
-answers 409 for it) — it is migration state, not free config. An interrupted
+or a start whose enqueue never landed. From start until the state row is gone — `active`, `swapped` **and**
+`aborting` — the embedding use-case assignment is **pinned**
+(`PUT /admin/llm-usecases` answers 409 for it): it is migration state, not
+free config, and after a swap it is also what a rollback restores. For the
+same reason the migration's providers are protected while it runs: neither
+the target nor the rollback provider can be deleted, and a default repoint
+(`set-default`, or a `defaultModel` patch) is refused whenever the live
+assignment **or** the rollback target resolves through it. An interrupted
 abort parks the migration in an `aborting` state; retrying the abort is
 idempotent and completes it.
+
+**Provider-edit caveat.** A `baseUrl` / `apiKey` patch on the migration's
+target provider is *not* refused — it repoints the shadow model mid-backfill
+and mixes two models into one column, exactly as the same patch does to the
+live column outside a migration. Treat the target provider's endpoint as
+frozen for the duration; if it must move, abort and restart.
 
 **Legacy mode caveat** (`USE_BULLMQ=false`): job-status lookups return
 nothing, so the start-time guards against a *running* destructive re-embed or
@@ -64,7 +75,11 @@ coverage signal reads the live column, so it stays healthy throughout (unlike
 the destructive path, whose TRUNCATE window it exists to expose). Failure
 modes: a shadow-provider outage leaves straggler pages (visible in the status
 card; swap refuses); an aborted swap (lock timeout) leaves everything on the
-old model with the state intact — retry when load drains.
+old model with the state intact — retry when load drains. Deleting the target
+provider inside start's probe window (a seconds-wide race the in-transaction
+re-check closes, leaving only the instant between the delete's own guard read
+and its commit) parks the migration at `backfilling` with every page a
+straggler — abort it and start again.
 
 ## Revert procedure
 

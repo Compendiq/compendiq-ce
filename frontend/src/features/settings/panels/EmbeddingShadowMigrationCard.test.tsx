@@ -36,6 +36,7 @@ type Status = {
     totalPages: number;
     backfilledPages: number;
     stragglerPages: number;
+    indexed: boolean;
   };
 };
 
@@ -58,9 +59,46 @@ function mockApi(status: Status, capture?: Array<{ url: string; method: string; 
 
 describe('EmbeddingShadowMigrationCard (#1116)', () => {
   it('renders nothing with no pending change and no active migration', async () => {
-    mockApi({ active: false, migration: null });
+    // Wait for the poll to actually SETTLE before asserting absence: the
+    // pre-fetch render is null for every input, so an assertion that resolves
+    // on the first synchronous tick passes no matter what the response says
+    // (review r5).
+    const fetchSpy = mockApi({ active: false, migration: null });
     const { container } = renderCard(null);
-    await waitFor(() => expect(container.querySelector('[data-testid="shadow-migration-card"]')).toBeNull());
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByText(/zero-downtime|Backfill/i)).toBeNull());
+    expect(container.querySelector('[data-testid="shadow-migration-card"]')).toBeNull();
+  });
+
+  it('warns instead of claiming an index when the dimension is past pgvector\'s indexable range (review r5)', async () => {
+    // >4000 dimensions builds no HNSW index at all — telling the admin "the
+    // new index is built" hides a post-swap sequential scan behind a Swap
+    // button. 06-data-model.md names a real model in this tier.
+    mockApi({
+      active: true,
+      migration: { phase: 'ready', model: 'qwen3-embedding:8b', dimensions: 4096, totalPages: 40, backfilledPages: 40, stragglerPages: 0, indexed: false },
+    });
+    renderCard(null);
+
+    expect(await screen.findByText(/no vector index/i)).toBeInTheDocument();
+    expect(screen.getByText(/scan sequentially/i)).toBeInTheDocument();
+    expect(screen.queryByText(/the new index is built/i)).toBeNull();
+  });
+
+  it('lands focus on Cancel when the cleanup confirmation arms (review r5)', async () => {
+    // Arming unmounts the focused button; without a deliberate move, focus
+    // drops to <body> (WCAG 2.4.3) and the warning is never announced.
+    mockApi({
+      active: true,
+      migration: { phase: 'swapped', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 40, backfilledPages: 40, stragglerPages: 0, indexed: true },
+    });
+    renderCard(null);
+
+    fireEvent.click(await screen.findByRole('button', { name: /^Clean up$/i }));
+
+    const cancel = await screen.findByRole('button', { name: /^Cancel$/i });
+    expect(cancel).toHaveFocus();
+    expect(screen.getByRole('alert')).toHaveTextContent(/permanently deletes/i);
   });
 
   it('offers the zero-downtime path for a pending model change and starts it', async () => {
@@ -85,7 +123,7 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
   it('shows backfill progress and an abort control while backfilling', async () => {
     mockApi({
       active: true,
-      migration: { phase: 'backfilling', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 40, backfilledPages: 10, stragglerPages: 30 },
+      migration: { phase: 'backfilling', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 40, backfilledPages: 10, stragglerPages: 30, indexed: true },
     });
     renderCard(null);
 
@@ -99,7 +137,7 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
     mockApi(
       {
         active: true,
-        migration: { phase: 'ready', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 40, backfilledPages: 40, stragglerPages: 0 },
+        migration: { phase: 'ready', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 40, backfilledPages: 40, stragglerPages: 0, indexed: true },
       },
       calls,
     );
@@ -117,7 +155,7 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
     mockApi(
       {
         active: true,
-        migration: { phase: 'swapped', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 40, backfilledPages: 40, stragglerPages: 0 },
+        migration: { phase: 'swapped', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 40, backfilledPages: 40, stragglerPages: 0, indexed: true },
       },
       calls,
     );
@@ -139,7 +177,7 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
     mockApi(
       {
         active: true,
-        migration: { phase: 'backfilling', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 40, backfilledPages: 10, stragglerPages: 30 },
+        migration: { phase: 'backfilling', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 40, backfilledPages: 10, stragglerPages: 30, indexed: true },
       },
       calls,
     );
@@ -156,7 +194,7 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
     mockApi(
       {
         active: true,
-        migration: { phase: 'aborting', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 0, backfilledPages: 0, stragglerPages: 0 },
+        migration: { phase: 'aborting', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 0, backfilledPages: 0, stragglerPages: 0, indexed: true },
       },
       calls,
     );
@@ -171,7 +209,7 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
   it('invalidates the assignments/settings caches after a lifecycle action (review r1)', async () => {
     mockApi({
       active: true,
-      migration: { phase: 'ready', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 40, backfilledPages: 40, stragglerPages: 0 },
+      migration: { phase: 'ready', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 40, backfilledPages: 40, stragglerPages: 0, indexed: true },
     });
     renderCard(null);
     const spy = vi.spyOn(queryClient, 'invalidateQueries');
@@ -190,7 +228,7 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
     mockApi(
       {
         active: true,
-        migration: { phase: 'swapped', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 40, backfilledPages: 40, stragglerPages: 0 },
+        migration: { phase: 'swapped', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 40, backfilledPages: 40, stragglerPages: 0, indexed: true },
       },
       calls,
     );

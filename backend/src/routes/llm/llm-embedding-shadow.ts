@@ -7,6 +7,7 @@ import {
   rollbackShadowMigration,
   cleanupShadowMigration,
   rerunShadowBackfill,
+  ShadowProbeError,
 } from '../../domains/llm/services/shadow-migration-service.js';
 import { getRateLimits } from '../../core/services/rate-limit-service.js';
 import { LlmHttpError } from '../../domains/llm/services/llm-http-error.js';
@@ -65,9 +66,15 @@ export async function llmEmbeddingShadowRoutes(fastify: FastifyInstance) {
         // picked, provider down, expired key) — a masked 500 hides the one
         // thing they can act on (review r2). LlmHttpError messages are
         // body-free per #1185, safe to echo to an admin.
-        if (err instanceof LlmHttpError) {
+        // Two shapes of probe failure, one admin-facing answer: the provider
+        // answered with an error status (LlmHttpError, body-free per #1185),
+        // or it never answered at all (ShadowProbeError — wrong port, service
+        // down, open breaker). The latter used to reach the global handler and
+        // come back as 'Internal Server Error' with the cause stripped, which
+        // is precisely the failure the admin can fix (review r5).
+        if (err instanceof LlmHttpError || err instanceof ShadowProbeError) {
           return reply.code(502).send({
-            error: `Probing "${body.model}" against the provider failed: ${err.message}`,
+            error: `Probing "${body.model}" against the provider failed: ${err instanceof ShadowProbeError ? err.detail.slice(0, 300) : err.message}`,
             statusCode: 502,
           });
         }

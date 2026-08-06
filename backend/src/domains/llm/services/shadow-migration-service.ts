@@ -1,5 +1,6 @@
 import { query, getPool } from '../../../core/db/postgres.js';
 import { generateEmbedding } from './openai-compatible-client.js';
+import { LlmHttpError } from './llm-http-error.js';
 import { getProviderById } from './llm-provider-service.js';
 import { bumpProviderCacheVersion } from './cache-bus.js';
 import { enqueueJob, getJobStatus } from '../../../core/services/queue-service.js';
@@ -44,6 +45,18 @@ import pgvector from 'pgvector';
  */
 
 export const SHADOW_MIGRATION_STATE_KEY = 'embedding_shadow_migration';
+
+/**
+ * A start-time probe that never reached an HTTP response — provider
+ * unreachable, breaker open, queue refusal. Carries a bounded detail so the
+ * route can answer 502 with the one thing the admin can act on.
+ */
+export class ShadowProbeError extends Error {
+  constructor(public readonly detail: string) {
+    super(`Probe failed before the provider answered: ${detail.slice(0, 300)}`);
+    this.name = 'ShadowProbeError';
+  }
+}
 export const SHADOW_JOB_QUEUE = 'shadow-reembed';
 
 export interface ShadowMigrationState {
@@ -210,7 +223,17 @@ export async function startShadowMigration(opts: {
   // column — the enforcement gap the issue body flags (server trusting a
   // client-posted number) does not exist on this path because no number is
   // accepted at all.
-  const vectors = await generateEmbedding(cfg, opts.model, 'probe');
+  let vectors: number[][];
+  try {
+    vectors = await generateEmbedding(cfg, opts.model, 'probe');
+  } catch (err) {
+    // LlmHttpError means the provider ANSWERED with an error status; the
+    // failure an admin is most likely to cause — wrong port, service down,
+    // open breaker — never produces one, and reached the route as a masked
+    // 500 (review r5). Classify it so the route can name it instead.
+    if (err instanceof LlmHttpError) throw err;
+    throw new ShadowProbeError(err instanceof Error ? err.message : String(err));
+  }
   const dimensions = vectors[0]?.length ?? 0;
   if (!Number.isInteger(dimensions) || dimensions < 1 || dimensions > 16000) {
     throw new Error(`Probe returned an unusable dimension (${dimensions})`);
@@ -222,6 +245,27 @@ export async function startShadowMigration(opts: {
   // discipline as the swap (review r1), or the start can queue indefinitely
   // behind a long reader while blocking every new one.
   await withLockRetry({ lockTimeoutMs: 5000, maxAttempts: 5 }, async (client) => {
+    // Lock first, re-verify second — the same discipline as swap/abort/
+    // revert/cleanup, and start needs it most: the probe above is a
+    // provider round-trip seconds wide, so the pre-probe checks are long
+    // stale by now (review r5). Without this, a second start racing the
+    // probe window failed on a raw 42701 (duplicate column) and a provider
+    // deleted during it left a migration pointing at nothing.
+    await client.query(`LOCK TABLE page_embeddings, pages IN ACCESS EXCLUSIVE MODE`);
+    const raceRows = await client.query(
+      `SELECT setting_value FROM admin_settings WHERE setting_key = '${SHADOW_MIGRATION_STATE_KEY}'`,
+    );
+    const raceRaw = (raceRows.rows[0] as { setting_value?: string } | undefined)?.setting_value;
+    if (raceRaw) {
+      const raceState = JSON.parse(raceRaw) as ShadowMigrationState;
+      throw new Error(
+        `A shadow migration is already ${raceState.status} (started ${raceState.startedAt}) — swap, roll it back or clean it up first`,
+      );
+    }
+    const stillThere = await client.query(`SELECT 1 FROM llm_providers WHERE id = $1`, [opts.providerId]);
+    if (stillThere.rows.length === 0) {
+      throw new Error('Provider not found');
+    }
     await client.query(`ALTER TABLE page_embeddings ADD COLUMN embedding_next ${columnType}`);
     await client.query(`ALTER TABLE pages ADD COLUMN page_avg_embedding_next ${columnType}`);
     await saveState(
@@ -267,9 +311,13 @@ async function shadowIndexesReady(state: ShadowMigrationState): Promise<boolean>
   // BOTH shadow indexes (review r4): a crash between the two CREATE INDEX
   // statements would otherwise report 'ready' and the swap's IF EXISTS
   // rename would silently leave the pages avg column unindexed post-swap.
+  // pg_indexes spans every schema in the database and index names are unique
+  // only per schema, so an unfiltered row count can be satisfied twice over by
+  // a restored clone schema while a real shadow index is missing (review r5).
   const r = await query<{ indexname: string }>(
-    `SELECT indexname FROM pg_indexes
-     WHERE indexname IN ('idx_page_embeddings_hnsw_next', 'idx_pages_page_avg_embedding_hnsw_next')`,
+    `SELECT DISTINCT indexname FROM pg_indexes
+     WHERE schemaname = current_schema()
+       AND indexname IN ('idx_page_embeddings_hnsw_next', 'idx_pages_page_avg_embedding_hnsw_next')`,
   );
   return r.rows.length === 2;
 }
@@ -681,12 +729,12 @@ export async function rollbackShadowMigration(opts?: {
       // full inherit repoints the restored vectors' model at the default
       // provider. Delete only when the captured row was absent or fully
       // null (those resolve identically to no row).
-      if (state.prev && (state.prev.providerId !== null || state.prev.model !== null)) {
+      if (revState.prev && (revState.prev.providerId !== null || revState.prev.model !== null)) {
         await client.query(
           `INSERT INTO llm_usecase_assignments (usecase, provider_id, model, updated_at)
            VALUES ('embedding', $1, $2, NOW())
            ON CONFLICT (usecase) DO UPDATE SET provider_id = $1, model = $2, updated_at = NOW()`,
-          [state.prev.providerId, state.prev.model],
+          [revState.prev.providerId, revState.prev.model],
         );
       } else {
         await client.query(`DELETE FROM llm_usecase_assignments WHERE usecase = 'embedding'`);
@@ -695,17 +743,21 @@ export async function rollbackShadowMigration(opts?: {
         `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
          VALUES ('embedding_dimensions', $1, NOW())
          ON CONFLICT (setting_key) DO UPDATE SET setting_value = $1, updated_at = NOW()`,
-        [String(state.prev?.dimensions ?? 1024)],
+        [String(revState.prev?.dimensions ?? 1024)],
       );
       await saveState(
         {
+          // Everything consumed here comes from the state this transaction
+          // VERIFIED under the lock, never the pre-lock snapshot (review r5):
+          // the two differ exactly when another lifecycle step won the lock
+          // race, which is when restoring the stale one does the damage.
           status: 'active',
-          providerId: state.providerId,
-          model: state.model,
-          dimensions: state.dimensions,
-          columnType: state.columnType,
-          indexed: state.indexed,
-          startedAt: state.startedAt,
+          providerId: revState.providerId,
+          model: revState.model,
+          dimensions: revState.dimensions,
+          columnType: revState.columnType,
+          indexed: revState.indexed,
+          startedAt: revState.startedAt,
         },
         client as unknown as { query: (sql: string, params?: unknown[]) => Promise<unknown> },
       );

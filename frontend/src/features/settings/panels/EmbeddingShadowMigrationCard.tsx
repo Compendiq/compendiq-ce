@@ -22,6 +22,7 @@ interface ShadowStatus {
     totalPages: number;
     backfilledPages: number;
     stragglerPages: number;
+    indexed: boolean;
   };
 }
 
@@ -39,6 +40,7 @@ export function EmbeddingShadowMigrationCard({ pending }: Props) {
   const [busy, setBusy] = useState(false);
   const [confirmingCleanup, setConfirmingCleanup] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const cancelCleanupRef = useRef<HTMLButtonElement | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -79,6 +81,14 @@ export function EmbeddingShadowMigrationCard({ pending }: Props) {
       setConfirmingCleanup(false);
     }
   }
+
+  useEffect(() => {
+    // Arming unmounts the button that had focus, dropping it to <body>
+    // (WCAG 2.4.3). Land on Cancel rather than Confirm: what is armed here
+    // deletes the old vectors permanently, and Enter must not finish it by
+    // momentum.
+    if (confirmingCleanup) cancelCleanupRef.current?.focus();
+  }, [confirmingCleanup]);
 
   const migration = status?.active ? status.migration : null;
 
@@ -166,8 +176,18 @@ export function EmbeddingShadowMigrationCard({ pending }: Props) {
       <div className="nm-card border-blue-500/30 p-3 text-sm" data-testid="shadow-migration-card">
         <p>
           Backfill complete — <b>{migration.totalPages}</b> pages carry <b>{migration.model}</b>{' '}
-          vectors and the new index is built. Swapping is a sub-second rename; the old vectors
-          stay available for rollback until cleanup.
+          vectors
+          {migration.indexed ? (
+            ' and the new index is built'
+          ) : (
+            <span className="text-warning">
+              {' '}
+              with <b>no vector index</b> — pgvector cannot index past 4000 dimensions, so search
+              will scan sequentially once you swap
+            </span>
+          )}
+          . Swapping is a sub-second rename; the old vectors stay available for rollback until
+          cleanup.
         </p>
         <div className="mt-2 flex gap-2">
           <button
@@ -198,7 +218,7 @@ export function EmbeddingShadowMigrationCard({ pending }: Props) {
         window.
       </p>
       {confirmingCleanup && (
-        <p className="mt-2 text-warning">
+        <p className="mt-2 text-warning" role="alert">
           Cleanup permanently deletes the old vectors — rolling back afterwards requires a full
           re-embed. Continue?
         </p>
@@ -206,7 +226,12 @@ export function EmbeddingShadowMigrationCard({ pending }: Props) {
       <div className="mt-2 flex gap-2">
         {confirmingCleanup ? (
           <>
-            <button className="nm-button-ghost" disabled={busy} onClick={() => setConfirmingCleanup(false)}>
+            <button
+              ref={cancelCleanupRef}
+              className="nm-button-ghost"
+              disabled={busy}
+              onClick={() => setConfirmingCleanup(false)}
+            >
               Cancel
             </button>
             <button

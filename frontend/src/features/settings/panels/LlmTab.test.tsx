@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LlmTab } from './LlmTab';
 import { useAuthStore } from '../../../stores/auth-store';
@@ -189,6 +189,27 @@ describe('LlmTab', () => {
     await waitFor(() => {
       expect(screen.queryByRole('button', { name: /probe/i })).toBeTruthy();
     });
+  });
+
+  it('names the newly selected provider\'s own default model in the pending change (review r5)', async () => {
+    // `resolved` is the server's resolution of the SAVED assignment, so it
+    // still says bge-m3 after switching to provider B with the model left on
+    // inherit. #1116's shadow path pins whatever name it is handed into the
+    // assignment at swap, so the stale one would migrate to a model the admin
+    // never chose.
+    const Wrapper = createWrapper();
+    mockRoutes();
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByText('Use case assignments');
+
+    fireEvent.change(screen.getByTestId('usecase-embedding-provider'), {
+      target: { value: providerB.id },
+    });
+
+    // Scoped: 'gpt-4o-mini' is also an <option> in the model dropdown.
+    const card = within(await screen.findByTestId('shadow-migration-card'));
+    expect(card.getByText(providerB.defaultModel)).toBeInTheDocument();
+    expect(card.queryByText('bge-m3')).toBeNull();
   });
 
   // #949: a background refetch (window focus, or a concurrent admin save)

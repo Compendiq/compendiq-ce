@@ -9,7 +9,7 @@ import { ZodError } from 'zod';
 // must be refused while a shadow migration runs, mirroring the
 // PUT /admin/llm-usecases pin.
 
-const dbQuery = vi.hoisted(() => vi.fn(async (): Promise<{ rows: unknown[] }> => ({ rows: [] })));
+const dbQuery = vi.hoisted(() => vi.fn(async (_sql?: string): Promise<{ rows: unknown[] }> => ({ rows: [] })));
 vi.mock('../../core/db/postgres.js', () => ({
   query: (...a: unknown[]) => dbQuery(...(a as [])),
   getPool: () => ({ connect: async () => ({ query: vi.fn(async () => ({ rows: [] })), release: vi.fn() }) }),
@@ -76,10 +76,21 @@ describe('provider default repoint guard during shadow migration (#1116 r2)', ()
     await app.close();
   });
 
+  /**
+   * Two different reads reach `query` here: the embedding assignment row and
+   * (review r5) the is_default lookup that decides whether a full-inherit
+   * assignment resolves through THIS provider.
+   */
+  function routeDb(assignmentRows: unknown[], isDefault = false) {
+    dbQuery.mockImplementation(async (sql?: string) =>
+      sql?.includes('is_default') ? { rows: [{ is_default: isDefault }] } : { rows: assignmentRows },
+    );
+  }
+
   beforeEach(() => {
     vi.clearAllMocks();
     shadowStateMock.mockResolvedValue(null);
-    dbQuery.mockResolvedValue({ rows: [] }); // embedding assignment absent = inherits default
+    routeDb([]); // embedding assignment absent = inherits default
   });
 
   it('refuses set-default while a migration runs and embedding inherits the default', async () => {
@@ -93,7 +104,7 @@ describe('provider default repoint guard during shadow migration (#1116 r2)', ()
 
   it('allows set-default when the embedding assignment is explicit', async () => {
     shadowStateMock.mockResolvedValue({ status: 'active' });
-    dbQuery.mockResolvedValue({ rows: [{ provider_id: PROVIDER_ID }] });
+    routeDb([{ provider_id: PROVIDER_ID }]);
 
     const res = await app.inject({ method: 'POST', url: `/api/admin/llm-providers/${PROVIDER_ID}/set-default` });
 
@@ -103,6 +114,7 @@ describe('provider default repoint guard during shadow migration (#1116 r2)', ()
 
   it('refuses a defaultModel patch under the same conditions', async () => {
     shadowStateMock.mockResolvedValue({ status: 'active' });
+    routeDb([], true); // this provider IS the default the assignment inherits
 
     const res = await app.inject({
       method: 'PATCH',
@@ -116,7 +128,7 @@ describe('provider default repoint guard during shadow migration (#1116 r2)', ()
 
   it('refuses a defaultModel patch when embedding is {provider: this, model: NULL} (review r3)', async () => {
     shadowStateMock.mockResolvedValue({ status: 'active' });
-    dbQuery.mockResolvedValue({ rows: [{ provider_id: PROVIDER_ID, model: null }] });
+    routeDb([{ provider_id: PROVIDER_ID, model: null }]);
 
     const res = await app.inject({
       method: 'PATCH',
@@ -129,7 +141,7 @@ describe('provider default repoint guard during shadow migration (#1116 r2)', ()
 
   it('allows a defaultModel patch on an UNRELATED provider when embedding pins another explicitly', async () => {
     shadowStateMock.mockResolvedValue({ status: 'active' });
-    dbQuery.mockResolvedValue({ rows: [{ provider_id: 'ffffffff-0000-4000-8000-000000000009', model: null }] });
+    routeDb([{ provider_id: 'ffffffff-0000-4000-8000-000000000009', model: null }]);
 
     const res = await app.inject({
       method: 'PATCH',
@@ -150,6 +162,61 @@ describe('provider default repoint guard during shadow migration (#1116 r2)', ()
     // An uninvolved provider stays deletable.
     res = await app.inject({ method: 'DELETE', url: '/api/admin/llm-providers/eeeeeeee-0000-4000-8000-000000000001' });
     expect(res.statusCode).toBe(200);
+  });
+
+  it('protects the ROLLBACK TARGET while swapped, not just the live row (review r5)', async () => {
+    // The swap pins the live assignment to the new explicit pair, so a guard
+    // that reads only that row goes inert for the whole validation window —
+    // exactly when the pre-swap assignment is what a rollback restores.
+    shadowStateMock.mockResolvedValue({
+      status: 'swapped',
+      providerId: 'ffffffff-0000-4000-8000-000000000009',
+      model: 'new-embedder',
+      prev: { providerId: null, model: null, dimensions: 1024 },
+    });
+    routeDb([{ provider_id: 'ffffffff-0000-4000-8000-000000000009', model: 'new-embedder' }]);
+
+    const res = await app.inject({ method: 'POST', url: `/api/admin/llm-providers/${PROVIDER_ID}/set-default` });
+
+    expect(res.statusCode).toBe(409);
+    expect(svc.setDefault).not.toHaveBeenCalled();
+  });
+
+  it('protects a partially-pinned rollback target from a defaultModel patch (review r5)', async () => {
+    // prev = {P, NULL} resolves P.default_model; changing it now silently
+    // repoints what the rollback restores away from the restored vectors.
+    shadowStateMock.mockResolvedValue({
+      status: 'swapped',
+      providerId: 'ffffffff-0000-4000-8000-000000000009',
+      model: 'new-embedder',
+      prev: { providerId: PROVIDER_ID, model: null, dimensions: 1024 },
+    });
+    routeDb([{ provider_id: 'ffffffff-0000-4000-8000-000000000009', model: 'new-embedder' }]);
+
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/api/admin/llm-providers/${PROVIDER_ID}`,
+      payload: { defaultModel: 'other-embedder' },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(svc.update).not.toHaveBeenCalled();
+  });
+
+  it('does not freeze every provider\'s defaultModel while embedding inherits the default (review r5)', async () => {
+    // A chat-only provider cannot change what embedding resolves to; refusing
+    // it froze unrelated admin work for the whole backfill window.
+    shadowStateMock.mockResolvedValue({ status: 'active' });
+    routeDb([], false); // migration runs, embedding inherits — but this one is NOT the default
+
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/api/admin/llm-providers/${PROVIDER_ID}`,
+      payload: { defaultModel: 'chat-model' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(svc.update).toHaveBeenCalled();
   });
 
   it('allows unrelated provider patches during a migration', async () => {
