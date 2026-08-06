@@ -82,6 +82,7 @@ const {
   getShadowMigrationState,
   getShadowMigrationStatus,
   shadowStateFingerprint,
+  awaitSimilarityEdgeRefresh,
   runShadowBackfillJob,
   rerunShadowBackfill,
   performShadowSwap,
@@ -819,6 +820,7 @@ describe.skipIf(!dbAvailable)('#1116 shadow migration service', () => {
       await runShadowBackfillJob();
 
       await performShadowSwap();
+      await awaitSimilarityEdgeRefresh(); // detached from the request; deterministic here
 
       // 0.75 is exact in float4, so this really does match the seeded row —
       // 0.999 would not, and the assertion would pass without the fix.

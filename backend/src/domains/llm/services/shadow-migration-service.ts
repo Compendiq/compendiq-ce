@@ -586,6 +586,23 @@ const DEADLOCK_DETECTED = '40P01';
  * not thrown — the vectors are already live and correct, the edges are stale
  * derived data, and `POST /api/pages/graph/refresh` rebuilds them on demand.
  */
+let pendingEdgeRefresh: Promise<void> = Promise.resolve();
+
+/** Tests await the detached refresh; nothing in production needs to. */
+export function awaitSimilarityEdgeRefresh(): Promise<void> {
+  return pendingEdgeRefresh;
+}
+
+function startSimilarityEdgeRefresh(phase: 'swap' | 'rollback'): void {
+  // DETACHED from the request on purpose. The swap's own transaction has
+  // already committed, and a whole-corpus recompute can outlast an edge
+  // proxy's read timeout — which would report a FAILED swap for one that
+  // succeeded, and invite the admin to click Roll back on it. Stale edges
+  // with a logged warning and a documented one-call remedy are the milder
+  // failure. Errors are handled inside, so this promise never rejects.
+  pendingEdgeRefresh = refreshSimilarityEdges(phase);
+}
+
 async function refreshSimilarityEdges(phase: 'swap' | 'rollback'): Promise<void> {
   try {
     // Dynamic: embedding-service imports THIS module for the dual-write, so a
@@ -748,7 +765,7 @@ export async function performShadowSwap(opts?: {
   );
 
   await bumpProviderCacheVersion();
-  await refreshSimilarityEdges('swap');
+  startSimilarityEdgeRefresh('swap');
   logger.info('Shadow migration swapped — new model is live; run cleanup once validated, or rollback to revert');
 }
 
@@ -898,7 +915,7 @@ export async function rollbackShadowMigration(opts?: {
   // Symmetric with the swap: the edges were rebuilt against the new model's
   // averages there, so leaving them now would strand new-model scores over
   // old-model vectors.
-  await refreshSimilarityEdges('rollback');
+  startSimilarityEdgeRefresh('rollback');
   logger.info('Shadow migration reverted — old model is live again; state back to active');
   return 'reverted';
 }
