@@ -36,21 +36,38 @@ export function SettingsLayout() {
       // 896px it stays a coherent shape instead of a pane stretched to whatever
       // the monitor happens to be, with its content stranded on the left.
       // Wide enough that the tabs carrying tables (audit, users) still breathe.
-      className="max-w-4xl"
+      className=""
     >
-      {/* Matches the route-title scale used across the app. */}
-      <h1 className="mb-3 text-lg font-semibold">Settings</h1>
+      {/* Sticky title strip, full bleed with a bottom hairline — the same shape
+          as the article's context strip, and for the same reason: the settings
+          column IS the pane now (AppLayout gives `<main>` the surface), so a
+          rounded bordered card inside it would be a box drawn on a box.
 
-      {/* The pane spans the content column, but its FORM does not: `max-w-2xl`
-          caps the fields at a usable measure. Without it a "Confluence URL"
-          input stretched the full ~1160px of a desktop pane — a single-line
-          field eleven times longer than anything anyone types into it, with
-          its label stranded at the far left of its own help text.
+          `-mx-4 sm:-mx-6` cancels the scroll container's padding so the rule
+          runs edge to edge; `-top-5 -mt-5` pulls it flush with the top of the
+          pane, because a sticky box otherwise clamps to its containing block's
+          content-box top and leaves the container's `pt-5` showing above it. */}
+      <div className="sticky -top-5 z-20 -mx-4 -mt-5 mb-4 border-b border-border bg-card sm:-mx-6">
+        {/* Aligned with the body below, which is `mx-auto max-w-4xl` inside the
+            scroll container's `px-4 sm:px-6`. The strip cancels that padding to
+            run its rule edge to edge, so it adds the same amount back: 896 + 48
+            = 944 at the same `px-6`, which puts both content edges on the same
+            x. Measured, not eyeballed. */}
+        <div className="mx-auto max-w-[928px] px-4 py-2 sm:max-w-[944px] sm:px-6">
+          <h1 className="text-lg font-semibold">Settings</h1>
+        </div>
+      </div>
+
+      {/* No card. The FORM still caps at `max-w-2xl`: without it a "Confluence
+          URL" input stretched the full width of the pane — a single-line field
+          many times longer than anything anyone types into it, with its label
+          stranded from its own help text.
 
           The cap lives here rather than in each tab so every settings surface
           inherits it; a tab needing full width (tables, audit logs) opts out
-          with `max-w-none` on its own root. */}
-      <div className="nm-card p-5 [&_form]:max-w-2xl">
+          with `max-w-none` on its own root. The column itself caps at 896px so
+          settings stays a coherent shape rather than tracking the monitor. */}
+      <div className="mx-auto max-w-4xl [&_form]:max-w-2xl">
         <Suspense fallback={<SkeletonFormFields />}>
           <Outlet
             context={

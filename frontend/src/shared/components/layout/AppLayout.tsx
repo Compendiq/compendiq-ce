@@ -513,7 +513,17 @@ export function AppLayout({ children }: { children: ReactNode }) {
               here — inside a `bg-card` main it is already the pane's colour, so
               the whole #1186 sticky-mask / #1218 min-h-0 mechanism keeps working
               unchanged rather than needing a route-specific padding override. */}
-          <main className={cn('flex flex-1 flex-col overflow-hidden', isArticleRoute && 'bg-card')}>
+          {/* Article AND settings routes make the MAIN COLUMN the content pane.
+              Both are reading-and-editing surfaces you sit inside rather than
+              dashboards you scan, so the surface belongs to the column and the
+              chassis stops showing through around a floating card. Every other
+              route keeps its cards on the chassis. */}
+          <main
+            className={cn(
+              'flex flex-1 flex-col overflow-hidden',
+              (isArticleRoute || isSettingsRoute) && 'bg-card',
+            )}
+          >
             <div ref={scrollContainerRef} data-scroll-container className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pb-5 pt-5 sm:px-6 [scrollbar-gutter:stable_both-edges]">
               <PageTransition>
                 {/* flex flex-1 flex-col so pages that opt in (e.g. /ai) can use
