@@ -286,7 +286,14 @@ export function AiAssistantPage() {
           Group A (left): which mode are we in. Inset segmented control.
           Group B (right): what's the model + what's the context window +
             what options are on. Outlined chips of uniform 28 px height. */}
-      <div className="sticky top-0 z-20 isolate -mx-1 space-y-3 bg-background/85 px-1 py-1 backdrop-blur">
+      {/* Opaque, no blur. The `inset-0` under-mask directly below already
+          guarantees occlusion, so `bg-background/85 backdrop-blur` on the bar
+          itself was belt-and-braces over something already solid — and blur is
+          the most expensive thing the compositor does, here on a bar that is
+          composited on every scroll frame. (Missed by the glass sweep: its
+          regex required a suffix, `backdrop-blur-sm`, and this is the bare
+          utility.) */}
+      <div className="sticky top-0 z-20 isolate -mx-1 space-y-3 bg-background px-1 py-1">
       <div
         aria-hidden
         className="pointer-events-none absolute inset-0 z-[-1] bg-background"
@@ -572,12 +579,13 @@ export function AiAssistantPage() {
                   Violet, not steel: under ADR-010 v0.5 --color-status-ai marks
                   "an AI does this" and steel means "you can operate this".
                   This ornament is the former — it is not clickable. */}
-              <div className="relative mb-5 flex h-20 w-20 items-center justify-center">
-                <div className="absolute inset-0 rounded-full bg-status-ai/10 blur-2xl" aria-hidden />
-                <div className="relative flex h-16 w-16 items-center justify-center rounded-full bg-status-ai/12 ring-1 ring-status-ai/25">
-                  <Bot size={32} className="text-status-ai" />
-                </div>
-              </div>
+              {/* A plain glyph, matching the dock's empty state. This was an
+                  80px blurred halo behind a 64px ringed disc behind the icon —
+                  three stacked decorations to say "AI". Violet still carries
+                  that meaning (ADR-010); it does not need a light source, and a
+                  blurred glow is the one effect this system removed everywhere
+                  else. */}
+              <Bot size={28} className="mb-4 text-status-ai" aria-hidden />
               <p className="text-lg font-medium">{getEmptyTitle(mode)}</p>
               <p className="mt-2 max-w-md text-sm text-muted-foreground">{getEmptySubtitle(mode, page)}</p>
               {mode === 'ask' && <AskExamplePrompts />}
@@ -629,7 +637,8 @@ export function AiAssistantPage() {
           mirrored -bottom-5 this bug was originally filed with is exactly that
           mistake; the strip it aimed at is gone because nothing scrolls into
           it, not because something covers it. */}
-      <div className="sticky bottom-0 z-20 isolate -mx-1 bg-background/85 px-1 py-1 backdrop-blur">
+      {/* Opaque, no blur — same reasoning as the sub-header above. */}
+      <div className="sticky bottom-0 z-20 isolate -mx-1 bg-background px-1 py-1">
         <div
           aria-hidden
           className="pointer-events-none absolute inset-0 z-[-1] bg-background"
