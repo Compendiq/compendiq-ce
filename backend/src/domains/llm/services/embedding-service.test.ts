@@ -63,6 +63,14 @@ vi.mock('./openai-compatible-client.js', () => ({
   invalidateDispatcher: vi.fn(),
 }));
 
+// #1116: the shadow-migration seam. These unit tests exercise the live embed
+// pipeline against a scripted query mock; the shadow path has its own
+// integration suite, so it is inert here (no active migration).
+vi.mock('./shadow-migration-service.js', () => ({
+  getActiveShadowTarget: vi.fn().mockResolvedValue(null),
+  getShadowMigrationState: vi.fn().mockResolvedValue(null),
+}));
+
 vi.mock('../../../core/services/content-converter.js', () => ({
   htmlToText: mocks.htmlToText,
 }));

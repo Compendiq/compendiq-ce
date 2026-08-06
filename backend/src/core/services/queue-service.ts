@@ -447,6 +447,19 @@ function registerAllWorkers(): void {
       return runReembedAllJob(job);
     },
   });
+
+  // Shadow-migration backfill worker (#1116) — on-demand, enqueued by
+  // `startShadowMigration`. Concurrency 1: one shadow backfill at a time.
+  registerWorkerDef({
+    queueName: 'shadow-reembed',
+    concurrency: 1,
+    processor: async (job: Job) => {
+      // eslint-disable-next-line boundaries/dependencies -- orchestrator needs cross-domain access
+      const { runShadowBackfillJob } = await import('../../domains/llm/services/shadow-migration-service.js');
+      const result = await runShadowBackfillJob(job);
+      return typeof result === 'string' ? result : `Backfilled ${result.processed} pages (${result.failed} failed)`;
+    },
+  });
 }
 
 // ─── Legacy setInterval fallback ─────────────────────────────────────────────

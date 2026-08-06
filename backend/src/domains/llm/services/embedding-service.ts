@@ -12,6 +12,7 @@ import { visiblePagesPredicate } from '../../../core/services/page-visibility.js
 import { CircuitBreakerOpenError, getProviderBreaker } from '../../../core/services/circuit-breaker.js';
 import { getReembedHistoryRetention } from '../../../core/services/admin-settings-service.js';
 import { enqueueJob } from '../../../core/services/queue-service.js';
+import { getActiveShadowTarget, getShadowMigrationState } from './shadow-migration-service.js';
 import { listRelationshipProducers } from './embedding-relationship-hooks.js';
 import { toUserFacingEmbeddingError } from './embedding-error-message.js';
 import pgvector from 'pgvector';
@@ -423,6 +424,32 @@ export async function embedPage(
     return 0;
   }
 
+  // ── Shadow dual-write (#1116) ────────────────────────────────────────────────
+  // While a shadow migration is backfilling, embed the SAME chunk texts with
+  // the shadow model too, so an edited page never goes stale in the shadow
+  // column. A shadow failure must never fail the live embed — the row's
+  // embedding_next stays NULL and the swap's straggler gate catches it.
+  const shadowTarget = await getActiveShadowTarget();
+  let shadowEmbeddings: Array<number[] | null> | null = null;
+  if (shadowTarget && allEmbeddings.length > 0) {
+    try {
+      shadowEmbeddings = [];
+      const shadowBatchSize = 10;
+      for (let i = 0; i < allEmbeddings.length; i += shadowBatchSize) {
+        const slice = allEmbeddings.slice(i, i + shadowBatchSize);
+        const vectors = await generateEmbedding(
+          shadowTarget.cfg,
+          shadowTarget.model,
+          slice.map((e) => e.text),
+        );
+        for (let j = 0; j < slice.length; j++) shadowEmbeddings.push(vectors[j] ?? null);
+      }
+    } catch (err) {
+      logger.warn({ err, pageId }, 'Shadow dual-write embed failed — live embed proceeds, page left as straggler');
+      shadowEmbeddings = null;
+    }
+  }
+
   // ── Phase 2: Atomically replace old embeddings with new ones ─────────────────
   // All LLM work is done; now open a short-lived transaction so that concurrent
   // RAG queries never see an empty page_embeddings window.
@@ -432,22 +459,34 @@ export async function embedPage(
     await client.query('DELETE FROM page_embeddings WHERE page_id = $1', [pageId]);
 
     // Batch insert embeddings (50 rows per INSERT) instead of one-at-a-time.
-    // 5 params per row x 50 = 250, well within PostgreSQL's 65535 parameter limit.
+    // 6 params per row x 50 = 300, well within PostgreSQL's 65535 parameter
+    // limit. The embedding_next column only exists while a shadow migration
+    // is active, so the column list is built per call.
     const INSERT_BATCH_SIZE = 50;
+    const withShadow = shadowTarget !== null;
     for (let batchStart = 0; batchStart < allEmbeddings.length; batchStart += INSERT_BATCH_SIZE) {
       const batch = allEmbeddings.slice(batchStart, batchStart + INSERT_BATCH_SIZE);
       const values: unknown[] = [];
       const placeholders: string[] = [];
       let paramIdx = 1;
 
-      for (const item of batch) {
-        placeholders.push(`($${paramIdx}, $${paramIdx + 1}, $${paramIdx + 2}, $${paramIdx + 3}, $${paramIdx + 4})`);
-        values.push(pageId, item.chunkIndex, item.text, pgvector.toSql(item.embedding), JSON.stringify(item.metadata));
-        paramIdx += 5;
+      for (let bi = 0; bi < batch.length; bi++) {
+        const item = batch[bi]!;
+        const cols = withShadow ? 6 : 5;
+        placeholders.push(
+          `(${Array.from({ length: cols }, (_, c) => `$${paramIdx + c}`).join(', ')})`,
+        );
+        values.push(pageId, item.chunkIndex, item.text, pgvector.toSql(item.embedding));
+        if (withShadow) {
+          const shadowVec = shadowEmbeddings?.[batchStart + bi] ?? null;
+          values.push(shadowVec ? pgvector.toSql(shadowVec) : null);
+        }
+        values.push(JSON.stringify(item.metadata));
+        paramIdx += cols;
       }
 
       await client.query(
-        `INSERT INTO page_embeddings (page_id, chunk_index, chunk_text, embedding, metadata)
+        `INSERT INTO page_embeddings (page_id, chunk_index, chunk_text, embedding${withShadow ? ', embedding_next' : ''}, metadata)
          VALUES ${placeholders.join(', ')}`,
         values,
       );
@@ -463,6 +502,19 @@ export async function embedPage(
        WHERE id = $1`,
       [pageId],
     );
+
+    if (withShadow) {
+      // Shadow average only when every row carries a shadow vector — a
+      // partial AVG would skew related-pages after the swap.
+      await client.query(
+        `UPDATE pages SET page_avg_embedding_next = (
+           SELECT CASE WHEN COUNT(*) FILTER (WHERE embedding_next IS NULL) = 0
+                       THEN AVG(embedding_next) END
+           FROM page_embeddings WHERE page_id = $1
+         ) WHERE id = $1`,
+        [pageId],
+      );
+    }
 
     await client.query('COMMIT');
   } catch (err) {
@@ -1253,6 +1305,15 @@ export async function enqueueReembedAll(
   const jobId = 'reembed-all';
 
   if (opts.newDimensions !== undefined) {
+    // #1116 mutual exclusion: the destructive TRUNCATE path and the shadow
+    // migration must never touch these columns concurrently — a shadow
+    // migration's swap/rollback would rename columns out from under the
+    // ALTERs below.
+    if (await getShadowMigrationState()) {
+      throw new Error(
+        'A shadow migration is in progress — swap, roll it back or clean it up before running a destructive dimension change',
+      );
+    }
     // pgvector type args must be literal — validate strictly before interpolation.
     const n = Math.floor(opts.newDimensions);
     if (!Number.isFinite(n) || n < 1 || n > 16000) {

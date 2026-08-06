@@ -12,6 +12,7 @@ import { apiFetch } from '../../../shared/lib/api';
 import { ProviderListSection } from './ProviderListSection';
 import { UsecaseAssignmentsSection } from './UsecaseAssignmentsSection';
 import { EmbeddingReembedBanner } from './EmbeddingReembedBanner';
+import { EmbeddingShadowMigrationCard } from './EmbeddingShadowMigrationCard';
 import { SkeletonFormFields } from '../../../shared/components/feedback/Skeleton';
 import { ErrorState } from '../../../shared/components/feedback/ErrorState';
 
@@ -187,6 +188,7 @@ export function LlmTab() {
         LLM provider + per-use-case assignments are shared across all users. Only admins can change them here.
       </div>
       <ProviderListSection />
+      <EmbeddingShadowMigrationCard pending={embeddingPending} />
       <EmbeddingReembedBanner
         // Legacy 1024-dim default while settings load or on older backends
         // whose payload predates the field.
