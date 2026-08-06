@@ -11,9 +11,8 @@ import { useSpaces, useSync, useSyncStatus } from '../../shared/hooks/use-spaces
 import { useSettings } from '../../shared/hooks/use-settings';
 import { useSearch } from '../../shared/hooks/use-search';
 import { EmptyState } from '../../shared/components/feedback/EmptyState';
-import { EmbeddingStatusBadge } from '../../shared/components/badges/EmbeddingStatusBadge';
 import { QualityScoreBadge } from '../../shared/components/badges/QualityScoreBadge';
-import { SummaryStatusBadge } from '../../shared/components/badges/SummaryStatusBadge';
+import { PageStateBadge } from '../../shared/components/badges/PageStateBadge';
 import { KPICards } from './KPICards';
 import { BulkActionBar } from './BulkActionBar';
 import { bulkWireId } from '../../shared/hooks/use-bulk-page-actions';
@@ -175,35 +174,33 @@ const PageListItem = memo(function PageListItem({
               for assistive tech, and so the same row markup serves both widths.
               The facts are not lost on mobile: every one of them is on the page
               itself, which is one tap away. */}
-          {/* Embedding state survives at every width; quality, summary and
-              labels are desktop-only.
-
-              Hiding all four below `sm` left mobile with no page state at all.
-              Which one survives needs no new semantics: embedding is the only
-              one that changes what the product can DO with a page — an
-              unembedded page is invisible to semantic search — while quality
-              and summary are advisory. Collapsing the three into a single
-              indicator is still open, and still a product decision; this is
-              the half of it that was not. */}
-          <div className="flex shrink-0 items-center gap-2">
-            <EmbeddingStatusBadge embeddingDirty={pageItem.embeddingDirty} />
-          </div>
+          {/* One pipeline badge, at every width, and it renders NOTHING when the
+              page is healthy or the job was deliberately skipped. This replaces
+              three near-duplicate pills ("Skipped / Skipped / Not Embedded");
+              the severity ladder and the reasoning live in PageStateBadge. */}
+          <PageStateBadge
+            embeddingDirty={pageItem.embeddingDirty}
+            summaryStatus={pageItem.summaryStatus}
+            qualityStatus={pageItem.qualityStatus}
+          />
           <div className="hidden shrink-0 items-center gap-2 sm:flex">
-            <QualityScoreBadge
-              qualityScore={pageItem.qualityScore}
-              qualityStatus={pageItem.qualityStatus}
-              qualityCompleteness={pageItem.qualityCompleteness}
-              qualityClarity={pageItem.qualityClarity}
-              qualityStructure={pageItem.qualityStructure}
-              qualityAccuracy={pageItem.qualityAccuracy}
-              qualityReadability={pageItem.qualityReadability}
-              qualitySummary={pageItem.qualitySummary}
-              qualityAnalyzedAt={pageItem.qualityAnalyzedAt}
-              qualityError={pageItem.qualityError}
-            />
-            <SummaryStatusBadge status={pageItem.summaryStatus} />
-            {/* EmbeddingStatusBadge is NOT here — it moved to the always-visible
-                cluster above. Leaving it in both rendered it twice on desktop. */}
+            {/* Only when a score EXISTS. A number about the content is not
+                pipeline state and an author acts on it differently — but
+                "Not Scored" IS pipeline state, and PageStateBadge owns that. */}
+            {pageItem.qualityScore !== null && pageItem.qualityScore !== undefined && (
+              <QualityScoreBadge
+                qualityScore={pageItem.qualityScore}
+                qualityStatus={pageItem.qualityStatus}
+                qualityCompleteness={pageItem.qualityCompleteness}
+                qualityClarity={pageItem.qualityClarity}
+                qualityStructure={pageItem.qualityStructure}
+                qualityAccuracy={pageItem.qualityAccuracy}
+                qualityReadability={pageItem.qualityReadability}
+                qualitySummary={pageItem.qualitySummary}
+                qualityAnalyzedAt={pageItem.qualityAnalyzedAt}
+                qualityError={pageItem.qualityError}
+              />
+            )}
             {/* No FreshnessBadge here: it is derived purely from lastModifiedAt,
                 which this row already prints as a date three lines above. Two
                 renderings of one field read as two facts. It stays on the page
