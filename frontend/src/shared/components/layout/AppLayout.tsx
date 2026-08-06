@@ -504,7 +504,16 @@ export function AppLayout({ children }: { children: ReactNode }) {
 
         {/* Main content area + optional right sidebar */}
         <div className="flex flex-1 overflow-hidden">
-          <main className="flex flex-1 flex-col overflow-hidden">
+          {/* On an article route the MAIN COLUMN is the content pane. Everywhere
+              else the pane is a card sitting on the chassis, but a document is
+              not a card: it is the thing you came for, so it takes the surface
+              edge to edge and the chassis stops showing through around it.
+
+              This is why the scroll container's own padding is left untouched
+              here — inside a `bg-card` main it is already the pane's colour, so
+              the whole #1186 sticky-mask / #1218 min-h-0 mechanism keeps working
+              unchanged rather than needing a route-specific padding override. */}
+          <main className={cn('flex flex-1 flex-col overflow-hidden', isArticleRoute && 'bg-card')}>
             <div ref={scrollContainerRef} data-scroll-container className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pb-5 pt-5 sm:px-6 [scrollbar-gutter:stable_both-edges]">
               <PageTransition>
                 {/* flex flex-1 flex-col so pages that opt in (e.g. /ai) can use

@@ -679,22 +679,41 @@ export function PageViewPage() {
           <div
             aria-hidden
             data-testid="edit-toolbar-mask"
-            className="absolute inset-x-0 -top-5 bottom-0 z-[-1] bg-background rounded-b-xl"
+            className="absolute inset-x-0 -top-5 bottom-0 z-[-1] bg-card"
           />
-        <div className="rounded-xl border border-border bg-card">
+        {/* The edit toolbar is a bar across the column now, not a floating
+            card: it loses the border and radius and keeps only a bottom
+            hairline, matching the context strip above it. The under-mask fill
+            follows the surface it hides content against — that is `bg-card`
+            here, because on an article route the main column IS the pane; it
+            was `bg-background`, which would now paint a chassis-coloured band
+            across a white document. `-top-5` still tracks the scroll
+            container's `pt-5` (scroll-padding-mask.test.ts). */}
+        <div className="-mx-4 border-b border-border bg-card sm:-mx-6">
           {editorInstance && (
-            <div className="px-1 border-b border-border">
-              <EditorToolbar editor={editorInstance} vimEnabled={vimEnabled} onToggleVim={toggleVim} />
-              <TableContextToolbar editor={editorInstance} />
-              <LayoutContextToolbar editor={editorInstance} />
-              <ColumnContextToolbar editor={editorInstance} />
+            <div className="border-b border-border">
+              {/* Aligned to the document's text column, not to the window.
+                  The arithmetic: these bars are full-bleed (`-mx-4 sm:-mx-6`),
+                  so they cancel AppLayout's scroll padding and must add it
+                  back — 24px (sm:px-6) + the body's own 40px (sm:px-10) = 64px,
+                  and the max-width grows by the same 48px so the right edge
+                  lands with it too. Below sm: 16 + 20 = 36px.
+                  Edge-to-edge the controls floated free of the text they act
+                  on, which is the tell that a toolbar was bolted above a
+                  document rather than belonging to it. */}
+              <div className="mx-auto max-w-[1248px] px-9 sm:px-16">
+                <EditorToolbar editor={editorInstance} vimEnabled={vimEnabled} onToggleVim={toggleVim} />
+                <TableContextToolbar editor={editorInstance} />
+                <LayoutContextToolbar editor={editorInstance} />
+                <ColumnContextToolbar editor={editorInstance} />
+              </div>
             </div>
           )}
           {/* Action row — Cancel/Save are aligned to TagEditor's input row
               (its bottom edge), since the TagEditor stacks existing tag
               pills above the "Add a tag…" input. items-end keeps the
               buttons on the same baseline as the Add-tag input/button. */}
-          <div className="flex items-end gap-3 px-3 py-2">
+          <div className="mx-auto flex max-w-[1248px] items-end gap-3 px-9 py-2 sm:px-16">
             <div className="min-w-0 flex-1">
               <TagEditor
                 tags={page.labels}
@@ -722,14 +741,15 @@ export function PageViewPage() {
         </div>
         </div>
       )}
-      {/* Article card. 25px gap below the toolbar when editing. When not
-          editing, the card sits on its own with no toolbar above. */}
-      <div
-        className={cn(
-          'overflow-hidden rounded-xl border border-border bg-card',
-          editing && 'mt-[25px]',
-        )}
-      >
+      {/* No card. The document sits directly on the main column, which carries
+          the pane surface for this route (see AppLayout). A rounded, bordered
+          panel floating on the chassis framed the page as an object on a desk;
+          full-bleed, it reads as the surface you are working on.
+
+          `overflow-hidden` went with it — it was there to clip content to the
+          rounded corners, and an overflow-hidden ancestor also breaks the
+          sticky positioning the strip below now relies on. */}
+      <div className={cn(editing && 'mt-4')}>
         {/* Breadcrumb / action strip */}
         {/* `flex-wrap`: the badge cluster and the action cluster are both
             unshrinkable, so at 390px they overlapped — "Local / Shared /
@@ -737,7 +757,21 @@ export function PageViewPage() {
             Wrapping drops the actions onto their own line instead of hiding
             either group; on this surface both are worth their vertical space,
             unlike the list row where the same badges are one tap from here. */}
-        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5 border-b border-border px-5 py-2 sm:px-7">
+        {/* Sticky context strip. Without the card's border to sit inside, it
+            needs its own hairline and its own surface to stay legible over
+            scrolling prose — and it pins to the top of the reading column
+            rather than scrolling away, because the page identity and Edit are
+            wanted at any scroll depth.
+
+            Its contents take the document's own `max-w-[1200px] px-5 sm:px-10`
+            measure, so the space key and the Edit button line up with the
+            body text instead of hugging the window edges. */}
+        {/* Hidden while editing. Its action half is already suppressed there
+            (Cancel/Save take over in the bar above), leaving only badges — so
+            it wedged a strip of read-only status between the save controls and
+            the title you are typing into. The badges return on save. */}
+        <div className={cn('sticky top-0 z-20 -mx-4 border-b border-border bg-card sm:-mx-6', editing && 'hidden')}>
+        <div className="mx-auto flex max-w-[1248px] flex-wrap items-center justify-between gap-x-4 gap-y-1.5 px-9 py-2 sm:px-16">
           <span className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-muted-foreground/60">
             <FileText size={12} className="shrink-0" />
             {page.spaceKey !== '__local__' && <span className="truncate">{page.spaceKey}</span>}
@@ -856,6 +890,7 @@ export function PageViewPage() {
               </>
             )}
           </div>
+        </div>
         </div>
 
         {editing ? (
