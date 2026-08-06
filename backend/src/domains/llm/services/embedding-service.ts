@@ -12,7 +12,12 @@ import { visiblePagesPredicate } from '../../../core/services/page-visibility.js
 import { CircuitBreakerOpenError, getProviderBreaker } from '../../../core/services/circuit-breaker.js';
 import { getReembedHistoryRetention } from '../../../core/services/admin-settings-service.js';
 import { enqueueJob } from '../../../core/services/queue-service.js';
-import { getActiveShadowTarget, getShadowMigrationState } from './shadow-migration-service.js';
+import {
+  getActiveShadowTarget,
+  getShadowMigrationState,
+  shadowStateFingerprint,
+  shadowEpochFromClient,
+} from './shadow-migration-service.js';
 import { listRelationshipProducers } from './embedding-relationship-hooks.js';
 import { toUserFacingEmbeddingError } from './embedding-error-message.js';
 import pgvector from 'pgvector';
@@ -357,6 +362,14 @@ export async function embedPage(
   const chunks = chunkText(plainText, pageTitle, spaceKey, String(pageId), opts?.chunkSize, opts?.chunkOverlap);
   if (chunks.length === 0) return 0;
 
+  // Schema-epoch snapshot (#1116, review r1): taken BEFORE any model is
+  // resolved or any vector generated, so it covers the entire generate
+  // window. The write transaction re-checks it — a swap/rollback/abort that
+  // lands anywhere in between aborts this embed instead of writing vectors
+  // from one epoch into the columns of another.
+  const shadowStateBefore = await getShadowMigrationState();
+  const epochBefore = shadowStateFingerprint(shadowStateBefore);
+
   // ── Phase 1: Generate all embeddings in memory (no DB connection held) ──────
   // If the LLM call fails here, no transaction is opened and the old embeddings
   // remain intact in the database.
@@ -429,7 +442,9 @@ export async function embedPage(
   // the shadow model too, so an edited page never goes stale in the shadow
   // column. A shadow failure must never fail the live embed — the row's
   // embedding_next stays NULL and the swap's straggler gate catches it.
-  const shadowTarget = await getActiveShadowTarget();
+  // Uses the epoch snapshot taken before Phase 1 — never a fresh read, which
+  // would let a swap landing during the live-generate window go unnoticed.
+  const shadowTarget = shadowStateBefore?.status === 'active' ? await getActiveShadowTarget() : null;
   let shadowEmbeddings: Array<number[] | null> | null = null;
   if (shadowTarget && allEmbeddings.length > 0) {
     try {
@@ -444,6 +459,17 @@ export async function embedPage(
         );
         for (let j = 0; j < slice.length; j++) shadowEmbeddings.push(vectors[j] ?? null);
       }
+      // A provider that answers with the wrong vector length must count as a
+      // shadow FAILURE, not poison the live INSERT below — a single
+      // wrong-dimension value in the multi-row insert would fail the whole
+      // page embed and break the promised live/shadow isolation (review r1).
+      if (shadowEmbeddings.some((v) => v !== null && v.length !== shadowTarget.dimensions)) {
+        logger.warn(
+          { pageId, expected: shadowTarget.dimensions },
+          'Shadow dual-write returned wrong-dimension vectors — treated as shadow failure, page left as straggler',
+        );
+        shadowEmbeddings = null;
+      }
     } catch (err) {
       logger.warn({ err, pageId }, 'Shadow dual-write embed failed — live embed proceeds, page left as straggler');
       shadowEmbeddings = null;
@@ -456,6 +482,25 @@ export async function embedPage(
   const client = await getPool().connect();
   try {
     await client.query('BEGIN');
+    // Schema-epoch recheck (review r1): the vectors above were generated
+    // against the models and columns of one migration epoch. If a swap,
+    // revert or abort committed since the snapshot, writing them now would
+    // put wrong-model vectors into the renamed columns (silently, when the
+    // dimensions happen to match) or hit vanished columns. Abort this embed
+    // and re-queue the page — the retry resolves everything freshly.
+    const epochNow = await shadowEpochFromClient(client);
+    if (epochNow !== epochBefore) {
+      await client.query('ROLLBACK');
+      await query(
+        `UPDATE pages SET embedding_dirty = TRUE, embedding_status = 'not_embedded', embedding_error = NULL WHERE id = $1`,
+        [pageId],
+      );
+      logger.warn(
+        { pageId, epochBefore, epochNow },
+        'Shadow-migration epoch changed mid-embed — page re-queued for a clean embed',
+      );
+      return 0;
+    }
     await client.query('DELETE FROM page_embeddings WHERE page_id = $1', [pageId]);
 
     // Batch insert embeddings (50 rows per INSERT) instead of one-at-a-time.
@@ -1310,9 +1355,13 @@ export async function enqueueReembedAll(
     // migration's swap/rollback would rename columns out from under the
     // ALTERs below.
     if (await getShadowMigrationState()) {
-      throw new Error(
+      const err = new Error(
         'A shadow migration is in progress — swap, roll it back or clean it up before running a destructive dimension change',
-      );
+      ) as Error & { statusCode: number };
+      // The destructive route has no error mapping; the statusCode rides on
+      // the error so the refusal answers 409, not a masked 500 (review r1).
+      err.statusCode = 409;
+      throw err;
     }
     // pgvector type args must be literal — validate strictly before interpolation.
     const n = Math.floor(opts.newDimensions);

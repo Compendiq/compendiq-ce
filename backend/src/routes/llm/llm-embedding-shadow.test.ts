@@ -14,6 +14,7 @@ const svc = vi.hoisted(() => ({
   swap: vi.fn(),
   rollback: vi.fn(),
   cleanup: vi.fn(),
+  rerun: vi.fn(),
 }));
 vi.mock('../../domains/llm/services/shadow-migration-service.js', () => ({
   startShadowMigration: (...a: unknown[]) => svc.start(...a),
@@ -21,6 +22,7 @@ vi.mock('../../domains/llm/services/shadow-migration-service.js', () => ({
   performShadowSwap: (...a: unknown[]) => svc.swap(...a),
   rollbackShadowMigration: (...a: unknown[]) => svc.rollback(...a),
   cleanupShadowMigration: (...a: unknown[]) => svc.cleanup(...a),
+  rerunShadowBackfill: (...a: unknown[]) => svc.rerun(...a),
 }));
 
 vi.mock('../../core/services/rate-limit-service.js', () => ({
@@ -168,6 +170,17 @@ describe('#1116 shadow-migration routes', () => {
     expect(res.statusCode).toBe(409);
   });
 
+  it('backfill re-run: 200 when active, 409 when nothing to backfill (review r1)', async () => {
+    svc.rerun.mockResolvedValue({ jobId: 'shadow-reembed' });
+    let res = await app.inject({ method: 'POST', url: '/api/admin/embedding/shadow-migration/backfill' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ jobId: 'shadow-reembed' });
+
+    svc.rerun.mockRejectedValue(new Error('No active shadow migration — nothing to backfill'));
+    res = await app.inject({ method: 'POST', url: '/api/admin/embedding/shadow-migration/backfill' });
+    expect(res.statusCode).toBe(409);
+  });
+
   it('every route is admin-gated', async () => {
     isAdmin = false;
     for (const [method, url] of [
@@ -176,6 +189,7 @@ describe('#1116 shadow-migration routes', () => {
       ['POST', '/api/admin/embedding/shadow-migration/swap'],
       ['POST', '/api/admin/embedding/shadow-migration/rollback'],
       ['POST', '/api/admin/embedding/shadow-migration/cleanup'],
+      ['POST', '/api/admin/embedding/shadow-migration/backfill'],
     ] as const) {
       const res = await app.inject({
         method,

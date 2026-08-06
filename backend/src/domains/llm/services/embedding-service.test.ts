@@ -69,6 +69,8 @@ vi.mock('./openai-compatible-client.js', () => ({
 vi.mock('./shadow-migration-service.js', () => ({
   getActiveShadowTarget: vi.fn().mockResolvedValue(null),
   getShadowMigrationState: vi.fn().mockResolvedValue(null),
+  shadowStateFingerprint: vi.fn().mockReturnValue('none'),
+  shadowEpochFromClient: vi.fn().mockResolvedValue('none'),
 }));
 
 vi.mock('../../../core/services/content-converter.js', () => ({

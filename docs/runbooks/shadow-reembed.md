@@ -23,8 +23,29 @@ vectors throughout; the old model stays recoverable until the final cleanup.
   count is 0 (`GET …/shadow-migration` → `stragglerPages`); disk headroom ≥
   2× current `page_embeddings` size plus the second HNSW index.
 - **No-go / wait** when: a destructive re-embed job is queued (start refuses);
-  sustained long-running queries are hitting `page_embeddings` (the swap's
-  bounded lock retries would exhaust — safe, but pointless until they drain).
+  a previous shadow backfill job is still queued (start refuses — BullMQ's
+  fixed job id would silently swallow the new enqueue); sustained
+  long-running queries are hitting `page_embeddings` (every DDL step —
+  start, swap, rollback, cleanup — runs under a bounded `lock_timeout` with
+  retries; safe, but pointless until they drain).
+
+## Stragglers and stuck jobs
+
+Pages whose shadow embed keeps failing are left as **stragglers** (visible in
+the status; the swap refuses while any remain) — the backfill terminates
+rather than retrying them forever. Fix the provider/content issue, then
+**Re-run backfill** (`POST …/shadow-migration/backfill`); it only re-embeds
+rows still missing shadow vectors. The same re-run recovers a crashed worker
+or a start whose enqueue never landed. While a migration is active the
+embedding use-case assignment is **pinned** (`PUT /admin/llm-usecases`
+answers 409 for it) — it is migration state, not free config. An interrupted
+abort parks the migration in an `aborting` state; retrying the abort is
+idempotent and completes it.
+
+**Legacy mode caveat** (`USE_BULLMQ=false`): job-status lookups return
+nothing, so the start-time guards against a *running* destructive re-embed or
+a *queued* previous backfill are inert — the state-row exclusion still holds,
+but operators must not fire both paths simultaneously by hand.
 
 ## Expected duration
 

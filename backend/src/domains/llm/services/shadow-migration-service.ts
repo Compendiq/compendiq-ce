@@ -47,7 +47,12 @@ export const SHADOW_MIGRATION_STATE_KEY = 'embedding_shadow_migration';
 export const SHADOW_JOB_QUEUE = 'shadow-reembed';
 
 export interface ShadowMigrationState {
-  status: 'active' | 'swapped';
+  /**
+   * 'active' = backfilling/ready; 'swapped' = new model live, prev retained;
+   * 'aborting' = an abort was requested but its column drops may not have
+   * completed (crash window) — rollback is idempotent and resumes it.
+   */
+  status: 'active' | 'swapped' | 'aborting';
   providerId: string;
   model: string;
   dimensions: number;
@@ -63,7 +68,7 @@ export interface ShadowMigrationState {
 }
 
 export interface ShadowMigrationStatus extends ShadowMigrationState {
-  phase: 'backfilling' | 'ready' | 'swapped';
+  phase: 'backfilling' | 'ready' | 'swapped' | 'aborting';
   totalPages: number;
   backfilledPages: number;
   stragglerPages: number;
@@ -102,8 +107,26 @@ async function saveState(state: ShadowMigrationState, client?: { query: (sql: st
   );
 }
 
-async function clearState(): Promise<void> {
-  await query(`DELETE FROM admin_settings WHERE setting_key = $1`, [SHADOW_MIGRATION_STATE_KEY]);
+/**
+ * The migration epoch as read through an EXISTING client/transaction — the
+ * seam embedPage's write transaction uses for its schema-epoch recheck. Kept
+ * here (not inline in embedPage) so the embed unit tests can stub it at the
+ * module boundary instead of scripting an extra row into their client mocks.
+ */
+export async function shadowEpochFromClient(client: {
+  query: (sql: string, params?: unknown[]) => Promise<{ rows: Array<{ setting_value?: string }> }>;
+}): Promise<string> {
+  const r = await client.query(
+    `SELECT setting_value FROM admin_settings WHERE setting_key = $1`,
+    [SHADOW_MIGRATION_STATE_KEY],
+  );
+  const raw = r.rows[0]?.setting_value;
+  if (!raw) return 'none';
+  try {
+    return shadowStateFingerprint(JSON.parse(raw) as ShadowMigrationState);
+  } catch {
+    return 'unparseable';
+  }
 }
 
 /** The provider config shape generateEmbedding needs, from a providerId. */
@@ -120,6 +143,19 @@ async function providerConfigFor(providerId: string) {
 }
 
 /**
+ * A comparable identity for the migration's schema epoch: it changes whenever
+ * a swap, revert or abort lands. embedPage snapshots it before generating and
+ * re-checks it inside its write transaction — vectors generated against one
+ * epoch must never be written into another (review r1: an embedPage in flight
+ * across an equal-dimension swap would otherwise silently write old-model
+ * vectors into the renamed columns).
+ */
+export function shadowStateFingerprint(state: ShadowMigrationState | null): string {
+  if (!state) return 'none';
+  return `${state.status}:${state.startedAt}:${state.swappedAt ?? ''}`;
+}
+
+/**
  * The dual-write target for embedPage: the shadow (provider config, model)
  * pair when a migration is actively backfilling, else null. Owner decision:
  * pages edited during the backfill embed with BOTH models so the shadow never
@@ -128,12 +164,13 @@ async function providerConfigFor(providerId: string) {
 export async function getActiveShadowTarget(): Promise<{
   cfg: NonNullable<Awaited<ReturnType<typeof providerConfigFor>>>;
   model: string;
+  dimensions: number;
 } | null> {
   const state = await getShadowMigrationState();
   if (!state || state.status !== 'active') return null;
   const cfg = await providerConfigFor(state.providerId);
   if (!cfg) return null;
-  return { cfg, model: state.model };
+  return { cfg, model: state.model, dimensions: state.dimensions };
 }
 
 export async function startShadowMigration(opts: {
@@ -152,8 +189,16 @@ export async function startShadowMigration(opts: {
   // null here; the destructive path's own Redis lock still serializes the
   // actual work.)
   const reembed = await getJobStatus('reembed-all', 'reembed-all');
-  if (reembed && ['active', 'waiting', 'delayed'].includes(reembed.state)) {
+  if (reembed && ['active', 'waiting', 'delayed'].includes(reembed.state ?? '')) {
     throw new Error('A destructive re-embed job is queued or running — wait for it before starting a shadow migration');
+  }
+
+  // A previous migration's backfill job can outlive its abort under the fixed
+  // jobId; BullMQ silently ignores a duplicate add, so starting now would
+  // create a migration with NO job. Refuse until it drains.
+  const previous = await getJobStatus(SHADOW_JOB_QUEUE, SHADOW_JOB_QUEUE);
+  if (previous && ['active', 'waiting', 'delayed'].includes(previous.state ?? '')) {
+    throw new Error('The previous shadow backfill job is still running or queued — wait for it to finish before starting a new migration');
   }
 
   const cfg = await providerConfigFor(opts.providerId);
@@ -173,9 +218,10 @@ export async function startShadowMigration(opts: {
 
   const { columnType, opclass } = columnTypeFor(dimensions);
 
-  const client = await getPool().connect();
-  try {
-    await client.query('BEGIN');
+  // ADD COLUMN takes a brief ACCESS EXCLUSIVE lock too — same bounded-lock
+  // discipline as the swap (review r1), or the start can queue indefinitely
+  // behind a long reader while blocking every new one.
+  await withLockRetry({ lockTimeoutMs: 5000, maxAttempts: 5 }, async (client) => {
     await client.query(`ALTER TABLE page_embeddings ADD COLUMN embedding_next ${columnType}`);
     await client.query(`ALTER TABLE pages ADD COLUMN page_avg_embedding_next ${columnType}`);
     await saveState(
@@ -188,15 +234,9 @@ export async function startShadowMigration(opts: {
         indexed: opclass !== null,
         startedAt: new Date().toISOString(),
       },
-      client,
+      client as unknown as { query: (sql: string, params?: unknown[]) => Promise<unknown> },
     );
-    await client.query('COMMIT');
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw err;
-  } finally {
-    client.release();
-  }
+  });
 
   const pageCount = await countBackfillPages();
   const retention = await getReembedHistoryRetention();
@@ -233,6 +273,10 @@ async function shadowIndexesReady(state: ShadowMigrationState): Promise<boolean>
 export async function getShadowMigrationStatus(): Promise<ShadowMigrationStatus | null> {
   const state = await getShadowMigrationState();
   if (!state) return null;
+  if (state.status === 'aborting') {
+    // The shadow columns may be half-dropped — no column-touching queries here.
+    return { ...state, phase: 'aborting', totalPages: 0, backfilledPages: 0, stragglerPages: 0, indexReady: false };
+  }
   if (state.status === 'swapped') {
     const totalPages = await countBackfillPages();
     return { ...state, phase: 'swapped', totalPages, backfilledPages: totalPages, stragglerPages: 0, indexReady: true };
@@ -274,37 +318,40 @@ export async function runShadowBackfillJob(job?: {
   const total = await countBackfillPages();
   let processed = 0;
   let failed = 0;
+  // Pages that failed THIS run are excluded from every later batch SELECT, so
+  // a poison page cannot be re-selected forever (review r1, blocking): the
+  // loop ends when every remaining NULL page is in this set. Values come from
+  // the DB's integer PK column and are re-validated before interpolation.
+  const failedPages = new Set<number>();
 
   for (;;) {
-    // Re-read state each batch so a rollback aborts the job promptly.
-    state = await getShadowMigrationState();
-    if (!state || state.status !== 'active') return 'aborted';
-
+    const exclude = [...failedPages].filter((n) => Number.isInteger(n));
     const batch = await query<{ page_id: number }>(
-      `SELECT DISTINCT page_id FROM page_embeddings WHERE embedding_next IS NULL ORDER BY page_id LIMIT $1`,
+      `SELECT DISTINCT page_id FROM page_embeddings
+       WHERE embedding_next IS NULL
+       ${exclude.length > 0 ? `AND page_id NOT IN (${exclude.join(',')})` : ''}
+       ORDER BY page_id LIMIT $1`,
       [BACKFILL_PAGE_BATCH],
     );
     if (batch.rows.length === 0) break;
 
     for (const { page_id } of batch.rows) {
+      // Re-read state per page so a rollback aborts the job promptly even
+      // inside a large batch (review r1).
+      state = await getShadowMigrationState();
+      if (!state || state.status !== 'active') return 'aborted';
       try {
         await shadowEmbedExistingRows(page_id, cfg, state.model);
         processed++;
       } catch (err) {
         failed++;
+        failedPages.add(page_id);
         logger.warn({ err, pageId: page_id }, 'Shadow backfill failed for page — left as straggler');
-        // Mark the page's rows so this pass does not spin on it forever; a
-        // NULL embedding_next remains NULL, but we must not re-select it in
-        // an infinite loop. Skip forward by remembering it this run.
       }
       if ((processed + failed) % 100 === 0 || processed + failed === total) {
         await job?.updateProgress?.({ total, processed, failed, phase: 'backfilling' });
       }
     }
-    // A page whose embed failed still has NULL rows and would be re-selected
-    // forever; stop when a full pass makes no progress.
-    if (batch.rows.length > 0 && processed === 0 && failed >= batch.rows.length) break;
-    if (failed > 0 && batch.rows.length <= failed && processed === 0) break;
   }
 
   if ((await countStragglerPages()) === 0) {
@@ -327,12 +374,12 @@ async function shadowEmbedExistingRows(
   );
   if (rows.rows.length === 0) return;
 
-  const embeddings: Array<{ chunkIndex: number; embedding: number[] }> = [];
+  const embeddings: Array<{ chunkIndex: number; text: string; embedding: number[] }> = [];
   for (let i = 0; i < rows.rows.length; i += EMBED_BATCH) {
     const slice = rows.rows.slice(i, i + EMBED_BATCH);
     const vectors = await generateEmbedding(cfg, model, slice.map((r) => r.chunk_text));
     for (let j = 0; j < slice.length; j++) {
-      embeddings.push({ chunkIndex: slice[j]!.chunk_index, embedding: vectors[j]! });
+      embeddings.push({ chunkIndex: slice[j]!.chunk_index, text: slice[j]!.chunk_text, embedding: vectors[j]! });
     }
   }
 
@@ -340,9 +387,17 @@ async function shadowEmbedExistingRows(
   try {
     await client.query('BEGIN');
     for (const e of embeddings) {
+      // Guarded write-back (review r1): the provider round-trip above is a
+      // long lock-free window in which embedPage can replace the page's rows
+      // and dual-write them. Only fill rows that are still NULL AND still
+      // carry the text this vector was computed from — anything else is a
+      // fresh row this pass must not stamp stale-text vectors onto; if its
+      // dual-write failed it stays NULL and the next pass re-embeds it from
+      // its CURRENT text.
       await client.query(
-        `UPDATE page_embeddings SET embedding_next = $3 WHERE page_id = $1 AND chunk_index = $2`,
-        [pageId, e.chunkIndex, pgvector.toSql(e.embedding)],
+        `UPDATE page_embeddings SET embedding_next = $3
+         WHERE page_id = $1 AND chunk_index = $2 AND embedding_next IS NULL AND chunk_text = $4`,
+        [pageId, e.chunkIndex, pgvector.toSql(e.embedding), e.text],
       );
     }
     // Materialize the shadow average only when every row has a shadow vector
@@ -384,6 +439,7 @@ async function buildShadowIndexes(state: ShadowMigrationState): Promise<void> {
 }
 
 const LOCK_NOT_AVAILABLE = '55P03';
+const DEADLOCK_DETECTED = '40P01';
 
 /**
  * Run `fn` inside a transaction with `SET LOCAL lock_timeout`, retrying with
@@ -408,8 +464,11 @@ async function withLockRetry(
       await client.query('ROLLBACK').catch(() => {});
       lastErr = err;
       const code = (err as { code?: string }).code;
-      if (code !== LOCK_NOT_AVAILABLE) throw err;
-      logger.warn({ attempt, maxAttempts: opts.maxAttempts }, 'Shadow swap lock wait timed out — retrying');
+      // 55P03 = lock_not_available (our SET LOCAL fired), 40P01 = deadlock
+      // detected — e.g. against the per-search coverage COUNT, which touches
+      // the same two tables (review r1). Both are transient; retry.
+      if (code !== LOCK_NOT_AVAILABLE && code !== DEADLOCK_DETECTED) throw err;
+      logger.warn({ attempt, maxAttempts: opts.maxAttempts, code }, 'Shadow DDL lock wait failed — retrying');
       await new Promise((r) => setTimeout(r, 200 * attempt));
     } finally {
       client.release();
@@ -449,9 +508,13 @@ export async function performShadowSwap(opts?: {
   await withLockRetry(
     { lockTimeoutMs: opts?.lockTimeoutMs ?? 5000, maxAttempts: opts?.maxAttempts ?? 5 },
     async (client) => {
-      // Re-check the gate INSIDE the lock: a page embedded between the check
-      // above and the lock grant dual-writes both columns, so it cannot
-      // create stragglers — but a shadow-provider failure in that window can.
+      // Acquire the exclusive locks FIRST (still under lock_timeout), so the
+      // straggler recheck below runs with every writer either committed or
+      // queued behind us. Rechecking before the lock grant left a window in
+      // which an in-flight dual-write whose shadow leg failed could commit a
+      // NULL embedding_next after the recheck's snapshot (review r1) — and
+      // the swap would promote that NULL into the live column.
+      await client.query(`LOCK TABLE page_embeddings, pages IN ACCESS EXCLUSIVE MODE`);
       const straggle = await client.query(
         `SELECT COUNT(DISTINCT page_id)::int AS n FROM page_embeddings WHERE embedding_next IS NULL`,
       );
@@ -504,14 +567,27 @@ export async function rollbackShadowMigration(opts?: {
     throw new Error('No shadow migration to roll back');
   }
 
-  if (state.status === 'active') {
-    // Abort: clear state FIRST so the backfill job's per-batch re-read exits,
-    // then drop the shadow artifacts.
-    await clearState();
-    await query(`DROP INDEX IF EXISTS idx_page_embeddings_hnsw_next`);
-    await query(`DROP INDEX IF EXISTS idx_pages_page_avg_embedding_hnsw_next`);
-    await query(`ALTER TABLE page_embeddings DROP COLUMN IF EXISTS embedding_next`);
-    await query(`ALTER TABLE pages DROP COLUMN IF EXISTS page_avg_embedding_next`);
+  if (state.status === 'active' || state.status === 'aborting') {
+    // Abort in two resumable steps (review r1): flip the state to 'aborting'
+    // first — the backfill job's per-page re-read exits on any non-active
+    // status, and a crash before the drops leaves a state row that this same
+    // function completes on re-run instead of stranding orphan columns that
+    // would 500 every future start. The drops + state delete then run in ONE
+    // bounded-lock transaction (they take ACCESS EXCLUSIVE, the same hazard
+    // the swap guards against).
+    if (state.status === 'active') {
+      await saveState({ ...state, status: 'aborting' });
+    }
+    await withLockRetry(
+      { lockTimeoutMs: opts?.lockTimeoutMs ?? 5000, maxAttempts: opts?.maxAttempts ?? 5 },
+      async (client) => {
+        await client.query(`DROP INDEX IF EXISTS idx_page_embeddings_hnsw_next`);
+        await client.query(`DROP INDEX IF EXISTS idx_pages_page_avg_embedding_hnsw_next`);
+        await client.query(`ALTER TABLE page_embeddings DROP COLUMN IF EXISTS embedding_next`);
+        await client.query(`ALTER TABLE pages DROP COLUMN IF EXISTS page_avg_embedding_next`);
+        await client.query(`DELETE FROM admin_settings WHERE setting_key = $1`, [SHADOW_MIGRATION_STATE_KEY]);
+      },
+    );
     logger.info('Shadow migration aborted — shadow columns dropped, live path untouched');
     return 'aborted';
   }
@@ -566,6 +642,10 @@ export async function rollbackShadowMigration(opts?: {
          WHERE id IN (SELECT DISTINCT page_id FROM page_embeddings WHERE embedding IS NULL)`,
       );
       await client.query(`DELETE FROM page_embeddings WHERE embedding IS NULL`);
+      // With the NULL rows gone, the old live column can take its NOT NULL
+      // back — otherwise the invariant is lost forever on this path
+      // (review r1); the forward path restores it in cleanup.
+      await client.query(`ALTER TABLE page_embeddings ALTER COLUMN embedding SET NOT NULL`);
     },
   );
 
@@ -574,21 +654,56 @@ export async function rollbackShadowMigration(opts?: {
   return 'reverted';
 }
 
-export async function cleanupShadowMigration(): Promise<void> {
+export async function cleanupShadowMigration(opts?: {
+  lockTimeoutMs?: number;
+  maxAttempts?: number;
+}): Promise<void> {
   const state = await getShadowMigrationState();
   if (!state || state.status !== 'swapped') {
     throw new Error('Cleanup only applies after a swap — nothing to clean up');
   }
 
-  await query(`DROP INDEX IF EXISTS idx_page_embeddings_hnsw_prev`);
-  await query(`DROP INDEX IF EXISTS idx_pages_page_avg_embedding_hnsw_prev`);
-  await query(`ALTER TABLE page_embeddings DROP COLUMN IF EXISTS embedding_prev`);
-  await query(`ALTER TABLE pages DROP COLUMN IF EXISTS page_avg_embedding_prev`);
-  // Restore the schema invariant the swap suspended. The precondition + the
-  // dual-write make NULLs impossible on the forward path; delete defensively
-  // so a stray NULL cannot wedge the ALTER.
-  await query(`DELETE FROM page_embeddings WHERE embedding IS NULL`);
-  await query(`ALTER TABLE page_embeddings ALTER COLUMN embedding SET NOT NULL`);
-  await clearState();
+  // One bounded-lock transaction (review r1): these DROPs take ACCESS
+  // EXCLUSIVE on the hot tables, and half-done cleanup must not be possible.
+  await withLockRetry(
+    { lockTimeoutMs: opts?.lockTimeoutMs ?? 5000, maxAttempts: opts?.maxAttempts ?? 5 },
+    async (client) => {
+      await client.query(`DROP INDEX IF EXISTS idx_page_embeddings_hnsw_prev`);
+      await client.query(`DROP INDEX IF EXISTS idx_pages_page_avg_embedding_hnsw_prev`);
+      await client.query(`ALTER TABLE page_embeddings DROP COLUMN IF EXISTS embedding_prev`);
+      await client.query(`ALTER TABLE pages DROP COLUMN IF EXISTS page_avg_embedding_prev`);
+      // A NULL live vector here is a row that slipped through the swap window
+      // — deleting it without re-queueing its page would permanently drop
+      // that content from vector search (review r1). Re-dirty first, then
+      // delete, then restore the invariant.
+      await client.query(
+        `UPDATE pages SET embedding_dirty = TRUE, embedding_status = 'not_embedded', page_avg_embedding = NULL
+         WHERE id IN (SELECT DISTINCT page_id FROM page_embeddings WHERE embedding IS NULL)`,
+      );
+      await client.query(`DELETE FROM page_embeddings WHERE embedding IS NULL`);
+      await client.query(`ALTER TABLE page_embeddings ALTER COLUMN embedding SET NOT NULL`);
+      await client.query(`DELETE FROM admin_settings WHERE setting_key = $1`, [SHADOW_MIGRATION_STATE_KEY]);
+    },
+  );
   logger.info('Shadow migration cleaned up — prev columns dropped, NOT NULL restored');
+}
+
+/**
+ * Re-enqueue the backfill for an active migration (review r1): stragglers, a
+ * crashed worker, or a crash between start's COMMIT and its enqueue would
+ * otherwise dead-end the migration with only Abort available.
+ */
+export async function rerunShadowBackfill(): Promise<{ jobId: string }> {
+  const state = await getShadowMigrationState();
+  if (!state || state.status !== 'active') {
+    throw new Error('No active shadow migration — nothing to backfill');
+  }
+  const retention = await getReembedHistoryRetention();
+  const jobId = await enqueueJob(
+    SHADOW_JOB_QUEUE,
+    { rerunAt: new Date().toISOString() },
+    { jobId: SHADOW_JOB_QUEUE, removeOnComplete: retention, removeOnFail: retention },
+  );
+  logger.info('Shadow backfill re-enqueued');
+  return { jobId };
 }

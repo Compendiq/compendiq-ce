@@ -6,6 +6,7 @@ import {
   performShadowSwap,
   rollbackShadowMigration,
   cleanupShadowMigration,
+  rerunShadowBackfill,
 } from '../../domains/llm/services/shadow-migration-service.js';
 import { getRateLimits } from '../../core/services/rate-limit-service.js';
 
@@ -35,7 +36,7 @@ export async function llmEmbeddingShadowRoutes(fastify: FastifyInstance) {
     if (/already (active|swapped)|destructive re-embed|shadow migration is already/i.test(message)) {
       return { statusCode: 409, message };
     }
-    if (/not ready to swap|No active shadow migration|No shadow migration|nothing to clean up/i.test(message)) {
+    if (/not ready to swap|No active shadow migration|No shadow migration|nothing to clean up|nothing to backfill|still (running|queued)/i.test(message)) {
       return { statusCode: 409, message };
     }
     if (/Provider not found/i.test(message)) return { statusCode: 404, message };
@@ -68,6 +69,23 @@ export async function llmEmbeddingShadowRoutes(fastify: FastifyInstance) {
     async () => {
       const migration = await getShadowMigrationStatus();
       return { active: migration !== null, migration };
+    },
+  );
+
+  // POST /admin/embedding/shadow-migration/backfill — re-enqueue the backfill
+  // for an active migration (stragglers, a crashed worker, or a crash between
+  // start's COMMIT and its enqueue).
+  fastify.post(
+    '/admin/embedding/shadow-migration/backfill',
+    { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT },
+    async (_request, reply) => {
+      try {
+        return await rerunShadowBackfill();
+      } catch (err) {
+        const mapped = mapError(err);
+        if (mapped) return reply.code(mapped.statusCode).send({ error: mapped.message, statusCode: mapped.statusCode });
+        throw err;
+      }
     },
   );
 

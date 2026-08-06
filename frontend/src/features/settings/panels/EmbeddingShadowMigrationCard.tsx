@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { apiFetch } from '../../../shared/lib/api';
 
@@ -15,7 +16,7 @@ interface Props {
 interface ShadowStatus {
   active: boolean;
   migration: null | {
-    phase: 'backfilling' | 'ready' | 'swapped';
+    phase: 'backfilling' | 'ready' | 'swapped' | 'aborting';
     model: string;
     dimensions: number;
     totalPages: number;
@@ -33,6 +34,7 @@ interface ShadowStatus {
  * changes.
  */
 export function EmbeddingShadowMigrationCard({ pending }: Props) {
+  const queryClient = useQueryClient();
   const [status, setStatus] = useState<ShadowStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirmingCleanup, setConfirmingCleanup] = useState(false);
@@ -55,12 +57,19 @@ export function EmbeddingShadowMigrationCard({ pending }: Props) {
     };
   }, [refresh]);
 
-  async function post(path: string, okMessage: string) {
+  async function post(path: string, okMessage: string, body?: object) {
     setBusy(true);
     try {
-      await apiFetch(path, { method: 'POST', body: path.endsWith('shadow-migration') && pending ? JSON.stringify(pending) : undefined });
+      await apiFetch(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined });
       toast.success(okMessage);
       await refresh();
+      // Swap/rollback/cleanup repoint the embedding assignment and
+      // dimensions server-side — the sibling panels (assignments section,
+      // destructive banner) read them through these caches and would keep
+      // showing pre-migration state until a full reload otherwise.
+      void queryClient.invalidateQueries({ queryKey: ['llm-usecases'] });
+      void queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
+      void queryClient.invalidateQueries({ queryKey: ['llm', 'usecase-default'] });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'request failed');
     } finally {
@@ -86,7 +95,7 @@ export function EmbeddingShadowMigrationCard({ pending }: Props) {
           <button
             className="nm-button-primary"
             disabled={busy}
-            onClick={() => void post('/admin/embedding/shadow-migration', 'Shadow backfill started')}
+            onClick={() => pending && void post('/admin/embedding/shadow-migration', 'Shadow backfill started', pending)}
           >
             {busy ? 'Starting…' : 'Start zero-downtime re-embed (recommended)'}
           </button>
@@ -96,6 +105,26 @@ export function EmbeddingShadowMigrationCard({ pending }: Props) {
   }
 
   if (!migration) return null;
+
+  if (migration.phase === 'aborting') {
+    return (
+      <div className="nm-card border-blue-500/30 p-3 text-sm" data-testid="shadow-migration-card">
+        <p>
+          A previous abort did not finish — the shadow columns may still exist.
+          Retry to complete it; nothing else can start until it does.
+        </p>
+        <div className="mt-2 flex gap-2">
+          <button
+            className="nm-button-primary"
+            disabled={busy}
+            onClick={() => void post('/admin/embedding/shadow-migration/rollback', 'Abort completed')}
+          >
+            Retry abort
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   if (migration.phase === 'backfilling') {
     return (
@@ -108,6 +137,15 @@ export function EmbeddingShadowMigrationCard({ pending }: Props) {
           pages backfilled. Search is unaffected — the current index keeps serving.
         </p>
         <div className="mt-2 flex gap-2">
+          {migration.stragglerPages > 0 && (
+            <button
+              className="nm-button-primary"
+              disabled={busy}
+              onClick={() => void post('/admin/embedding/shadow-migration/backfill', 'Backfill re-enqueued')}
+            >
+              Re-run backfill
+            </button>
+          )}
           <button
             className="nm-button-ghost"
             disabled={busy}
