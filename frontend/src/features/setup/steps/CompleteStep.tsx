@@ -39,7 +39,8 @@ export function CompleteStep() {
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.2, duration: 0.25 }}
-        className="mt-6 text-2xl font-bold"
+        // Matches WelcomeStep: these two bookend the flow and share a register.
+        className="mt-6 text-2xl font-semibold"
       >
         You&apos;re All Set!
       </m.h2>

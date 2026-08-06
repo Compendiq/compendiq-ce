@@ -125,24 +125,23 @@ export function SetupWizard() {
     setHasAppliedBackendMin(true);
   }, [hasAppliedBackendMin, isRerun, isSetupStatusLoading, steps]);
 
+  // The animated gradient mesh is retired (ADR-010 v0.6). v0.4 kept it here on
+  // the grounds that it sat behind the neumorphic surfaces without conflict;
+  // under a flat system there is nothing for it to sit behind, and three
+  // separate rules were against it:
+  //
+  //  - it was the last gradient in the app, on the one screen a new operator
+  //    sees first, so it set an expectation the rest of the product breaks;
+  //  - `rgba(120, 80, 255, …)` is a hardcoded violet, and violet is reserved
+  //    for AI in this system — it was signalling "AI" on a screen that has not
+  //    asked about a model yet;
+  //  - it animated `background`, a paint property rather than a compositable
+  //    one, on `repeat: Infinity`, with no `prefers-reduced-motion` guard, for
+  //    the entire time the wizard was open.
+  //
+  // The wizard now sits on the chassis like every other surface.
   return (
     <div className="bg-background flex min-h-screen items-center justify-center p-4">
-      {/* Animated gradient background */}
-      <div className="pointer-events-none fixed inset-0 overflow-hidden">
-        <m.div
-          animate={{
-            background: [
-              'radial-gradient(ellipse at 20% 50%, rgba(120, 80, 255, 0.08) 0%, transparent 50%)',
-              'radial-gradient(ellipse at 80% 50%, rgba(120, 80, 255, 0.08) 0%, transparent 50%)',
-              'radial-gradient(ellipse at 50% 20%, rgba(120, 80, 255, 0.08) 0%, transparent 50%)',
-              'radial-gradient(ellipse at 20% 50%, rgba(120, 80, 255, 0.08) 0%, transparent 50%)',
-            ],
-          }}
-          transition={{ duration: 20, repeat: Infinity, ease: 'linear' }}
-          className="absolute inset-0"
-        />
-      </div>
-
       <div className="relative w-full max-w-lg">
         {/* Logo header for non-welcome steps */}
         {currentStep > 0 && currentStep < STEPS.length - 1 && (
@@ -170,12 +169,19 @@ export function SetupWizard() {
               {STEPS.map((step, index) => (
                 <div key={step.id} className="flex items-center">
                   <div
+                    // Progress takes the accent, not `--color-action`. As
+                    // near-black filled circles the completed steps were the
+                    // heaviest thing on the screen — heavier than Continue, the
+                    // only control that advances the flow — which is the same
+                    // inversion the search-mode toggle had. The current step is
+                    // an outlined accent ring so "where am I" and "what is done"
+                    // stay distinguishable without a second hue.
                     className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-medium transition-colors ${
                       index < currentStep
-                        ? 'bg-action text-action-foreground'
+                        ? 'bg-primary text-primary-foreground'
                         : index === currentStep
-                          ? 'bg-action/20 text-action ring-2 ring-action/40'
-                          : 'bg-foreground/10 text-muted-foreground'
+                          ? 'bg-card text-primary-ink ring-2 ring-primary'
+                          : 'bg-muted text-muted-foreground'
                     }`}
                     data-testid={`step-indicator-${step.id}`}
                   >
@@ -190,7 +196,7 @@ export function SetupWizard() {
                   {index < STEPS.length - 1 && (
                     <div
                       className={`mx-1 h-0.5 w-6 rounded transition-colors ${
-                        index < currentStep ? 'bg-action' : 'bg-foreground/10'
+                        index < currentStep ? 'bg-primary' : 'bg-border'
                       }`}
                     />
                   )}

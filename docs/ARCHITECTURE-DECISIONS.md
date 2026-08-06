@@ -725,6 +725,16 @@ no shadow left to fall back on.
 - **Density.** 32px controls, 28px/13px tree rows, 48px header, 10/8/6/4 corner
   scale, 18px semibold route titles, list rows as rows (`px-3 py-2`) rather than
   cards.
+- **The setup wizard's animated gradient mesh is retired.** v0.4 explicitly
+  preserved it ("it sits behind the neumorphic surfaces without conflict");
+  under a flat system there is nothing for it to sit behind. Three separate
+  rules were against it: it was the last gradient in the app and sat on the one
+  screen a new operator sees first, so it promised a surface the rest of the
+  product does not have; its `rgba(120, 80, 255, …)` was a hardcoded violet, and
+  violet means AI here, on a screen that has not asked about a model yet; and it
+  animated `background` — a paint property, not a compositable one — on
+  `repeat: Infinity` with no `prefers-reduced-motion` guard, for as long as the
+  wizard was open. The wizard sits on the chassis like every other surface.
 - **Theme preference follows the OS by default** (`system | dark | light`). The
   *preference* is persisted; the resolved palette is not, so a stale value
   cannot win over the live OS reading. `startSystemThemeSync` is gated on
