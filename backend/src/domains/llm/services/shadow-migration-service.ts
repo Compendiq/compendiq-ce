@@ -264,10 +264,14 @@ async function countStragglerPages(): Promise<number> {
 
 async function shadowIndexesReady(state: ShadowMigrationState): Promise<boolean> {
   if (!state.indexed) return true;
+  // BOTH shadow indexes (review r4): a crash between the two CREATE INDEX
+  // statements would otherwise report 'ready' and the swap's IF EXISTS
+  // rename would silently leave the pages avg column unindexed post-swap.
   const r = await query<{ indexname: string }>(
-    `SELECT indexname FROM pg_indexes WHERE indexname = 'idx_page_embeddings_hnsw_next'`,
+    `SELECT indexname FROM pg_indexes
+     WHERE indexname IN ('idx_page_embeddings_hnsw_next', 'idx_pages_page_avg_embedding_hnsw_next')`,
   );
-  return r.rows.length > 0;
+  return r.rows.length === 2;
 }
 
 export async function getShadowMigrationStatus(): Promise<ShadowMigrationStatus | null> {
@@ -515,6 +519,18 @@ export async function performShadowSwap(opts?: {
       // NULL embedding_next after the recheck's snapshot (review r1) — and
       // the swap would promote that NULL into the live column.
       await client.query(`LOCK TABLE page_embeddings, pages IN ACCESS EXCLUSIVE MODE`);
+      // State re-verify directly after the lock (review r4): if an abort
+      // COMPLETED while we queued, embedding_next is gone and the straggler
+      // SELECT below would raise a raw 42703 → masked 500 instead of this
+      // crafted refusal.
+      const preRows = await client.query(
+        `SELECT setting_value FROM admin_settings WHERE setting_key = '${SHADOW_MIGRATION_STATE_KEY}'`,
+      );
+      const preRaw = (preRows.rows[0] as { setting_value?: string } | undefined)?.setting_value;
+      const preState = preRaw ? (JSON.parse(preRaw) as ShadowMigrationState) : null;
+      if (!preState || preState.status !== 'active') {
+        throw new Error(`Migration state changed mid-swap (now ${preState?.status ?? 'absent'}) — swap refused`);
+      }
       const straggle = await client.query(
         `SELECT COUNT(DISTINCT page_id)::int AS n FROM page_embeddings WHERE embedding_next IS NULL`,
       );
@@ -638,6 +654,18 @@ export async function rollbackShadowMigration(opts?: {
   await withLockRetry(
     { lockTimeoutMs: opts?.lockTimeoutMs ?? 5000, maxAttempts: opts?.maxAttempts ?? 5 },
     async (client) => {
+      // Lock FIRST, re-verify second (review r4, same discipline as swap/
+      // abort/cleanup): a revert losing the race to a cleanup or a second
+      // revert would otherwise fail on a raw RENAME error → masked 500.
+      await client.query(`LOCK TABLE page_embeddings, pages IN ACCESS EXCLUSIVE MODE`);
+      const revRows = await client.query(
+        `SELECT setting_value FROM admin_settings WHERE setting_key = '${SHADOW_MIGRATION_STATE_KEY}'`,
+      );
+      const revRaw = (revRows.rows[0] as { setting_value?: string } | undefined)?.setting_value;
+      const revState = revRaw ? (JSON.parse(revRaw) as ShadowMigrationState) : null;
+      if (!revState || revState.status !== 'swapped') {
+        throw new Error(`Migration state changed mid-rollback (now ${revState?.status ?? 'absent'}) — rollback refused`);
+      }
       await client.query(`ALTER TABLE page_embeddings RENAME COLUMN embedding TO embedding_next`);
       await client.query(`ALTER TABLE page_embeddings RENAME COLUMN embedding_prev TO embedding`);
       await client.query(`ALTER TABLE pages RENAME COLUMN page_avg_embedding TO page_avg_embedding_next`);
@@ -647,7 +675,13 @@ export async function rollbackShadowMigration(opts?: {
       await client.query(`ALTER INDEX IF EXISTS idx_pages_page_avg_embedding_hnsw RENAME TO idx_pages_page_avg_embedding_hnsw_next`);
       await client.query(`ALTER INDEX IF EXISTS idx_pages_page_avg_embedding_hnsw_prev RENAME TO idx_pages_page_avg_embedding_hnsw`);
 
-      if (state.prev?.providerId && state.prev.model) {
+      // Restore what was captured VERBATIM (review r4): {provider: P,
+      // model: NULL} and {provider: NULL, model: M} are first-class partial
+      // pins with their own resolution semantics — collapsing either to
+      // full inherit repoints the restored vectors' model at the default
+      // provider. Delete only when the captured row was absent or fully
+      // null (those resolve identically to no row).
+      if (state.prev && (state.prev.providerId !== null || state.prev.model !== null)) {
         await client.query(
           `INSERT INTO llm_usecase_assignments (usecase, provider_id, model, updated_at)
            VALUES ('embedding', $1, $2, NOW())

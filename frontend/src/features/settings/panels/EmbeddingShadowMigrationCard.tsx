@@ -51,7 +51,9 @@ export function EmbeddingShadowMigrationCard({ pending }: Props) {
 
   useEffect(() => {
     void refresh();
-    pollRef.current = setInterval(() => void refresh(), 3_000);
+    // 5s matches ActiveEmbeddingLocksBanner's cadence and stays under the
+    // default 20/min per-route admin rate limit (3s sat exactly at it).
+    pollRef.current = setInterval(() => void refresh(), 5_000);
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
     };
@@ -137,15 +139,16 @@ export function EmbeddingShadowMigrationCard({ pending }: Props) {
           pages backfilled. Search is unaffected — the current index keeps serving.
         </p>
         <div className="mt-2 flex gap-2">
-          {migration.stragglerPages > 0 && (
-            <button
-              className="nm-button-primary"
-              disabled={busy}
-              onClick={() => void post('/admin/embedding/shadow-migration/backfill', 'Backfill re-enqueued')}
-            >
-              Re-run backfill
-            </button>
-          )}
+          {/* Always offered while backfilling: it also recovers a worker
+              that crashed during the final index build (zero stragglers), and
+              the server refuses honestly if the job is still running. */}
+          <button
+            className="nm-button-primary"
+            disabled={busy}
+            onClick={() => void post('/admin/embedding/shadow-migration/backfill', 'Backfill re-enqueued')}
+          >
+            Re-run backfill
+          </button>
           <button
             className="nm-button-ghost"
             disabled={busy}

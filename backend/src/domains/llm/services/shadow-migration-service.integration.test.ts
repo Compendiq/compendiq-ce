@@ -558,6 +558,15 @@ describe.skipIf(!dbAvailable)('#1116 shadow migration service', () => {
       await expect(performShadowSwap()).rejects.toThrow(/index/i);
     });
 
+    it('refuses when only the pages avg shadow index is missing (review r4)', async () => {
+      // A crash between the two CREATE INDEX statements leaves exactly this
+      // state; swapping would silently strand pages.page_avg_embedding
+      // unindexed after cleanup drops the prev index.
+      await readyMigration();
+      await query(`DROP INDEX IF EXISTS idx_pages_page_avg_embedding_hnsw_next`);
+      await expect(performShadowSwap()).rejects.toThrow(/index/i);
+    });
+
     it('atomically renames columns and indexes, drops the prev NOT NULL, repoints the assignment', async () => {
       await readyMigration();
 
@@ -666,6 +675,27 @@ describe.skipIf(!dbAvailable)('#1116 shadow migration service', () => {
         [fresh.rows[0]!.id],
       );
       expect(dirty.rows[0]!.embedding_dirty).toBe(true);
+    });
+
+    it('rollback restores a partially-pinned embedding assignment verbatim (review r4)', async () => {
+      // {provider: P, model: NULL} resolves P.default_model — deleting the
+      // row on rollback would silently repoint embedding at the DEFAULT
+      // provider while the restored vectors came from P.
+      await query(
+        `UPDATE llm_usecase_assignments SET model = NULL WHERE usecase = 'embedding'`,
+      );
+      await seedEmbeddedPage('Doc A');
+      await startShadowMigration({ providerId: shadowProviderId, model: SHADOW_MODEL });
+      await runShadowBackfillJob();
+      await performShadowSwap();
+
+      await rollbackShadowMigration();
+
+      const assign = await query<{ provider_id: string; model: string | null }>(
+        `SELECT provider_id, model FROM llm_usecase_assignments WHERE usecase = 'embedding'`,
+      );
+      expect(assign.rows).toHaveLength(1);
+      expect(assign.rows[0]).toEqual({ provider_id: liveProviderId, model: null });
     });
 
     it('an interrupted abort is resumable instead of stranding the shadow columns (review r1)', async () => {

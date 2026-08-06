@@ -42,7 +42,7 @@ export async function llmEmbeddingShadowRoutes(fastify: FastifyInstance) {
     }
     // The r2/r3 race refusals: safe, deliberate, and carrying the admin's
     // next step — they must arrive as 409s, not masked 500s (review r3).
-    if (/changed mid-(swap|abort|cleanup)|swap completed while the abort/i.test(message)) {
+    if (/changed mid-(swap|abort|cleanup|rollback)|swap completed while the abort/i.test(message)) {
       return { statusCode: 409, message };
     }
     if (/Provider not found/i.test(message)) return { statusCode: 404, message };
