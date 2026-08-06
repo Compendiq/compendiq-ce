@@ -2127,4 +2127,91 @@ describe('AiAssistantPage', () => {
       }
     });
   });
+
+  // ── Confidence badge (#1117) ──────────────────────────────────────────────
+  //
+  // The badge reads a cosine similarity. It used to be handed `score`, which
+  // after RRF fusion is the fusion value (~0.033) — below ConfidenceBadge's
+  // 0.4 medium threshold, so every knowledge-base answer rendered a red "Low
+  // confidence". `averageSourceSimilarity` is unit-tested separately; these
+  // cover the WIRING, which no test previously touched.
+  describe('confidence badge', () => {
+    function seedAssistantMessage(sources: unknown[]) {
+      function ThreadSeeder() {
+        const { setMessages } = useAiContext();
+        return (
+          <button
+            onClick={() =>
+              setMessages([
+                { id: 'q', role: 'user', content: 'how do I deploy?' },
+                {
+                  id: 'a',
+                  role: 'assistant',
+                  content: 'Use the pipeline.',
+                  sources,
+                } as never,
+              ])
+            }
+          >
+            seed thread
+          </button>
+        );
+      }
+      render(
+        <>
+          <ThreadSeeder />
+          <AiAssistantPage />
+        </>,
+        { wrapper: createWrapper(['/ai']) },
+      );
+      fireEvent.click(screen.getByText('seed thread'));
+    }
+
+    it('renders no badge when no source carries a similarity', () => {
+      // A keyword-only retrieval measured nothing. Averaging the absent value
+      // as 0 is what painted the badge red on every answer.
+      seedAssistantMessage([
+        { pageTitle: 'Runbook', pageId: 1, score: 0.0164, similarity: null },
+        { pageTitle: 'Guide', pageId: 2, score: 0.0328, similarity: null },
+      ]);
+
+      expect(screen.getByText('Use the pipeline.')).toBeInTheDocument();
+      expect(screen.queryByTestId('confidence-badge')).not.toBeInTheDocument();
+    });
+
+    it('renders no badge when a source carries score but no similarity at all', () => {
+      // Not a persistence case: sources are never stored (saveConversation
+      // writes `ChatMessage[]`). This is the absent-field state the Source type
+      // permits — an older client, or any frame built without the field.
+      seedAssistantMessage([{ pageTitle: 'Old', pageId: 1, score: 0.0164 }]);
+
+      expect(screen.queryByTestId('confidence-badge')).not.toBeInTheDocument();
+    });
+
+    it('renders High confidence from the similarity, not the fusion score', () => {
+      // The regression in one assertion: `score` here is 0.0164, which would
+      // render "Low confidence". The similarity is what must win.
+      seedAssistantMessage([
+        { pageTitle: 'Deployment', pageId: 1, score: 0.0164, similarity: 0.86 },
+      ]);
+
+      const badge = screen.getByTestId('confidence-badge');
+      expect(badge).toHaveTextContent('High confidence');
+    });
+
+    it('ignores web sources rather than letting their score:1 inflate the average', () => {
+      seedAssistantMessage([
+        { pageTitle: 'KB page', pageId: 1, score: 0.0164, similarity: 0.30 },
+        { pageTitle: 'Web one', pageId: 0, url: 'https://example.com/1', score: 1, similarity: null },
+        { pageTitle: 'Web two', pageId: 0, url: 'https://example.com/2', score: 1, similarity: null },
+      ]);
+
+      // The only measured similarity is 0.30 -> Low. Reading `score` instead
+      // averages (0.0164 + 1 + 1) / 3 = 0.672 -> Medium, a grade earned
+      // entirely by two web results that never went through retrieval. The
+      // values are chosen so the two implementations disagree.
+      expect(screen.getByTestId('confidence-badge')).toHaveTextContent('Low confidence');
+    });
+  });
+
 });

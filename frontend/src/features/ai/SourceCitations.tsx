@@ -29,8 +29,26 @@ export interface Source {
   /** Absolute http(s) URL — present only on web / external-docs sources. */
   url?: string;
   sectionTitle?: string;
-  /** RAG similarity score (0-1 scale), used for confidence badges */
+  /**
+   * Retrieval ORDERING value, in whichever unit produced it — an RRF fusion
+   * score for a hybrid answer (typically ~0.033, up to ~0.17 on this path when
+   * one page fills the vector leg), or a flat `1` for web and external sources,
+   * which never went through retrieval. Kept because it orders the array. The
+   * ~0.17 figure is the chat path's; see `SearchResult.score` in
+   * `rag-service.ts` for why it is not a global bound.
+   *
+   * @deprecated Never render or threshold this. Use {@link Source.similarity}.
+   */
   score?: number;
+  /**
+   * Cosine similarity — the only score field with one meaning. `null` or absent
+   * when none was measured: a keyword-only retrieval hit, or a web/external
+   * source. Absent must render no confidence badge rather than a zero (#1117).
+   *
+   * Nominally [0,1] but genuinely [-1,1] — see `SearchResult.vectorScore` in
+   * `rag-service.ts`. Display sites must not assume a percentage in [0,100].
+   */
+  similarity?: number | null;
 }
 
 interface SourceCitationsProps {

@@ -102,6 +102,61 @@ an await would leave the route handler without the scope and the memo dead at
 runtime (#899). The memoised wrapper falls back to the raw resolver outside a
 scope (background workers, tests that skip the opt-in).
 
+### Score semantics (#1117)
+
+A retrieval result carries three numbers, and only one of them means anything
+to a user.
+
+| Field | Unit | Produced by | Safe to show? |
+|---|---|---|---|
+| `score` | whatever the producer used | cosine from `vectorSearch`, `ts_rank` from `keywordSearch`, RRF fusion from `reciprocalRankFusion` | **No** — ordering only |
+| `vectorScore` | cosine similarity, `[-1,1]` | the vector leg; `null` when the page was matched only by full-text | **Yes**, with care |
+| `keywordRank` | raw `ts_rank`, unbounded | the keyword leg; `null` when matched only by vector | No — corpus-dependent |
+
+RRF fusion previously *overwrote* `score` with the fusion value and discarded
+the cosine. That value is ~0.016 for a single rank in one leg and ~0.033 for the
+common two-leg case, and it is **not** bounded there: the vector leg is
+per-chunk, so one page occupying several top slots has its contributions summed.
+The worst case is a function of the per-stage limit, which differs by caller:
+
+| Path | topK | stage limit | worst-case fusion score |
+|---|---|---|---|
+| `/llm/ask` (chat) | 5 | 10 (CE) | ~0.169 |
+| `/llm/ask` under EE ACL | 5 | `ceil(5×1.5)` = 8 | ~0.141 |
+| `/api/search` under EE ACL | 20 | `ceil(20×1.5)` = 30 | ~0.419 |
+
+`ConfidenceBadge` sits on the chat path only and reads the value as a cosine
+(`>= 0.7` high, `>= 0.4` medium). The chat-path maximum of ~0.169 is well under
+that floor, which is why **every** hybrid knowledge-base answer rendered "Low
+confidence" — and web sources, handed a flat `score: 1`, were the only ones that
+could raise the average. Note the chat-path bound is *not* global: the
+`/api/search` figure clears 0.4, and nothing thresholds it there. `rrfWorstCase`
+in `rag-service.ts` computes these and a test pins them, because the prose
+version of this table has been wrong twice.
+
+Fusion now carries the per-leg values alongside the fused score instead of
+replacing them; ordering is unchanged.
+
+On the wire, `/llm/ask` sources and `/api/search` items expose the cosine as
+**`similarity`** (`null` when none was measured). `score` is retained because it
+is what orders the array, and must never be rendered. A `null` similarity
+renders **no** badge and **no** percentage, because a keyword-only hit has no
+similarity rather than a similarity of zero.
+
+Two range traps. `vectorScore` is `1 - (embedding <=> query)` and pgvector's
+cosine distance runs to 2, so the true range is `[-1,1]`; the `/pages` search
+list therefore renders a percentage only for a **positive** similarity. And
+`sources` are never persisted — `saveConversation` writes `ChatMessage[]`, i.e.
+`{role, content}` (see the source-objects note later in this document) — so a
+replayed conversation carries no sources and shows no badge regardless of any
+of this.
+
+`search_analytics.max_score` deliberately still stores the **fusion** value for
+`hybrid` and `keyword_fallback` rows. Repointing it at `vectorScore` would make
+new rows silently incomparable with historical ones, and the table has no column
+to distinguish them; that change belongs with the analytics migration in #1117's
+second half.
+
 Per ADR-023 (EE — `RAG_PERMISSION_ENFORCEMENT`), a second post-filter runs
 after the RRF merge when the feature is active. It calls
 `userCanAccessPage(userId, pageId)` for each merged candidate, gating

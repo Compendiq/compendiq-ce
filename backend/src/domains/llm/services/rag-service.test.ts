@@ -79,7 +79,7 @@ vi.mock('../../../core/services/fts-language.js', () => ({
   getFtsLanguage: vi.fn().mockResolvedValue('simple'),
 }));
 
-import { buildRagContext, hybridSearch, RAG_EF_SEARCH, reciprocalRankFusion, vectorSearch, keywordSearch, recordSearchAnalytics } from './rag-service.js';
+import { buildRagContext, hybridSearch, RAG_EF_SEARCH, reciprocalRankFusion, rrfWorstCase, vectorSearch, keywordSearch, recordSearchAnalytics } from './rag-service.js';
 import type { SearchResult } from './rag-service.js';
 import { CircuitBreakerOpenError } from '../../../core/services/circuit-breaker.js';
 
@@ -489,6 +489,10 @@ describe('RAG Service', () => {
       if (!idMap.has(id)) idMap.set(id, nextId++);
       return idMap.get(id)!;
     };
+    // Vector-shaped by default: `score` is a cosine similarity, mirrored into
+    // `vectorScore`. Fusion derives the per-leg values from which ARGUMENT the
+    // result arrived in, not from these fields, so a fixture passed as a keyword
+    // result still comes back carrying `keywordRank` — see the #1117 block below.
     const makeResult = (id: string, chunk: string, overrides?: Partial<SearchResult>): SearchResult => ({
       pageId: stablePageId(id),
       confluenceId: id,
@@ -497,6 +501,8 @@ describe('RAG Service', () => {
       sectionTitle: `Section ${id}`,
       spaceKey: 'DEV',
       score: 0.5,
+      vectorScore: 0.5,
+      keywordRank: null,
       ...overrides,
     });
 
@@ -584,6 +590,8 @@ describe('RAG Service', () => {
         sectionTitle: 'Article One',
         spaceKey: null,
         score: 0.5,
+        vectorScore: null,
+        keywordRank: 0.5,
       };
       const standalone2: SearchResult = {
         pageId: 200,
@@ -593,10 +601,120 @@ describe('RAG Service', () => {
         sectionTitle: 'Article Two',
         spaceKey: null,
         score: 0.5,
+        vectorScore: null,
+        keywordRank: 0.5,
       };
       const combined = reciprocalRankFusion([], [standalone1, standalone2]);
       // Both should survive because RRF key uses pageId, not confluenceId
       expect(combined).toHaveLength(2);
+    });
+
+    // ── #1117: the documented bounds on `score`, made executable ─────────────
+    //
+    // `SearchResult.score`'s JSDoc quotes worst-case fusion values, and the
+    // prose version has been wrong twice — once too low (it assumed one rank per
+    // leg, ignoring that the vector leg is per-CHUNK so one page's contributions
+    // sum) and once too narrow (it quoted the chat-path limit as if it were
+    // global). These pin the figures so the next edit has to agree with
+    // arithmetic rather than with a comment.
+    describe('documented fusion bounds', () => {
+      it('matches the closed form for a page occupying every vector slot', () => {
+        // Ten chunks of ONE page is what `rrfWorstCase(10)` describes; assert the
+        // helper against the function it documents rather than against itself.
+        const chunks = Array.from({ length: 10 }, (_, i) =>
+          makeResult('bound-page', `chunk ${i}`, { score: 0.5 - i * 0.01 }),
+        );
+        const combined = reciprocalRankFusion(chunks, []);
+        expect(combined).toHaveLength(1);
+        expect(combined[0].score).toBeCloseTo(rrfWorstCase(10), 12);
+      });
+
+      it('caps the chat path below the 0.4 confidence threshold', () => {
+        // /llm/ask uses topK=5, so the stage limit is the legs' default 10 (CE)
+        // or ceil(5*1.5)=8 under EE ACL. This is the bound that makes "reading
+        // the fusion score as a cosine always yields Low confidence" true.
+        expect(rrfWorstCase(10, true)).toBeLessThan(0.4);
+        expect(rrfWorstCase(8, true)).toBeLessThan(0.4);
+        expect(rrfWorstCase(10, true)).toBeCloseTo(0.1694, 3);
+      });
+
+      it('exceeds that threshold on /api/search under EE ACL at limit=20', () => {
+        // stageLimit = ceil(20*1.5) = 30. Nothing thresholds the fusion score on
+        // that path, but the chat-path bound must not be restated as a global
+        // one — this test is the reason that distinction stays in the JSDoc.
+        expect(rrfWorstCase(30, true)).toBeGreaterThan(0.4);
+        expect(rrfWorstCase(30, true)).toBeCloseTo(0.4191, 3);
+      });
+    });
+
+    // ── #1117 stage 1: raw per-leg scores survive fusion ─────────────────────
+    //
+    // Fusion overwrote `score` with the RRF value and discarded the cosine the
+    // vector leg had measured. With k=60 over two legs the RRF value maxes out
+    // near 1/61 + 1/61 ≈ 0.0328 for the common case — more when one page fills
+    // several vector slots — and ConfidenceBadge reads that field as a
+    // cosine similarity (>= 0.7 high / >= 0.4 medium) — so every hybrid answer
+    // rendered "Low confidence". The fix carries the per-leg values alongside
+    // the fusion score rather than replacing them.
+    describe('raw per-leg score plumbing (#1117)', () => {
+      it('carries the vector leg cosine as vectorScore, with no keywordRank', () => {
+        const combined = reciprocalRankFusion([makeResult('p-v', 'chunk', { score: 0.83 })], []);
+        expect(combined[0].vectorScore).toBe(0.83);
+        expect(combined[0].keywordRank).toBeNull();
+      });
+
+      it('carries the keyword leg ts_rank as keywordRank, with no vectorScore', () => {
+        const combined = reciprocalRankFusion([], [makeResult('p-k', 'body', { score: 0.11 })]);
+        expect(combined[0].keywordRank).toBe(0.11);
+        expect(combined[0].vectorScore).toBeNull();
+      });
+
+      it('carries both when a page is found by both legs', () => {
+        const combined = reciprocalRankFusion(
+          [makeResult('p-both', 'vector chunk', { score: 0.77 })],
+          [makeResult('p-both', 'body text', { score: 0.09 })],
+        );
+        expect(combined).toHaveLength(1);
+        expect(combined[0].vectorScore).toBe(0.77);
+        expect(combined[0].keywordRank).toBe(0.09);
+      });
+
+      it('reports the best chunk cosine when one page has several vector chunks', () => {
+        const combined = reciprocalRankFusion(
+          [
+            makeResult('p-multi', 'weaker chunk', { score: 0.40 }),
+            makeResult('p-multi', 'stronger chunk', { score: 0.91 }),
+          ],
+          [],
+        );
+        expect(combined).toHaveLength(1);
+        // Same chunk the existing best-chunk rule already picks as representative.
+        expect(combined[0].chunkText).toBe('stronger chunk');
+        expect(combined[0].vectorScore).toBe(0.91);
+      });
+
+      it('derives the leg from the argument, not from the fixture fields', () => {
+        // makeResult is vector-shaped (vectorScore mirrors score). Passed as a
+        // keyword result it must still come back as a keyword hit, otherwise a
+        // keyword-only page would report a similarity it never had.
+        const vectorShaped = makeResult('p-arg', 'body', { score: 0.31, vectorScore: 0.31 });
+        const combined = reciprocalRankFusion([], [vectorShaped]);
+        expect(combined[0].vectorScore).toBeNull();
+        expect(combined[0].keywordRank).toBe(0.31);
+      });
+
+      it('leaves `score` as the RRF fusion value and does not reorder', () => {
+        // Load-bearing: `score` stays the ranking quantity. If it were replaced
+        // by the cosine, ordering would change and this PR would stop being a
+        // reporting-only change.
+        const vec = [makeResult('r-1', 'c1', { score: 0.10 }), makeResult('r-2', 'c2', { score: 0.99 })];
+        const combined = reciprocalRankFusion(vec, []);
+        // r-1 ranked first in the vector leg, so RRF puts it first even though
+        // its cosine is far lower than r-2's.
+        expect(combined.map((r) => r.chunkText)).toEqual(['c1', 'c2']);
+        expect(combined[0].score).toBeCloseTo(1 / 61, 10);
+        expect(combined[0].score).not.toBe(combined[0].vectorScore);
+      });
     });
   });
 
@@ -656,6 +774,11 @@ describe('RAG Service', () => {
         score: 0.75,
       });
       expect(results[0].chunkText).toBe('First 500 chars of body text here.');
+      // #1117: the keyword leg declares its provenance. `vectorScore: null` is
+      // load-bearing — a keyword hit measured no similarity, and a 0 here would
+      // reach ConfidenceBadge as "measured, and terrible".
+      expect(results[0].keywordRank).toBe(0.75);
+      expect(results[0].vectorScore).toBeNull();
     });
   });
 
@@ -704,6 +827,33 @@ describe('RAG Service', () => {
       expect(results[0].pageId).toBe(7);
       expect(results[0].score).toBeCloseTo(0.7); // 1 - 0.3
       expect(results[0].chunkText).toBe('Sample chunk content');
+      // #1117: the vector leg reports the cosine in its own field too, so the
+      // value survives RRF fusion overwriting `score`.
+      expect(results[0].vectorScore).toBeCloseTo(0.7);
+      expect(results[0].keywordRank).toBeNull();
+    });
+
+    it('reports a negative vectorScore rather than clamping it', async () => {
+      // pgvector's `<=>` is a cosine DISTANCE with range [0,2], so `1 - distance`
+      // is [-1,1]. Nothing clamps it; display sites must not assume [0,1].
+      mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
+      mocks.mockClientQuery.mockResolvedValueOnce(undefined); // BEGIN
+      mocks.mockClientQuery.mockResolvedValueOnce(undefined); // SET LOCAL
+      mocks.mockClientQuery.mockResolvedValueOnce({
+        rows: [
+          {
+            page_id: 8,
+            confluence_id: 'PAGE-8',
+            chunk_text: 'Opposing chunk',
+            metadata: { page_title: 'Opposite', section_title: 'x', space_key: 'DEV' },
+            distance: 1.4,
+          },
+        ],
+      }); // SELECT
+      mocks.mockClientQuery.mockResolvedValueOnce(undefined); // COMMIT
+
+      const results = await vectorSearch('user-1', new Array(1024).fill(0.1), 5);
+      expect(results[0].vectorScore).toBeCloseTo(-0.4);
     });
 
     it('calls client.release() even on error', async () => {
