@@ -7,6 +7,7 @@ import { enqueueJob, getJobStatus } from '../../../core/services/queue-service.j
 import { getReembedHistoryRetention } from '../../../core/services/admin-settings-service.js';
 import { logger } from '../../../core/utils/logger.js';
 import { getEnterprisePlugin } from '../../../core/enterprise/loader.js';
+import { invalidateGraphCache } from '../../../core/services/redis-cache.js';
 import pgvector from 'pgvector';
 
 /**
@@ -74,6 +75,13 @@ export interface ShadowMigrationState {
   indexed: boolean;
   startedAt: string;
   swappedAt?: string;
+  /**
+   * Set by a post-swap revert. Without it the reverted state is byte-identical
+   * to the pre-swap one (`status:startedAt:swappedAt`), so an embedPage whose
+   * epoch snapshot straddled BOTH the swap and the revert passed its recheck
+   * and wrote swapped-epoch vectors into reverted columns (review r7).
+   */
+  revertedAt?: string;
   prev?: {
     providerId: string | null;
     model: string | null;
@@ -166,7 +174,7 @@ async function providerConfigFor(providerId: string) {
  */
 export function shadowStateFingerprint(state: ShadowMigrationState | null): string {
   if (!state) return 'none';
-  return `${state.status}:${state.startedAt}:${state.swappedAt ?? ''}`;
+  return `${state.status}:${state.startedAt}:${state.swappedAt ?? ''}:${state.revertedAt ?? ''}`;
 }
 
 /**
@@ -347,6 +355,24 @@ async function shadowIndexesReady(state: ShadowMigrationState): Promise<boolean>
 }
 
 export async function getShadowMigrationStatus(): Promise<ShadowMigrationStatus | null> {
+  try {
+    return await readShadowMigrationStatus();
+  } catch (err) {
+    // The straggler count and the index probe both name the shadow columns,
+    // and an abort committing between this function's state read and those
+    // queries drops them — 42703 out of a plain status read, and out of the
+    // swap's pre-flight gate as a masked 500 (review r7). Same discipline as
+    // the backfill job: only when the state row agrees the migration ended.
+    if (await abortedOutFromUnder(err)) {
+      const now = await getShadowMigrationState();
+      if (!now) return null;
+      return { ...now, phase: 'aborting', totalPages: 0, backfilledPages: 0, stragglerPages: 0, indexReady: false };
+    }
+    throw err;
+  }
+}
+
+async function readShadowMigrationStatus(): Promise<ShadowMigrationStatus | null> {
   const state = await getShadowMigrationState();
   if (!state) return null;
   if (state.status === 'aborting') {
@@ -374,12 +400,6 @@ const BACKFILL_PAGE_BATCH = 25;
 const EMBED_BATCH = 16;
 
 /**
- * The backfill worker. Embeds every chunk row that still lacks a shadow
- * vector, page by page, with the NEW model; per-page failures are logged and
- * left as stragglers (the swap gate refuses while any remain). Aborts cleanly
- * when the state row disappears (rollback-before-swap).
- */
-/**
  * Review r6: an abort drops the shadow columns, and both the batch SELECT and
  * the final straggler recount name `embedding_next` — an abort committing
  * between pages takes the job's own queries out from under it and Postgres
@@ -395,6 +415,12 @@ async function abortedOutFromUnder(err: unknown): Promise<boolean> {
   return !now || now.status !== 'active';
 }
 
+/**
+ * The backfill worker. Embeds every chunk row that still lacks a shadow
+ * vector, page by page, with the NEW model; per-page failures are logged and
+ * left as stragglers (the swap gate refuses while any remain). Aborts cleanly
+ * when the state row disappears (rollback-before-swap).
+ */
 export async function runShadowBackfillJob(job?: {
   updateProgress?: (p: number | object) => Promise<void>;
 }): Promise<{ processed: number; failed: number } | 'no-active-migration' | 'aborted'> {
@@ -545,6 +571,38 @@ const LOCK_NOT_AVAILABLE = '55P03';
 const DEADLOCK_DETECTED = '40P01';
 
 /**
+ * `page_relationships.embedding_similarity` is a PERSISTED derivative of
+ * `pages.page_avg_embedding` — the column the swap replaces. Nothing else
+ * rebuilds it: the destructive path only self-heals because it dirties the
+ * whole corpus and `processDirtyPages` recomputes every edge on the way out
+ * (review r7). Left alone, the graph and related-pages keep serving scores
+ * from the OLD vector space, and worse, drift into a permanent MIXTURE as
+ * individual pages are edited and rewrite only their own edges — with one
+ * read-time score floor applied across two incomparable distributions.
+ *
+ * Runs AFTER the swap transaction commits, never inside it: this is a
+ * whole-corpus recompute, and holding the swap's ACCESS EXCLUSIVE lock across
+ * it would turn a sub-second rename into an outage. A failure here is logged,
+ * not thrown — the vectors are already live and correct, the edges are stale
+ * derived data, and `POST /api/pages/graph/refresh` rebuilds them on demand.
+ */
+async function refreshSimilarityEdges(phase: 'swap' | 'rollback'): Promise<void> {
+  try {
+    // Dynamic: embedding-service imports THIS module for the dual-write, so a
+    // static import here would close the cycle at module-init time.
+    const { computePageRelationships } = await import('./embedding-service.js');
+    await computePageRelationships();
+    await invalidateGraphCache();
+    logger.info({ phase }, 'Similarity edges recomputed for the new embedding space');
+  } catch (err) {
+    logger.error(
+      { err, phase },
+      'Failed to recompute similarity edges after the shadow migration — the graph and related pages keep old-model scores until POST /api/pages/graph/refresh is run',
+    );
+  }
+}
+
+/**
  * Run `fn` inside a transaction with `SET LOCAL lock_timeout`, retrying with
  * backoff when a lock wait times out. No pool sets lock_timeout (only
  * runMigrations, to 0), so without the explicit SET LOCAL the renames would
@@ -690,6 +748,7 @@ export async function performShadowSwap(opts?: {
   );
 
   await bumpProviderCacheVersion();
+  await refreshSimilarityEdges('swap');
   logger.info('Shadow migration swapped — new model is live; run cleanup once validated, or rollback to revert');
 }
 
@@ -815,6 +874,7 @@ export async function rollbackShadowMigration(opts?: {
           columnType: revState.columnType,
           indexed: revState.indexed,
           startedAt: revState.startedAt,
+          revertedAt: new Date().toISOString(),
         },
         client as unknown as { query: (sql: string, params?: unknown[]) => Promise<unknown> },
       );
@@ -835,6 +895,10 @@ export async function rollbackShadowMigration(opts?: {
   );
 
   await bumpProviderCacheVersion();
+  // Symmetric with the swap: the edges were rebuilt against the new model's
+  // averages there, so leaving them now would strand new-model scores over
+  // old-model vectors.
+  await refreshSimilarityEdges('rollback');
   logger.info('Shadow migration reverted — old model is live again; state back to active');
   return 'reverted';
 }

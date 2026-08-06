@@ -11,6 +11,13 @@ interface Pending {
 interface Props {
   /** The unsaved embedding provider/model change, when one exists (same value the destructive banner receives). */
   pending: Pending | null;
+  /**
+   * Called after any lifecycle action that repoints the embedding assignment
+   * server-side. Invalidating the query is not enough — the parent holds a
+   * local working copy behind a one-shot hydration guard, and only it can
+   * drop that guard so the form re-seeds (review r7).
+   */
+  onLifecycleChange?: () => void;
 }
 
 interface ShadowStatus {
@@ -34,7 +41,7 @@ interface ShadowStatus {
  * destructive EmbeddingReembedBanner as the recommended path for model
  * changes.
  */
-export function EmbeddingShadowMigrationCard({ pending }: Props) {
+export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange }: Props) {
   const queryClient = useQueryClient();
   const [status, setStatus] = useState<ShadowStatus | null>(null);
   const [busy, setBusy] = useState(false);
@@ -74,6 +81,7 @@ export function EmbeddingShadowMigrationCard({ pending }: Props) {
       void queryClient.invalidateQueries({ queryKey: ['llm-usecases'] });
       void queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
       void queryClient.invalidateQueries({ queryKey: ['llm', 'usecase-default'] });
+      onLifecycleChange?.();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'request failed');
     } finally {

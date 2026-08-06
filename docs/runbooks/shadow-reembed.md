@@ -13,6 +13,7 @@ vectors throughout; the old model stays recoverable until the final cleanup.
 | 3. Index build | HNSW indexes built on **both** shadow columns at the end of the backfill — unless the model's dimension exceeds 4000, which pgvector cannot index at all (the status card says so instead of claiming an index, and post-swap vector search scans sequentially) | Yes | none for reads; **writes to `page_embeddings` AND to `pages` queue for the build duration** (minutes) — the second index is on `pages`, so sync upserts, editor saves and embedding-status updates stall too |
 | 4. Swap | **Swap to the new model** (`POST …/swap`) — one transaction of column/index renames under `lock_timeout 5s`, ≤5 attempts | Yes (Roll back) | sub-second on success. While a lock attempt waits behind a long reader, **new searches queue behind the pending exclusive lock** — each failed attempt can stall them up to 5s (≤5 attempts), so run the swap when long queries have drained |
 | 5. Validate | run real searches; the quality gate is #1102's eval rig | — | new model serving |
+| — | *(automatic)* the swap and a post-swap rollback both rebuild `page_relationships.embedding_similarity`, the persisted derivative of `pages.page_avg_embedding`, and clear the graph cache | — | graph/related-pages briefly serve the previous edges; if the rebuild logs a failure, run `POST /api/pages/graph/refresh` |
 | 6a. Cleanup | **Clean up** (`POST …/cleanup`) — drops the `_prev` columns, restores NOT NULL | **No — old vectors deleted** | **search and page reads are down for the duration** — see below |
 | 6b. Rollback | **Roll back** (`POST …/rollback`) — reverse renames, restore the old assignment; pages embedded post-swap are re-dirtied for the normal pipeline | back to step 4 | same as 6a |
 
@@ -65,6 +66,12 @@ the target nor the rollback provider can be deleted, and a default repoint
 assignment **or** the rollback target resolves through it. An interrupted
 abort parks the migration in an `aborting` state; retrying the abort is
 idempotent and completes it.
+
+**The destructive re-embed is refused outright while a migration exists** —
+both the dimension-change form and the plain same-dimension one. During
+`swapped` it would fill the table with rows that have no `embedding_prev`,
+and the rollback that deletes NULL-vector rows would then empty the corpus
+instead of restoring it.
 
 **Provider-edit caveat.** A `baseUrl` / `apiKey` patch on the migration's
 target provider is *not* refused — it repoints the shadow model mid-backfill

@@ -194,7 +194,16 @@ export function LlmTab() {
         LLM provider + per-use-case assignments are shared across all users. Only admins can change them here.
       </div>
       <ProviderListSection />
-      <EmbeddingShadowMigrationCard pending={embeddingPending} />
+      <EmbeddingShadowMigrationCard
+        pending={embeddingPending}
+        // A swap writes an EXPLICIT (provider, model) pair server-side. The
+        // card can invalidate the query, but only this guard reset makes the
+        // form re-seed from it — otherwise the local copy stays frozen on the
+        // admin's pre-start edit, and an inherit-shaped one then reads as a
+        // fresh "model changed" the moment the swap succeeds, re-raising the
+        // destructive re-embed banner over a completed migration (review r7).
+        onLifecycleChange={() => setAssignmentsInitialized(false)}
+      />
       <EmbeddingReembedBanner
         // Legacy 1024-dim default while settings load or on older backends
         // whose payload predates the field.

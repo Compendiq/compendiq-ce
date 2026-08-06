@@ -85,6 +85,28 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
     expect(screen.queryByText(/the new index is built/i)).toBeNull();
   });
 
+  it('tells the parent to re-seed after a lifecycle action (review r7)', async () => {
+    // Invalidating ['llm-usecases'] refetches the server state, but LlmTab
+    // holds a local working copy behind a one-shot hydration guard — only
+    // this callback drops it. Without it a swap re-raises the destructive
+    // "model changed" banner over a migration that just succeeded.
+    mockApi({
+      active: true,
+      migration: { phase: 'ready', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 40, backfilledPages: 40, stragglerPages: 0, indexed: true },
+    });
+    const onLifecycleChange = vi.fn();
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <EmbeddingShadowMigrationCard pending={null} onLifecycleChange={onLifecycleChange} />
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: /Swap to the new model/i }));
+
+    await waitFor(() => expect(onLifecycleChange).toHaveBeenCalled());
+  });
+
   it('lands focus on Cancel when the cleanup confirmation arms (review r5)', async () => {
     // Arming unmounts the focused button; without a deliberate move, focus
     // drops to <body> (WCAG 2.4.3) and the warning is never announced.

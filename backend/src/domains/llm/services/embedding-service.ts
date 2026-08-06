@@ -1353,20 +1353,24 @@ export async function enqueueReembedAll(
   // Fixed id — concurrent POSTs collapse onto the same BullMQ record.
   const jobId = 'reembed-all';
 
+  // #1116 mutual exclusion, for EVERY reembed-all and not just a dimension
+  // change (review r7). The same-dimension re-embed TRUNCATEs and rebuilds
+  // `embedding` too, so during `swapped` it fills the table with rows whose
+  // `embedding_prev` is NULL — and the rollback that deletes NULL-vector rows
+  // would then empty the corpus, turning the advertised "old model serves
+  // again immediately" into a full re-embed from nothing. During `active` it
+  // races the backfill for the same rows.
+  if (await getShadowMigrationState()) {
+    const err = new Error(
+      'A shadow migration is in progress — swap, roll it back or clean it up before re-embedding the corpus',
+    ) as Error & { statusCode: number };
+    // The destructive route has no error mapping; the statusCode rides on
+    // the error so the refusal answers 409, not a masked 500 (review r1).
+    err.statusCode = 409;
+    throw err;
+  }
+
   if (opts.newDimensions !== undefined) {
-    // #1116 mutual exclusion: the destructive TRUNCATE path and the shadow
-    // migration must never touch these columns concurrently — a shadow
-    // migration's swap/rollback would rename columns out from under the
-    // ALTERs below.
-    if (await getShadowMigrationState()) {
-      const err = new Error(
-        'A shadow migration is in progress — swap, roll it back or clean it up before running a destructive dimension change',
-      ) as Error & { statusCode: number };
-      // The destructive route has no error mapping; the statusCode rides on
-      // the error so the refusal answers 409, not a masked 500 (review r1).
-      err.statusCode = 409;
-      throw err;
-    }
     // pgvector type args must be literal — validate strictly before interpolation.
     const n = Math.floor(opts.newDimensions);
     if (!Number.isFinite(n) || n < 1 || n > 16000) {

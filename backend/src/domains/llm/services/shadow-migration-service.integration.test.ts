@@ -81,6 +81,7 @@ const {
   startShadowMigration,
   getShadowMigrationState,
   getShadowMigrationStatus,
+  shadowStateFingerprint,
   runShadowBackfillJob,
   rerunShadowBackfill,
   performShadowSwap,
@@ -528,6 +529,18 @@ describe.skipIf(!dbAvailable)('#1116 shadow migration service', () => {
       return pageId;
     }
 
+    it('refuses a SAME-dimension destructive re-embed too, not only a dimension change (review r7)', async () => {
+      // The same-dimension path TRUNCATEs and rebuilds `embedding` as well.
+      // Run during 'swapped' it fills the table with rows whose
+      // embedding_prev is NULL, and the rollback that deletes NULL-vector
+      // rows would then empty the corpus — the opposite of the runbook's
+      // "old model serves again immediately".
+      await seedEmbeddedPage('Doc A');
+      await startShadowMigration({ providerId: shadowProviderId, model: SHADOW_MODEL });
+
+      await expect(enqueueReembedAll({})).rejects.toMatchObject({ statusCode: 409 });
+    });
+
     it('refuses to start while an org LLM policy pins the embedding use case (review r6)', async () => {
       // The policy is consulted BEFORE llm_usecase_assignments, so the swap's
       // repoint would be cosmetic: corpus on one model, every query on
@@ -788,6 +801,50 @@ describe.skipIf(!dbAvailable)('#1116 shadow migration service', () => {
         [fresh.rows[0]!.id],
       );
       expect(dirty.rows[0]!.embedding_dirty).toBe(true);
+    });
+
+    it('rebuilds the persisted similarity edges after the swap (review r7)', async () => {
+      // page_relationships.embedding_similarity is derived from
+      // pages.page_avg_embedding — the column the swap replaces. Nothing else
+      // rebuilds it, so the graph would keep serving old-model scores and
+      // drift into a mixture as individual pages are edited.
+      const a = await seedEmbeddedPage('Doc A');
+      const b = await seedEmbeddedPage('Doc B');
+      await query(
+        `INSERT INTO page_relationships (page_id_1, page_id_2, relationship_type, score)
+         VALUES ($1, $2, 'embedding_similarity', 0.75)`,
+        [a, b],
+      );
+      await startShadowMigration({ providerId: shadowProviderId, model: SHADOW_MODEL });
+      await runShadowBackfillJob();
+
+      await performShadowSwap();
+
+      // 0.75 is exact in float4, so this really does match the seeded row —
+      // 0.999 would not, and the assertion would pass without the fix.
+      const seeded = await query<{ n: number }>(
+        `SELECT COUNT(*)::int AS n FROM page_relationships
+         WHERE page_id_1 = $1 AND page_id_2 = $2
+           AND relationship_type = 'embedding_similarity' AND score = 0.75::real`,
+        [a, b],
+      );
+      expect(seeded.rows[0]!.n).toBe(0);
+    });
+
+    it('a revert leaves an epoch distinct from the pre-swap one (review r7)', async () => {
+      // The fingerprint was status:startedAt:swappedAt, and a revert restores
+      // status 'active' with the original startedAt and no swappedAt — byte
+      // identical to before the swap. An embedPage whose snapshot straddled
+      // BOTH transitions then passed its recheck and wrote swapped-epoch
+      // vectors into reverted columns.
+      await seedEmbeddedPage('Doc A');
+      await startShadowMigration({ providerId: shadowProviderId, model: SHADOW_MODEL });
+      const before = shadowStateFingerprint(await getShadowMigrationState());
+      await runShadowBackfillJob();
+      await performShadowSwap();
+      await rollbackShadowMigration();
+
+      expect(shadowStateFingerprint(await getShadowMigrationState())).not.toBe(before);
     });
 
     it('the revert restores the state it verified under the lock, not the pre-lock snapshot (review r5)', async () => {
