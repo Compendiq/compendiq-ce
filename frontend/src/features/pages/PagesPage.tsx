@@ -605,13 +605,19 @@ export function PagesPage() {
           {/* Sync moved into the Last Sync KPI card, where it sits beside the
               value it acts on. Keeping a second copy here would have made the
               header four buttons wide for no added reach. */}
+          {/* The one FILLED control on this route. Everything here was an
+              outlined rectangle, so the accent never actually filled anything
+              and the page had no fast path to its own primary action — which is
+              half of what the brief asked Plane for. `nm-button-primary` is the
+              filled recipe; the outline treatment stays for secondary actions,
+              which is what makes this one read as primary. */}
           <button
             onClick={() => navigate('/pages/new')}
-            className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+            className="nm-button-primary"
           >
             <Plus size={16} />
             <span className="hidden sm:inline">New Page</span>
-            <span className="hidden sm:inline"><ShortcutHint shortcutId="new-page" className="border-action/30 text-action/80" /></span>
+            <span className="hidden sm:inline"><ShortcutHint shortcutId="new-page" className="border-primary-foreground/25 text-primary-foreground/80" /></span>
           </button>
         </div>
       </div>

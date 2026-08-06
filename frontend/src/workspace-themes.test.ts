@@ -454,6 +454,41 @@ describe('Flat depth model', () => {
     }
   });
 
+  // The checks above only walk `@utility` blocks, and that blind spot shipped:
+  // a live `.drawio-nodeview:hover { box-shadow: 0 0 0 1px … }` survived the
+  // whole conversion because it is a plain class rule. This sweeps the entire
+  // stylesheet for depth shadows written anywhere.
+  it('no plain class rule declares a depth shadow', () => {
+    const offenders: string[] = [];
+    let examined = 0;
+    // Every box-shadow declaration in the file, with the selector above it.
+    const re = /([^{}]+)\{([^{}]*box-shadow:[^;}]+;[^{}]*)\}/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(css)) !== null) {
+      const selector = m[1]!.trim().split('\n').pop()!.trim();
+      for (const decl of m[2]!.match(/box-shadow:\s*([^;]+);/g) ?? []) {
+        examined++;
+        const value = decl.replace(/box-shadow:\s*/, '').trim();
+        // Allowed: `none`, focus rings (0 0 0 Npx), and the one overlay token.
+        if (/^none$/.test(value)) continue;
+        if (/^0 0 0 \d+px/.test(value)) continue;
+        if (/var\(--shadow-overlay(-sm)?\)/.test(value)) continue;
+        // Retired tokens resolve to `transparent`, so they paint nothing.
+        if (/var\(--nm-(shadow|highlight)/.test(value)) continue;
+        offenders.push(`${selector} → ${value}`);
+      }
+    }
+    // Self-check: a regex that silently stopped matching would report zero
+    // offenders and pass forever. The stylesheet genuinely declares box-shadow
+    // in several places (focus rings, the overlay token), so a run that
+    // examined none means the sweep broke, not that the CSS got cleaner.
+    expect(examined, 'the shadow sweep matched nothing — its regex is stale').toBeGreaterThan(5);
+    expect(
+      offenders,
+      `depth shadows outside the overlay contract:\n${offenders.join('\n')}`,
+    ).toEqual([]);
+  });
+
   // Exactly one surface may float, and it is the one that genuinely leaves the
   // page: popovers, dropdowns, dialogs, the command palette.
   it('only nm-card-elevated carries the overlay shadow', () => {

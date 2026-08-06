@@ -311,21 +311,35 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      11.25 px outliers (nav pills, stat-card labels) up to a legible floor. */
   --font-size-xs: 0.8125rem;
 
-  /* Glass utility colors — kept until Phase 5 retires the glass-* @utility blocks */
-  --glass-border: oklch(1 0 0 / 0.08);
-  --glass-border-hover: oklch(1 0 0 / 0.15);
-  --glass-shadow: oklch(0 0 0 / 0.2);
-  --glass-shadow-hover: oklch(0 0 0 / 0.3);
-  --glass-sidebar-bg: oklch(from var(--color-card) l c h / 0.55);
-  --glass-sidebar-blur: 24px;
-  --glass-sidebar-border: oklch(1 0 0 / 0.12);
-  --glass-sidebar-shadow: 0 8px 32px oklch(0 0 0 / 0.18);
-  --glass-sidebar-specular: inset 0 0.5px 0 oklch(1 0 0 / 0.08);
-  --glass-sidebar-divider: oklch(1 0 0 / 0.06);
-  --glass-pill-bg: linear-gradient(145deg, oklch(1 0 0 / 0.12) 0%, oklch(1 0 0 / 0.04) 100%);
-  --glass-pill-border: oklch(1 0 0 / 0.1);
-  --glass-pill-shadow: 0 2px 8px oklch(0 0 0 / 0.12), inset 0 0.5px 0 oklch(1 0 0 / 0.12);
-  --glass-pill-hover: oklch(1 0 0 / 0.05);
+  /* Retired glass tokens, resolved onto the flat system.
+
+     There is no glass here: translucency and backdrop-blur were decoration
+     standing in for hierarchy, and blur behind dense 13px text is both the
+     most expensive thing the compositor does and the least readable.
+
+     The ~80 `bg-[var(--glass-*)]` callsites are left in place deliberately.
+     Every ROLE they encode is still correct ("hover tint for a nav pill",
+     "divider inside the sidebar"), so repointing the tokens converts all of
+     them at once and keeps one place to retune. Renaming across 12 files is a
+     mechanical follow-up, not a design decision.
+
+     `--glass-border` matters most: at 8% alpha it could not clear WCAG
+     1.4.11's 3:1, and it was live on operable surfaces (the draw.io node view,
+     the code copy button). It now resolves to the measured interactive edge. */
+  --glass-border: var(--color-border-interactive);
+  --glass-border-hover: var(--color-primary);
+  --glass-shadow: none;
+  --glass-shadow-hover: none;
+  --glass-sidebar-bg: var(--color-background);
+  --glass-sidebar-blur: 0px;
+  --glass-sidebar-border: var(--color-border);
+  --glass-sidebar-shadow: none;
+  --glass-sidebar-specular: none;
+  --glass-sidebar-divider: var(--color-border);
+  --glass-pill-bg: transparent;
+  --glass-pill-border: var(--color-border);
+  --glass-pill-shadow: none;
+  --glass-pill-hover: var(--color-accent);
 
   /* Violet, matching --color-code-keyword. Deliberately NOT amber (which now
      means warning) and NOT steel (which means "you can click this") — inline
@@ -349,20 +363,10 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
    - light-mode neumorphic shadow recipe (neutral slate shadow + white highlight)
    - the light gradient chassis and card surface */
 [data-theme-type="light"] {
-  /* Glass tokens (light) — kept for in-flight glass-* utilities */
-  --glass-border: oklch(0 0 0 / 0.08);
-  --glass-border-hover: oklch(0 0 0 / 0.15);
-  --glass-shadow: oklch(0 0 0 / 0.06);
-  --glass-shadow-hover: oklch(0 0 0 / 0.1);
-  --glass-sidebar-bg: oklch(from var(--color-card) l c h / 0.7);
-  --glass-sidebar-border: oklch(0 0 0 / 0.16);
-  --glass-sidebar-shadow: 0 8px 32px oklch(0 0 0 / 0.12);
-  --glass-sidebar-specular: inset 0 0.5px 0 oklch(1 0 0 / 0.4);
-  --glass-sidebar-divider: oklch(0 0 0 / 0.06);
-  --glass-pill-bg: linear-gradient(145deg, oklch(1 0 0 / 0.6) 0%, oklch(1 0 0 / 0.25) 100%);
-  --glass-pill-border: oklch(1 0 0 / 0.5);
-  --glass-pill-shadow: 0 2px 5px oklch(0 0 0 / 0.05), inset 0 0.5px 0 oklch(1 0 0 / 0.7);
-  --glass-pill-hover: oklch(from var(--color-primary) l c h / 0.07);
+  /* No light-theme glass overrides. The retired tokens now resolve to
+     `--color-*` values in the `@theme` block above, which this theme already
+     redefines — so both themes follow automatically and there is nothing to
+     keep in sync here. */
 
   /* Elevation tokens (light) — same contract as Graphite: in-flow surfaces
      cast nothing, and only true overlays get a shadow. See the dark block for
@@ -405,11 +409,19 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
    surface, ink and status hue is the counterpart of the dark token above it,
    which is what lets both themes share one set of shell utilities. */
 [data-theme="paper"] {
-  --color-background: #f7f7f8;          /* paper chassis / sidebar ground */
+  /* The ground sits a real step below the pane. At #f7f7f8 the gap to white
+     was ~1.4% luminance: "chrome is the ground, content is the pane" is the
+     system's central move and it only rendered in Graphite, leaving Paper's
+     pane boundary carried by the hairline alone. */
+  --color-background: #f1f1f3;          /* paper chassis / sidebar ground */
   --color-foreground: #17181a;          /* ink */
   --color-card: #ffffff;                /* content pane */
   --color-card-foreground: #17181a;
-  --color-card-elevated: #ffffff;
+  /* Elevated must differ from `card`, or an overlay over a pane rests entirely
+     on its shadow — and in forced-colors mode, where shadow is discarded,
+     on nothing at all. Slightly cool rather than brighter: white is already
+     the ceiling on this side, so elevation reads as a cleaner surface. */
+  --color-card-elevated: #fdfdfe;
   --color-primary: #4a55c9;             /* indigo — the light-theme sibling */
   --color-primary-foreground: #ffffff;
   --color-primary-gradient-start: #4a55c9;
@@ -438,8 +450,11 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   --color-destructive-foreground: #ffffff;
   /* Same two-weight split as dark: a quiet hairline for structure, and an
      interactive edge that clears 1.4.11's 3:1 on both background and card. */
-  --color-border: #e6e6e9;
-  --color-border-interactive: #8b8f98;
+  --color-border: #e2e2e6;
+  /* Darkened with the chassis. At #8b8f98 it measured 2.87:1 on the new
+     ground — under 1.4.11's 3:1 floor, caught by workspace-themes.test.ts
+     rather than by eye. */
+  --color-border-interactive: #848892;
   --color-ring: #4a55c9;
   --color-success: #16794a;
   --color-warning: #8a5a00;
@@ -1268,15 +1283,6 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
 /* ===========================
    GLOW ON INTERACTIVE ELEMENTS
    =========================== */
-
-@utility glow-interactive {
-  transition: box-shadow 0.2s ease;
-  &:hover {
-    box-shadow:
-      0 0 0 1px oklch(from var(--color-primary) l c h / 0.5),
-      0 0 20px oklch(from var(--color-primary) l c h / 0.15);
-  }
-}
 
 /* ===========================
    GRADIENT BORDERS (Dark Mode)
@@ -2182,8 +2188,17 @@ pre:focus-within .code-copy-btn,
    Article viewer — TipTap read-only overrides
    ============================================ */
 
+/* Vertical only. The 2.5rem horizontal inset that used to live here was a
+   SECOND one: PageViewPage's body container already carries the document's
+   `px-5 sm:px-10` measure, so prose rendered 40px right of the page title,
+   the summary banner and the sticky sub-header sitting directly above it —
+   and toggling Edit shifted every line of the document sideways, because the
+   editor's own wrapper insets differently.
+
+   The single caller (`<ArticleViewer>` in PageViewPage) owns the horizontal
+   measure. A future caller that renders the viewer bare must bring its own. */
 .article-viewer .tiptap {
-  padding: 1.5rem 2.5rem;
+  padding: 1.5rem 0;
 }
 
 /* #349: read-only viewer — let the TipTap-injected .tableWrapper handle
@@ -2439,18 +2454,22 @@ pre:focus-within .code-copy-btn,
   margin: 1rem 0;
 }
 
+/* An operable surface: it takes the measured interactive border, not the
+   retired 8%-alpha glass one, which could not clear 1.4.11's 3:1. Hover is a
+   border-colour change — the zero-offset coloured halo it used to grow was the
+   last live extrusion in the system, and it survived the conversion because
+   the flatness guard only walks `@utility` blocks. */
 .drawio-nodeview {
   position: relative;
-  border: 1px solid var(--glass-border);
+  border: 1px solid var(--color-border-interactive);
   border-radius: var(--radius-md);
-  background: oklch(from var(--color-card) l c h / 0.5);
+  background: var(--color-card);
   overflow: hidden;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  transition: border-color 0.12s ease-out;
 }
 
 .drawio-nodeview:hover {
-  border-color: oklch(from var(--color-primary) l c h / 0.4);
-  box-shadow: 0 0 0 1px oklch(from var(--color-primary) l c h / 0.15);
+  border-color: var(--color-primary);
 }
 
 /* Drag handle — left edge, visible on hover */

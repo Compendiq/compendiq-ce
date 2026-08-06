@@ -24,7 +24,11 @@ export function ShortcutHint({ shortcutId, className = '' }: ShortcutHintProps) 
 
   return (
     <kbd
-      className={`ml-1.5 inline-flex items-center rounded border border-border bg-background/50 px-1.5 py-0.5 text-[11px] font-mono text-muted-foreground ${className}`.trim()}
+      // `hidden sm:inline-flex`: a keyboard hint on a touch device advertises
+      // an input the user does not have, and at 11px in a 390px row it read as
+      // punctuation rather than a key. Hidden, not removed — the shortcut still
+      // works for anyone with a keyboard at any width.
+      className={`ml-1.5 hidden items-center rounded border border-border bg-background/50 px-1.5 py-0.5 text-[11px] font-mono text-muted-foreground sm:inline-flex ${className}`.trim()}
     >
       {formatted}
     </kbd>

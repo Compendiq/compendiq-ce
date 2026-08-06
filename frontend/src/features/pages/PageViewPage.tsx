@@ -732,7 +732,10 @@ export function PageViewPage() {
             <button
               onClick={handleSave}
               disabled={updateMutation.isPending}
-              className="shrink-0 inline-flex items-center gap-1 rounded-md border border-action bg-transparent px-3 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+              // Filled: Save is the primary action of edit mode, and Cancel
+              // sits directly beside it. An outlined pair made the destructive
+              // choice and the committing one look identical.
+              className="nm-button-primary shrink-0"
             >
               {updateMutation.isPending ? 'Saving…' : 'Save'}
               {!updateMutation.isPending && <ShortcutHint shortcutId="save" />}

@@ -66,7 +66,7 @@ export const THEMES: ThemeMeta[] = [
     label: 'Paper',
     description: 'Neutral paper surfaces with one indigo accent',
     category: 'light',
-    preview: { bg: '#f7f7f8', card: '#ffffff', primary: '#4a55c9', accent: '#17181a' },
+    preview: { bg: '#f1f1f3', card: '#ffffff', primary: '#4a55c9', accent: '#17181a' },
   },
 ];
 
