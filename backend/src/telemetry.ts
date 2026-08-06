@@ -11,7 +11,10 @@
  * Controlled by environment variables:
  *   OTEL_ENABLED=true          - Enable OpenTelemetry (default: false)
  *   OTEL_SERVICE_NAME          - Service name (default: 'compendiq-backend')
- *   OTEL_EXPORTER_OTLP_ENDPOINT - OTLP endpoint (if set, uses OTLP exporter; otherwise console)
+ *   OTEL_EXPORTER_OTLP_ENDPOINT and the standard per-signal config
+ *   (OTEL_EXPORTER_OTLP_{TRACES,METRICS}_ENDPOINT,
+ *   OTEL_{TRACES,METRICS}_EXPORTER incl. 'none') are honored per signal;
+ *   only the fully-unconfigured dev default falls back to console exporters.
  */
 
 import { logger } from './core/utils/logger.js';
@@ -19,6 +22,23 @@ import { logger } from './core/utils/logger.js';
 const SDK_KEY = '__otelSdk';
 const TRACER_KEY = '__otelTracer';
 const METER_KEY = '__otelMeter';
+
+/**
+ * Where one signal's telemetry actually goes, for the boot log. Mirrors
+ * sdk-node's env precedence: the exporter-choice variable wins (a non-otlp
+ * value like 'none'/'console'/'zipkin' ignores every endpoint); only an
+ * otlp resolution consults the signal-specific then general endpoint.
+ */
+function resolveSignalDestination(exporterChoice: string | undefined, signalEndpoint: string | undefined): string {
+  if (exporterChoice && exporterChoice !== 'otlp') {
+    return exporterChoice;
+  }
+  return (
+    signalEndpoint
+    ?? process.env.OTEL_EXPORTER_OTLP_ENDPOINT
+    ?? (exporterChoice ? 'otlp (default endpoint)' : 'console')
+  );
+}
 
 type OtelSdk = { shutdown: () => Promise<void> };
 
@@ -127,18 +147,19 @@ export async function startTelemetry(): Promise<void> {
     logger.info(
       {
         serviceName,
-        // Per-signal resolution mirrors the guards above: signal-specific
-        // endpoint, general endpoint, explicit exporter choice, else console.
-        tracesDestination:
-          process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
-          ?? process.env.OTEL_EXPORTER_OTLP_ENDPOINT
-          ?? process.env.OTEL_TRACES_EXPORTER
-          ?? 'console',
-        metricsDestination:
-          process.env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT
-          ?? process.env.OTEL_EXPORTER_OTLP_ENDPOINT
-          ?? process.env.OTEL_METRICS_EXPORTER
-          ?? 'console',
+        // Per-signal resolution matches sdk-node's own precedence: an
+        // explicit exporter choice decides WHICH exporter runs (endpoints
+        // only matter when that resolves to otlp), so consult it FIRST —
+        // an endpoint-first chain would log a collector URL for a signal
+        // the operator disabled with '=none' (review r4).
+        tracesDestination: resolveSignalDestination(
+          process.env.OTEL_TRACES_EXPORTER,
+          process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT,
+        ),
+        metricsDestination: resolveSignalDestination(
+          process.env.OTEL_METRICS_EXPORTER,
+          process.env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT,
+        ),
       },
       'OpenTelemetry initialized',
     );
