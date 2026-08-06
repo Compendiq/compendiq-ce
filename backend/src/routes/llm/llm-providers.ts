@@ -24,6 +24,7 @@ import {
   SsrfError,
 } from '../../core/utils/ssrf-guard.js';
 import { getRateLimits } from '../../core/services/rate-limit-service.js';
+import { getShadowMigrationState } from '../../domains/llm/services/shadow-migration-service.js';
 import { query } from '../../core/db/postgres.js';
 
 /**
@@ -69,6 +70,26 @@ const ADMIN_RATE_LIMIT = {
 };
 
 const IdParamsSchema = z.object({ id: z.string().uuid() });
+
+
+/**
+ * #1116 review r2: while a shadow migration runs, the LIVE embedding model is
+ * migration state. The explicit assignment row is pinned by
+ * PUT /admin/llm-usecases — but when the embedding use case INHERITS the
+ * default provider (row absent or provider NULL), repointing the default via
+ * set-default or a defaultModel patch changes the live model just the same.
+ * True exactly when a migration exists AND embedding resolves via default.
+ */
+async function embeddingInheritsDefaultDuringMigration(): Promise<boolean> {
+  if ((await getShadowMigrationState()) === null) return false;
+  const r = await query<{ provider_id: string | null }>(
+    `SELECT provider_id FROM llm_usecase_assignments WHERE usecase = 'embedding'`,
+  );
+  return !r.rows[0] || r.rows[0].provider_id === null;
+}
+
+const EMBEDDING_PINNED_MSG =
+  'A shadow embedding migration is in progress and the embedding use case inherits the default provider — changing the default would repoint the live embedding model mid-migration. Assign the embedding use case explicitly or finish the migration first (#1116).';
 
 export async function llmProviderRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
@@ -151,6 +172,12 @@ export async function llmProviderRoutes(fastify: FastifyInstance) {
     async (request, reply) => {
       const { id } = IdParamsSchema.parse(request.params);
       const patch = LlmProviderUpdateSchema.parse(request.body);
+      if (
+        Object.prototype.hasOwnProperty.call(patch, 'defaultModel')
+        && (await embeddingInheritsDefaultDuringMigration())
+      ) {
+        return reply.code(409).send({ error: EMBEDDING_PINNED_MSG, statusCode: 409 });
+      }
       // Capture the previous baseUrl BEFORE we mutate state so a baseUrl
       // change can revoke the OLD origin's allowlist entry once it's no
       // longer referenced (mirrors the Confluence flow on URL replace).
@@ -234,6 +261,9 @@ export async function llmProviderRoutes(fastify: FastifyInstance) {
     { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT },
     async (request, reply) => {
       const { id } = IdParamsSchema.parse(request.params);
+      if (await embeddingInheritsDefaultDuringMigration()) {
+        return reply.code(409).send({ error: EMBEDDING_PINNED_MSG, statusCode: 409 });
+      }
       try {
         await setDefaultProvider(id);
       } catch {

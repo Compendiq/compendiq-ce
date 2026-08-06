@@ -9,6 +9,7 @@ import {
   rerunShadowBackfill,
 } from '../../domains/llm/services/shadow-migration-service.js';
 import { getRateLimits } from '../../core/services/rate-limit-service.js';
+import { LlmHttpError } from '../../domains/llm/services/llm-http-error.js';
 
 const ADMIN_RATE_LIMIT = {
   config: {
@@ -55,6 +56,16 @@ export async function llmEmbeddingShadowRoutes(fastify: FastifyInstance) {
       try {
         return await startShadowMigration(body);
       } catch (err) {
+        // The probe is the most likely admin-facing failure (wrong model
+        // picked, provider down, expired key) — a masked 500 hides the one
+        // thing they can act on (review r2). LlmHttpError messages are
+        // body-free per #1185, safe to echo to an admin.
+        if (err instanceof LlmHttpError) {
+          return reply.code(502).send({
+            error: `Probing "${body.model}" against the provider failed: ${err.message}`,
+            statusCode: 502,
+          });
+        }
         const mapped = mapError(err);
         if (mapped) return reply.code(mapped.statusCode).send({ error: mapped.message, statusCode: mapped.statusCode });
         throw err;

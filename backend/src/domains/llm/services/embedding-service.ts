@@ -482,12 +482,17 @@ export async function embedPage(
   const client = await getPool().connect();
   try {
     await client.query('BEGIN');
-    // Schema-epoch recheck (review r1): the vectors above were generated
-    // against the models and columns of one migration epoch. If a swap,
-    // revert or abort committed since the snapshot, writing them now would
-    // put wrong-model vectors into the renamed columns (silently, when the
-    // dimensions happen to match) or hit vanished columns. Abort this embed
-    // and re-queue the page — the retry resolves everything freshly.
+    await client.query('DELETE FROM page_embeddings WHERE page_id = $1', [pageId]);
+    // Schema-epoch recheck (review r1+r2): the vectors above were generated
+    // against the models and columns of one migration epoch. The recheck runs
+    // AFTER the DELETE on purpose — the DELETE's ROW EXCLUSIVE lock conflicts
+    // with the migration DDL's ACCESS EXCLUSIVE, so by the time it returns,
+    // any swap/revert/abort either committed BEFORE our lock grant (and this
+    // read sees its new epoch → we abort) or is queued BEHIND this
+    // transaction and cannot change the schema before we COMMIT. Rechecking
+    // before the DELETE held no conflicting lock, so a DDL transaction
+    // holding the table lock was invisible and its rename landed between the
+    // recheck and the write (review r2).
     const epochNow = await shadowEpochFromClient(client);
     if (epochNow !== epochBefore) {
       await client.query('ROLLBACK');
@@ -501,7 +506,6 @@ export async function embedPage(
       );
       return 0;
     }
-    await client.query('DELETE FROM page_embeddings WHERE page_id = $1', [pageId]);
 
     // Batch insert embeddings (50 rows per INSERT) instead of one-at-a-time.
     // 6 params per row x 50 = 300, well within PostgreSQL's 65535 parameter

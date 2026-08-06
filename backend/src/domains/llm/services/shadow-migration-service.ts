@@ -534,7 +534,21 @@ export async function performShadowSwap(opts?: {
       await client.query(`ALTER INDEX IF EXISTS idx_pages_page_avg_embedding_hnsw RENAME TO idx_pages_page_avg_embedding_hnsw_prev`);
       await client.query(`ALTER INDEX IF EXISTS idx_pages_page_avg_embedding_hnsw_next RENAME TO idx_pages_page_avg_embedding_hnsw`);
 
-      const state = (await getShadowMigrationState())!;
+      // Re-read the state through THIS transaction's client and refuse any
+      // status but 'active' (review r2): a concurrent abort flips the row to
+      // 'aborting', and blindly spreading it into 'swapped' below would let
+      // the queued abort later erase the swap's state row — new model live,
+      // prev columns stranded, lifecycle wedged.
+      const stateRows = await client.query(
+        `SELECT setting_value FROM admin_settings WHERE setting_key = '${SHADOW_MIGRATION_STATE_KEY}'`,
+      );
+      const rawState = (stateRows.rows[0] as { setting_value?: string } | undefined)?.setting_value;
+      const state = rawState ? (JSON.parse(rawState) as ShadowMigrationState) : null;
+      if (!state || state.status !== 'active') {
+        throw new Error(
+          `Migration state changed mid-swap (now ${state?.status ?? 'absent'}) — swap refused`,
+        );
+      }
       await client.query(
         `INSERT INTO llm_usecase_assignments (usecase, provider_id, model, updated_at)
          VALUES ('embedding', $1, $2, NOW())
@@ -576,11 +590,36 @@ export async function rollbackShadowMigration(opts?: {
     // bounded-lock transaction (they take ACCESS EXCLUSIVE, the same hazard
     // the swap guards against).
     if (state.status === 'active') {
-      await saveState({ ...state, status: 'aborting' });
+      // Compare-and-set (review r2): a blind upsert could land AFTER a
+      // concurrently-committing swap and overwrite its 'swapped' row. Flip
+      // only if the row still says 'active'; otherwise re-route below.
+      const cas = await query(
+        `UPDATE admin_settings SET setting_value = $2, updated_at = NOW()
+         WHERE setting_key = $1 AND setting_value::jsonb->>'status' = 'active'`,
+        [SHADOW_MIGRATION_STATE_KEY, JSON.stringify({ ...state, status: 'aborting' })],
+      );
+      if ((cas as unknown as { rowCount?: number }).rowCount === 0) {
+        const now = await getShadowMigrationState();
+        if (now?.status === 'swapped') {
+          throw new Error('The swap completed while the abort was queued — use rollback to revert it, or cleanup to keep it');
+        }
+        if (!now) return 'aborted'; // someone else already finished the abort
+      }
     }
     await withLockRetry(
       { lockTimeoutMs: opts?.lockTimeoutMs ?? 5000, maxAttempts: opts?.maxAttempts ?? 5 },
       async (client) => {
+        // Re-verify through THIS transaction (review r2): the drops are
+        // IF EXISTS and would silently no-op against a post-swap schema,
+        // after which the DELETE below would erase the swap's state row.
+        const rows = await client.query(
+          `SELECT setting_value FROM admin_settings WHERE setting_key = '${SHADOW_MIGRATION_STATE_KEY}'`,
+        );
+        const raw = (rows.rows[0] as { setting_value?: string } | undefined)?.setting_value;
+        const current = raw ? (JSON.parse(raw) as ShadowMigrationState) : null;
+        if (current && current.status !== 'aborting') {
+          throw new Error(`Migration state changed mid-abort (now ${current.status}) — abort refused`);
+        }
         await client.query(`DROP INDEX IF EXISTS idx_page_embeddings_hnsw_next`);
         await client.query(`DROP INDEX IF EXISTS idx_pages_page_avg_embedding_hnsw_next`);
         await client.query(`ALTER TABLE page_embeddings DROP COLUMN IF EXISTS embedding_next`);
@@ -697,6 +736,13 @@ export async function rerunShadowBackfill(): Promise<{ jobId: string }> {
   const state = await getShadowMigrationState();
   if (!state || state.status !== 'active') {
     throw new Error('No active shadow migration — nothing to backfill');
+  }
+  // BullMQ silently ignores an add under a fixed jobId while that job is
+  // queued or running — the admin would get a success toast and nothing
+  // would happen (review r2). Refuse honestly instead.
+  const running = await getJobStatus(SHADOW_JOB_QUEUE, SHADOW_JOB_QUEUE);
+  if (running && ['active', 'waiting', 'delayed'].includes(running.state ?? '')) {
+    throw new Error('The backfill job is still running or queued — wait for it to finish before re-running');
   }
   const retention = await getReembedHistoryRetention();
   const jobId = await enqueueJob(

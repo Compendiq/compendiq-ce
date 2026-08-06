@@ -368,6 +368,15 @@ describe.skipIf(!dbAvailable)('#1116 shadow migration service', () => {
       await expect(rerunShadowBackfill()).rejects.toThrow(/no active/i);
     });
 
+    it('rerunShadowBackfill refuses while the job is still queued — BullMQ would silently dedupe (review r2)', async () => {
+      await seedEmbeddedPage('Doc A');
+      await startShadowMigration({ providerId: shadowProviderId, model: SHADOW_MODEL });
+      getJobStatusMock.mockImplementation(async (queueName?: string) =>
+        queueName === 'shadow-reembed' ? { state: 'active' } : null,
+      );
+      await expect(rerunShadowBackfill()).rejects.toThrow(/still running|still queued/i);
+    });
+
     it('reports stragglers until every row is shadow-embedded', async () => {
       await seedEmbeddedPage('Doc A');
       await startShadowMigration({ providerId: shadowProviderId, model: SHADOW_MODEL });
@@ -504,6 +513,41 @@ describe.skipIf(!dbAvailable)('#1116 shadow migration service', () => {
       await startShadowMigration({ providerId: shadowProviderId, model: SHADOW_MODEL });
       await expect(performShadowSwap()).rejects.toThrow(/straggler|not ready/i);
     });
+
+    it("a state flip landing during the swap's lock wait is caught by the in-lock recheck (review r2)", async () => {
+      // The concurrent-abort interleaving the OUTER status check cannot see:
+      // the abort's CAS lands while the swap is already queued on the table
+      // lock. Without the in-lock re-read the swap would spread 'aborting'
+      // into 'swapped' and the queued abort would later erase the swap's
+      // state row — new model live, prev columns stranded, lifecycle wedged.
+      await readyMigration();
+      const blocker = await getPool().connect();
+      try {
+        await blocker.query('BEGIN');
+        await blocker.query('SELECT 1 FROM page_embeddings LIMIT 1'); // ACCESS SHARE queues the AEL
+
+        const swapPromise = performShadowSwap({ lockTimeoutMs: 3000, maxAttempts: 2 }).then(
+          () => 'swapped' as const,
+          (e: unknown) => e as Error,
+        );
+        // Give the swap time to pass its outer check and block on LOCK TABLE.
+        await new Promise((r) => setTimeout(r, 300));
+        const state = await getShadowMigrationState();
+        await query(
+          `UPDATE admin_settings SET setting_value = $1 WHERE setting_key = 'embedding_shadow_migration'`,
+          [JSON.stringify({ ...state, status: 'aborting' })],
+        );
+        await blocker.query('ROLLBACK'); // lock granted to the swap now
+
+        const result = await swapPromise;
+        expect(result).toBeInstanceOf(Error);
+        expect((result as Error).message).toMatch(/changed mid-swap/i);
+        expect((await columnInfo('page_embeddings', 'embedding'))!.udt).toBe('vector(1024)');
+      } finally {
+        await blocker.query('ROLLBACK').catch(() => {});
+        blocker.release();
+      }
+    }, 20_000);
 
     it('refuses while the shadow index is missing, even with zero stragglers', async () => {
       // The in-lock recheck only counts stragglers — index readiness is the

@@ -30,6 +30,7 @@ vi.mock('../../core/services/rate-limit-service.js', () => ({
 }));
 
 const { llmEmbeddingShadowRoutes } = await import('./llm-embedding-shadow.js');
+const { LlmHttpError } = await import('../../domains/llm/services/llm-http-error.js');
 
 let isAdmin = true;
 
@@ -119,6 +120,19 @@ describe('#1116 shadow-migration routes', () => {
       payload: { providerId: '2c0c8a92-98a8-4f8c-a6a1-000000000001', model: 'm' },
     });
     expect(res.statusCode).toBe(422);
+  });
+
+  it('start: a probe failure answers 502 with an admin-actionable message, not a masked 500 (review r2)', async () => {
+    svc.start.mockRejectedValue(new LlmHttpError('generateEmbedding', 401, 'unauthorized body'));
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/embedding/shadow-migration',
+      payload: { providerId: '2c0c8a92-98a8-4f8c-a6a1-000000000001', model: 'typo-model' },
+    });
+    expect(res.statusCode).toBe(502);
+    expect(res.json().error).toContain('typo-model');
+    // The provider's raw body must stay out of the response (#1185 policy).
+    expect(JSON.stringify(res.json())).not.toContain('unauthorized body');
   });
 
   it('status: returns the live status, or active:false when none', async () => {
