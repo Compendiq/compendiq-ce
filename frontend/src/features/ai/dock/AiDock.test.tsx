@@ -13,7 +13,6 @@ import { LazyMotion, domAnimation } from 'framer-motion';
 import { AiProvider } from '../AiContext';
 import { DockPanel } from './DockPanel';
 import { useAiDockStore } from '../../../stores/ai-dock-store';
-import { useUiStore } from '../../../stores/ui-store';
 
 Element.prototype.scrollIntoView = vi.fn();
 
@@ -96,7 +95,6 @@ describe('AiDock (#1126)', () => {
     vi.clearAllMocks();
     modelsFail = false;
     useAiDockStore.setState({ open: false });
-    useUiStore.setState({ aiDockWidth: 420 });
     window.innerWidth = 1400;
     apiFetchMock.mockImplementation((path: string) => {
       if (path === '/pages/page-1') return Promise.resolve(PAGE);

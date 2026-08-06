@@ -26,7 +26,7 @@ import { Logo } from '../Logo';
 import { ThemeToggle } from './ThemeToggle';
 import { PageTransition } from './PageTransition';
 import { LayoutPresetMenu, type LayoutPreset } from './LayoutPresetMenu';
-import { useMediaQuery } from '../../hooks/use-media-query';
+import { useMediaQuery, useIsMobileLayout } from '../../hooks/use-media-query';
 import { cn } from '../../lib/cn';
 
 export function AppLayout({ children }: { children: ReactNode }) {
@@ -57,6 +57,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const previousLayoutPathRef = useRef(location.pathname);
   const isArticleRoute = /^\/pages\/[^/]+$/.test(location.pathname);
   const isInspectorCompactLayout = useMediaQuery('(min-width: 768px) and (max-width: 1439px)');
+  const isMobileLayout = useIsMobileLayout();
   // On /settings* we swap the Pages tree for a Settings-specific sidebar so
   // the main nav (Pages / AI / Graph) stays accessible — otherwise users land
   // in Settings with no in-rail path back to the rest of the app, since the
@@ -103,8 +104,13 @@ export function AppLayout({ children }: { children: ReactNode }) {
       return;
     }
 
+    // The AI preset. `setArticleSidebarCollapsed(true)` here was correct when
+    // the assistant was its own column and the inspector had to step aside for
+    // it; now the assistant IS a tab in that inspector, so collapsing it hid
+    // the very thing the preset asks for. The effect below turns `openDock()`
+    // into the tab selection on every layout that has an inspector.
     setTreeSidebarCollapsed(false);
-    setArticleSidebarCollapsed(true);
+    setArticleSidebarCollapsed(false);
     openDock();
     setMidWidthTreeExpandedOverride(false);
   }, [
@@ -113,6 +119,41 @@ export function AppLayout({ children }: { children: ReactNode }) {
     requestInspectorView,
     setArticleSidebarCollapsed,
     setTreeSidebarCollapsed,
+  ]);
+
+  // "Show me the assistant" is raised as `openDock()` from three places: Alt+I
+  // in PageViewPage, the AI layout preset above, and the inspector's own rail
+  // button. Below `md` that still means the bottom sheet, which is all `AiDock`
+  // renders now.
+  //
+  // At `md` and above it can no longer mean "open the dock", because there is
+  // no dock: the assistant became a tab inside the inspector and `AiDock`
+  // returns null. Left unhandled the flag did real damage — `ArticleRightPane`
+  // ORs it into its own `collapsed`, so at >=1100px Alt+I collapsed the
+  // inspector to a 40px rail, and between 768 and 1099px the pane's
+  // `dockOpen && !dockLayoutIsWide` guard removed the right side of the screen
+  // outright. The keystroke destroyed the panel it was supposed to open.
+  //
+  // So the intent is consumed here and re-expressed as what it now means:
+  // show the inspector, select Assistant. Lowering the flag immediately keeps
+  // `open` meaning exactly one thing again — "the mobile sheet is up" — rather
+  // than a second, contradictory desktop state that every consumer would have
+  // to special-case.
+  // Gated on `isArticleRoute` as well: the inspector exists only there, so off
+  // an article route there is no tab to select and consuming the flag would
+  // just stomp the user's saved pane preference on an unrelated page.
+  useEffect(() => {
+    if (!dockOpen || isMobileLayout || !isArticleRoute) return;
+    setArticleSidebarCollapsed(false);
+    requestInspectorView('assistant');
+    closeDock();
+  }, [
+    closeDock,
+    dockOpen,
+    isArticleRoute,
+    isMobileLayout,
+    requestInspectorView,
+    setArticleSidebarCollapsed,
   ]);
 
   // At intermediate desktop widths, an expanded inspector temporarily turns

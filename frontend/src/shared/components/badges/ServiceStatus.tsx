@@ -143,7 +143,7 @@ export function ServiceStatus() {
               // loudest thing on every screen at 14px against 13px everywhere
               // else. Now the STATUS COLOUR marks the condition (icon + border)
               // and nothing else: the label is ordinary foreground text, and the
-              // action takes the accent, because indigo is what "operable" means
+              // action takes the accent, because teal is what "operable" means
               // in this system. Three colours, three distinct jobs.
               //
               // `flex-wrap` + `gap-y`: at 390px the label and its link used to

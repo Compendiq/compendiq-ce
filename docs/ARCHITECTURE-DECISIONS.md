@@ -684,13 +684,20 @@ the mandatory 1px border on every operable surface for WCAG 1.4.11 and
 no shadow left to fall back on.
 
 - **Themes.** `slate-steel` → **`graphite`** (dark, `#0d0e11`); `frost-steel` →
-  **`paper`** (light, `#f7f7f8`). Both are neutral. Retired IDs migrate on read
+  **`paper`** (light, `#fbfbfc`). Both are neutral. Retired IDs migrate on read
   in `validateThemeId` *and* the `index.html` FOUC script, preserving brightness
   so a light-theme user does not flash dark before React mounts.
-- **Accent.** Steel → **indigo** (`#8b93f8` dark / `#4a55c9` light), still the
+- **Accent.** Steel → **teal** (`#4dd0e1` dark / `#0e7490` light), still the
   single brand *and* interaction colour. Amber stays warning-only; violet stays
   AI. The v0.5 rule that an AI-labelled *control* takes the interaction accent
   (not violet) is unchanged.
+
+  The two values are not one hue at two lightnesses. Dark carries a bright
+  cyan-teal because it has to clear 4.5:1 against `#16181d`; Paper carries a
+  deep teal because that same bright value measures under 2:1 on white. An
+  indigo was trialled first and swapped for teal on owner preference; the
+  ratios are computed from the tokens in `workspace-themes.test.ts`, so a
+  retune of either fails with the measured number rather than a hex diff.
 - **Depth is a value step plus a hairline.** The two-light-source extrusion
   recipe is gone. `--nm-shadow-*` / `--nm-highlight-*` remain declared but
   resolve to `transparent`, so a missed callsite renders flat rather than

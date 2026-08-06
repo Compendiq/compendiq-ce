@@ -24,7 +24,7 @@ flowchart TB
         fAuth["auth/<br/>OidcCallbackPage (EE route)"]
         fPages["pages/<br/>list · view · new · trash · pinned<br/>bulk actions · 404 catch-all<br/>RelocateDialog (#1123)"]
         fSpaces["spaces/<br/>settings · new"]
-        fAI["ai/<br/>AiAssistantPage (/ai — no-document home)<br/>dock/ AiDock · DockPanel · AiDockSheet · DockDiffCard (#1126)<br/>column beside /pages/:id, sheet over it below md"]
+        fAI["ai/<br/>AiAssistantPage (/ai — no-document home)<br/>dock/ AiDock · DockPanel · AiDockSheet · DockDiffCard (#1126)<br/>tab inside ArticleRightPane, sheet over the article below md"]
         fGraph["graph/"]
         fSettings["settings/<br/>LoginPage · user + admin"]
         fAdmin["admin/<br/>LicenseStatusCard<br/>OidcSettingsPage (EE-gated)<br/>analytics/ (AnalyticsPage)"]
@@ -67,25 +67,43 @@ flowchart TB
 
 ## Article route panels (#1126)
 
-On `/pages/:id` the shell renders three siblings in one flex row, so each
+On `/pages/:id` the shell renders **two** siblings in one flex row, so each
 panel scrolls independently and the editor column shrinks around them rather
 than having anything float above it.
 
 ```mermaid
 flowchart LR
     main["main<br/>[data-scroll-container]<br/>PageViewPage · TipTap"]
-    rail["ArticleRightPane<br/>280px pane ⇄ 40px rail<br/>outline flyout on hover/focus"]
-    dock["AiDock<br/>~420px, resizable<br/>chips + composer + inline diff"]
+    rail["ArticleRightPane<br/>280px pane ⇄ 40px rail<br/>tabs: Assistant · Outline · Details<br/>outline flyout on hover/focus"]
 
-    main --- rail --- dock
+    main --- rail
 ```
 
-- Opening the dock **ORs** the pane into its rail; it never writes the user's
-  persisted `articleSidebarCollapsed`. `.` closes the dock while it is open,
-  so the key is never dead.
-- Below `min-width: 1100px` (`useIsDockWideLayout`) the rail is not rendered
-  and the dock is capped narrower. That query and `useIsMobileLayout` below are
-  the app's only JS *width* queries — `use-can-hover` and three one-shot checks
+- **The assistant is a tab, not a third column.** #1126 shipped it as its own
+  column beside `ArticleRightPane`; on a 1440px screen that drew three vertical
+  rules across the window and squeezed the article — the thing the route exists
+  for — between two slabs of chrome. It is now the first of three tabs inside
+  the inspector, switching instantly like Outline and Details. One right-hand
+  edge, one interaction to learn. `AiDock` still exists but renders the mobile
+  sheet or nothing: `return mobile ? <AiDockSheet /> : null`.
+- The tab choice is **local `useState`** in `ArticleRightPane`, not a store: it
+  is a per-visit view, and persisting it would open pages onto an AI panel
+  nobody asked for. It defaults to Outline, or Details when the page has no
+  headings.
+- **"Show me the assistant" is consumed by `AppLayout`.** `openDock()` is still
+  what Alt+I, the AI layout preset and the inspector's rail button raise. Below
+  `md` that opens the sheet. On an article route at `md` and up there is no
+  dock, so an effect turns it into `requestInspectorView('assistant')` plus an
+  expand, and lowers the flag in the same tick — `open` keeps meaning exactly
+  "the mobile sheet is up". Skipping that step is not a no-op: `ArticleRightPane`
+  ORs `open` into its own `collapsed`, so an unconsumed flag collapsed the
+  inspector to a rail at ≥1100px and made the right side vanish entirely
+  between 768 and 1099px, i.e. the keystroke destroyed the panel it was meant
+  to open. Guarded across all four widths in `AppLayout.test.tsx`.
+- `.` closes the sheet while it is open, so the key is never dead; at `md` and
+  up it plainly toggles the pane.
+- `useIsDockWideLayout` (`min-width: 1100px`) and `useIsMobileLayout` are the
+  app's only JS *width* queries — `use-can-hover` and three one-shot checks
   read `matchMedia` for pointer and motion capability, but every other
   responsive layout decision is a Tailwind class.
 - Below `md` (`useIsMobileLayout`) there is no right side to dock into, so
@@ -94,7 +112,7 @@ flowchart LR
   already becomes a slide-over there. Two detents (52% / 92% of the viewport),
   dragged with a hand-rolled Pointer Events handler because the app's
   `LazyMotion features={domAnimation}` excludes framer's `drag` feature bundle.
-  Unlike the column, the sheet **is** modal — backdrop, `aria-modal`, Tab trap
+  Unlike the inspector tab, the sheet **is** modal — backdrop, `aria-modal`, Tab trap
   — because it occludes the document rather than sitting beside it.
 - `Apply` on a proposed change goes through **`POST /llm/improvements/apply`**,
   not a client-side write into the editor. That route runs `protectMedia` /
@@ -261,10 +279,10 @@ the backend side.
 ## Styling
 
 - **TailwindCSS 4** with CSS variables for theming. Two themes ship —
-  **Graphite** (dark, `#0d0e11`) and **Paper** (light, `#f7f7f8`) — a neutral
-  flat system carrying one indigo accent (`#8b93f8` / `#4a55c9`) as the single
+  **Graphite** (dark, `#0d0e11`) and **Paper** (light, `#fbfbfc`) — a neutral
+  flat system carrying one teal accent (`#4dd0e1` / `#0e7490`) as the single
   brand and interaction colour, amber reserved for warning/attention, and
-  violet for AI ornament (operable things stay indigo). Surfaces are **flat
+  violet for AI ornament (operable things stay teal). Surfaces are **flat
   colours**: `--surface-backdrop`, `--surface-card` and
   `--surface-card-elevated` are plain values, so a `hover:bg-*` utility
   composes normally — the gradient-as-background-image trap of the previous

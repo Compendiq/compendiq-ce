@@ -144,7 +144,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
 @theme {
   /* Default theme: Graphite — the dark half of Compendiq's workspace system.
 
-     A neutral graphite chassis carrying one indigo accent. Surfaces are FLAT:
+     A neutral graphite chassis carrying one teal accent. Surfaces are FLAT:
      a pane is distinguished from its chassis by a value step and a 1px
      hairline, never by extrusion, gradient or glow. That is the whole depth
      model, and it is what makes ~20 routes of dense list, form and document
@@ -162,7 +162,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   --color-card: #16181d;                /* content pane, one value step up */
   --color-card-foreground: #eceef2;
   --color-card-elevated: #1e2027;       /* popovers, dialogs, raised panes */
-  /* Indigo — the single brand AND interaction accent: brand mark, primary
+  /* Teal — the single brand AND interaction accent: brand mark, primary
      buttons, links, active nav, focus ring. One hue carries both identity and
      every actionable affordance, so "is this clickable?" never depends on
      telling two similar accents apart. */
@@ -171,11 +171,11 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   --color-primary-gradient-start: #4dd0e1;
   --color-primary-gradient-end: #4dd0e1; /* flat: the canon has no gradient fills */
   --color-primary-glow: rgba(77, 208, 225, 0.26);
-  /* Indigo clears AA as text on every dark surface unaided, so ink and fill
+  /* Teal clears AA as text on every dark surface unaided, so ink and fill
      are the same value here (the light theme needs a darkened sibling). */
   --color-primary-ink: #4dd0e1;
   /* Action ink — the neutral affordance for non-accent buttons: light fill,
-     dark text. Leaves indigo free to mean "primary action". */
+     dark text. Leaves teal free to mean "primary action". */
   --color-action: #eceef2;             /* matches --color-foreground */
   --color-action-foreground: #0d0e11;
   --color-action-hover: #ffffff;
@@ -207,7 +207,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   /* Amber is NOT the brand here — it is reserved for warning and attention,
      which is what makes it readable as a signal when it appears. */
   --color-warning: #fbbf24;
-  /* Deliberately the same value as --color-primary: indigo is the system's one
+  /* Deliberately the same value as --color-primary: teal is the system's one
      accent, so "informational" and "interactive" share a hue. Keep info for
      passive notices only — an info-coloured element that is NOT clickable is
      fine, but never use it to mark something that is. */
@@ -438,7 +438,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      keep --color-primary for fills (buttons, pills, borders). */
   --color-primary-ink: #0b6378;
   /* Action ink — the neutral affordance for non-accent buttons. Deep ink on
-     paper, mirroring dark's inverted pair; leaves indigo free for "primary". */
+     paper, mirroring dark's inverted pair; leaves teal free for "primary". */
   --color-action: #17181a;             /* matches --color-foreground */
   --color-action-foreground: #ffffff;
   --color-action-hover: #2a2c30;
@@ -923,7 +923,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      the primary's box metrics. It was a 1.5px outline over transparent, which
      at this density reads heavier than the primary it sits beside. Hover
      fills rather than turning the whole control accent-coloured — a secondary
-     action that goes indigo on hover competes with the primary next to it. */
+     action that goes teal on hover competes with the primary next to it. */
   padding: 0.375rem 0.75rem;
   border-radius: var(--radius-md);
   border: 1px solid var(--color-border-interactive);

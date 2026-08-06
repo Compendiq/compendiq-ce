@@ -557,6 +557,11 @@ describe('AppLayout', () => {
     }
 
     it('closes the dock rather than leaving the key dead', () => {
+      // Below `md`, where the dock is the bottom sheet and genuinely holds the
+      // screen. At `md` and up this scenario no longer exists: the assistant is
+      // a tab, so AppLayout consumes `open` on an article route the moment it
+      // is raised and `.` goes back to plainly toggling the pane.
+      window.innerWidth = 500;
       useAiDockStore.setState({ open: true });
       const dotShortcut = captureShortcuts('/pages/page-1');
 
@@ -711,6 +716,77 @@ describe('AppLayout', () => {
         expect(aiRequests(wokenSpy).length).toBeGreaterThan(0);
       });
       wokenSpy.mockRestore();
+    });
+  });
+
+  describe('"show me the assistant" on a layout with no dock', () => {
+    /**
+     * `openDock()` is raised by Alt+I, by the AI layout preset and by the
+     * inspector's rail button. It used to open a third column; the assistant is
+     * a tab in `ArticleRightPane` now and `AiDock` renders only the mobile
+     * sheet, so on every layout at `md` and up the flag has to be consumed and
+     * re-expressed as a tab request.
+     *
+     * Left unconsumed it did not merely no-op. `ArticleRightPane` ORs `open`
+     * into its own `collapsed`, so at >=1100px the keystroke collapsed the
+     * inspector to a rail, and between 768 and 1099px the pane's
+     * `dockOpen && !dockLayoutIsWide` guard returned null and the right side of
+     * the screen disappeared. Measured in a real browser at 1440/1200/900/800
+     * before the fix; these cells are the standing guard.
+     */
+    beforeEach(() => {
+      useAiDockStore.setState({ open: false });
+      useUiStore.setState({ articleSidebarCollapsed: false });
+    });
+
+    it.each([1440, 1200, 900, 800])(
+      'at %ipx it selects the Assistant tab and lowers the flag',
+      async (width) => {
+        window.innerWidth = width;
+        render(<AppLayout>content</AppLayout>, { wrapper: createWrapper('/pages/abc') });
+
+        act(() => {
+          useAiDockStore.getState().openDock();
+        });
+
+        await waitFor(() => {
+          expect(screen.getByTestId('article-right-pane')).toHaveAttribute(
+            'data-inspector-view',
+            'assistant',
+          );
+        });
+        // Consumed, not left standing: `open` means "the mobile sheet is up"
+        // and nothing else, so no other consumer has to special-case a second
+        // desktop meaning.
+        expect(useAiDockStore.getState().open).toBe(false);
+      },
+    );
+
+    it('expands a collapsed inspector rather than asking a rail to show a tab', async () => {
+      window.innerWidth = 1440;
+      useUiStore.setState({ articleSidebarCollapsed: true });
+      render(<AppLayout>content</AppLayout>, { wrapper: createWrapper('/pages/abc') });
+
+      act(() => {
+        useAiDockStore.getState().openDock();
+      });
+
+      await waitFor(() => {
+        expect(useUiStore.getState().articleSidebarCollapsed).toBe(false);
+      });
+    });
+
+    it('below md the flag is left alone — that is the mobile sheet', async () => {
+      window.innerWidth = 500;
+      render(<AppLayout>content</AppLayout>, { wrapper: createWrapper('/pages/abc') });
+
+      act(() => {
+        useAiDockStore.getState().openDock();
+      });
+
+      await waitFor(() => {
+        expect(useAiDockStore.getState().open).toBe(true);
+      });
     });
   });
 });

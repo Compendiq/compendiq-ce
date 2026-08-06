@@ -633,7 +633,7 @@ export function PagesPage() {
                 unstated. A saturated icon-only square is a worse affordance than
                 a quiet one. */}
             <span>New Page</span>
-            {/* Full-opacity ink. At /80 on the indigo fill this chip became the
+            {/* Full-opacity ink. At /80 on the accent fill this chip became the
                 lowest-contrast text in the frame — the theme guard measures
                 `primary-foreground` on `primary`, but nothing measures a
                 translucent variant of it, so the alpha put 11px text somewhere

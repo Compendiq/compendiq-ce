@@ -16,9 +16,11 @@ import { AiDockSheet } from './AiDockSheet';
  * `hidden md:flex` — so the sheet is the assistant's only form on a phone,
  * mirroring the way the left sidebar becomes a slide-over there.
  *
- * The column's width preference (`aiDockWidth`), its resize handle and its
- * open/close spring went with it; inside the inspector the assistant inherits
- * that pane's own width and resize.
+ * The column's width preference, its resize handle and its open/close spring
+ * went with it; inside the inspector the assistant inherits that pane's own
+ * width and resize. `ui-store`'s `aiDockWidth` is deleted rather than left
+ * dormant — nothing read it any more, and a persisted key that only tests
+ * write is indistinguishable from one that still means something.
  */
 export function AiDock() {
   const mobile = useIsMobileLayout();
