@@ -82,8 +82,8 @@ const PageListItem = memo(function PageListItem({
     >
       <div
         className={cn(
-          'flex w-full items-center gap-3 rounded-xl border bg-card/70 p-4 text-left transition-colors hover:border-primary/45 hover:bg-card',
-          selected ? 'border-primary/50 bg-primary/[0.07]' : 'border-border/55',
+          'flex w-full items-center gap-3 rounded-xl border bg-card p-4 text-left transition-colors hover:border-primary/45 hover:bg-card',
+          selected ? 'border-primary/50 bg-primary/[0.07]' : 'border-border',
         )}
         data-testid={`article-hover-${pageItem.id}`}
       >
@@ -138,7 +138,7 @@ const PageListItem = memo(function PageListItem({
                 ) : (
                   // Private = neutral gray. Was amber, but privacy carries no AI semantic.
                   <span
-                    className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border/60 bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                    className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
                     data-testid="badge-private"
                     data-visibility-badge={pageItem.id}
                   >
@@ -572,7 +572,7 @@ export function PagesPage() {
         <div className="flex flex-wrap gap-2">
           <button
             onClick={() => navigate('/trash')}
-            className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm flex items-center gap-2 px-4 py-2 text-sm hover:bg-foreground/5"
+            className="rounded-xl border border-border bg-card flex items-center gap-2 px-4 py-2 text-sm hover:bg-foreground/5"
             data-testid="trash-link"
           >
             <Trash2 size={16} />
@@ -609,7 +609,7 @@ export function PagesPage() {
 
       {/* Sync progress */}
       {syncStatus?.status === 'syncing' && syncStatus.progress && (
-        <div className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm p-3">
+        <div className="rounded-xl border border-border bg-card p-3">
           <div className="flex items-center justify-between text-sm">
             <span>Syncing {syncStatus.progress.space}...</span>
             <span>{syncStatus.progress.current}/{syncStatus.progress.total}</span>
@@ -625,7 +625,7 @@ export function PagesPage() {
 
       {/* Embedding progress */}
       {embeddingStatusData?.isProcessing && (
-        <div className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm flex items-center gap-3 p-3 border border-primary/30" data-testid="embedding-progress-banner">
+        <div className="rounded-xl border border-border bg-card flex items-center gap-3 p-3 border border-primary/30" data-testid="embedding-progress-banner">
           <Loader2 size={16} className="animate-spin text-action" />
           <span className="text-sm">
             Embedding in progress — {embeddingStatusData.dirtyPages} pages remaining
@@ -648,7 +648,7 @@ export function PagesPage() {
       <PinnedArticlesSection />
 
       {/* Filters */}
-      <section aria-labelledby="kb-filters-heading" className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm space-y-3 p-4">
+      <section aria-labelledby="kb-filters-heading" className="rounded-xl border border-border bg-card space-y-3 p-4">
         <h2 id="kb-filters-heading" className="sr-only">Search and filter pages</h2>
         <div className="flex flex-wrap items-center gap-3">
           {/* Search */}
@@ -703,7 +703,7 @@ export function PagesPage() {
                     'rounded-full px-3 py-1 text-xs font-medium transition-all capitalize',
                     searchMode === m
                       ? 'bg-action text-action-foreground shadow-md shadow-action/25 ring-1 ring-action/50'
-                      : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10 border border-transparent hover:border-border/40',
+                      : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10 border border-transparent hover:border-border',
                   )}
                 >
                   {m}
@@ -779,7 +779,7 @@ export function PagesPage() {
 
         {/* Advanced filters panel */}
         {showAdvancedFilters && (
-          <div className="grid grid-cols-2 items-end gap-3 border-t border-border/40 pt-3 sm:grid-cols-3 lg:grid-cols-4" data-testid="advanced-filters-panel">
+          <div className="grid grid-cols-2 items-end gap-3 border-t border-border pt-3 sm:grid-cols-3 lg:grid-cols-4" data-testid="advanced-filters-panel">
             {/* Author filter */}
             <div className="min-w-40">
               <label htmlFor="filter-author-select" className="mb-1 block text-xs text-muted-foreground">Author</label>
@@ -912,7 +912,7 @@ export function PagesPage() {
         {activeFilters.length > 0 && (
           <div
             className={cn(
-              'flex flex-wrap items-center gap-2 border-t border-border/50 pt-3',
+              'flex flex-wrap items-center gap-2 border-t border-border pt-3',
               useSemanticSearch && 'opacity-50',
             )}
             data-testid="active-filter-pills"
@@ -972,7 +972,7 @@ export function PagesPage() {
       {/* Space home content (when enabled and a space is selected) */}
       {showHomeContent && !forcePageList ? (
         homePageLoading ? (
-          <div className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm h-96 animate-pulse" />
+          <div className="rounded-xl border border-border bg-card h-96 animate-pulse" />
         ) : homePage ? (
           <m.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-3">
             <div className="flex items-center justify-between">
@@ -980,13 +980,13 @@ export function PagesPage() {
               <div className="flex gap-2">
                 <button
                   onClick={() => navigate(`/pages/${homePage.id}`)}
-                  className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
+                  className="rounded-xl border border-border bg-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
                 >
                   <FileText size={14} /> View Full Page
                 </button>
                 <button
                   onClick={() => setForcePageList(true)}
-                  className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
+                  className="rounded-xl border border-border bg-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
                   data-testid="show-page-list"
                 >
                   <List size={14} /> Show All Pages
@@ -994,7 +994,7 @@ export function PagesPage() {
               </div>
             </div>
             <SanitizedHtml
-              className={`rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm prose max-w-none p-6${isLight ? '' : ' prose-invert'}`}
+              className={`rounded-xl border border-border bg-card prose max-w-none p-6${isLight ? '' : ' prose-invert'}`}
               html={homeBodyHtml}
               additionalAllowedAttrs={['data-diagram-name', 'data-drawio', 'data-color', 'data-layout-type', 'data-cell-width', 'data-border']}
             />
@@ -1010,7 +1010,7 @@ export function PagesPage() {
           {searchResults.isLoadingImmediate && searchResults.immediateResults.length === 0 ? (
             <div className="space-y-3">
               {Array.from({ length: 5 }).map((_, i) => (
-                <div key={i} className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm h-16 animate-pulse" />
+                <div key={i} className="rounded-xl border border-border bg-card h-16 animate-pulse" />
               ))}
             </div>
           ) : (() => {
@@ -1045,7 +1045,7 @@ export function PagesPage() {
                     >
                       <button
                         onClick={() => navigate(`/pages/${item.id}`)}
-                        className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm transition-all hover:border-primary/50 flex w-full items-center gap-3 p-4 text-left"
+                        className="rounded-xl border border-border bg-card transition-all hover:border-primary/50 flex w-full items-center gap-3 p-4 text-left"
                         data-testid={`article-hover-${item.id}`}
                       >
                         <FileText size={18} className="shrink-0 text-muted-foreground" />
@@ -1078,7 +1078,7 @@ export function PagesPage() {
                 onClick={() => setFilters({ page: Math.max(1, page - 1) })}
                 disabled={page <= 1}
                 aria-label="Previous page"
-                className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm p-2 disabled:opacity-30"
+                className="rounded-xl border border-border bg-card p-2 disabled:opacity-30"
               >
                 <ChevronLeft size={18} />
               </button>
@@ -1089,7 +1089,7 @@ export function PagesPage() {
                 onClick={() => setFilters({ page: Math.min(searchResults.totalPages, page + 1) })}
                 disabled={page >= searchResults.totalPages}
                 aria-label="Next page"
-                className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm p-2 disabled:opacity-30"
+                className="rounded-xl border border-border bg-card p-2 disabled:opacity-30"
               >
                 <ChevronRight size={18} />
               </button>
@@ -1102,7 +1102,7 @@ export function PagesPage() {
           {isLoading ? (
             <div className="space-y-3">
               {Array.from({ length: 5 }).map((_, i) => (
-                <div key={i} className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm h-16 animate-pulse" />
+                <div key={i} className="rounded-xl border border-border bg-card h-16 animate-pulse" />
               ))}
             </div>
           ) : pagesError && !pagesData ? (
@@ -1206,7 +1206,7 @@ export function PagesPage() {
                 onClick={() => setFilters({ page: Math.max(1, page - 1) })}
                 disabled={page <= 1}
                 aria-label="Previous page"
-                className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm p-2 disabled:opacity-30"
+                className="rounded-xl border border-border bg-card p-2 disabled:opacity-30"
               >
                 <ChevronLeft size={18} />
               </button>
@@ -1217,7 +1217,7 @@ export function PagesPage() {
                 onClick={() => setFilters({ page: Math.min(pagesData.totalPages, page + 1) })}
                 disabled={page >= pagesData.totalPages}
                 aria-label="Next page"
-                className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm p-2 disabled:opacity-30"
+                className="rounded-xl border border-border bg-card p-2 disabled:opacity-30"
               >
                 <ChevronRight size={18} />
               </button>

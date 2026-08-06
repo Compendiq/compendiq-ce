@@ -142,7 +142,7 @@ export function DockDiffCard({ onRerun }: { onRerun: (id: DockChipId) => void })
 
   return (
     <div className="nm-card overflow-hidden" data-testid="dock-diff-card">
-      <div className="flex items-baseline justify-between gap-3 border-b border-border/50 px-3 py-2">
+      <div className="flex items-baseline justify-between gap-3 border-b border-border px-3 py-2">
         <h3 className="text-sm font-medium text-foreground">Proposed changes</h3>
         <span className="shrink-0 font-mono text-xs tabular-nums">
           <span className="text-success">+{stats.additions}</span>{' '}
@@ -170,7 +170,7 @@ export function DockDiffCard({ onRerun }: { onRerun: (id: DockChipId) => void })
         <p
           data-testid="layout-token-loss-warning"
           role="alert"
-          className="border-t border-border/50 bg-warning/10 px-3 py-2 text-xs text-foreground"
+          className="border-t border-border bg-warning/10 px-3 py-2 text-xs text-foreground"
         >
           This response dropped the page’s column-layout markers, so applying will most likely be
           rejected. Run Improve again to retry.
@@ -181,14 +181,14 @@ export function DockDiffCard({ onRerun }: { onRerun: (id: DockChipId) => void })
         <p
           data-testid="dock-diff-apply-error"
           role="alert"
-          className="border-t border-border/50 bg-destructive/10 px-3 py-2 text-xs text-foreground"
+          className="border-t border-border bg-destructive/10 px-3 py-2 text-xs text-foreground"
         >
           {failure.message}
         </p>
       )}
 
       {moved && !failure && (
-        <p className="border-t border-border/50 bg-warning/10 px-3 py-2 text-xs text-foreground" data-testid="dock-diff-stale">
+        <p className="border-t border-border bg-warning/10 px-3 py-2 text-xs text-foreground" data-testid="dock-diff-stale">
           This page reached v{page.version} after these changes were proposed. Re-run Improve so it
           works from the current text.
         </p>
@@ -197,12 +197,12 @@ export function DockDiffCard({ onRerun }: { onRerun: (id: DockChipId) => void })
       {/* Apply rewrites the SAVED page, so an open editor would hold its own
           stale copy and overwrite the improvement on the next save. */}
       {editing && !rerunOnly && (
-        <p className="border-t border-border/50 px-3 py-2 text-xs text-muted-foreground" data-testid="dock-diff-editing">
+        <p className="border-t border-border px-3 py-2 text-xs text-muted-foreground" data-testid="dock-diff-editing">
           Applying updates the saved page. Save or cancel your edit first.
         </p>
       )}
 
-      <div className="flex items-center justify-end gap-2 border-t border-border/50 px-3 py-2.5">
+      <div className="flex items-center justify-end gap-2 border-t border-border px-3 py-2.5">
         <button
           type="button"
           onClick={() => setShowDiffView(false)}

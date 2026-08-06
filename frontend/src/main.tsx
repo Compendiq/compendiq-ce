@@ -39,7 +39,7 @@ function ThemedToaster() {
       richColors
       theme={isLightTheme(theme) ? 'light' : 'dark'}
       toastOptions={{
-        className: 'backdrop-blur-md bg-card/80 border border-border/50',
+        className: 'bg-card border border-border',
       }}
     />
   );

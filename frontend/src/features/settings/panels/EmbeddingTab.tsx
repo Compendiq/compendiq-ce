@@ -146,7 +146,7 @@ export function EmbeddingTab() {
         </div>
       )}
 
-      <hr className="border-border/40" />
+      <hr className="border-border" />
 
       <div>
         <label className="mb-1.5 block text-sm font-medium" htmlFor="admin-drawio-url-input">
@@ -174,7 +174,7 @@ export function EmbeddingTab() {
         />
       </div>
 
-      <hr className="border-border/40" />
+      <hr className="border-border" />
 
       <div>
         <label className="mb-1.5 block text-sm font-medium" htmlFor="admin-reembed-retention-input">

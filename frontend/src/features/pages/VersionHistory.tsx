@@ -195,7 +195,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
           aria-describedby={undefined}
         >
           {/* Header */}
-          <div className="flex items-center justify-between border-b border-border/50 px-5 py-4">
+          <div className="flex items-center justify-between border-b border-border px-5 py-4">
             <div className="flex items-center gap-2">
               <History size={16} className="text-action" />
               <Dialog.Title className="font-semibold">Version History</Dialog.Title>
@@ -252,7 +252,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
               <>
               {isError && (
                 /* Background refetch failed but data is loaded — keep the list. */
-                <div className="flex items-center gap-2 border-b border-border/50 bg-destructive/10 px-5 py-2.5 text-xs text-muted-foreground">
+                <div className="flex items-center gap-2 border-b border-border bg-destructive/10 px-5 py-2.5 text-xs text-muted-foreground">
                   <AlertTriangle size={12} className="shrink-0 text-destructive" />
                   <span>Could not refresh version history &mdash; showing the last loaded versions.</span>
                   <button
@@ -272,7 +272,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
               ) : (
               <>
               {backfillNotice && (
-                <div className="flex items-start gap-2 border-b border-border/50 bg-warning/10 px-5 py-2.5 text-xs text-muted-foreground">
+                <div className="flex items-start gap-2 border-b border-border bg-warning/10 px-5 py-2.5 text-xs text-muted-foreground">
                   <Info size={12} className="mt-0.5 shrink-0 text-warning" />
                   <span>{backfillNotice}</span>
                 </div>
@@ -283,7 +283,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                     key={`${version.versionNumber}-${version.isCurrent}`}
                     className={cn(
                       'flex items-center gap-3 px-5 py-2.5',
-                      i !== versions.length - 1 && 'border-b border-border/30',
+                      i !== versions.length - 1 && 'border-b border-border',
                       selectedVersion === version.versionNumber && 'bg-action/5',
                     )}
                   >
@@ -384,7 +384,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                   initial={{ opacity: 0, height: 0 }}
                   animate={{ opacity: 1, height: 'auto' }}
                   exit={{ opacity: 0, height: 0 }}
-                  className="overflow-hidden border-t border-border/50"
+                  className="overflow-hidden border-t border-border"
                 >
                   <div className="p-4">
                     <div className="flex items-center justify-between mb-2">
@@ -445,7 +445,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
 
             {/* Semantic diff */}
             {showSemanticDiff && (
-              <div className="border-t border-border/50 p-4">
+              <div className="border-t border-border p-4">
                 <div className="flex items-center justify-between mb-2">
                   <h4 className="text-xs font-medium text-muted-foreground flex items-center gap-1">
                     <Sparkles size={12} className="text-primary" />
@@ -516,7 +516,7 @@ function CompareView({
 
   if (!version1 || !version2) {
     return (
-      <div className="border-t border-border/50 p-4">
+      <div className="border-t border-border p-4">
         <div className="flex items-center justify-center gap-2 py-4 text-muted-foreground">
           <Loader2 size={14} className="animate-spin" />
           <span className="text-sm">Loading versions for comparison...</span>
@@ -526,7 +526,7 @@ function CompareView({
   }
 
   return (
-    <div className="border-t border-border/50">
+    <div className="border-t border-border">
       <div className="flex items-center justify-between px-4 py-2">
         <h4 className="text-xs font-medium text-muted-foreground">
           Comparing v{v1} vs v{v2}

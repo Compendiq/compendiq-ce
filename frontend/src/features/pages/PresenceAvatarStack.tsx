@@ -45,7 +45,7 @@ export function PresenceAvatarStack({
     <div
       data-testid="presence-avatar-stack"
       className={cn(
-        'inline-flex items-center gap-1 rounded-full bg-card/80 backdrop-blur-md border border-white/10 px-2 py-1 shadow-sm',
+        'inline-flex items-center gap-1 rounded-full bg-card border border-white/10 px-2 py-1 shadow-sm',
         className,
       )}
     >

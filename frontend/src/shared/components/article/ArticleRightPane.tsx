@@ -1050,7 +1050,7 @@ export function ArticleRightPane({
             <span className="truncate">{isPinned ? 'Pinned' : 'Pin'}</span>
           </button>
 
-          <details className="group mt-2 border-t border-border/55 pt-2">
+          <details className="group mt-2 border-t border-border pt-2">
             <summary className="flex h-8 cursor-pointer list-none items-center gap-2 rounded-lg px-2 text-xs font-medium text-muted-foreground transition-colors marker:content-none hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
               <ChevronRight
                 size={13}
@@ -1175,7 +1175,7 @@ export function ArticleRightPane({
 
       {/* Page facts are structured for scanning; health badges remain semantic. */}
       {page && !editing && (
-        <div className="border-t border-border/55 px-3 py-4">
+        <div className="border-t border-border px-3 py-4">
           <div className="text-[11px] font-semibold text-muted-foreground">Page details</div>
           <dl className="mt-2 divide-y divide-border/45 text-xs">
             <div className="flex items-center justify-between gap-3 py-2">
@@ -1271,7 +1271,7 @@ export function ArticleRightPane({
         )}
 
         {/* Outline tree — with scroll mask */}
-        <div className="mt-1 flex-1 overflow-y-auto border-t border-border/55 p-2 scroll-mask" data-testid="article-outline-tree">
+        <div className="mt-1 flex-1 overflow-y-auto border-t border-border p-2 scroll-mask" data-testid="article-outline-tree">
         {headings.length === 0 ? (
           <div className="flex h-full min-h-40 flex-col items-center justify-center px-5 text-center">
             <span className="flex size-9 items-center justify-center rounded-xl bg-foreground/[0.05] text-muted-foreground">

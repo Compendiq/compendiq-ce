@@ -209,12 +209,12 @@ function BulkUserImportModalInner({
         />
         <Dialog.Content
           className={cn(
-            'fixed left-1/2 top-1/2 z-50 w-full max-w-3xl -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-border/60 bg-card/90 shadow-2xl backdrop-blur-xl outline-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 max-h-[85vh] overflow-y-auto',
+            'fixed left-1/2 top-1/2 z-50 w-full max-w-3xl -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-border bg-card shadow-2xl outline-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 max-h-[85vh] overflow-y-auto',
           )}
           aria-describedby={undefined}
           data-testid="bulk-import-modal"
         >
-          <div className="flex items-center justify-between border-b border-border/50 px-5 py-4">
+          <div className="flex items-center justify-between border-b border-border px-5 py-4">
             <Dialog.Title className="flex items-center gap-2 text-base font-semibold">
               <Users size={16} className="text-action" />
               Bulk import users
@@ -238,7 +238,7 @@ function BulkUserImportModalInner({
 
             {step.kind === 'previewing' && (
               <div
-                className="flex items-center gap-3 rounded-lg border border-border/40 bg-foreground/5 p-4 text-sm"
+                className="flex items-center gap-3 rounded-lg border border-border bg-foreground/5 p-4 text-sm"
                 data-testid="bulk-import-previewing"
               >
                 <Loader2 size={16} className="animate-spin" />
@@ -298,7 +298,7 @@ function PickStep({ onFileChosen }: PickStepProps) {
 
       <label
         htmlFor="bulk-import-file"
-        className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-border/60 bg-foreground/[0.02] p-8 text-sm transition-colors hover:border-primary/60 hover:bg-foreground/5"
+        className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-border bg-foreground/[0.02] p-8 text-sm transition-colors hover:border-primary/60 hover:bg-foreground/5"
         data-testid="bulk-import-dropzone"
       >
         <Upload size={20} className="text-muted-foreground" />
@@ -379,7 +379,7 @@ function PreviewStep({
         </div>
       </div>
 
-      <div className="overflow-hidden rounded-lg border border-border/40">
+      <div className="overflow-hidden rounded-lg border border-border">
         <table className="w-full text-xs">
           <thead className="bg-foreground/5 text-left uppercase tracking-wide text-muted-foreground">
             <tr>
@@ -398,7 +398,7 @@ function PreviewStep({
                 <tr
                   key={idx}
                   className={cn(
-                    'border-t border-border/40',
+                    'border-t border-border',
                     invalid && 'bg-red-500/5',
                     !invalid && dup && 'bg-amber-500/5',
                   )}
@@ -441,7 +441,7 @@ function PreviewStep({
       </div>
 
       <fieldset
-        className="space-y-2 rounded-lg border border-border/40 p-3"
+        className="space-y-2 rounded-lg border border-border p-3"
         data-testid="bulk-import-mode"
       >
         <legend className="px-1 text-xs font-medium text-muted-foreground">
@@ -483,11 +483,11 @@ function PreviewStep({
         </label>
       </fieldset>
 
-      <div className="flex justify-end gap-2 border-t border-border/40 pt-4">
+      <div className="flex justify-end gap-2 border-t border-border pt-4">
         <button
           type="button"
           onClick={onBack}
-          className="rounded-md border border-border/60 px-4 py-2 text-sm hover:bg-foreground/5"
+          className="rounded-md border border-border px-4 py-2 text-sm hover:bg-foreground/5"
           data-testid="bulk-import-back"
           disabled={applying}
         >
@@ -546,7 +546,7 @@ function PreviewFailedStep({
         <button
           type="button"
           onClick={onBack}
-          className="rounded-md border border-border/60 px-4 py-2 text-sm hover:bg-foreground/5"
+          className="rounded-md border border-border px-4 py-2 text-sm hover:bg-foreground/5"
           data-testid="bulk-import-error-back"
         >
           Back

@@ -73,7 +73,7 @@ export function CompleteStep() {
           <button
             key={link.path}
             onClick={() => navigate(link.path)}
-            className="group flex w-full items-center gap-3 rounded-lg border border-border/40 bg-foreground/5 px-4 py-3 text-left transition-colors hover:bg-foreground/10"
+            className="group flex w-full items-center gap-3 rounded-lg border border-border bg-foreground/5 px-4 py-3 text-left transition-colors hover:bg-foreground/10"
             data-testid={link.testId}
           >
             <div className="flex-1">

@@ -113,7 +113,7 @@ export function ArticleSummary({
     if (summaryStatus === 'pending' && health?.services?.llm === false) {
       return (
         <div
-          className="mb-6 flex items-center gap-2 rounded-lg border border-border/40 bg-foreground/[0.03] px-4 py-3"
+          className="mb-6 flex items-center gap-2 rounded-lg border border-border bg-foreground/[0.03] px-4 py-3"
           data-testid="article-summary-offline"
         >
           <CloudOff size={16} className="text-muted-foreground" />

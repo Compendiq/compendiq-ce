@@ -475,7 +475,7 @@ export function NewPagePage() {
         <div className="nm-card overflow-hidden">
           {/* Editor toolbar */}
           {editorInstance && (
-            <div className="border-b border-border/25 px-1">
+            <div className="border-b border-border px-1">
               <EditorToolbar editor={editorInstance} />
               <TableContextToolbar editor={editorInstance} />
               <LayoutContextToolbar editor={editorInstance} />

@@ -271,7 +271,7 @@ function SyncConflictPolicyTabInner() {
       </div>
 
       {/* Save button */}
-      <div className="flex items-center justify-between border-t border-border/50 pt-4">
+      <div className="flex items-center justify-between border-t border-border pt-4">
         <div className="text-xs text-muted-foreground">
           {dirty ? 'You have unsaved changes.' : 'No unsaved changes.'}
         </div>

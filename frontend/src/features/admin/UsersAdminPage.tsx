@@ -163,7 +163,7 @@ export function UsersAdminPage() {
             <button
               type="button"
               onClick={() => setShowBulkAction(true)}
-              className="rounded-md border border-border/60 px-4 py-2 text-sm font-medium hover:bg-foreground/5"
+              className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-foreground/5"
               data-testid="users-bulk-action-btn"
             >
               Bulk actions ({selectedUserIds.size})
@@ -173,7 +173,7 @@ export function UsersAdminPage() {
             <button
               type="button"
               onClick={() => setShowBulkImport(true)}
-              className="rounded-md border border-border/60 px-4 py-2 text-sm font-medium hover:bg-foreground/5"
+              className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-foreground/5"
               data-testid="users-bulk-import-btn"
             >
               Bulk import

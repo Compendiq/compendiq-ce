@@ -21,7 +21,7 @@ interface PanelHeaderProps {
  */
 export function PanelHeader({ title, subtitle, action }: PanelHeaderProps) {
   return (
-    <header className="mb-6 flex items-start justify-between gap-4 border-b border-border/40 pb-4">
+    <header className="mb-6 flex items-start justify-between gap-4 border-b border-border pb-4">
       <div className="min-w-0">
         <h2 className="text-lg font-semibold leading-tight tracking-[-0.01em] text-foreground">
           {title}

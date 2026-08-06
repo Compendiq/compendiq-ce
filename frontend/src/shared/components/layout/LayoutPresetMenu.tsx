@@ -68,7 +68,7 @@ export function LayoutPresetMenu({
         <DropdownMenu.Content
           align="end"
           sideOffset={8}
-          className="z-50 w-64 rounded-xl border border-border/55 bg-card/95 p-1.5 shadow-xl backdrop-blur-xl"
+          className="z-50 w-64 rounded-xl border border-border bg-card p-1.5 shadow-xl"
           aria-label="Layout presets"
         >
           <DropdownMenu.Label className="px-2.5 pb-1 pt-2 text-[11px] font-semibold text-muted-foreground">

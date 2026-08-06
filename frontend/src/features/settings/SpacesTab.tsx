@@ -141,7 +141,7 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
       </div>
 
       {/* Show space home content toggle */}
-      <div className="flex items-center justify-between rounded-lg border border-border/50 bg-foreground/5 px-4 py-3">
+      <div className="flex items-center justify-between rounded-lg border border-border bg-foreground/5 px-4 py-3">
         <div>
           <p className="text-sm font-medium">Show space home content</p>
           <p className="text-xs text-muted-foreground">
@@ -183,7 +183,7 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
                   'flex w-full items-center gap-3 rounded-lg border px-4 py-3 text-left transition-colors',
                   isSelected
                     ? 'border-action/30 bg-action/10'
-                    : 'border-border/50 bg-foreground/5 hover:bg-foreground/10',
+                    : 'border-border bg-foreground/5 hover:bg-foreground/10',
                 )}
                 role="listitem"
               >
@@ -237,7 +237,7 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
           })}
         </div>
       ) : (
-        <div className="rounded-lg border border-border/50 bg-foreground/5 py-8 text-center text-sm text-muted-foreground">
+        <div className="rounded-lg border border-border bg-foreground/5 py-8 text-center text-sm text-muted-foreground">
           Click "Fetch Spaces" to load available Confluence spaces.
         </div>
       )}

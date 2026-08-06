@@ -411,7 +411,7 @@ export function IpAllowlistTab() {
           Exempt paths
         </div>
         <ul
-          className="space-y-1 rounded-md border border-border/40 bg-foreground/[0.02] p-3"
+          className="space-y-1 rounded-md border border-border bg-foreground/[0.02] p-3"
           data-testid="ip-allowlist-exceptions"
         >
           {exceptions.length === 0 ? (
@@ -526,7 +526,7 @@ export function IpAllowlistTab() {
       </div>
 
       {/* Save */}
-      <div className="flex items-center justify-between border-t border-border/50 pt-4">
+      <div className="flex items-center justify-between border-t border-border pt-4">
         <div className="text-xs text-muted-foreground">
           {dirty ? 'You have unsaved changes.' : 'No unsaved changes.'}
         </div>

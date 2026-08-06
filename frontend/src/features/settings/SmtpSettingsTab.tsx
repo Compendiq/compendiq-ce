@@ -53,7 +53,7 @@ export function SmtpSettingsTab() {
   });
 
   if (isLoading) {
-    return <div className="animate-pulse space-y-4"><div className="h-8 rounded bg-card/60" /><div className="h-8 rounded bg-card/60" /></div>;
+    return <div className="animate-pulse space-y-4"><div className="h-8 rounded bg-card" /><div className="h-8 rounded bg-card" /></div>;
   }
 
   return (
@@ -151,7 +151,7 @@ export function SmtpSettingsTab() {
         </button>
       </div>
 
-      <hr className="border-border/30" />
+      <hr className="border-border" />
 
       <div>
         <h4 className="mb-2 text-sm font-semibold">Send Test Email</h4>

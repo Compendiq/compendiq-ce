@@ -67,10 +67,10 @@ export function SyncConflictResolveDialog({ conflict, onClose, onResolved }: Pro
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm" />
         <Dialog.Content
-          className="fixed left-1/2 top-1/2 z-50 grid h-[85vh] w-[95vw] max-w-5xl -translate-x-1/2 -translate-y-1/2 grid-rows-[auto_1fr_auto] overflow-hidden rounded-xl border border-border/50 bg-background shadow-2xl"
+          className="fixed left-1/2 top-1/2 z-50 grid h-[85vh] w-[95vw] max-w-5xl -translate-x-1/2 -translate-y-1/2 grid-rows-[auto_1fr_auto] overflow-hidden rounded-xl border border-border bg-background shadow-2xl"
           data-testid="sync-conflict-resolve-dialog"
         >
-          <div className="flex items-start justify-between border-b border-border/50 p-4">
+          <div className="flex items-start justify-between border-b border-border p-4">
             <div className="min-w-0 flex-1">
               <Dialog.Title className="truncate text-base font-semibold">
                 Resolve conflict — {conflict.pageTitle}
@@ -102,12 +102,12 @@ export function SyncConflictResolveDialog({ conflict, onClose, onResolved }: Pro
             />
           </div>
 
-          <div className="flex items-center justify-end gap-2 border-t border-border/50 p-4">
+          <div className="flex items-center justify-end gap-2 border-t border-border p-4">
             <button
               type="button"
               onClick={onClose}
               disabled={isPending}
-              className="rounded-md border border-border/50 px-4 py-2 text-sm text-muted-foreground hover:bg-foreground/5 hover:text-foreground disabled:opacity-50"
+              className="rounded-md border border-border px-4 py-2 text-sm text-muted-foreground hover:bg-foreground/5 hover:text-foreground disabled:opacity-50"
               data-testid="sync-conflict-resolve-cancel-btn"
             >
               Cancel
@@ -116,7 +116,7 @@ export function SyncConflictResolveDialog({ conflict, onClose, onResolved }: Pro
               type="button"
               onClick={() => resolveMutation.mutate({ resolution: 'local' })}
               disabled={isPending}
-              className="flex items-center gap-1.5 rounded-md border border-border/50 px-4 py-2 text-sm hover:bg-foreground/5 disabled:opacity-50"
+              className="flex items-center gap-1.5 rounded-md border border-border px-4 py-2 text-sm hover:bg-foreground/5 disabled:opacity-50"
               data-testid="sync-conflict-resolve-keep-local-btn"
             >
               {isPending ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}

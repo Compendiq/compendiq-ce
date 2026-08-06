@@ -103,7 +103,7 @@ export function LabelManager() {
 
       {/* Merge dialog */}
       {mergeSource && (
-        <div className="rounded-lg border border-border/50 bg-foreground/5 p-3" data-testid="merge-dialog">
+        <div className="rounded-lg border border-border bg-foreground/5 p-3" data-testid="merge-dialog">
           <p className="mb-2 text-sm">
             Merge <span className="font-medium text-action">{mergeSource}</span> into:
           </p>
@@ -153,9 +153,9 @@ export function LabelManager() {
           {labels?.length === 0 ? 'No labels found across any pages' : 'No labels match your filter'}
         </div>
       ) : (
-        <div className="rounded-lg border border-border/50">
+        <div className="rounded-lg border border-border">
           {/* Header */}
-          <div className="flex items-center border-b border-border/50 px-4 py-2 text-xs font-medium text-muted-foreground">
+          <div className="flex items-center border-b border-border px-4 py-2 text-xs font-medium text-muted-foreground">
             <span className="flex-1">Label Name</span>
             <span className="w-24 text-right">Pages</span>
             <span className="w-36 text-right">Actions</span>
@@ -165,7 +165,7 @@ export function LabelManager() {
           {filteredLabels.map((label) => (
             <div
               key={label.name}
-              className="flex items-center border-b border-border/30 px-4 py-2.5 last:border-b-0 hover:bg-foreground/[0.02]"
+              className="flex items-center border-b border-border px-4 py-2.5 last:border-b-0 hover:bg-foreground/[0.02]"
               data-testid={`label-row-${label.name}`}
             >
               {editingLabel === label.name ? (

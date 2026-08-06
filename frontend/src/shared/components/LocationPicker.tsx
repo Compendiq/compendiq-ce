@@ -397,10 +397,10 @@ export function LocationPicker({
                 animate={{ opacity: 1, y: 0, scale: 1 }}
                 exit={{ opacity: 0, y: -4, scale: 0.98 }}
                 transition={{ duration: 0.15, ease: 'easeOut' }}
-                className="w-80 rounded-lg border border-border/50 bg-card shadow-xl backdrop-blur-xl"
+                className="w-80 rounded-lg border border-border bg-card shadow-xl"
               >
                 {/* Search bar */}
-                <div className="border-b border-border/40 p-2">
+                <div className="border-b border-border p-2">
                   <div className="relative">
                     <Search
                       size={14}
@@ -428,7 +428,7 @@ export function LocationPicker({
                 </div>
 
                 {/* Root option */}
-                <div className="border-b border-border/40 px-2 py-1">
+                <div className="border-b border-border px-2 py-1">
                   <button
                     type="button"
                     onClick={handleClearParent}
@@ -457,7 +457,7 @@ export function LocationPicker({
                 </div>
 
                 {/* Footer with confirm button */}
-                <div className="flex items-center justify-end border-t border-border/40 p-2">
+                <div className="flex items-center justify-end border-t border-border p-2">
                   <button
                     type="button"
                     onClick={handleConfirm}

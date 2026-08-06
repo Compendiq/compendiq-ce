@@ -681,9 +681,9 @@ export function PageViewPage() {
             data-testid="edit-toolbar-mask"
             className="absolute inset-x-0 -top-5 bottom-0 z-[-1] bg-background rounded-b-xl"
           />
-        <div className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm">
+        <div className="rounded-xl border border-border bg-card">
           {editorInstance && (
-            <div className="px-1 border-b border-border/20">
+            <div className="px-1 border-b border-border">
               <EditorToolbar editor={editorInstance} vimEnabled={vimEnabled} onToggleVim={toggleVim} />
               <TableContextToolbar editor={editorInstance} />
               <LayoutContextToolbar editor={editorInstance} />
@@ -726,12 +726,12 @@ export function PageViewPage() {
           editing, the card sits on its own with no toolbar above. */}
       <div
         className={cn(
-          'overflow-hidden rounded-xl border border-border/55 bg-card/80',
+          'overflow-hidden rounded-xl border border-border bg-card',
           editing && 'mt-[25px]',
         )}
       >
         {/* Breadcrumb / action strip */}
-        <div className="flex items-center justify-between gap-4 border-b border-border/25 px-5 py-2 sm:px-7">
+        <div className="flex items-center justify-between gap-4 border-b border-border px-5 py-2 sm:px-7">
           <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground/60">
             <FileText size={12} className="shrink-0" />
             {page.spaceKey !== '__local__' && <span className="truncate">{page.spaceKey}</span>}
@@ -763,7 +763,7 @@ export function PageViewPage() {
               ) : (
                 // Private = neutral gray. Was amber, but privacy carries no AI semantic.
                 <span
-                  className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                  className="inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
                   data-testid="badge-private"
                 >
                   <Lock size={10} /> Private
@@ -773,7 +773,7 @@ export function PageViewPage() {
             {/* Draft indicator — neutral private-tier palette (drafts read as personal/private state, not AI). */}
             {'hasDraft' in page && Boolean((page as Record<string, unknown>).hasDraft) && (
               <span
-                className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                className="inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
                 data-testid="badge-draft"
               >
                 <AlertCircle size={10} /> Draft
@@ -853,7 +853,7 @@ export function PageViewPage() {
           <>
             {/* Editable title — same 1200px reading column as the body so they
                 visually align as one document. */}
-            <div className="border-b border-border/25 px-5 py-5 sm:px-10">
+            <div className="border-b border-border px-5 py-5 sm:px-10">
               <div className="mx-auto max-w-[1200px]">
                 <input
                   value={editTitle}
@@ -911,7 +911,7 @@ export function PageViewPage() {
                 {page.labels.map((label) => (
                   <span
                     key={label}
-                    className="rounded-full border border-border/60 bg-background/45 px-3 py-1 text-xs font-medium text-muted-foreground"
+                    className="rounded-full border border-border bg-background/45 px-3 py-1 text-xs font-medium text-muted-foreground"
                   >
                     {label}
                   </span>
@@ -1045,14 +1045,14 @@ function FeedbackWidget({ pageId }: { pageId: string | undefined }) {
 
   if (submitted) {
     return (
-      <div className="mt-12 border-t border-border/25 pt-6 text-center" data-testid="feedback-widget">
+      <div className="mt-12 border-t border-border pt-6 text-center" data-testid="feedback-widget">
         <p className="text-sm text-muted-foreground">Thanks for your feedback!</p>
       </div>
     );
   }
 
   return (
-    <div className="mt-12 border-t border-border/25 pt-6" data-testid="feedback-widget">
+    <div className="mt-12 border-t border-border pt-6" data-testid="feedback-widget">
       <p className="mb-3 text-sm font-medium text-muted-foreground">Was this page helpful?</p>
       <div className="flex gap-2">
         <button

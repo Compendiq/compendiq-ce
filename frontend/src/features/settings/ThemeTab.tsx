@@ -62,7 +62,7 @@ export function ThemeTab({ onSave }: ThemeTabProps) {
                       'group relative flex w-full flex-col overflow-hidden rounded-xl border text-left transition-all motion-safe:duration-150',
                       isActive
                         ? 'border-[var(--color-primary)] ring-2 ring-[var(--color-primary)]/35'
-                        : 'border-border/60 hover:border-border hover:-translate-y-0.5',
+                        : 'border-border hover:border-border hover:-translate-y-0.5',
                     )}
                   >
                     {/* Mini chrome preview — uses the theme's own colours via
@@ -122,7 +122,7 @@ export function ThemeTab({ onSave }: ThemeTabProps) {
                     </div>
 
                     {/* Label strip */}
-                    <div className="flex items-center justify-between gap-3 border-t border-border/40 px-3 py-2.5">
+                    <div className="flex items-center justify-between gap-3 border-t border-border px-3 py-2.5">
                       <div className="min-w-0">
                         <div className="text-sm font-medium">{t.label}</div>
                         <div className="truncate text-xs text-muted-foreground">{t.description}</div>

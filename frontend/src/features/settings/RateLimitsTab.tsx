@@ -129,7 +129,7 @@ export function RateLimitsTab() {
 
       <div className="space-y-4">
         {CATEGORIES.map((cat) => (
-          <div key={cat.key} className="rounded-lg border border-border/30 bg-background/50 p-4">
+          <div key={cat.key} className="rounded-lg border border-border bg-background/50 p-4">
             <div className="flex items-center justify-between">
               <div>
                 <label htmlFor={cat.key} className="text-sm font-medium">{cat.label}</label>
@@ -148,7 +148,7 @@ export function RateLimitsTab() {
                       setValues((prev) => ({ ...prev, [cat.key]: Math.max(cat.min, Math.min(cat.max, v)) }));
                     }
                   }}
-                  className="w-24 rounded-lg border border-border/40 bg-background/50 px-3 py-1.5 text-right text-sm outline-none focus:ring-1 focus:ring-primary/30"
+                  className="w-24 rounded-lg border border-border bg-background/50 px-3 py-1.5 text-right text-sm outline-none focus:ring-1 focus:ring-primary/30"
                   data-testid={`rate-limit-${cat.key}`}
                 />
                 <span className="text-xs text-muted-foreground">/min</span>
@@ -169,7 +169,7 @@ export function RateLimitsTab() {
         ))}
       </div>
 
-      <div className="flex items-center gap-3 border-t border-border/40 pt-4">
+      <div className="flex items-center gap-3 border-t border-border pt-4">
         <button
           onClick={handleSave}
           disabled={!hasChanges || mutation.isPending}

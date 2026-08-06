@@ -64,7 +64,7 @@ export function BulkActionBar({ selectedIds, confluenceCount, onClear }: BulkAct
             type="button"
             onClick={() => run('embed')}
             disabled={bulk.isPending}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-border/50 px-3 py-1.5 text-sm transition-colors hover:bg-foreground/5 disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm transition-colors hover:bg-foreground/5 disabled:opacity-50"
             data-testid="bulk-embed-btn"
           >
             <Database size={14} aria-hidden="true" />
@@ -76,7 +76,7 @@ export function BulkActionBar({ selectedIds, confluenceCount, onClear }: BulkAct
               type="button"
               onClick={() => run('sync')}
               disabled={bulk.isPending}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-border/50 px-3 py-1.5 text-sm transition-colors hover:bg-foreground/5 disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm transition-colors hover:bg-foreground/5 disabled:opacity-50"
               data-testid="bulk-sync-btn"
             >
               <RefreshCw size={14} aria-hidden="true" />
@@ -88,7 +88,7 @@ export function BulkActionBar({ selectedIds, confluenceCount, onClear }: BulkAct
             type="button"
             onClick={() => run('quality')}
             disabled={bulk.isPending}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-border/50 px-3 py-1.5 text-sm transition-colors hover:bg-foreground/5 disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm transition-colors hover:bg-foreground/5 disabled:opacity-50"
             data-testid="bulk-quality-btn"
           >
             <Gauge size={14} aria-hidden="true" />

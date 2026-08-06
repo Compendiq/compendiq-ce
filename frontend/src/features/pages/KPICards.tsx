@@ -131,7 +131,7 @@ export function KPICards({ embeddingStatus, spacesCount, lastSynced, onSync, isS
     >
       {/* Total pages, qualified by the spaces they came from. */}
       <m.div variants={fadeUp} className="h-full">
-        <TiltCard className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm p-4 h-full" maxTilt={10} data-testid="kpi-total-articles">
+        <TiltCard className="rounded-xl border border-border bg-card p-4 h-full" maxTilt={10} data-testid="kpi-total-articles">
           <div className="flex items-center gap-3">
             <div className="rounded-lg bg-foreground/5 p-2 text-success">
               <FileText size={16} />
@@ -153,7 +153,7 @@ export function KPICards({ embeddingStatus, spacesCount, lastSynced, onSync, isS
           was. The ring stays as the tile's icon — it reads the ratio faster
           than the text does. */}
       <m.div variants={fadeUp} className="h-full">
-        <TiltCard className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm p-4 h-full" maxTilt={10} data-testid="kpi-embedded-pages">
+        <TiltCard className="rounded-xl border border-border bg-card p-4 h-full" maxTilt={10} data-testid="kpi-embedded-pages">
           <div className="flex items-center gap-3">
             <EmbeddingCoverageRing
               percent={embeddingStatus ? coveragePercent : 0}
@@ -175,7 +175,7 @@ export function KPICards({ embeddingStatus, spacesCount, lastSynced, onSync, isS
       {/* Double-width and action-bearing: the only tile that implies a next
           step should be the one that gets the visual weight. */}
       <m.div variants={fadeUp} className="h-full sm:col-span-2">
-        <TiltCard className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm p-4 h-full" maxTilt={6} data-testid="kpi-last-sync">
+        <TiltCard className="rounded-xl border border-border bg-card p-4 h-full" maxTilt={6} data-testid="kpi-last-sync">
           <div className="flex h-full items-center justify-between gap-3">
             <div className="flex items-center gap-3">
               <div className="rounded-lg bg-foreground/5 p-2 text-muted-foreground">

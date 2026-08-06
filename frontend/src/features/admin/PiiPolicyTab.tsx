@@ -386,7 +386,7 @@ function PiiPolicyTabInner() {
                 llmJudgeUsecase: e.target.value as PiiLlmJudgeUsecase,
               }))
             }
-            className="w-48 rounded-md border border-border/50 bg-background px-2 py-1 text-sm text-foreground disabled:opacity-50"
+            className="w-48 rounded-md border border-border bg-background px-2 py-1 text-sm text-foreground disabled:opacity-50"
             data-testid="pii-policy-llm-judge-usecase-select"
           >
             {PII_LLM_JUDGE_USECASES.map((u) => (
@@ -407,7 +407,7 @@ function PiiPolicyTabInner() {
           Block publication = 409 the response (integrates with the AI
           review queue).
         </p>
-        <div className="overflow-x-auto rounded-lg border border-border/40">
+        <div className="overflow-x-auto rounded-lg border border-border">
           <table className="w-full text-sm">
             <thead className="bg-foreground/[0.03] text-xs text-muted-foreground">
               <tr>
@@ -431,7 +431,7 @@ function PiiPolicyTabInner() {
                 return (
                   <tr
                     key={useCase}
-                    className="border-t border-border/40"
+                    className="border-t border-border"
                     data-testid={`pii-policy-action-row-${useCase}`}
                   >
                     <td className="px-3 py-2 align-middle font-medium">
@@ -507,7 +507,7 @@ function PiiPolicyTabInner() {
       </div>
 
       {/* Save */}
-      <div className="flex items-center justify-between border-t border-border/50 pt-4">
+      <div className="flex items-center justify-between border-t border-border pt-4">
         <div className="text-xs text-muted-foreground">
           {dirty ? 'You have unsaved changes.' : 'No unsaved changes.'}
         </div>

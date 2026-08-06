@@ -263,7 +263,7 @@ export function ArticleOutline({
     >
       <button
         onClick={onToggle}
-        className="flex h-12 w-12 items-center justify-center rounded-2xl border border-border/60 bg-card/80 text-muted-foreground shadow-sm backdrop-blur-xl transition-colors hover:bg-card hover:text-foreground"
+        className="flex h-12 w-12 items-center justify-center rounded-2xl border border-border bg-card text-muted-foreground shadow-sm transition-colors hover:bg-card hover:text-foreground"
         aria-label="Show outline"
       >
         <ChevronLeft size={16} />
@@ -274,7 +274,7 @@ export function ArticleOutline({
   if (headings.length === 0) {
     return isOpen ? (
       <aside
-        className="sticky top-4 h-fit rounded-[28px] border border-border/60 bg-card/75 p-4 shadow-sm backdrop-blur-xl"
+        className="sticky top-4 h-fit rounded-[28px] border border-border bg-card p-4 shadow-sm"
         data-testid="article-outline-empty"
       >
         <div className="mb-4 flex items-center justify-between">
@@ -303,7 +303,7 @@ export function ArticleOutline({
 
   return (
     <aside
-      className="sticky top-4 h-fit rounded-[28px] border border-border/60 bg-card/75 p-4 shadow-sm backdrop-blur-xl"
+      className="sticky top-4 h-fit rounded-[28px] border border-border bg-card p-4 shadow-sm"
       data-testid="article-outline-panel"
     >
       <div className="mb-4 flex items-center justify-between gap-3">

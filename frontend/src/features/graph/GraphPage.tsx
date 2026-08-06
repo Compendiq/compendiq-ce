@@ -582,7 +582,7 @@ export function GraphPage() {
       {/* Graph container */}
       <div
         ref={containerRef}
-        className="relative min-h-0 flex-1 overflow-hidden rounded-lg border border-border/50 bg-background/50"
+        className="relative min-h-0 flex-1 overflow-hidden rounded-lg border border-border bg-background/50"
         data-testid="graph-container"
       >
         <ForceGraph2D
@@ -616,8 +616,8 @@ export function GraphPage() {
         {hoveredNode && (
           <div
             className={cn(
-              'pointer-events-none fixed z-50 max-w-xs rounded-lg border border-border/50',
-              'bg-card/95 px-3 py-2 text-xs shadow-lg backdrop-blur-md',
+              'pointer-events-none fixed z-50 max-w-xs rounded-lg border border-border',
+              'bg-card px-3 py-2 text-xs shadow-lg',
               'max-h-64 overflow-y-auto',
             )}
             style={{
@@ -704,7 +704,7 @@ function ArticlePickerLanding({ onPick, onShowFullGraph }: ArticlePickerLandingP
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="Search pages by title…"
-            className="w-full rounded-lg border border-border/40 bg-foreground/5 py-2 pl-9 pr-3 text-sm outline-none focus:ring-1 focus:ring-primary"
+            className="w-full rounded-lg border border-border bg-foreground/5 py-2 pl-9 pr-3 text-sm outline-none focus:ring-1 focus:ring-primary"
             data-testid="graph-picker-input"
           />
         </div>
@@ -742,7 +742,7 @@ function ArticlePickerLanding({ onPick, onShowFullGraph }: ArticlePickerLandingP
           </ul>
         )}
 
-        <div className="mt-5 border-t border-border/30 pt-4 text-xs text-muted-foreground">
+        <div className="mt-5 border-t border-border pt-4 text-xs text-muted-foreground">
           <p>
             Want to see everything anyway? The full graph can be slow on large
             knowledge bases.

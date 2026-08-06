@@ -412,7 +412,7 @@ function ProviderTab({ disabled }: { disabled?: boolean }) {
         </div>
       </div>
 
-      <div className="flex items-center justify-between border-t border-border/50 pt-4">
+      <div className="flex items-center justify-between border-t border-border pt-4">
         <label className="flex items-center gap-2 text-sm">
           <input
             type="checkbox"
@@ -597,7 +597,7 @@ function MappingsTab({ disabled }: { disabled?: boolean }) {
         <div className="nm-card overflow-hidden">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-border/50 text-left text-xs text-muted-foreground">
+              <tr className="border-b border-border text-left text-xs text-muted-foreground">
                 <th className="px-4 py-3 font-medium">OIDC Group</th>
                 <th className="px-4 py-3 font-medium">Role</th>
                 <th className="px-4 py-3 font-medium">Space</th>

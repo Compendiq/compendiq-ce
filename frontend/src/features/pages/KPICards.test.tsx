@@ -334,7 +334,7 @@ describe('KPICards', () => {
       const card = screen.getByTestId(testId);
       // Each card uses the v0.4 translucent pane style + h-full for equal height
       expect(card.className).toContain('rounded-xl');
-      expect(card.className).toContain('bg-card/50');
+      expect(card.className).toContain('bg-card');
       expect(card.className).toContain('h-full');
     }
   });

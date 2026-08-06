@@ -105,7 +105,7 @@ export function SettingsSidebar({ onNavigate }: { onNavigate?: () => void } = {}
               aria-labelledby={`settings-group-${group.id}`}
               className={cn(
                 'pb-2',
-                groupIdx > 0 && 'mt-2 border-t border-border/40 pt-2',
+                groupIdx > 0 && 'mt-2 border-t border-border pt-2',
               )}
             >
               <h2

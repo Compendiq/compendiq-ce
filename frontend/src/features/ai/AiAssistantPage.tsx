@@ -288,7 +288,7 @@ export function AiAssistantPage() {
         aria-hidden
         className="pointer-events-none absolute inset-0 z-[-1] bg-background"
       />
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-2 rounded-xl border border-border/40 bg-card/50 px-3 py-2 backdrop-blur-sm">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-2 rounded-xl border border-border bg-card px-3 py-2">
         {/* Group A — mode segmented control */}
         {/* Horizontally scrollable below the width that fits all six modes.
             At 390px the row previously cut off mid-word after "Summar…", so
@@ -364,7 +364,7 @@ export function AiAssistantPage() {
         <div className="flex-1" />
 
         {/* Group B — context + options. Each chip is 28 px tall (h-7),
-            border-border/40 at rest, tinted on active. The divider between
+            border-border at rest, tinted on active. The divider between
             the model dropdown and the toggles separates "infrastructure" the
             user sets once from "context flags" they flip per question. */}
         <div className="flex flex-wrap items-center gap-1.5">
@@ -380,7 +380,7 @@ export function AiAssistantPage() {
               <AlertTriangle size={12} /> Models unavailable — retry
             </button>
           ) : models.length === 0 ? (
-            <span className="flex h-7 items-center gap-1.5 rounded-md border border-border/40 px-2.5 text-xs text-muted-foreground">
+            <span className="flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs text-muted-foreground">
               <Loader2 size={12} className="animate-spin" /> Loading models...
             </span>
           ) : (
@@ -430,7 +430,7 @@ export function AiAssistantPage() {
                 'flex h-7 cursor-pointer items-center gap-1.5 rounded-md border px-2.5 text-xs transition-colors',
                 includeSubPages
                   ? 'border-primary/45 bg-primary/12 text-primary-ink'
-                  : 'border-border/40 text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
+                  : 'border-border text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
               )}
               title="Include sub-pages in the AI context"
             >
@@ -457,7 +457,7 @@ export function AiAssistantPage() {
               'flex h-7 cursor-pointer items-center gap-1.5 rounded-md border px-2.5 text-xs transition-colors',
               thinkingMode
                 ? 'border-purple-500/45 bg-purple-500/15 text-purple-300'
-                : 'border-border/40 text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
+                : 'border-border text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
             )}
             title={thinkingMode
               ? 'Extended thinking is on — responses take longer but reason more carefully'
@@ -480,7 +480,7 @@ export function AiAssistantPage() {
           than leaving a tablist with nothing selected looking broken (#1126). */}
       {!modeHasTab && (
         <p
-          className="rounded-xl border border-border/40 bg-card/50 px-3 py-2 text-xs text-muted-foreground backdrop-blur-sm"
+          className="rounded-xl border border-border bg-card px-3 py-2 text-xs text-muted-foreground"
           data-testid="ai-legacy-mode-notice"
         >
           This view moved into the assistant that opens beside an article. Open the page and press{' '}
@@ -538,7 +538,7 @@ export function AiAssistantPage() {
           laptop lost them entirely, and on mobile they rendered behind the
           composer. min-h-0 lets the flex child actually shrink so the scroll
           container resolves instead of overflowing its parent. */}
-      <div className="min-h-0 flex-1 overflow-y-auto rounded-xl border border-border/40 bg-card/40 backdrop-blur-sm" data-testid="ai-message-pane">
+      <div className="min-h-0 flex-1 overflow-y-auto rounded-xl border border-border bg-card" data-testid="ai-message-pane">
         <div className="min-h-[360px] space-y-4 p-5">
           {/* Zero-embeddings notice (#938). Q&A answers via RAG over embedded
               pages; with none embedded, buildRagContext returns "No relevant

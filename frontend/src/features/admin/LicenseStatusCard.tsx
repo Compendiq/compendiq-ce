@@ -234,7 +234,7 @@ export function LicenseStatusCard() {
         {/* Stats — also shown when an (invalid) key is stored so the admin
             can see what that key granted. */}
         {(!isCommunity || hasStoredKey) && (
-          <div className="grid grid-cols-2 gap-px border-t border-border/40 bg-border/40">
+          <div className="grid grid-cols-2 gap-px border-t border-border bg-border/40">
             <div className="bg-card p-4">
               <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
                 <Users size={12} />
@@ -265,7 +265,7 @@ export function LicenseStatusCard() {
             <h3 className="text-sm font-medium">License Key</h3>
           </div>
           {hasStoredKey && (
-            <div className="mb-3 rounded-md border border-border/40 bg-foreground/5 px-3 py-2 font-mono text-xs text-muted-foreground" data-testid="license-key-display">
+            <div className="mb-3 rounded-md border border-border bg-foreground/5 px-3 py-2 font-mono text-xs text-muted-foreground" data-testid="license-key-display">
               Stored: {data?.displayKey}
             </div>
           )}
@@ -299,7 +299,7 @@ export function LicenseStatusCard() {
               <button
                 onClick={() => clearMutation.mutate()}
                 disabled={saveMutation.isPending || clearMutation.isPending}
-                className="flex items-center gap-2 rounded-lg border border-border/50 bg-transparent px-4 py-2 text-sm text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
+                className="flex items-center gap-2 rounded-lg border border-border bg-transparent px-4 py-2 text-sm text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
                 data-testid="license-key-clear-btn"
               >
                 {clearMutation.isPending ? (
@@ -338,7 +338,7 @@ export function LicenseStatusCard() {
             {activeFeatureCount} of {ENTERPRISE_FEATURES.length} active
           </span>
         </summary>
-        <ul role="list" className="mt-3 divide-y divide-border/40 rounded-lg border border-border/40">
+        <ul role="list" className="mt-3 divide-y divide-border/40 rounded-lg border border-border">
           {ENTERPRISE_FEATURES.map((feature) => {
             const isAvailable = data?.features?.includes(feature.key) ?? false;
             return (

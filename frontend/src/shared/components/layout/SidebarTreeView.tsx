@@ -718,7 +718,7 @@ export function SidebarTreeView({
       {/* A compact navigation shortcut; the Pages dashboard remains the rich
           pinned overview with excerpts and management controls. */}
       {pinnedData && pinnedData.items.length > 0 && (
-        <section className="shrink-0 border-t border-border/45 px-2 py-2" aria-labelledby="sidebar-pinned-heading">
+        <section className="shrink-0 border-t border-border px-2 py-2" aria-labelledby="sidebar-pinned-heading">
           <button
             type="button"
             onClick={() => setPinnedSectionCollapsed((value) => !value)}
@@ -784,7 +784,7 @@ export function SidebarTreeView({
       )}
 
       {/* Page collection toolbar — actions are scoped to the tree below. */}
-      <div className="flex h-9 shrink-0 items-center justify-between border-y border-border/55 px-3">
+      <div className="flex h-9 shrink-0 items-center justify-between border-y border-border px-3">
         <span className="text-xs font-semibold text-foreground/85">Pages</span>
         <button
           onClick={() => {
