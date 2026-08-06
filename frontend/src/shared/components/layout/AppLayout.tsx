@@ -379,8 +379,10 @@ export function AppLayout({ children }: { children: ReactNode }) {
       <CommandPalette />
       <KeyboardShortcutsModal />
 
-      {/* Top navigation bar — a denser mineral surface over the app canvas. */}
-      <header className="app-header relative z-10 flex h-[58px] shrink-0 items-center border-b px-4">
+      {/* Top navigation bar. 48px: the workspace convention, and 10px back from
+          the 58px the neumorphic header needed to give its extrusion room to
+          read. The height is spent on content everywhere else in the app. */}
+      <header className="app-header relative z-10 flex h-12 shrink-0 items-center border-b px-3">
         {/* Mobile hamburger — opens sidebar slide-over */}
         <button
           onClick={() => setMobileSidebarOpen((v) => !v)}
@@ -394,7 +396,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
 
         {/* Logo - always visible in header */}
         <Link to="/" aria-label="Compendiq home" className="mr-3 flex shrink-0 items-center group">
-          <Logo className="h-[26px] w-auto text-foreground" title="Compendiq" />
+          <Logo className="h-[22px] w-auto text-foreground" title="Compendiq" />
         </Link>
 
         {/* Spacer — the in-page breadcrumb was removed; the sidebar carries all
@@ -408,9 +410,9 @@ export function AppLayout({ children }: { children: ReactNode }) {
             onClick={openCommandPalette}
             aria-label="Search knowledge base"
             aria-expanded={isCommandPaletteOpen}
-            className="app-search pointer-events-auto flex h-9 w-full max-w-xl items-center gap-2 rounded-lg px-3 text-sm"
+            className="app-search pointer-events-auto flex h-8 w-full max-w-lg items-center gap-2 rounded-md px-2.5 text-[13px]"
           >
-            <Search size={16} className="shrink-0" />
+            <Search size={14} className="shrink-0" />
             <span className="truncate">Search pages, commands...</span>
             <span className="ml-auto shrink-0">
               <ShortcutHint shortcutId="search" />

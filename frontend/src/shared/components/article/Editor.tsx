@@ -597,7 +597,7 @@ function ColorPickerDropdown({
                   onSelect(c.value);
                   setOpen(false);
                 }}
-                className="h-7 w-7 rounded-md border border-border transition-transform hover:scale-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                className="h-7 w-7 rounded-md border border-border transition-transform focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
                 style={{ backgroundColor: c.value }}
               />
             ))}

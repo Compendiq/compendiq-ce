@@ -158,7 +158,10 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
         tabIndex={0}
         aria-expanded={hasChildren ? isExpanded : undefined}
         className={cn(
-          'group flex items-center gap-1.5 rounded-[10px] h-9 pr-2 text-sm cursor-pointer transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
+          // 28px rows at 13px. The tree is the tallest thing on screen, so its
+          // row height sets how much of the corpus is reachable without
+          // scrolling — 36px rows cost roughly two pages per viewport.
+          'group flex items-center gap-1.5 rounded-md h-7 pr-2 text-[13px] cursor-pointer transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
           isActive
             ? 'nav-selection font-medium'
             : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
@@ -190,7 +193,7 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
         {/* #767: pin the weight explicitly (conditional, never both classes)
             so titles can't inherit or synthesize a heavier weight while the
             variable font loads or the row sits on a composited layer. */}
-        <span className={cn('truncate text-sm', isActive ? 'font-medium' : 'font-normal')}>
+        <span className={cn('truncate text-[13px]', isActive ? 'font-medium' : 'font-normal')}>
           {node.page.title}
         </span>
       </div>

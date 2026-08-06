@@ -82,8 +82,17 @@ const PageListItem = memo(function PageListItem({
     >
       <div
         className={cn(
-          'flex w-full items-center gap-3 rounded-xl border bg-card p-4 text-left transition-colors hover:border-primary/45 hover:bg-card',
-          selected ? 'border-primary/50 bg-primary/[0.07]' : 'border-border',
+          // A list row, not a card: px-3 py-2 and a 6px corner. `p-4` plus a
+          // 12px radius is card geometry, and forty of them stacked reads as a
+          // gallery of tiles rather than a list you scan down.
+          //
+          // Hover tints the row instead of colouring its border. An accent
+          // border on hover competes with `selected`, which is the state that
+          // actually needs to be seen across a long list.
+          'flex w-full items-center gap-3 rounded-md border px-3 py-2 text-left transition-colors',
+          selected
+            ? 'border-primary/50 bg-primary/[0.07]'
+            : 'border-border bg-card hover:bg-accent',
         )}
         data-testid={`article-hover-${pageItem.id}`}
       >

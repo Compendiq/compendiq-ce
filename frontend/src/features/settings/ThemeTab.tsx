@@ -62,7 +62,7 @@ export function ThemeTab({ onSave }: ThemeTabProps) {
                       'group relative flex w-full flex-col overflow-hidden rounded-xl border text-left transition-all motion-safe:duration-150',
                       isActive
                         ? 'border-[var(--color-primary)] ring-2 ring-[var(--color-primary)]/35'
-                        : 'border-border hover:border-border hover:-translate-y-0.5',
+                        : 'border-border hover:border-border',
                     )}
                   >
                     {/* Mini chrome preview — uses the theme's own colours via

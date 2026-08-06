@@ -1647,7 +1647,18 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
    Panels, task lists, drawio, TOC placeholder
    ============================================ */
 
-/* Panels — info, warning, note, tip */
+/* Panels — info, warning, note, tip.
+
+   The 3px `border-left` here is deliberate and is NOT the side-tab accent the
+   design detector flags. That rule targets a coloured edge used as decoration
+   on app cards and callouts; these selectors style DOCUMENT BODY content —
+   the rendering of a Confluence `panel` macro that arrived through the content
+   pipeline. Its left rule carries meaning from the source document, and
+   "the source of record wins" outranks our own surface conventions. Restyling
+   it would make an imported page look unlike itself in Confluence.
+
+   If the detector flags this again: it is an accepted exception, not a miss.
+   The equivalent decoration on app chrome stays refused. */
 .prose .panel-info,
 .prose .panel-warning,
 .prose .panel-note,

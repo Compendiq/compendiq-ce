@@ -58,7 +58,7 @@ export function MainNavStripExpanded({ onNavigate }: MainNavStripProps) {
             onClick={onNavigate}
             title={`${label} (${shortcut})`}
             className={cn(
-              'flex flex-1 items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs transition-all duration-200 active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
+              'flex flex-1 items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
               active
                 ? 'nav-selection font-medium'
                 : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
@@ -100,7 +100,7 @@ export function MainNavStripCollapsed({ onNavigate }: MainNavStripProps) {
             to={path}
             onClick={onNavigate}
             className={cn(
-              'rounded-lg p-1.5 transition-all duration-200 active:scale-[0.95]',
+              'rounded-lg p-1.5 transition-all duration-200',
               active
                 ? 'nav-selection'
                 : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
