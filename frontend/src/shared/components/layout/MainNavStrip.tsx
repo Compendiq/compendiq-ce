@@ -71,7 +71,10 @@ export function MainNavStripExpanded({ onNavigate }: MainNavStripProps) {
             )}
           >
             {/* The active icon carried a `drop-shadow` — an extrusion tell from
-                the retired world, and the last one in the nav. */}
+                the retired world. This component renders the strip TWICE (rail
+                and expanded), and the first pass removed it from this copy only,
+                under a comment claiming it was the last one in the nav. It was
+                not; the expanded copy below kept it for another whole branch. */}
             <Icon
               size={13}
               className={cn(
@@ -118,7 +121,6 @@ export function MainNavStripCollapsed({ onNavigate }: MainNavStripProps) {
             <Icon
               size={16}
               className={cn(
-                active && 'drop-shadow-[0_1px_2px_oklch(0_0_0_/_0.25)]',
                 active && path === '/ai' && 'text-primary-ink',
               )}
             />

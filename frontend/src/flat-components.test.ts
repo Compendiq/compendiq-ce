@@ -136,10 +136,22 @@ const FILES = sources(SRC).map((f) => {
   return { path: relative(SRC, f), text: stripped, strings: stringBodies(stripped) };
 });
 
-/** Matches inside string/template bodies only — never bare identifiers. */
-function callsites(file: { strings: string[] }, pattern: RegExp): string[] {
+/**
+ * Matches inside string/template bodies only — never bare identifiers.
+ *
+ * `allow` is applied to the FULL body, before truncation. Applying an allowance
+ * to the shortened display string is a live bug I shipped for one commit: a
+ * legitimate `shadow-[var(--shadow-overlay)]` sitting past column 100 of a long
+ * class list got cut off, the allowance stopped matching, and the guard failed
+ * on the exact call sites it was written to permit.
+ */
+function callsites(
+  file: { strings: string[] },
+  pattern: RegExp,
+  allow?: (body: string) => boolean,
+): string[] {
   return file.strings
-    .filter((s) => pattern.test(s))
+    .filter((s) => pattern.test(s) && !(allow?.(s) ?? false))
     .map((s) => s.replace(/\s+/g, ' ').trim().slice(0, 100));
 }
 
@@ -147,13 +159,27 @@ describe('the component layer is as flat as the token layer', () => {
   it('no Tailwind shadow utility survives — the system has one shadow', () => {
     const offenders: string[] = [];
     for (const file of FILES) {
+      // Matches the named scale AND arbitrary values AND `drop-shadow`.
+      //
+      // The first version matched only `shadow-{sm,md,lg,xl,2xl,inner}`, which
+      // let five shadows through: three coloured glows on ConfidenceBadge, a
+      // hardcoded `#22d3ee` glow on StreamingCursor, a `drop-shadow` on the
+      // main nav's *expanded* renderer (the rail copy had been cleaned, under a
+      // comment claiming it was the last one), and — worst — an AiDockSheet
+      // shadow pointing at `--nm-shadow-out-strong`, a retired token that now
+      // resolves to `transparent`, so it rendered nothing while reading as live
+      // code. A guard whose pattern is narrower than the rule it enforces
+      // certifies exactly the call sites nobody would have written by accident.
+      //
       // `shadow-[var(--shadow-overlay)]` is the system shadow spelled as an
-      // arbitrary value, for the two overlays that are not `nm-card-elevated`
-      // (a drawer on `nm-sidebar`, a round floating button). Allowed by name.
-      for (const hit of callsites(file, /\bshadow(-(sm|md|lg|xl|2xl|inner))?(?=["'\s]|$)/)) {
-        if (hit.includes('shadow-[var(--shadow-overlay)]')) continue;
-        offenders.push(`${file.path}: ${hit}`);
-      }
+      // arbitrary value, for the overlays that are not `nm-card-elevated`
+      // (two drawers, a round floating button). Allowed by name.
+      const hits = callsites(
+        file,
+        /\b(drop-)?shadow(-(sm|md|lg|xl|2xl|inner))?(-\[|(?=["'\s]|$))/,
+        (body) => /\bshadow-\[var\(--shadow-overlay\)\]/.test(body),
+      );
+      for (const hit of hits) offenders.push(`${file.path}: ${hit}`);
     }
     expect(
       offenders,
@@ -195,6 +221,25 @@ describe('the component layer is as flat as the token layer', () => {
         offenders.push(`${file.path}: ${hit}`);
     }
     expect(offenders, 'hover and press are background/border changes, not motion').toEqual([]);
+  });
+
+  it('no lift or scale via Framer props either', () => {
+    // The class rule above cannot see `whileHover={{ scale: 1.02 }}` — it is a
+    // JS prop, not a string. The setup wizard was doing exactly that, so "no
+    // lift, no scale" held everywhere the guard could look and nowhere else.
+    // Scanned over raw text rather than string bodies, since these are objects.
+    const offenders: string[] = [];
+    for (const { path, text } of FILES) {
+      const re = /\bwhile(Hover|Tap|Focus)\s*=\s*\{\{[^}]*\b(scale|y)\s*:/g;
+      for (const m of text.matchAll(re)) {
+        offenders.push(`${path}: ${m[0].replace(/\s+/g, ' ').slice(0, 70)}`);
+      }
+    }
+    expect(
+      offenders,
+      'hover and press are background/border changes — that rule is about the ' +
+        'gesture, not about which API expresses it',
+    ).toEqual([]);
   });
 
   it('borders come from tokens, not literal white', () => {

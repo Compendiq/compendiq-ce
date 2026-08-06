@@ -23,7 +23,6 @@ export function StreamingCursor({ active = true, className }: StreamingCursorPro
       data-testid="streaming-cursor"
       className={cn(
         'inline-block w-[2px] h-5 bg-cyan-400 rounded-sm align-middle',
-        'shadow-[0_0_8px_#22d3ee]',
         !shouldReduceMotion && 'animate-[cursor-blink_1s_step-end_infinite]',
         className,
       )}

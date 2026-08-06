@@ -232,7 +232,12 @@ export function CommandPalette() {
             <Dialog.Title className="sr-only">Command palette</Dialog.Title>
             <div className={cn(
               'nm-card-elevated overflow-hidden',
-              isAiMode && 'shadow-[0_0_30px_-5px_rgba(168,85,247,0.4)] ring-1 ring-purple-500/30',
+              // The glow went with the rest of them: a 30px coloured bloom is
+              // the retired world's way of saying "this mode is special", and
+              // `nm-card-elevated` already carries the one overlay shadow the
+              // system has. The ring stays — that is the AI signal, and a ring
+              // is a border, not an effect.
+              isAiMode && 'ring-1 ring-purple-500/30',
             )}>
               {/* Search input */}
               <div className={cn(

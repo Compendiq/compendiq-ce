@@ -57,8 +57,6 @@ export function WelcomeStep({ onNext }: WelcomeStepProps) {
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.4, duration: 0.25 }}
-        whileHover={{ scale: 1.02 }}
-        whileTap={{ scale: 0.98 }}
         onClick={onNext}
         className="nm-button-primary mt-8 px-8 py-3 text-base"
         data-testid="start-setup-btn"

@@ -22,27 +22,24 @@ function getConfidenceLevel(score: number): ConfidenceLevel {
   return 'low';
 }
 
-const levelConfig: Record<ConfidenceLevel, { label: string; dotClass: string; bgClass: string; textClass: string; glowClass: string }> = {
+const levelConfig: Record<ConfidenceLevel, { label: string; dotClass: string; bgClass: string; textClass: string }> = {
   high: {
     label: 'High confidence',
     dotClass: 'bg-status-connected',
     bgClass: 'bg-status-connected/10',
     textClass: 'text-status-connected',
-    glowClass: 'shadow-[0_0_6px_1px_var(--color-status-connected)]/40',
   },
   medium: {
     label: 'Medium confidence',
     dotClass: 'bg-status-syncing',
     bgClass: 'bg-status-syncing/10',
     textClass: 'text-status-syncing',
-    glowClass: 'shadow-[0_0_6px_1px_var(--color-status-syncing)]/40',
   },
   low: {
     label: 'Low confidence',
     dotClass: 'bg-status-disconnected',
     bgClass: 'bg-status-disconnected/10',
     textClass: 'text-status-disconnected',
-    glowClass: 'shadow-[0_0_6px_1px_var(--color-status-disconnected)]/40',
   },
 };
 
@@ -70,7 +67,6 @@ export function ConfidenceBadge({ score, className }: ConfidenceBadgeProps) {
         className={cn(
           'inline-block h-2 w-2 rounded-full',
           config.dotClass,
-          config.glowClass,
         )}
         aria-hidden="true"
       />
