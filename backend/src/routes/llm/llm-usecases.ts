@@ -17,6 +17,7 @@ import {
   refreshVisionCapability,
   readVisionCapabilityDetail,
 } from '../../domains/llm/services/model-capabilities.js';
+import { getShadowMigrationState } from '../../domains/llm/services/shadow-migration-service.js';
 import { logger } from '../../core/utils/logger.js';
 
 const ADMIN_LIMIT = {
@@ -110,8 +111,26 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
   fastify.put(
     '/admin/llm-usecases',
     { preHandler: fastify.requireAdmin, ...ADMIN_LIMIT },
-    async (req) => {
+    async (req, reply) => {
       const updates = UpdateUsecaseAssignmentsInputSchema.parse(req.body);
+      // #1116: while a shadow migration is in flight, the embedding
+      // assignment is load-bearing migration state — embedPage's dual-write
+      // resolves the LIVE model from it, and the swap captures it as the
+      // rollback target. Repointing it mid-flight would silently change which
+      // model the live column receives. Refuse until the migration ends.
+      const embeddingPatch = updates.embedding;
+      if (
+        embeddingPatch
+        && (Object.prototype.hasOwnProperty.call(embeddingPatch, 'providerId')
+          || Object.prototype.hasOwnProperty.call(embeddingPatch, 'model'))
+        && (await getShadowMigrationState()) !== null
+      ) {
+        return reply.code(409).send({
+          error:
+            'A shadow embedding migration is in progress — the embedding assignment is pinned until it swaps, rolls back or is cleaned up (#1116).',
+          statusCode: 409,
+        });
+      }
       // #1154: whether this save actually moved the `chat` assignment. Saving
       // only, say, `embedding` must not fire a vision probe.
       let chatAssignmentChanged = false;

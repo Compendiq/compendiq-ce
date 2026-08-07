@@ -280,6 +280,23 @@ erDiagram
   larger models (e.g. `qwen3-embedding:8b` at 4096) fall to the seq-scan tier.
   Query-time `ef_search` is set per request. Source of truth:
   `backend/src/domains/llm/services/embedding-service.ts` (`enqueueReembedAll`).
+- **Shadow re-embed columns (#1116, transient).** During a zero-downtime model
+  change (`shadow-migration-service.ts`), `page_embeddings.embedding_next` and
+  `pages.page_avg_embedding_next` exist as **runtime-created** nullable columns
+  typed at the server-probed dimension of the NEW model (same tier table as
+  above; there is deliberately no numbered migration — the type is only known
+  at probe time). `embedPage` dual-writes both columns while the backfill runs;
+  the swap is one transaction of column/index RENAMEs under an explicit
+  `lock_timeout` with bounded retries (live→`_prev`, `_next`→live, the prev
+  column's NOT NULL dropped because post-swap inserts never provide it), which
+  also repoints the `embedding` use-case assignment and `embedding_dimensions`.
+  `_prev` columns hold the old vectors for rollback until cleanup drops them
+  and restores the live column's NOT NULL. Migration state lives in
+  `admin_settings.embedding_shadow_migration`. A schema snapshot can therefore
+  legitimately contain `_next`/`_prev` variants of both vector columns; the
+  destructive `enqueueReembedAll({newDimensions})` path refuses to run while
+  that state row exists (and vice versa). Runbook:
+  `docs/runbooks/shadow-reembed.md`.
 - **Materialized page averages (#919).** `pages.page_avg_embedding` stores each
   page's average chunk vector, written by `embedPage` inside the same
   transaction as the chunk inserts, with its own HNSW index

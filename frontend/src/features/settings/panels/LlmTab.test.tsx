@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LlmTab } from './LlmTab';
 import { useAuthStore } from '../../../stores/auth-store';
@@ -189,6 +189,89 @@ describe('LlmTab', () => {
     await waitFor(() => {
       expect(screen.queryByRole('button', { name: /probe/i })).toBeTruthy();
     });
+  });
+
+  it('names the newly selected provider\'s own default model in the pending change (review r5)', async () => {
+    // `resolved` is the server's resolution of the SAVED assignment, so it
+    // still says bge-m3 after switching to provider B with the model left on
+    // inherit. #1116's shadow path pins whatever name it is handed into the
+    // assignment at swap, so the stale one would migrate to a model the admin
+    // never chose.
+    const Wrapper = createWrapper();
+    mockRoutes();
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByText('Use case assignments');
+
+    fireEvent.change(screen.getByTestId('usecase-embedding-provider'), {
+      target: { value: providerB.id },
+    });
+
+    // Scoped: 'gpt-4o-mini' is also an <option> in the model dropdown.
+    const card = within(await screen.findByTestId('shadow-migration-card'));
+    expect(card.getByText(providerB.defaultModel)).toBeInTheDocument();
+    expect(card.queryByText('bge-m3')).toBeNull();
+  });
+
+  it('a completed swap does not re-raise the destructive re-embed banner (review r8)', async () => {
+    // The r7 fix reset the hydration guard synchronously, before the
+    // invalidated query had refetched — so the form re-seeded from the STALE
+    // document, re-armed the guard against it, and the banner came back over
+    // a migration that had just succeeded. This drives the real integration:
+    // swap, then assert the banner stays away.
+    const Wrapper = createWrapper();
+    const swapped = {
+      ...assignments,
+      embedding: {
+        providerId: providerB.id,
+        model: providerB.defaultModel,
+        resolved: { providerId: providerB.id, providerName: 'OpenAI', model: providerB.defaultModel },
+      },
+    };
+    let usecasesBody = assignments;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init = {}) => {
+      const url = typeof input === 'string' ? input : (input as URL).toString();
+      const method = (init as RequestInit).method;
+      if (url.endsWith('/admin/llm-providers') && method !== 'POST') {
+        return new Response(JSON.stringify([providerA, providerB]), { headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.includes('/admin/embedding/shadow-migration') && method === 'POST') {
+        usecasesBody = swapped; // the swap repoints the assignment server-side
+        return new Response('{"swapped":true}', { headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.includes('/admin/embedding/shadow-migration')) {
+        return new Response(
+          JSON.stringify({
+            active: true,
+            migration: { phase: 'ready', model: providerB.defaultModel, dimensions: 1024, totalPages: 3, backfilledPages: 3, stragglerPages: 0, indexed: true },
+          }),
+          { headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      if (url.endsWith('/admin/llm-usecases')) {
+        return new Response(JSON.stringify(usecasesBody), { headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.endsWith('/admin/settings')) {
+        return new Response(
+          JSON.stringify({ ftsLanguage: 'simple', embeddingChunkSize: 500, embeddingChunkOverlap: 50, drawioEmbedUrl: null, llmMaxConcurrentStreamsPerUser: 3, embeddingDimensions: 1024 }),
+          { headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      return new Response('[]', { headers: { 'Content-Type': 'application/json' } });
+    });
+
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByText('Use case assignments');
+
+    fireEvent.click(await screen.findByRole('button', { name: /Swap to the new model/i }));
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Swap to the new model/i })).toBeNull());
+    // Positive control: the form must show the pair the swap wrote. Asserting
+    // only the banner's absence would pass on a harness where it never
+    // renders at all.
+    await waitFor(() =>
+      expect((screen.getByTestId('usecase-embedding-provider') as HTMLSelectElement).value).toBe(providerB.id),
+    );
+    expect(screen.queryByText(/Embedding (provider\/model|model) changed/i)).toBeNull();
   });
 
   // #949: a background refetch (window focus, or a concurrent admin save)
