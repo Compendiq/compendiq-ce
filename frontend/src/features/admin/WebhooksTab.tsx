@@ -1272,7 +1272,7 @@ function StatusChip({ status }: { status: WebhookDelivery['status'] }) {
     success: 'bg-emerald-500/15 text-emerald-300',
     failure: 'bg-destructive/15 text-destructive',
     timeout: 'bg-amber-500/15 text-amber-300',
-    ssrf_blocked: 'bg-purple-500/15 text-purple-300',
+    ssrf_blocked: 'bg-status-ai/15 text-status-ai',
   };
   return (
     <span
