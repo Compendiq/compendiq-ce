@@ -205,7 +205,7 @@ export function SearchAndReplace({ editor }: SearchAndReplaceProps) {
           onChange={(e) => setSearchTerm(e.target.value)}
           onKeyDown={handleSearchKeyDown}
           placeholder="Search..."
-          className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground placeholder:text-muted-foreground focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
+          className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground placeholder:text-muted-foreground focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-ring"
           autoFocus
         />
 
@@ -293,7 +293,7 @@ export function SearchAndReplace({ editor }: SearchAndReplaceProps) {
             onChange={(e) => setReplaceTerm(e.target.value)}
             onKeyDown={handleReplaceKeyDown}
             placeholder="Replace..."
-            className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground placeholder:text-muted-foreground focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
+            className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground placeholder:text-muted-foreground focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-ring"
           />
           <button
             onClick={handleReplaceNext}

@@ -125,7 +125,7 @@ export function SpaceSettingsPage() {
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="w-full rounded-lg border border-border bg-background/50 px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
+              className="w-full rounded-lg border border-border bg-background/50 px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-ring"
               required
             />
           </div>
@@ -141,7 +141,7 @@ export function SpaceSettingsPage() {
               onChange={(e) => setDescription(e.target.value)}
               rows={3}
               maxLength={2000}
-              className="w-full rounded-lg border border-border bg-background/50 px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30 resize-none"
+              className="w-full rounded-lg border border-border bg-background/50 px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-ring resize-none"
             />
           </div>
 

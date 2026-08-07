@@ -85,7 +85,7 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
           // Must stay in step with SidebarTreeView's row: the two trees render
           // side by side in the same rail, so a height difference reads as a
           // rendering bug rather than a distinction.
-          'group flex items-center gap-1.5 rounded-md h-7 pr-2 text-[13px] cursor-pointer transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
+          'group flex items-center gap-1.5 rounded-md h-7 pr-2 text-[13px] cursor-pointer transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background',
           isActive
             ? 'nm-pill-active text-action font-medium scale-[1.01]'
             : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',

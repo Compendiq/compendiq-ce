@@ -511,7 +511,7 @@ function UserCreateDialog({ onClose, onSubmit, isSubmitting }: UserCreateDialogP
           </button>
           <button
             type="submit"
-            className="rounded-md border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+            className="rounded-md border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             disabled={isSubmitting}
           >
             {isSubmitting ? 'Creating…' : 'Create'}

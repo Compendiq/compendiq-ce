@@ -99,7 +99,7 @@ export function NewSpacePage() {
               value={name}
               onChange={(e) => handleNameChange(e.target.value)}
               placeholder="e.g. Engineering Docs"
-              className="w-full rounded-lg border border-border bg-background/50 px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
+              className="w-full rounded-lg border border-border bg-background/50 px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-ring"
               required
               autoFocus
             />
@@ -121,7 +121,7 @@ export function NewSpacePage() {
               placeholder="e.g. ENG_DOCS"
               pattern="[A-Z0-9_]+"
               maxLength={50}
-              className="w-full rounded-lg border border-border bg-background/50 px-3 py-2 text-sm font-mono text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
+              className="w-full rounded-lg border border-border bg-background/50 px-3 py-2 text-sm font-mono text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-ring"
               required
             />
             <p className="mt-1 text-[11px] text-muted-foreground">
@@ -142,7 +142,7 @@ export function NewSpacePage() {
               placeholder="What is this space for?"
               rows={3}
               maxLength={2000}
-              className="w-full rounded-lg border border-border bg-background/50 px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30 resize-none"
+              className="w-full rounded-lg border border-border bg-background/50 px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-ring resize-none"
             />
           </div>
 

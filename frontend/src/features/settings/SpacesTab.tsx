@@ -190,7 +190,7 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
                 <button
                   type="button"
                   onClick={() => toggleSpace(space.key)}
-                  className="flex min-w-0 flex-1 items-center gap-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 rounded-md"
+                  className="flex min-w-0 flex-1 items-center gap-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-md"
                   aria-pressed={isSelected}
                   aria-label={`${isSelected ? 'Deselect' : 'Select'} ${space.name}`}
                 >
@@ -226,7 +226,7 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
                     onClick={(e) => { e.stopPropagation(); handleRemoveSpace(space.key, space.name); }}
                     disabled={removeSpace.isPending}
                     aria-label={`Remove ${space.name}`}
-                    className="shrink-0 rounded p-1 text-muted-foreground hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+                    className="shrink-0 rounded p-1 text-muted-foreground hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     title="Remove this space and its synced pages"
                   >
                     <Trash2 size={14} />

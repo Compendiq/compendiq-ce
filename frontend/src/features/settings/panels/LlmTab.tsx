@@ -249,7 +249,7 @@ export function LlmTab() {
                   );
                 }
               }}
-              className="w-24 rounded-lg border border-border bg-background/50 px-3 py-1.5 text-right text-sm outline-none focus:ring-1 focus:ring-primary/30"
+              className="w-24 rounded-lg border border-border bg-background/50 px-3 py-1.5 text-right text-sm outline-none focus:ring-1 focus:ring-ring"
             />
           </div>
         </div>

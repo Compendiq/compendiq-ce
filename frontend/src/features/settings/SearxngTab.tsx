@@ -121,7 +121,7 @@ export function SearxngTab() {
       {isDirty && (
         <div className="sticky bottom-0 flex justify-end border-t border-border bg-card pt-4">
           <button onClick={() => saveMutation.mutate(form)} disabled={saveMutation.isPending}
-            className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground" data-testid="searxng-save">
+            className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground" data-testid="searxng-save">
             {saveMutation.isPending && <Loader2 size={14} className="animate-spin" />}
             Save SearXNG Settings
           </button>

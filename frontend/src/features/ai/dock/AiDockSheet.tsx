@@ -289,7 +289,7 @@ function SheetSurface({ onClose, reduceEffects }: { onClose: () => void; reduceE
         aria-controls="ai-dock-sheet"
         aria-label={expanded ? 'Collapse assistant' : 'Expand assistant'}
         title={expanded ? 'Collapse assistant' : 'Expand assistant'}
-        className="group flex h-7 w-full shrink-0 touch-none select-none items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40"
+        className="group flex h-7 w-full shrink-0 touch-none select-none items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
         data-testid="ai-dock-sheet-grabber"
       >
         {/* The handle is a control, so it takes --color-border-interactive —

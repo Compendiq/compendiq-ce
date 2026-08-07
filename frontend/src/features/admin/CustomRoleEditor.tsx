@@ -491,7 +491,7 @@ export function CustomRoleEditor({ open, onOpenChange, editRole }: CustomRoleEdi
                 <button
                   onClick={handleSubmit}
                   disabled={!canSubmit}
-                  className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+                  className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
                   data-testid="submit-role-btn"
                 >
                   {isPending && <Loader2 size={14} className="animate-spin" />}

@@ -285,7 +285,7 @@ export function LicenseStatusCard() {
             <button
               onClick={handleSave}
               disabled={!keyInput.trim() || saveMutation.isPending || clearMutation.isPending}
-              className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+              className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
               data-testid="license-key-save-btn"
             >
               {saveMutation.isPending ? (
@@ -323,7 +323,7 @@ export function LicenseStatusCard() {
           opens it; everyone else gets a one-line summary. Expanded by default
           once a paid tier is active, where the rows carry real information. */}
       <details className="group" open={!isCommunity} data-testid="feature-catalogue">
-        <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
+        <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
           <ChevronRight
             size={14}
             aria-hidden="true"

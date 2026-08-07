@@ -617,7 +617,7 @@ export function PageViewPage() {
         </p>
         <button
           onClick={() => navigate('/')}
-          className="rounded-xl border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          className="rounded-xl border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           Return to pages
         </button>
@@ -956,7 +956,7 @@ export function PageViewPage() {
               <p className="text-muted-foreground">This page has no content yet.</p>
               <button
                 onClick={handleStartEditing}
-                className="rounded-xl border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                className="rounded-xl border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 data-testid="add-content-btn"
               >
                 Add content
