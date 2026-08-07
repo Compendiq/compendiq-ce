@@ -272,7 +272,7 @@ export function DocumentUploadZone({
       aria-label={`Remove ${noun}`}
       className={cn(
         'shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:opacity-50',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50',
         extraClass,
       )}
       data-testid={`${testIdPrefix}-remove-button`}
@@ -341,7 +341,7 @@ export function DocumentUploadZone({
             // one optical centre. (The row owns `self-end`, not the button.)
             'flex shrink-0 items-center rounded-md border border-transparent px-2 py-2',
             'text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
             'disabled:pointer-events-none disabled:opacity-50',
             (isDragOver || extracted) && 'text-primary-ink',
           )}

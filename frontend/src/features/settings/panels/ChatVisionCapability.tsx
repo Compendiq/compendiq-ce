@@ -123,7 +123,7 @@ export function ChatVisionCapability({ vision }: { vision: boolean | null }) {
         */}
         {probeError && (
           <details className="group" data-testid="vision-probe-error">
-            <summary className="inline-flex cursor-pointer list-none items-center gap-1 rounded text-xs text-muted-foreground transition-colors marker:content-none hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
+            <summary className="inline-flex cursor-pointer list-none items-center gap-1 rounded text-xs text-muted-foreground transition-colors marker:content-none hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
               <ChevronRight
                 size={12}
                 className="shrink-0 transition-transform group-open:rotate-90"

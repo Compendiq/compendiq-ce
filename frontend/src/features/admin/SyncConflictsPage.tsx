@@ -184,7 +184,7 @@ function SyncConflictsPageInner() {
               <button
                 type="button"
                 onClick={() => setSelected(c)}
-                className="inline-flex items-center gap-1.5 rounded-md border border-action bg-transparent px-3 py-1.5 text-xs font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                className="inline-flex items-center gap-1.5 rounded-md border border-action bg-transparent px-3 py-1.5 text-xs font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 data-testid={`sync-conflict-review-btn-${c.id}`}
               >
                 <GitMerge size={12} />

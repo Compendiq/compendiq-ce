@@ -64,7 +64,7 @@ export function MainNavStripExpanded({ onNavigate }: MainNavStripProps) {
             onClick={onNavigate}
             title={`${label} (${shortcut})`}
             className={cn(
-              'flex h-7 flex-1 items-center justify-center gap-1.5 rounded-sm px-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
+              'flex h-7 flex-1 items-center justify-center gap-1.5 rounded-sm px-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
               active
                 ? 'nm-pill-active'
                 : 'text-muted-foreground hover:text-foreground',

@@ -75,7 +75,7 @@ export function RegistrationPolicyTab() {
           id="registration-mode"
           value={mode}
           onChange={(e) => setMode(e.target.value as RegistrationMode)}
-          className="w-full rounded-lg border border-border bg-background/50 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary/30"
+          className="w-full rounded-lg border border-border bg-background/50 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring"
           data-testid="registration-mode-select"
         >
           <option value="closed">Closed — only administrators can create accounts</option>

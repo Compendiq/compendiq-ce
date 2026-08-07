@@ -425,7 +425,7 @@ export function AiAssistantPage() {
                 next.delete('pageId');
                 setSearchParams(next, { replace: true });
               }}
-              className="flex h-7 items-center gap-1.5 rounded-md border border-border-interactive bg-foreground/[0.03] px-2.5 text-xs text-muted-foreground transition-colors hover:bg-foreground/[0.07] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+              className="flex h-7 items-center gap-1.5 rounded-md border border-border-interactive bg-foreground/[0.03] px-2.5 text-xs text-muted-foreground transition-colors hover:bg-foreground/[0.07] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               title={`Answers are scoped to "${page.title}" — click to clear`}
               data-testid="ai-context-chip"
             >

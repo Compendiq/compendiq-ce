@@ -67,7 +67,7 @@ function ParentPagePicker({
         onClick={() => setIsOpen(!isOpen)}
         className={cn(
           'flex w-full items-center justify-between gap-2 rounded-lg border border-border bg-background/50 px-3 py-1.5 text-left text-sm',
-          'hover:border-border focus:outline-none focus:ring-1 focus:ring-primary/30',
+          'hover:border-border focus:outline-none focus:ring-1 focus:ring-ring',
         )}
       >
         <span className={parentId ? 'text-foreground' : 'text-muted-foreground'}>

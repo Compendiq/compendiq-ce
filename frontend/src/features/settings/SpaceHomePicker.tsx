@@ -162,7 +162,7 @@ export function SpaceHomePicker({
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder={`Search pages in ${spaceKey}…`}
-              className="w-full rounded-md border border-border bg-background py-1.5 pl-7 pr-2 text-xs focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
+              className="w-full rounded-md border border-border bg-background py-1.5 pl-7 pr-2 text-xs focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-ring"
               data-testid={`space-home-picker-search-${spaceKey}`}
               autoFocus
             />

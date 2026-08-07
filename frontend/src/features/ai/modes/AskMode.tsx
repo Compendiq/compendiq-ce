@@ -280,7 +280,7 @@ export function AskExamplePrompts() {
                 pick(prompt);
               }
             }}
-            className="group flex w-full items-start gap-2.5 rounded-lg border border-border bg-foreground/[0.03] px-3 py-2.5 text-left text-sm text-foreground/85 transition-colors hover:border-primary/40 hover:bg-foreground/[0.06] hover:text-foreground focus-visible:border-primary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
+            className="group flex w-full items-start gap-2.5 rounded-lg border border-border bg-foreground/[0.03] px-3 py-2.5 text-left text-sm text-foreground/85 transition-colors hover:border-primary/40 hover:bg-foreground/[0.06] hover:text-foreground focus-visible:border-primary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             data-testid="ask-example-prompt"
           >
             {/* No leading icon: the same Sparkles glyph on all four cards

@@ -160,7 +160,7 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
           // 28px rows at 13px. The tree is the tallest thing on screen, so its
           // row height sets how much of the corpus is reachable without
           // scrolling — 36px rows cost roughly two pages per viewport.
-          'group flex items-center gap-1.5 rounded-md h-7 pr-2 text-[13px] cursor-pointer transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
+          'group flex items-center gap-1.5 rounded-md h-7 pr-2 text-[13px] cursor-pointer transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background',
           isActive
             ? 'nav-selection font-medium'
             : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
@@ -757,7 +757,7 @@ export function SidebarTreeView({
                     onNavigate?.();
                   }}
                   className={cn(
-                    'group flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
+                    'group flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                     activePageId === item.id
                       ? 'nav-selection font-medium'
                       : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
@@ -824,7 +824,7 @@ export function SidebarTreeView({
                 }
               }}
               placeholder="Folder name..."
-              className="flex-1 rounded-md bg-foreground/5 px-2 py-1 text-xs text-foreground outline-none ring-1 ring-primary/30 focus:ring-primary/60 transition-colors"
+              className="flex-1 rounded-md bg-foreground/5 px-2 py-1 text-xs text-foreground outline-none ring-1 ring-primary/30 focus:ring-ring transition-colors"
               aria-label="New folder name"
             />
             <button
@@ -937,7 +937,7 @@ export function SidebarTreeView({
         onKeyDown={handleResizeKeyDown}
         className={cn(
           'group absolute bottom-0 right-0 top-0 z-10 flex w-2 cursor-col-resize items-center justify-end outline-none',
-          'focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60',
+          'focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
         )}
         title="Drag to resize · Double-click to reset"
       >

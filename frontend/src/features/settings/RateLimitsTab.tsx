@@ -148,7 +148,7 @@ export function RateLimitsTab() {
                       setValues((prev) => ({ ...prev, [cat.key]: Math.max(cat.min, Math.min(cat.max, v)) }));
                     }
                   }}
-                  className="w-24 rounded-lg border border-border bg-background/50 px-3 py-1.5 text-right text-sm outline-none focus:ring-1 focus:ring-primary/30"
+                  className="w-24 rounded-lg border border-border bg-background/50 px-3 py-1.5 text-right text-sm outline-none focus:ring-1 focus:ring-ring"
                   data-testid={`rate-limit-${cat.key}`}
                 />
                 <span className="text-xs text-muted-foreground">/min</span>

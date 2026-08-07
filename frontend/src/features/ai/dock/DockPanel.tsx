@@ -212,7 +212,7 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
         </span>
         <button
           onClick={onClose}
-          className="shrink-0 rounded-lg p-1 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+          className="shrink-0 rounded-lg p-1 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           aria-label="Close AI assistant"
           title="Close assistant (Esc)"
           data-testid="ai-dock-close"
@@ -323,7 +323,7 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
                   disabled={disabled}
                   title={isImprove ? improveChipHint(improvementType) : hint}
                   className={cn(
-                    'flex h-7 items-center gap-1.5 rounded-md border border-border-interactive px-2.5 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:opacity-50',
+                    'flex h-7 items-center gap-1.5 rounded-md border border-border-interactive px-2.5 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50',
                     // Half of a split control: the caret picks up the right end.
                     isImprove && 'relative rounded-r-none hover:z-10 focus-visible:z-10',
                   )}
@@ -381,7 +381,7 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
                     // that makes the pair read as one chip; z-10 on hover/focus
                     // lifts whichever half is being addressed so its own border
                     // and ring win over its neighbour's.
-                    className="relative -ml-px flex h-7 w-7 items-center justify-center rounded-md rounded-l-none border border-border-interactive text-muted-foreground transition-colors hover:z-10 hover:bg-foreground/5 hover:text-foreground focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:opacity-50"
+                    className="relative -ml-px flex h-7 w-7 items-center justify-center rounded-md rounded-l-none border border-border-interactive text-muted-foreground transition-colors hover:z-10 hover:bg-foreground/5 hover:text-foreground focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
                     data-testid="ai-dock-improve-types-toggle"
                   >
                     <ChevronDown
@@ -490,7 +490,7 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
             onClick={() => void ask()}
             disabled={isStreaming || !input.trim() || !model}
             aria-label={isStreaming ? 'Sending…' : 'Send message'}
-            className="flex shrink-0 self-end items-center rounded-md border border-primary bg-primary px-2.5 py-1.5 text-sm font-medium text-primary-foreground transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:opacity-50"
+            className="flex shrink-0 self-end items-center rounded-md border border-primary bg-primary px-2.5 py-1.5 text-sm font-medium text-primary-foreground transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
             data-testid="ai-dock-send"
           >
             {isStreaming ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
@@ -566,7 +566,7 @@ function ImprovementTypeDrawer({ id, value, onChange, disabled, onKeyDown }: Imp
               aria-pressed={selected}
               title={IMPROVEMENT_DESCRIPTIONS[type]}
               className={cn(
-                'flex h-6 items-center rounded-md px-2 text-[11px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:opacity-50',
+                'flex h-6 items-center rounded-md px-2 text-[11px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50',
                 selected
                   ? 'nm-pill-active font-medium text-action'
                   : 'border border-border-interactive text-muted-foreground hover:bg-foreground/5 hover:text-foreground',

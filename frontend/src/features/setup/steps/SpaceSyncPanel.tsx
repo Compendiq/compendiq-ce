@@ -205,7 +205,7 @@ export function SpaceSyncPanel() {
                 aria-pressed={isSelected}
                 className={cn(
                   'flex w-full items-center gap-3 rounded-lg border px-4 py-3 text-left transition-colors',
-                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                   isSelected
                     ? 'border-action/40 bg-action/10'
                     : 'border-border-interactive bg-foreground/5 hover:bg-foreground/10',
