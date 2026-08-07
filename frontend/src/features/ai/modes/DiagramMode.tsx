@@ -38,7 +38,7 @@ export function DiagramTypeSelector() {
     ? (diagramType as (typeof DIAGRAM_TYPES)[number])
     : 'flowchart';
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-border/40 bg-card/50 px-3 py-2 backdrop-blur-sm">
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-border bg-card px-3 py-2">
       <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground/80">
         Diagram type
       </span>
@@ -53,7 +53,7 @@ export function DiagramTypeSelector() {
               'flex h-7 items-center rounded-md border px-2.5 text-xs capitalize transition-colors',
               diagramType === type
                 ? 'border-primary/45 bg-primary/15 text-primary-ink font-medium'
-                : 'border-border/40 text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
+                : 'border-border text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
             )}
           >
             {type}
@@ -157,7 +157,7 @@ export function DiagramModeInput() {
   }, [page, model, diagramType, pageId, thinkingMode, isStreaming, runStream, setDiagramCode]);
 
   return (
-    <div className="mt-3 flex items-center gap-3 border-t border-border/40 pt-3">
+    <div className="mt-3 flex items-center gap-3 border-t border-border pt-3">
       <button
         onClick={handleDiagram}
         disabled={isStreaming || !page || !model}

@@ -15,7 +15,6 @@ import {
   Settings,
 } from 'lucide-react';
 import { m, AnimatePresence, useReducedMotion } from 'framer-motion';
-import { ShortcutHint } from '../ShortcutHint';
 import { MainNavStripExpanded, MainNavStripCollapsed } from './MainNavStrip';
 import { usePageTree, useCreatePage, usePinnedPages } from '../../hooks/use-pages';
 import { useSpaces } from '../../hooks/use-spaces';
@@ -158,7 +157,10 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
         tabIndex={0}
         aria-expanded={hasChildren ? isExpanded : undefined}
         className={cn(
-          'group flex items-center gap-1.5 rounded-[10px] h-9 pr-2 text-sm cursor-pointer transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
+          // 28px rows at 13px. The tree is the tallest thing on screen, so its
+          // row height sets how much of the corpus is reachable without
+          // scrolling — 36px rows cost roughly two pages per viewport.
+          'group flex items-center gap-1.5 rounded-md h-7 pr-2 text-[13px] cursor-pointer transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
           isActive
             ? 'nav-selection font-medium'
             : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
@@ -190,7 +192,7 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
         {/* #767: pin the weight explicitly (conditional, never both classes)
             so titles can't inherit or synthesize a heavier weight while the
             variable font loads or the row sits on a composited layer. */}
-        <span className={cn('truncate text-sm', isActive ? 'font-medium' : 'font-normal')}>
+        <span className={cn('truncate text-[13px]', isActive ? 'font-medium' : 'font-normal')}>
           {node.page.title}
         </span>
       </div>
@@ -526,12 +528,14 @@ export function SidebarTreeView({
                 toggleTreeSidebar();
               }
             }}
-            className="mt-2 flex items-center gap-0.5 rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
+            className="mt-2 flex items-center rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
             aria-label="Expand sidebar"
             title="Expand sidebar (,)"
           >
+            {/* Shortcut in the tooltip, not glued to the icon — see the twin in
+                ArticleRightPane. A "," rendered as a bordered chip beside a
+                rail icon reads as stray punctuation, not a key. */}
             <PanelLeft size={16} />
-            <ShortcutHint shortcutId="toggle-sidebar" />
           </button>
 
           {/* Nav icons */}
@@ -557,17 +561,20 @@ export function SidebarTreeView({
         isResizing && 'select-none',
       )}
     >
-      {/* Global destinations remain visually separate from workspace content. */}
-      <div className="panel-toolbar flex shrink-0 items-center gap-1 border-b px-2 py-2">
+      {/* Global destinations remain visually separate from workspace content.
+          `h-12` rather than `py-2`: this rule, the article context strip's and
+          the inspector's header rule are one line running across the app, so
+          all three are pinned to the same 48px border-box height instead of
+          each being however tall its own content plus padding came out. */}
+      <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 border-b px-2">
           <MainNavStripExpanded onNavigate={onNavigate} />
           <button
             onClick={toggleTreeSidebar}
-            className="flex shrink-0 items-center gap-0.5 rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
+            className="flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
             aria-label="Collapse sidebar"
             title="Collapse sidebar (,)"
           >
             <PanelLeftClose size={14} />
-            <ShortcutHint shortcutId="toggle-sidebar" />
           </button>
       </div>
 
@@ -718,7 +725,7 @@ export function SidebarTreeView({
       {/* A compact navigation shortcut; the Pages dashboard remains the rich
           pinned overview with excerpts and management controls. */}
       {pinnedData && pinnedData.items.length > 0 && (
-        <section className="shrink-0 border-t border-border/45 px-2 py-2" aria-labelledby="sidebar-pinned-heading">
+        <section className="shrink-0 border-t border-border px-2 py-2" aria-labelledby="sidebar-pinned-heading">
           <button
             type="button"
             onClick={() => setPinnedSectionCollapsed((value) => !value)}
@@ -784,7 +791,7 @@ export function SidebarTreeView({
       )}
 
       {/* Page collection toolbar — actions are scoped to the tree below. */}
-      <div className="flex h-9 shrink-0 items-center justify-between border-y border-border/55 px-3">
+      <div className="flex h-9 shrink-0 items-center justify-between border-y border-border px-3">
         <span className="text-xs font-semibold text-foreground/85">Pages</span>
         <button
           onClick={() => {

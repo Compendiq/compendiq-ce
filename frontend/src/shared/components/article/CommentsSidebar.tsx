@@ -155,7 +155,7 @@ export function CommentsSidebar({ pageId, className }: CommentsSidebarProps) {
               exit={{ x: '100%', opacity: 0 }}
               transition={{ type: 'spring', damping: 30, stiffness: 300 }}
               className={cn(
-                'fixed right-2 top-2 bottom-2 z-50 flex w-full max-w-md flex-col nm-sidebar shadow-2xl',
+                'fixed right-2 top-2 bottom-2 z-50 flex w-full max-w-md flex-col nm-sidebar shadow-[var(--shadow-overlay)]',
                 className,
               )}
               data-testid="comments-sidebar"

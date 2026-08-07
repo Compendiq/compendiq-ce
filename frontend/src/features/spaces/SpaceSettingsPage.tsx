@@ -87,7 +87,7 @@ export function SpaceSettingsPage() {
         Back
       </button>
 
-      <div className="rounded-xl border border-border/50 bg-card/80 p-6 shadow-lg backdrop-blur-md">
+      <div className="rounded-xl border border-border bg-card p-6">
         <div className="mb-6 flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-action/10">
             <Settings size={20} className="text-action" />
@@ -106,7 +106,7 @@ export function SpaceSettingsPage() {
             <label className="mb-1.5 block text-xs font-medium text-foreground">
               Space Key
             </label>
-            <div className="flex items-center gap-2 rounded-lg border border-border/30 bg-foreground/5 px-3 py-2">
+            <div className="flex items-center gap-2 rounded-lg border border-border bg-foreground/5 px-3 py-2">
               <HardDrive size={14} className="text-action/70" />
               <span className="font-mono text-sm text-muted-foreground">{key}</span>
             </div>
@@ -125,7 +125,7 @@ export function SpaceSettingsPage() {
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="w-full rounded-lg border border-border/50 bg-background/50 px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
+              className="w-full rounded-lg border border-border bg-background/50 px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
               required
             />
           </div>
@@ -141,7 +141,7 @@ export function SpaceSettingsPage() {
               onChange={(e) => setDescription(e.target.value)}
               rows={3}
               maxLength={2000}
-              className="w-full rounded-lg border border-border/50 bg-background/50 px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30 resize-none"
+              className="w-full rounded-lg border border-border bg-background/50 px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30 resize-none"
             />
           </div>
 
@@ -155,7 +155,8 @@ export function SpaceSettingsPage() {
             <button
               type="submit"
               disabled={!name.trim() || updateSpace.isPending}
-              className="rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+              // The form's submit: filled, like every other page primary.
+              className="nm-button-primary disabled:cursor-not-allowed"
             >
               {updateSpace.isPending ? 'Saving...' : 'Save Changes'}
             </button>

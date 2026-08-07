@@ -94,22 +94,22 @@ interface GraphCanvasColors {
 function getCanvasColors(isLight: boolean): GraphCanvasColors {
   return isLight
     ? {
-        // Frost Steel --color-foreground #171c2c
-        label: 'rgba(23,28,44,0.85)',
-        title: 'rgba(23,28,44,0.95)',
-        badge: 'rgba(23,28,44,0.7)',
-        border: 'rgba(23,28,44,0.4)',
-        borderHover: 'rgba(23,28,44,0.9)',
-        hoverStroke: 'rgba(23,28,44,0.8)',
+        // Paper --color-foreground #17181a
+        label: 'rgba(23,24,26,0.85)',
+        title: 'rgba(23,24,26,0.95)',
+        badge: 'rgba(23,24,26,0.7)',
+        border: 'rgba(23,24,26,0.4)',
+        borderHover: 'rgba(23,24,26,0.9)',
+        hoverStroke: 'rgba(23,24,26,0.8)',
       }
     : {
-        // Slate Steel --color-foreground #e8ecf5
-        label: 'rgba(232,236,245,0.85)',
-        title: 'rgba(232,236,245,0.95)',
-        badge: 'rgba(232,236,245,0.7)',
-        border: 'rgba(232,236,245,0.4)',
-        borderHover: 'rgba(232,236,245,0.9)',
-        hoverStroke: 'rgba(232,236,245,0.8)',
+        // Graphite --color-foreground #eceef2
+        label: 'rgba(236,238,242,0.85)',
+        title: 'rgba(236,238,242,0.95)',
+        badge: 'rgba(236,238,242,0.7)',
+        border: 'rgba(236,238,242,0.4)',
+        borderHover: 'rgba(236,238,242,0.9)',
+        hoverStroke: 'rgba(236,238,242,0.8)',
       };
 }
 
@@ -197,7 +197,7 @@ export function GraphPage() {
   const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
 
   // #941: derive theme-aware canvas colours so node labels/borders stay
-  // legible on both the dark (Slate Steel) and light (Frost Steel) themes.
+  // legible on both the dark (Graphite) and light (Paper) themes.
   const isLight = useIsLightTheme();
   const canvasColors = useMemo(() => getCanvasColors(isLight), [isLight]);
 
@@ -452,7 +452,7 @@ export function GraphPage() {
       {/* Header bar */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold">Knowledge Graph</h1>
+          <h1 className="text-lg font-semibold">Knowledge Graph</h1>
           <p className="text-sm text-muted-foreground">
             {data.nodes.length} {viewMode === 'clustered' ? 'clusters' : 'pages'}, {data.edges.length} connections
             {focusPageId && ' (local view)'}
@@ -582,7 +582,7 @@ export function GraphPage() {
       {/* Graph container */}
       <div
         ref={containerRef}
-        className="relative min-h-0 flex-1 overflow-hidden rounded-lg border border-border/50 bg-background/50"
+        className="relative min-h-0 flex-1 overflow-hidden rounded-lg border border-border bg-background/50"
         data-testid="graph-container"
       >
         <ForceGraph2D
@@ -616,8 +616,8 @@ export function GraphPage() {
         {hoveredNode && (
           <div
             className={cn(
-              'pointer-events-none fixed z-50 max-w-xs rounded-lg border border-border/50',
-              'bg-card/95 px-3 py-2 text-xs shadow-lg backdrop-blur-md',
+              'pointer-events-none fixed z-50 max-w-xs rounded-lg border border-border',
+              'nm-card-elevated px-3 py-2 text-xs',
               'max-h-64 overflow-y-auto',
             )}
             style={{
@@ -704,7 +704,7 @@ function ArticlePickerLanding({ onPick, onShowFullGraph }: ArticlePickerLandingP
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="Search pages by title…"
-            className="w-full rounded-lg border border-border/40 bg-foreground/5 py-2 pl-9 pr-3 text-sm outline-none focus:ring-1 focus:ring-primary"
+            className="w-full rounded-lg border border-border bg-foreground/5 py-2 pl-9 pr-3 text-sm outline-none focus:ring-1 focus:ring-primary"
             data-testid="graph-picker-input"
           />
         </div>
@@ -742,7 +742,7 @@ function ArticlePickerLanding({ onPick, onShowFullGraph }: ArticlePickerLandingP
           </ul>
         )}
 
-        <div className="mt-5 border-t border-border/30 pt-4 text-xs text-muted-foreground">
+        <div className="mt-5 border-t border-border pt-4 text-xs text-muted-foreground">
           <p>
             Want to see everything anyway? The full graph can be slow on large
             knowledge bases.

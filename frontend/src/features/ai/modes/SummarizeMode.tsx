@@ -29,7 +29,7 @@ export function SummarizeModeInput() {
   }, [page, model, isStreaming, pageId, includeSubPages, thinkingMode, runStream]);
 
   return (
-    <div className="mt-3 flex items-center gap-3 border-t border-border/40 pt-3">
+    <div className="mt-3 flex items-center gap-3 border-t border-border pt-3">
       <button
         onClick={handleSummarize}
         disabled={isStreaming || !page || !model}

@@ -98,17 +98,17 @@ export function ErrorDashboard() {
 
       {/* Summary stats */}
       <div className="grid grid-cols-3 gap-3">
-        <div className="rounded-lg border border-border/50 p-3">
+        <div className="rounded-lg border border-border p-3">
           <p className="text-xs text-muted-foreground">Today</p>
           <p className={cn('text-2xl font-bold', totalErrors24h > 0 ? 'text-destructive' : 'text-success')} data-testid="errors-today">
             {totalErrors24h}
           </p>
         </div>
-        <div className="rounded-lg border border-border/50 p-3">
+        <div className="rounded-lg border border-border p-3">
           <p className="text-xs text-muted-foreground">This Week</p>
           <p className="text-2xl font-bold" data-testid="errors-week">{totalErrors7d}</p>
         </div>
-        <div className="rounded-lg border border-border/50 p-3">
+        <div className="rounded-lg border border-border p-3">
           <p className="text-xs text-muted-foreground">Unresolved</p>
           <p className={cn('text-2xl font-bold', (summary?.unresolvedCount ?? 0) > 0 ? 'text-warning' : 'text-success')} data-testid="errors-unresolved">
             {summary?.unresolvedCount ?? 0}
@@ -151,7 +151,7 @@ export function ErrorDashboard() {
           {errors.items.map((error) => (
             <div
               key={error.id}
-              className="rounded-lg border border-border/30 hover:border-border/50"
+              className="rounded-lg border border-border hover:border-border"
               data-testid={`error-row-${error.id}`}
             >
               {/* Error header */}
@@ -199,7 +199,7 @@ export function ErrorDashboard() {
 
               {/* Expanded stack trace */}
               {expandedId === error.id && (
-                <div className="border-t border-border/30 p-3" data-testid={`error-detail-${error.id}`}>
+                <div className="border-t border-border p-3" data-testid={`error-detail-${error.id}`}>
                   {error.stack && (
                     <div className="mb-3">
                       <p className="mb-1 text-xs font-medium text-muted-foreground">Stack Trace</p>

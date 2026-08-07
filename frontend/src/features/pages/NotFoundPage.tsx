@@ -37,7 +37,7 @@ export function NotFoundPage() {
         <Compass size={32} aria-hidden="true" />
       </div>
 
-      <h1 className="text-2xl font-semibold tracking-[-0.01em]" tabIndex={-1}>
+      <h1 className="text-lg font-semibold tracking-[-0.01em]" tabIndex={-1}>
         This page doesn&apos;t exist
       </h1>
 
@@ -80,7 +80,7 @@ export function NotFoundPage() {
       <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
         <Link
           to="/"
-          className="inline-flex items-center gap-2 rounded-lg border border-border/50 px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
           data-testid="not-found-pages-link"
         >
           <FileText size={15} aria-hidden="true" />
@@ -88,7 +88,7 @@ export function NotFoundPage() {
         </Link>
         <Link
           to="/trash"
-          className="inline-flex items-center gap-2 rounded-lg border border-border/50 px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
           data-testid="not-found-trash-link"
         >
           <Trash2 size={15} aria-hidden="true" />

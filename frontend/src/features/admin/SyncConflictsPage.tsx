@@ -106,7 +106,7 @@ function SyncConflictsPageInner() {
       data-testid="sync-conflicts-page"
     >
       <div>
-        <h1 className="flex items-center gap-2 text-2xl font-bold">
+        <h1 className="flex items-center gap-2 text-lg font-semibold">
           <GitMerge size={20} className="text-muted-foreground" />
           Sync conflicts
         </h1>
@@ -148,7 +148,7 @@ function SyncConflictsPageInner() {
       {/* Empty state */}
       {!error && data && data.conflicts.length === 0 && (
         <div
-          className="flex flex-col items-center justify-center gap-3 rounded-lg border border-border/40 bg-foreground/[0.02] p-8 text-center"
+          className="flex flex-col items-center justify-center gap-3 rounded-lg border border-border bg-foreground/[0.02] p-8 text-center"
           data-testid="sync-conflicts-empty"
         >
           <CheckCircle2 size={32} className="text-emerald-400" />

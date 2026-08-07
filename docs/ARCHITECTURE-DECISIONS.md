@@ -667,6 +667,130 @@ the steel tokens. The brand mark itself was retinted (tile `#151B2C`, glyph
 `#E8ECF5`, magnifier strokes steel) across the React `Logo`, the standalone
 SVGs, and the generated favicons.
 
+### v0.6 — Graphite / Paper, a flat workspace system (supersedes neumorphism)
+
+**Owner decision (2026-08-06).** Presented with four distinct visual worlds
+against the category convention, the owner chose **the convention, executed at
+full fidelity**, with **Linear, Plane and Notion** named as the craft bar. This
+is recorded as a durable brand commitment in `PRODUCT.md`, not a one-off: future
+work does not re-open it with a concept round.
+
+This retires the **neumorphic depth model** that v0.4 introduced and v0.5 kept.
+What survives from v0.4/v0.5 and is still binding: Radix primitives, Framer
+Motion `LazyMotion`, `:focus-visible` rings with offset, `prefers-reduced-motion`
+honoured, the `--color-status-*` semantic tokens, the split border roles, and
+the mandatory 1px border on every operable surface for WCAG 1.4.11 and
+`forced-colors: active`. **The 1px border matters more now, not less** — there is
+no shadow left to fall back on.
+
+- **Themes.** `slate-steel` → **`graphite`** (dark, `#0d0e11`); `frost-steel` →
+  **`paper`** (light, `#fbfbfc`). Both are neutral. Retired IDs migrate on read
+  in `validateThemeId` *and* the `index.html` FOUC script, preserving brightness
+  so a light-theme user does not flash dark before React mounts.
+- **Accent.** Steel → **teal** (`#4dd0e1` dark / `#0e7490` light), still the
+  single brand *and* interaction colour. Amber stays warning-only; violet stays
+  AI. The v0.5 rule that an AI-labelled *control* takes the interaction accent
+  (not violet) is unchanged.
+
+  The two values are not one hue at two lightnesses. Dark carries a bright
+  cyan-teal because it has to clear 4.5:1 against `#16181d`; Paper carries a
+  deep teal because that same bright value measures under 2:1 on white. An
+  indigo was trialled first and swapped for teal on owner preference; the
+  ratios are computed from the tokens in `workspace-themes.test.ts`, so a
+  retune of either fails with the measured number rather than a hex diff.
+- **Depth is a value step plus a hairline.** The two-light-source extrusion
+  recipe is gone. `--nm-shadow-*` / `--nm-highlight-*` remain declared but
+  resolve to `transparent`, so a missed callsite renders flat rather than
+  leaving one embossed control behind. Exactly one real shadow exists —
+  `--shadow-overlay`, carried by `nm-card-elevated` alone, for content that
+  genuinely floats above the page.
+- **Chrome is the ground, content is the pane.** Sidebar, header and toolbars
+  paint `--color-background`; the content pane sits one step up. This inverts
+  v0.4/v0.5, where chrome was the lighter card colour. It is why the document is
+  the brightest thing on screen. Consequence: the six
+  `[data-theme-type="light"]` shell overrides are deleted — both themes are one
+  token-driven ladder, and a light-only override was the mechanism by which the
+  two themes drifted apart.
+- **Surfaces are flat colours.** The gradient chassis is reverted. A gradient
+  under dense 13px text means the same row measures differently at the top of a
+  pane than at the bottom, and every surface needs measuring twice. **This also
+  reverses v0.5's "card surfaces are background images" consequence**: a
+  Tailwind `hover:bg-*` composes normally again, and the trap is designed out
+  rather than documented around.
+- **No lift, no scale, no glass.** `translateY` on hover and `scale` on press
+  are removed from both the utilities and the components. The `--glass-*` tokens
+  resolve onto `--color-*`; `backdrop-blur` survives **only** on modal scrims,
+  where it is a specific effect rather than decoration standing in for
+  hierarchy. 307 fractional `border-border/NN` opacities collapse to one
+  measurable hairline, and 56 translucent `bg-card/NN` panes become opaque —
+  a translucent pane's text contrast cannot be computed, which is the thing the
+  theme tests exist to guarantee.
+- **Typography.** Space Grotesk is retired; there is **no display face**. Inter
+  carries everything, JetBrains Mono carries code and data figures.
+  `--font-display` is an alias onto Inter so existing callsites cannot drift.
+  Both remain variable builds for the `font-synthesis: style` reason above.
+- **Density.** 32px controls, 28px/13px tree rows, 48px header, 10/8/6/4 corner
+  scale, 18px semibold route titles, list rows as rows (`px-3 py-2`) rather than
+  cards.
+- **The setup wizard's animated gradient mesh is retired.** v0.4 explicitly
+  preserved it ("it sits behind the neumorphic surfaces without conflict");
+  under a flat system there is nothing for it to sit behind. Three separate
+  rules were against it: it was the last gradient in the app and sat on the one
+  screen a new operator sees first, so it promised a surface the rest of the
+  product does not have; its `rgba(120, 80, 255, …)` was a hardcoded violet, and
+  violet means AI here, on a screen that has not asked about a model yet; and it
+  animated `background` — a paint property, not a compositable one — on
+  `repeat: Infinity` with no `prefers-reduced-motion` guard, for as long as the
+  wizard was open. The wizard sits on the chassis like every other surface.
+- **Theme preference follows the OS by default** (`system | dark | light`). The
+  *preference* is persisted; the resolved palette is not, so a stale value
+  cannot win over the live OS reading. `startSystemThemeSync` is gated on
+  hydration — an OS event in the gap re-serialised the initial `system` over the
+  user's stored choice.
+- **Regression guard retargeted.** `neumorphic-themes.test.ts` →
+  `workspace-themes.test.ts`. Its computed-WCAG machinery is carried over
+  intact; the structural half now fails on a reintroduced shadow, `transform`,
+  gradient surface, or light-theme shell override — drift that looks like polish
+  in review. `ui-text-legibility.test.ts` enforces an 11px floor.
+
+**Accepted exception:** the 3px `border-left` on `.panel-*` in `.prose` /
+`.tiptap` is the rendering of a Confluence panel macro in *document body*
+content. Its left rule carries meaning from the source document, and "the source
+of record wins" outranks our surface conventions. The equivalent decoration on
+app chrome stays refused.
+
+**Cross-surface parity — closed, and the shape of the fix is the point.**
+`compendiq-landing` carries Graphite/Paper: same chassis, same teal, same Inter,
+`paper`/`graphite` theme IDs. The app is the source of truth and the port went
+outward.
+
+Parity is **brand-deep, not rule-deep**. v0.6's flat surfaces, its 10/8/6/4
+radii and its single shadow are answers to being a workspace that recedes behind
+a document; a marketing page has the opposite job and keeps its radial backdrop
+and softer radii. The two surfaces share an identity, not a density.
+
+Three things a token port structurally cannot reach, all of which had silently
+survived at least one rebrand:
+
+- **The mark.** Its colours must be literals, because four of its five files are
+  static SVGs rendering with no custom properties available (a favicon has no
+  document; a maskable icon is rasterised by the OS). Honey survived into steel
+  and steel survived into Graphite the same way. `logo-color-parity.test.ts` now
+  ties the literals back to `--color-card` / `--color-foreground` /
+  `--color-primary` parsed out of `index.css`.
+- **A second mark.** The landing page had its own honey raster of a *visually
+  different* mark serving as header, footer and favicon. It now serves the app's
+  SVGs.
+- **The social card.** A PNG, so it stayed honey through two rebrands — cream
+  ground, honey underline, serif headline — as the first thing anyone sees when
+  a link is shared. It is now generated (`npm run og`) from a template carrying
+  the palette literals, and guarded (`npm run og:check`) by content hash rather
+  than mtime, since git does not preserve mtimes.
+
+The general lesson: a palette guard that reads only the stylesheet certifies the
+part of the brand that was never at risk. Rasters, static SVGs and anything with
+a baked literal need their own tie back to the tokens.
+
 ---
 
 ## ADR-011: Docker Deployment Architecture

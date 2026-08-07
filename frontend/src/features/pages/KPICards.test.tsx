@@ -53,14 +53,23 @@ describe('KPICards', () => {
     );
   });
 
-  it('gives the Last Sync tile double width so one tile leads the row', () => {
+  // The strip reads left to right and Last Sync is the only segment carrying a
+  // next step, so it takes the remaining width and finishes the row. This
+  // replaces an assertion on `sm:col-span-2`, which pinned the retired
+  // four-column tile grid rather than the intent.
+  it('lets Last Sync take the remaining width so the action ends the strip', () => {
     render(
       <KPICards embeddingStatus={mockEmbeddingStatus} spacesCount={5} />,
       { wrapper: Wrapper },
     );
 
     const lastSync = screen.getByTestId('kpi-last-sync');
-    expect(lastSync.closest('.sm\\:col-span-2')).not.toBeNull();
+    // Own line on mobile (it carries a button), remaining width from sm up.
+    expect(lastSync.className).toContain('basis-full');
+    expect(lastSync.className).toContain('sm:flex-1');
+
+    const segments = Array.from(screen.getByTestId('kpi-cards').children);
+    expect(segments.indexOf(lastSync)).toBe(segments.length - 1);
   });
 
   it('offers the sync action inside the Last Sync tile', () => {
@@ -314,7 +323,11 @@ describe('KPICards', () => {
     expect(svg).toHaveAttribute('aria-label', 'Embedding coverage: 100%');
   });
 
-  it('all cards use consistent DOM structure for equal height', () => {
+  // These are three segments of ONE strip, not three cards. The old version of
+  // this test asserted each carried `rounded-xl bg-card h-full` — the tile
+  // styling — which is exactly what a strip must not have: three bordered
+  // panes inside a bordered pane is the nested-card shape.
+  it('renders one separated strip with all three segments inside it', () => {
     render(
       <KPICards
         embeddingStatus={mockEmbeddingStatus}
@@ -324,18 +337,22 @@ describe('KPICards', () => {
       { wrapper: Wrapper },
     );
 
-    const testIds = [
-      'kpi-total-articles',
-      'kpi-embedded-pages',
-      'kpi-last-sync',
-    ];
+    // Separated by a rule, not boxed. The strip is ambient status — a caption
+    // on the page rather than an object on it — so it carries a bottom hairline
+    // and no fill. It used to assert `bg-card`, which pinned the container the
+    // destacking pass removed; the intent was always "one strip, and the
+    // segments own no pane styling", which the loop below is what actually
+    // tests.
+    const strip = screen.getByTestId('kpi-cards');
+    expect(strip.className).toContain('border-b');
+    expect(strip.className).not.toContain('bg-card');
 
-    for (const testId of testIds) {
-      const card = screen.getByTestId(testId);
-      // Each card uses the v0.4 translucent pane style + h-full for equal height
-      expect(card.className).toContain('rounded-xl');
-      expect(card.className).toContain('bg-card/50');
-      expect(card.className).toContain('h-full');
+    for (const testId of ['kpi-total-articles', 'kpi-embedded-pages', 'kpi-last-sync']) {
+      const segment = screen.getByTestId(testId);
+      expect(strip).toContainElement(segment);
+      // No pane styling of its own — the strip is the only surface.
+      expect(segment.className).not.toContain('bg-card');
+      expect(segment.className).not.toContain('rounded-xl');
     }
   });
 });

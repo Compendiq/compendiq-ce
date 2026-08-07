@@ -362,7 +362,7 @@ export function DocumentUploadZone({
   if (extracted && filename) {
     return (
       <div
-        className="flex items-start gap-3 rounded-lg border border-border/40 bg-background/50 p-3"
+        className="flex items-start gap-3 rounded-lg border border-border bg-background/50 p-3"
         data-testid={`${testIdPrefix}-preview-card`}
       >
         <FileText size={20} className="mt-0.5 shrink-0 text-primary" aria-hidden />
@@ -402,7 +402,7 @@ export function DocumentUploadZone({
           'flex w-full items-center justify-center gap-2 rounded-lg border border-dashed px-4 py-3 text-sm transition-colors',
           isDragOver
             ? 'border-primary bg-primary/10 text-primary-ink'
-            : 'border-border/40 text-muted-foreground hover:border-border/60 hover:text-foreground',
+            : 'border-border text-muted-foreground hover:border-border hover:text-foreground',
           blocked && 'pointer-events-none opacity-50',
         )}
         data-testid={`${testIdPrefix}-upload-zone`}

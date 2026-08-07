@@ -145,6 +145,11 @@ describe('AiDockSheet (#1126)', () => {
     expect(screen.queryByTestId('ai-dock')).not.toBeInTheDocument();
   });
 
+  // At md and up `AiDock` renders NOTHING: the assistant is a tab inside
+  // ArticleRightPane there, not a column and not a sheet. This used to assert
+  // the column appeared instead of the sheet; the sheet's own contract — "I am
+  // the phone form and only the phone form" — is unchanged and is what is
+  // actually being pinned.
   it('is not the form used at md and up', async () => {
     window.innerWidth = 1400;
     renderSheet();
@@ -152,9 +157,11 @@ describe('AiDockSheet (#1126)', () => {
       useAiDockStore.getState().openDock();
     });
 
-    await waitFor(() => expect(screen.getByTestId('ai-dock')).toBeInTheDocument());
-    expect(screen.queryByTestId('ai-dock-sheet')).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByTestId('ai-dock-sheet')).not.toBeInTheDocument();
+    });
     expect(screen.queryByTestId('ai-dock-sheet-backdrop')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('ai-dock')).not.toBeInTheDocument();
   });
 
   it('opens at the resting detent with the composer in reach', async () => {

@@ -206,9 +206,9 @@ export function MermaidDiagram({ code, className, forceDark }: MermaidDiagramPro
   };
 
   return (
-    <div className={cn('rounded-lg border border-border/50 bg-foreground/5', className)}>
+    <div className={cn('rounded-lg border border-border bg-foreground/5', className)}>
       {/* Toolbar */}
-      <div className="flex items-center justify-between border-b border-border/50 px-3 py-1.5">
+      <div className="flex items-center justify-between border-b border-border px-3 py-1.5">
         <span className="text-xs text-muted-foreground">Mermaid Diagram</span>
         <div className="flex items-center gap-1">
           <button
@@ -234,7 +234,7 @@ export function MermaidDiagram({ code, className, forceDark }: MermaidDiagramPro
       {loading && !loadError && (
         <div className="flex items-center justify-center p-8" data-testid="mermaid-loading">
           <div className="flex flex-col items-center gap-3">
-            <div className="h-24 w-48 animate-pulse rounded-lg bg-foreground/10 backdrop-blur-sm" />
+            <div className="h-24 w-48 animate-pulse rounded-lg bg-foreground/10" />
             <span className="text-xs text-muted-foreground">Loading diagram...</span>
           </div>
         </div>
@@ -242,7 +242,7 @@ export function MermaidDiagram({ code, className, forceDark }: MermaidDiagramPro
 
       {/* Load error state */}
       {loadError && (
-        <div className="border-t border-border/50 p-3" data-testid="mermaid-load-error">
+        <div className="border-t border-border p-3" data-testid="mermaid-load-error">
           <p className="mb-2 text-xs text-red-400">
             Failed to load Mermaid library: {loadError}
           </p>
@@ -264,7 +264,7 @@ export function MermaidDiagram({ code, className, forceDark }: MermaidDiagramPro
 
       {/* Error fallback: show raw code */}
       {error && !loadError && (
-        <div className="border-t border-border/50 p-3">
+        <div className="border-t border-border p-3">
           <p className="mb-2 text-xs text-red-400">Diagram rendering failed: {error}</p>
           <pre className="max-h-48 overflow-auto rounded bg-black/30 p-2 text-xs text-muted-foreground">
             {code}

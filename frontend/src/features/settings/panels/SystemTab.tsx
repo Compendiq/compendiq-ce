@@ -212,7 +212,7 @@ export function SystemTab() {
         </button>
       </div>
 
-      <div className="border-t border-border/40 pt-6">
+      <div className="border-t border-border pt-6">
         <h3 className="text-base font-semibold">Application Info</h3>
         <div className="mt-3 space-y-2 text-sm text-muted-foreground" data-testid="application-info">
           <div className="flex items-center justify-between">

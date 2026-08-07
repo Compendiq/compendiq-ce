@@ -96,7 +96,7 @@ export function NotificationDropdown({
     <div className="flex flex-col" data-testid="notification-dropdown">
       {/* Header with mark all read */}
       {hasUnread && (
-        <div className="flex items-center justify-end border-b border-border/30 px-3 py-2">
+        <div className="flex items-center justify-end border-b border-border px-3 py-2">
           <button
             onClick={onMarkAllRead}
             className="text-xs text-action hover:text-action/80 transition-colors"

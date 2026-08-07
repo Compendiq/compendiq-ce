@@ -26,7 +26,7 @@ import { Logo } from '../Logo';
 import { ThemeToggle } from './ThemeToggle';
 import { PageTransition } from './PageTransition';
 import { LayoutPresetMenu, type LayoutPreset } from './LayoutPresetMenu';
-import { useMediaQuery } from '../../hooks/use-media-query';
+import { useMediaQuery, useIsMobileLayout } from '../../hooks/use-media-query';
 import { cn } from '../../lib/cn';
 
 export function AppLayout({ children }: { children: ReactNode }) {
@@ -57,6 +57,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const previousLayoutPathRef = useRef(location.pathname);
   const isArticleRoute = /^\/pages\/[^/]+$/.test(location.pathname);
   const isInspectorCompactLayout = useMediaQuery('(min-width: 768px) and (max-width: 1439px)');
+  const isMobileLayout = useIsMobileLayout();
   // On /settings* we swap the Pages tree for a Settings-specific sidebar so
   // the main nav (Pages / AI / Graph) stays accessible — otherwise users land
   // in Settings with no in-rail path back to the rest of the app, since the
@@ -103,8 +104,13 @@ export function AppLayout({ children }: { children: ReactNode }) {
       return;
     }
 
+    // The AI preset. `setArticleSidebarCollapsed(true)` here was correct when
+    // the assistant was its own column and the inspector had to step aside for
+    // it; now the assistant IS a tab in that inspector, so collapsing it hid
+    // the very thing the preset asks for. The effect below turns `openDock()`
+    // into the tab selection on every layout that has an inspector.
     setTreeSidebarCollapsed(false);
-    setArticleSidebarCollapsed(true);
+    setArticleSidebarCollapsed(false);
     openDock();
     setMidWidthTreeExpandedOverride(false);
   }, [
@@ -113,6 +119,41 @@ export function AppLayout({ children }: { children: ReactNode }) {
     requestInspectorView,
     setArticleSidebarCollapsed,
     setTreeSidebarCollapsed,
+  ]);
+
+  // "Show me the assistant" is raised as `openDock()` from three places: Alt+I
+  // in PageViewPage, the AI layout preset above, and the inspector's own rail
+  // button. Below `md` that still means the bottom sheet, which is all `AiDock`
+  // renders now.
+  //
+  // At `md` and above it can no longer mean "open the dock", because there is
+  // no dock: the assistant became a tab inside the inspector and `AiDock`
+  // returns null. Left unhandled the flag did real damage — `ArticleRightPane`
+  // ORs it into its own `collapsed`, so at >=1100px Alt+I collapsed the
+  // inspector to a 40px rail, and between 768 and 1099px the pane's
+  // `dockOpen && !dockLayoutIsWide` guard removed the right side of the screen
+  // outright. The keystroke destroyed the panel it was supposed to open.
+  //
+  // So the intent is consumed here and re-expressed as what it now means:
+  // show the inspector, select Assistant. Lowering the flag immediately keeps
+  // `open` meaning exactly one thing again — "the mobile sheet is up" — rather
+  // than a second, contradictory desktop state that every consumer would have
+  // to special-case.
+  // Gated on `isArticleRoute` as well: the inspector exists only there, so off
+  // an article route there is no tab to select and consuming the flag would
+  // just stomp the user's saved pane preference on an unrelated page.
+  useEffect(() => {
+    if (!dockOpen || isMobileLayout || !isArticleRoute) return;
+    setArticleSidebarCollapsed(false);
+    requestInspectorView('assistant');
+    closeDock();
+  }, [
+    closeDock,
+    dockOpen,
+    isArticleRoute,
+    isMobileLayout,
+    requestInspectorView,
+    setArticleSidebarCollapsed,
   ]);
 
   // At intermediate desktop widths, an expanded inspector temporarily turns
@@ -379,8 +420,10 @@ export function AppLayout({ children }: { children: ReactNode }) {
       <CommandPalette />
       <KeyboardShortcutsModal />
 
-      {/* Top navigation bar — a denser mineral surface over the app canvas. */}
-      <header className="app-header relative z-10 flex h-[58px] shrink-0 items-center border-b px-4">
+      {/* Top navigation bar. 48px: the workspace convention, and 10px back from
+          the 58px the neumorphic header needed to give its extrusion room to
+          read. The height is spent on content everywhere else in the app. */}
+      <header className="app-header relative z-10 flex h-12 shrink-0 items-center border-b px-3">
         {/* Mobile hamburger — opens sidebar slide-over */}
         <button
           onClick={() => setMobileSidebarOpen((v) => !v)}
@@ -394,7 +437,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
 
         {/* Logo - always visible in header */}
         <Link to="/" aria-label="Compendiq home" className="mr-3 flex shrink-0 items-center group">
-          <Logo className="h-[26px] w-auto text-foreground" title="Compendiq" />
+          <Logo className="h-[22px] w-auto text-foreground" title="Compendiq" />
         </Link>
 
         {/* Spacer — the in-page breadcrumb was removed; the sidebar carries all
@@ -408,9 +451,9 @@ export function AppLayout({ children }: { children: ReactNode }) {
             onClick={openCommandPalette}
             aria-label="Search knowledge base"
             aria-expanded={isCommandPaletteOpen}
-            className="app-search pointer-events-auto flex h-9 w-full max-w-xl items-center gap-2 rounded-lg px-3 text-sm"
+            className="app-search pointer-events-auto flex h-8 w-full max-w-lg items-center gap-2 rounded-md px-2.5 text-[13px]"
           >
-            <Search size={16} className="shrink-0" />
+            <Search size={14} className="shrink-0" />
             <span className="truncate">Search pages, commands...</span>
             <span className="ml-auto shrink-0">
               <ShortcutHint shortcutId="search" />
@@ -502,7 +545,26 @@ export function AppLayout({ children }: { children: ReactNode }) {
 
         {/* Main content area + optional right sidebar */}
         <div className="flex flex-1 overflow-hidden">
-          <main className="flex flex-1 flex-col overflow-hidden">
+          {/* On an article route the MAIN COLUMN is the content pane. Everywhere
+              else the pane is a card sitting on the chassis, but a document is
+              not a card: it is the thing you came for, so it takes the surface
+              edge to edge and the chassis stops showing through around it.
+
+              This is why the scroll container's own padding is left untouched
+              here — inside a `bg-card` main it is already the pane's colour, so
+              the whole #1186 sticky-mask / #1218 min-h-0 mechanism keeps working
+              unchanged rather than needing a route-specific padding override. */}
+          {/* Article AND settings routes make the MAIN COLUMN the content pane.
+              Both are reading-and-editing surfaces you sit inside rather than
+              dashboards you scan, so the surface belongs to the column and the
+              chassis stops showing through around a floating card. Every other
+              route keeps its cards on the chassis. */}
+          <main
+            className={cn(
+              'flex flex-1 flex-col overflow-hidden',
+              (isArticleRoute || isSettingsRoute) && 'bg-card',
+            )}
+          >
             <div ref={scrollContainerRef} data-scroll-container className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pb-5 pt-5 sm:px-6 [scrollbar-gutter:stable_both-edges]">
               <PageTransition>
                 {/* flex flex-1 flex-col so pages that opt in (e.g. /ai) can use
@@ -565,7 +627,24 @@ export function AppLayout({ children }: { children: ReactNode }) {
               editor column flex-shrinks around them and each panel scrolls
               independently — the dock is part of the layout, not an overlay
               floating above it (#1126). */}
-          {isArticleRoute && <ArticleRightPane inspectorViewRequest={inspectorViewRequest} />}
+          {/* Both side columns are desktop-only, matching the left rail's own
+              `hidden md:flex`. Below md they were still laid out as flex
+              siblings of <main>: at 390px the inspector held ~280px of a
+              390px viewport and the document flex-shrank to ~90px, rendering
+              a heading one letter per line. A third column cannot be a column
+              on a phone — and the reading surface is the whole point of the
+              route, so it is the one thing that must not yield. */}
+          {isArticleRoute && (
+            <div className="hidden md:flex">
+              <ArticleRightPane inspectorViewRequest={inspectorViewRequest} />
+            </div>
+          )}
+          {/* No desktop dock column any more: at md and up the assistant is a
+              tab inside ArticleRightPane (owner decision, superseding #1126's
+              third column). `AiDock` still renders here for its MOBILE form —
+              it returns the bottom sheet below md and nothing above it — which
+              is the only reachable assistant on a phone, since the inspector
+              pane itself is `hidden md:flex`. */}
           {isArticleRoute && <AiDock />}
         </div>
       </div>
@@ -578,7 +657,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 8 }}
             transition={{ duration: 0.15 }}
-            className="fixed bottom-4 right-4 z-50 flex items-center gap-1.5 rounded-lg bg-card/90 backdrop-blur-md border border-border/50 px-3 py-1.5 shadow-lg"
+            className="fixed bottom-4 right-4 z-50 flex items-center gap-1.5 nm-card-elevated px-3 py-1.5"
             role="status"
             aria-live="polite"
           >

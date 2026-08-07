@@ -193,7 +193,7 @@ export function LlmPolicyTab() {
       </div>
 
       {/* Save button */}
-      <div className="flex items-center justify-end border-t border-border/50 pt-4">
+      <div className="flex items-center justify-end border-t border-border pt-4">
         <button
           onClick={handleSave}
           disabled={saveMutation.isPending}

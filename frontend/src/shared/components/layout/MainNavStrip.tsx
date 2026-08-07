@@ -45,8 +45,14 @@ interface MainNavStripProps {
 export function MainNavStripExpanded({ onNavigate }: MainNavStripProps) {
   const location = useLocation();
   return (
+    // A segmented control on a recessed track — the same shape as the article
+    // inspector's Outline/Details tabs and the search-mode toggle. All three
+    // are "pick one of N", and they had three different treatments: this one
+    // was a bare row with an accent-tinted active item, the inspector a track
+    // with a raised tab, the search toggle a third thing again. One pattern
+    // now: recessed track, raised neutral active segment.
     <nav
-      className="flex shrink-0 grow items-center gap-0.5"
+      className="flex shrink-0 grow items-center gap-0.5 rounded-md border border-border bg-muted p-0.5"
       aria-label="Main navigation"
     >
       {MAIN_NAV_ITEMS.map(({ icon: Icon, label, path, shortcut }) => {
@@ -58,17 +64,21 @@ export function MainNavStripExpanded({ onNavigate }: MainNavStripProps) {
             onClick={onNavigate}
             title={`${label} (${shortcut})`}
             className={cn(
-              'flex flex-1 items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs transition-all duration-200 active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
+              'flex h-7 flex-1 items-center justify-center gap-1.5 rounded-sm px-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
               active
-                ? 'nav-selection font-medium'
-                : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
+                ? 'nm-pill-active'
+                : 'text-muted-foreground hover:text-foreground',
             )}
           >
+            {/* The active icon carried a `drop-shadow` — an extrusion tell from
+                the retired world. This component renders the strip TWICE (rail
+                and expanded), and the first pass removed it from this copy only,
+                under a comment claiming it was the last one in the nav. It was
+                not; the expanded copy below kept it for another whole branch. */}
             <Icon
-              size={14}
+              size={13}
               className={cn(
-                active && 'drop-shadow-[0_1px_2px_oklch(0_0_0_/_0.25)]',
-                // AI uses the same active-navigation steel as its label here;
+                // AI uses the same active-navigation ink as its label here;
                 // violet remains reserved for generated content and status.
                 active && path === '/ai' && 'text-primary-ink',
               )}
@@ -100,7 +110,7 @@ export function MainNavStripCollapsed({ onNavigate }: MainNavStripProps) {
             to={path}
             onClick={onNavigate}
             className={cn(
-              'rounded-lg p-1.5 transition-all duration-200 active:scale-[0.95]',
+              'rounded-lg p-1.5 transition-all duration-200',
               active
                 ? 'nav-selection'
                 : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
@@ -111,7 +121,6 @@ export function MainNavStripCollapsed({ onNavigate }: MainNavStripProps) {
             <Icon
               size={16}
               className={cn(
-                active && 'drop-shadow-[0_1px_2px_oklch(0_0_0_/_0.25)]',
                 active && path === '/ai' && 'text-primary-ink',
               )}
             />

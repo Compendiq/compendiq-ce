@@ -50,7 +50,7 @@ export function CommentForm({
         placeholder={placeholder}
         rows={3}
         disabled={isSubmitting}
-        className="w-full resize-none rounded-lg border border-border/50 bg-foreground/5 px-3 py-2 text-sm outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-primary disabled:opacity-50"
+        className="w-full resize-none rounded-lg border border-border bg-foreground/5 px-3 py-2 text-sm outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-primary disabled:opacity-50"
         data-testid="comment-textarea"
       />
       <div className="flex items-center justify-end gap-2">

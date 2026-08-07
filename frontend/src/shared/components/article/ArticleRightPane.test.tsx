@@ -94,6 +94,13 @@ vi.mock('../../../features/pages/AutoTagger', () => ({
   ),
 }));
 
+// The pane hosts the assistant as a tab now. DockPanel consumes AiContext and
+// the whole AI data stack; this file is about the PANE, so the panel is stubbed
+// the same way AutoTagger and the badges are. AiDock.test.tsx covers the panel.
+vi.mock('../../../features/ai/dock/DockPanel', () => ({
+  DockPanel: () => <div data-testid="dock-panel-stub" />,
+}));
+
 vi.mock('../badges/FreshnessBadge', () => ({
   FreshnessBadge: ({ lastModified }: { lastModified: string }) => <span>{lastModified}</span>,
 }));
@@ -163,9 +170,14 @@ describe('ArticleRightPane', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
     expect(screen.getByTestId('article-right-pane')).toBeInTheDocument();
-    expect(screen.getByText('Page context')).toBeInTheDocument();
+    // The "Page context" label and the page title under it are gone: the view
+    // switcher is the header row now. Both were redundant — the article's own
+    // H1 sits a few pixels to the left and never scrolls out from under the
+    // context strip. What the header must still carry is the tablist and the
+    // collapse control, which is what this asserts instead.
+    expect(screen.getByRole('tablist', { name: 'Page context views' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Collapse page sidebar')).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Details' })).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getByText('AI Assistant')).toBeInTheDocument();
     expect(screen.getByText('Pin')).toBeInTheDocument();
     expect(screen.getByText('Open in Confluence')).toBeInTheDocument();
     expect(screen.getByText('Delete')).toBeInTheDocument();
@@ -174,7 +186,6 @@ describe('ArticleRightPane', () => {
   it('keeps primary actions visible and tucks maintenance and deletion behind disclosures', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    expect(screen.getByText('AI Assistant').closest('details')).toBeNull();
     expect(screen.getByText('Export PDF').closest('details')).toBeNull();
     expect(screen.getByText('Pin').closest('details')).toBeNull();
 
@@ -246,7 +257,9 @@ describe('ArticleRightPane', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
     expect(screen.queryByTestId('article-actions')).not.toBeInTheDocument();
-    expect(screen.queryByText('AI Assistant')).not.toBeInTheDocument();
+    // No "AI Assistant" assertion here any more: that control was removed from
+    // Page actions, so asserting its absence would pass whether or not editing
+    // hides anything — a green cell testing nothing.
   });
 
   it('keeps AI-Tagging available in edit mode (#354)', () => {
@@ -284,42 +297,60 @@ describe('ArticleRightPane', () => {
     expect(screen.queryByText('Version history')).not.toBeInTheDocument();
   });
 
-  // #1126: this button used to navigate to /ai?mode=improve&pageId=…, which took
-  // the document off screen to operate on it. It opens the assistant beside the
-  // document instead. #1176: and only opens it — it queues no work, so the
-  // control is "AI Assistant" rather than a rewrite that starts on click.
-  it('opens the docked assistant instead of navigating away, and starts nothing', () => {
+  // #1126: the way in used to navigate to /ai?mode=improve&pageId=…, taking the
+  // document off screen to operate on it. It shows the assistant beside the
+  // document instead. #1176: and only shows it — it queues no work.
+  //
+  // The trigger under test is now the TAB. There was also an "AI Assistant"
+  // button in Page actions, which this test used to click; it was removed once
+  // the assistant became the tab immediately to its left, since it duplicated
+  // the tablist one row below it. Both halves that matter are unchanged: no
+  // navigation, and nothing starts on open.
+  it('shows the assistant in this pane instead of navigating away, and starts nothing', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    fireEvent.click(screen.getByText('AI Assistant'));
+    fireEvent.click(screen.getByTestId('page-context-tab-assistant'));
 
-    expect(useAiDockStore.getState().open).toBe(true);
+    expect(screen.getByTestId('page-context-tab-assistant')).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
     expect(mockNavigate).not.toHaveBeenCalled();
   });
 
-  it('collapses itself to the rail while the dock is open, without touching the saved preference', () => {
+  // These two cells asserted the opposite until the assistant became a tab: the
+  // pane used to collapse to its rail whenever `dockOpen` was set, because the
+  // assistant was a third column that needed the room. There is no column now.
+  //
+  // Re-adding the OR is not a cosmetic regression. `AppLayout` consumes the flag
+  // in an effect — after commit — so the pane starts collapsing, and its width is
+  // a framer spring: measured per rAF, it ran 280 → 1 → 280 over ~30 frames on
+  // the very keystroke meant to open it. jsdom performs no layout, so that is
+  // invisible here; what these cells can pin is the cause, which is whether the
+  // pane consults `dockOpen` at all.
+  it('does not collapse for the dock flag on a wide layout — the assistant is a tab', () => {
     window.innerWidth = 1400;
     useAiDockStore.setState({ open: true });
 
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    expect(screen.getByTestId('article-right-pane-rail')).toBeInTheDocument();
-    expect(screen.queryByTestId('article-right-pane')).not.toBeInTheDocument();
-    // The user's own collapse preference is untouched, so closing the dock
-    // restores whatever they had chosen and `.` keeps its meaning.
+    expect(screen.getByTestId('article-right-pane')).toBeInTheDocument();
+    expect(screen.queryByTestId('article-right-pane-rail')).not.toBeInTheDocument();
     expect(useUiStore.getState().articleSidebarCollapsed).toBe(false);
   });
 
-  it('closes the dock to expand its forced rail without changing an expanded preference', () => {
+  it('expands on its own preference alone, without consulting the dock', () => {
     window.innerWidth = 1400;
+    useUiStore.setState({ articleSidebarCollapsed: true });
     useAiDockStore.setState({ open: true });
 
     render(<ArticleRightPane />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByLabelText('Expand page sidebar'));
 
-    expect(useAiDockStore.getState().open).toBe(false);
     expect(useUiStore.getState().articleSidebarCollapsed).toBe(false);
-    expect(screen.getByTestId('article-right-pane')).toBeInTheDocument();
+    // Untouched: closing the sheet is `AppLayout`'s job and the `.` shortcut's,
+    // not something this pane's expand control reaches sideways to do.
+    expect(useAiDockStore.getState().open).toBe(true);
   });
 
   it('steps aside entirely below the wide breakpoint while the dock is open', () => {

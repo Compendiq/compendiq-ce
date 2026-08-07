@@ -232,7 +232,7 @@ export function ScimSettingsPage() {
             </div>
           </div>
 
-          <div className="flex items-center justify-between border-t border-border/50 pt-3">
+          <div className="flex items-center justify-between border-t border-border pt-3">
             <label className="flex items-center gap-2 text-sm">
               <input
                 type="checkbox"
@@ -336,7 +336,7 @@ export function ScimSettingsPage() {
         <div className="nm-card overflow-hidden">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-border/50 text-left text-xs text-muted-foreground">
+              <tr className="border-b border-border text-left text-xs text-muted-foreground">
                 <th className="px-4 py-3 font-medium">Name</th>
                 <th className="px-4 py-3 font-medium">Created</th>
                 <th className="px-4 py-3 font-medium">Last Used</th>

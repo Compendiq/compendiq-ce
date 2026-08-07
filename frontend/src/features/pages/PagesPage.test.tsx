@@ -1107,10 +1107,11 @@ describe('PagesPage', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       const keyword = screen.getByTestId('search-mode-keyword');
       expect(keyword).toHaveAttribute('aria-pressed', 'true');
-      // Active mode uses ink-action fill (Task 5 — amber reserved for AI affordances; search-mode toggle is non-AI selection).
-      expect(keyword.className).toContain('bg-action');
-      expect(keyword.className).toContain('shadow-md');
-      expect(keyword.className).toContain('ring-1');
+      // A segmented control: the active segment is the raised one on the track
+      // (`nm-pill-active`). It used to be a near-black `bg-action` fill with a
+      // shadow and ring, which made picking a retrieval strategy louder than
+      // the page's primary action.
+      expect(keyword.className).toContain('nm-pill-active');
     });
 
     it('marks inactive buttons with aria-pressed=false', () => {
@@ -1127,24 +1128,28 @@ describe('PagesPage', () => {
       fireEvent.click(semantic);
 
       expect(semantic).toHaveAttribute('aria-pressed', 'true');
-      // Active mode uses ink-action fill (Task 5).
-      expect(semantic.className).toContain('bg-action');
-      expect(semantic.className).toContain('shadow-md');
+      expect(semantic.className).toContain('nm-pill-active');
 
       const keyword = screen.getByTestId('search-mode-keyword');
       expect(keyword).toHaveAttribute('aria-pressed', 'false');
-      expect(keyword.className).not.toContain('shadow-md');
+      expect(keyword.className).not.toContain('nm-pill-active');
     });
 
-    it('active button has stronger visual weight (shadow + ring) vs inactive', () => {
+    // Selection is carried by fill and weight, not by a shadow or a ring —
+    // neither of which this system has outside overlays and focus.
+    it('distinguishes the active segment from the inactive ones', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       const active = screen.getByTestId('search-mode-keyword');
       const inactive = screen.getByTestId('search-mode-semantic');
 
-      expect(active.className).toContain('shadow-md');
-      expect(active.className).toContain('ring-1');
-      expect(inactive.className).not.toContain('shadow-md');
-      expect(inactive.className).not.toContain('ring-1');
+      expect(active.className).toContain('nm-pill-active');
+      expect(inactive.className).not.toContain('nm-pill-active');
+      expect(inactive.className).toContain('text-muted-foreground');
+
+      for (const el of [active, inactive]) {
+        expect(el.className).not.toContain('shadow-md');
+        expect(el.className).not.toContain('ring-1');
+      }
     });
   });
 

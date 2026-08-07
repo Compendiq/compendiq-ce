@@ -65,10 +65,10 @@ export function SearxngTab() {
         <label className="mb-1.5 block text-sm font-medium">SearXNG URL</label>
         <div className="flex gap-2">
           <input value={form.url} onChange={(e) => updateField('url', e.target.value)}
-            className="flex-1 rounded-lg border border-border/40 bg-foreground/[0.03] px-3 py-2 text-sm outline-none focus:border-primary/50"
+            className="flex-1 rounded-lg border border-border bg-foreground/[0.03] px-3 py-2 text-sm outline-none focus:border-primary/50"
             placeholder="http://searxng:8080" data-testid="searxng-url" />
           <button onClick={() => testMutation.mutate()} disabled={testMutation.isPending}
-            className="flex items-center gap-1.5 rounded-lg border border-border/40 bg-foreground/[0.03] px-3 py-2 text-sm hover:bg-foreground/[0.06] disabled:opacity-50" data-testid="searxng-test">
+            className="flex items-center gap-1.5 rounded-lg border border-border bg-foreground/[0.03] px-3 py-2 text-sm hover:bg-foreground/[0.06] disabled:opacity-50" data-testid="searxng-test">
             {testMutation.isPending ? <Loader2 size={14} className="animate-spin" />
               : testMutation.data?.ok ? <CheckCircle2 size={14} className="text-emerald-400" />
               : testMutation.data && !testMutation.data.ok ? <XCircle size={14} className="text-red-400" />
@@ -98,13 +98,13 @@ export function SearxngTab() {
         <div>
           <label className="mb-1.5 block text-sm font-medium">Max Results</label>
           <input type="number" value={form.maxResults} onChange={(e) => updateField('maxResults', parseInt(e.target.value, 10) || 5)}
-            min={1} max={20} className="w-full rounded-lg border border-border/40 bg-foreground/[0.03] px-3 py-2 text-sm outline-none focus:border-primary/50" data-testid="searxng-max-results" />
+            min={1} max={20} className="w-full rounded-lg border border-border bg-foreground/[0.03] px-3 py-2 text-sm outline-none focus:border-primary/50" data-testid="searxng-max-results" />
           <p className="mt-1 text-xs text-muted-foreground">Number of search results returned (1-20)</p>
         </div>
         <div>
           <label className="mb-1.5 block text-sm font-medium">Search Categories</label>
           <input value={form.categories} onChange={(e) => updateField('categories', e.target.value)}
-            className="w-full rounded-lg border border-border/40 bg-foreground/[0.03] px-3 py-2 text-sm outline-none focus:border-primary/50"
+            className="w-full rounded-lg border border-border bg-foreground/[0.03] px-3 py-2 text-sm outline-none focus:border-primary/50"
             placeholder="general" data-testid="searxng-categories" />
           <p className="mt-1 text-xs text-muted-foreground">Comma-separated: general, it, science, files</p>
         </div>
@@ -119,7 +119,7 @@ export function SearxngTab() {
       </div>
 
       {isDirty && (
-        <div className="sticky bottom-0 flex justify-end border-t border-border/40 bg-card/80 pt-4 backdrop-blur-sm">
+        <div className="sticky bottom-0 flex justify-end border-t border-border bg-card pt-4">
           <button onClick={() => saveMutation.mutate(form)} disabled={saveMutation.isPending}
             className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground" data-testid="searxng-save">
             {saveMutation.isPending && <Loader2 size={14} className="animate-spin" />}

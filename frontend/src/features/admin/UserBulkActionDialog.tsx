@@ -188,12 +188,12 @@ function UserBulkActionDialogInner({
         />
         <Dialog.Content
           className={cn(
-            'fixed left-1/2 top-1/2 z-50 w-full max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-border/60 bg-card/90 shadow-2xl backdrop-blur-xl outline-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 max-h-[85vh] overflow-y-auto',
+            'fixed left-1/2 top-1/2 z-50 w-full max-w-lg -translate-x-1/2 -translate-y-1/2 nm-card-elevated outline-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 max-h-[85vh] overflow-y-auto',
           )}
           aria-describedby={undefined}
           data-testid="bulk-action-modal"
         >
-          <div className="flex items-center justify-between border-b border-border/50 px-5 py-4">
+          <div className="flex items-center justify-between border-b border-border px-5 py-4">
             <Dialog.Title className="flex items-center gap-2 text-base font-semibold">
               <Users size={16} className="text-action" />
               Bulk action ({selectedUserIds.length} selected)
@@ -215,7 +215,7 @@ function UserBulkActionDialogInner({
             <label className="block text-sm">
               <span className="mb-1 block font-medium">Action</span>
               <select
-                className="w-full rounded-md border border-border/60 bg-background px-3 py-2 text-sm"
+                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
                 value={actionKind}
                 onChange={(e) => {
                   setActionKind(e.target.value as ActionKind);
@@ -235,7 +235,7 @@ function UserBulkActionDialogInner({
             {/* Per-action body */}
             {actionKind === 'change-role' && (
               <fieldset
-                className="space-y-2 rounded-md border border-border/40 p-3"
+                className="space-y-2 rounded-md border border-border p-3"
                 data-testid="bulk-action-role"
               >
                 <legend className="px-1 text-xs font-medium text-muted-foreground">
@@ -273,7 +273,7 @@ function UserBulkActionDialogInner({
                   Reason (optional)
                 </span>
                 <textarea
-                  className="w-full rounded-md border border-border/60 bg-background px-3 py-2 text-sm"
+                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
                   rows={3}
                   maxLength={500}
                   value={reason}
@@ -293,7 +293,7 @@ function UserBulkActionDialogInner({
                 <span className="mb-1 block font-medium">Group</span>
                 <input
                   type="text"
-                  className="w-full rounded-md border border-border/60 bg-background px-3 py-2 text-sm"
+                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
                   value={groupId}
                   onChange={(e) => setGroupId(e.target.value)}
                   placeholder="group id (UUID)"
@@ -333,11 +333,11 @@ function UserBulkActionDialogInner({
               </div>
             )}
 
-            <div className="flex justify-end gap-2 border-t border-border/40 pt-4">
+            <div className="flex justify-end gap-2 border-t border-border pt-4">
               <button
                 type="button"
                 onClick={handleClose}
-                className="rounded-md border border-border/60 px-4 py-2 text-sm hover:bg-foreground/5"
+                className="rounded-md border border-border px-4 py-2 text-sm hover:bg-foreground/5"
                 data-testid="bulk-action-cancel"
                 disabled={submitMutation.isPending}
               >

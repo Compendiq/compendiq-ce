@@ -210,7 +210,7 @@ export function SettingsSkeleton() {
       <div className="skeleton h-7 w-32 mb-6" />
       <div className="nm-card">
         {/* Tab bar */}
-        <div className="flex border-b border-border/50 gap-1 px-2 py-2">
+        <div className="flex border-b border-border gap-1 px-2 py-2">
           {Array.from({ length: 5 }).map((_, i) => (
             <div key={i} className="skeleton h-8 w-20 rounded" />
           ))}

@@ -131,7 +131,7 @@ export function ImprovePanel({
             data-testid={`${testIdPrefix}-preview`}
             aria-live="polite"
             className={cn(
-              'prose prose-sm max-h-56 max-w-none overflow-y-auto rounded-md border border-border/60 bg-background p-2 text-sm',
+              'prose prose-sm max-h-56 max-w-none overflow-y-auto rounded-md border border-border bg-background p-2 text-sm',
               isStreaming && !hasResult && 'motion-safe:animate-pulse',
             )}
           >

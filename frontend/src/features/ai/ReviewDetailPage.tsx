@@ -276,7 +276,7 @@ function ReviewDetailContent({
         </button>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h1 className="flex items-center gap-2 text-2xl font-bold">
+            <h1 className="flex items-center gap-2 text-lg font-semibold">
               <FileText size={20} className="text-muted-foreground" />
               {review.page_title ?? `Page #${review.page_id}`}
             </h1>
@@ -329,7 +329,7 @@ function ReviewDetailContent({
           <span className="text-success">+{stats.added}</span>
           <span className="text-destructive">-{stats.removed}</span>
         </div>
-        <div className="flex rounded-md border border-border/50 text-xs">
+        <div className="flex rounded-md border border-border text-xs">
           <button
             type="button"
             onClick={onToggleHtml}
@@ -426,7 +426,7 @@ function ReviewDetailContent({
       {/* Reviewer notes (if already actioned) */}
       {review.review_notes && (
         <div
-          className="rounded-md border border-border/40 bg-foreground/[0.02] p-3 text-sm"
+          className="rounded-md border border-border bg-foreground/[0.02] p-3 text-sm"
           data-testid="ai-review-detail-existing-notes"
         >
           <div className="mb-1 text-xs font-medium text-muted-foreground">
@@ -441,14 +441,14 @@ function ReviewDetailContent({
       {/* Action panel */}
       {isPending && (
         <div
-          className="flex flex-wrap items-center justify-end gap-2 border-t border-border/50 pt-4"
+          className="flex flex-wrap items-center justify-end gap-2 border-t border-border pt-4"
           data-testid="ai-review-detail-actions"
         >
           <button
             type="button"
             onClick={() => setRejectOpen(true)}
             disabled={approveMutation.isPending}
-            className="flex items-center gap-1.5 rounded-md border border-border/50 px-4 py-2 text-sm hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
+            className="flex items-center gap-1.5 rounded-md border border-border px-4 py-2 text-sm hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
             data-testid="ai-review-detail-reject-btn"
           >
             <X size={14} /> Reject
@@ -457,7 +457,7 @@ function ReviewDetailContent({
             type="button"
             onClick={() => setEditOpen(true)}
             disabled={approveMutation.isPending}
-            className="flex items-center gap-1.5 rounded-md border border-border/50 px-4 py-2 text-sm hover:bg-foreground/5 disabled:opacity-50"
+            className="flex items-center gap-1.5 rounded-md border border-border px-4 py-2 text-sm hover:bg-foreground/5 disabled:opacity-50"
             data-testid="ai-review-detail-edit-btn"
           >
             <Edit3 size={14} /> Edit & approve
@@ -542,7 +542,7 @@ function RejectDialog({ reviewId, onClose, onDone }: RejectDialogProps) {
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
       data-testid="ai-review-detail-reject-dialog"
     >
-      <div className="w-full max-w-md rounded-xl border border-border/50 bg-background p-5 shadow-2xl">
+      <div className="w-full max-w-md nm-card-elevated p-5">
         <h2 className="text-base font-semibold">Reject AI output</h2>
         <p className="mt-1 text-xs text-muted-foreground">
           Optional: leave a short note for the author so they can re-run
@@ -554,7 +554,7 @@ function RejectDialog({ reviewId, onClose, onDone }: RejectDialogProps) {
           maxLength={4000}
           rows={4}
           placeholder="(optional notes)"
-          className="mt-3 w-full rounded-md border border-border/50 bg-background p-2 text-sm focus:border-primary focus:outline-none"
+          className="mt-3 w-full rounded-md border border-border bg-background p-2 text-sm focus:border-primary focus:outline-none"
           data-testid="ai-review-detail-reject-notes"
         />
         <div className="mt-4 flex items-center justify-end gap-2">
@@ -562,7 +562,7 @@ function RejectDialog({ reviewId, onClose, onDone }: RejectDialogProps) {
             type="button"
             onClick={onClose}
             disabled={mutation.isPending}
-            className="rounded-md border border-border/50 px-4 py-2 text-sm hover:bg-foreground/5 disabled:opacity-50"
+            className="rounded-md border border-border px-4 py-2 text-sm hover:bg-foreground/5 disabled:opacity-50"
             data-testid="ai-review-detail-reject-cancel-btn"
           >
             Cancel
@@ -638,7 +638,7 @@ function EditAndApproveDialog({
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
       data-testid="ai-review-detail-edit-dialog"
     >
-      <div className="grid h-[90vh] w-full max-w-4xl grid-rows-[auto_1fr_auto] gap-3 rounded-xl border border-border/50 bg-background p-5 shadow-2xl">
+      <div className="grid h-[90vh] w-full max-w-4xl grid-rows-[auto_1fr_auto] gap-3 nm-card-elevated p-5">
         <div>
           <h2 className="text-base font-semibold">Edit & approve</h2>
           <p className="mt-1 text-xs text-muted-foreground">
@@ -652,7 +652,7 @@ function EditAndApproveDialog({
           value={content}
           onChange={(e) => setContent(e.target.value)}
           maxLength={1_000_000}
-          className="h-full w-full resize-none rounded-md border border-border/50 bg-background p-3 font-mono text-sm leading-relaxed focus:border-primary focus:outline-none"
+          className="h-full w-full resize-none rounded-md border border-border bg-background p-3 font-mono text-sm leading-relaxed focus:border-primary focus:outline-none"
           data-testid="ai-review-detail-edit-textarea"
         />
         <div className="space-y-2">
@@ -662,7 +662,7 @@ function EditAndApproveDialog({
             maxLength={4000}
             rows={2}
             placeholder="(optional notes)"
-            className="w-full rounded-md border border-border/50 bg-background p-2 text-sm focus:border-primary focus:outline-none"
+            className="w-full rounded-md border border-border bg-background p-2 text-sm focus:border-primary focus:outline-none"
             data-testid="ai-review-detail-edit-notes"
           />
           <div className="flex items-center justify-end gap-2">
@@ -670,7 +670,7 @@ function EditAndApproveDialog({
               type="button"
               onClick={onClose}
               disabled={mutation.isPending}
-              className="rounded-md border border-border/50 px-4 py-2 text-sm hover:bg-foreground/5 disabled:opacity-50"
+              className="rounded-md border border-border px-4 py-2 text-sm hover:bg-foreground/5 disabled:opacity-50"
               data-testid="ai-review-detail-edit-cancel-btn"
             >
               Cancel

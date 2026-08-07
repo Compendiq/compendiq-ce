@@ -27,7 +27,7 @@ import { IMPROVEMENT_TYPES, IMPROVEMENT_DESCRIPTIONS } from '../improvement-type
 export function ImproveTypeSelector() {
   const { improvementType, setImprovementType } = useAiContext();
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-border/40 bg-card/50 px-3 py-2 backdrop-blur-sm">
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-border bg-card px-3 py-2">
       <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground/80">
         Improvement type
       </span>
@@ -42,7 +42,7 @@ export function ImproveTypeSelector() {
               'flex h-7 items-center rounded-md border px-2.5 text-xs capitalize transition-colors',
               improvementType === type
                 ? 'border-primary/45 bg-primary/15 text-primary-ink font-medium'
-                : 'border-border/40 text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
+                : 'border-border text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
             )}
           >
             {type}
@@ -258,7 +258,7 @@ export function ImproveModeInput() {
   ]);
 
   return (
-    <div ref={surfaceRef} className="mt-3 flex flex-col gap-3 border-t border-border/40 pt-3">
+    <div ref={surfaceRef} className="mt-3 flex flex-col gap-3 border-t border-border pt-3">
       {/* An advisory, not a refusal: the backend accepts both, and only the
           resolved model knows whether they fit. Amber is the attention colour
           under ADR-010 v0.5 and this is exactly that. */}
@@ -326,7 +326,7 @@ export function ImproveModeInput() {
             checked={searchWeb}
             onChange={(e) => setSearchWeb(e.target.checked)}
             disabled={isStreaming}
-            className="rounded border-border/40"
+            className="rounded border-border"
           />
           <Globe size={14} />
           Search web for reference material

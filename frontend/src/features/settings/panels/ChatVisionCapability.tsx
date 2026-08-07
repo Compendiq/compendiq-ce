@@ -133,7 +133,7 @@ export function ChatVisionCapability({ vision }: { vision: boolean | null }) {
             </summary>
             <p
               data-testid="vision-probe-error-text"
-              className="mt-1.5 max-h-32 overflow-y-auto rounded-md border border-border/50 bg-background/50 px-2.5 py-2 font-mono text-[11px] leading-relaxed break-words whitespace-pre-wrap text-muted-foreground"
+              className="mt-1.5 max-h-32 overflow-y-auto rounded-md border border-border bg-background/50 px-2.5 py-2 font-mono text-[11px] leading-relaxed break-words whitespace-pre-wrap text-muted-foreground"
             >
               {probeError}
             </p>

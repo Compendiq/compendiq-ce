@@ -77,6 +77,14 @@ export default defineConfig({
   },
   server: {
     port: 8081,
+    // Allow serving files from the repository root. The workspace hoists
+    // node_modules there, so when the dev server runs from a git worktree
+    // (`.claude/worktrees/<name>/frontend`) the default allow-list does not
+    // cover it and every @fontsource file 403s — the app then renders in a
+    // system fallback, which silently misreports the typography.
+    fs: {
+      allow: [path.resolve(__dirname, '..'), path.resolve(__dirname, '../../../..')],
+    },
     proxy: {
       '/api': {
         target: process.env.VITE_API_PROXY_TARGET ?? 'http://localhost:3051',

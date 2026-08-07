@@ -71,7 +71,7 @@ export function SubTabs({ ariaLabel, tabs, testIdRoot }: SubTabsProps) {
       <div
         role="tablist"
         aria-label={ariaLabel}
-        className="inline-flex flex-wrap items-center gap-0.5 rounded-lg bg-foreground/[0.04] p-1"
+        className="inline-flex flex-wrap items-center gap-0.5 rounded-md border border-border bg-muted p-0.5"
         onKeyDown={(e) => {
           if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
           e.preventDefault();
@@ -97,14 +97,18 @@ export function SubTabs({ ariaLabel, tabs, testIdRoot }: SubTabsProps) {
               data-testid={testIdRoot ? `subtab-${testIdRoot}-${tab.id}` : undefined}
               className={cn(
                 'flex h-7 items-center gap-1.5 rounded-md px-2.5 text-sm transition-colors',
+                // `panel-tab-active` is the one active-segment treatment, shared
+                // with the inspector's view switcher and the main nav. This was
+                // a fourth: a tinted pane carrying `shadow-sm` and a primary
+                // ring, both retired by the flat system.
                 isActive
-                  ? 'bg-card text-primary-ink shadow-sm ring-1 ring-primary/35 font-medium'
+                  ? 'panel-tab-active font-medium'
                   : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
               )}
             >
               <span>{tab.label}</span>
               {tab.badge && (
-                <span className="rounded-sm border border-white/10 px-1.5 py-0.5 text-[12px] font-medium uppercase tracking-wider text-muted-foreground">
+                <span className="rounded-sm border border-border px-1.5 py-0.5 text-[12px] font-medium uppercase tracking-wider text-muted-foreground">
                   {tab.badge}
                 </span>
               )}

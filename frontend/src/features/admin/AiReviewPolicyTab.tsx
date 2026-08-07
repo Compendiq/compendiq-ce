@@ -184,7 +184,7 @@ function AiReviewPolicyTabInner() {
       data-testid="ai-review-policy-tab"
     >
       <div>
-        <h1 className="flex items-center gap-2 text-2xl font-bold">
+        <h1 className="flex items-center gap-2 text-lg font-semibold">
           <ShieldCheck size={20} className="text-muted-foreground" />
           AI review policy
         </h1>
@@ -313,7 +313,7 @@ function AiReviewPolicyTabInner() {
           different policy — e.g. trust auto-tag with auto-publish while
           keeping generate gated.
         </p>
-        <div className="overflow-x-auto rounded-lg border border-border/40">
+        <div className="overflow-x-auto rounded-lg border border-border">
           <table className="w-full text-sm">
             <thead className="bg-foreground/[0.03] text-xs text-muted-foreground">
               <tr>
@@ -327,7 +327,7 @@ function AiReviewPolicyTabInner() {
                 return (
                   <tr
                     key={action}
-                    className="border-t border-border/40"
+                    className="border-t border-border"
                     data-testid={`ai-review-policy-override-row-${action}`}
                   >
                     <td className="px-3 py-2 align-middle font-medium">
@@ -342,7 +342,7 @@ function AiReviewPolicyTabInner() {
                           if (v === '') setOverride(action, null);
                           else setOverride(action, v as AiReviewMode);
                         }}
-                        className="rounded-md border border-border/50 bg-background px-2 py-1 text-sm disabled:opacity-50"
+                        className="rounded-md border border-border bg-background px-2 py-1 text-sm disabled:opacity-50"
                         data-testid={`ai-review-policy-override-select-${action}`}
                       >
                         <option value="">Inherit default</option>
@@ -386,7 +386,7 @@ function AiReviewPolicyTabInner() {
                 }));
               }
             }}
-            className="w-24 rounded-md border border-border/50 bg-background px-2 py-1 text-sm disabled:opacity-50"
+            className="w-24 rounded-md border border-border bg-background px-2 py-1 text-sm disabled:opacity-50"
             data-testid="ai-review-policy-expire-days-input"
           />
           <span className="text-xs text-muted-foreground">days</span>
@@ -394,7 +394,7 @@ function AiReviewPolicyTabInner() {
       </div>
 
       {/* Save button */}
-      <div className="flex items-center justify-between border-t border-border/50 pt-4">
+      <div className="flex items-center justify-between border-t border-border pt-4">
         <div className="text-xs text-muted-foreground">
           {dirty ? 'You have unsaved changes.' : 'No unsaved changes.'}
         </div>

@@ -2,11 +2,15 @@ import { create } from 'zustand';
 
 interface AiDockState {
   /**
-   * Deliberately NOT persisted. The dock forces the article right pane into its
-   * 40px rail while it is open, and a persisted `open` would mean a reload
-   * silently re-opens an AI panel and re-collapses the outline for a user who
-   * never asked for either. Dock *width* is a real preference and does persist
-   * — it lives in `ui-store` as `aiDockWidth`.
+   * "The mobile sheet is up" — and, transiently, "someone asked for the
+   * assistant". Deliberately NOT persisted: a stored `open` would mean a reload
+   * silently raises an AI panel for a user who never asked for one.
+   *
+   * At `md` and up there is no dock to open — the assistant is a tab in
+   * `ArticleRightPane` — so `AppLayout` consumes this flag on an article route
+   * and re-expresses it as a tab request, lowering it in the same tick. That
+   * keeps `open` meaning exactly one thing on screen. Read it as "the sheet is
+   * showing"; never as "the desktop assistant is showing".
    */
   open: boolean;
   /**

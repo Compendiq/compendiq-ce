@@ -197,7 +197,7 @@ export function LlmStep({ onNext, onBack }: LlmStepProps) {
 
         {/* Test result indicator. Uses the semantic status tokens rather than
             literal Tailwind emerald/red: those shades are dark-theme tuned and
-            (unlike the amber ones) are not remapped for Frost Steel, so the
+            (unlike the amber ones) are not remapped for Paper, so the
             label rendered at 1.33:1 and the icon at 1.69:1 on the light
             surface. The status tokens carry an AA-passing value per theme, and
             match ConfluenceStep's banner. The icons move with the label

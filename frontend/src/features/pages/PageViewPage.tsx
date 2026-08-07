@@ -611,7 +611,7 @@ export function PageViewPage() {
     return (
       <div className="nm-card flex min-h-[18rem] flex-col items-center justify-center gap-3 py-16 text-center">
         <FileText size={42} className="text-muted-foreground" />
-        <h1 className="text-xl font-semibold text-foreground">Page not found</h1>
+        <h1 className="text-lg font-semibold text-foreground">Page not found</h1>
         <p className="max-w-md text-sm text-muted-foreground">
           The selected page is unavailable or no longer accessible in the synced space tree.
         </p>
@@ -660,7 +660,7 @@ export function PageViewPage() {
               stays flat bg-background rather than a copy of the gradient
               --surface-backdrop: at this height the radial has all but
               resolved to --color-background (measured max delta 3/255 in
-              Slate Steel, 2/255 in Frost Steel, and exact at the column
+              Graphite, 2/255 in Paper, and exact at the column
               edges), while a re-declared gradient can only line up with the
               app shell's via background-attachment: fixed, which silently
               re-anchors to the framer-motion transform on this very element.
@@ -679,22 +679,41 @@ export function PageViewPage() {
           <div
             aria-hidden
             data-testid="edit-toolbar-mask"
-            className="absolute inset-x-0 -top-5 bottom-0 z-[-1] bg-background rounded-b-xl"
+            className="absolute inset-x-0 -top-5 bottom-0 z-[-1] bg-card"
           />
-        <div className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm">
+        {/* The edit toolbar is a bar across the column now, not a floating
+            card: it loses the border and radius and keeps only a bottom
+            hairline, matching the context strip above it. The under-mask fill
+            follows the surface it hides content against — that is `bg-card`
+            here, because on an article route the main column IS the pane; it
+            was `bg-background`, which would now paint a chassis-coloured band
+            across a white document. `-top-5` still tracks the scroll
+            container's `pt-5` (scroll-padding-mask.test.ts). */}
+        <div className="-mx-4 border-b border-border bg-card sm:-mx-6">
           {editorInstance && (
-            <div className="px-1 border-b border-border/20">
-              <EditorToolbar editor={editorInstance} vimEnabled={vimEnabled} onToggleVim={toggleVim} />
-              <TableContextToolbar editor={editorInstance} />
-              <LayoutContextToolbar editor={editorInstance} />
-              <ColumnContextToolbar editor={editorInstance} />
+            <div className="border-b border-border">
+              {/* Aligned to the document's text column, not to the window.
+                  The arithmetic: these bars are full-bleed (`-mx-4 sm:-mx-6`),
+                  so they cancel AppLayout's scroll padding and must add it
+                  back — 24px (sm:px-6) + the body's own 40px (sm:px-10) = 64px,
+                  and the max-width grows by the same 48px so the right edge
+                  lands with it too. Below sm: 16 + 20 = 36px.
+                  Edge-to-edge the controls floated free of the text they act
+                  on, which is the tell that a toolbar was bolted above a
+                  document rather than belonging to it. */}
+              <div className="mx-auto max-w-[1248px] px-9 sm:px-16">
+                <EditorToolbar editor={editorInstance} vimEnabled={vimEnabled} onToggleVim={toggleVim} />
+                <TableContextToolbar editor={editorInstance} />
+                <LayoutContextToolbar editor={editorInstance} />
+                <ColumnContextToolbar editor={editorInstance} />
+              </div>
             </div>
           )}
           {/* Action row — Cancel/Save are aligned to TagEditor's input row
               (its bottom edge), since the TagEditor stacks existing tag
               pills above the "Add a tag…" input. items-end keeps the
               buttons on the same baseline as the Add-tag input/button. */}
-          <div className="flex items-end gap-3 px-3 py-2">
+          <div className="mx-auto flex max-w-[1248px] items-end gap-3 px-9 py-2 sm:px-16">
             <div className="min-w-0 flex-1">
               <TagEditor
                 tags={page.labels}
@@ -713,26 +732,72 @@ export function PageViewPage() {
             <button
               onClick={handleSave}
               disabled={updateMutation.isPending}
-              className="shrink-0 inline-flex items-center gap-1 rounded-md border border-action bg-transparent px-3 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+              // Filled: Save is the primary action of edit mode, and Cancel
+              // sits directly beside it. An outlined pair made the destructive
+              // choice and the committing one look identical.
+              className="nm-button-primary shrink-0"
             >
               {updateMutation.isPending ? 'Saving…' : 'Save'}
-              {!updateMutation.isPending && <ShortcutHint shortcutId="save" />}
+              {/* Ink that belongs to the fill. The default chip is
+                  `text-muted-foreground` on `bg-background/50`, tuned for a
+                  neutral surface — on the filled primary it is the
+                  lowest-contrast text in the frame. */}
+              {!updateMutation.isPending && (
+                <ShortcutHint
+                  shortcutId="save"
+                  className="border-primary-foreground/30 bg-transparent text-primary-foreground"
+                />
+              )}
             </button>
           </div>
         </div>
         </div>
       )}
-      {/* Article card. 25px gap below the toolbar when editing. When not
-          editing, the card sits on its own with no toolbar above. */}
-      <div
-        className={cn(
-          'overflow-hidden rounded-xl border border-border/55 bg-card/80',
-          editing && 'mt-[25px]',
-        )}
-      >
+      {/* No card. The document sits directly on the main column, which carries
+          the pane surface for this route (see AppLayout). A rounded, bordered
+          panel floating on the chassis framed the page as an object on a desk;
+          full-bleed, it reads as the surface you are working on.
+
+          `overflow-hidden` went with it — it was there to clip content to the
+          rounded corners, and an overflow-hidden ancestor also breaks the
+          sticky positioning the strip below now relies on. */}
+      <div className={cn(editing && 'mt-4')}>
         {/* Breadcrumb / action strip */}
-        <div className="flex items-center justify-between gap-4 border-b border-border/25 px-5 py-2 sm:px-7">
-          <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground/60">
+        {/* `flex-wrap`: the badge cluster and the action cluster are both
+            unshrinkable, so at 390px they overlapped — "Local / Shared /
+            Skipped" rendered on top of "Move to Confluence / Verify / Graph".
+            Wrapping drops the actions onto their own line instead of hiding
+            either group; on this surface both are worth their vertical space,
+            unlike the list row where the same badges are one tap from here. */}
+        {/* Sticky context strip. Without the card's border to sit inside, it
+            needs its own hairline and its own surface to stay legible over
+            scrolling prose — and it pins to the top of the reading column
+            rather than scrolling away, because the page identity and Edit are
+            wanted at any scroll depth.
+
+            Its contents take the document's own `max-w-[1200px] px-5 sm:px-10`
+            measure, so the space key and the Edit button line up with the
+            body text instead of hugging the window edges. */}
+        {/* Hidden while editing. Its action half is already suppressed there
+            (Cancel/Save take over in the bar above), leaving only badges — so
+            it wedged a strip of read-only status between the save controls and
+            the title you are typing into. The badges return on save. */}
+        <div className={cn('sticky -top-5 z-20 -mx-4 -mt-5 border-b border-border bg-card sm:-mx-6', editing && 'hidden')}>
+        {/* A fixed minimum rather than "whatever the content plus padding came
+            out to": this rule, the left sidebar's and the inspector's are one
+            line running across the app, so all three are pinned to the same
+            48px. `min-h` not `h`, because this row wraps at narrow widths (the
+            badge cluster and the action cluster each take a line) and a fixed
+            height would clip the second one.
+
+            The `-1px` is not a fudge. The sidebar and inspector rows put their
+            `border-b` on the same element as their `h-12`, so under border-box
+            the hairline is *inside* the 48. Here the border is on the sticky
+            parent and the height is on this inner row, so without subtracting
+            it the strip measures 49 and its rule sits one pixel below the other
+            two — which is exactly the seam this alignment exists to remove. */}
+        <div className="mx-auto flex min-h-[calc(3rem-1px)] max-w-[1248px] flex-wrap items-center justify-between gap-x-4 gap-y-1.5 px-9 py-2 sm:px-16">
+          <span className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-muted-foreground/60">
             <FileText size={12} className="shrink-0" />
             {page.spaceKey !== '__local__' && <span className="truncate">{page.spaceKey}</span>}
             {/* Source badge */}
@@ -763,7 +828,7 @@ export function PageViewPage() {
               ) : (
                 // Private = neutral gray. Was amber, but privacy carries no AI semantic.
                 <span
-                  className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                  className="inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
                   data-testid="badge-private"
                 >
                   <Lock size={10} /> Private
@@ -773,7 +838,7 @@ export function PageViewPage() {
             {/* Draft indicator — neutral private-tier palette (drafts read as personal/private state, not AI). */}
             {'hasDraft' in page && Boolean((page as Record<string, unknown>).hasDraft) && (
               <span
-                className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                className="inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
                 data-testid="badge-draft"
               >
                 <AlertCircle size={10} /> Draft
@@ -793,7 +858,10 @@ export function PageViewPage() {
             />
           </span>
 
-          <div className="flex shrink-0 items-center gap-1.5">
+          {/* Wraps internally as well. Wrapping the outer row alone still left
+              the actions on one unshrinkable line, so "Edit" — the most used
+              control on the page — was the part clipped off the right edge. */}
+          <div className="flex flex-wrap items-center gap-1.5">
             <PresenceAvatarStack viewers={presenceViewers} className="mr-1" />
             {editing ? null : (
               <>
@@ -848,12 +916,13 @@ export function PageViewPage() {
             )}
           </div>
         </div>
+        </div>
 
         {editing ? (
           <>
             {/* Editable title — same 1200px reading column as the body so they
                 visually align as one document. */}
-            <div className="border-b border-border/25 px-5 py-5 sm:px-10">
+            <div className="border-b border-border px-5 py-5 sm:px-10">
               <div className="mx-auto max-w-[1200px]">
                 <input
                   value={editTitle}
@@ -911,7 +980,7 @@ export function PageViewPage() {
                 {page.labels.map((label) => (
                   <span
                     key={label}
-                    className="rounded-full border border-border/60 bg-background/45 px-3 py-1 text-xs font-medium text-muted-foreground"
+                    className="rounded-full border border-border bg-background/45 px-3 py-1 text-xs font-medium text-muted-foreground"
                   >
                     {label}
                   </span>
@@ -1045,14 +1114,14 @@ function FeedbackWidget({ pageId }: { pageId: string | undefined }) {
 
   if (submitted) {
     return (
-      <div className="mt-12 border-t border-border/25 pt-6 text-center" data-testid="feedback-widget">
+      <div className="mt-12 border-t border-border pt-6 text-center" data-testid="feedback-widget">
         <p className="text-sm text-muted-foreground">Thanks for your feedback!</p>
       </div>
     );
   }
 
   return (
-    <div className="mt-12 border-t border-border/25 pt-6" data-testid="feedback-widget">
+    <div className="mt-12 border-t border-border pt-6" data-testid="feedback-widget">
       <p className="mb-3 text-sm font-medium text-muted-foreground">Was this page helpful?</p>
       <div className="flex gap-2">
         <button
@@ -1098,7 +1167,13 @@ function VerifyButton({ pageId }: { pageId: string | undefined }) {
       disabled={verifyMutation.isPending}
       title="Mark this page as up-to-date. Resets the next review reminder based on the configured review interval."
       aria-label="Mark page as verified"
-      className="rounded-md px-2.5 py-1 text-xs text-emerald-500 transition-colors hover:bg-emerald-500/10 disabled:opacity-50"
+      // Neutral, like every other action in this toolbar. It was
+      // `text-emerald-500`, which collides with the status vocabulary: green
+      // means "connected / healthy" throughout the app, so a green control read
+      // as a state readout rather than a thing you press — and it was the only
+      // coloured item in a row of otherwise neutral actions, which made the
+      // least consequential one the most prominent.
+      className="rounded-md px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
       data-testid="verify-btn"
     >
       <ShieldCheck size={12} className="mr-1 inline" />

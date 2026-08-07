@@ -17,19 +17,30 @@ describe('Logo', () => {
     expect(wordmark!.getAttribute('fill')).toBe('currentColor');
   });
 
-  it('keeps the steel magnifier stroke hard-coded (the AI signal must NOT inherit)', () => {
+  // Not "the AI signal", as this was called until the accent moved to teal —
+  // the magnifier stroke is the brand accent. Violet is the AI signal, and the
+  // mark identifies the product rather than labelling an AI affordance. The
+  // distinction matters because it is the reason the stroke must NOT inherit:
+  // an identity is fixed, a control's colour follows its meaning.
+  it('keeps the teal magnifier stroke hard-coded rather than inheriting', () => {
     const { container } = render(<Logo />);
-    const steels = container.querySelectorAll('[stroke="#6ea8ff"], [stroke="#6EA8FF"]');
-    expect(steels.length).toBe(2);
+    const accents = container.querySelectorAll('[stroke="#4dd0e1"], [stroke="#4DD0E1"]');
+    expect(accents.length).toBe(2);
   });
 
   // The mark is mirrored in public/*.svg and the generated favicons, which
-  // render with no CSS custom properties available — so the retired honey
-  // values must not survive anywhere in the component either.
-  it('carries no retired honey-palette values', () => {
+  // render with no CSS custom properties available — so no retired palette
+  // value may survive anywhere in the component either. Steel joined honey on
+  // that list once the accent moved to teal; both generations shipped a mark
+  // that lagged the palette, which is why this list only ever grows.
+  // `src/logo-color-parity.test.ts` checks the four mirrors on disk.
+  it('carries no retired palette values', () => {
     const { container } = render(<Logo />);
     const markup = container.innerHTML.toLowerCase();
-    for (const retired of ['#f9c74f', '#fff8e9', '#1a1a1a']) {
+    for (const retired of [
+      '#f9c74f', '#fff8e9', '#1a1a1a', // honey
+      '#6ea8ff', '#e8ecf5', '#151b2c', // steel
+    ]) {
       expect(markup).not.toContain(retired);
     }
   });

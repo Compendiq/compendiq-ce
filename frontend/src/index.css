@@ -2,21 +2,22 @@
 @plugin "@tailwindcss/typography";
 
 /* Self-hosted brand fonts via @fontsource (no external CDN — privacy-safe).
-   Display: Space Grotesk — geometric grotesque with a mechanical bite; used
-            for headings and verdict lines so titles read as instrument labels
-            rather than editorial prose.
-   Body:    Inter (variable wght axis) — the neutral screen workhorse. Chosen
-            over IBM Plex Sans because the display face now carries all the
-            character; the body face's only job is to disappear.
-   Mono:    JetBrains Mono (variable) — code blocks AND every data figure, so a
-            column of counts, percentages and IDs lines up to the digit.
-   All three are variable (wght axis), which matters for the display face:
-   Tailwind's preflight resets headings to `font-weight: inherit`, so a bare
-   <h1> asks for 400 and prose h1 asks for 800. Static cuts would snap those
-   to the nearest shipped weight — and `font-synthesis: style` (below) blocks
-   the browser from faking the difference. Space Grotesk Variable covers
-   300–700 continuously in one file. */
-@import "@fontsource-variable/space-grotesk/wght.css";
+
+   TWO faces, not three. The retired system carried a separate display face for
+   headings; this one does not, because a workspace heading is a wayfinding
+   label rather than editorial, and a second family competing with it at
+   15–20px costs legibility without buying identity.
+
+   Body:  Inter (variable wght axis) — the screen workhorse, and now the whole
+          typographic voice. `--font-display` is an alias onto it.
+   Mono:  JetBrains Mono (variable) — code blocks AND every data figure, so a
+          column of counts, percentages and IDs lines up to the digit.
+
+   Both are variable (wght axis), which is load-bearing: Tailwind's preflight
+   resets headings to `font-weight: inherit`, so a bare <h1> asks for 400 while
+   prose h1 asks for 800. Static cuts would snap those to the nearest shipped
+   weight, and `font-synthesis: style` (below) blocks the browser from faking
+   the difference. Inter Variable covers 100–900 continuously in one file. */
 @import "@fontsource-variable/inter/wght.css";
 @import "@fontsource-variable/jetbrains-mono/index.css";
 
@@ -57,7 +58,7 @@ html {
 
 /* Premium typography rendering (Obsidian / Notion pattern). Uses the
    brand body sans (Inter Variable), with system fallbacks if the font failed
-   to load. Headings use the display face (Space Grotesk) — see below.
+   to load. Headings share the same face — see below.
 
    `background` carries the gradient-lit chassis: a wide radial lifting the
    top of the viewport a few steps above --color-background, so the app sits
@@ -74,7 +75,7 @@ body {
      swap). During the swap window the browser renders system fallbacks and
      may synthesize faux-bold glyphs, making random sidebar/tree text flash
      heavier between loads. `style` allows only italic synthesis (neither
-     Inter Variable's wght axis nor Space Grotesk Variable ships an italic
+     Inter Variable ships no italic
      cut, so the `italic` utility and the editor's Italic mark rely on
      oblique synthesis) while disabling weight and
      small-caps synthesis. Shorthand over `font-synthesis-weight: none` for
@@ -82,21 +83,26 @@ body {
   font-synthesis: style;
 }
 
-/* Headings take the display face (Space Grotesk). Its tighter apertures and
-   flat terminals give titles a mechanical, instrument-panel voice that reads
-   as distinct from Inter body copy at a glance — the scale step alone was
-   doing that work before, when both shared one family.
+/* Headings share the body face. There is no display voice in this system: a
+   workspace heading is a wayfinding label, and a second family competing with
+   it at 15–20px costs legibility without buying identity.
 
-   Negative tracking is applied here rather than per-heading so every title in
-   the app (page headers, dialog titles, prose h1–h6) shares one optical
-   setting. Space Grotesk sets wide by default; without this, headings look
-   loose next to Inter's tighter body rhythm. */
+   Optical tracking is applied here rather than per-heading so every title in
+   the app (page headers, dialog titles, prose h1–h6) shares one setting. Inter
+   sets loose at display sizes and needs tightening; the value is scaled by
+   size below rather than applied flat, because -0.02em on an 15px h4 closes
+   the counters while the same figure on a 30px h1 is barely enough. */
 h1, h2, h3, h4, h5, h6,
 .prose :where(h1, h2, h3, h4, h5, h6) {
   font-family: var(--font-display);
   font-optical-sizing: auto;
-  letter-spacing: -0.015em;
+  letter-spacing: -0.011em;
+  font-weight: 600;
 }
+
+h1, .prose :where(h1) { letter-spacing: -0.022em; }
+h2, .prose :where(h2) { letter-spacing: -0.018em; }
+h3, .prose :where(h3) { letter-spacing: -0.014em; }
 
 /* Thin minimal scrollbars — 5 px, translucent (Obsidian-like) */
 * {
@@ -136,44 +142,53 @@ h1, h2, h3, h4, h5, h6,
 }
 
 @theme {
-  /* Default theme: Slate Steel — mineral ink surfaces with a steel accent
-     (neumorphic dark).
-     Every value below is verified against the AA floors noted inline. */
-  --color-background: #0b121c;          /* slate navy ink — the chassis */
-  --color-foreground: #e8f1f2;          /* cool near-white, 16.24:1 on bg */
-  --color-card: #111a27;                /* instrument pane, one step up */
-  --color-card-foreground: #e8f1f2;
-  --color-card-elevated: #172333;       /* hover / raised pane */
-  /* Steel — the single brand AND interaction accent: brand mark, primary
-     CTAs, links, active states, focus ring. One calm analytical hue carries
-     both identity and every actionable affordance, so "is this clickable?"
-     never depends on telling two similar accents apart. */
-  --color-primary: #74aefc;
-  --color-primary-foreground: #0b1725;  /* 7.91:1 ink on the steel fill */
-  --color-primary-gradient-start: #94c2ff;
-  --color-primary-gradient-end: #4e87dc; /* 5.00:1 with the ink above */
-  --color-primary-glow: rgba(116, 174, 252, 0.32);
-  /* Steel clears AA as text on every dark surface unaided (7.73:1 on bg,
-     6.62:1 on the elevated pane), so unlike the old honey — which needed a
-     lightened sibling to be legible — ink and fill are the same value. */
-  --color-primary-ink: #74aefc;
-  /* Action ink — the neutral affordance for non-accent buttons. Light ink on
-     navy, mirroring lifecycle-management's default Button (foreground fill /
-     background text). Leaves steel free to mean "primary action". */
-  --color-action: #e8f1f2;             /* matches --color-foreground */
-  --color-action-foreground: #0b121c;  /* 16.24:1 */
-  --color-action-hover: #ffffff;       /* pure white lift on hover */
-  --color-secondary: #182434;
-  --color-secondary-foreground: #c8d2e0;
-  --color-muted: #182434;
-  /* 6.06:1 on --color-background and 5.19:1 on the elevated pane — the
-     sidebar's counts, hints and secondary labels all inherit this, so it is
-     measured against the *worst* surface it lands on, not the darkest. */
-  --color-muted-foreground: #91a1b8;
-  --color-accent: #1a2738;
-  --color-accent-foreground: #e8f1f2;
-  --color-destructive: #ff7575;
-  --color-destructive-foreground: #211010;
+  /* Default theme: Graphite — the dark half of Compendiq's workspace system.
+
+     A neutral graphite chassis carrying one teal accent. Surfaces are FLAT:
+     a pane is distinguished from its chassis by a value step and a 1px
+     hairline, never by extrusion, gradient or glow. That is the whole depth
+     model, and it is what makes ~20 routes of dense list, form and document
+     content read quickly at 13–14px.
+
+     Supersedes the retired navy-and-steel palette and its neumorphic recipe.
+     The `nm-*` utility names are retained — 107 files reference them — but
+     every one is now a flat definition; see the utility block below.
+
+     Every value is verified by src/workspace-themes.test.ts, which parses these
+     tokens and COMPUTES WCAG ratios rather than pinning hex literals. Retune a
+     surface and it fails with the measured ratio. */
+  --color-background: #0d0e11;          /* graphite chassis */
+  --color-foreground: #eceef2;          /* near-white, 16.9:1 on bg */
+  --color-card: #16181d;                /* content pane, one value step up */
+  --color-card-foreground: #eceef2;
+  --color-card-elevated: #1e2027;       /* popovers, dialogs, raised panes */
+  /* Teal — the single brand AND interaction accent: brand mark, primary
+     buttons, links, active nav, focus ring. One hue carries both identity and
+     every actionable affordance, so "is this clickable?" never depends on
+     telling two similar accents apart. */
+  --color-primary: #4dd0e1;
+  --color-primary-foreground: #05242b;  /* ink on the teal fill */
+  --color-primary-gradient-start: #4dd0e1;
+  --color-primary-gradient-end: #4dd0e1; /* flat: the canon has no gradient fills */
+  --color-primary-glow: rgba(77, 208, 225, 0.26);
+  /* Teal clears AA as text on every dark surface unaided, so ink and fill
+     are the same value here (the light theme needs a darkened sibling). */
+  --color-primary-ink: #4dd0e1;
+  /* Action ink — the neutral affordance for non-accent buttons: light fill,
+     dark text. Leaves teal free to mean "primary action". */
+  --color-action: #eceef2;             /* matches --color-foreground */
+  --color-action-foreground: #0d0e11;
+  --color-action-hover: #ffffff;
+  --color-secondary: #21242b;
+  --color-secondary-foreground: #c9ccd4;
+  --color-muted: #21242b;
+  /* Measured against the WORST surface it lands on (the elevated pane),
+     not the darkest — sidebar counts, hints and secondary labels inherit it. */
+  --color-muted-foreground: #9ca1ad;
+  --color-accent: #21242b;
+  --color-accent-foreground: #eceef2;
+  --color-destructive: #f87171;
+  --color-destructive-foreground: #1a0f0f;
   /* Two border weights with different jobs:
      --color-border      hairline separators, table cells, prose rules. Quiet
                          by design; it draws structure, not boundaries.
@@ -185,32 +200,38 @@ h1, h2, h3, h4, h5, h6,
                          forced-colors mode throws away — this border is what
                          survives. (The retired honey palette used one 1.60:1
                          border for both jobs and did not meet 1.4.11.) */
-  --color-border: #223248;
-  --color-border-interactive: #667a96;
-  --color-ring: #74aefc;
-  --color-success: #5ed39b;
+  --color-border: #26282f;
+  --color-border-interactive: #6b707b;
+  --color-ring: #4dd0e1;
+  --color-success: #4ade80;
   /* Amber is NOT the brand here — it is reserved for warning and attention,
      which is what makes it readable as a signal when it appears. */
-  --color-warning: #f3c969;
-  /* Deliberately the same value as --color-primary: steel is the system's one
-     blue, so "informational" and "interactive" share a hue. Keep info for
+  --color-warning: #fbbf24;
+  /* Deliberately the same value as --color-primary: teal is the system's one
+     accent, so "informational" and "interactive" share a hue. Keep info for
      passive notices only — an info-coloured element that is NOT clickable is
      fine, but never use it to mark something that is. */
-  --color-info: #77a8ff;
+  --color-info: #8b93f8;
 
   /* Status colors. Steel carries "embedding" (it is the system's one blue);
      violet is reserved for AI so it never collides with an interactive
      affordance. All ≥4.5:1 on both --color-background and --color-card. */
-  --color-status-connected: #5ed39b;
-  --color-status-syncing: #f3c969;
-  --color-status-embedding: #77a8ff;
-  --color-status-ai: #c69af4;
-  --color-status-disconnected: #ff7575;
-  --color-status-inactive: #8b99a6;
+  --color-status-connected: #4ade80;
+  --color-status-syncing: #fbbf24;
+  --color-status-embedding: #4dd0e1;
+  --color-status-ai: #c084fc;
+  --color-status-disconnected: #f87171;
+  --color-status-inactive: #8b8f99;
 
   /* Brand typography — self-hosted via @fontsource (privacy-safe).
      Tailwind 4 exposes these as font-display / font-sans / font-mono. */
-  --font-display: 'Space Grotesk Variable', 'Inter Variable', system-ui, sans-serif;
+  /* One workhorse face carries the whole application. The retired system used
+     a separate display face so titles read as "instrument labels";
+     this system does not have a display voice, because a workspace heading is
+     a wayfinding label and not a piece of editorial. Hierarchy comes from size,
+     weight and space alone. `--font-display` is kept as an alias so the ~40
+     `font-display` callsites need no edit and cannot drift apart from body. */
+  --font-display: 'Inter Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   --font-sans: 'Inter Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, 'SF Mono', Consolas, monospace;
 
@@ -219,70 +240,106 @@ h1, h2, h3, h4, h5, h6,
   --color-code-bg: #0b1420;
   --color-code-keyword: #c69af4;
   --color-code-string: #5ed39b;
-  --color-code-function: #74aefc;
+  --color-code-function: #8b93f8;
   --color-code-comment: #8b99a6;
   --color-code-number: #f3c969;
   --color-code-type: #5ed9cb;
   --color-code-meta: #f472b6;      /* pink,   6.78:1 */
 
-  /* Neumorphic shadow tokens — Slate Steel.
-     Same two-light-source recipe as before, retuned cool: the highlight was a
-     warm honey tint (rgba(110,92,58,…)) picked to sit under a honey accent.
-     On navy that tint reads as dirt — a muddy brown rim on a blue surface —
-     so it is now a cool slate lift drawn from the chassis' own hue. Shadow
-     alphas are a touch deeper than the graphite recipe because the darker
-     backdrop compresses the visible range. */
-  --nm-shadow-out: rgba(0, 0, 0, 0.30);
-  --nm-shadow-out-strong: rgba(0, 0, 0, 0.38);
-  --nm-shadow-out-hover: rgba(0, 0, 0, 0.42);
-  --nm-highlight: rgba(116, 150, 190, 0.10);
-  --nm-highlight-strong: rgba(128, 165, 205, 0.14);
-  --nm-highlight-hover: rgba(138, 178, 220, 0.17);
-  --nm-shadow-in: rgba(0, 0, 0, 0.38);
+  /* Elevation tokens — Graphite.
 
-  /* Gradient-lit chassis (dark). The backdrop is a wide radial hung above the
-     viewport so the top of the app is lifted a few steps and the bottom falls
-     away — the single biggest reason this palette reads as rich rather than
-     flat. The card gradient is a shallow top-to-bottom fall inside each pane.
-     Worst case for text on a card is the LIGHTEST stop, #171e31: body copy
-     measures 14.01:1 and muted 5.39:1 there, so both clear AA at the top of
-     the pane as well as the bottom. Retune a stop → re-measure those two.
+     The `--nm-*` names are kept so the 107 files referencing the utilities keep
+     working, but the two-light-source extrusion recipe is GONE. In this system
+     an in-page surface casts no shadow at all: the tokens below resolve to
+     `transparent` for every in-flow surface, and depth is carried by the value
+     step plus the 1px hairline.
 
-     --surface-card-elevated is the same construction one step up, straddling
-     --color-card-elevated exactly as --surface-card straddles --color-card.
-     It exists because `nm-card-elevated` paints a gradient too: without its
-     own token it would resolve --surface-card and render identically to
-     `nm-card`, and the elevation would live only in the shadow. Its lightest
-     stop #1c243b is the worst surface in the dark theme — body copy 13.00:1,
-     muted 5.00:1, --color-border-interactive 3.14:1. */
-  --surface-backdrop: radial-gradient(1200px 520px at 50% -220px, #15273d 0%, #0b121c 62%);
-  --surface-card: linear-gradient(180deg, #142030, #0f1825);
-  --surface-card-elevated: linear-gradient(180deg, #1b2a3f, #152233);
+     Shadow survives in exactly one place — content that floats ABOVE the page
+     and needs to be read as detached from it: popovers, dropdowns, dialogs,
+     command palette, toasts. Those use --shadow-overlay, which is a real
+     shadow with an offset and a soft blur, not a halo.
 
-  --radius-xl: 1.25rem;
-  --radius-lg: 0.75rem;
-  --radius-md: 0.5rem;
+     Keeping the token names transparent rather than deleting them is
+     deliberate: it makes every stale `box-shadow: … var(--nm-shadow-out)`
+     render flat immediately, so a missed callsite degrades to correct rather
+     than to a leftover extrusion. */
+  --nm-shadow-out: transparent;
+  --nm-shadow-out-strong: transparent;
+  --nm-shadow-out-hover: transparent;
+  --nm-highlight: transparent;
+  --nm-highlight-strong: transparent;
+  --nm-highlight-hover: transparent;
+  --nm-shadow-in: transparent;
+
+  /* The one real shadow in the system. Offset + soft blur (never a zero-offset
+     halo), tuned so an overlay reads as floating on a near-black chassis. */
+  --shadow-overlay:
+    0 8px 24px -6px rgba(0, 0, 0, 0.6),
+    0 2px 6px -2px rgba(0, 0, 0, 0.4);
+  --shadow-overlay-sm:
+    0 4px 12px -4px rgba(0, 0, 0, 0.55),
+    0 1px 3px -1px rgba(0, 0, 0, 0.35);
+
+  /* Surfaces are FLAT COLOURS, not gradients.
+
+     The retired system lit the chassis with a wide radial and gave each pane a
+     shallow vertical fall. Both are gone: a gradient on a workspace surface
+     puts a moving value under dense 13px text, so the same row reads at a
+     different contrast at the top of a pane than at the bottom, and every
+     surface needs measuring twice.
+
+     These stay named `--surface-*` (rather than callsites switching to
+     `--color-*`) so the pane/chrome distinction remains expressible in one
+     place if it is ever needed again. They are now plain colours, which means
+     a Tailwind `bg-*` utility composes with them normally again — the old
+     "gradients are background-images, so hover:bg-* silently does nothing"
+     trap is designed out rather than documented around. */
+  --surface-backdrop: var(--color-background);
+  --surface-card: var(--color-card);
+  --surface-card-elevated: var(--color-card-elevated);
+
+  /* Corner language. Retuned down hard from the neumorphic scale
+     (20/12/8/4px): soft extrusion needed a large radius to read as a pillow,
+     a flat hairline pane does not, and at 13–14px row density a 20px corner
+     wastes the row. 10/8/6/4 is the workspace range. */
+  --radius-xl: 0.625rem;
+  --radius-lg: 0.5rem;
+  --radius-md: 0.375rem;
   --radius-sm: 0.25rem;
 
   /* text-xs override — 0.8125rem = 13 px at the 16 px base. Lifts the
      11.25 px outliers (nav pills, stat-card labels) up to a legible floor. */
   --font-size-xs: 0.8125rem;
 
-  /* Glass utility colors — kept until Phase 5 retires the glass-* @utility blocks */
-  --glass-border: oklch(1 0 0 / 0.08);
-  --glass-border-hover: oklch(1 0 0 / 0.15);
-  --glass-shadow: oklch(0 0 0 / 0.2);
-  --glass-shadow-hover: oklch(0 0 0 / 0.3);
-  --glass-sidebar-bg: oklch(from var(--color-card) l c h / 0.55);
-  --glass-sidebar-blur: 24px;
-  --glass-sidebar-border: oklch(1 0 0 / 0.12);
-  --glass-sidebar-shadow: 0 8px 32px oklch(0 0 0 / 0.18);
-  --glass-sidebar-specular: inset 0 0.5px 0 oklch(1 0 0 / 0.08);
-  --glass-sidebar-divider: oklch(1 0 0 / 0.06);
-  --glass-pill-bg: linear-gradient(145deg, oklch(1 0 0 / 0.12) 0%, oklch(1 0 0 / 0.04) 100%);
-  --glass-pill-border: oklch(1 0 0 / 0.1);
-  --glass-pill-shadow: 0 2px 8px oklch(0 0 0 / 0.12), inset 0 0.5px 0 oklch(1 0 0 / 0.12);
-  --glass-pill-hover: oklch(1 0 0 / 0.05);
+  /* Retired glass tokens, resolved onto the flat system.
+
+     There is no glass here: translucency and backdrop-blur were decoration
+     standing in for hierarchy, and blur behind dense 13px text is both the
+     most expensive thing the compositor does and the least readable.
+
+     The ~80 `bg-[var(--glass-*)]` callsites are left in place deliberately.
+     Every ROLE they encode is still correct ("hover tint for a nav pill",
+     "divider inside the sidebar"), so repointing the tokens converts all of
+     them at once and keeps one place to retune. Renaming across 12 files is a
+     mechanical follow-up, not a design decision.
+
+     `--glass-border` matters most: at 8% alpha it could not clear WCAG
+     1.4.11's 3:1, and it was live on operable surfaces (the draw.io node view,
+     the code copy button). It now resolves to the measured interactive edge. */
+  --glass-border: var(--color-border-interactive);
+  --glass-border-hover: var(--color-primary);
+  --glass-shadow: none;
+  --glass-shadow-hover: none;
+  --glass-sidebar-bg: var(--color-background);
+  --glass-sidebar-blur: 0px;
+  --glass-sidebar-border: var(--color-border);
+  --glass-sidebar-shadow: none;
+  --glass-sidebar-specular: none;
+  --glass-sidebar-divider: var(--color-border);
+  --glass-pill-bg: transparent;
+  --glass-pill-border: var(--color-border);
+  --glass-pill-shadow: none;
+  --glass-pill-hover: var(--color-accent);
 
   /* Violet, matching --color-code-keyword. Deliberately NOT amber (which now
      means warning) and NOT steel (which means "you can click this") — inline
@@ -290,124 +347,143 @@ h1, h2, h3, h4, h5, h6,
   --inline-code-color: #c69af4;
 
   /* Dropdown chevron — dark-theme default. The stroke colour is the
-     dark-theme muted-foreground hex (#91a1b8, URL-escaped to %2391a1b8).
+     dark-theme muted-foreground hex (#91a1b8, URL-escaped to %239ca1ad).
      Light theme overrides this in the [data-theme-type="light"] block. */
-  --nm-select-chevron-12: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2391a1b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
-  --nm-select-chevron-14: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%2391a1b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  --nm-select-chevron-12: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239ca1ad' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  --nm-select-chevron-14: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%239ca1ad' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
 }
 
 /* ===========================
    LIGHT THEMES — shared overrides
    =========================== */
 
-/* Shared overrides for any light theme (currently only frost-steel).
+/* Shared overrides for any light theme (currently only `paper`).
    Carries:
    - light-mode glass tokens (kept until glass-* utilities are retired in Phase 5)
    - light-mode neumorphic shadow recipe (neutral slate shadow + white highlight)
    - the light gradient chassis and card surface */
 [data-theme-type="light"] {
-  /* Glass tokens (light) — kept for in-flight glass-* utilities */
-  --glass-border: oklch(0 0 0 / 0.08);
-  --glass-border-hover: oklch(0 0 0 / 0.15);
-  --glass-shadow: oklch(0 0 0 / 0.06);
-  --glass-shadow-hover: oklch(0 0 0 / 0.1);
-  --glass-sidebar-bg: oklch(from var(--color-card) l c h / 0.7);
-  --glass-sidebar-border: oklch(0 0 0 / 0.16);
-  --glass-sidebar-shadow: 0 8px 32px oklch(0 0 0 / 0.12);
-  --glass-sidebar-specular: inset 0 0.5px 0 oklch(1 0 0 / 0.4);
-  --glass-sidebar-divider: oklch(0 0 0 / 0.06);
-  --glass-pill-bg: linear-gradient(145deg, oklch(1 0 0 / 0.6) 0%, oklch(1 0 0 / 0.25) 100%);
-  --glass-pill-border: oklch(1 0 0 / 0.5);
-  --glass-pill-shadow: 0 2px 5px oklch(0 0 0 / 0.05), inset 0 0.5px 0 oklch(1 0 0 / 0.7);
-  --glass-pill-hover: oklch(from var(--color-primary) l c h / 0.07);
+  /* No light-theme glass overrides. The retired tokens now resolve to
+     `--color-*` values in the `@theme` block above, which this theme already
+     redefines — so both themes follow automatically and there is nothing to
+     keep in sync here. */
 
-  /* Neumorphic shadow tokens — Frost Steel recipe.
-     Mineral ink shadow (rgb 26/29/32 — the light theme foreground) keeps
-     depth inside a clean neutral slate family; pure-white highlights remain
-     clean against the frost paper surfaces. */
-  --nm-shadow-out: rgba(26, 29, 32, 0.07);
-  --nm-shadow-out-strong: rgba(26, 29, 32, 0.11);
-  --nm-shadow-out-hover: rgba(26, 29, 32, 0.13);
-  --nm-highlight: rgba(255, 255, 255, 0.90);
-  --nm-highlight-strong: rgba(255, 255, 255, 0.96);
-  --nm-highlight-hover: rgba(255, 255, 255, 1);
-  --nm-shadow-in: rgba(26, 29, 32, 0.09);
+  /* Elevation tokens (light) — same contract as Graphite: in-flow surfaces
+     cast nothing, and only true overlays get a shadow. See the dark block for
+     why the names survive as transparent rather than being deleted. */
+  --nm-shadow-out: transparent;
+  --nm-shadow-out-strong: transparent;
+  --nm-shadow-out-hover: transparent;
+  --nm-highlight: transparent;
+  --nm-highlight-strong: transparent;
+  --nm-highlight-hover: transparent;
+  --nm-shadow-in: transparent;
 
-  /* Gradient-lit chassis (light). The same construction as dark — a wide
-     radial hung above the viewport — but inverted in direction: it lifts
-     toward white at the top rather than toward a lighter navy, so the page
-     reads as lit from above in both themes. Deliberately shallow; a strong
-     gradient on a light surface reads as a rendering artifact, not as light.
+  /* Overlay shadow, light. Shallower and tighter than the dark recipe: on a
+     near-white ground a large soft shadow reads as smudge rather than lift,
+     so this leans on a crisper short-range blur plus the overlay's hairline. */
+  --shadow-overlay:
+    0 6px 16px -4px rgba(15, 18, 24, 0.14),
+    0 2px 5px -2px rgba(15, 18, 24, 0.10);
+  --shadow-overlay-sm:
+    0 3px 8px -3px rgba(15, 18, 24, 0.12),
+    0 1px 2px -1px rgba(15, 18, 24, 0.08);
 
-     Elevation inverts on light: the card pane already tops out at pure white,
-     so an elevated pane cannot get brighter — it gets *flatter*. Holding
-     nearer to white through the whole pane is what reads as "closer to the
-     viewer" here, the same way the deeper gradient reads as recessed. */
-  --surface-backdrop:
-    radial-gradient(1000px 460px at 50% -210px, #ffffff 0%, #f7f8fa 56%, transparent 78%),
-    #f4f5f7;
-  --surface-card: linear-gradient(180deg, #ffffff, #f9fafb);
-  --surface-card-elevated: linear-gradient(180deg, #ffffff, #fafafa);
+  /* Flat surfaces, light. See the dark block for the reasoning; it applies
+     with more force here, because a vertical fall on a near-white pane is
+     exactly the range where dense grey text drifts across the AA line. */
+  --surface-backdrop: var(--color-background);
+  --surface-card: var(--color-card);
+  --surface-card-elevated: var(--color-card-elevated);
 
-  /* Dropdown chevron — mineral slate stroke (#5f656e, URL-escaped to %235f656e),
+  /* Dropdown chevron — mineral slate stroke (#5f656e, URL-escaped to %2363666d),
      matching the light theme's --color-muted-foreground. The :root default is
      the dark-theme value and washes out on a near-white surface. */
-  --nm-select-chevron-12: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%235f656e' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
-  --nm-select-chevron-14: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%235f656e' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  --nm-select-chevron-12: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2363666d' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  --nm-select-chevron-14: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%2363666d' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
 }
 
-/* ---- Theme: Frost Steel — mineral paper with a steel accent (neumorphic
-   light) ---- The designed light sibling of Slate Steel, in a neutral slate
-   hue family: every surface, ink and status hue is the light-theme counterpart
-   of the dark token above it, not an independent palette. */
-[data-theme="frost-steel"] {
-  --color-background: #f4f5f7;          /* neutral frost paper */
-  --color-foreground: #1a1d20;          /* mineral ink, 14.77:1 on bg */
-  --color-card: #ffffff;                /* neutral paper pane */
-  --color-card-foreground: #1a1d20;
-  --color-card-elevated: #ffffff;
-  --color-primary: #2b63b7;             /* steel — the light-theme sibling */
-  --color-primary-foreground: #ffffff;  /* 5.88:1 white on the steel fill */
-  --color-primary-gradient-start: #467aca;
-  --color-primary-gradient-end: #214b91;
-  --color-primary-glow: rgba(43, 99, 183, 0.26);
+/* ---- Theme: Paper — the light half of the workspace system ----
+   Not an inverted dark shell and not an independent palette: the same
+   three-step ladder (chassis → pane → elevated) with light-theme values. Every
+   surface, ink and status hue is the counterpart of the dark token above it,
+   which is what lets both themes share one set of shell utilities. */
+[data-theme="paper"] {
+  /* A light ground, not a grey one. This went #f7f7f8 -> #f1f1f3 to widen the
+     ground-to-pane step, which the finish review was right to ask for — but at
+     #f1f1f3 the app read as grey rather than light, which is the opposite of
+     the named craft bar. Linear and Plane both sit near-white and carry the
+     pane edge on the HAIRLINE instead of a value step; `--color-border` below
+     is tuned to do that work here.
+     Owner decision (2026-08-06), taste over the reviewer's measurement: the
+     step is deliberately small again, and the border is what separates. */
+  --color-background: #fbfbfc;          /* paper chassis / sidebar ground */
+  --color-foreground: #17181a;          /* ink */
+  --color-card: #ffffff;                /* content pane */
+  --color-card-foreground: #17181a;
+  /* Elevated must differ from `card`, or an overlay over a pane rests entirely
+     on its shadow — and in forced-colors mode, where shadow is discarded,
+     on nothing at all. Slightly cool rather than brighter: white is already
+     the ceiling on this side, so elevation reads as a cleaner surface. */
+  --color-card-elevated: #fdfdfe;
+  --color-primary: #0e7490;             /* teal — the light-theme sibling */
+  --color-primary-foreground: #ffffff;
+  --color-primary-gradient-start: #0e7490;
+  --color-primary-gradient-end: #0e7490; /* flat: the canon has no gradient fills */
+  --color-primary-glow: rgba(14, 116, 144, 0.22);
   /* Unlike dark — where fill and ink are one value — the light theme keeps a
      darkened sibling for TEXT. --color-primary clears 5.39:1 on the background;
      this text-specific ink lands at 6.30:1.
      Use it for links, eyebrow labels, and anywhere steel is a text color;
      keep --color-primary for fills (buttons, pills, borders). */
-  --color-primary-ink: #2959a4;
+  --color-primary-ink: #0b6378;
   /* Action ink — the neutral affordance for non-accent buttons. Deep ink on
-     frost, mirroring dark's inverted pair; leaves steel free for "primary". */
-  --color-action: #1a1d20;             /* matches --color-foreground */
+     paper, mirroring dark's inverted pair; leaves teal free for "primary". */
+  --color-action: #17181a;             /* matches --color-foreground */
   --color-action-foreground: #ffffff;
-  --color-action-hover: #2b3038;
-  --color-secondary: #eaecef;
-  --color-secondary-foreground: #33373e;
-  --color-muted: #eaecef;
-  /* Clears AA on both the background and warm paper card. */
-  --color-muted-foreground: #5f656e;
-  --color-accent: #e2e5e9;
-  --color-accent-foreground: #1a1d20;
-  --color-destructive: #b73535;
+  --color-action-hover: #2a2c30;
+  --color-secondary: #eeeef0;
+  --color-secondary-foreground: #35373b;
+  --color-muted: #eeeef0;
+  /* Measured against the WORST surface it lands on (white card), not the
+     grey chassis. */
+  --color-muted-foreground: #63666d;
+  --color-accent: #e8e8eb;
+  --color-accent-foreground: #17181a;
+  --color-destructive: #c03434;
   --color-destructive-foreground: #ffffff;
   /* Same two-weight split as dark: a quiet hairline for structure, and an
-     interactive edge that clears 1.4.11's 3:1 on both background and card. */
-  --color-border: #d9dce1;
-  --color-border-interactive: #737984;
-  --color-ring: #2b63b7;
-  --color-success: #18754a;
+     interactive edge that clears 1.4.11's 3:1 on both background and card.
+     The hairline is a step stronger than it would otherwise be (#e2e2e6 ->
+     #dcdce1): with the ground moved to near-white, the pane boundary rests on
+     this border rather than on a value step, so it has to actually be visible.
+     It is still a separator, NOT an operable edge — that stays
+     --color-border-interactive, which the 3:1 test measures. */
+  --color-border: #dcdce1;
+  /* Darkened twice. First with the chassis: at #8b8f98 it measured 2.87:1 on
+     the new ground, under 1.4.11's 3:1 floor. Then again, because #848892
+     cleared the chassis and the card but measured **2.90:1 on the hovered
+     `accent` fill (#e8e8eb)** — and an operable edge is at its most load-
+     bearing exactly when the pointer is on it.
+     The guard had been measuring against the chassis and the card only, so
+     the ADR's "≥3:1 on every surface" was a claim no test checked. It checks
+     all four Paper surfaces now. #7d818b is the value with headroom rather
+     than the first that squeaks past: 3.19 accent / 3.90 card / 3.77 bg /
+     3.46 muted. */
+  --color-border-interactive: #7d818b;
+  --color-ring: #0e7490;
+  --color-success: #16794a;
   --color-warning: #8a5a00;
-  --color-info: #315ea8;
+  --color-info: #3f49b8;
 
   /* Status colors — the light-theme counterparts, all ≥4.5:1 on background
      and card. Same role assignment as dark: steel = embedding, violet = AI. */
-  --color-status-connected: #18754a;
+  --color-status-connected: #16794a;
   --color-status-syncing: #8a5a00;
-  --color-status-embedding: #315ea8;
+  --color-status-embedding: #0b6378;
   --color-status-ai: #7041a8;
-  --color-status-disconnected: #b73535;
-  --color-status-inactive: #636972;
+  --color-status-disconnected: #c03434;
+  --color-status-inactive: #63666d;
 
   /* Code colors — matched against --color-code-bg #eceef1, a neutral tint of the
      background so a code block reads as recessed against the white pane. */
@@ -429,7 +505,7 @@ h1, h2, h3, h4, h5, h6,
 /* ---- Light-theme warning-text remap ----
    Many warning/EE-notice callouts in feature panels use Tailwind's literal
    `text-amber-100..400` / `text-yellow-300..400` shades. Those were tuned for
-   the dark theme — on Frost Steel's near-white surface they're effectively
+   the dark theme — on Paper's near-white surface they're effectively
    invisible (contrast < 1.5:1). Rather than editing every callsite, remap
    those text classes to the AA-pass `--color-warning` (#8a5a00, 5.80:1 vs
    #f3f6f1). Same colour the design system already uses for warning panels in
@@ -471,14 +547,19 @@ h1, h2, h3, h4, h5, h6,
 /* Shell surfaces carry the palette without competing with content. The
    header is slightly denser than the canvas; sidebars are one tonal step
    deeper, creating stable wayfinding without glass or a heavy shadow. */
+/* Chrome is the GROUND, content is the PANE. The chassis colour carries the
+   header, sidebar and every toolbar; the content pane sits one value step up
+   from it and is separated by a hairline, never by a shadow. That inversion is
+   the core move of the workspace canon: it is why the document you are reading
+   is the brightest thing on screen and the navigation recedes without needing
+   to be dimmed. */
 @utility app-header {
-  background: color-mix(in oklab, var(--color-card) 88%, var(--color-background));
+  background: var(--color-background);
   border-color: var(--color-border);
-  box-shadow: 0 1px 0 oklch(from var(--color-foreground) l c h / 0.035);
 }
 
 @utility app-sidebar {
-  background: color-mix(in oklab, var(--color-card) 62%, var(--color-background));
+  background: var(--color-background);
   border-color: var(--color-border);
 }
 
@@ -486,99 +567,77 @@ h1, h2, h3, h4, h5, h6,
    internal hierarchy comes from quiet chrome, a single context control, and
    section rhythm rather than a stack of card-like containers. */
 @utility panel-toolbar {
-  background: color-mix(in oklab, var(--color-card) 48%, transparent);
+  background: var(--color-background);
   border-color: var(--color-border);
 }
 
 @utility panel-context {
-  background: color-mix(in oklab, var(--color-card) 72%, var(--color-background));
+  background: var(--color-card);
   border: 1px solid var(--color-border-interactive);
-  box-shadow: inset 0 1px 0 oklch(1 0 0 / 0.035);
 }
 
+/* An active tab is a filled chip, not a tinted pane with a shadow. */
 @utility panel-tab-active {
-  color: var(--color-primary-ink);
-  background: color-mix(in oklab, var(--color-card) 82%, var(--color-primary) 18%);
-  box-shadow: var(--nm-shadow-flat);
+  color: var(--color-foreground);
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
 }
 
 /* A selected destination is a quiet steel field, not an inverted slab.
    The 1px edge remains visible in forced-colors mode, while the icon and
    label retain a non-color cue through weight and position. */
+/* A selected destination is a quiet neutral fill with full-strength ink — the
+   workspace convention, and the one that survives a long sidebar. The retired
+   system tinted the fill AND the label with the accent, which made ten list
+   items compete with the primary button; here the accent is spent on actions,
+   and "where am I" is carried by fill plus weight. The 1px outline is what
+   survives forced-colors mode. */
 @utility nav-selection {
-  color: var(--color-primary-ink);
-  background: oklch(from var(--color-primary) l c h / 0.12);
-  outline: 1px solid oklch(from var(--color-primary) l c h / 0.28);
+  color: var(--color-foreground);
+  font-weight: 500;
+  background: var(--color-accent);
+  outline: 1px solid var(--color-border);
   outline-offset: -1px;
-  box-shadow: inset 0 1px 0 oklch(1 0 0 / 0.06);
 }
 
 @utility app-search {
   color: var(--color-muted-foreground);
-  background: color-mix(in oklab, var(--color-card) 74%, transparent);
+  background: var(--color-card);
   border: 1px solid var(--color-border);
-  box-shadow: inset 0 1px 2px oklch(0 0 0 / 0.08);
   transition:
-    color 160ms ease-out,
-    border-color 160ms ease-out,
-    background-color 160ms ease-out,
-    box-shadow 160ms ease-out;
+    color 120ms ease-out,
+    border-color 120ms ease-out,
+    background-color 120ms ease-out;
 
   &:hover {
     color: var(--color-foreground);
-    background: var(--color-card);
-    border-color: oklch(from var(--color-primary) l c h / 0.48);
+    border-color: var(--color-border-interactive);
   }
 
   &:focus-visible {
     color: var(--color-foreground);
     border-color: var(--color-primary);
-    outline: 2px solid oklch(from var(--color-primary) l c h / 0.42);
-    outline-offset: 2px;
+    outline: 2px solid var(--color-ring);
+    outline-offset: -1px;
   }
 }
 
 /* Light mode is composed as paper and ink, not an inverted dark shell.
    Chrome stays opaque and quiet, the sidebar sits one value step below the
    reading canvas, and the search boundary remains unambiguous in daylight. */
-[data-theme-type="light"] .app-header {
-  background: color-mix(in oklab, var(--color-card) 96%, var(--color-background));
-  border-color: var(--color-border);
-  box-shadow: none;
-}
+/* The light theme needs no shell overrides.
 
-[data-theme-type="light"] .app-sidebar {
-  background: color-mix(in oklab, var(--color-background) 84%, var(--color-muted));
-  border-color: var(--color-border);
-}
+   Under the retired system it needed six, because that system composed light
+   as a separate construction — "paper and ink, not an inverted dark shell" —
+   with its own header mix, its own inset highlights, and its own shadow on the
+   active tab. Every one of those was a second place to get the value ladder
+   wrong, and it is why light and dark drifted apart.
 
-[data-theme-type="light"] .panel-toolbar {
-  background: color-mix(in oklab, var(--color-card) 66%, var(--color-background));
-}
-
-[data-theme-type="light"] .panel-context {
-  background: color-mix(in oklab, var(--color-card) 94%, var(--color-background));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
-}
-
-[data-theme-type="light"] .panel-tab-active {
-  background: var(--color-card);
-  box-shadow: 0 1px 3px rgba(23, 36, 34, 0.08);
-}
-
-[data-theme-type="light"] .app-search {
-  color: var(--color-muted-foreground);
-  background: var(--color-background);
-  border-color: var(--color-border-interactive);
-  box-shadow: inset 0 1px 2px rgba(23, 36, 34, 0.06);
-}
-
-[data-theme-type="light"] .nav-selection {
-  color: var(--color-primary-ink);
-  background: oklch(from var(--color-primary) l c h / 0.09);
-  outline-color: oklch(from var(--color-primary) l c h / 0.34);
-  box-shadow: none;
-}
+   Here both themes are the same three-step ladder — chassis, pane, elevated —
+   expressed entirely in `--color-*`. Light differs from dark in the token
+   values only, so anything correct in one theme is correct in the other by
+   construction. Do not reintroduce a `[data-theme-type="light"]` override for
+   a shell surface: retune the token instead, and let both themes move. */
 
 /* Scroll edge fade mask — applied to scrollable sidebar content areas. */
 @utility scroll-mask {
@@ -631,7 +690,7 @@ h1, h2, h3, h4, h5, h6,
 }
 
 /* ===========================
-   NEUMORPHIC UTILITIES (#30 — Slate Steel + Frost Steel)
+   WORKSPACE UTILITIES — flat surfaces, Graphite + Paper
 
    Hybrid neumorphism: every interactive surface has a 1px solid border for
    WCAG 1.4.11 (3:1 non-text contrast) compliance — pure shadow-only borders
@@ -669,18 +728,21 @@ h1, h2, h3, h4, h5, h6,
   border-radius: var(--radius-lg);
   border: 1px solid var(--color-border);
   background: var(--surface-card, var(--color-card));
-  box-shadow:
-    6px 6px 14px var(--nm-shadow-out),
-    -4px -4px 10px var(--nm-highlight);
 }
 
+/* "Elevated" now means an OVERLAY — a popover, dropdown, dialog, command
+   palette or toast that floats above the page. It is the only surface in the
+   system carrying a shadow, and that shadow has an offset and a soft blur.
+
+   In-page panes that merely want emphasis must NOT reach for this: they are
+   `nm-card` and earn their prominence from position, spacing and heading
+   weight. A shadow on something that never leaves the page is the single tell
+   that gives away a flat system that was not committed to. */
 @utility nm-card-elevated {
-  border-radius: var(--radius-xl);
+  border-radius: var(--radius-lg);
   border: 1px solid var(--color-border);
   background: var(--surface-card-elevated, var(--color-card-elevated, var(--color-card)));
-  box-shadow:
-    10px 10px 22px var(--nm-shadow-out),
-    -6px -6px 16px var(--nm-highlight);
+  box-shadow: var(--shadow-overlay);
 }
 
 /* Hover tint for a card-surfaced control (a small button wearing `nm-card`).
@@ -693,92 +755,78 @@ h1, h2, h3, h4, h5, h6,
    with a utility that repaints the surface with something else (`nm-pill-active`
    above all) — on hover the card gradient would come back and cover it. Those
    are alternatives, not layers: pick one per state. */
+/* Hover tint for a card-surfaced control. Now a plain background-color swap,
+   because the surfaces are plain colours again.
+
+   The utility is KEPT rather than retired in favour of `hover:bg-*` at 19
+   callsites: it is the one place the hover value is defined, so the whole app
+   moves together. The historical hazard it guarded against — a `hover:bg-*`
+   silently painting underneath an opaque gradient — no longer exists. */
 @utility nm-card-hover {
-  transition: background-image 0.2s ease-out;
+  transition: background-color 0.12s ease-out;
 
   &:hover {
-    background-image:
-      linear-gradient(
-        oklch(from var(--color-foreground) l c h / 0.06),
-        oklch(from var(--color-foreground) l c h / 0.06)
-      ),
-      var(--surface-card, none);
+    background-color: var(--color-accent);
   }
 }
 
+/* A clickable card. Hover is a background and border change, not a lift: the
+   -3px translate plus growing shadow was the neumorphic system's signature and
+   is exactly what a flat workspace refuses. Press is a background darkening,
+   not a scale — a card that shrinks under the cursor reads as a toy at this
+   density, and `transform` on a list of 40 rows is work the compositor should
+   not be doing. */
 @utility nm-card-interactive {
   position: relative;
   border-radius: var(--radius-lg);
-  border: 1px solid var(--color-border-interactive);
+  border: 1px solid var(--color-border);
   background: var(--surface-card, var(--color-card));
   cursor: pointer;
   outline: 2px solid transparent;
-  outline-offset: 3px;
-  box-shadow:
-    6px 6px 14px var(--nm-shadow-out),
-    -4px -4px 10px var(--nm-highlight);
+  outline-offset: 2px;
   transition:
-    box-shadow 0.35s cubic-bezier(0.16, 1, 0.3, 1),
-    transform 0.35s cubic-bezier(0.16, 1, 0.3, 1),
-    border-color 0.2s ease-out;
-  will-change: transform, box-shadow;
+    background-color 0.12s ease-out,
+    border-color 0.12s ease-out;
 
   &:hover {
-    border-color: oklch(from var(--color-primary) l c h / 0.5);
-    box-shadow:
-      10px 10px 22px var(--nm-shadow-out-strong),
-      -6px -6px 16px var(--nm-highlight-strong);
-    transform: translateY(-3px);
+    background-color: var(--color-accent);
+    border-color: var(--color-border-interactive);
   }
 
   &:active {
-    box-shadow:
-      inset 4px 4px 10px var(--nm-shadow-in),
-      inset -2px -2px 6px var(--nm-highlight);
-    transform: translateY(0) scale(0.985);
-    transition-duration: 0.15s;
+    background-color: var(--color-secondary);
   }
 
   &:focus-visible {
-    outline-color: var(--color-primary);
+    outline-color: var(--color-ring);
   }
 }
 
 @utility nm-toolbar {
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   border: 1px solid var(--color-border);
-  background: var(--color-card);
-  box-shadow:
-    inset 3px 3px 8px var(--nm-shadow-in),
-    inset -1px -1px 4px var(--nm-highlight);
+  background: var(--color-background);
 }
 
 @utility nm-sidebar {
-  border-radius: var(--radius-xl);
-  border: 1px solid var(--color-border);
-  background: var(--color-card);
-  box-shadow:
-    4px 0 16px var(--nm-shadow-out),
-    -2px 0 8px var(--nm-highlight);
+  border-right: 1px solid var(--color-border);
+  background: var(--color-background);
 }
 
 @utility nm-header {
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--color-border);
-  background: var(--color-card);
-  box-shadow:
-    0 6px 14px var(--nm-shadow-out),
-    0 -2px 6px var(--nm-highlight);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-background);
 }
 
+/* An active segmented-control pill. Neutral fill, full-strength ink, same
+   reasoning as `nav-selection`: the accent is reserved for actions, so a row
+   of pills does not read as five primary buttons. */
 @utility nm-pill-active {
-  border-radius: var(--radius-md);
-  background: oklch(from var(--color-primary) l c h / 0.12);
-  border: 1px solid oklch(from var(--color-primary) l c h / 0.4);
-  box-shadow:
-    inset 2px 2px 5px var(--nm-shadow-in),
-    inset -1px -1px 3px var(--nm-highlight);
-  color: var(--color-primary);
+  border-radius: var(--radius-sm);
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  color: var(--color-foreground);
+  font-weight: 500;
 }
 
 @utility nm-button-primary {
@@ -787,58 +835,42 @@ h1, h2, h3, h4, h5, h6,
   align-items: center;
   justify-content: center;
   gap: 0.5rem;
-  padding: 0.625rem 1.25rem;
+  /* 32px tall at the 16px base — the workspace control height. The retired
+     button was 40px because a neumorphic pillow needs room to be a pillow;
+     a flat button does not, and 32px is what lines up beside a 32px input and
+     a 28px toolbar chip. */
+  padding: 0.375rem 0.75rem;
   border-radius: var(--radius-md);
-  border: 1px solid oklch(from var(--color-primary) calc(l - 0.06) c h);
-  /* Set background-color as a solid fallback in addition to the gradient
-     overlay. Gradients live in background-image only; without an explicit
-     background-color the rendered surface appears amber to users but reads
-     as transparent to automated contrast auditors (which only inspect
-     background-color, not background-image). The visible look is unchanged
-     — the gradient renders on top of the solid color. */
+  border: 1px solid transparent;
   background-color: var(--color-primary);
-  background-image: linear-gradient(
-    145deg,
-    oklch(from var(--color-primary) calc(l + 0.04) c h),
-    var(--color-primary)
-  );
   color: var(--color-primary-foreground);
-  font-size: 0.875rem;
-  font-weight: 600;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.25rem;
   cursor: pointer;
   outline: 2px solid transparent;
-  outline-offset: 3px;
-  box-shadow:
-    4px 4px 10px var(--nm-shadow-out-strong),
-    -2px -2px 6px var(--nm-highlight-strong),
-    inset 0 1px 0 oklch(1 0 0 / 0.25);
+  outline-offset: 2px;
   transition:
-    box-shadow 0.3s cubic-bezier(0.16, 1, 0.3, 1),
-    transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    background-color 0.12s ease-out,
+    opacity 0.12s ease-out;
 
+  /* Hover darkens the fill. No lift, no glow, no growing shadow: a primary
+     button that jumps 2px toward the cursor is the neumorphic tell, and the
+     0 0 20px halo it grew was decoration standing in for feedback. */
   &:hover {
-    box-shadow:
-      6px 6px 16px var(--nm-shadow-out-strong),
-      -3px -3px 10px var(--nm-highlight-strong),
-      inset 0 1px 0 oklch(1 0 0 / 0.35),
-      0 0 20px oklch(from var(--color-primary) l c h / 0.35);
-    transform: translateY(-2px);
+    background-color: color-mix(in oklab, var(--color-primary) 88%, var(--color-foreground));
   }
 
   &:active {
-    box-shadow:
-      inset 3px 3px 6px oklch(0 0 0 / 0.3),
-      inset -1px -1px 3px oklch(1 0 0 / 0.2);
-    transform: translateY(0) scale(0.97);
-    transition-duration: 0.1s;
+    background-color: color-mix(in oklab, var(--color-primary) 78%, var(--color-foreground));
   }
 
   &:focus-visible {
-    outline-color: var(--color-primary);
+    outline-color: var(--color-ring);
   }
 
   &:disabled {
-    opacity: 0.5;
+    opacity: 0.45;
     pointer-events: none;
   }
 }
@@ -854,54 +886,29 @@ h1, h2, h3, h4, h5, h6,
   align-items: center;
   justify-content: center;
   gap: 0.5rem;
-  padding: 0.625rem 1.25rem;
+  /* Identical box metrics to nm-button-primary so the pair lines up in a
+     dialog footer. Only the palette differs. */
+  padding: 0.375rem 0.75rem;
   border-radius: var(--radius-md);
-  border: 1px solid oklch(from var(--color-destructive) calc(l - 0.06) c h);
-  /* Solid background-color under the gradient overlay, same reasoning as
-     nm-button-primary: contrast auditors only read background-color. */
+  border: 1px solid transparent;
   background-color: var(--color-destructive);
-  background-image: linear-gradient(
-    145deg,
-    oklch(from var(--color-destructive) calc(l + 0.04) c h),
-    var(--color-destructive)
-  );
   color: var(--color-destructive-foreground);
-  font-size: 0.875rem;
-  font-weight: 600;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.25rem;
   cursor: pointer;
   outline: 2px solid transparent;
-  outline-offset: 3px;
-  box-shadow:
-    4px 4px 10px var(--nm-shadow-out-strong),
-    -2px -2px 6px var(--nm-highlight-strong),
-    inset 0 1px 0 oklch(1 0 0 / 0.25);
+  outline-offset: 2px;
   transition:
-    background-color 0.2s ease-out,
-    box-shadow 0.3s cubic-bezier(0.16, 1, 0.3, 1),
-    transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    background-color 0.12s ease-out,
+    opacity 0.12s ease-out;
 
   &:hover {
-    /* Darken on hover (vs primary's glow) — red glow reads as an error
-       state, a simple value shift reads as affordance. */
-    background-color: oklch(from var(--color-destructive) calc(l - 0.05) c h);
-    background-image: linear-gradient(
-      145deg,
-      oklch(from var(--color-destructive) calc(l - 0.01) c h),
-      oklch(from var(--color-destructive) calc(l - 0.05) c h)
-    );
-    box-shadow:
-      6px 6px 16px var(--nm-shadow-out-strong),
-      -3px -3px 10px var(--nm-highlight-strong),
-      inset 0 1px 0 oklch(1 0 0 / 0.3);
-    transform: translateY(-2px);
+    background-color: color-mix(in oklab, var(--color-destructive) 86%, var(--color-foreground));
   }
 
   &:active {
-    box-shadow:
-      inset 3px 3px 6px oklch(0 0 0 / 0.3),
-      inset -1px -1px 3px oklch(1 0 0 / 0.2);
-    transform: translateY(0) scale(0.97);
-    transition-duration: 0.1s;
+    background-color: color-mix(in oklab, var(--color-destructive) 74%, var(--color-foreground));
   }
 
   &:focus-visible {
@@ -909,7 +916,7 @@ h1, h2, h3, h4, h5, h6,
   }
 
   &:disabled {
-    opacity: 0.5;
+    opacity: 0.45;
     pointer-events: none;
   }
 }
@@ -919,46 +926,40 @@ h1, h2, h3, h4, h5, h6,
   align-items: center;
   justify-content: center;
   gap: 0.375rem;
-  padding: 0.5625rem 1.125rem;
+  /* The secondary button: a real filled surface with a 1px border, matching
+     the primary's box metrics. It was a 1.5px outline over transparent, which
+     at this density reads heavier than the primary it sits beside. Hover
+     fills rather than turning the whole control accent-coloured — a secondary
+     action that goes teal on hover competes with the primary next to it. */
+  padding: 0.375rem 0.75rem;
   border-radius: var(--radius-md);
-  border: 1.5px solid var(--color-border-interactive);
-  background: transparent;
+  border: 1px solid var(--color-border-interactive);
+  background: var(--color-card);
   color: var(--color-foreground);
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
   font-weight: 500;
+  line-height: 1.25rem;
   cursor: pointer;
   outline: 2px solid transparent;
-  outline-offset: 3px;
+  outline-offset: 2px;
   transition:
-    box-shadow 0.25s cubic-bezier(0.16, 1, 0.3, 1),
-    transform 0.25s cubic-bezier(0.16, 1, 0.3, 1),
-    border-color 0.2s ease-out,
-    color 0.2s ease-out;
+    background-color 0.12s ease-out,
+    border-color 0.12s ease-out;
 
   &:hover {
-    border-color: var(--color-primary);
-    color: var(--color-primary);
-    box-shadow:
-      3px 3px 8px var(--nm-shadow-out),
-      -2px -2px 6px var(--nm-highlight),
-      0 0 16px oklch(from var(--color-primary) l c h / 0.12);
-    transform: translateY(-1px);
+    background-color: var(--color-accent);
   }
 
   &:active {
-    box-shadow:
-      inset 2px 2px 5px var(--nm-shadow-in),
-      inset -1px -1px 3px var(--nm-highlight);
-    transform: translateY(0) scale(0.98);
-    transition-duration: 0.1s;
+    background-color: var(--color-secondary);
   }
 
   &:focus-visible {
-    outline-color: var(--color-primary);
+    outline-color: var(--color-ring);
   }
 
   &:disabled {
-    opacity: 0.5;
+    opacity: 0.45;
     pointer-events: none;
   }
 }
@@ -967,46 +968,37 @@ h1, h2, h3, h4, h5, h6,
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 2.375rem;
-  height: 2.375rem;
+  /* 32px square, matching the button and input height. Hover is a background
+     fill — the retired recipe lifted the button 2px AND rotated it -3deg,
+     which is a toy gesture in a toolbar the user hits forty times an hour. */
+  width: 2rem;
+  height: 2rem;
   border-radius: var(--radius-md);
-  border: 1px solid var(--color-border-interactive);
-  background: var(--color-card);
+  border: 1px solid transparent;
+  background: transparent;
   color: var(--color-muted-foreground);
   cursor: pointer;
   outline: 2px solid transparent;
-  outline-offset: 3px;
-  box-shadow:
-    3px 3px 8px var(--nm-shadow-out),
-    -2px -2px 6px var(--nm-highlight);
+  outline-offset: 2px;
   transition:
-    box-shadow 0.25s cubic-bezier(0.16, 1, 0.3, 1),
-    transform 0.25s cubic-bezier(0.16, 1, 0.3, 1),
-    color 0.2s ease-out;
+    background-color 0.12s ease-out,
+    color 0.12s ease-out;
 
   &:hover {
-    color: var(--color-primary);
-    box-shadow:
-      5px 5px 12px var(--nm-shadow-out-strong),
-      -3px -3px 8px var(--nm-highlight-strong),
-      0 0 14px oklch(from var(--color-primary) l c h / 0.18);
-    transform: translateY(-2px) rotate(-3deg);
+    color: var(--color-foreground);
+    background-color: var(--color-accent);
   }
 
   &:active {
-    box-shadow:
-      inset 2px 2px 5px var(--nm-shadow-in),
-      inset -1px -1px 3px var(--nm-highlight);
-    transform: translateY(0) scale(0.92);
-    transition-duration: 0.1s;
+    background-color: var(--color-secondary);
   }
 
   &:focus-visible {
-    outline-color: var(--color-primary);
+    outline-color: var(--color-ring);
   }
 
   &:disabled {
-    opacity: 0.5;
+    opacity: 0.45;
     pointer-events: none;
   }
 }
@@ -1023,37 +1015,30 @@ h1, h2, h3, h4, h5, h6,
   border-radius: var(--radius-md);
   border: 1px solid var(--color-border-interactive);
   background: var(--color-card);
-  box-shadow:
-    inset 2px 2px 5px var(--nm-shadow-out),
-    inset -1px -1px 3px var(--nm-highlight);
-  transition: border-color 0.2s ease-out, box-shadow 0.2s ease-out;
+  transition: border-color 0.12s ease-out, box-shadow 0.12s ease-out;
 
+  /* Focus is a 1px ring drawn tight to the border, not a 2px halo bleeding
+     outward from an inset well. */
   &:focus-within {
     border-color: var(--color-primary);
-    box-shadow:
-      inset 2px 2px 5px var(--nm-shadow-out),
-      inset -1px -1px 3px var(--nm-highlight),
-      0 0 0 2px oklch(from var(--color-primary) l c h / 0.3);
+    box-shadow: 0 0 0 1px var(--color-primary);
   }
 }
 
 @utility nm-input {
+  /* 32px tall, flat, one hairline. The inset "well" is gone: a recessed field
+     is the neumorphic system's way of saying "type here", and a flat system
+     says it with a border and a placeholder instead. */
   width: 100%;
-  padding: 0.6875rem 1rem;
+  padding: 0.375rem 0.625rem;
   border-radius: var(--radius-md);
   border: 1px solid var(--color-border-interactive);
   background: var(--color-card);
   color: var(--color-foreground);
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
+  line-height: 1.25rem;
   outline: none;
-  /* Subtle inset depth — matches landing's .neu-inset-sm recipe. Uses
-     --nm-shadow-out (regular alpha) rather than --nm-shadow-in (strong
-     alpha reserved for press/active states) so resting form fields don't
-     feel like deep wells. */
-  box-shadow:
-    inset 2px 2px 5px var(--nm-shadow-out),
-    inset -1px -1px 3px var(--nm-highlight);
-  transition: border-color 0.2s ease-out, box-shadow 0.2s ease-out;
+  transition: border-color 0.12s ease-out, box-shadow 0.12s ease-out;
 
   &::placeholder {
     color: var(--color-muted-foreground);
@@ -1062,14 +1047,11 @@ h1, h2, h3, h4, h5, h6,
   &:focus,
   &:focus-visible {
     border-color: var(--color-primary);
-    box-shadow:
-      inset 2px 2px 5px var(--nm-shadow-out),
-      inset -1px -1px 3px var(--nm-highlight),
-      0 0 0 2px oklch(from var(--color-primary) l c h / 0.3);
+    box-shadow: 0 0 0 1px var(--color-primary);
   }
 
   &:disabled {
-    opacity: 0.5;
+    opacity: 0.45;
     pointer-events: none;
   }
 }
@@ -1081,8 +1063,8 @@ h1, h2, h3, h4, h5, h6,
    The chevron color lives in `--nm-select-chevron`, set per theme below.
    CSS variables can't be interpolated inside `url()` data URIs, so each
    theme defines a complete `--nm-select-chevron-12` / `-14` data URL with
-   its own stroke colour. Dark theme uses Slate Steel's muted-foreground
-   (#8b93a7); light theme uses Frost Steel's (#5a6478) so the chevron carries
+   its own stroke colour. Dark theme uses Graphite.s muted-foreground
+   light theme uses Paper.s so the chevron carries
    enough contrast against the near-white surface.
 
    Variants:
@@ -1093,7 +1075,7 @@ h1, h2, h3, h4, h5, h6,
   height: 1.75rem;
   border-radius: var(--radius-md);
   border: 1px solid var(--color-border-interactive);
-  background-color: oklch(from var(--color-foreground) l c h / 0.03);
+  background-color: var(--color-card);
   padding: 0 1.75rem 0 0.625rem;
   font-size: var(--font-size-xs);
   line-height: 1;
@@ -1104,15 +1086,15 @@ h1, h2, h3, h4, h5, h6,
   background-repeat: no-repeat;
   background-position: right 0.5rem center;
   background-size: 12px 12px;
-  transition: background-color 0.2s ease-out, border-color 0.2s ease-out, box-shadow 0.2s ease-out;
+  transition: background-color 0.12s ease-out, border-color 0.12s ease-out, box-shadow 0.12s ease-out;
 
   &:hover {
-    background-color: oklch(from var(--color-foreground) l c h / 0.06);
+    background-color: var(--color-accent);
   }
 
   &:focus-visible {
-    border-color: oklch(from var(--color-primary) l c h / 0.6);
-    box-shadow: 0 0 0 2px oklch(from var(--color-primary) l c h / 0.3);
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 1px var(--color-primary);
   }
 
   &:disabled {
@@ -1123,12 +1105,13 @@ h1, h2, h3, h4, h5, h6,
 
 @utility nm-select-md {
   appearance: none;
-  height: 2.25rem;
+  /* 32px, matching nm-input and the buttons rather than sitting 4px taller. */
+  height: 2rem;
   border-radius: var(--radius-md);
   border: 1px solid var(--color-border-interactive);
-  background-color: oklch(from var(--color-foreground) l c h / 0.03);
-  padding: 0 2rem 0 0.75rem;
-  font-size: 0.875rem;
+  background-color: var(--color-card);
+  padding: 0 2rem 0 0.625rem;
+  font-size: 0.8125rem;
   line-height: 1;
   color: var(--color-foreground);
   outline: none;
@@ -1137,15 +1120,15 @@ h1, h2, h3, h4, h5, h6,
   background-repeat: no-repeat;
   background-position: right 0.625rem center;
   background-size: 14px 14px;
-  transition: background-color 0.2s ease-out, border-color 0.2s ease-out, box-shadow 0.2s ease-out;
+  transition: background-color 0.12s ease-out, border-color 0.12s ease-out, box-shadow 0.12s ease-out;
 
   &:hover {
-    background-color: oklch(from var(--color-foreground) l c h / 0.06);
+    background-color: var(--color-accent);
   }
 
   &:focus-visible {
-    border-color: oklch(from var(--color-primary) l c h / 0.6);
-    box-shadow: 0 0 0 2px oklch(from var(--color-primary) l c h / 0.3);
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 1px var(--color-primary);
   }
 
   &:disabled {
@@ -1316,15 +1299,6 @@ h1, h2, h3, h4, h5, h6,
 /* ===========================
    GLOW ON INTERACTIVE ELEMENTS
    =========================== */
-
-@utility glow-interactive {
-  transition: box-shadow 0.2s ease;
-  &:hover {
-    box-shadow:
-      0 0 0 1px oklch(from var(--color-primary) l c h / 0.5),
-      0 0 20px oklch(from var(--color-primary) l c h / 0.15);
-  }
-}
 
 /* ===========================
    GRADIENT BORDERS (Dark Mode)
@@ -1695,7 +1669,18 @@ h1, h2, h3, h4, h5, h6,
    Panels, task lists, drawio, TOC placeholder
    ============================================ */
 
-/* Panels — info, warning, note, tip */
+/* Panels — info, warning, note, tip.
+
+   The 3px `border-left` here is deliberate and is NOT the side-tab accent the
+   design detector flags. That rule targets a coloured edge used as decoration
+   on app cards and callouts; these selectors style DOCUMENT BODY content —
+   the rendering of a Confluence `panel` macro that arrived through the content
+   pipeline. Its left rule carries meaning from the source document, and
+   "the source of record wins" outranks our own surface conventions. Restyling
+   it would make an imported page look unlike itself in Confluence.
+
+   If the detector flags this again: it is an accepted exception, not a miss.
+   The equivalent decoration on app chrome stays refused. */
 .prose .panel-info,
 .prose .panel-warning,
 .prose .panel-note,
@@ -2219,8 +2204,17 @@ pre:focus-within .code-copy-btn,
    Article viewer — TipTap read-only overrides
    ============================================ */
 
+/* Vertical only. The 2.5rem horizontal inset that used to live here was a
+   SECOND one: PageViewPage's body container already carries the document's
+   `px-5 sm:px-10` measure, so prose rendered 40px right of the page title,
+   the summary banner and the sticky sub-header sitting directly above it —
+   and toggling Edit shifted every line of the document sideways, because the
+   editor's own wrapper insets differently.
+
+   The single caller (`<ArticleViewer>` in PageViewPage) owns the horizontal
+   measure. A future caller that renders the viewer bare must bring its own. */
 .article-viewer .tiptap {
-  padding: 1.5rem 2.5rem;
+  padding: 1.5rem 0;
 }
 
 /* #349: read-only viewer — let the TipTap-injected .tableWrapper handle
@@ -2476,18 +2470,22 @@ pre:focus-within .code-copy-btn,
   margin: 1rem 0;
 }
 
+/* An operable surface: it takes the measured interactive border, not the
+   retired 8%-alpha glass one, which could not clear 1.4.11's 3:1. Hover is a
+   border-colour change — the zero-offset coloured halo it used to grow was the
+   last live extrusion in the system, and it survived the conversion because
+   the flatness guard only walks `@utility` blocks. */
 .drawio-nodeview {
   position: relative;
-  border: 1px solid var(--glass-border);
+  border: 1px solid var(--color-border-interactive);
   border-radius: var(--radius-md);
-  background: oklch(from var(--color-card) l c h / 0.5);
+  background: var(--color-card);
   overflow: hidden;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  transition: border-color 0.12s ease-out;
 }
 
 .drawio-nodeview:hover {
-  border-color: oklch(from var(--color-primary) l c h / 0.4);
-  box-shadow: 0 0 0 1px oklch(from var(--color-primary) l c h / 0.15);
+  border-color: var(--color-primary);
 }
 
 /* Drag handle — left edge, visible on hover */
@@ -2743,68 +2741,12 @@ pre:focus-within .code-copy-btn,
   animation: ripple-expand 0.6s ease-out forwards;
 }
 
-/* ===========================
-   DIRECTION-AWARE HOVER
-   =========================== */
-
-.direction-aware-hover {
-  position: relative;
-  overflow: hidden;
-}
-
-.direction-aware-hover .hover-bloom {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 0.3s ease;
-  z-index: 0;
-}
-
-.direction-aware-hover:hover .hover-bloom {
-  opacity: 1;
-}
-
-/* ===========================
-   CARD STACK EFFECT
-   =========================== */
-
-.card-stack {
-  position: relative;
-}
-
-.card-stack::before,
-.card-stack::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--glass-border);
-  background: oklch(from var(--color-card) l c h / 0.4);
-  transition: transform 0.3s ease, opacity 0.3s ease;
-  z-index: -1;
-  pointer-events: none;
-}
-
-.card-stack::before {
-  transform: translate(2px, 2px);
-  opacity: 0.5;
-}
-
-.card-stack::after {
-  transform: translate(4px, 4px);
-  opacity: 0.3;
-}
-
-.card-stack:hover::before {
-  transform: translate(3px, 3px) rotate(0.5deg);
-  opacity: 0.6;
-}
-
-.card-stack:hover::after {
-  transform: translate(6px, 6px) rotate(-0.5deg);
-  opacity: 0.4;
-}
+/* `.direction-aware-hover` / `.hover-bloom` and `.card-stack` lived here.
+   The first two were already dead. `.card-stack` had one caller — the pinned
+   article cards — where it drew two offset ghost layers behind the card that
+   rotated on hover to fake a stack of paper, under a `TiltCard` that rotated
+   the card itself in 3D. Both are the retired neumorphic world; depth in this
+   system is a value step plus a hairline, never a simulated object. */
 
 /* Reduced motion */
 @media (prefers-reduced-motion: reduce) {
@@ -2885,8 +2827,8 @@ pre:focus-within .code-copy-btn,
    Keeps the captured passage visibly marked while the bubble menu's Improve
    popover holds focus (a blurred editor stops painting its native selection).
    Applied via a ProseMirror inline decoration — never a document mark. The
-   steel primary at low alpha reads as a highlight on both Slate Steel (dark)
-   and Frost Steel (light) without hurting text contrast.
+   the primary accent at low alpha reads as a highlight on both Graphite (dark)
+   and Paper (light) without hurting text contrast.
    ============================================ */
 .ai-improve-selection {
   background-color: color-mix(in srgb, var(--color-primary) 30%, transparent);

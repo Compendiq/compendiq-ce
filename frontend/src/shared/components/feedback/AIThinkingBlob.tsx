@@ -36,7 +36,13 @@ export function AIThinkingBlob({
         <div
           className={cn(
             'absolute inset-0 rounded-full',
-            'bg-gradient-to-br from-purple-500/30 to-violet-600/30',
+            // `--color-status-ai`, not raw `purple-500`/`violet-600`. The blob
+            // is the app's one AI-thinking glyph, so it has to be the same
+            // violet as every other AI marker — and the Tailwind palette does
+            // not track the theme, which put a bright dark-theme violet on
+            // Paper where the token is a much deeper `#7041a8`. Flat rather
+            // than a gradient for the same reason as every other surface.
+            'bg-status-ai/30',
             'blur-md',
             !shouldReduceMotion && 'animate-[blob-pulse_3s_ease-in-out_infinite]',
           )}
@@ -45,7 +51,7 @@ export function AIThinkingBlob({
         <div
           className={cn(
             'absolute inset-0.5 will-change-transform',
-            'bg-gradient-to-br from-purple-500 to-violet-600',
+            'bg-status-ai',
             !shouldReduceMotion
               ? 'animate-[blob-morph_4s_ease-in-out_infinite]'
               : 'rounded-full',

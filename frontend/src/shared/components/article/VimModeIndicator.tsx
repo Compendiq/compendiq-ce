@@ -23,7 +23,7 @@ export function VimModeIndicator({ vimState }: VimModeIndicatorProps) {
   return (
     <div
       data-testid="vim-mode-indicator"
-      className="flex items-center gap-2 border-t border-border/50 bg-card/80 px-3 py-1 text-xs font-mono"
+      className="flex items-center gap-2 border-t border-border bg-card px-3 py-1 text-xs font-mono"
     >
       <span
         className={cn(
