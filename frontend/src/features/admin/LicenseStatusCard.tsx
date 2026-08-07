@@ -31,9 +31,9 @@ const tierConfig: Record<string, { label: string; color: string; bgColor: string
   },
   business: {
     label: 'Business',
-    color: 'text-purple-400',
-    bgColor: 'bg-purple-500/10',
-    borderColor: 'border-purple-500/30',
+    color: 'text-status-ai',
+    bgColor: 'bg-status-ai/10',
+    borderColor: 'border-status-ai/30',
   },
   enterprise: {
     label: 'Enterprise',

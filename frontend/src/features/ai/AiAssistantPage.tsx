@@ -467,7 +467,7 @@ export function AiAssistantPage() {
             className={cn(
               'flex h-7 cursor-pointer items-center gap-1.5 rounded-md border px-2.5 text-xs transition-colors',
               thinkingMode
-                ? 'border-purple-500/45 bg-purple-500/15 text-purple-300'
+                ? 'border-status-ai/45 bg-status-ai/15 text-status-ai'
                 : 'border-border text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
             )}
             title={thinkingMode

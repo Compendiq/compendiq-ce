@@ -29,7 +29,7 @@ const typeIcons: Record<Notification['type'], typeof Bell> = {
 
 const typeColors: Record<Notification['type'], string> = {
   comment: 'text-blue-400',
-  mention: 'text-purple-400',
+  mention: 'text-status-ai',
   verification_due: 'text-amber-400',
   sync_complete: 'text-emerald-400',
   general: 'text-muted-foreground',

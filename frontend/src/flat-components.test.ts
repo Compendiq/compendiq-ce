@@ -258,6 +258,29 @@ describe('the component layer is as flat as the token layer', () => {
     ).toEqual([]);
   });
 
+  it('the AI signal is the token, never a raw purple', () => {
+    // `--color-status-ai` is #c084fc dark / #7041a8 light, so it tracks the
+    // theme. Tailwind's palette does not: `text-purple-300` on Paper's white
+    // card measures 1.77:1, and on the `bg-purple-500/10` tint it was paired
+    // with, 1.56:1 — invisible. The same markup measured 6.00:1 once it moved
+    // to the token, with no regression in Graphite (5.78:1).
+    //
+    // Scoped to purple deliberately. The wider problem is real and much larger
+    // — ~345 raw palette classes remain, mostly amber/emerald/red status
+    // colours with the same light-theme failure — but that is its own change
+    // with its own testing, not a rider on this one.
+    const offenders: string[] = [];
+    for (const file of FILES) {
+      for (const hit of callsites(file, /\b(text|bg|border|ring)-purple-\d{3}/)) {
+        offenders.push(`${file.path}: ${hit}`);
+      }
+    }
+    expect(
+      offenders,
+      'use `status-ai` — a raw purple does not track the theme and is unreadable on Paper',
+    ).toEqual([]);
+  });
+
   it('the sweep is looking at the real sources', () => {
     // Anti-vacuity: if the walk or the extension filter breaks, every rule above
     // passes on an empty set and the file becomes decoration.

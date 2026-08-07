@@ -500,7 +500,7 @@ const spaceBadgeClasses: Record<SyncOverviewSpace['status'], string> = {
 };
 
 const workerBadgeClasses = {
-  processing: 'border-purple-500/30 bg-purple-500/10 text-purple-300',
+  processing: 'border-status-ai/30 bg-status-ai/10 text-status-ai',
   idle: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300',
 };
 
