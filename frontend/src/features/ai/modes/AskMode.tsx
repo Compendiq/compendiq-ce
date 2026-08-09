@@ -133,7 +133,7 @@ export function AskModeInput() {
               <button
                 onClick={() => removeUrl(url)}
                 aria-label={`Remove ${new URL(url).hostname}`}
-                className="hover:text-red-400"
+                className="hover:text-destructive"
               >
                 <X size={10} />
               </button>

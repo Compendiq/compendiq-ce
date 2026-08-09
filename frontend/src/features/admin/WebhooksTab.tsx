@@ -111,7 +111,7 @@ export function WebhooksTab() {
   if (!isEnterprise || !hasFeature('webhook_push')) {
     return (
       <div
-        className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-100"
+        className="rounded-lg border border-warning/40 bg-warning/10 p-4 text-sm text-warning"
         role="alert"
         data-testid="webhooks-not-licensed"
       >
@@ -215,10 +215,10 @@ function WebhooksTabInner() {
       {/* Non-dismissible notice about signing */}
       <div
         role="alert"
-        className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-amber-100"
+        className="flex items-start gap-3 rounded-lg border border-warning/40 bg-warning/10 p-4 text-warning"
         data-testid="webhooks-signing-notice"
       >
-        <Shield size={18} className="mt-0.5 shrink-0 text-amber-400" />
+        <Shield size={18} className="mt-0.5 shrink-0 text-warning" />
         <div className="text-sm">
           Receivers <strong>must verify the signature header</strong> before
           processing a delivery. See <em>USER-GUIDE → Webhook Signing</em> for
@@ -368,7 +368,7 @@ function SubscriptionRow({
             </div>
             {sub.hasSecondarySecret && (
               <span
-                className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-xs text-amber-300"
+                className="inline-flex items-center gap-1 rounded-full bg-warning/15 px-2 py-0.5 text-xs text-warning"
                 data-testid={`webhook-rotation-chip-${sub.id}`}
                 title={
                   sub.secretSecondaryAddedAt
@@ -407,7 +407,7 @@ function SubscriptionRow({
                 data-testid={`webhook-last-delivery-${sub.id}`}
               >
                 {last.status === 'success' ? (
-                  <CheckCircle2 size={12} className="text-emerald-400" />
+                  <CheckCircle2 size={12} className="text-success" />
                 ) : (
                   <XCircle size={12} className="text-destructive" />
                 )}
@@ -882,8 +882,8 @@ function RotateSecretDialog({
       testid="webhook-rotate-dialog"
     >
       <div className="space-y-4">
-        <div className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-amber-100">
-          <AlertTriangle size={16} className="mt-0.5 shrink-0 text-amber-400" />
+        <div className="flex items-start gap-3 rounded-lg border border-warning/40 bg-warning/10 p-3 text-warning">
+          <AlertTriangle size={16} className="mt-0.5 shrink-0 text-warning" />
           <p className="text-xs">
             Both the current and new secret will sign deliveries for 24 hours,
             then the previous secret is retired automatically. Receivers must
@@ -929,7 +929,7 @@ function RotateSecretDialog({
 
         {result && (
           <div
-            className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3 text-xs text-emerald-100"
+            className="rounded-lg border border-success/30 bg-success/5 p-3 text-xs text-success"
             data-testid="webhook-rotate-result"
           >
             <div className="flex items-center gap-2 font-medium">
@@ -1049,7 +1049,7 @@ function TestDeliveryDialog({ subscription, onClose }: TestDialogProps) {
             className={cn(
               'rounded-lg border p-3 text-xs',
               result.status === 'success'
-                ? 'border-emerald-500/30 bg-emerald-500/5 text-emerald-100'
+                ? 'border-success/30 bg-success/5 text-success'
                 : 'border-destructive/40 bg-destructive/5 text-destructive',
             )}
             data-testid="webhook-test-result"
@@ -1269,9 +1269,9 @@ function DeliveryRow({
 
 function StatusChip({ status }: { status: WebhookDelivery['status'] }) {
   const styles: Record<WebhookDelivery['status'], string> = {
-    success: 'bg-emerald-500/15 text-emerald-300',
+    success: 'bg-success/15 text-success',
     failure: 'bg-destructive/15 text-destructive',
-    timeout: 'bg-amber-500/15 text-amber-300',
+    timeout: 'bg-warning/15 text-warning',
     ssrf_blocked: 'bg-status-ai/15 text-status-ai',
   };
   return (

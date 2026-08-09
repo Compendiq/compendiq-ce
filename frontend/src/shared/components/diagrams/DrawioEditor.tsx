@@ -222,7 +222,7 @@ export function DrawioEditor({ xml, onSave, onClose, drawioUrl }: DrawioEditorPr
           data-testid="drawio-error"
         >
           <div className="mx-4 flex max-w-md flex-col items-center gap-4 rounded-lg border border-white/10 bg-black/80 p-8 text-center">
-            <AlertTriangle className="h-10 w-10 text-amber-400" />
+            <AlertTriangle className="h-10 w-10 text-warning" />
             <h3 className="text-lg font-medium text-white">Could not load diagram editor</h3>
             <p className="text-sm text-white/60">
               The self-hosted draw.io editor did not respond. Check that the /drawio/ static files

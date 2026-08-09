@@ -84,7 +84,7 @@ export function AiReviewPolicyTab() {
   if (!isEnterprise || !hasFeature('ai_output_review')) {
     return (
       <div
-        className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-100"
+        className="rounded-lg border border-warning/40 bg-warning/10 p-4 text-sm text-warning"
         role="alert"
         data-testid="ai-review-policy-not-licensed"
       >
@@ -198,10 +198,10 @@ function AiReviewPolicyTabInner() {
       {is404 && (
         <div
           role="alert"
-          className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-amber-100"
+          className="flex items-start gap-3 rounded-lg border border-warning/40 bg-warning/10 p-4 text-warning"
           data-testid="ai-review-policy-overlay-missing"
         >
-          <Info size={18} className="mt-0.5 shrink-0 text-amber-400" />
+          <Info size={18} className="mt-0.5 shrink-0 text-warning" />
           <div className="text-sm">
             The AI review policy API isn&apos;t registered on this
             deployment. The Enterprise overlay that exposes{' '}
@@ -290,7 +290,7 @@ function AiReviewPolicyTabInner() {
                     {AI_REVIEW_MODE_LABELS[mode]}
                   </span>
                   {data?.policy.default_mode === mode && (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs text-emerald-300">
+                    <span className="inline-flex items-center gap-1 rounded-full bg-success/15 px-2 py-0.5 text-xs text-success">
                       <CheckCircle2 size={10} /> active
                     </span>
                   )}

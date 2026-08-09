@@ -19,15 +19,15 @@ function useLicenseStatus() {
 const tierConfig: Record<string, { label: string; color: string; bgColor: string; borderColor: string }> = {
   community: {
     label: 'Community',
-    color: 'text-zinc-400',
-    bgColor: 'bg-zinc-500/10',
-    borderColor: 'border-zinc-500/30',
+    color: 'text-status-inactive',
+    bgColor: 'bg-status-inactive/10',
+    borderColor: 'border-status-inactive/30',
   },
   team: {
     label: 'Team',
-    color: 'text-blue-400',
-    bgColor: 'bg-blue-500/10',
-    borderColor: 'border-blue-500/30',
+    color: 'text-info',
+    bgColor: 'bg-info/10',
+    borderColor: 'border-info/30',
   },
   business: {
     label: 'Business',
@@ -37,9 +37,9 @@ const tierConfig: Record<string, { label: string; color: string; bgColor: string
   },
   enterprise: {
     label: 'Enterprise',
-    color: 'text-amber-400',
-    bgColor: 'bg-amber-500/10',
-    borderColor: 'border-amber-500/30',
+    color: 'text-warning',
+    bgColor: 'bg-warning/10',
+    borderColor: 'border-warning/30',
   },
 };
 
@@ -352,7 +352,7 @@ export function LicenseStatusCard() {
                     className={cn(
                       'inline-flex h-7 w-7 items-center justify-center rounded-md',
                       isAvailable
-                        ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                        ? 'bg-success/10 text-success'
                         : 'bg-foreground/[0.04] text-muted-foreground/60',
                     )}
                   >
@@ -369,7 +369,7 @@ export function LicenseStatusCard() {
                   className={cn(
                     'rounded-full px-2 py-0.5 text-[12px] font-medium uppercase tracking-wider',
                     isAvailable
-                      ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                      ? 'bg-success/10 text-success'
                       : 'bg-foreground/[0.04] text-muted-foreground',
                   )}
                 >

@@ -353,21 +353,21 @@ function PreviewStep({
           className="flex flex-wrap gap-2 text-xs"
           data-testid="bulk-import-summary"
         >
-          <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 font-medium text-emerald-700 dark:text-emerald-300">
+          <span className="rounded-full bg-success/15 px-2 py-0.5 font-medium text-success">
             {summary.valid} valid
           </span>
           {summary.invalid > 0 && (
-            <span className="rounded-full bg-red-500/15 px-2 py-0.5 font-medium text-red-700 dark:text-red-300">
+            <span className="rounded-full bg-destructive/15 px-2 py-0.5 font-medium text-destructive">
               {summary.invalid} invalid
             </span>
           )}
           {summary.wouldUpdate > 0 && (
-            <span className="rounded-full bg-amber-500/15 px-2 py-0.5 font-medium text-amber-700 dark:text-amber-300">
+            <span className="rounded-full bg-warning/15 px-2 py-0.5 font-medium text-warning">
               {summary.wouldUpdate} will update
             </span>
           )}
           {summary.wouldCreate > 0 && (
-            <span className="rounded-full bg-sky-500/15 px-2 py-0.5 font-medium text-sky-700 dark:text-sky-300">
+            <span className="rounded-full bg-info/15 px-2 py-0.5 font-medium text-info">
               {summary.wouldCreate} new
             </span>
           )}
@@ -399,8 +399,8 @@ function PreviewStep({
                   key={idx}
                   className={cn(
                     'border-t border-border',
-                    invalid && 'bg-red-500/5',
-                    !invalid && dup && 'bg-amber-500/5',
+                    invalid && 'bg-destructive/5',
+                    !invalid && dup && 'bg-warning/5',
                   )}
                   data-testid={`bulk-import-row-${idx}`}
                 >
@@ -413,7 +413,7 @@ function PreviewStep({
                   <td className="p-2">
                     {invalid ? (
                       <span
-                        className="flex items-center gap-1 text-red-700 dark:text-red-300"
+                        className="flex items-center gap-1 text-destructive"
                         data-testid={`bulk-import-row-${idx}-invalid`}
                       >
                         <AlertTriangle size={12} />
@@ -421,13 +421,13 @@ function PreviewStep({
                       </span>
                     ) : dup ? (
                       <span
-                        className="text-amber-700 dark:text-amber-300"
+                        className="text-warning"
                         data-testid={`bulk-import-row-${idx}-dup`}
                       >
                         existing {r.existing}
                       </span>
                     ) : (
-                      <span className="flex items-center gap-1 text-emerald-700 dark:text-emerald-300">
+                      <span className="flex items-center gap-1 text-success">
                         <CheckCircle2 size={12} />
                         ready
                       </span>
@@ -535,8 +535,8 @@ function PreviewFailedStep({
         className={cn(
           'flex items-start gap-3 rounded-lg border p-4 text-sm',
           isMissingOverlay
-            ? 'border-amber-500/40 bg-amber-500/10 text-amber-100'
-            : 'border-red-500/40 bg-red-500/10 text-red-100',
+            ? 'border-warning/40 bg-warning/10 text-warning'
+            : 'border-destructive/40 bg-destructive/10 text-destructive',
         )}
       >
         <AlertTriangle size={16} className="mt-0.5 shrink-0" />

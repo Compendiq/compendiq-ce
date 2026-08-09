@@ -143,7 +143,7 @@ export function EmbeddingReembedBanner({ currentDimensions, pending }: Props) {
   if (stage === 'confirm') {
     const heavy = newDims !== null && newDims !== currentDimensions;
     return (
-      <div className="nm-card border-red-500/30 p-3 text-sm">
+      <div className="nm-card border-destructive/30 p-3 text-sm">
         {heavy ? (
           <p>
             ⚠ Dimension change: <b>{currentDimensions} → {newDims}</b>. This will{' '}
@@ -190,7 +190,7 @@ export function EmbeddingReembedBanner({ currentDimensions, pending }: Props) {
     }
     return (
       <div
-        className="nm-card border-blue-500/30 flex items-center justify-between p-3 text-sm"
+        className="nm-card border-info/30 flex items-center justify-between p-3 text-sm"
         data-testid="reembed-progress-banner"
       >
         <span>
@@ -201,7 +201,7 @@ export function EmbeddingReembedBanner({ currentDimensions, pending }: Props) {
   }
 
   return (
-    <div className="nm-card border-yellow-500/30 flex items-center justify-between p-3 text-sm">
+    <div className="nm-card border-warning/30 flex items-center justify-between p-3 text-sm">
       <span>⚠ Embedding provider/model changed. Probe and re-embed required.</span>
       <button
         className="nm-button-primary"

@@ -148,9 +148,9 @@ export function McpDocsTab() {
                 {testMutation.isPending ? (
                   <Loader2 size={14} className="animate-spin" />
                 ) : testMutation.data?.ok ? (
-                  <CheckCircle2 size={14} className="text-emerald-400" />
+                  <CheckCircle2 size={14} className="text-success" />
                 ) : testMutation.data && !testMutation.data.ok ? (
-                  <XCircle size={14} className="text-red-400" />
+                  <XCircle size={14} className="text-destructive" />
                 ) : (
                   <ExternalLink size={14} />
                 )}
@@ -220,7 +220,7 @@ export function McpDocsTab() {
                     className="inline-flex items-center gap-1 rounded-full border border-border bg-foreground/[0.03] px-2.5 py-1 text-xs"
                   >
                     {domain}
-                    <button onClick={() => removeDomain(domain)} className="text-muted-foreground hover:text-red-400">
+                    <button onClick={() => removeDomain(domain)} className="text-muted-foreground hover:text-destructive">
                       <Trash2 size={12} />
                     </button>
                   </span>

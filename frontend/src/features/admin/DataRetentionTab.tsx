@@ -235,11 +235,11 @@ export function DataRetentionTab() {
           <m.div
             initial={{ opacity: 0, y: -8 }}
             animate={{ opacity: 1, y: 0 }}
-            className="flex items-start gap-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-4"
+            className="flex items-start gap-3 rounded-lg border border-warning/20 bg-warning/5 p-4"
           >
-            <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-500" />
+            <AlertTriangle size={18} className="mt-0.5 shrink-0 text-warning" />
             <div>
-              <div className="text-sm font-medium text-amber-200">Enterprise Feature</div>
+              <div className="text-sm font-medium text-warning">Enterprise Feature</div>
               <div className="mt-1 text-xs text-muted-foreground">
                 Extended multi-table retention policies, preview, and on-demand purge
                 require an enterprise license with the Data Retention feature enabled.
@@ -349,7 +349,7 @@ export function DataRetentionTab() {
                       className={cn(
                         'rounded px-2 py-0.5 text-xs font-medium',
                         policy.enabled
-                          ? 'bg-emerald-500/10 text-emerald-400'
+                          ? 'bg-success/10 text-success'
                           : 'bg-foreground/10 text-muted-foreground',
                       )}
                       data-testid={`retention-enabled-${policy.tableName}`}
@@ -426,8 +426,8 @@ export function DataRetentionTab() {
                       row.estimatedRows < 0
                         ? 'bg-destructive/10 text-destructive'
                         : row.estimatedRows > 0
-                          ? 'bg-amber-500/10 text-amber-400'
-                          : 'bg-emerald-500/10 text-emerald-400',
+                          ? 'bg-warning/10 text-warning'
+                          : 'bg-success/10 text-success',
                     )}>
                       {row.estimatedRows < 0 ? 'error' : row.estimatedRows.toLocaleString()}
                     </span>

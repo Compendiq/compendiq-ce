@@ -142,12 +142,12 @@ export function ArticleSummary({
   if (summaryStatus === 'failed') {
     return (
       <div
-        className="mb-6 flex items-center justify-between gap-2 rounded-lg border border-red-500/20 bg-red-500/5 px-4 py-3"
+        className="mb-6 flex items-center justify-between gap-2 rounded-lg border border-destructive/20 bg-destructive/5 px-4 py-3"
         data-testid="article-summary-failed"
       >
         <div className="flex items-center gap-2">
-          <AlertCircle size={16} className="text-red-400" />
-          <span className="text-sm text-red-400">
+          <AlertCircle size={16} className="text-destructive" />
+          <span className="text-sm text-destructive">
             Summary generation failed{summaryError ? `: ${summaryError}` : ''}
           </span>
         </div>
@@ -155,7 +155,7 @@ export function ArticleSummary({
           <button
             onClick={handleRegenerate}
             disabled={regenerateMutation.isPending}
-            className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-red-400 hover:bg-red-500/10"
+            className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-destructive hover:bg-destructive/10"
             data-testid="summary-retry-button"
           >
             <RefreshCw size={12} className={cn(regenerateMutation.isPending && 'animate-spin')} />

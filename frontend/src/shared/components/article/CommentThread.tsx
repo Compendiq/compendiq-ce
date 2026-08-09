@@ -74,7 +74,7 @@ export function CommentThread({
               {formatRelativeTime(comment.createdAt)}
             </span>
             {comment.resolved && (
-              <span className="rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[11px] font-medium text-emerald-400">
+              <span className="rounded-full bg-success/15 px-1.5 py-0.5 text-[11px] font-medium text-success">
                 Resolved
               </span>
             )}
@@ -103,7 +103,7 @@ export function CommentThread({
             ) : (
               <button
                 onClick={() => onResolve(comment.id)}
-                className="flex items-center gap-1 text-xs text-emerald-400 hover:text-emerald-300 transition-colors"
+                className="flex items-center gap-1 text-xs text-success hover:text-success transition-colors"
                 data-testid={`resolve-${comment.id}`}
               >
                 <Check size={12} />

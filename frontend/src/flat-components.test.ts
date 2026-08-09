@@ -258,26 +258,40 @@ describe('the component layer is as flat as the token layer', () => {
     ).toEqual([]);
   });
 
-  it('the AI signal is the token, never a raw purple', () => {
-    // `--color-status-ai` is #c084fc dark / #7041a8 light, so it tracks the
-    // theme. Tailwind's palette does not: `text-purple-300` on Paper's white
-    // card measures 1.77:1, and on the `bg-purple-500/10` tint it was paired
-    // with, 1.56:1 — invisible. The same markup measured 6.00:1 once it moved
-    // to the token, with no regression in Graphite (5.78:1).
+  it('status colours are tokens, never a raw Tailwind palette shade', () => {
+    // Tokens track the theme; the palette does not. Every one of these classes
+    // had been picked to look right in Graphite, so the light theme inherited a
+    // set of near-invisible status states — `text-emerald-300` on
+    // `bg-emerald-500/10` over Paper's white card measured 1.52:1, and that was
+    // the *success* state of the sync panel. `text-amber-100` measured 1.11:1.
     //
-    // Scoped to purple deliberately. The wider problem is real and much larger
-    // — ~345 raw palette classes remain, mostly amber/emerald/red status
-    // colours with the same light-theme failure — but that is its own change
-    // with its own testing, not a rider on this one.
+    // The same markup on tokens measures 4.75–6.31:1 in Paper and 5.57–8.69:1
+    // in Graphite, computed over `bg-<role>/10` on the card.
+    //
+    // Two things the sweep had to preserve that a colour name alone does not
+    // carry, and which are the reason this is a guard and not just a rename:
+    //   - the SHADE encoded tint-vs-solid. `bg-yellow-50` is a pale panel fill
+    //     and `bg-yellow-500` is a solid one; collapsing both to `bg-warning`
+    //     turned three tinted badges into full-strength fills, one of which
+    //     ended up painting `text-destructive` on `bg-destructive`.
+    //   - a 2px streaming cursor and a score dot are solid MARKS, not panels,
+    //     so the shade heuristic's tint was wrong for them specifically.
+    const PALETTE =
+      'red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|slate|gray|zinc|neutral|stone';
     const offenders: string[] = [];
     for (const file of FILES) {
-      for (const hit of callsites(file, /\b(text|bg|border|ring)-purple-\d{3}/)) {
+      for (const hit of callsites(
+        file,
+        new RegExp(`\\b(text|bg|border|ring|from|to|via|divide|outline|decoration|fill|stroke)-(${PALETTE})-\\d{2,3}`),
+      )) {
         offenders.push(`${file.path}: ${hit}`);
       }
     }
     expect(
       offenders,
-      'use `status-ai` — a raw purple does not track the theme and is unreadable on Paper',
+      'use the semantic token (success / warning / destructive / info / ' +
+        'status-*) — a raw palette shade is fixed to one theme, and every one ' +
+        'of these was chosen against the dark one',
     ).toEqual([]);
   });
 

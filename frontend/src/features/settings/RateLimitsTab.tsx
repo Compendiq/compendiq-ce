@@ -155,7 +155,7 @@ export function RateLimitsTab() {
               </div>
             </div>
             {'warning' in cat && cat.warning && values[cat.key] < 5 && (
-              <p className="mt-2 text-xs text-yellow-500">{cat.warning}</p>
+              <p className="mt-2 text-xs text-warning">{cat.warning}</p>
             )}
             {values[cat.key] !== cat.default && (
               <button

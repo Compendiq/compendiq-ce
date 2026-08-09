@@ -297,7 +297,7 @@ export function SyncTab() {
         </div>
 
         {data.issues.length === 0 ? (
-          <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4 text-sm text-emerald-300" data-testid="sync-overview-empty">
+          <div className="rounded-xl border border-success/30 bg-success/10 p-4 text-sm text-success" data-testid="sync-overview-empty">
             No missing images or draw.io exports were detected in the selected spaces.
           </div>
         ) : (
@@ -305,7 +305,7 @@ export function SyncTab() {
             {data.issues.map((issue) => (
               <div
                 key={issue.pageId}
-                className="rounded-xl border border-red-500/30 bg-red-500/10 p-4"
+                className="rounded-xl border border-destructive/30 bg-destructive/10 p-4"
                 data-testid={`sync-overview-issue-${issue.pageId}`}
               >
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
@@ -313,7 +313,7 @@ export function SyncTab() {
                     <div className="font-medium">{issue.pageTitle}</div>
                     <div className="text-sm text-muted-foreground">{issue.spaceKey}</div>
                   </div>
-                  <div className="text-sm text-red-200">
+                  <div className="text-sm text-destructive">
                     {issue.missingImages} image missing, {issue.missingDrawio} draw.io missing
                   </div>
                 </div>
@@ -322,7 +322,7 @@ export function SyncTab() {
                   {issue.missingFiles.map((filename) => (
                     <span
                       key={filename}
-                      className="rounded-full border border-red-400/30 bg-black/10 px-2.5 py-1 text-xs text-red-100"
+                      className="rounded-full border border-destructive/30 bg-black/10 px-2.5 py-1 text-xs text-destructive"
                     >
                       {filename}
                     </span>
@@ -486,22 +486,22 @@ export function SyncTab() {
 // ---------------------------------------------------------------------------
 
 const syncBadgeClasses: Record<'idle' | 'syncing' | 'embedding' | 'error', string> = {
-  idle: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300',
-  syncing: 'border-amber-500/30 bg-amber-500/10 text-amber-300',
-  embedding: 'border-sky-500/30 bg-sky-500/10 text-sky-300',
-  error: 'border-red-500/30 bg-red-500/10 text-red-300',
+  idle: 'border-success/30 bg-success/10 text-success',
+  syncing: 'border-warning/30 bg-warning/10 text-warning',
+  embedding: 'border-info/30 bg-info/10 text-info',
+  error: 'border-destructive/30 bg-destructive/10 text-destructive',
 };
 
 const spaceBadgeClasses: Record<SyncOverviewSpace['status'], string> = {
-  healthy: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300',
-  degraded: 'border-red-500/30 bg-red-500/10 text-red-300',
-  syncing: 'border-amber-500/30 bg-amber-500/10 text-amber-300',
-  not_synced: 'border-slate-500/30 bg-slate-500/10 text-slate-300',
+  healthy: 'border-success/30 bg-success/10 text-success',
+  degraded: 'border-destructive/30 bg-destructive/10 text-destructive',
+  syncing: 'border-warning/30 bg-warning/10 text-warning',
+  not_synced: 'border-status-inactive/30 bg-status-inactive/10 text-status-inactive',
 };
 
 const workerBadgeClasses = {
   processing: 'border-status-ai/30 bg-status-ai/10 text-status-ai',
-  idle: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300',
+  idle: 'border-success/30 bg-success/10 text-success',
 };
 
 function formatTimestamp(value?: string | null): string {

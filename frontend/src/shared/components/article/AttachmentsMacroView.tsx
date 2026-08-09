@@ -23,16 +23,16 @@ function formatFileSize(bytes: number): string {
 function FileIcon({ filename }: { filename: string }) {
   const ext = filename.split('.').pop()?.toLowerCase() ?? '';
   if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp'].includes(ext)) {
-    return <FileImage size={16} className="text-blue-400 shrink-0" />;
+    return <FileImage size={16} className="text-info shrink-0" />;
   }
   if (['zip', 'tar', 'gz', 'rar', '7z'].includes(ext)) {
-    return <FileArchive size={16} className="text-yellow-400 shrink-0" />;
+    return <FileArchive size={16} className="text-warning shrink-0" />;
   }
   if (['js', 'ts', 'py', 'java', 'xml', 'json', 'html', 'css', 'sh'].includes(ext)) {
-    return <FileCode size={16} className="text-green-400 shrink-0" />;
+    return <FileCode size={16} className="text-success shrink-0" />;
   }
   if (['pdf', 'doc', 'docx', 'txt', 'md', 'rtf'].includes(ext)) {
-    return <FileText size={16} className="text-orange-400 shrink-0" />;
+    return <FileText size={16} className="text-warning shrink-0" />;
   }
   return <File size={16} className="text-muted-foreground shrink-0" />;
 }

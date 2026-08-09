@@ -102,7 +102,7 @@ export function ReviewDetailPage() {
   if (!isEnterprise || !hasFeature('ai_output_review')) {
     return (
       <div
-        className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-100"
+        className="rounded-lg border border-warning/40 bg-warning/10 p-4 text-sm text-warning"
         role="alert"
         data-testid="ai-review-detail-not-licensed"
       >
@@ -150,9 +150,9 @@ function ReviewDetailPageInner() {
         </button>
         <div
           role="alert"
-          className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-amber-100"
+          className="flex items-start gap-3 rounded-lg border border-warning/40 bg-warning/10 p-4 text-warning"
         >
-          <Info size={18} className="mt-0.5 shrink-0 text-amber-400" />
+          <Info size={18} className="mt-0.5 shrink-0 text-warning" />
           <div className="text-sm">
             This review couldn&apos;t be loaded. Either the review id is
             invalid, or the Enterprise overlay that exposes the review
@@ -288,11 +288,11 @@ function ReviewDetailContent({
                 className={cn(
                   'rounded-full px-2 py-0.5 text-xs font-medium',
                   review.status === 'pending' &&
-                    'bg-amber-500/15 text-amber-300',
+                    'bg-warning/15 text-warning',
                   review.status === 'approved' &&
-                    'bg-emerald-500/15 text-emerald-300',
+                    'bg-success/15 text-success',
                   review.status === 'edit-and-approved' &&
-                    'bg-emerald-500/15 text-emerald-300',
+                    'bg-success/15 text-success',
                   review.status === 'rejected' &&
                     'bg-destructive/15 text-destructive',
                   review.status === 'expired' &&
@@ -312,7 +312,7 @@ function ReviewDetailContent({
               )}
               {review.pii_findings_id && (
                 <span
-                  className="inline-flex items-center gap-1 rounded-full bg-rose-500/15 px-2 py-0.5 text-xs text-rose-300"
+                  className="inline-flex items-center gap-1 rounded-full bg-destructive/15 px-2 py-0.5 text-xs text-destructive"
                   data-testid="ai-review-detail-pii-flag"
                 >
                   <ShieldAlert size={10} /> PII findings

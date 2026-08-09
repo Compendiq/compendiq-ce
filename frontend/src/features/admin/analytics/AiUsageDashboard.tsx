@@ -45,9 +45,9 @@ function ChartSkeleton() {
 
 function StatCard({ label, value, warning }: { label: string; value: string | number; warning?: boolean }) {
   return (
-    <div className={cn('nm-card p-4 text-center', warning && 'border-amber-500/30')} data-testid={`stat-${label.toLowerCase().replace(/\s+/g, '-')}`}>
+    <div className={cn('nm-card p-4 text-center', warning && 'border-warning/30')} data-testid={`stat-${label.toLowerCase().replace(/\s+/g, '-')}`}>
       <p className="text-xs text-muted-foreground mb-1">{label}</p>
-      <p className={cn('text-2xl font-semibold', warning && 'text-amber-500')}>{value}</p>
+      <p className={cn('text-2xl font-semibold', warning && 'text-warning')}>{value}</p>
     </div>
   );
 }
@@ -101,7 +101,7 @@ export function AiUsageDashboard({ dateRange, onExportPdf }: DashboardProps) {
   if (!data.available) {
     return (
       <div className="nm-card p-6 flex items-start gap-3" data-testid="ai-usage-unavailable">
-        <Info className="h-5 w-5 text-blue-400 mt-0.5 shrink-0" />
+        <Info className="h-5 w-5 text-info mt-0.5 shrink-0" />
         <div>
           <h3 className="text-sm font-medium mb-1">AI Audit Logging Not Available</h3>
           <p className="text-sm text-muted-foreground">{data.message ?? 'The AI audit log table has not been initialized.'}</p>
@@ -156,7 +156,7 @@ export function AiUsageDashboard({ dateRange, onExportPdf }: DashboardProps) {
 
       {/* Error rate warning */}
       {errorRateWarning && (
-        <div className="nm-card border-amber-500/30 p-3 flex items-center gap-2 text-sm text-amber-500" data-testid="error-rate-warning">
+        <div className="nm-card border-warning/30 p-3 flex items-center gap-2 text-sm text-warning" data-testid="error-rate-warning">
           <AlertTriangle className="h-4 w-4 shrink-0" />
           Error rate is above 10% ({errorRate.toFixed(1)}%). Investigate failing requests.
         </div>

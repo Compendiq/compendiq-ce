@@ -200,10 +200,10 @@ function ProviderTab({ disabled }: { disabled?: boolean }) {
             <div className={cn(
               'h-2.5 w-2.5 rounded-full',
               data?.configured && data.provider?.enabled
-                ? 'bg-emerald-500'
+                ? 'bg-success'
                 : data?.configured
-                  ? 'bg-amber-500'
-                  : 'bg-zinc-500',
+                  ? 'bg-warning'
+                  : 'bg-status-inactive',
             )} />
             <span className="text-sm font-medium">
               {data?.configured && data.provider?.enabled
@@ -266,7 +266,7 @@ function ProviderTab({ disabled }: { disabled?: boolean }) {
               className={cn(
                 'mt-2 rounded-md p-3 text-xs',
                 testResult.success
-                  ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
+                  ? 'bg-success/10 text-success'
                   : 'bg-destructive/10 text-destructive',
               )}
             >
@@ -351,7 +351,7 @@ function ProviderTab({ disabled }: { disabled?: boolean }) {
             <m.div
               initial={{ opacity: 0, height: 0 }}
               animate={{ opacity: 1, height: 'auto' }}
-              className="mt-2 flex items-start gap-2 rounded-md bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400"
+              className="mt-2 flex items-start gap-2 rounded-md bg-warning/10 p-3 text-xs text-warning"
               data-testid="oidc-redirect-origin-warning"
             >
               <AlertTriangle size={14} className="mt-0.5 shrink-0" />
@@ -663,12 +663,12 @@ export function OidcSettingsPage() {
         <m.div
           initial={{ opacity: 0, y: -8 }}
           animate={{ opacity: 1, y: 0 }}
-          className="flex items-start gap-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-4"
+          className="flex items-start gap-3 rounded-lg border border-warning/20 bg-warning/5 p-4"
           data-testid="enterprise-required-banner"
         >
-          <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-500" />
+          <AlertTriangle size={18} className="mt-0.5 shrink-0 text-warning" />
           <div>
-            <div className="text-sm font-medium text-amber-200">Enterprise License Required</div>
+            <div className="text-sm font-medium text-warning">Enterprise License Required</div>
             <div className="mt-1 text-xs text-muted-foreground">
               SSO / OIDC authentication requires an active enterprise license. The configuration below is read-only.
               Set the <code className="rounded bg-foreground/10 px-1.5 py-0.5">COMPENDIQ_LICENSE_KEY</code> environment variable to enable this feature.

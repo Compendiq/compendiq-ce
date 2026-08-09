@@ -28,10 +28,10 @@ const typeIcons: Record<Notification['type'], typeof Bell> = {
 };
 
 const typeColors: Record<Notification['type'], string> = {
-  comment: 'text-blue-400',
+  comment: 'text-info',
   mention: 'text-status-ai',
-  verification_due: 'text-amber-400',
-  sync_complete: 'text-emerald-400',
+  verification_due: 'text-warning',
+  sync_complete: 'text-success',
   general: 'text-muted-foreground',
 };
 

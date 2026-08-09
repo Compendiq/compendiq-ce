@@ -195,12 +195,12 @@ export function UsersAdminPage() {
       </header>
 
       {lastTempPassword && (
-        <div className="rounded-md border border-yellow-300 bg-yellow-50 p-3 text-sm dark:bg-yellow-900/20">
-          <p className="font-semibold text-yellow-900 dark:text-yellow-200">
+        <div className="rounded-md border border-warning/40 bg-warning/10 p-3 text-sm">
+          <p className="font-semibold text-warning">
             Temporary password for {lastTempPassword.username}
           </p>
-          <p className="mt-1 font-mono text-yellow-900 dark:text-yellow-100">{lastTempPassword.password}</p>
-          <p className="mt-2 text-xs text-yellow-800 dark:text-yellow-200">
+          <p className="mt-1 font-mono text-warning">{lastTempPassword.password}</p>
+          <p className="mt-2 text-xs text-warning">
             Share this with the user over a secure channel. It will not be shown again. Ask the user to change it immediately after first login.
           </p>
           <button
@@ -282,11 +282,11 @@ export function UsersAdminPage() {
                   </td>
                   <td className="p-3">
                     {u.deactivatedAt ? (
-                      <span className="rounded-full bg-red-100 px-2 py-0.5 text-xs text-red-800 dark:bg-red-900/30 dark:text-red-200">
+                      <span className="rounded-full bg-destructive/10 px-2 py-0.5 text-xs text-destructive">
                         deactivated
                       </span>
                     ) : (
-                      <span className="rounded-full bg-green-100 px-2 py-0.5 text-xs text-green-800 dark:bg-green-900/30 dark:text-green-200">
+                      <span className="rounded-full bg-success/10 px-2 py-0.5 text-xs text-success">
                         active
                       </span>
                     )}
@@ -298,7 +298,7 @@ export function UsersAdminPage() {
                     {u.id !== currentUserId && !u.deactivatedAt && (
                       <button
                         type="button"
-                        className="text-xs text-yellow-700 underline dark:text-yellow-400"
+                        className="text-xs text-warning underline"
                         onClick={() => deactivate.mutate(u.id)}
                         disabled={deactivate.isPending}
                       >
@@ -308,7 +308,7 @@ export function UsersAdminPage() {
                     {u.deactivatedAt && (
                       <button
                         type="button"
-                        className="text-xs text-green-700 underline dark:text-green-400"
+                        className="text-xs text-success underline"
                         onClick={() => reactivate.mutate(u.id)}
                         disabled={reactivate.isPending}
                       >
@@ -318,7 +318,7 @@ export function UsersAdminPage() {
                     {u.id !== currentUserId && (
                       <button
                         type="button"
-                        className="text-xs text-red-700 underline dark:text-red-400"
+                        className="text-xs text-destructive underline"
                         onClick={() => setPendingDelete(u)}
                         disabled={remove.isPending}
                       >
@@ -494,7 +494,7 @@ function UserCreateDialog({ onClose, onSubmit, isSubmitting }: UserCreateDialogP
               Send invitation email (requires SMTP + email address)
             </label>
             {mode === 'invitation' && !email.trim() && (
-              <p className="text-xs text-yellow-700 dark:text-yellow-400">
+              <p className="text-xs text-warning">
                 Without an email address the temp password will be shown to you after create, and no email is sent.
               </p>
             )}

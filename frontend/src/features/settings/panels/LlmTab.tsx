@@ -183,7 +183,7 @@ export function LlmTab() {
 
   return (
     <div className="space-y-6">
-      <div className="nm-card border-yellow-500/30 p-3 text-sm text-yellow-400">
+      <div className="nm-card border-warning/30 p-3 text-sm text-warning">
         LLM provider + per-use-case assignments are shared across all users. Only admins can change them here.
       </div>
       <ProviderListSection />
