@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
-import { TagEditor } from './TagEditor';
+import { createRef } from 'react';
+import { act, render, screen, fireEvent } from '@testing-library/react';
+import { TagEditor, type TagEditorHandle } from './TagEditor';
 import { normalizeTag } from '../lib/tag-utils';
 
 describe('normalizeTag', () => {
@@ -196,6 +197,76 @@ describe('TagEditor', () => {
     fireEvent.keyDown(input, { key: 'Escape' });
 
     expect(screen.queryByTestId('tag-suggestions')).not.toBeInTheDocument();
+  });
+
+  /**
+   * `dismissSuggestions` is the whole contract between this editor and
+   * `TagPopover`: the popover cannot see the list (Radix takes Escape at
+   * `document` in the capture phase, before this component's own keydown ever
+   * runs), so the boolean is the only thing telling it whether the keystroke was
+   * already spent. Returning `true` with nothing open would make the popover
+   * undismissable by keyboard.
+   */
+  describe('dismissSuggestions handle', () => {
+    it('hides an open list and reports that it consumed the call', () => {
+      const ref = createRef<TagEditorHandle>();
+      render(<TagEditor {...defaultProps} ref={ref} />);
+
+      fireEvent.change(screen.getByTestId('tag-input'), { target: { value: 'java' } });
+      expect(screen.getByTestId('tag-suggestions')).toBeInTheDocument();
+
+      let consumed: boolean | undefined;
+      act(() => {
+        consumed = ref.current?.dismissSuggestions();
+      });
+
+      expect(consumed).toBe(true);
+      expect(screen.queryByTestId('tag-suggestions')).not.toBeInTheDocument();
+    });
+
+    it('reports false when there is no list to hide', () => {
+      const ref = createRef<TagEditorHandle>();
+      render(<TagEditor {...defaultProps} ref={ref} />);
+
+      expect(screen.queryByTestId('tag-suggestions')).not.toBeInTheDocument();
+
+      let consumed: boolean | undefined;
+      act(() => {
+        consumed = ref.current?.dismissSuggestions();
+      });
+
+      expect(consumed).toBe(false);
+    });
+
+    /**
+     * Typing text that matches nothing leaves `showSuggestions` true with an
+     * empty list and no dropdown on screen. Keying off that flag alone would
+     * report a peel that the user cannot see, silently eating one Escape.
+     */
+    it('reports false when the query matches nothing', () => {
+      const ref = createRef<TagEditorHandle>();
+      render(<TagEditor {...defaultProps} ref={ref} />);
+
+      fireEvent.change(screen.getByTestId('tag-input'), { target: { value: 'zzzzz' } });
+      expect(screen.queryByTestId('tag-suggestions')).not.toBeInTheDocument();
+
+      let consumed: boolean | undefined;
+      act(() => {
+        consumed = ref.current?.dismissSuggestions();
+      });
+
+      expect(consumed).toBe(false);
+    });
+  });
+
+  it('focuses the input on mount when autoFocus is set', () => {
+    render(<TagEditor {...defaultProps} autoFocus />);
+    expect(screen.getByTestId('tag-input')).toHaveFocus();
+  });
+
+  it('does not steal focus when autoFocus is not set', () => {
+    render(<TagEditor {...defaultProps} />);
+    expect(screen.getByTestId('tag-input')).not.toHaveFocus();
   });
 
   it('disables input and remove buttons when isLoading', () => {

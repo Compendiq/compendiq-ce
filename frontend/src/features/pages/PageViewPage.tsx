@@ -34,7 +34,7 @@ import { apiFetch } from '../../shared/lib/api';
 import { ArticleSummary } from '../../shared/components/article/ArticleSummary';
 import type { TocHeading } from '../../shared/components/article/TableOfContents';
 import { PageViewSkeleton } from '../../shared/components/feedback/Skeleton';
-import { TagEditor } from '../../shared/components/TagEditor';
+import { TagPopover } from '../../shared/components/TagPopover';
 import { ShortcutHint } from '../../shared/components/ShortcutHint';
 import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
 import { usePresence } from './use-presence';
@@ -709,13 +709,36 @@ export function PageViewPage() {
               </div>
             </div>
           )}
-          {/* Action row — Cancel/Save are aligned to TagEditor's input row
-              (its bottom edge), since the TagEditor stacks existing tag
-              pills above the "Add a tag…" input. items-end keeps the
-              buttons on the same baseline as the Add-tag input/button. */}
-          <div className="mx-auto flex max-w-[1248px] items-end gap-3 px-9 py-2 sm:px-16">
+          {/* Action row — one line of controls, pinned to the same 48px as the
+              header, the sidebar header, the inspector header and the context
+              strip directly below.
+
+              It used to be ~92px, because `TagEditor` rendered open here and
+              stacks a pill row, a 12px gap and an input row. It is a chip now
+              (`TagPopover`), which also stops the row mixing three scopes at
+              equal weight: the toolbar above acts on the selection, the chip on
+              the page, Cancel/Save on the session.
+
+              The 48px is DECLARED, not derived, exactly as the context strip
+              below declares it — and for the same reason. Measured in Chromium,
+              `nm-button-primary` and `nm-button-ghost` are 34px, not the 32px
+              their comments claim: both add a 1px border outside a 6+20+6 box,
+              and only `nm-icon-button` sets an explicit 2rem. Deriving the row
+              from padding therefore lands on 50px, and chasing 48 by trimming
+              padding would break again the moment a control's border changed.
+
+              The `-1px` is the same arithmetic the context strip documents: the
+              hairline sits on the sticky parent, not on this row, so without
+              subtracting it the row measures 49 and its rule falls one pixel
+              below the other three — the exact seam this alignment exists to
+              remove.
+
+              `items-center`, not `items-end` — that was there to hide the tag
+              stack's ragged bottom edge, and with three equal-height controls it
+              would now push them all low. */}
+          <div className="mx-auto flex min-h-[calc(3rem-1px)] max-w-[1248px] items-center gap-3 px-9 py-1.5 sm:px-16">
             <div className="min-w-0 flex-1">
-              <TagEditor
+              <TagPopover
                 tags={page.labels}
                 onAddTag={handleAddTag}
                 onRemoveTag={handleRemoveTag}
@@ -725,7 +748,14 @@ export function PageViewPage() {
             </div>
             <button
               onClick={handleCancelEditing}
-              className="shrink-0 rounded-md px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+              // Measured to 34px, matching the chip and Save exactly: 6 + 20 + 6
+              // plus a 1px transparent border, which is how `nm-button-primary`
+              // reaches the same figure. It was `py-2` and 36px; `items-end`
+              // used to hide the mismatch by bottom-aligning both against the
+              // tall tag block, and with that block gone it would be a visible
+              // step between two adjacent buttons. The border is load-bearing
+              // arithmetic, not decoration — dropping it leaves this 2px short.
+              className="shrink-0 rounded-md border border-transparent px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
             >
               Cancel
             </button>

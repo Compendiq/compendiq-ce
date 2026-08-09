@@ -131,8 +131,8 @@ vi.mock('../../shared/components/feedback/Skeleton', () => ({
   PageViewSkeleton: () => <div data-testid="page-view-skeleton" />,
 }));
 
-vi.mock('../../shared/components/TagEditor', () => ({
-  TagEditor: () => <div data-testid="tag-editor" />,
+vi.mock('../../shared/components/TagPopover', () => ({
+  TagPopover: () => <button data-testid="tag-popover-trigger" />,
 }));
 
 
