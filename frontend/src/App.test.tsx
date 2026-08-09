@@ -3,6 +3,7 @@ import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useAuthStore } from './stores/auth-store';
+import { createQueryClient } from './shared/lib/query-client';
 import { App, PageLoadingFallback } from './App';
 
 describe('App – ProtectedRoute token restoration', () => {
@@ -130,6 +131,108 @@ describe('App – ProtectedRoute token restoration', () => {
       expect(useAuthStore.getState().isAuthenticated).toBe(false);
     });
   });
+});
+
+describe('App – expired session must not hang on the loading fallback', () => {
+  let fetchSpy: MockInstance<typeof fetch>;
+
+  beforeEach(() => {
+    fetchSpy = vi.spyOn(globalThis, 'fetch');
+  });
+
+  afterEach(() => {
+    useAuthStore.getState().clearAuth();
+  });
+
+  function renderApp(queryClient: QueryClient, initialPath = '/') {
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={[initialPath]}>
+          <App />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  // Reproduces the reported hang: opening the app with an expired/revoked
+  // refresh cookie shows "Loading..." forever until a manual reload.
+  //
+  // The sequence is a starvation, not a failed fetch. useSessionInit's refresh
+  // 401s and calls clearAuth(); that true->false flip fires
+  // useClearCacheOnLogout, whose queryClient.clear() evicts the already-
+  // resolved ['setup-status'] entry. useSetupStatus then reports isLoading
+  // again with no data, and ProtectedRoute's `if (isLoading)` gate returns the
+  // fallback *before* reaching its `<Navigate to="/login">` — with nothing left
+  // to refetch the evicted query, the spinner never resolves.
+  //
+  // The pre-existing "clears auth and redirects to login when refresh fails on
+  // reload" test above cannot catch this: it asserts only the store flag, which
+  // flips correctly while the UI stays stuck.
+  it('lands on the login page when the session refresh fails on load', async () => {
+    useAuthStore.setState({
+      accessToken: null,
+      user: { id: '1', username: 'test', role: 'user' },
+      isAuthenticated: true,
+    });
+
+    // The app's own client — staleTime and the retry predicate both affect
+    // whether an evicted query refetches, so a bespoke one would not be
+    // testing the app.
+    const queryClient = createQueryClient();
+
+    // A configured instance (setupComplete: true) whose refresh cookie is no
+    // longer accepted. Returning a real setup-status payload matters: an empty
+    // {} would leave setupComplete falsy and route to /setup instead, which is
+    // why the existing coverage never exercised this path.
+    //
+    // The ordering below is the whole bug. The refresh must fail while the
+    // setup-status request is still IN FLIGHT, so queryClient.clear() removes a
+    // pending query: the response then arrives for a query that no longer
+    // exists and is discarded, leaving the observer with no data and nothing to
+    // trigger a refetch. If setup-status resolves first the app behaves
+    // correctly — clearAuth re-renders ProtectedRoute while the cached answer
+    // is still there, and it redirects to /login as intended.
+    let refreshFailed: () => void;
+    const refreshHasFailed = new Promise<void>((resolve) => {
+      refreshFailed = resolve;
+    });
+
+    fetchSpy.mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      if (url.includes('/api/health/setup-status')) {
+        await refreshHasFailed;
+        return new Response(
+          JSON.stringify({
+            setupComplete: true,
+            steps: { admin: true, llm: true, confluence: true },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (url.includes('/auth/refresh')) {
+        // Let the 401 land, then release setup-status on a later macrotask so
+        // clearAuth's effect (and its clear()) has run first.
+        setTimeout(() => refreshFailed(), 0);
+        return new Response('Unauthorized', { status: 401 });
+      }
+      return new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+
+    renderApp(queryClient, '/');
+
+    await waitFor(() => {
+      expect(useAuthStore.getState().isAuthenticated).toBe(false);
+    });
+
+    // The user must end up somewhere actionable rather than on a spinner.
+    await waitFor(() => {
+      expect(screen.getByTestId('sso-status-announcer')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('Loading...')).not.toBeInTheDocument();
+  }, 10000);
 });
 
 describe('App – ProtectedRoute setup-status fail-safe (#932)', () => {

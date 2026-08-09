@@ -10,13 +10,21 @@ interface SetupStatus {
 }
 
 /**
+ * Describes the deployment, not the signed-in user — `{ setupComplete, steps }`
+ * carries no per-user data. Exported so the logout cache wipe can spare it:
+ * ProtectedRoute gates on this query's loading state, so dropping it mid-flight
+ * strands the router on the loading fallback (see useClearCacheOnLogout).
+ */
+export const SETUP_STATUS_QUERY_KEY = ['setup-status'] as const;
+
+/**
  * Queries the setup status endpoint to determine whether the first-run
  * wizard has been completed. The result is cached for 30 seconds to avoid
  * hammering the endpoint on every route navigation.
  */
 export function useSetupStatus() {
   const { data, isLoading, error, refetch } = useQuery<SetupStatus>({
-    queryKey: ['setup-status'],
+    queryKey: SETUP_STATUS_QUERY_KEY,
     queryFn: async () => {
       const res = await fetch('/api/health/setup-status');
       if (!res.ok) {

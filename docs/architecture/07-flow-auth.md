@@ -134,6 +134,17 @@ carry no user identity (#885). A ref guard means a token refresh (`setAuth`
 while still authenticated) does not drop a live session's cache; only a true
 logout does.
 
+The wipe spares exactly one query: `SETUP_STATUS_QUERY_KEY`. It describes the
+deployment (`{ setupComplete, steps }`), never a user, so it falls outside what
+#885 protects — and `ProtectedRoute` gates on its loading state. A blanket
+`queryClient.clear()` removed it **mid-flight** on the most common expiry path
+(open the app with a stale session → `useSessionInit`'s refresh 401s →
+`clearAuth`): the in-flight response then arrived for a query that no longer
+existed and was discarded, so `isLoading` stayed true with nothing left to
+trigger a refetch. The route sat on the loading fallback forever, *above* its
+own `<Navigate to="/login">`, and only a manual reload recovered. Mutation
+state is still cleared outright.
+
 ## Per-request revocation check (#737)
 
 `authenticate` does not trust the JWT alone: after signature verification it
