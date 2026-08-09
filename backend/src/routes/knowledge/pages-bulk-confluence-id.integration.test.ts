@@ -88,10 +88,15 @@ vi.mock('../../domains/confluence/services/attachment-handler.js', () => ({
 
 // Not merely an LLM boundary: left real, the embedding worker races these tests
 // by clearing `embedding_dirty` on the rows they just asserted about.
+// A factory mock replaces the whole module, so anything the routes import has
+// to be listed. `assertShadowRollbackWindowClear` (#1116) guards
+// POST /pages/bulk/embed, which this file exercises; omitting it made the route
+// throw "not a function" and every cell here fail on a bare 500.
 vi.mock('../../domains/llm/services/embedding-service.js', () => ({
   processDirtyPages: vi.fn().mockResolvedValue(undefined),
   isProcessingUser: vi.fn().mockReturnValue(false),
   computePageRelationships: vi.fn().mockResolvedValue(0),
+  assertShadowRollbackWindowClear: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('../../domains/knowledge/services/quality-worker.js', () => ({

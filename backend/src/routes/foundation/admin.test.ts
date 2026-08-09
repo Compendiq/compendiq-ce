@@ -667,6 +667,30 @@ describe('Admin routes', () => {
     });
   });
 
+  describe('PUT /api/admin/settings - chunk changes during a shadow migration (#1116 r8/r9)', () => {
+    it('refuses with 409 and writes NOTHING when a migration is in progress', async () => {
+      // A chunk change dirties the whole corpus; during a migration's
+      // `swapped` phase the rollback that deletes NULL-vector rows would then
+      // empty it. Refusing AFTER the settings upsert would be its own bug —
+      // the new chunk size persisted with the corpus never re-chunked.
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({
+        rows: [{ setting_value: JSON.stringify({ status: 'swapped', providerId: 'p', model: 'm', dimensions: 8, columnType: 'vector(8)', indexed: true, startedAt: '2026-08-06T00:00:00.000Z' }) }],
+        rowCount: 1,
+      });
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/settings',
+        payload: { embeddingChunkSize: 512 },
+      });
+
+      expect(response.statusCode).toBe(409);
+      const calls = (mockQuery as ReturnType<typeof vi.fn>).mock.calls as Array<[string, ...unknown[]]>;
+      expect(calls.find(([sql]) => typeof sql === 'string' && sql.includes('embedding_dirty'))).toBeUndefined();
+      expect(calls.find(([sql]) => typeof sql === 'string' && /INSERT INTO admin_settings/i.test(sql))).toBeUndefined();
+    });
+  });
+
   // ─── Plan §2.7 / §4.5 RED #11 — reembedHistoryRetention wiring ──────────
   describe('reembedHistoryRetention (issue #257)', () => {
     it('GET /api/admin/settings returns 150 when no row is stored (default)', async () => {

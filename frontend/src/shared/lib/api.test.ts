@@ -393,3 +393,36 @@ describe('logoutApi', () => {
     expect(mockClearAuth).toHaveBeenCalled();
   });
 });
+
+// #1116 review r3: several admin routes answer {error: <human text>} rather
+// than the app's global {error: NAME, message: text} shape — the refusal text
+// must still reach the toast instead of a bare status line.
+describe('failureMessage error-field fallback (#1116 r3)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('surfaces a prose {error} body when {message} is absent', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ error: 'The backfill job is still running or queued — wait for it to finish before re-running', statusCode: 409 }), {
+        status: 409,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    await expect(apiFetch('/admin/embedding/shadow-migration/backfill', { method: 'POST' })).rejects.toThrow(
+      /still running or queued/,
+    );
+  });
+
+  it('does not mistake a single-token error NAME for a message', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ error: 'InternalServerError', statusCode: 500 }), {
+        status: 500,
+        statusText: '',
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    await expect(apiFetch('/whatever')).rejects.toThrow(/Request failed \(HTTP 500\)/);
+  });
+});
+

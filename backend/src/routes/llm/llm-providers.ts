@@ -24,6 +24,7 @@ import {
   SsrfError,
 } from '../../core/utils/ssrf-guard.js';
 import { getRateLimits } from '../../core/services/rate-limit-service.js';
+import { getShadowMigrationState } from '../../domains/llm/services/shadow-migration-service.js';
 import { query } from '../../core/db/postgres.js';
 
 /**
@@ -69,6 +70,81 @@ const ADMIN_RATE_LIMIT = {
 };
 
 const IdParamsSchema = z.object({ id: z.string().uuid() });
+
+
+/**
+ * #1116 review r2: while a shadow migration runs, the LIVE embedding model is
+ * migration state. The explicit assignment row is pinned by
+ * PUT /admin/llm-usecases — but when the embedding use case INHERITS the
+ * default provider (row absent or provider NULL), repointing the default via
+ * set-default or a defaultModel patch changes the live model just the same.
+ * True exactly when a migration exists AND embedding resolves via default.
+ */
+async function embeddingAssignmentRow(): Promise<{ provider_id: string | null; model: string | null } | null> {
+  const r = await query<{ provider_id: string | null; model: string | null }>(
+    `SELECT provider_id, model FROM llm_usecase_assignments WHERE usecase = 'embedding'`,
+  );
+  return r.rows[0] ?? null;
+}
+
+/**
+ * Review r5: the assignment shapes whose RESOLUTION the migration depends on
+ * — the live row, plus (once swapped) the pre-swap assignment that rollback
+ * restores. The second is what the r3 guards missed: the swap pins the live
+ * row to the new explicit pair, so testing that row alone declares every
+ * default repoint harmless exactly during the window where the rollback
+ * target is the thing at risk. Move the default then roll back, and the
+ * restored assignment resolves a model the restored vectors were never
+ * embedded with — wrong-length inserts if the dimensions differ, a silently
+ * mixed embedding space if they match.
+ */
+async function migrationSensitiveShapes(): Promise<
+  Array<{ providerId: string | null; model: string | null }> | null
+> {
+  const state = await getShadowMigrationState();
+  if (state === null) return null;
+  const row = await embeddingAssignmentRow();
+  const shapes = [{ providerId: row?.provider_id ?? null, model: row?.model ?? null }];
+  if (state.prev) shapes.push({ providerId: state.prev.providerId, model: state.prev.model });
+  return shapes;
+}
+
+async function embeddingInheritsDefaultDuringMigration(): Promise<boolean> {
+  const shapes = await migrationSensitiveShapes();
+  // Only a shape with NO pinned provider resolves through whichever provider
+  // is default; {P, NULL} keeps resolving through P wherever the default goes.
+  return shapes !== null && shapes.some((s) => s.providerId === null);
+}
+
+/**
+ * Review r3: an assignment of {provider: P, model: NULL} resolves its live
+ * model from P.default_model — so patching P's defaultModel mid-migration
+ * repoints the live embedding model exactly like the inherit case. True when
+ * a migration runs AND this provider's default_model is what embedding
+ * resolves through (either full inherit, or explicit-provider-with-NULL-model
+ * pointing at this id).
+ */
+async function embeddingResolvesThroughProviderDefault(providerId: string): Promise<boolean> {
+  const shapes = await migrationSensitiveShapes();
+  if (shapes === null) return false;
+  if (shapes.some((s) => s.providerId === providerId && s.model === null)) return true;
+  if (!shapes.some((s) => s.providerId === null)) return false;
+  // A full-inherit shape resolves through the DEFAULT provider's
+  // default_model — so that provider's patch matters and no other's does.
+  // The old blanket `true` froze the defaultModel of every provider in the
+  // instance, chat-only ones included, for the whole backfill window (r5).
+  const r = await query<{ is_default: boolean }>(
+    `SELECT is_default FROM llm_providers WHERE id = $1`,
+    [providerId],
+  );
+  return r.rows[0]?.is_default === true;
+}
+
+// The remedy must not name one the sibling guard refuses: PUT
+// /admin/llm-usecases answers 409 for any embedding patch while a migration
+// exists, so 'assign it explicitly' was a dead end (review r5).
+const EMBEDDING_PINNED_MSG =
+  'A shadow embedding migration is in progress and its embedding assignment resolves through this provider\'s default — changing the default would repoint the live embedding model mid-migration, or the model a rollback restores. Swap, roll back or clean up the migration first (#1116).';
 
 export async function llmProviderRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
@@ -151,6 +227,12 @@ export async function llmProviderRoutes(fastify: FastifyInstance) {
     async (request, reply) => {
       const { id } = IdParamsSchema.parse(request.params);
       const patch = LlmProviderUpdateSchema.parse(request.body);
+      if (
+        Object.prototype.hasOwnProperty.call(patch, 'defaultModel')
+        && (await embeddingResolvesThroughProviderDefault(id))
+      ) {
+        return reply.code(409).send({ error: EMBEDDING_PINNED_MSG, message: EMBEDDING_PINNED_MSG, statusCode: 409 });
+      }
       // Capture the previous baseUrl BEFORE we mutate state so a baseUrl
       // change can revoke the OLD origin's allowlist entry once it's no
       // longer referenced (mirrors the Confluence flow on URL replace).
@@ -205,6 +287,18 @@ export async function llmProviderRoutes(fastify: FastifyInstance) {
     { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT },
     async (request, reply) => {
       const { id } = IdParamsSchema.parse(request.params);
+      // Review r3: the shadow target (pre-swap) and the previous provider
+      // (post-swap, the rollback target) live only in the migration-state
+      // JSON — no FK protects them. Deleting the former 500s every swap
+      // attempt; deleting the latter silently and permanently kills the
+      // advertised rollback window (provider ids are generated UUIDs, so no
+      // recreated provider can ever satisfy the stored id).
+      const migration = await getShadowMigrationState();
+      if (migration && (migration.providerId === id || migration.prev?.providerId === id)) {
+        const msg =
+          'This provider is part of the in-flight shadow embedding migration (target or rollback provider) — finish, roll back or clean up the migration first (#1116).';
+        return reply.code(409).send({ error: msg, message: msg, statusCode: 409 });
+      }
       try {
         await deleteProvider(id);
       } catch (err) {
@@ -234,6 +328,9 @@ export async function llmProviderRoutes(fastify: FastifyInstance) {
     { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT },
     async (request, reply) => {
       const { id } = IdParamsSchema.parse(request.params);
+      if (await embeddingInheritsDefaultDuringMigration()) {
+        return reply.code(409).send({ error: EMBEDDING_PINNED_MSG, message: EMBEDDING_PINNED_MSG, statusCode: 409 });
+      }
       try {
         await setDefaultProvider(id);
       } catch {

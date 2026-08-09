@@ -502,6 +502,12 @@ Key properties:
   pooled client (same pattern as `postgres.ts`). On any error we `ROLLBACK` and
   re-throw, so a crash mid-purge can never leave a space half-removed.
 - **Cascade** — `DELETE FROM pages` cascades to `page_embeddings` and `page_versions` via FK `ON DELETE CASCADE` (migration 030).
+- **Shadow dual-write (#1116)** — while a zero-downtime embedding-model change
+  is backfilling, `embedPage` embeds each page's chunks with **both** models and
+  writes `embedding` + `embedding_next` in the same insert (a shadow-provider
+  failure never fails the live embed; the page is left as a straggler the swap
+  gate refuses on). See `06-data-model.md`'s shadow-columns entry and
+  `docs/runbooks/shadow-reembed.md`.
 - **Orphan reconciliation** — several tables reference a space by plain `space_key`
   with **no** foreign key, so they survive the cascade. Within the same transaction
   `unsyncSpace` reconciles them so nothing dangles:

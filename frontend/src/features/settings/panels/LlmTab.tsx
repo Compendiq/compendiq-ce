@@ -12,6 +12,7 @@ import { apiFetch } from '../../../shared/lib/api';
 import { ProviderListSection } from './ProviderListSection';
 import { UsecaseAssignmentsSection } from './UsecaseAssignmentsSection';
 import { EmbeddingReembedBanner } from './EmbeddingReembedBanner';
+import { EmbeddingShadowMigrationCard } from './EmbeddingShadowMigrationCard';
 import { SkeletonFormFields } from '../../../shared/components/feedback/Skeleton';
 import { ErrorState } from '../../../shared/components/feedback/ErrorState';
 
@@ -63,6 +64,7 @@ export function LlmTab() {
   // (same reset IpAllowlistTab does) so the form re-hydrates from the fresh
   // server state.
   const [assignmentsInitialized, setAssignmentsInitialized] = useState(false);
+  const [shadowMigrationActive, setShadowMigrationActive] = useState(false);
   const [capInitialized, setCapInitialized] = useState(false);
 
   // Mirror the server-provided assignments once per load. Using useEffect
@@ -91,10 +93,16 @@ export function LlmTab() {
     const nowE = assignments.embedding;
     if (origE.providerId === nowE.providerId && origE.model === nowE.model) return null;
     const providerId = nowE.providerId ?? nowE.resolved.providerId;
-    const model = nowE.model ?? nowE.resolved.model;
+    // `resolved` is the SERVER's resolution of the saved assignment, so it
+    // still names the old provider's model after an unsaved provider switch
+    // with the model left on inherit. Resolve through the provider actually
+    // selected; the shadow path makes this load-bearing — it pins whatever
+    // model name it is handed into the assignment at swap (review r5).
+    const selectedDefault = providers.find((p) => p.id === providerId)?.defaultModel ?? null;
+    const model = nowE.model ?? selectedDefault ?? nowE.resolved.model;
     if (!providerId || !model) return null;
     return { providerId, model };
-  }, [rawAssignments, assignments]);
+  }, [rawAssignments, assignments, providers]);
 
   const save = useMutation({
     mutationFn: (diff: UpdateUsecaseAssignmentsInput) =>
@@ -187,12 +195,43 @@ export function LlmTab() {
         LLM provider + per-use-case assignments are shared across all users. Only admins can change them here.
       </div>
       <ProviderListSection />
-      <EmbeddingReembedBanner
-        // Legacy 1024-dim default while settings load or on older backends
-        // whose payload predates the field.
-        currentDimensions={adminSettings?.embeddingDimensions ?? 1024}
+      <EmbeddingShadowMigrationCard
         pending={embeddingPending}
+        // A swap writes an EXPLICIT (provider, model) pair server-side, and
+        // without re-seeding, the local copy stays frozen on the admin's
+        // pre-start edit — an inherit-shaped one then reads as a fresh "model
+        // changed" the moment the swap succeeds, re-raising the destructive
+        // re-embed banner over a completed migration (review r7).
+        //
+        // Only the EMBEDDING row is re-seeded, not the whole document
+        // (review r8): dropping the #949 hydration guard wholesale would
+        // silently revert unsaved edits to the other four use cases, which is
+        // the exact invariant that guard exists to protect. The embedding row
+        // has no unsaved edits worth keeping — it is pinned server-side for
+        // the duration, so a PUT touching it is refused with a 409.
+        onActiveChange={setShadowMigrationActive}
+        onLifecycleChange={() => {
+          const fresh = qc.getQueryData<UsecaseAssignments>(['llm-usecases']);
+          if (fresh) {
+            setAssignments((prev) => (prev ? { ...prev, embedding: fresh.embedding } : prev));
+          }
+        }}
       />
+      {/* Suppressed while a shadow migration exists (review r9): `pending`
+          stays non-null for the whole migration — the assignment PUT is
+          deliberately 409'd, so the admin's edit is never saved — and the
+          destructive banner would otherwise sit under the shadow card
+          offering "Confirm + re-embed" for the same intent the card is
+          mid-way through serving. The server refuses that button anyway; the
+          point is not to offer the replaced path beside its replacement. */}
+      {!shadowMigrationActive && (
+        <EmbeddingReembedBanner
+          // Legacy 1024-dim default while settings load or on older backends
+          // whose payload predates the field.
+          currentDimensions={adminSettings?.embeddingDimensions ?? 1024}
+          pending={embeddingPending}
+        />
+      )}
       <UsecaseAssignmentsSection
         assignments={assignments}
         providers={providers}

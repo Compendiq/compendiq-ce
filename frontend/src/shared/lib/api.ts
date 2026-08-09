@@ -148,8 +148,17 @@ function isBodyless(status: number): boolean {
  * branch. Both now carry the status code (#1178).
  */
 async function failureMessage(res: Response): Promise<string> {
-  const body = (await res.json().catch(() => null)) as { message?: unknown } | null;
+  const body = (await res.json().catch(() => null)) as { message?: unknown; error?: unknown } | null;
   if (typeof body?.message === 'string' && body.message.trim()) return body.message;
+  // Several admin routes answer `{error: <human text>}` (the shadow-migration
+  // refusals, provider guards, probe 404s). Surface that text rather than a
+  // bare status line — but only when it reads as prose; a single-token error
+  // NAME ('InternalServerError') is not a message (#1116 review r3).
+  if (typeof body?.error === 'string' && body.error.trim() && /\s/.test(body.error.trim())) {
+    // Keep naming the status — the pre-existing contract for message-less
+    // bodies — while surfacing the refusal text.
+    return `${body.error.trim()} (HTTP ${res.status})`;
+  }
 
   const reason = res.statusText.trim();
   return reason ? `${reason} (HTTP ${res.status})` : `Request failed (HTTP ${res.status})`;

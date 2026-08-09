@@ -4,6 +4,7 @@ import { query } from '../../core/db/postgres.js';
 import { encryptPat, isEncryptedSecretFormat, reEncryptPat } from '../../core/utils/crypto.js';
 import { getAuditLog, logAuditEvent } from '../../core/services/audit-service.js';
 import { listErrors, resolveError, getErrorSummary } from '../../core/services/error-tracker.js';
+import { assertNoShadowMigration } from '../../domains/llm/services/embedding-service.js';
 import { logger } from '../../core/utils/logger.js';
 import { UpdateAdminSettingsSchema } from '@compendiq/contracts';
 import {
@@ -367,6 +368,14 @@ export async function adminRoutes(fastify: FastifyInstance) {
 
     const hasChunkChanges =
       body.embeddingChunkSize !== undefined || body.embeddingChunkOverlap !== undefined;
+
+    // Refused BEFORE anything is written (review r9): a chunk change dirties
+    // the whole corpus, which a shadow migration forbids — and throwing after
+    // the settings upsert would leave the new chunk size persisted with the
+    // corpus never re-chunked, i.e. a silently mixed index.
+    if (hasChunkChanges) {
+      await assertNoShadowMigration();
+    }
 
     // Validate chunk overlap does not exceed 25% of chunk size (only when chunk settings change)
     if (hasChunkChanges) {

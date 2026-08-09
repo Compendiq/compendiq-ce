@@ -1,7 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
 import { confluenceToHtml } from '../../core/services/content-converter.js';
-import { getEmbeddingStatus, processDirtyPages, reEmbedAll, isProcessingUser, embedPage, resetFailedEmbeddings } from '../../domains/llm/services/embedding-service.js';
+import { assertNoShadowMigration, getEmbeddingStatus, processDirtyPages, reEmbedAll, isProcessingUser, embedPage, resetFailedEmbeddings } from '../../domains/llm/services/embedding-service.js';
 import type { EmbeddingProgressEvent } from '../../domains/llm/services/embedding-service.js';
 import { isEmbeddingLocked } from '../../core/services/redis-cache.js';
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
@@ -252,6 +252,12 @@ export async function llmEmbeddingRoutes(fastify: FastifyInstance) {
     preHandler: fastify.requireAdmin,
     config: { rateLimit: { max: async () => (await getRateLimits()).admin.max, timeWindow: '1 minute' } },
   }, async (_request, _reply) => {
+    // Checked BEFORE firing: reEmbedAll() carries the same guard, but this
+    // caller is fire-and-forget, so its 409 would land in a log line while the
+    // admin read "Re-embedding started" — the one door of the four that never
+    // actually refused to the admin's face (review r9).
+    await assertNoShadowMigration();
+
     reEmbedAll().catch((err) => {
       logger.error({ err }, 'Re-embed all failed');
     });
