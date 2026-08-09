@@ -46,6 +46,39 @@ function arg(name: string): string | undefined {
   return i === -1 ? undefined : process.argv[i + 1];
 }
 
+/**
+ * This script is DESTRUCTIVE: it truncates pages, page_embeddings,
+ * page_relationships and search_analytics, retypes the vector columns and
+ * rewrites admin_settings — against whatever POSTGRES_URL names. Prose in a
+ * runbook is not a safeguard (review r3), so the database has to opt in by
+ * name or by an explicit override.
+ *
+ * The allow-list is on the DATABASE name rather than the host: a colleague's
+ * laptop, a staging box and production all differ in host but the fatal
+ * mistake is pointing this at a database that holds real pages.
+ */
+const DISPOSABLE_DB_PATTERN = /(^|_)eval($|_)|_test($|_)|^kb_eval$|^compendiq_eval$/i;
+
+function assertDisposableDatabase(url: string): void {
+  if (process.env.EVAL_ALLOW_DESTRUCTIVE === 'yes-wipe-this-database') return;
+
+  let dbName: string;
+  try {
+    dbName = decodeURIComponent(new URL(url).pathname.replace(/^\//, ''));
+  } catch {
+    throw new Error('POSTGRES_URL is not a valid URL — refusing to run a destructive eval against it');
+  }
+
+  if (!DISPOSABLE_DB_PATTERN.test(dbName)) {
+    throw new Error(
+      `Refusing to run: this script TRUNCATES pages, page_embeddings, page_relationships and ` +
+        `search_analytics and RETYPES the vector columns, and "${dbName}" does not look disposable ` +
+        `(expected a name containing "eval" or "test"). Point POSTGRES_URL at a throwaway database, ` +
+        `or set EVAL_ALLOW_DESTRUCTIVE=yes-wipe-this-database if you genuinely mean this one.`,
+    );
+  }
+}
+
 async function main(): Promise<void> {
   const baseUrl = process.env.EVAL_EMBEDDING_BASE_URL;
   const model = process.env.EVAL_EMBEDDING_MODEL;
@@ -53,6 +86,8 @@ async function main(): Promise<void> {
     throw new Error('EVAL_EMBEDDING_BASE_URL and EVAL_EMBEDDING_MODEL are required — the eval never mocks the embedder');
   }
   const outPath = arg('out') ?? 'retrieval-eval.json';
+
+  assertDisposableDatabase(process.env.POSTGRES_URL ?? '');
 
   await runMigrations();
   await query(

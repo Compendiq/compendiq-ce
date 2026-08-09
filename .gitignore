@@ -1,5 +1,8 @@
 # Dependencies
-node_modules/
+# No trailing slash: a directory-only pattern does not match a SYMLINK of the
+# same name, which is how a `node_modules -> /Users/…` link was committed to a
+# branch and reached the PR head (#1102 review r3).
+node_modules
 node_modules.old/
 .pnp
 .pnp.js

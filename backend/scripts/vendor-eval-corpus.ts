@@ -104,6 +104,15 @@ const notices: string[] = [];
 for (const source of SOURCES) {
   const root = join(cloneRoot, source.name);
   const pin = pinnedCommits.get(source.name);
+  if (!pin && pinnedCommits.size === 0 && process.argv.includes('--update')) {
+    // --update must read upstream, not whatever commit a previous pinned run
+    // left this clone detached at (review r3). Without this, the documented
+    // sequence — reproduce, then --update — silently re-recorded the old pin.
+    execFileSync('git', ['-C', root, 'fetch', '--quiet', 'origin'], { stdio: 'inherit' });
+    const branch = execFileSync('git', ['-C', root, 'symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], { encoding: 'utf8' }).trim();
+    execFileSync('git', ['-C', root, 'checkout', '--quiet', branch.replace(/^origin\//, '')], { stdio: 'inherit' });
+    execFileSync('git', ['-C', root, 'merge', '--quiet', '--ff-only', branch], { stdio: 'inherit' });
+  }
   if (pin) {
     // Fails loudly on a shallow clone that lacks the pinned commit, which is
     // better than vendoring a different corpus under the same manifest.

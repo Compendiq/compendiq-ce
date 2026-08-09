@@ -25,7 +25,11 @@ rather than measured.
 ## Running it
 
 ```bash
-# needs a database it may TRUNCATE and RETYPE, plus an embedding endpoint
+# The script REFUSES any database whose name does not look disposable — it
+# truncates pages, page_embeddings, page_relationships and search_analytics and
+# retypes the vector columns. Name it *eval* or *test*, or set
+# EVAL_ALLOW_DESTRUCTIVE=yes-wipe-this-database if you mean it.
+# Plus an embedding endpoint:
 docker run -d -p 11434:11434 ollama/ollama
 curl -X POST localhost:11434/api/pull -d '{"name":"nomic-embed-text"}'
 
