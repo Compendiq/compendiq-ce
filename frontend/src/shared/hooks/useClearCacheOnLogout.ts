@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '../../stores/auth-store';
 import { forgetLastConfluenceSpace } from '../../features/pages/last-confluence-space';
+import { SETUP_STATUS_QUERY_KEY } from './useSetupStatus';
 
 /**
  * Wipe the in-memory TanStack Query cache whenever the session ends.
@@ -30,7 +31,19 @@ export function useClearCacheOnLogout(): void {
 
   useEffect(() => {
     if (wasAuthenticated.current && !isAuthenticated) {
-      queryClient.clear();
+      // Everything EXCEPT the setup-status query, which describes the
+      // deployment rather than any user and so is outside what this wipe
+      // protects. A blanket queryClient.clear() also removed it *mid-flight*:
+      // the in-flight response then arrived for a query that no longer existed
+      // and was discarded, leaving ProtectedRoute's `isLoading` gate stuck on
+      // the loading fallback with nothing left to trigger a refetch — an
+      // expired session rendered a permanent spinner instead of the login page.
+      queryClient.removeQueries({
+        predicate: (query) => query.queryKey[0] !== SETUP_STATUS_QUERY_KEY[0],
+      });
+      // clear() dropped mutation state too; keep doing that so an interrupted
+      // mutation can't surface to whoever logs in next in this tab.
+      queryClient.getMutationCache().clear();
       forgetLastConfluenceSpace();
     }
     wasAuthenticated.current = isAuthenticated;
