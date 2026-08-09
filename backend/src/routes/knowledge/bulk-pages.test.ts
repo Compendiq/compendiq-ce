@@ -75,10 +75,18 @@ vi.mock('../../core/utils/logger.js', () => ({
 
 const mockProcessDirtyPages = vi.fn().mockResolvedValue({ processed: 2, errors: 0 });
 const mockIsProcessingUser = vi.fn().mockResolvedValue(false);
+// A factory mock REPLACES the module, so every import the routes reach for has
+// to appear here. `assertShadowRollbackWindowClear` (#1116) is called at the top
+// of POST /pages/bulk/embed; when it was missing from this list the route threw
+// "not a function" and 19 cells in this file failed with a bare 500 — the guard
+// itself was fine.
+const mockAssertShadowRollbackWindowClear = vi.fn().mockResolvedValue(undefined);
 vi.mock('../../domains/llm/services/embedding-service.js', () => ({
   processDirtyPages: (...args: unknown[]) => mockProcessDirtyPages(...args),
   isProcessingUser: (...args: unknown[]) => mockIsProcessingUser(...args),
   computePageRelationships: vi.fn().mockResolvedValue(0),
+  assertShadowRollbackWindowClear: (...args: unknown[]) =>
+    mockAssertShadowRollbackWindowClear(...args),
 }));
 
 const mockTriggerQualityBatch = vi.fn().mockResolvedValue(undefined);
@@ -631,6 +639,37 @@ describe('Bulk Pages Routes (Parallelized)', () => {
       expect(response.statusCode).toBe(409);
       const body = JSON.parse(response.body);
       expect(body.error).toContain('already in progress');
+    });
+
+    // The guard above is a no-op mock, which is what a route test wants — but a
+    // no-op mock also passes if the route stops calling it at all, and that is
+    // precisely how the call was lost. These two cells pin the wiring: it is
+    // invoked, and its refusal reaches the client as a 409 rather than a 500.
+    it('consults the shadow-rollback guard before touching anything', async () => {
+      await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/embed',
+        payload: { ids: ['page-1'] },
+      });
+
+      expect(mockAssertShadowRollbackWindowClear).toHaveBeenCalled();
+    });
+
+    it('surfaces the guard refusal as a 409, not a 500', async () => {
+      const refusal = Object.assign(
+        new Error('A shadow embedding migration has swapped and is awaiting validation'),
+        { statusCode: 409 },
+      );
+      mockAssertShadowRollbackWindowClear.mockRejectedValueOnce(refusal);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/embed',
+        payload: { ids: ['page-1'] },
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(JSON.parse(response.body).error).toContain('awaiting validation');
     });
 
     it('accepts filter-mode + expectedCount selection', async () => {
