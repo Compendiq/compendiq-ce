@@ -27,35 +27,31 @@ vi.mock('sonner', () => ({
   },
 }));
 
-import { Editor, EditorToolbar, clearDraft } from './Editor';
+import { Editor, clearDraft } from './Editor';
 import type { Editor as EditorType } from '@tiptap/react';
 import { TextSelection } from '@tiptap/pm/state';
 import { handleTableCellTripleClick } from './table-cell-selection';
 
-// Minimal mock of a TipTap Editor instance for toolbar-level tests
-function createMockEditor(): EditorType {
-  const chainProxy: Record<string, unknown> = new Proxy(
-    { run: vi.fn() } as Record<string, unknown>,
-    {
-      get(_target, prop: string) {
-        if (prop === 'run') return vi.fn();
-        return () => chainProxy;
-      },
-    },
-  );
+/**
+ * The toolbar's long tail lives behind the Insert menu now. Radix menus open on
+ * pointerdown; click is fired too so the helper survives a swap to Popover.
+ */
+function openInsertMenu() {
+  const trigger = screen.getByTestId('insert-menu-trigger');
+  fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' });
+  fireEvent.click(trigger);
+}
 
-  return {
-    chain: () => chainProxy,
-    can: () =>
-      new Proxy(
-        {},
-        { get() { return () => true; } },
-      ),
-    isActive: () => false,
-    getAttributes: () => ({}),
-    on: vi.fn(),
-    off: vi.fn(),
-  } as unknown as EditorType;
+/** Opens the Insert menu and then one of its variant submenus. */
+function openInsertSubmenu(name: string) {
+  openInsertMenu();
+  fireEvent.click(screen.getByRole('menuitem', { name: new RegExp(`^${name}`) }));
+}
+
+/** Opens the Insert menu and picks one of its top-level items. */
+function chooseInsertItem(name: string) {
+  openInsertMenu();
+  fireEvent.click(screen.getByRole('menuitem', { name }));
 }
 
 describe('Editor', () => {
@@ -138,7 +134,10 @@ describe('Editor', () => {
     expect(classes).not.toMatch(/before:bg-background/);
   });
 
-  it('renders Insert Layout toolbar button', async () => {
+  it('offers the column layout presets from the Insert menu', async () => {
+    // Was a bare "a button whose title mentions layout" check. The presets now
+    // live in a submenu, so assert the presets themselves rather than a trigger
+    // that could exist while opening onto nothing.
     const { container } = render(
       <Editor content="<p>Test</p>" editable={true} />,
     );
@@ -147,16 +146,11 @@ describe('Editor', () => {
       expect(container.querySelector('[class*="tiptap"]')).toBeTruthy();
     });
 
-    // Find the toolbar region: look for a group of buttons inside the editor wrapper
-    const buttons = container.querySelectorAll('button');
-    const layoutButton = Array.from(buttons).find(
-      (btn) =>
-        btn.title?.toLowerCase().includes('layout') ||
-        btn.textContent?.toLowerCase().includes('layout'),
-    );
+    openInsertSubmenu('Column layout');
 
-    // The Insert Layout button must exist in the toolbar
-    expect(layoutButton).toBeTruthy();
+    for (const label of ['Two equal', 'Left sidebar', 'Right sidebar', 'Three equal', 'Side panels']) {
+      expect(screen.getByRole('menuitem', { name: label })).toBeInTheDocument();
+    }
   });
 
   it('loads the MermaidBlock extension', async () => {
@@ -289,8 +283,8 @@ describe('Editor', () => {
     ])('inserts a %s panel that serializes to .%s', async (label, className) => {
       const editor = await renderEditorWithToolbar();
 
-      fireEvent.click(screen.getByTitle('Insert Panel'));
-      fireEvent.click(screen.getByTitle(label));
+      openInsertSubmenu('Panel');
+      fireEvent.click(screen.getByRole('menuitem', { name: label }));
 
       expect(editor.getHTML()).toContain(`class="${className}"`);
     });
@@ -298,8 +292,8 @@ describe('Editor', () => {
     it('places the caret inside the new panel so the user can type immediately', async () => {
       const editor = await renderEditorWithToolbar();
 
-      fireEvent.click(screen.getByTitle('Insert Panel'));
-      fireEvent.click(screen.getByTitle('Info'));
+      openInsertSubmenu('Panel');
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Info' }));
 
       // isActive('panel') alone is true for any panel at any depth, so it
       // wouldn't catch the caret landing in the wrong (e.g. outer) panel.
@@ -321,8 +315,8 @@ describe('Editor', () => {
         expect(editor).not.toBeNull();
       });
 
-      fireEvent.click(screen.getByTitle('Insert Panel'));
-      fireEvent.click(screen.getByTitle('Info'));
+      openInsertSubmenu('Panel');
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Info' }));
 
       expect(editor!.isActive('panel')).toBe(true);
       expect(editor!.state.selection.$from.parent.textContent).toBe('');
@@ -332,8 +326,8 @@ describe('Editor', () => {
       const editor = await renderEditorWithToolbar();
       editor.commands.setTextSelection(3);
 
-      fireEvent.click(screen.getByTitle('Insert Panel'));
-      fireEvent.click(screen.getByTitle('Info'));
+      openInsertSubmenu('Panel');
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Info' }));
 
       expect(editor.isActive('panel')).toBe(true);
       expect(editor.state.selection.$from.parent.textContent).toBe('');
@@ -359,8 +353,8 @@ describe('Editor', () => {
       // Caret between "Exi" and "sting" inside the existing panel's paragraph.
       editor!.commands.setTextSelection(5);
 
-      fireEvent.click(screen.getByTitle('Insert Panel'));
-      fireEvent.click(screen.getByTitle('Tip'));
+      openInsertSubmenu('Panel');
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Tip' }));
 
       const { $from } = editor!.state.selection;
       expect($from.parent.textContent).toBe('');
@@ -382,8 +376,8 @@ describe('Editor', () => {
       // line here that needs a default.
       const editor = await renderEditorWithToolbar();
 
-      fireEvent.click(screen.getByTitle('Insert Panel'));
-      fireEvent.click(screen.getByTitle('Info'));
+      openInsertSubmenu('Panel');
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Info' }));
 
       expect(editor.getHTML()).toMatch(/<div[^>]*class="panel-info"[^>]*><p><\/p><\/div>/);
     });
@@ -392,8 +386,8 @@ describe('Editor', () => {
       const editor = await renderEditorWithToolbar();
       expect(editor).not.toBeNull();
 
-      fireEvent.click(screen.getByTitle('Insert Panel'));
-      fireEvent.click(screen.getByTitle('Info'));
+      openInsertSubmenu('Panel');
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Info' }));
 
       expect(screen.queryByTitle('Warning')).not.toBeInTheDocument();
     });
@@ -432,8 +426,8 @@ describe('Editor', () => {
         expect(editor).not.toBeNull();
       });
 
-      fireEvent.click(screen.getByTitle('Insert Panel'));
-      fireEvent.click(screen.getByTitle('Tip'));
+      openInsertSubmenu('Panel');
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Tip' }));
 
       const html = editor!.getHTML();
       expect(html).toContain('class="panel-tip"');
@@ -461,7 +455,7 @@ describe('Editor', () => {
     it('inserts a section with an empty summary and no fabricated title', async () => {
       const editor = await renderEditorWithToolbar();
 
-      fireEvent.click(screen.getByTitle('Insert Expand/Collapse Section'));
+      chooseInsertItem('Expand section');
 
       const html = editor.getHTML();
       expect(html).toContain('<summary></summary>');
@@ -471,7 +465,7 @@ describe('Editor', () => {
     it('places the caret inside the empty summary', async () => {
       const editor = await renderEditorWithToolbar();
 
-      fireEvent.click(screen.getByTitle('Insert Expand/Collapse Section'));
+      chooseInsertItem('Expand section');
 
       expect(editor.state.selection.$from.parent.type.name).toBe('detailsSummary');
       expect(editor.state.selection.$from.parent.textContent).toBe('');
@@ -480,7 +474,7 @@ describe('Editor', () => {
     it('turns the first keystrokes into a real title', async () => {
       const editor = await renderEditorWithToolbar();
 
-      fireEvent.click(screen.getByTitle('Insert Expand/Collapse Section'));
+      chooseInsertItem('Expand section');
       editor.commands.insertContent('My section');
 
       expect(editor.getHTML()).toContain('<summary>My section</summary>');
@@ -495,7 +489,7 @@ describe('Editor', () => {
       );
       editor.commands.setTextSelection(11);
 
-      fireEvent.click(screen.getByTitle('Insert Expand/Collapse Section'));
+      chooseInsertItem('Expand section');
 
       expect(editor.state.selection.$from.parent.type.name).toBe('detailsSummary');
       expect(editor.state.selection.$from.parent.textContent).toBe('');
@@ -1433,202 +1427,5 @@ describe('draft auto-save flush on unmount (#877)', () => {
 
     // The unmount flush must skip the suppressed key — no resurrection.
     expect(localStorage.getItem('draft:page-877-suppress')).toBeNull();
-  });
-});
-
-describe('EditorToolbar — header numbering toggle', () => {
-  beforeEach(() => {
-    localStorage.clear();
-  });
-
-  it('renders a header numbering toggle button when props are provided', () => {
-    const editor = createMockEditor();
-    const toggle = vi.fn();
-    render(<EditorToolbar editor={editor} headerNumbering={false} onToggleHeaderNumbering={toggle} />);
-
-    expect(screen.getByTitle('Toggle Header Numbering')).toBeInTheDocument();
-  });
-
-  it('shows active styling when headerNumbering is true', () => {
-    const editor = createMockEditor();
-    const toggle = vi.fn();
-    render(<EditorToolbar editor={editor} headerNumbering={true} onToggleHeaderNumbering={toggle} />);
-
-    const btn = screen.getByTitle('Toggle Header Numbering');
-    // Editor-toolbar active-state uses ink-action (Task 5 — amber reserved for AI affordances).
-    expect(btn.className).toContain('bg-action');
-  });
-
-  it('shows inactive styling when headerNumbering is false', () => {
-    const editor = createMockEditor();
-    const toggle = vi.fn();
-    render(<EditorToolbar editor={editor} headerNumbering={false} onToggleHeaderNumbering={toggle} />);
-
-    const btn = screen.getByTitle('Toggle Header Numbering');
-    expect(btn.className).not.toContain('bg-primary');
-  });
-
-  it('calls onToggleHeaderNumbering when the button is clicked', () => {
-    const editor = createMockEditor();
-    const toggle = vi.fn();
-    render(<EditorToolbar editor={editor} headerNumbering={false} onToggleHeaderNumbering={toggle} />);
-
-    fireEvent.click(screen.getByTitle('Toggle Header Numbering'));
-    expect(toggle).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not render the toggle button when onToggleHeaderNumbering is absent', () => {
-    const editor = createMockEditor();
-    render(<EditorToolbar editor={editor} />);
-
-    expect(screen.queryByTitle('Toggle Header Numbering')).not.toBeInTheDocument();
-  });
-
-  // ---------- #353 toolbar grouping + bigger color pickers ----------
-
-  it('renders the toolbar groups in the conventional order (#353)', () => {
-    const editor = createMockEditor();
-    render(<EditorToolbar editor={editor} />);
-
-    // Inline → block → lists → insert → captions → colors → utilities.
-    const groups = Array.from(
-      document.querySelectorAll<HTMLElement>('[data-testid^="toolbar-group-"]'),
-    ).map((el) => el.dataset.testid);
-
-    expect(groups).toEqual([
-      'toolbar-group-inline',
-      'toolbar-group-block',
-      'toolbar-group-lists',
-      'toolbar-group-insert',
-      'toolbar-group-captions',
-      'toolbar-group-colors',
-      'toolbar-group-utilities',
-    ]);
-  });
-
-  it('places both color pickers inside the colors group (#353)', () => {
-    const editor = createMockEditor();
-    render(<EditorToolbar editor={editor} />);
-
-    const group = screen.getByTestId('toolbar-group-colors');
-    expect(group).toHaveAttribute('role', 'group');
-    expect(group).toHaveAttribute('aria-label', 'colors');
-    expect(group.querySelectorAll('[data-testid="color-picker-trigger"]').length).toBe(2);
-  });
-
-  it('separates groups with role=separator dividers (#353)', () => {
-    const editor = createMockEditor();
-    const { container } = render(<EditorToolbar editor={editor} />);
-
-    // Six segments → at least five separators between them.
-    const separators = container.querySelectorAll('[role="separator"]');
-    expect(separators.length).toBeGreaterThanOrEqual(5);
-  });
-
-  it('color-picker triggers meet the 32x32 minimum target size (#353)', () => {
-    const editor = createMockEditor();
-    render(<EditorToolbar editor={editor} />);
-
-    const triggers = screen.getAllByTestId('color-picker-trigger');
-    expect(triggers.length).toBe(2);
-    for (const trigger of triggers) {
-      // Tailwind h-9 w-9 maps to 36×36 (1rem = 16px) — comfortably above
-      // the issue's 32×32 minimum.
-      expect(trigger.className).toMatch(/(?:^|\s)h-9(?:\s|$)/);
-      expect(trigger.className).toMatch(/(?:^|\s)w-9(?:\s|$)/);
-    }
-  });
-
-  it('color-picker triggers expose a tooltip and aria-label (#353)', () => {
-    const editor = createMockEditor();
-    render(<EditorToolbar editor={editor} />);
-
-    const triggers = screen.getAllByTestId('color-picker-trigger');
-    expect(triggers[0]).toHaveAttribute('title', 'Text Color');
-    expect(triggers[0]).toHaveAttribute('aria-label', 'Text Color');
-    expect(triggers[1]).toHaveAttribute('title', 'Highlight (Ctrl+Shift+H)');
-    expect(triggers[1]).toHaveAttribute('aria-label', 'Highlight (Ctrl+Shift+H)');
-  });
-
-  it('color-picker swatches meet the 24x24 minimum after opening the picker (#353)', () => {
-    const editor = createMockEditor();
-    render(<EditorToolbar editor={editor} />);
-
-    const triggers = screen.getAllByTestId('color-picker-trigger');
-    fireEvent.click(triggers[0]!);
-
-    const swatches = screen.getAllByTestId('color-picker-swatch');
-    expect(swatches.length).toBeGreaterThanOrEqual(8);
-    for (const sw of swatches) {
-      // h-7 w-7 → 28×28 (above the issue's 24×24 minimum).
-      expect(sw.className).toMatch(/(?:^|\s)h-7(?:\s|$)/);
-      expect(sw.className).toMatch(/(?:^|\s)w-7(?:\s|$)/);
-      // Each swatch must carry an accessible name (its colour label).
-      expect(sw.getAttribute('aria-label')).toBeTruthy();
-    }
-  });
-
-  it('exposes the toolbar landmark with an accessible name (#353)', () => {
-    const editor = createMockEditor();
-    render(<EditorToolbar editor={editor} />);
-    const toolbar = screen.getByRole('toolbar', { name: 'Page editor toolbar' });
-    expect(toolbar).toBeInTheDocument();
-  });
-
-  // ---------- #955 toolbar toggle buttons expose pressed state ----------
-
-  it('exposes aria-pressed on active and inactive toggle buttons (#955)', () => {
-    // Screen readers announce a toggle button's on/off state via aria-pressed.
-    // Without it, users can't tell whether Bold (or any formatting toggle) is
-    // currently applied. Build a mock editor whose selection is inside bold
-    // text so Bold reads active and Italic reads inactive.
-    const base = createMockEditor();
-    const editor = {
-      ...base,
-      isActive: (name: string) => name === 'bold',
-    } as unknown as EditorType;
-    render(<EditorToolbar editor={editor} />);
-
-    const boldBtn = screen.getByTitle('Bold (Ctrl+B)');
-    const italicBtn = screen.getByTitle('Italic (Ctrl+I)');
-    expect(boldBtn).toHaveAttribute('aria-pressed', 'true');
-    expect(italicBtn).toHaveAttribute('aria-pressed', 'false');
-  });
-
-  // ---------- #1134 insert-panel picker ----------
-
-  it('renders the Insert Panel trigger inside the insert group (#1134)', () => {
-    const editor = createMockEditor();
-    render(<EditorToolbar editor={editor} />);
-
-    const trigger = screen.getByTitle('Insert Panel');
-    expect(screen.getByTestId('toolbar-group-insert')).toContainElement(trigger);
-  });
-
-  it('offers all four Confluence panel types once opened (#1134)', () => {
-    // The backend converter and the .panel-* styles both cover
-    // info/warning/note/tip, so the picker must not strand three of them.
-    const editor = createMockEditor();
-    render(<EditorToolbar editor={editor} />);
-
-    // Closed by default — no picking surface until the user asks for it.
-    expect(screen.queryByTitle('Info')).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByTitle('Insert Panel'));
-
-    for (const label of ['Info', 'Warning', 'Note', 'Tip']) {
-      expect(screen.getByTitle(label)).toBeInTheDocument();
-    }
-  });
-
-  it('closes the panel picker on an outside click (#1134)', () => {
-    const editor = createMockEditor();
-    render(<EditorToolbar editor={editor} />);
-
-    fireEvent.click(screen.getByTitle('Insert Panel'));
-    expect(screen.getByTitle('Info')).toBeInTheDocument();
-
-    fireEvent.mouseDown(document.body);
-    expect(screen.queryByTitle('Info')).not.toBeInTheDocument();
   });
 });

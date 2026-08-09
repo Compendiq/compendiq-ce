@@ -109,13 +109,12 @@ function MenuButton({
       title={title}
       aria-label={title}
       aria-pressed={active}
-      className={cn(
-        'flex h-8 w-8 items-center justify-center rounded transition-colors',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
-        active
-          ? 'bg-primary/20 text-primary ring-1 ring-primary/30'
-          : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
-      )}
+      // `nm-icon-button` — the same 32px control as the page toolbar, and the
+      // same pressed recipe. These are the identical six toggles: Bold reading
+      // teal in the bubble menu and neutral in the toolbar was one state
+      // wearing two faces depending on which surface you reached it from.
+      // `aria-pressed` above is what selects the pressed styling.
+      className="nm-icon-button"
     >
       {children}
     </button>

@@ -1197,6 +1197,44 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   }
 }
 
+/* A pressed icon toggle: Bold while the caret is in bold text, Vim while vim
+   mode is on. Three signals carry it, because no one of them survives every
+   context.
+
+   The fill steps DOWN to the chassis colour rather than up. These buttons sit
+   on `--color-card` (the editor toolbar is part of the document pane, not the
+   chrome), so the usual one-step-up move would land on `--color-accent` — which
+   is already the hover fill, making pressed and hovered the same box.
+
+   The border is what actually does the work. `--color-border-interactive`
+   measures >=3:1 on every surface, so the state clears WCAG 1.4.11 on its own,
+   and — unlike a background — a border survives `forced-colors: active`, where
+   the OS repaints every fill and a fill-only pressed state disappears entirely.
+
+   Deliberately NOT the teal accent. `nm-pill-active` states the rule: the accent
+   is reserved for actions, and a formatting row where six toggles light up teal
+   reads as six primary buttons rather than as state.
+
+   WHY THIS IS NOT NESTED INSIDE `@utility nm-icon-button`, where it belongs by
+   subject: Tailwind emits a nested `&[aria-pressed='true']` in the production
+   build but NOT through the dev server, so the pressed state was invisible while
+   working on it and correct only once built — measured, not assumed. A plain
+   rule is emitted identically by both. It also has to sit AFTER the
+   `forced-colors` and `prefers-reduced-motion` blocks above, which name
+   `.nm-icon-button:hover` at the same (0,2,0) specificity this rule carries: on
+   a tie the later rule wins, and being last is what stops a pressed button from
+   dropping back to merely-hovered under either media query. */
+.nm-icon-button[aria-pressed='true'] {
+  background-color: var(--color-background);
+  border-color: var(--color-border-interactive);
+  color: var(--color-foreground);
+}
+
+.nm-icon-button[aria-pressed='true']:hover {
+  background-color: var(--color-accent);
+  color: var(--color-foreground);
+}
+
 /* ===========================
    SKELETON LOADER
    =========================== */
