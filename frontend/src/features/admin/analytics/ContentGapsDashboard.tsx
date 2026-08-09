@@ -72,9 +72,9 @@ function StatCard({ label, value }: { label: string; value: string | number }) {
 
 function SeverityDot({ score }: { score: number | null }) {
   const color =
-    score == null ? 'bg-gray-400' :
-    score < 0.2 ? 'bg-red-500' :
-    score < 0.5 ? 'bg-amber-500' : 'bg-green-500';
+    score == null ? 'bg-status-inactive' :
+    score < 0.2 ? 'bg-destructive' :
+    score < 0.5 ? 'bg-warning' : 'bg-success';
   return <span className={`inline-block h-2 w-2 rounded-full ${color}`} />;
 }
 

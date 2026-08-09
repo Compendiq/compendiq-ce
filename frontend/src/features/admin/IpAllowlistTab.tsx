@@ -317,10 +317,10 @@ export function IpAllowlistTab() {
       {/* Lockout warning — NOT dismissible */}
       <div
         role="alert"
-        className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-amber-100"
+        className="flex items-start gap-3 rounded-lg border border-warning/40 bg-warning/10 p-4 text-warning"
         data-testid="ip-allowlist-warning"
       >
-        <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-400" />
+        <AlertTriangle size={18} className="mt-0.5 shrink-0 text-warning" />
         <div className="text-sm">
           This restricts access to the IPs listed.{' '}
           <strong>Make sure your own IP is in the Allowed ranges before saving</strong>{' '}
@@ -496,7 +496,7 @@ export function IpAllowlistTab() {
                 className={cn(
                   'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium',
                   testResult.allowed
-                    ? 'bg-emerald-500/15 text-emerald-300'
+                    ? 'bg-success/15 text-success'
                     : 'bg-destructive/15 text-destructive',
                 )}
                 data-testid="ip-allowlist-test-outcome"
@@ -511,7 +511,7 @@ export function IpAllowlistTab() {
               )}
               {testResult.isTrustedProxy && (
                 <span
-                  className="inline-flex items-center rounded-full bg-blue-500/15 px-2 py-0.5 text-xs text-blue-300"
+                  className="inline-flex items-center rounded-full bg-info/15 px-2 py-0.5 text-xs text-info"
                   data-testid="ip-allowlist-test-trusted-proxy"
                 >
                   trusted proxy

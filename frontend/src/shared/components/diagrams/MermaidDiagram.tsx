@@ -243,7 +243,7 @@ export function MermaidDiagram({ code, className, forceDark }: MermaidDiagramPro
       {/* Load error state */}
       {loadError && (
         <div className="border-t border-border p-3" data-testid="mermaid-load-error">
-          <p className="mb-2 text-xs text-red-400">
+          <p className="mb-2 text-xs text-destructive">
             Failed to load Mermaid library: {loadError}
           </p>
           <pre className="max-h-48 overflow-auto rounded bg-black/30 p-2 text-xs text-muted-foreground">
@@ -265,7 +265,7 @@ export function MermaidDiagram({ code, className, forceDark }: MermaidDiagramPro
       {/* Error fallback: show raw code */}
       {error && !loadError && (
         <div className="border-t border-border p-3">
-          <p className="mb-2 text-xs text-red-400">Diagram rendering failed: {error}</p>
+          <p className="mb-2 text-xs text-destructive">Diagram rendering failed: {error}</p>
           <pre className="max-h-48 overflow-auto rounded bg-black/30 p-2 text-xs text-muted-foreground">
             {code}
           </pre>

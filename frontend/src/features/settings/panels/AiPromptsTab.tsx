@@ -73,9 +73,9 @@ export function AiPromptsTab({ settings, onSave, isAdmin }: { settings: Settings
 
       {/* Active AI Safety rules info banner */}
       {aiSafety && (aiSafety.guardrails.noFabricationEnabled || aiSafety.outputRules.stripReferences) && (
-        <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-3 text-sm" data-testid="ai-safety-banner">
-          <p className="font-medium text-sky-300">Active AI Safety Rules</p>
-          <ul className="mt-1 list-disc pl-5 text-xs text-sky-300/80">
+        <div className="rounded-lg border border-info/30 bg-info/10 p-3 text-sm" data-testid="ai-safety-banner">
+          <p className="font-medium text-info">Active AI Safety Rules</p>
+          <ul className="mt-1 list-disc pl-5 text-xs text-info/80">
             {aiSafety.guardrails.noFabricationEnabled && (
               <li>No-fabrication guardrail active (prevents hallucinated references)</li>
             )}
@@ -84,7 +84,7 @@ export function AiPromptsTab({ settings, onSave, isAdmin }: { settings: Settings
             )}
           </ul>
           {isAdmin && (
-            <p className="mt-1 text-xs text-sky-400/70">
+            <p className="mt-1 text-xs text-info/70">
               Manage these rules in the AI Safety tab.
             </p>
           )}

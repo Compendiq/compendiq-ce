@@ -89,7 +89,7 @@ export function EmbeddingTab() {
       {/* Issue #257 — admin visibility for in-flight per-user embedding locks. */}
       <ActiveEmbeddingLocksBanner />
 
-      <div className="nm-card border-yellow-500/30 p-3 text-sm text-yellow-400">
+      <div className="nm-card border-warning/30 p-3 text-sm text-warning">
         These settings are shared across all users. Changing chunk settings will trigger re-embedding of all pages, which may take several minutes.
       </div>
 
@@ -138,7 +138,7 @@ export function EmbeddingTab() {
 
       {hasChunkChanges && (
         <div
-          className="nm-card border-yellow-500/30 p-3 text-sm text-yellow-400"
+          className="nm-card border-warning/30 p-3 text-sm text-warning"
           data-testid="admin-chunk-change-warning"
         >
           Saving will mark all embedded pages dirty and trigger global re-embedding.

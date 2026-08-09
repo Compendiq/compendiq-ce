@@ -60,7 +60,7 @@ export function SyncConflictsPage() {
   if (!isEnterprise || !hasFeature('sync_conflict_resolution')) {
     return (
       <div
-        className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-100"
+        className="rounded-lg border border-warning/40 bg-warning/10 p-4 text-sm text-warning"
         role="alert"
         data-testid="sync-conflicts-not-licensed"
       >
@@ -119,10 +119,10 @@ function SyncConflictsPageInner() {
       {is404 && (
         <div
           role="alert"
-          className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-amber-100"
+          className="flex items-start gap-3 rounded-lg border border-warning/40 bg-warning/10 p-4 text-warning"
           data-testid="sync-conflicts-overlay-missing"
         >
-          <Info size={18} className="mt-0.5 shrink-0 text-amber-400" />
+          <Info size={18} className="mt-0.5 shrink-0 text-warning" />
           <div className="text-sm">
             The sync conflict API isn&apos;t registered on this deployment.
             The Enterprise overlay that exposes{' '}
@@ -151,7 +151,7 @@ function SyncConflictsPageInner() {
           className="flex flex-col items-center justify-center gap-3 rounded-lg border border-border bg-foreground/[0.02] p-8 text-center"
           data-testid="sync-conflicts-empty"
         >
-          <CheckCircle2 size={32} className="text-emerald-400" />
+          <CheckCircle2 size={32} className="text-success" />
           <div>
             <div className="text-sm font-medium">No conflicts pending</div>
             <div className="mt-1 text-xs text-muted-foreground">

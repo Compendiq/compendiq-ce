@@ -1127,7 +1127,7 @@ function FeedbackWidget({ pageId }: { pageId: string | undefined }) {
         <button
           onClick={() => handleFeedback(true)}
           disabled={submitFeedback.isPending}
-          className="flex items-center gap-1.5 rounded-lg bg-emerald-500/10 px-4 py-2 text-sm text-emerald-500 transition-colors hover:bg-emerald-500/20 disabled:opacity-50"
+          className="flex items-center gap-1.5 rounded-lg bg-success/10 px-4 py-2 text-sm text-success transition-colors hover:bg-success/20 disabled:opacity-50"
           data-testid="feedback-helpful"
         >
           <ThumbsUp size={14} /> Yes
@@ -1135,7 +1135,7 @@ function FeedbackWidget({ pageId }: { pageId: string | undefined }) {
         <button
           onClick={() => handleFeedback(false)}
           disabled={submitFeedback.isPending}
-          className="flex items-center gap-1.5 rounded-lg bg-red-500/10 px-4 py-2 text-sm text-red-500 transition-colors hover:bg-red-500/20 disabled:opacity-50"
+          className="flex items-center gap-1.5 rounded-lg bg-destructive/10 px-4 py-2 text-sm text-destructive transition-colors hover:bg-destructive/20 disabled:opacity-50"
           data-testid="feedback-not-helpful"
         >
           <ThumbsDown size={14} /> No
@@ -1168,7 +1168,7 @@ function VerifyButton({ pageId }: { pageId: string | undefined }) {
       title="Mark this page as up-to-date. Resets the next review reminder based on the configured review interval."
       aria-label="Mark page as verified"
       // Neutral, like every other action in this toolbar. It was
-      // `text-emerald-500`, which collides with the status vocabulary: green
+      // `text-success`, which collides with the status vocabulary: green
       // means "connected / healthy" throughout the app, so a green control read
       // as a state readout rather than a thing you press — and it was the only
       // coloured item in a row of otherwise neutral actions, which made the

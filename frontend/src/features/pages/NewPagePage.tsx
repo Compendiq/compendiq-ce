@@ -377,7 +377,7 @@ export function NewPagePage() {
                 className={cn(
                   'flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors',
                   articleType === 'local'
-                    ? 'bg-emerald-500/15 text-emerald-500 ring-1 ring-emerald-500/30'
+                    ? 'bg-success/15 text-success ring-1 ring-success/30'
                     : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10',
                 )}
                 data-testid="article-type-local"
@@ -390,7 +390,7 @@ export function NewPagePage() {
                 className={cn(
                   'flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors',
                   articleType === 'confluence'
-                    ? 'bg-blue-500/15 text-blue-500 ring-1 ring-blue-500/30'
+                    ? 'bg-info/15 text-info ring-1 ring-info/30'
                     : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10',
                 )}
                 data-testid="article-type-confluence"
@@ -432,7 +432,7 @@ export function NewPagePage() {
                   className={cn(
                     'flex items-center justify-center gap-1 rounded-lg px-2.5 py-1.5 text-sm transition-colors',
                     visibility === 'private'
-                      ? 'bg-amber-500/15 text-amber-500 ring-1 ring-amber-500/30'
+                      ? 'bg-warning/15 text-warning ring-1 ring-warning/30'
                       : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10',
                   )}
                   data-testid="visibility-private"
@@ -445,7 +445,7 @@ export function NewPagePage() {
                   className={cn(
                     'flex items-center justify-center gap-1 rounded-lg px-2.5 py-1.5 text-sm transition-colors',
                     visibility === 'shared'
-                      ? 'bg-sky-500/15 text-sky-500 ring-1 ring-sky-500/30'
+                      ? 'bg-info/15 text-info ring-1 ring-info/30'
                       : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10',
                   )}
                   data-testid="visibility-shared"

@@ -70,8 +70,8 @@ export function SearxngTab() {
           <button onClick={() => testMutation.mutate()} disabled={testMutation.isPending}
             className="flex items-center gap-1.5 rounded-lg border border-border bg-foreground/[0.03] px-3 py-2 text-sm hover:bg-foreground/[0.06] disabled:opacity-50" data-testid="searxng-test">
             {testMutation.isPending ? <Loader2 size={14} className="animate-spin" />
-              : testMutation.data?.ok ? <CheckCircle2 size={14} className="text-emerald-400" />
-              : testMutation.data && !testMutation.data.ok ? <XCircle size={14} className="text-red-400" />
+              : testMutation.data?.ok ? <CheckCircle2 size={14} className="text-success" />
+              : testMutation.data && !testMutation.data.ok ? <XCircle size={14} className="text-destructive" />
               : <ExternalLink size={14} />}
             Test
           </button>
@@ -80,17 +80,17 @@ export function SearxngTab() {
       </div>
 
       {testMutation.data?.ok && testMutation.data.sample && (
-        <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3">
-          <p className="text-sm font-medium text-emerald-300">Connection successful ({testMutation.data.resultCount} results)</p>
-          <ul className="mt-1 space-y-1 text-xs text-emerald-300/80">
+        <div className="rounded-lg border border-success/30 bg-success/10 p-3">
+          <p className="text-sm font-medium text-success">Connection successful ({testMutation.data.resultCount} results)</p>
+          <ul className="mt-1 space-y-1 text-xs text-success/80">
             {testMutation.data.sample.map((s, i) => <li key={i}>{s.title}</li>)}
           </ul>
         </div>
       )}
 
       {testMutation.data && !testMutation.data.ok && (
-        <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3">
-          <p className="text-sm text-red-300">{testMutation.data.error}</p>
+        <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3">
+          <p className="text-sm text-destructive">{testMutation.data.error}</p>
         </div>
       )}
 
@@ -110,9 +110,9 @@ export function SearxngTab() {
         </div>
       </div>
 
-      <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-3 text-sm text-sky-300">
+      <div className="rounded-lg border border-info/30 bg-info/10 p-3 text-sm text-info">
         <p className="font-medium">How web search works</p>
-        <p className="mt-1 text-xs text-sky-300/80">
+        <p className="mt-1 text-xs text-info/80">
           When users enable &quot;Search web for reference material&quot; in any AI mode, the MCP sidecar queries SearXNG,
           fetches the top results, and injects them into the LLM prompt as verified reference material.
         </p>

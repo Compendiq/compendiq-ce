@@ -138,13 +138,13 @@ function deriveWorkerState(status: NormalizedStatus): WorkerState {
 const stateConfig: Record<WorkerState, { label: string; dotClass: string; textClass: string }> = {
   running: {
     label: 'Running',
-    dotClass: 'bg-emerald-500 animate-pulse',
-    textClass: 'text-emerald-600 dark:text-emerald-400',
+    dotClass: 'bg-success animate-pulse',
+    textClass: 'text-success',
   },
   queued: {
     label: 'Queued',
-    dotClass: 'bg-amber-500',
-    textClass: 'text-amber-600 dark:text-amber-400',
+    dotClass: 'bg-warning',
+    textClass: 'text-warning',
   },
   idle: {
     label: 'Idle',
@@ -296,9 +296,9 @@ function WorkerCard({ title, statusKey, statusEndpoint, runEndpoint, rescanEndpo
 
           {/* Status pills */}
           <div className="flex flex-wrap gap-2">
-            <StatusPill count={status.pending} label="Pending" icon={Clock} color="bg-amber-500/10 text-amber-600 dark:text-amber-400" />
-            <StatusPill count={status.processing} label="Processing" icon={Loader2} color="bg-blue-500/10 text-blue-600 dark:text-blue-400" />
-            <StatusPill count={status.completed} label="Done" icon={CheckCircle} color="bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" />
+            <StatusPill count={status.pending} label="Pending" icon={Clock} color="bg-warning/10 text-warning" />
+            <StatusPill count={status.processing} label="Processing" icon={Loader2} color="bg-info/10 text-info" />
+            <StatusPill count={status.completed} label="Done" icon={CheckCircle} color="bg-success/10 text-success" />
             <StatusPill count={status.skipped} label="Skipped" icon={Clock} color="bg-foreground/5 text-muted-foreground" />
             <StatusPill count={status.failed} label="Failed" icon={AlertTriangle} color="bg-destructive/10 text-destructive" />
           </div>

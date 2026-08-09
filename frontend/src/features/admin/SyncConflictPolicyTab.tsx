@@ -95,7 +95,7 @@ export function SyncConflictPolicyTab() {
   if (!isEnterprise || !hasFeature('sync_conflict_resolution')) {
     return (
       <div
-        className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-100"
+        className="rounded-lg border border-warning/40 bg-warning/10 p-4 text-sm text-warning"
         role="alert"
         data-testid="sync-conflict-policy-not-licensed"
       >
@@ -189,10 +189,10 @@ function SyncConflictPolicyTabInner() {
       {is404 && (
         <div
           role="alert"
-          className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-amber-100"
+          className="flex items-start gap-3 rounded-lg border border-warning/40 bg-warning/10 p-4 text-warning"
           data-testid="sync-conflict-policy-overlay-missing"
         >
-          <Info size={18} className="mt-0.5 shrink-0 text-amber-400" />
+          <Info size={18} className="mt-0.5 shrink-0 text-warning" />
           <div className="text-sm">
             The sync conflict policy API isn&apos;t registered on this
             deployment. The Enterprise overlay that exposes <code>GET</code> /{' '}
@@ -247,7 +247,7 @@ function SyncConflictPolicyTabInner() {
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-medium">{opt.label}</span>
                   {data?.policy === opt.value && (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs text-emerald-300">
+                    <span className="inline-flex items-center gap-1 rounded-full bg-success/15 px-2 py-0.5 text-xs text-success">
                       <CheckCircle2 size={10} /> active
                     </span>
                   )}
@@ -257,7 +257,7 @@ function SyncConflictPolicyTabInner() {
                 </p>
                 {opt.warning && isActive && (
                   <div
-                    className="mt-2 flex items-start gap-1.5 rounded-md bg-amber-500/10 p-2 text-xs text-amber-200"
+                    className="mt-2 flex items-start gap-1.5 rounded-md bg-warning/10 p-2 text-xs text-warning"
                     data-testid={`sync-conflict-policy-warning-${opt.value}`}
                   >
                     <AlertTriangle size={12} className="mt-0.5 shrink-0" />

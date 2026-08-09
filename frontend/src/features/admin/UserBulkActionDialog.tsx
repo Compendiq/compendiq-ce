@@ -307,7 +307,7 @@ function UserBulkActionDialogInner({
 
             {/* Confirmation summary */}
             <div
-              className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-100"
+              className="rounded-lg border border-warning/40 bg-warning/10 p-3 text-sm text-warning"
               data-testid="bulk-action-summary"
             >
               {summarySentence}
@@ -319,8 +319,8 @@ function UserBulkActionDialogInner({
                 className={cn(
                   'flex items-start gap-2 rounded-lg border p-3 text-sm',
                   isMissingOverlay
-                    ? 'border-amber-500/40 bg-amber-500/10 text-amber-100'
-                    : 'border-red-500/40 bg-red-500/10 text-red-100',
+                    ? 'border-warning/40 bg-warning/10 text-warning'
+                    : 'border-destructive/40 bg-destructive/10 text-destructive',
                 )}
                 data-testid={
                   isMissingOverlay

@@ -57,9 +57,9 @@ function tokenStatus(expiresAt: string | null): 'active' | 'expiring' | 'expired
 }
 
 const statusDotClass: Record<ReturnType<typeof tokenStatus>, string> = {
-  active: 'bg-emerald-500',
-  expiring: 'bg-amber-500',
-  expired: 'bg-red-500',
+  active: 'bg-success',
+  expiring: 'bg-warning',
+  expired: 'bg-destructive',
 };
 
 // ── Component ──────────────────────────────────────────────────────────────────
@@ -141,11 +141,11 @@ export function ScimSettingsPage() {
         <m.div
           initial={{ opacity: 0, y: -8 }}
           animate={{ opacity: 1, y: 0 }}
-          className="flex items-start gap-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-4"
+          className="flex items-start gap-3 rounded-lg border border-warning/20 bg-warning/5 p-4"
         >
-          <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-500" />
+          <AlertTriangle size={18} className="mt-0.5 shrink-0 text-warning" />
           <div>
-            <div className="text-sm font-medium text-amber-200">Enterprise Feature</div>
+            <div className="text-sm font-medium text-warning">Enterprise Feature</div>
             <div className="mt-1 text-xs text-muted-foreground">
               SCIM provisioning requires an enterprise license with the SCIM feature enabled.
             </div>
@@ -198,13 +198,13 @@ export function ScimSettingsPage() {
         <m.div
           initial={{ opacity: 0, y: -8 }}
           animate={{ opacity: 1, y: 0 }}
-          className="nm-card space-y-4 border border-amber-500/20 p-4"
+          className="nm-card space-y-4 border border-warning/20 p-4"
           data-testid="scim-token-reveal"
         >
-          <div className="flex items-start gap-3 rounded-lg bg-amber-500/5 p-3">
-            <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-500" />
+          <div className="flex items-start gap-3 rounded-lg bg-warning/5 p-3">
+            <AlertTriangle size={18} className="mt-0.5 shrink-0 text-warning" />
             <div className="text-xs text-muted-foreground">
-              <span className="font-medium text-amber-200">Copy this token now.</span>{' '}
+              <span className="font-medium text-warning">Copy this token now.</span>{' '}
               It will not be shown again. Store it securely in your identity provider.
             </div>
           </div>

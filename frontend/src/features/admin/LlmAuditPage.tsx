@@ -168,11 +168,11 @@ export function LlmAuditPage() {
         <m.div
           initial={{ opacity: 0, y: -8 }}
           animate={{ opacity: 1, y: 0 }}
-          className="flex items-start gap-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-4"
+          className="flex items-start gap-3 rounded-lg border border-warning/20 bg-warning/5 p-4"
         >
-          <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-500" />
+          <AlertTriangle size={18} className="mt-0.5 shrink-0 text-warning" />
           <div className="space-y-2">
-            <div className="text-sm font-medium text-amber-200">LLM Audit Trail — Enterprise feature</div>
+            <div className="text-sm font-medium text-warning">LLM Audit Trail — Enterprise feature</div>
             <p className="text-xs text-muted-foreground">
               Per-LLM-call records (model, tokens, latency, status, prompt
               redaction) ship with the Enterprise Edition. The Community
@@ -357,7 +357,7 @@ export function LlmAuditPage() {
                       <span className={cn(
                         'rounded px-2 py-0.5 text-xs font-medium',
                         entry.status === 'success'
-                          ? 'bg-emerald-500/10 text-emerald-400'
+                          ? 'bg-success/10 text-success'
                           : 'bg-destructive/10 text-destructive',
                       )}>
                         {entry.status}
@@ -411,7 +411,7 @@ function StatCard({ label, value, variant = 'default' }: { label: string; value:
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className={cn(
         'mt-1 text-xl font-semibold',
-        variant === 'warning' ? 'text-amber-400' : 'text-foreground',
+        variant === 'warning' ? 'text-warning' : 'text-foreground',
       )}>
         {value}
       </div>

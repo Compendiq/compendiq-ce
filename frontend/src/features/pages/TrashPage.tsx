@@ -70,7 +70,7 @@ export function TrashPage() {
                   <div className="flex items-center gap-3 text-xs text-muted-foreground">
                     <span>Deleted {new Date(item.deletedAt).toLocaleDateString()}</span>
                     <span>by {item.deletedBy}</span>
-                    <span className="text-orange-500">
+                    <span className="text-warning">
                       {daysUntilPurge(item.autoPurgeAt)} days until auto-purge
                     </span>
                   </div>
@@ -79,7 +79,7 @@ export function TrashPage() {
                   <button
                     onClick={() => handleRestore(item.id)}
                     disabled={restoreMutation.isPending}
-                    className="flex items-center gap-1.5 rounded-lg bg-emerald-500/10 px-3 py-1.5 text-sm text-emerald-500 transition-colors hover:bg-emerald-500/20 disabled:opacity-50"
+                    className="flex items-center gap-1.5 rounded-lg bg-success/10 px-3 py-1.5 text-sm text-success transition-colors hover:bg-success/20 disabled:opacity-50"
                     data-testid={`restore-btn-${item.id}`}
                   >
                     <RotateCcw size={14} /> Restore

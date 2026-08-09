@@ -89,11 +89,11 @@ export function LlmPolicyTab() {
         <m.div
           initial={{ opacity: 0, y: -8 }}
           animate={{ opacity: 1, y: 0 }}
-          className="flex items-start gap-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-4"
+          className="flex items-start gap-3 rounded-lg border border-warning/20 bg-warning/5 p-4"
         >
-          <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-500" />
+          <AlertTriangle size={18} className="mt-0.5 shrink-0 text-warning" />
           <div>
-            <div className="text-sm font-medium text-amber-200">Enterprise Feature</div>
+            <div className="text-sm font-medium text-warning">Enterprise Feature</div>
             <div className="mt-1 text-xs text-muted-foreground">
               Organization-wide LLM policy requires an enterprise license with the LLM Policy feature enabled.
             </div>
@@ -124,9 +124,9 @@ export function LlmPolicyTab() {
       <m.div
         initial={{ opacity: 0, y: -8 }}
         animate={{ opacity: 1, y: 0 }}
-        className="flex items-start gap-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-4"
+        className="flex items-start gap-3 rounded-lg border border-warning/20 bg-warning/5 p-4"
       >
-        <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-500" />
+        <AlertTriangle size={18} className="mt-0.5 shrink-0 text-warning" />
         <div className="text-xs text-muted-foreground">
           Changes take effect immediately for all users.
         </div>

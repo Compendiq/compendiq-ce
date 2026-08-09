@@ -315,7 +315,7 @@ function ReportCard({
         </div>
         {available ? (
           <span
-            className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-500"
+            className="inline-flex items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-xs text-success"
             data-testid={`badge-available-${entry.id}`}
           >
             <CheckCircle2 size={12} />
@@ -323,7 +323,7 @@ function ReportCard({
           </span>
         ) : (
           <span
-            className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-xs text-amber-500"
+            className="inline-flex items-center gap-1 rounded-full bg-warning/10 px-2 py-0.5 text-xs text-warning"
             data-testid={`badge-coming-soon-${entry.id}`}
           >
             <AlertTriangle size={12} />
@@ -361,7 +361,7 @@ function ReportCard({
 
       {!validation.ok && available && (
         <p
-          className="text-xs text-amber-500"
+          className="text-xs text-warning"
           data-testid={`validation-error-${entry.id}`}
         >
           {validation.reason}

@@ -427,7 +427,7 @@ export function CustomRoleEditor({ open, onOpenChange, editRole }: CustomRoleEdi
                             <td className="px-4 py-2">{a.spaceKey}</td>
                             <td className="px-4 py-2">
                               <span className={`rounded px-2 py-0.5 text-xs font-medium ${
-                                a.principalType === 'group' ? 'bg-action/10 text-action' : 'bg-blue-500/10 text-blue-500'
+                                a.principalType === 'group' ? 'bg-action/10 text-action' : 'bg-info/10 text-info'
                               }`}>
                                 {a.principalType === 'group' ? 'Group' : 'User'}
                               </span>

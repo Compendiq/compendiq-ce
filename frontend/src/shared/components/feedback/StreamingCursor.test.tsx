@@ -23,10 +23,15 @@ describe('StreamingCursor', () => {
     expect(screen.getByTestId('streaming-cursor')).toHaveAttribute('aria-hidden', 'true');
   });
 
-  it('applies cyan glow styling', () => {
+  // Was `bg-cyan-400` with a `shadow-[0_0_8px_#22d3ee]` glow. Both were raw
+  // literals that never tracked the theme; the glow went with the flat system
+  // and the fill is the accent token now. Solid, not a tint — this is a 2px
+  // cursor, and a 15% fill makes it a smudge.
+  it('paints the cursor in the accent, at full strength', () => {
     render(<StreamingCursor />, { wrapper: Wrapper });
     const cursor = screen.getByTestId('streaming-cursor');
-    expect(cursor.className).toContain('bg-cyan-400');
+    expect(cursor.className).toContain('bg-primary');
+    expect(cursor.className).not.toMatch(/bg-primary\//);
   });
 
   it('applies custom className', () => {
