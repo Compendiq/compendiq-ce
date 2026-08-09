@@ -38,6 +38,7 @@ const SOURCES: Source[] = [
 ];
 
 const OUT_DIR = resolve(import.meta.dirname, '../src/domains/llm/eval/corpus');
+const ATTRIBUTION_FILE = 'LICENSE-ATTRIBUTION.md';
 /** Below this a "page" is a stub (a redirect or a nav index) and only adds noise. */
 const MIN_CHARS = 500;
 
@@ -80,9 +81,29 @@ mkdirSync(OUT_DIR, { recursive: true });
 
 const manifest: Array<{ file: string; title: string; source: string; repo: string; commit: string; path: string; license: string }> = [];
 
+// Honour the recorded pins when a manifest is already present, so a refresh
+// REPRODUCES the corpus instead of silently taking whatever the default branch
+// happens to be today (review r1 — the attribution claimed reproducibility the
+// script did not deliver). Pass --update to deliberately move to the clones'
+// current HEADs, which then obliges a re-label.
+const pinnedCommits = new Map<string, string>();
+if (!process.argv.includes('--update') && existsSync(join(OUT_DIR, 'MANIFEST.json'))) {
+  const previous = JSON.parse(readFileSync(join(OUT_DIR, 'MANIFEST.json'), 'utf8')) as { pages: Array<{ source: string; commit: string }> };
+  for (const page of previous.pages) pinnedCommits.set(page.source, page.commit);
+}
+
+const notices: string[] = [];
+
 for (const source of SOURCES) {
   const root = join(cloneRoot, source.name);
+  const pin = pinnedCommits.get(source.name);
+  if (pin) {
+    // Fails loudly on a shallow clone that lacks the pinned commit, which is
+    // better than vendoring a different corpus under the same manifest.
+    execFileSync('git', ['-C', root, 'checkout', '--quiet', pin], { stdio: 'inherit' });
+  }
   const commit = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  notices.push(`\n---\n\n## ${source.name} — ${source.repo}\n\n\`\`\`\n${readFileSync(join(root, 'LICENSE'), 'utf8').trim()}\n\`\`\`\n`);
   const docsRoot = join(root, source.docs);
 
   for (const file of walk(docsRoot, source.skip, docsRoot).sort()) {
@@ -101,4 +122,32 @@ for (const source of SOURCES) {
 }
 
 writeFileSync(join(OUT_DIR, 'MANIFEST.json'), `${JSON.stringify({ generatedBy: 'scripts/vendor-eval-corpus.ts', pages: manifest }, null, 2)}\n`);
+
+// Regenerated, never assumed to survive: this script wipes OUT_DIR, and the
+// attribution lives inside it. Leaving it to a committed file meant the
+// documented refresh silently deleted the MIT notices the corpus is obliged
+// to carry (review r1).
+writeFileSync(
+  join(OUT_DIR, ATTRIBUTION_FILE),
+  `# Vendored eval corpus — third-party notices
+
+The markdown files in this directory are **verbatim copies of third-party
+documentation**, vendored for #1102's retrieval eval harness. They are test
+fixtures: nothing here is Compendiq's own documentation, and nothing here ships
+in the product.
+
+They are committed rather than fetched because the harness must run in CI
+without network access, and because a corpus that could shift underneath the
+fixture would silently invalidate every labelled \`query → page\` pair. Each
+page's upstream repository, path and **pinned commit** are recorded in
+\`MANIFEST.json\`, and \`backend/scripts/vendor-eval-corpus.ts\` checks those
+commits out on a re-run, so it reproduces this directory rather than tracking
+the default branch. Pass \`--update\` to move to current HEADs — which obliges
+a re-label, because the fixture records the manifest hash it was written
+against.
+
+All three sources are MIT licensed. Their notices follow in full, as the
+licence requires.
+${notices.join('')}`,
+);
 console.log(`vendored ${manifest.length} pages from ${SOURCES.length} sources`);

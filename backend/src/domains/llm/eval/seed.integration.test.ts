@@ -158,8 +158,16 @@ describe.skipIf(!dbAvailable)('eval seeder (#1102)', () => {
       );
       expect(row.rows[0]!.title).toBe(page.title);
       expect(row.rows[0]!.space_key).toBe(EVAL_SPACE_KEY);
-      // Markdown was converted, not stored raw: retrieval reads body_html.
-      expect(row.rows[0]!.body_html).toContain('<');
+      // Converted, not stored raw. Asserting merely that body_html contains
+      // '<' proves nothing — every corpus page's markdown contains one
+      // already (review r1). Assert the conversion's signature instead.
+      expect(row.rows[0]!.body_html).toMatch(/<(p|h[1-6]|ul|pre|code)\b/);
+
+      // …and body_text is the EXTRACTED text the FTS trigger indexes, not the
+      // markdown source: no heading markers, no code fences, no link URLs.
+      const stored = await query<{ body_text: string }>(`SELECT body_text FROM pages WHERE id = $1`, [pageId]);
+      expect(stored.rows[0]!.body_text).not.toMatch(/^#{1,6}\s/m);
+      expect(stored.rows[0]!.body_text).not.toContain('```');
 
       const chunks = await query<{ n: number }>(
         `SELECT COUNT(*)::int AS n FROM page_embeddings WHERE page_id = $1`,

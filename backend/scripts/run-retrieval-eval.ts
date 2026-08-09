@@ -24,7 +24,7 @@ import { loadCorpus, loadFixture, assertFixturePower } from '../src/domains/llm/
 import { seedCorpus, ensureVectorDimensions, configureEmbeddingProvider, resetEvalCorpus, assertModelReadsFullChunk } from '../src/domains/llm/eval/seed.js';
 import { runEval } from '../src/domains/llm/eval/runner.js';
 import { flushSearchAnalytics } from '../src/domains/llm/services/rag-service.js';
-import { recallAtK, meanReciprocalRank, pairedBootstrapCi, winLoss, type QueryRun } from '../src/domains/llm/eval/metrics.js';
+import { recallAtK, meanReciprocalRank, pairedBootstrapCi, pairedSignificance, winLoss, type QueryRun } from '../src/domains/llm/eval/metrics.js';
 
 const TOP_K = [1, 3, 5, 10] as const;
 const EVAL_USER = 'aaaaaaaa-1102-4000-8000-000000001102';
@@ -139,22 +139,31 @@ async function main(): Promise<void> {
     const scoreOne = (r: QueryRun) => recallAtK([r], 5);
     const ci = pairedBootstrapCi(baseline.runs, runs, scoreOne, { seed: 1102 });
     const table = winLoss(baseline.runs, runs, scoreOne);
+    const verdict = pairedSignificance(baseline.runs, runs, scoreOne);
 
     console.log('\n--- vs baseline (Recall@5) ---');
-    console.log(`delta ${ci.observedDelta >= 0 ? '+' : ''}${ci.observedDelta.toFixed(4)}  95% CI [${ci.lower.toFixed(4)}, ${ci.upper.toFixed(4)}]`);
+    console.log(`delta ${ci.observedDelta >= 0 ? '+' : ''}${ci.observedDelta.toFixed(4)}  (bootstrap interval [${ci.lower.toFixed(4)}, ${ci.upper.toFixed(4)}], descriptive)`);
     console.log(`${table.wins.length} wins · ${table.losses.length} losses · ${table.ties} unchanged`);
     for (const loss of table.losses.slice(0, 10)) {
       console.log(`  LOSS ${loss.queryId}: ${loss.baseline.toFixed(2)} → ${loss.candidate.toFixed(2)}`);
     }
-    console.log(
-      ci.excludesZero
-        ? `\nVERDICT: credible ${ci.observedDelta > 0 ? 'improvement' : 'REGRESSION'} — the interval excludes zero.`
-        : '\nVERDICT: no credible change — the interval straddles zero. Per-query movement above is still worth reading.',
-    );
-    // A credible regression is the only failing verdict: an improvement and a
-    // wash both pass, because this gate exists to catch retrieval getting
-    // worse, not to demand that every PR make it better.
-    if (ci.excludesZero && ci.observedDelta < 0) process.exitCode = 1;
+
+    // The DECISION is McNemar's exact test over the discordant pairs — the
+    // interval above only describes effect size. Per-query Recall@5 is binary
+    // here, and in that regime the percentile bootstrap fired at 4 flipped
+    // queries for any fixture size, at a true p of 0.125 (review r1).
+    if (verdict.method === 'mcnemar-exact') {
+      console.log(`\nMcNemar exact over ${verdict.wins + verdict.losses} discordant pairs: p = ${verdict.pValue!.toFixed(4)}`);
+      console.log(
+        verdict.significant
+          ? `VERDICT: credible ${verdict.direction === 'improvement' ? 'improvement' : 'REGRESSION'} (p < 0.05).`
+          : 'VERDICT: no credible change — too few queries moved, or they moved both ways. The win/loss table above is still worth reading.',
+      );
+      if (verdict.direction === 'regression') process.exitCode = 1;
+    } else {
+      // Graded scores: no exact paired test applies, so report and do not gate.
+      console.log('\nVERDICT: graded scores — reporting only, no automated verdict. Read the win/loss table.');
+    }
   }
 }
 

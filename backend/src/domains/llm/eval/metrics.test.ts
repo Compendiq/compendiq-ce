@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { recallAtK, meanReciprocalRank, pairedBootstrapCi, winLoss, type QueryRun } from './metrics.js';
+import { recallAtK, meanReciprocalRank, pairedBootstrapCi, pairedSignificance, winLoss, type QueryRun } from './metrics.js';
 
 // #1102 — the scoring half of the eval harness. Pure functions over recorded
 // runs, so these hold whatever the retrieval stack did. Every expectation is
@@ -25,10 +25,11 @@ describe('recallAtK (#1102)', () => {
   });
 
   it('averages over queries, not over hits — one hard query cannot be masked by an easy one', () => {
-    // q1 = 1.0, q2 = 0.0 → 0.5. A hit-pooled metric would report 1/2 here too,
-    // but diverges as soon as the fixtures have different expected-set sizes.
-    const runs = [run('q1', [7], [7]), run('q2', [8], [9])];
-    expect(recallAtK(runs, 1)).toBe(0.5);
+    // The expected-set sizes must DIFFER or the two definitions agree and the
+    // test proves nothing (review r1): q1 finds 3 of 3, q2 finds 0 of 1.
+    // Per-query: (1 + 0) / 2 = 0.5. Hit-pooled: 3 hits / 4 expected = 0.75.
+    const runs = [run('q1', [1, 2, 3], [1, 2, 3]), run('q2', [9], [8])];
+    expect(recallAtK(runs, 3)).toBe(0.5);
   });
 
   it('dedups retrieved pages BEFORE the top-K cut, so a repeat cannot evict a real hit', () => {
@@ -142,6 +143,77 @@ describe('pairedBootstrapCi (#1102)', () => {
     expect(() => pairedBootstrapCi(baseline, candidate, (r) => recallAtK([r], 1), { seed: 1 })).toThrow(
       /same queries/i,
     );
+  });
+});
+
+describe('pairedSignificance (#1102, review r1)', () => {
+  function pair(wins: number, losses: number, ties: number) {
+    const baseline: QueryRun[] = [];
+    const candidate: QueryRun[] = [];
+    for (let i = 0; i < wins; i++) { baseline.push(run(`w${i}`, [99, 1], [1])); candidate.push(run(`w${i}`, [1, 99], [1])); }
+    for (let i = 0; i < losses; i++) { baseline.push(run(`l${i}`, [1, 99], [1])); candidate.push(run(`l${i}`, [99, 1], [1])); }
+    for (let i = 0; i < ties; i++) { baseline.push(run(`t${i}`, [1, 99], [1])); candidate.push(run(`t${i}`, [1, 99], [1])); }
+    return { baseline, candidate };
+  }
+  const score = (r: QueryRun) => recallAtK([r], 1);
+
+  it('does NOT call 4 flipped queries significant — the bootstrap did, at a true p of 0.125', () => {
+    // The exact defect: with unanimous deltas the percentile bootstrap fired
+    // at m>=4 for ANY N, so 4 losses out of 144 (and out of 10,000) read as
+    // "credible regression".
+    const { baseline, candidate } = pair(0, 4, 140);
+    const verdict = pairedSignificance(baseline, candidate, score);
+
+    expect(verdict.method).toBe('mcnemar-exact');
+    expect(verdict.losses).toBe(4);
+    expect(verdict.pValue).toBeCloseTo(0.125, 10);
+    expect(verdict.significant).toBe(false);
+
+    // …while the interval it replaced says the opposite on the same input.
+    const ci = pairedBootstrapCi(baseline, candidate, score, { seed: 1102 });
+    expect(ci.excludesZero).toBe(true);
+  });
+
+  it('is independent of fixture size, as the sign test must be', () => {
+    for (const ties of [96, 296, 996]) {
+      const { baseline, candidate } = pair(0, 4, ties);
+      expect(pairedSignificance(baseline, candidate, score).pValue).toBeCloseTo(0.125, 10);
+    }
+  });
+
+  it('calls a real one-sided movement significant once the evidence supports it', () => {
+    // 6 discordant, all losses → p = 2/2^6 = 0.03125.
+    const { baseline, candidate } = pair(0, 6, 138);
+    const verdict = pairedSignificance(baseline, candidate, score);
+
+    expect(verdict.pValue).toBeCloseTo(0.03125, 10);
+    expect(verdict.significant).toBe(true);
+    expect(verdict.direction).toBe('regression');
+  });
+
+  it('reads a mixed result by its discordant pairs, not by the raw mean', () => {
+    // 2 wins / 8 losses: p = 2*(C(10,0)+C(10,1)+C(10,2))/2^10 = 0.109…
+    const { baseline, candidate } = pair(2, 8, 134);
+    const verdict = pairedSignificance(baseline, candidate, score);
+
+    expect(verdict.pValue).toBeCloseTo(0.109375, 6);
+    expect(verdict.significant).toBe(false);
+  });
+
+  it('reports improvement direction symmetrically', () => {
+    const { baseline, candidate } = pair(7, 0, 137);
+    const verdict = pairedSignificance(baseline, candidate, score);
+    expect(verdict.significant).toBe(true);
+    expect(verdict.direction).toBe('improvement');
+  });
+
+  it('falls back to the interval when scores are graded rather than binary', () => {
+    // Multi-page expectations make per-query recall fractional, which is
+    // outside McNemar's assumptions.
+    const baseline = [run('q1', [1, 2], [1, 2, 3])];
+    const candidate = [run('q1', [1, 2, 3], [1, 2, 3])];
+    const verdict = pairedSignificance(baseline, candidate, (r) => recallAtK([r], 5));
+    expect(verdict.method).toBe('bootstrap-percentile');
   });
 });
 

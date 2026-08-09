@@ -8,8 +8,14 @@ rather than measured.
 
 ## What it measures, and what it does not
 
-- **Does** detect regressions in retrieval *logic* — the same corpus and the
-  same embedding model before and after a change.
+- **Does** detect regressions in retrieval *logic* — the same corpus, the same
+  embedding model, and ideally the same machine before and after a change.
+  The bootstrap and the sign test both condition on this pair of runs: neither
+  models run-to-run variance in retrieval itself. HNSW is an approximate index
+  and its graph differs between builds, which is enough to move a query or two
+  — a local run and a CI run of identical code differed by one query at K=3.
+  So **measure both sides in the same environment**; pairing a CI artifact
+  against a laptop run mixes that noise into the deltas the test reads.
 - **Does not** judge an embedding-model upgrade. The CI model is small and
   fast on purpose; comparing candidate models needs the real ones, on #1113's
   rig. `--baseline` refuses a cross-model comparison for that reason.
@@ -21,12 +27,12 @@ rather than measured.
 ```bash
 # needs a database it may TRUNCATE and RETYPE, plus an embedding endpoint
 docker run -d -p 11434:11434 ollama/ollama
-curl -X POST localhost:11434/api/pull -d '{"name":"all-minilm"}'
+curl -X POST localhost:11434/api/pull -d '{"name":"nomic-embed-text"}'
 
 cd backend
 export POSTGRES_URL=postgresql://kb_user:pw@localhost:5433/kb_eval
 export EVAL_EMBEDDING_BASE_URL=http://localhost:11434/v1
-export EVAL_EMBEDDING_MODEL=all-minilm
+export EVAL_EMBEDDING_MODEL=nomic-embed-text
 
 # 1. measure the baseline — on the branch point, BEFORE your change
 npx tsx scripts/run-retrieval-eval.ts --out /tmp/baseline.json
@@ -37,7 +43,8 @@ npx tsx scripts/run-retrieval-eval.ts --out /tmp/candidate.json --baseline /tmp/
 
 CI runs the same script in the `retrieval-eval` job on any PR touching
 `rag-service`, `embedding-service`, `llm-provider-resolver` or `eval/`, and
-uploads its report as an artifact — download that to use as a baseline.
+uploads its report as an artifact. Use that artifact to *read* a run, not as a
+`--baseline` for a local candidate — see the environment caveat above.
 
 Re-running against the same database is safe: the script clears the previous
 corpus before seeding. It has to — without that, a second run leaves two
@@ -48,23 +55,64 @@ found.
 
 ## Reading the verdict
 
+Real output, from re-running the harness against its own baseline with nothing
+changed:
+
 ```
-delta +0.0347  95% CI [0.0069, 0.0625]
-14 wins · 9 losses · 121 unchanged
-VERDICT: credible improvement — the interval excludes zero.
+--- retrieval eval ---
+Recall@1: 0.3889
+Recall@3: 0.7847
+Recall@5: 0.8819
+Recall@10: 0.9236
+MRR:       0.5837
+vector leg participated in 144/144 queries
+
+--- vs baseline (Recall@5) ---
+delta +0.0000  (bootstrap interval [0.0000, 0.0000], descriptive)
+0 wins · 0 losses · 144 unchanged
+
+McNemar exact over 0 discordant pairs: p = 1.0000
+VERDICT: no credible change — too few queries moved, or they moved both ways.
 ```
 
-The gate is the **paired bootstrap CI**, not a fixed threshold. The issue's
-original "regressions > 0.01 fail" rule is unrepresentable: Recall@K over N
-queries moves in 1/N increments, so at N=144 the smallest possible change is
-0.007 and at N=30 it would be 0.033 — a fixed line fires on noise while the
-effect it names cannot occur. The interval answers the right question: is the
-movement bigger than the fixture's own sampling variation?
+**The decision is McNemar's exact test over the discordant pairs** — the
+queries the change actually flipped. The bootstrap interval is printed beside
+it as a description of effect size, and is deliberately *not* the gate: with
+one expected page per label, per-query Recall@K is 0 or 1, and in that discrete
+regime the percentile interval fires at **four flipped queries regardless of
+fixture size** — at a true two-sided p of 0.125. Growing the fixture would not
+have helped; it would only have shrunk the delta printed beside the same
+verdict.
+
+The issue's original "regressions > 0.01 fail" rule is unrepresentable for a
+different reason: Recall@K over N queries moves in 1/N increments, so at N=144
+the smallest possible change is 0.007 and at N=30 it would be 0.033 — a fixed
+line fires on noise while the effect it names cannot occur.
+
+What the sign test can and cannot see: 6 discordant pairs all one way is
+p=0.031 and fails the run; 4 one way is p=0.125 and does not, because no
+honest test can call four coin flips significant. If you need to detect an
+effect that small, the fixture needs more queries that the change can move —
+not a looser threshold.
 
 **Only a credible regression fails the run.** An improvement and a wash both
 pass — this catches retrieval getting worse, it does not demand every PR make
 it better. Read the win/loss table either way: a change that wins 14 and loses
 9 has moved 23 queries while the mean barely twitched.
+
+## The model must read a whole chunk
+
+The corpus chunks out at up to `CHUNK_HARD_LIMIT` (6000 characters), so the CI
+model's context window has to cover that. `all-minilm` does not: its ~256-token
+window silently embedded roughly the first sixth of each chunk while the run
+still reported "100% embedded" and a confident Recall@K describing text the
+model never read.
+
+`assertModelReadsFullChunk` now fails the run when that happens, detected
+empirically rather than from a model card — neither the OpenAI-compatible API
+nor Ollama's `/v1` exposes a context length. It embeds two chunk-sized texts
+differing only in their final word; a model reading the whole input must return
+different vectors. `all-minilm` returns byte-identical ones.
 
 ## When it fails for a reason that is not quality
 

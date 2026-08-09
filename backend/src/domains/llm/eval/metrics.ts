@@ -115,6 +115,95 @@ export function pairedBootstrapCi(
   };
 }
 
+export interface PairedSignificance {
+  method: 'mcnemar-exact' | 'bootstrap-percentile';
+  /** Queries the candidate fixed / broke. Only these carry information. */
+  wins: number;
+  losses: number;
+  /** Exact two-sided p under the sign null, for the McNemar path. */
+  pValue: number | null;
+  significant: boolean;
+  direction: 'improvement' | 'regression' | 'none';
+}
+
+/**
+ * The decision rule. Which test applies depends on the scores, not on taste.
+ *
+ * Every fixture label today names exactly one expected page, so per-query
+ * Recall@K is 0 or 1 and each paired delta is in {-1, 0, +1}. In that discrete
+ * regime the percentile bootstrap has no coverage guarantee: with unanimous
+ * deltas every resample mean sits on one side of zero, so `excludesZero`
+ * reduces to P(a resample draws none of the m moved queries) ≈ e^-m, which
+ * crosses the 2.5% tail at m ≥ 4 **for any N** — it fired on 4 flipped
+ * queries out of 144 and would fire on 4 out of 10,000, at an actual
+ * two-sided p of 0.125 (review r1). Growing the fixture did not help; it only
+ * shrank the delta printed beside the same verdict.
+ *
+ * For binary outcomes the correct paired test is McNemar's, exact: only the
+ * discordant pairs carry information, and under the null each is a coin flip.
+ * The bootstrap interval is still reported, as a description of effect size.
+ */
+export function pairedSignificance(
+  baseline: QueryRun[],
+  candidate: QueryRun[],
+  scoreOne: (run: QueryRun) => number,
+): PairedSignificance {
+  const byId = new Map(candidate.map((r) => [r.queryId, r]));
+  let wins = 0;
+  let losses = 0;
+  let binary = true;
+
+  for (const b of baseline) {
+    const c = byId.get(b.queryId);
+    if (!c) continue;
+    const before = scoreOne(b);
+    const after = scoreOne(c);
+    if (before !== 0 && before !== 1) binary = false;
+    if (after !== 0 && after !== 1) binary = false;
+    if (after > before) wins++;
+    else if (after < before) losses++;
+  }
+
+  if (!binary) {
+    // Graded scores (a fixture with multi-page expectations) are outside
+    // McNemar's assumptions; the caller falls back to the interval.
+    return { method: 'bootstrap-percentile', wins, losses, pValue: null, significant: false, direction: 'none' };
+  }
+
+  const pValue = mcnemarExactTwoSided(wins, losses);
+  const significant = pValue < 0.05 && wins !== losses;
+  return {
+    method: 'mcnemar-exact',
+    wins,
+    losses,
+    pValue,
+    significant,
+    direction: !significant ? 'none' : wins > losses ? 'improvement' : 'regression',
+  };
+}
+
+/**
+ * Exact two-sided sign test over the discordant pairs: 2·P(X ≤ min(w,l)) for
+ * X ~ Binomial(w+l, ½), clamped to 1. With 4 discordant pairs all one way
+ * this is 0.125 — which is why the bootstrap's verdict at m=4 was wrong, and
+ * why no honest test can call 4 flipped queries significant.
+ */
+export function mcnemarExactTwoSided(wins: number, losses: number): number {
+  const n = wins + losses;
+  if (n === 0) return 1;
+  const k = Math.min(wins, losses);
+  let cumulative = 0;
+  for (let i = 0; i <= k; i++) cumulative += binomialCoefficient(n, i);
+  const p = (2 * cumulative) / 2 ** n;
+  return Math.min(1, p);
+}
+
+function binomialCoefficient(n: number, k: number): number {
+  let result = 1;
+  for (let i = 1; i <= k; i++) result = (result * (n - i + 1)) / i;
+  return result;
+}
+
 export interface WinLossTable {
   wins: Array<{ queryId: string; baseline: number; candidate: number }>;
   losses: Array<{ queryId: string; baseline: number; candidate: number }>;

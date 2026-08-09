@@ -8,7 +8,7 @@
  * measuring its own fixture rather than the retrieval stack.
  */
 import { query } from '../../../core/db/postgres.js';
-import { markdownToHtml } from '../../../core/services/content-converter.js';
+import { markdownToHtml, htmlToText } from '../../../core/services/content-converter.js';
 import { embedPage, CHUNK_HARD_LIMIT } from '../services/embedding-service.js';
 import { generateEmbedding } from '../services/openai-compatible-client.js';
 import type { ProviderConfig } from '../services/openai-compatible-client.js';
@@ -160,11 +160,18 @@ export async function seedCorpus(
 
   for (const [index, page] of corpus.entries()) {
     const html = await markdownToHtml(page.markdown);
+    // body_text must be what the PRODUCT stores — htmlToText(html), not the
+    // markdown source (review r1). The migration-049 trigger builds pages.tsv
+    // from title || body_text, so storing raw markdown would index heading
+    // markers, code-fence syntax and every link URL: the keyword leg would be
+    // scored against a corpus the product never produces, while the vector leg
+    // embedded the converted text. Half of hybrid search, measured wrong.
+    const text = htmlToText(html);
     const inserted = await query<{ id: number }>(
       `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html, page_type, visibility, embedding_dirty, embedding_status)
        VALUES (gen_random_uuid()::text, 'standalone', $1, $2, $3, '', $4, 'page', 'shared', TRUE, 'not_embedded')
        RETURNING id`,
-      [EVAL_SPACE_KEY, page.title, page.markdown, html],
+      [EVAL_SPACE_KEY, page.title, text, html],
     );
     const pageId = inserted.rows[0]!.id;
     pageIdByFile.set(page.file, pageId);

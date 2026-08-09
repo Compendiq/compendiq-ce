@@ -9,12 +9,14 @@ They are committed rather than fetched because the harness must run in CI
 without network access, and because a corpus that could shift underneath the
 fixture would silently invalidate every labelled `query → page` pair. Each
 page's upstream repository, path and **pinned commit** are recorded in
-`MANIFEST.json`; `backend/scripts/vendor-eval-corpus.ts` reproduces the
-directory from those pins.
+`MANIFEST.json`, and `backend/scripts/vendor-eval-corpus.ts` checks those
+commits out on a re-run, so it reproduces this directory rather than tracking
+the default branch. Pass `--update` to move to current HEADs — which obliges
+a re-label, because the fixture records the manifest hash it was written
+against.
 
 All three sources are MIT licensed. Their notices follow in full, as the
 licence requires.
-
 
 ---
 
@@ -44,7 +46,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-
 ---
 
 ## vitest — https://github.com/vitest-dev/vitest
@@ -72,7 +73,6 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
-
 
 ---
 
