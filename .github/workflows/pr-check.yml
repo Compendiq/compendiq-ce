@@ -117,6 +117,108 @@ jobs:
       - name: Contracts tests
         run: npm test -w @compendiq/contracts
 
+  # #1102 — retrieval quality gate. Deliberately its OWN job: it runs a real
+  # embedding model, which the fast PR path must not wait on. Scoped by paths
+  # so it only fires for changes that can actually move retrieval.
+  retrieval-eval:
+    name: Retrieval eval
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: kb_user
+          POSTGRES_PASSWORD: changeme-postgres
+          POSTGRES_DB: kb_eval
+        ports:
+          - 5434:5432
+        options: >-
+          --health-cmd "pg_isready -U kb_user -d kb_eval"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      # The gate's job is "did this PR regress retrieval LOGIC", which only
+      # needs the same model on both sides — not the production 8B one. Ollama
+      # because its /v1 shim is already what openai-compatible-client speaks,
+      # so this needs a provider row rather than new client code.
+      ollama:
+        image: ollama/ollama:latest
+        ports:
+          - 11434:11434
+        options: >-
+          --health-cmd "ollama --version"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      POSTGRES_URL: postgresql://kb_user:changeme-postgres@localhost:5434/kb_eval
+      JWT_SECRET: ci-test-secret-that-is-at-least-32-characters-long
+      PAT_ENCRYPTION_KEY: ci-test-encryption-key-at-least-32-chars
+      EVAL_EMBEDDING_BASE_URL: http://localhost:11434/v1
+      EVAL_EMBEDDING_MODEL: all-minilm
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      # Everything below is skipped unless the PR touches something that can
+      # actually move retrieval. Done here rather than with a workflow-level
+      # `paths:` filter, which would gate every job in the file, and without a
+      # third-party filter action.
+      - name: Does this PR touch retrieval?
+        id: scope
+        run: |
+          BASE="origin/${{ github.base_ref || 'dev' }}"
+          git fetch --no-tags --depth=1 origin "${{ github.base_ref || 'dev' }}" || true
+          CHANGED=$(git diff --name-only "$BASE"...HEAD || echo "")
+          if echo "$CHANGED" | grep -qE '^backend/src/domains/llm/(services/(rag-service|embedding-service|llm-provider-resolver)|eval/)|^backend/scripts/run-retrieval-eval|^\.github/workflows/pr-check'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No retrieval-affecting paths changed — skipping the eval."
+          fi
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        if: steps.scope.outputs.run == 'true'
+        with:
+          node-version-file: package.json
+          cache: npm
+
+      - name: Install dependencies
+        if: steps.scope.outputs.run == 'true'
+        run: npm ci
+
+      - name: Build contracts
+        if: steps.scope.outputs.run == 'true'
+        run: npm run build -w @compendiq/contracts
+
+      # ~45 MB. Pulled rather than baked because the service container image is
+      # shared; if this becomes the job's bottleneck, bake a custom image.
+      - name: Pull the embedding model
+        if: steps.scope.outputs.run == 'true'
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:11434/api/version && break
+            sleep 2
+          done
+          curl -sf -X POST http://localhost:11434/api/pull -d '{"name":"all-minilm"}' | tail -1
+
+      - name: Run the retrieval eval
+        if: steps.scope.outputs.run == 'true'
+        run: npx tsx scripts/run-retrieval-eval.ts --out retrieval-eval.json
+        working-directory: backend
+
+      # The report is the artefact a retrieval PR compares against: download
+      # the baseline run's copy and pass it as --baseline locally.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: steps.scope.outputs.run == 'true'
+        with:
+          name: retrieval-eval-report
+          path: backend/retrieval-eval.json
+
   mcp-docs:
     name: MCP Docs Sidecar
     runs-on: ubuntu-latest
