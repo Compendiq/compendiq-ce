@@ -1,0 +1,2363 @@
+{
+  "generatedBy": "scripts/vendor-eval-corpus.ts",
+  "pages": [
+    {
+      "file": "fastify__Guides__Benchmarking.md",
+      "title": "docs/Guides/Benchmarking.md",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Guides/Benchmarking.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Guides__Contributing.md",
+      "title": "Contributing To Fastify",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Guides/Contributing.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Guides__Database.md",
+      "title": "docs/Guides/Database.md",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Guides/Database.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Guides__Delay-Accepting-Requests.md",
+      "title": "Delay Accepting Requests",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Guides/Delay-Accepting-Requests.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Guides__Detecting-When-Clients-Abort.md",
+      "title": "Detecting When Clients Abort",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Guides/Detecting-When-Clients-Abort.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Guides__Ecosystem.md",
+      "title": "docs/Guides/Ecosystem.md",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Guides/Ecosystem.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Guides__Fluent-Schema.md",
+      "title": "docs/Guides/Fluent-Schema.md",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Guides/Fluent-Schema.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Guides__Getting-Started.md",
+      "title": "docs/Guides/Getting-Started.md",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Guides/Getting-Started.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Guides__Index.md",
+      "title": "docs/Guides/Index.md",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Guides/Index.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Guides__Migration-Guide-V3.md",
+      "title": "V3 Migration Guide",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Guides/Migration-Guide-V3.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Guides__Migration-Guide-V4.md",
+      "title": "V4 Migration Guide",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Guides/Migration-Guide-V4.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Guides__Migration-Guide-V5.md",
+      "title": "V5 Migration Guide",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Guides/Migration-Guide-V5.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Guides__Plugins-Guide.md",
+      "title": "The hitchhiker's guide to plugins",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Guides/Plugins-Guide.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Guides__Prototype-Poisoning.md",
+      "title": "docs/Guides/Prototype-Poisoning.md",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Guides/Prototype-Poisoning.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Guides__Recommendations.md",
+      "title": "The global section defines base HAProxy (engine) instance configuration.",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Guides/Recommendations.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Guides__Serverless.md",
+      "title": "Use the official Node.js LTS image.",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Guides/Serverless.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Guides__Style-Guide.md",
+      "title": "Fastify Style Guide",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Guides/Style-Guide.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Guides__Testing.md",
+      "title": "Testing",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Guides/Testing.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Guides__Write-Plugin.md",
+      "title": "How to write a good plugin",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Guides/Write-Plugin.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Guides__Write-Type-Provider.md",
+      "title": "docs/Guides/Write-Type-Provider.md",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Guides/Write-Type-Provider.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Reference__ContentTypeParser.md",
+      "title": "docs/Reference/ContentTypeParser.md",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Reference/ContentTypeParser.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Reference__Decorators.md",
+      "title": "docs/Reference/Decorators.md",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Reference/Decorators.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Reference__Encapsulation.md",
+      "title": "{\"answer\":42}",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Reference/Encapsulation.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Reference__Errors.md",
+      "title": "docs/Reference/Errors.md",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Reference/Errors.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Reference__HTTP2.md",
+      "title": "docs/Reference/HTTP2.md",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Reference/HTTP2.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Reference__Hooks.md",
+      "title": "docs/Reference/Hooks.md",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Reference/Hooks.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Reference__Index.md",
+      "title": "docs/Reference/Index.md",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Reference/Index.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Reference__LTS.md",
+      "title": "docs/Reference/LTS.md",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Reference/LTS.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Reference__Lifecycle.md",
+      "title": "docs/Reference/Lifecycle.md",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Reference/Lifecycle.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Reference__Logging.md",
+      "title": "docs/Reference/Logging.md",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Reference/Logging.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Reference__Middleware.md",
+      "title": "docs/Reference/Middleware.md",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Reference/Middleware.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Reference__Plugins.md",
+      "title": "docs/Reference/Plugins.md",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Reference/Plugins.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Reference__Principles.md",
+      "title": "Technical Principles",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Reference/Principles.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Reference__Reply.md",
+      "title": "docs/Reference/Reply.md",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Reference/Reply.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Reference__Request.md",
+      "title": "docs/Reference/Request.md",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Reference/Request.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Reference__Routes.md",
+      "title": "docs/Reference/Routes.md",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Reference/Routes.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Reference__Server.md",
+      "title": "docs/Reference/Server.md",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Reference/Server.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Reference__Type-Providers.md",
+      "title": "docs/Reference/Type-Providers.md",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Reference/Type-Providers.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Reference__TypeScript.md",
+      "title": "docs/Reference/TypeScript.md",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Reference/TypeScript.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Reference__Validation-and-Serialization.md",
+      "title": "docs/Reference/Validation-and-Serialization.md",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Reference/Validation-and-Serialization.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__Reference__Warnings.md",
+      "title": "docs/Reference/Warnings.md",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/Reference/Warnings.md",
+      "license": "MIT"
+    },
+    {
+      "file": "fastify__index.md",
+      "title": "docs/index.md",
+      "source": "fastify",
+      "repo": "https://github.com/fastify/fastify",
+      "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
+      "path": "docs/index.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__api__advanced__artifacts.md",
+      "title": "Test Artifacts",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/api/advanced/artifacts.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__api__advanced__metadata.md",
+      "title": "Task Metadata <Badge type=\"danger\">advanced</Badge>",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/api/advanced/metadata.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__api__advanced__plugin.md",
+      "title": "Plugin API",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/api/advanced/plugin.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__api__advanced__reporters.md",
+      "title": "Reporters",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/api/advanced/reporters.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__api__advanced__runner.md",
+      "title": "Runner API <Badge type=\"danger\">advanced</Badge>",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/api/advanced/runner.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__api__advanced__test-case.md",
+      "title": "TestCase",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/api/advanced/test-case.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__api__advanced__test-collection.md",
+      "title": "TestCollection",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/api/advanced/test-collection.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__api__advanced__test-module.md",
+      "title": "TestModule",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/api/advanced/test-module.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__api__advanced__test-project.md",
+      "title": "TestProject",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/api/advanced/test-project.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__api__advanced__test-specification.md",
+      "title": "TestSpecification",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/api/advanced/test-specification.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__api__advanced__test-suite.md",
+      "title": "TestSuite",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/api/advanced/test-suite.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__api__advanced__vitest.md",
+      "title": "Vitest API",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/api/advanced/vitest.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__api__assert-type.md",
+      "title": "assertType",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/api/assert-type.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__api__assert.md",
+      "title": "assert",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/api/assert.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__api__browser__assertions.md",
+      "title": "Assertion API | Browser Mode",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/api/browser/assertions.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__api__browser__commands.md",
+      "title": "Commands | Browser Mode",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/api/browser/commands.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__api__browser__context.md",
+      "title": "Context API | Browser Mode",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/api/browser/context.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__api__browser__interactivity.md",
+      "title": "Interactivity API | Browser Mode",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/api/browser/interactivity.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__api__browser__locators.md",
+      "title": "Locators | Browser Mode",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/api/browser/locators.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__api__browser__react.md",
+      "title": "vitest-browser-react",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/api/browser/react.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__api__browser__svelte.md",
+      "title": "vitest-browser-svelte",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/api/browser/svelte.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__api__browser__vue.md",
+      "title": "vitest-browser-vue",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/api/browser/vue.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__api__describe.md",
+      "title": "describe",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/api/describe.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__api__expect-typeof.md",
+      "title": "expectTypeOf",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/api/expect-typeof.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__api__expect.md",
+      "title": "expect",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/api/expect.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__api__hooks.md",
+      "title": "Hooks",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/api/hooks.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__api__mock.md",
+      "title": "Mocks",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/api/mock.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__api__test.md",
+      "title": "Test",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/api/test.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__api__vi.md",
+      "title": "Vi",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/api/vi.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__alias.md",
+      "title": "alias | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/alias.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__allowonly.md",
+      "title": "allowOnly | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/allowonly.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__api.md",
+      "title": "api | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/api.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__bail.md",
+      "title": "bail | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/bail.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__benchmark.md",
+      "title": "benchmark | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/benchmark.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__browser__commands.md",
+      "title": "browser.commands | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/browser/commands.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__browser__dependencysourcemaps.md",
+      "title": "browser.dependencySourcemaps | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/browser/dependencysourcemaps.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__browser__detailspanelposition.md",
+      "title": "browser.detailsPanelPosition | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/browser/detailspanelposition.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__browser__enabled.md",
+      "title": "browser.enabled | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/browser/enabled.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__browser__expect.md",
+      "title": "browser.expect | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/browser/expect.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__browser__instances.md",
+      "title": "browser.instances | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/browser/instances.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__browser__locators.md",
+      "title": "browser.locators | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/browser/locators.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__browser__orchestratorscripts.md",
+      "title": "browser.orchestratorScripts | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/browser/orchestratorscripts.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__browser__playwright.md",
+      "title": "Configuring Playwright",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/browser/playwright.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__browser__preview.md",
+      "title": "Configuring Preview",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/browser/preview.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__browser__provider.md",
+      "title": "browser.provider | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/browser/provider.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__browser__trace.md",
+      "title": "browser.trace | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/browser/trace.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__browser__traceview.md",
+      "title": "browser.traceView | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/browser/traceview.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__browser__webdriverio.md",
+      "title": "Configuring WebdriverIO",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/browser/webdriverio.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__cache.md",
+      "title": "cache | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/cache.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__chaiconfig.md",
+      "title": "chaiConfig | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/chaiconfig.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__changed.md",
+      "title": "changed | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/changed.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__clearmocks.md",
+      "title": "clearMocks | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/clearmocks.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__coverage.md",
+      "title": "coverage | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/coverage.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__css.md",
+      "title": "css | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/css.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__dangerouslyignoreunhandlederrors.md",
+      "title": "dangerouslyIgnoreUnhandledErrors | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/dangerouslyignoreunhandlederrors.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__deps.md",
+      "title": "deps | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/deps.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__detectasyncleaks.md",
+      "title": "detectAsyncLeaks | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/detectasyncleaks.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__diff.md",
+      "title": "diff | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/diff.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__disableconsoleintercept.md",
+      "title": "disableConsoleIntercept | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/disableconsoleintercept.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__environment.md",
+      "title": "environment | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/environment.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__environmentoptions.md",
+      "title": "environmentOptions | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/environmentoptions.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__exclude.md",
+      "title": "exclude | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/exclude.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__expect.md",
+      "title": "expect | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/expect.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__experimental.md",
+      "title": "experimental | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/experimental.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__faketimers.md",
+      "title": "fakeTimers | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/faketimers.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__forcereruntriggers.md",
+      "title": "forceRerunTriggers | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/forcereruntriggers.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__fsmodulecache.md",
+      "title": "fsModuleCache | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/fsmodulecache.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__fsmodulecachepath.md",
+      "title": "fsModuleCachePath | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/fsmodulecachepath.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__globals.md",
+      "title": "globals | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/globals.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__globalsetup.md",
+      "title": "globalSetup | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/globalsetup.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__include-source.md",
+      "title": "includeSource | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/include-source.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__include.md",
+      "title": "include | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/include.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__includetasklocation.md",
+      "title": "includeTaskLocation | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/includetasklocation.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__index.md",
+      "title": "Configuring Vitest",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/index.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__injectcjsglobals.md",
+      "title": "injectCjsGlobals | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/injectcjsglobals.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__isolate.md",
+      "title": "isolate | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/isolate.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__maxworkers.md",
+      "title": "maxWorkers | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/maxworkers.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__mockreset.md",
+      "title": "mockReset | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/mockreset.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__name.md",
+      "title": "name | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/name.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__onconsolelog.md",
+      "title": "onConsoleLog | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/onconsolelog.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__onstacktrace.md",
+      "title": "onStackTrace | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/onstacktrace.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__onunhandlederror.md",
+      "title": "onUnhandledError | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/onunhandlederror.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__pool.md",
+      "title": "pool | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/pool.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__provide.md",
+      "title": "provide | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/provide.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__reporters.md",
+      "title": "reporters | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/reporters.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__resolvesnapshotpath.md",
+      "title": "resolveSnapshotPath | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/resolvesnapshotpath.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__restoremocks.md",
+      "title": "restoreMocks | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/restoremocks.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__retry.md",
+      "title": "retry | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/retry.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__sequence.md",
+      "title": "sequence | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/sequence.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__server.md",
+      "title": "server | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/server.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__setupfiles.md",
+      "title": "setupFiles | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/setupfiles.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__snapshotenvironment.md",
+      "title": "snapshotEnvironment | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/snapshotenvironment.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__snapshotformat.md",
+      "title": "snapshotFormat | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/snapshotformat.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__stricttags.md",
+      "title": "strictTags | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/stricttags.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__tags.md",
+      "title": "tags | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/tags.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__testnamepattern.md",
+      "title": "testNamePattern | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/testnamepattern.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__typecheck.md",
+      "title": "typecheck | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/typecheck.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__ui.md",
+      "title": "ui | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/ui.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__unstubenvs.md",
+      "title": "unstubEnvs | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/unstubenvs.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__unstubglobals.md",
+      "title": "unstubGlobals | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/unstubglobals.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__update.md",
+      "title": "update | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/update.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__vmmemorylimit.md",
+      "title": "vmMemoryLimit | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/vmmemorylimit.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__config__watchtriggerpatterns.md",
+      "title": "watchTriggerPatterns | Config",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/config/watchtriggerpatterns.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__advanced__benchmark-provider.md",
+      "title": "Custom Benchmark Provider <Version type=\"experimental\">5.0.0</Version> <Badge type=\"danger\">advanced</Badge> {#custom-benchmark-provider}",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/advanced/benchmark-provider.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__advanced__index.md",
+      "title": "Advanced API",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/advanced/index.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__advanced__pool.md",
+      "title": "Custom Pool <Badge type=\"danger\">advanced</Badge> {#custom-pool}",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/advanced/pool.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__advanced__reporters.md",
+      "title": "Extending Reporters <Badge type=\"danger\">advanced</Badge> {#extending-reporters}",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/advanced/reporters.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__advanced__tests.md",
+      "title": "Running Tests <Badge type=\"danger\">advanced</Badge> {#running-tests}",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/advanced/tests.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__benchmarking.md",
+      "title": "Benchmarking | Guide",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/benchmarking.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__browser__aria-snapshots.md",
+      "title": "ARIA Snapshots | Guide",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/browser/aria-snapshots.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__browser__component-testing.md",
+      "title": "Component Testing | Guide",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/browser/component-testing.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__browser__index.md",
+      "title": "Browser Mode | Guide",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/browser/index.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__browser__multiple-setups.md",
+      "title": "Multiple Setups",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/browser/multiple-setups.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__browser__playwright-traces.md",
+      "title": "Playwright Traces",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/browser/playwright-traces.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__browser__trace-view.md",
+      "title": "Trace View <Badge type=\"warning\" text=\"Experimental\" /> <Version>5.0.0</Version>",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/browser/trace-view.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__browser__visual-regression-testing.md",
+      "title": "Visual Regression Testing",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/browser/visual-regression-testing.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__browser__why.md",
+      "title": "Why Browser Mode | Browser Mode",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/browser/why.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__cli-generated.md",
+      "title": "docs/guide/cli-generated.md",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/cli-generated.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__cli.md",
+      "title": "Command Line Interface | Guide",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/cli.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__common-errors.md",
+      "title": "Common Errors | Guide",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/common-errors.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__comparisons.md",
+      "title": "Comparisons with Other Test Runners | Guide",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/comparisons.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__coverage.md",
+      "title": "Coverage | Guide",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/coverage.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__debugging.md",
+      "title": "Debugging | Guide",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/debugging.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__environment.md",
+      "title": "Test Environment | Guide",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/environment.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__extending-matchers.md",
+      "title": "Extending Matchers | Guide",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/extending-matchers.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__features.md",
+      "title": "Features | Guide",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/features.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__filtering.md",
+      "title": "Test Filtering | Guide",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/filtering.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__ide.md",
+      "title": "IDE Integrations | Guide",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/ide.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__improving-performance.md",
+      "title": "Improving Performance",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/improving-performance.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__in-source.md",
+      "title": "In-Source Testing | Guide",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/in-source.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__index.md",
+      "title": "Getting Started | Guide",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/index.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__learn__async.md",
+      "title": "Testing Asynchronous Code | Guide",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/learn/async.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__learn__debugging-tests.md",
+      "title": "Debugging Failing Tests | Guide",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/learn/debugging-tests.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__learn__matchers.md",
+      "title": "Using Matchers | Guide",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/learn/matchers.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__learn__mock-functions.md",
+      "title": "Mock Functions | Guide",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/learn/mock-functions.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__learn__setup-teardown.md",
+      "title": "Setup and Teardown | Guide",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/learn/setup-teardown.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__learn__snapshots.md",
+      "title": "Snapshot Testing | Guide",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/learn/snapshots.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__learn__testing-in-practice.md",
+      "title": "Testing in Practice | Guide",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/learn/testing-in-practice.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__learn__writing-tests-with-ai.md",
+      "title": "Writing Tests with AI | Guide",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/learn/writing-tests-with-ai.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__learn__writing-tests.md",
+      "title": "Writing Tests | Guide",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/learn/writing-tests.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__lifecycle.md",
+      "title": "Test Run Lifecycle | Guide",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/lifecycle.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__migration.md",
+      "title": "Migration Guide | Guide",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/migration.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__mocking.md",
+      "title": "Mocking | Guide",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/mocking.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__mocking__classes.md",
+      "title": "Mocking Classes",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/mocking/classes.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__mocking__dates.md",
+      "title": "Mocking Dates",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/mocking/dates.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__mocking__file-system.md",
+      "title": "Mocking the File System",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/mocking/file-system.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__mocking__functions.md",
+      "title": "Mocking Functions",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/mocking/functions.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__mocking__globals.md",
+      "title": "Mocking Globals",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/mocking/globals.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__mocking__modules.md",
+      "title": "Mocking Modules",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/mocking/modules.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__mocking__requests.md",
+      "title": "Mocking Requests",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/mocking/requests.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__mocking__timers.md",
+      "title": "Timers",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/mocking/timers.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__open-telemetry.md",
+      "title": "Open Telemetry Support <Experimental /> {#open-telemetry-support}",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/open-telemetry.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__parallelism.md",
+      "title": "Parallelism | Guide",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/parallelism.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__profiling-test-performance.md",
+      "title": "Profiling Test Performance",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/profiling-test-performance.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__projects.md",
+      "title": "Test Projects | Guide",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/projects.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__recipes__browser-locators.md",
+      "title": "Extending Browser Locators | Recipes",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/recipes/browser-locators.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__recipes__cancellable.md",
+      "title": "Cancellable Test Resources | Recipes",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/recipes/cancellable.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__recipes__conditional-mocking.md",
+      "title": "Conditional Mocking with vi.when | Recipes",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/recipes/conditional-mocking.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__recipes__custom-assertions.md",
+      "title": "Custom Assertion Helpers | Recipes",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/recipes/custom-assertions.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__recipes__db-transaction.md",
+      "title": "Database Transaction per Test | Recipes",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/recipes/db-transaction.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__recipes__disable-isolation.md",
+      "title": "Per-File Isolation Settings | Recipes",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/recipes/disable-isolation.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__recipes__explicit-resources.md",
+      "title": "Auto-Cleanup with `using` | Recipes",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/recipes/explicit-resources.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__recipes__parallel-sequential.md",
+      "title": "Parallel and Sequential Test Files | Recipes",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/recipes/parallel-sequential.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__recipes__schema-matching.md",
+      "title": "Schema-Driven Assertions | Recipes",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/recipes/schema-matching.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__recipes__type-narrowing.md",
+      "title": "Type Narrowing in Tests | Recipes",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/recipes/type-narrowing.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__recipes__wait-for.md",
+      "title": "Waiting for Async Conditions | Recipes",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/recipes/wait-for.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__recipes__watch-templates.md",
+      "title": "Watching Non-Imported Files | Recipes",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/recipes/watch-templates.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__reporters.md",
+      "title": "Reporters | Guide",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/reporters.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__snapshot.md",
+      "title": "Snapshot | Guide",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/snapshot.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__test-annotations.md",
+      "title": "Test Annotations | Guide",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/test-annotations.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__test-context.md",
+      "title": "Test Context | Guide",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/test-context.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__test-tags.md",
+      "title": "Test Tags | Guide",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/test-tags.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__testing-types.md",
+      "title": "Testing Types | Guide",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/testing-types.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__ui.md",
+      "title": "Vitest UI | Guide",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/ui.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__guide__why.md",
+      "title": "Why Vitest | Guide",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/guide/why.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__releases.md",
+      "title": "Releases",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/releases.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__team.md",
+      "title": "Meet the Team",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/team.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vitest__todo.md",
+      "title": "Remove UnoCSS - Migration Complete",
+      "source": "vitest",
+      "repo": "https://github.com/vitest-dev/vitest",
+      "commit": "c67d296f42f93ec888ff148e821877194969cea9",
+      "path": "docs/todo.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__acknowledgements.md",
+      "title": "Acknowledgements",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/acknowledgements.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__changes__hotupdate-hook.md",
+      "title": "HMR `hotUpdate` Plugin Hook",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/changes/hotupdate-hook.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__changes__index.md",
+      "title": "Breaking Changes",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/changes/index.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__changes__per-environment-apis.md",
+      "title": "Move to Per-environment APIs",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/changes/per-environment-apis.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__changes__shared-plugins-during-build.md",
+      "title": "Shared Plugins during Build",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/changes/shared-plugins-during-build.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__changes__ssr-using-modulerunner.md",
+      "title": "SSR Using `ModuleRunner` API",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/changes/ssr-using-modulerunner.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__changes__this-environment-in-hooks.md",
+      "title": "`this.environment` in Hooks",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/changes/this-environment-in-hooks.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__config__build-options.md",
+      "title": "Build Options",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/config/build-options.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__config__dep-optimization-options.md",
+      "title": "Dep Optimization Options",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/config/dep-optimization-options.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__config__index.md",
+      "title": "Configuring Vite",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/config/index.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__config__preview-options.md",
+      "title": "Preview Options",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/config/preview-options.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__config__server-options.md",
+      "title": "Server Options",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/config/server-options.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__config__shared-options.md",
+      "title": "Shared Options",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/config/shared-options.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__config__ssr-options.md",
+      "title": "SSR Options",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/config/ssr-options.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__config__worker-options.md",
+      "title": "Worker Options",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/config/worker-options.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__guide__api-environment-frameworks.md",
+      "title": "Environment API for Frameworks",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/guide/api-environment-frameworks.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__guide__api-environment-instances.md",
+      "title": "Using `Environment` Instances",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/guide/api-environment-instances.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__guide__api-environment-plugins.md",
+      "title": "Environment API for Plugins",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/guide/api-environment-plugins.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__guide__api-environment-runtimes.md",
+      "title": "Environment API for Runtimes",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/guide/api-environment-runtimes.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__guide__api-environment.md",
+      "title": "Environment API",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/guide/api-environment.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__guide__api-hmr.md",
+      "title": "HMR API",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/guide/api-hmr.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__guide__api-javascript.md",
+      "title": "JavaScript API",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/guide/api-javascript.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__guide__api-plugin.md",
+      "title": "Plugin API",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/guide/api-plugin.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__guide__assets.md",
+      "title": "Static Asset Handling",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/guide/assets.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__guide__backend-integration.md",
+      "title": "Backend Integration",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/guide/backend-integration.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__guide__build.md",
+      "title": "Building for Production",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/guide/build.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__guide__cli.md",
+      "title": "Command Line Interface",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/guide/cli.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__guide__dep-pre-bundling.md",
+      "title": "Dependency Pre-Bundling",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/guide/dep-pre-bundling.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__guide__env-and-mode.md",
+      "title": "Env Variables and Modes",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/guide/env-and-mode.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__guide__features.md",
+      "title": "Features",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/guide/features.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__guide__index.md",
+      "title": "Getting Started",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/guide/index.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__guide__migration.md",
+      "title": "Migration from v7",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/guide/migration.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__guide__performance.md",
+      "title": "Performance",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/guide/performance.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__guide__philosophy.md",
+      "title": "Project Philosophy",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/guide/philosophy.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__guide__ssr.md",
+      "title": "Server-Side Rendering (SSR)",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/guide/ssr.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__guide__static-deploy.md",
+      "title": "Deploying a Static Site",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/guide/static-deploy.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__guide__troubleshooting.md",
+      "title": "Troubleshooting",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/guide/troubleshooting.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__guide__using-plugins.md",
+      "title": "Using Plugins",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/guide/using-plugins.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__guide__why.md",
+      "title": "Why Vite",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/guide/why.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__plugins__index.md",
+      "title": "Plugins",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/plugins/index.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__releases.md",
+      "title": "Releases",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/releases.md",
+      "license": "MIT"
+    },
+    {
+      "file": "vite__team.md",
+      "title": "Meet the Team",
+      "source": "vite",
+      "repo": "https://github.com/vitejs/vite",
+      "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
+      "path": "docs/team.md",
+      "license": "MIT"
+    }
+  ]
+}
