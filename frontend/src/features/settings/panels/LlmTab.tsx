@@ -64,6 +64,7 @@ export function LlmTab() {
   // (same reset IpAllowlistTab does) so the form re-hydrates from the fresh
   // server state.
   const [assignmentsInitialized, setAssignmentsInitialized] = useState(false);
+  const [shadowMigrationActive, setShadowMigrationActive] = useState(false);
   const [capInitialized, setCapInitialized] = useState(false);
 
   // Mirror the server-provided assignments once per load. Using useEffect
@@ -208,6 +209,7 @@ export function LlmTab() {
         // the exact invariant that guard exists to protect. The embedding row
         // has no unsaved edits worth keeping — it is pinned server-side for
         // the duration, so a PUT touching it is refused with a 409.
+        onActiveChange={setShadowMigrationActive}
         onLifecycleChange={() => {
           const fresh = qc.getQueryData<UsecaseAssignments>(['llm-usecases']);
           if (fresh) {
@@ -215,12 +217,21 @@ export function LlmTab() {
           }
         }}
       />
-      <EmbeddingReembedBanner
-        // Legacy 1024-dim default while settings load or on older backends
-        // whose payload predates the field.
-        currentDimensions={adminSettings?.embeddingDimensions ?? 1024}
-        pending={embeddingPending}
-      />
+      {/* Suppressed while a shadow migration exists (review r9): `pending`
+          stays non-null for the whole migration — the assignment PUT is
+          deliberately 409'd, so the admin's edit is never saved — and the
+          destructive banner would otherwise sit under the shadow card
+          offering "Confirm + re-embed" for the same intent the card is
+          mid-way through serving. The server refuses that button anyway; the
+          point is not to offer the replaced path beside its replacement. */}
+      {!shadowMigrationActive && (
+        <EmbeddingReembedBanner
+          // Legacy 1024-dim default while settings load or on older backends
+          // whose payload predates the field.
+          currentDimensions={adminSettings?.embeddingDimensions ?? 1024}
+          pending={embeddingPending}
+        />
+      )}
       <UsecaseAssignmentsSection
         assignments={assignments}
         providers={providers}

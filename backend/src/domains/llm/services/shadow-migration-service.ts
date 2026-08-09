@@ -581,8 +581,17 @@ async function buildShadowIndexes(state: ShadowMigrationState): Promise<void> {
   } finally {
     // RESET restores the pool's startup value, not Postgres' default — the
     // same discipline runMigrations uses before returning its client.
-    await idxClient.query('RESET statement_timeout').catch(() => {});
-    idxClient.release();
+    try {
+      await idxClient.query('RESET statement_timeout');
+      idxClient.release();
+    } catch (err) {
+      // Swallowing this would return a connection permanently exempt from
+      // PG_STATEMENT_TIMEOUT to the shared pool, silently disabling for every
+      // later query the protection this exemption exists to respect. Destroy
+      // it instead — runMigrations does the same (review r9).
+      logger.warn({ err }, 'Could not reset statement_timeout after the shadow index build — destroying the connection');
+      idxClient.release(true);
+    }
   }
 }
 
@@ -606,6 +615,25 @@ const DEADLOCK_DETECTED = '40P01';
  * derived data, and `POST /api/pages/graph/refresh` rebuilds them on demand.
  */
 let pendingEdgeRefresh: Promise<void> = Promise.resolve();
+
+/**
+ * Rollback and cleanup wait for the detached edge rebuild rather than fight it
+ * for the table lock — but only up to a point. The rebuild is a whole-corpus
+ * recompute; waiting on it unbounded would 504 through the edge proxy an
+ * operation that had not yet started, which is the same false-failure the
+ * detach was introduced to avoid (review r9). After the cap they proceed and
+ * take their chances on the lock, whose own bounded retry then reports
+ * honestly. The wait is also process-local by nature: another replica's
+ * rebuild is invisible here, so the lock retry stays the real backstop.
+ */
+const EDGE_REFRESH_WAIT_MS = 30_000;
+
+function waitForEdgeRefresh(): Promise<unknown> {
+  return Promise.race([
+    pendingEdgeRefresh,
+    new Promise((resolve) => setTimeout(resolve, EDGE_REFRESH_WAIT_MS)),
+  ]);
+}
 
 /** Tests await the detached refresh; nothing in production needs to. */
 export function awaitSimilarityEdgeRefresh(): Promise<void> {
@@ -807,7 +835,7 @@ export async function rollbackShadowMigration(opts?: {
   // right after a swap would exhaust its retries against our OWN background
   // work and report a lock failure. Wait it out instead of racing it; it
   // never rejects (review r8).
-  await pendingEdgeRefresh;
+  await waitForEdgeRefresh();
   const state = await getShadowMigrationState();
   if (!state) {
     throw new Error('No shadow migration to roll back');
@@ -965,7 +993,7 @@ export async function cleanupShadowMigration(opts?: {
   // right after a swap would exhaust its retries against our OWN background
   // work and report a lock failure. Wait it out instead of racing it; it
   // never rejects (review r8).
-  await pendingEdgeRefresh;
+  await waitForEdgeRefresh();
   const state = await getShadowMigrationState();
   if (!state || state.status !== 'swapped') {
     throw new Error('Cleanup only applies after a swap — nothing to clean up');

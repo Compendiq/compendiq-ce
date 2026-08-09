@@ -212,6 +212,48 @@ describe('LlmTab', () => {
     expect(card.queryByText('bge-m3')).toBeNull();
   });
 
+  it('stops offering the destructive re-embed while a shadow migration runs (review r9)', async () => {
+    // `pending` stays non-null for the whole migration — the assignment PUT is
+    // deliberately 409'd — so without this the replaced path sits under its
+    // own replacement offering the same intent.
+    const Wrapper = createWrapper();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init = {}) => {
+      const url = typeof input === 'string' ? input : (input as URL).toString();
+      if (url.endsWith('/admin/llm-providers') && (init as RequestInit).method !== 'POST') {
+        return new Response(JSON.stringify([providerA, providerB]), { headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.includes('/admin/embedding/shadow-migration')) {
+        return new Response(
+          JSON.stringify({
+            active: true,
+            migration: { phase: 'backfilling', model: 'gpt-4o-mini', dimensions: 1024, totalPages: 10, backfilledPages: 2, stragglerPages: 8, indexed: true, indexReady: false, startedAt: '2026-08-06T10:00:00.000Z' },
+          }),
+          { headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      if (url.endsWith('/admin/llm-usecases')) {
+        return new Response(JSON.stringify(assignments), { headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.endsWith('/admin/settings')) {
+        return new Response(
+          JSON.stringify({ ftsLanguage: 'simple', embeddingChunkSize: 500, embeddingChunkOverlap: 50, drawioEmbedUrl: null, llmMaxConcurrentStreamsPerUser: 3, embeddingDimensions: 1024 }),
+          { headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      return new Response('[]', { headers: { 'Content-Type': 'application/json' } });
+    });
+
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByText('Use case assignments');
+    fireEvent.change(screen.getByTestId('usecase-embedding-provider'), { target: { value: providerB.id } });
+
+    // The shadow card is up…
+    expect(await screen.findByText(/pages backfilled/i)).toBeInTheDocument();
+    // …and the destructive path it replaces is not offered beside it.
+    await waitFor(() => expect(screen.queryByRole('button', { name: /probe/i })).toBeNull());
+    expect(screen.queryByText(/Embedding provider\/model changed/i)).toBeNull();
+  });
+
   it('a completed swap does not re-raise the destructive re-embed banner (review r8)', async () => {
     // The r7 fix reset the hydration guard synchronously, before the
     // invalidated query had refetched — so the form re-seeded from the STALE

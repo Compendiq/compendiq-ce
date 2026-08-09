@@ -21,6 +21,7 @@ beforeEach(() => {
   useAuthStore.getState().setAuth('t', { id: '1', username: 'admin', role: 'admin' });
 });
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   useAuthStore.getState().clearAuth();
 });
@@ -37,6 +38,8 @@ type Status = {
     backfilledPages: number;
     stragglerPages: number;
     indexed: boolean;
+    indexReady: boolean;
+    startedAt: string;
   };
 };
 
@@ -70,13 +73,36 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
     expect(container.querySelector('[data-testid="shadow-migration-card"]')).toBeNull();
   });
 
+  it('shows an ETA from measured throughput while backfilling, and names the index phase instead (review r9)', async () => {
+    // The issue asks for progress AND an ETA. Half done after an hour → about
+    // an hour left.
+    vi.setSystemTime(new Date('2026-08-06T11:00:00.000Z'));
+    mockApi({
+      active: true,
+      migration: { phase: 'backfilling', model: 'm', dimensions: 1024, totalPages: 100, backfilledPages: 50, stragglerPages: 50, indexed: true, indexReady: false, startedAt: '2026-08-06T10:00:00.000Z' },
+    });
+    const { unmount } = renderCard(null);
+    expect(await screen.findByText(/1\.0 h remaining/i)).toBeInTheDocument();
+    unmount();
+
+    // Pages done, index building: no page counter to extrapolate from, so it
+    // names the phase rather than showing a countdown it cannot honour.
+    mockApi({
+      active: true,
+      migration: { phase: 'backfilling', model: 'm', dimensions: 1024, totalPages: 100, backfilledPages: 100, stragglerPages: 0, indexed: true, indexReady: false, startedAt: '2026-08-06T10:00:00.000Z' },
+    });
+    renderCard(null);
+    expect(await screen.findByText(/building the vector index/i)).toBeInTheDocument();
+    expect(screen.queryByText(/remaining/i)).toBeNull();
+  });
+
   it('warns instead of claiming an index when the dimension is past pgvector\'s indexable range (review r5)', async () => {
     // >4000 dimensions builds no HNSW index at all — telling the admin "the
     // new index is built" hides a post-swap sequential scan behind a Swap
     // button. 06-data-model.md names a real model in this tier.
     mockApi({
       active: true,
-      migration: { phase: 'ready', model: 'qwen3-embedding:8b', dimensions: 4096, totalPages: 40, backfilledPages: 40, stragglerPages: 0, indexed: false },
+      migration: { phase: 'ready', model: 'qwen3-embedding:8b', dimensions: 4096, totalPages: 40, backfilledPages: 40, stragglerPages: 0, indexed: false, indexReady: true, startedAt: '2026-08-06T10:00:00.000Z' },
     });
     renderCard(null);
 
@@ -92,7 +118,7 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
     // "model changed" banner over a migration that just succeeded.
     mockApi({
       active: true,
-      migration: { phase: 'ready', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 40, backfilledPages: 40, stragglerPages: 0, indexed: true },
+      migration: { phase: 'ready', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 40, backfilledPages: 40, stragglerPages: 0, indexed: true, indexReady: true, startedAt: '2026-08-06T10:00:00.000Z' },
     });
     const onLifecycleChange = vi.fn();
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -112,7 +138,7 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
     // drops to <body> (WCAG 2.4.3) and the warning is never announced.
     mockApi({
       active: true,
-      migration: { phase: 'swapped', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 40, backfilledPages: 40, stragglerPages: 0, indexed: true },
+      migration: { phase: 'swapped', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 40, backfilledPages: 40, stragglerPages: 0, indexed: true, indexReady: true, startedAt: '2026-08-06T10:00:00.000Z' },
     });
     renderCard(null);
 
@@ -145,7 +171,7 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
   it('shows backfill progress and an abort control while backfilling', async () => {
     mockApi({
       active: true,
-      migration: { phase: 'backfilling', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 40, backfilledPages: 10, stragglerPages: 30, indexed: true },
+      migration: { phase: 'backfilling', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 40, backfilledPages: 10, stragglerPages: 30, indexed: true, indexReady: true, startedAt: '2026-08-06T10:00:00.000Z' },
     });
     renderCard(null);
 
@@ -159,7 +185,7 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
     mockApi(
       {
         active: true,
-        migration: { phase: 'ready', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 40, backfilledPages: 40, stragglerPages: 0, indexed: true },
+        migration: { phase: 'ready', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 40, backfilledPages: 40, stragglerPages: 0, indexed: true, indexReady: true, startedAt: '2026-08-06T10:00:00.000Z' },
       },
       calls,
     );
@@ -177,7 +203,7 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
     mockApi(
       {
         active: true,
-        migration: { phase: 'swapped', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 40, backfilledPages: 40, stragglerPages: 0, indexed: true },
+        migration: { phase: 'swapped', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 40, backfilledPages: 40, stragglerPages: 0, indexed: true, indexReady: true, startedAt: '2026-08-06T10:00:00.000Z' },
       },
       calls,
     );
@@ -199,7 +225,7 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
     mockApi(
       {
         active: true,
-        migration: { phase: 'backfilling', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 40, backfilledPages: 10, stragglerPages: 30, indexed: true },
+        migration: { phase: 'backfilling', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 40, backfilledPages: 10, stragglerPages: 30, indexed: true, indexReady: true, startedAt: '2026-08-06T10:00:00.000Z' },
       },
       calls,
     );
@@ -216,7 +242,7 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
     mockApi(
       {
         active: true,
-        migration: { phase: 'aborting', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 0, backfilledPages: 0, stragglerPages: 0, indexed: true },
+        migration: { phase: 'aborting', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 0, backfilledPages: 0, stragglerPages: 0, indexed: true, indexReady: true, startedAt: '2026-08-06T10:00:00.000Z' },
       },
       calls,
     );
@@ -231,7 +257,7 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
   it('invalidates the assignments/settings caches after a lifecycle action (review r1)', async () => {
     mockApi({
       active: true,
-      migration: { phase: 'ready', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 40, backfilledPages: 40, stragglerPages: 0, indexed: true },
+      migration: { phase: 'ready', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 40, backfilledPages: 40, stragglerPages: 0, indexed: true, indexReady: true, startedAt: '2026-08-06T10:00:00.000Z' },
     });
     renderCard(null);
     const spy = vi.spyOn(queryClient, 'invalidateQueries');
@@ -250,7 +276,7 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
     mockApi(
       {
         active: true,
-        migration: { phase: 'swapped', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 40, backfilledPages: 40, stragglerPages: 0, indexed: true },
+        migration: { phase: 'swapped', model: 'qwen3-embedding:4b', dimensions: 2560, totalPages: 40, backfilledPages: 40, stragglerPages: 0, indexed: true, indexReady: true, startedAt: '2026-08-06T10:00:00.000Z' },
       },
       calls,
     );

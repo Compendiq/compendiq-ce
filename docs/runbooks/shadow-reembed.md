@@ -67,6 +67,12 @@ assignment **or** the rollback target resolves through it. An interrupted
 abort parks the migration in an `aborting` state; retrying the abort is
 idempotent and completes it.
 
+**A bulk page re-embed** (`POST /api/pages/bulk/embed`, which any signed-in
+user can call) is refused only in the **post-swap** window: during the
+backfill it is harmless, because edits dual-write both columns, but after the
+swap those rows have no `embedding_prev`, so a rollback would re-dirty exactly
+those pages and search would lose them until the pipeline caught up.
+
 **Every whole-corpus re-embed is refused while a migration exists** — the
 dimension-change form, the plain same-dimension one, the embedding-rescan
 admin routes (`reEmbedAll`), and a chunk-size/overlap change, which marks the
@@ -88,7 +94,13 @@ but operators must not fire both paths simultaneously by hand.
 
 **Rollback and cleanup wait for the background edge rebuild** rather than
 compete with it for the table lock — clicking either right after a swap can
-therefore sit for as long as the recompute takes before it starts.
+therefore sit for up to 30s before it starts. The wait is capped for a reason
+(waiting out a whole-corpus recompute would time out at the edge proxy and
+report a failure for an operation that had not begun) and it only sees a
+rebuild running in the SAME backend process, so on a multi-replica deployment
+the bounded lock retry is the real backstop: a rollback that answers 503
+"could not acquire the table lock" during the rebuild window is safe to
+retry, and nothing has been changed when it does.
 
 **`PG_STATEMENT_TIMEOUT` does not apply to this lifecycle's long statements.**
 The HNSW build, the re-dirty scan, the NULL-row delete and the `SET NOT NULL`

@@ -21,7 +21,7 @@ import {
 } from '../../core/services/bulk-page-selection.js';
 import { emitWebhookEvent } from '../../core/services/webhook-emit-hook.js';
 import { STANDALONE_TRASH_RETENTION_DAYS } from '../../core/services/data-retention-service.js';
-import { processDirtyPages, isProcessingUser } from '../../domains/llm/services/embedding-service.js';
+import { processDirtyPages, isProcessingUser, assertShadowRollbackWindowClear } from '../../domains/llm/services/embedding-service.js';
 import { triggerQualityBatch } from '../../domains/knowledge/services/quality-worker.js';
 import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
@@ -2214,6 +2214,11 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
   // POST /api/pages/bulk/embed - re-embed multiple pages
   fastify.post('/pages/bulk/embed', async (request, reply) => {
+    // #1116 r9: bounded but real — after a swap these rows carry no
+    // `embedding_prev`, so a rollback re-dirties exactly these pages and
+    // search loses them until the pipeline catches up. Only the post-swap
+    // window is refused; during the backfill embedPage dual-writes.
+    await assertShadowRollbackWindowClear();
     const parsed = BulkIdsOrFilterSchema.parse(request.body);
     const userId = request.userId;
 

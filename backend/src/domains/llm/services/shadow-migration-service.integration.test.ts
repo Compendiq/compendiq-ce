@@ -89,8 +89,7 @@ const {
   rollbackShadowMigration,
   cleanupShadowMigration,
 } = await import('./shadow-migration-service.js');
-const { embedPage, enqueueReembedAll, reEmbedAll } = await import('./embedding-service.js');
-const { resetUsecaseCache } = await import('./llm-provider-resolver.js');
+const { embedPage, enqueueReembedAll, reEmbedAll, assertNoShadowMigration, assertShadowRollbackWindowClear } = await import('./embedding-service.js');
 
 const dbAvailable = await isDbAvailable();
 
@@ -120,7 +119,10 @@ async function seedBase(): Promise<void> {
      ON CONFLICT (usecase) DO UPDATE SET provider_id = $1, model = $2, updated_at = NOW()`,
     [liveProviderId, LIVE_MODEL],
   );
-  resetUsecaseCache?.();
+  // No resolver-cache reset is needed (and none is exported): the config
+  // cache is keyed by provider id and every test seeds fresh UUIDs, so a
+  // stale entry is unreachable. The optional call that used to sit here read
+  // as a safety net that did not exist (review r9).
 }
 
 async function seedEmbeddedPage(title: string, chunks = 2): Promise<number> {
@@ -529,6 +531,23 @@ describe.skipIf(!dbAvailable)('#1116 shadow migration service', () => {
       await runShadowBackfillJob();
       return pageId;
     }
+
+    it('refuses a bulk page re-embed only inside the rollback window (review r9)', async () => {
+      // Bounded and non-admin, so it is not refused for the whole backfill —
+      // during `active` embedPage dual-writes and the rows stay consistent.
+      // After the swap they carry no embedding_prev, so a rollback would
+      // re-dirty exactly these pages and search would lose them meanwhile.
+      await seedEmbeddedPage('Doc A');
+      await startShadowMigration({ providerId: shadowProviderId, model: SHADOW_MODEL });
+
+      await expect(assertShadowRollbackWindowClear()).resolves.toBeUndefined();
+      await expect(assertNoShadowMigration()).rejects.toMatchObject({ statusCode: 409 });
+
+      await runShadowBackfillJob();
+      await performShadowSwap();
+
+      await expect(assertShadowRollbackWindowClear()).rejects.toMatchObject({ statusCode: 409 });
+    });
 
     it('refuses reEmbedAll(), the OTHER whole-corpus door into the same hazard (review r8)', async () => {
       // enqueueReembedAll was guarded in r7, but reEmbedAll() — behind the

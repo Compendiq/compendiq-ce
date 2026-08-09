@@ -1327,9 +1327,34 @@ export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatu
  * mapping of their own, so it answers 409 instead of a masked 500.
  */
 export async function assertNoShadowMigration(): Promise<void> {
-  if (await getShadowMigrationState()) {
+  await refuseDuringShadowMigration((status) => status !== null);
+}
+
+/**
+ * The narrower guard, for BOUNDED user-initiated re-embeds — today
+ * `POST /pages/bulk/embed`, which is authenticate-only and can dirty up to
+ * 5000 pages. Those are harmless while the backfill runs, because `embedPage`
+ * dual-writes both columns. After the swap they are not: the rows they write
+ * have no `embedding_prev`, so a rollback re-dirties exactly those pages and
+ * search loses them until the normal pipeline catches up — the rollback's
+ * "old model serves again immediately" quietly stops being true for that
+ * slice (review r9). Refusing in every state would block an ordinary,
+ * non-admin action for a backfill window that can run for hours, so this one
+ * refuses only inside the window it can actually damage.
+ */
+export async function assertShadowRollbackWindowClear(): Promise<void> {
+  await refuseDuringShadowMigration((status) => status === 'swapped');
+}
+
+async function refuseDuringShadowMigration(
+  refuses: (status: string | null) => boolean,
+): Promise<void> {
+  const state = await getShadowMigrationState();
+  if (refuses(state?.status ?? null)) {
     const err = new Error(
-      'A shadow migration is in progress — swap, roll it back or clean it up before re-embedding the corpus (#1116)',
+      state?.status === 'swapped'
+        ? 'A shadow embedding migration has swapped and is awaiting validation — re-embedding these pages now would drop them from the rollback. Try again once it is cleaned up or rolled back (#1116).'
+        : 'A shadow migration is in progress — swap, roll it back or clean it up before re-embedding the corpus (#1116)',
     ) as Error & { statusCode: number };
     err.statusCode = 409;
     throw err;

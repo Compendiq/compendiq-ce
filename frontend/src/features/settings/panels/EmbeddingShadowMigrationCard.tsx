@@ -18,6 +18,11 @@ interface Props {
    * drop that guard so the form re-seeds (review r7).
    */
   onLifecycleChange?: () => void;
+  /**
+   * Reports whether a migration exists, so the parent can stop offering the
+   * destructive path this card replaces while one is under way (review r9).
+   */
+  onActiveChange?: (active: boolean) => void;
 }
 
 interface ShadowStatus {
@@ -30,6 +35,8 @@ interface ShadowStatus {
     backfilledPages: number;
     stragglerPages: number;
     indexed: boolean;
+    indexReady: boolean;
+    startedAt: string;
   };
 }
 
@@ -41,13 +48,25 @@ interface ShadowStatus {
  * destructive EmbeddingReembedBanner as the recommended path for model
  * changes.
  */
-export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange }: Props) {
+/** Coarse on purpose: an ETA to the minute would imply precision this has none of. */
+function formatEta(ms: number): string {
+  const minutes = Math.round(ms / 60_000);
+  if (minutes < 1) return 'under a minute';
+  if (minutes < 60) return `${minutes} min`;
+  const hours = ms / 3_600_000;
+  return hours < 10 ? `${hours.toFixed(1)} h` : `${Math.round(hours)} h`;
+}
+
+export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onActiveChange }: Props) {
   const queryClient = useQueryClient();
   const [status, setStatus] = useState<ShadowStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirmingCleanup, setConfirmingCleanup] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const cancelCleanupRef = useRef<HTMLButtonElement | null>(null);
+  // Through a ref so an inline arrow prop cannot re-fire the effect each render.
+  const onActiveChangeRef = useRef(onActiveChange);
+  onActiveChangeRef.current = onActiveChange;
 
   const refresh = useCallback(async () => {
     try {
@@ -106,6 +125,10 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange }: Pro
 
   const migration = status?.active ? status.migration : null;
 
+  useEffect(() => {
+    onActiveChangeRef.current?.(migration !== null);
+  }, [migration]);
+
   if (!migration && !pending) return null;
   if (status === null) return null; // first poll not resolved yet
 
@@ -153,6 +176,19 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange }: Pro
   }
 
   if (migration.phase === 'backfilling') {
+    // The issue asks for progress AND an ETA. Extrapolate from measured
+    // throughput rather than guessing: elapsed ÷ done × remaining. It is
+    // suppressed below 5 pages, where the sample is too small to mean
+    // anything, and once the pages are done — the index build that follows
+    // has no page counter to extrapolate from, so the card names that phase
+    // instead of showing a countdown it cannot honour (review r9).
+    const buildingIndex = migration.stragglerPages === 0 && !migration.indexReady;
+    const elapsedMs = Date.now() - new Date(migration.startedAt).getTime();
+    const eta =
+      !buildingIndex && migration.backfilledPages >= 5 && migration.backfilledPages < migration.totalPages
+        ? formatEta((elapsedMs / migration.backfilledPages) * (migration.totalPages - migration.backfilledPages))
+        : null;
+
     return (
       <div className="nm-card border-blue-500/30 p-3 text-sm" data-testid="shadow-migration-card">
         <p>
@@ -160,8 +196,16 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange }: Pro
           <b>
             {migration.backfilledPages}/{migration.totalPages}
           </b>{' '}
-          pages backfilled. Search is unaffected — the current index keeps serving.
+          pages backfilled{eta ? ` — about ${eta} remaining` : ''}. Search is unaffected — the
+          current index keeps serving.
         </p>
+        {buildingIndex && (
+          <p className="mt-1 text-muted-foreground">
+            All pages carry shadow vectors; <b>building the vector index</b>. This is usually the
+            longest phase and reports no page-level progress — writes to the embedding table queue
+            behind it.
+          </p>
+        )}
         <div className="mt-2 flex gap-2">
           {/* Always offered while backfilling: it also recovers a worker
               that crashed during the final index build (zero stragglers), and
