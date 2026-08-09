@@ -1,0 +1,1302 @@
+{
+  "corpusManifestSha": "8b2f2c34a52208b6210f611d2adec6d2dcff8e76a94a95ca026b7df76dda19f1",
+  "labeledBy": "claude-sonnet via #1102 labeling workflow — 12 independent agents over disjoint corpus slices, blind to the retrieval implementation",
+  "labels": [
+    {
+      "id": "q-2e832160a7",
+      "query": "fastify decorateRequest this arrow function",
+      "expectedFiles": [
+        "fastify__Guides__Plugins-Guide.md"
+      ],
+      "style": "keywords",
+      "rationale": "The guide explicitly warns that arrow functions break `this` binding in decorateReply/decorateRequest and shows the fix using a regular `function` keyword."
+    },
+    {
+      "id": "q-f8afc63393",
+      "query": "FST_ERR_DEC_ALREADY_PRESENT",
+      "expectedFiles": [
+        "fastify__Reference__Errors.md"
+      ],
+      "style": "error-text",
+      "rationale": "This exact error code is a row in the Fastify Error Codes table, describing the cause (duplicate decorator name) and the fix (use a different name)."
+    },
+    {
+      "id": "q-db16166c12",
+      "query": "why does my Fastify app leak database column names and query text to API clients",
+      "expectedFiles": [
+        "fastify__Reference__Errors.md"
+      ],
+      "style": "question",
+      "rationale": "The Security callout explains that `message` and `code` from unexpected errors (e.g. a DB driver's ER_BAD_FIELD_ERROR) are forwarded verbatim to the client unless a custom setErrorHandler intercepts it."
+    },
+    {
+      "id": "q-1b265747bc",
+      "query": "how do I restrict a route so it only responds for a specific hostname",
+      "expectedFiles": [
+        "fastify__Reference__Routes.md"
+      ],
+      "style": "how-to",
+      "rationale": "The Host Constraints section shows exactly this using `constraints: { host: 'auth.fastify.example' }` (also supports RegExp for wildcard subdomains)."
+    },
+    {
+      "id": "q-2b00290069",
+      "query": "vite this.environment.config.consumer server ssr plugin hook",
+      "expectedFiles": [
+        "vite__changes__this-environment-in-hooks.md"
+      ],
+      "style": "keywords",
+      "rationale": "The page's migration guide shows replacing `options.ssr` with `this.environment.config.consumer === 'server'` inside resolveId/load/transform hooks."
+    },
+    {
+      "id": "q-714ddc71eb",
+      "query": "how do I make my Vite module runner communicate over worker threads instead of HTTP",
+      "expectedFiles": [
+        "vite__guide__api-environment-runtimes.md"
+      ],
+      "style": "how-to",
+      "rationale": "The page gives a full worker.js/server.js example using parentPort.postMessage for transport and notes `skipFsCheck: true` since worker messages aren't exposed over the network, contrasted with an HTTP-based transport example."
+    },
+    {
+      "id": "q-6e4d80da1a",
+      "query": "what's the minimum Node.js version needed to run Vite",
+      "expectedFiles": [
+        "vite__guide__index.md"
+      ],
+      "style": "question",
+      "rationale": "The Getting Started page states the compatibility requirement directly: \"Vite requires Node.js version 20.19+, 22.12+.\""
+    },
+    {
+      "id": "q-fb84d89d25",
+      "query": "vitest recordArtifact custom TestArtifact type",
+      "expectedFiles": [
+        "vitest__api__advanced__artifacts.md"
+      ],
+      "style": "keywords",
+      "rationale": "The page documents `recordArtifact`, `TestArtifactBase`, and how to register a custom artifact type via module augmentation of `TestArtifactRegistry`."
+    },
+    {
+      "id": "q-78f523ca47",
+      "query": "does Vitest's assertType function actually check anything when I run my tests normally",
+      "expectedFiles": [
+        "vitest__api__assert-type.md"
+      ],
+      "style": "question",
+      "rationale": "The warning box states plainly that `assertType` does nothing at runtime and requires the `--typecheck` flag to have any effect, matching this paraphrased question."
+    },
+    {
+      "id": "q-de0d94a88b",
+      "query": "test passes when I run it alone but fails when the whole suite runs",
+      "expectedFiles": [
+        "vitest__guide__learn__debugging-tests.md"
+      ],
+      "style": "question",
+      "rationale": "The 'Shared State Between Tests' section describes this exact symptom, attributes it to unreset shared state, and gives the beforeEach/test.extend fix."
+    },
+    {
+      "id": "q-ec844a3ba2",
+      "query": "how do I mock the file system so my tests don't touch real disk",
+      "expectedFiles": [
+        "vitest__guide__mocking__file-system.md"
+      ],
+      "style": "how-to",
+      "rationale": "The page's whole purpose is this: it recommends `memfs` with `__mocks__/fs.cjs` and `vi.mock('node:fs')` to redirect fs calls to an in-memory filesystem."
+    },
+    {
+      "id": "q-8a66d730e0",
+      "query": "how can I cancel a fetch request automatically if a vitest test times out",
+      "expectedFiles": [
+        "vitest__guide__recipes__cancellable.md"
+      ],
+      "style": "how-to",
+      "rationale": "The recipe shows passing the test context's `signal` to `fetch({ signal })` so the request aborts when Vitest cancels the test on timeout."
+    },
+    {
+      "id": "q-bf8872f7f8",
+      "query": "why is __proto__ in JSON input dangerous for a web framework",
+      "expectedFiles": [
+        "fastify__Guides__Prototype-Poisoning.md"
+      ],
+      "style": "question",
+      "rationale": "The article's 'Prototype in a nutshell' and 'BOOM' sections walk through exactly how a poisoned __proto__ key in JSON.parse() output can leak into an object's prototype and slip past validation."
+    },
+    {
+      "id": "q-204b0c846c",
+      "query": "how do I add a hook that runs before every request handler in fastify",
+      "expectedFiles": [
+        "fastify__Reference__Hooks.md"
+      ],
+      "style": "how-to",
+      "rationale": "The preHandler section states directly: 'The preHandler hook allows you to specify a function that is executed before a routes's handler,' with both callback and async examples."
+    },
+    {
+      "id": "q-b5dfdaee8c",
+      "query": "FST_ERR_REP_ALREADY_SENT",
+      "expectedFiles": [
+        "fastify__Reference__Hooks.md"
+      ],
+      "style": "error-text",
+      "rationale": "The 'Respond to a request from a hook' section's code comment warns that omitting 'return reply' after an async preHandler calls reply.send() will fail with exactly this error code."
+    },
+    {
+      "id": "q-66efddbc59",
+      "query": "how do I stop fastify from timing out slow requests that use keep-alive connections",
+      "expectedFiles": [
+        "fastify__Reference__Server.md"
+      ],
+      "style": "question",
+      "rationale": "The handlerTimeout option doc explicitly contrasts itself with connectionTimeout/requestTimeout, noting it 'works correctly with HTTP keep-alive connections' because it's application-level rather than socket-level."
+    },
+    {
+      "id": "q-0e2cd1180e",
+      "query": "vite build.target baseline-widely-available browser compatibility",
+      "expectedFiles": [
+        "vite__config__build-options.md"
+      ],
+      "style": "keywords",
+      "rationale": "The build.target entry defines this exact default value and explains it targets Baseline Widely Available browser versions as of a fixed date."
+    },
+    {
+      "id": "q-5568547300",
+      "query": "how many separate runtime environments does vite support besides the browser",
+      "expectedFiles": [
+        "vite__guide__api-environment.md"
+      ],
+      "style": "question",
+      "rationale": "The guide explains Vite 6 formalized environments beyond the old implicit client/ssr pair, letting users configure named environments like 'edge' via the environments config option."
+    },
+    {
+      "id": "q-765765e33f",
+      "query": "migrating from rolldown-vite to vite 8 rolldown oxc",
+      "expectedFiles": [
+        "vite__guide__migration.md"
+      ],
+      "style": "keywords",
+      "rationale": "The 'Gradual Migration' subsection under Rolldown gives the exact package.json change needed to move off the rolldown-vite intermediate package onto official Vite 8."
+    },
+    {
+      "id": "q-b0735d546d",
+      "query": "how to wrap each vitest test in a database transaction that rolls back automatically",
+      "expectedFiles": [
+        "vitest__api__hooks.md"
+      ],
+      "style": "how-to",
+      "rationale": "The aroundEach section's example (`aroundEach(async (runTest) => { await db.transaction(runTest) })`) is captioned exactly as a rolled-back transaction, without the query needing to name the hook."
+    },
+    {
+      "id": "q-1e48d8d54f",
+      "query": "chai assert.throws error message matches regex",
+      "expectedFiles": [
+        "vitest__api__assert.md"
+      ],
+      "style": "keywords",
+      "rationale": "The `throws` entry documents the errMsgMatcher regex form and shows `assert.throws(fn, ReferenceError, /Error thrown must be a ReferenceError and match this/)`."
+    },
+    {
+      "id": "q-6d16193646",
+      "query": "difference between vi.spyOn and vi.fn in vitest",
+      "expectedFiles": [
+        "vitest__guide__mocking__functions.md"
+      ],
+      "style": "question",
+      "rationale": "The page opens by distinguishing spying (vi.spyOn, observing an existing method) from mocking (vi.fn, creating a new mock function), then demonstrates both."
+    },
+    {
+      "id": "q-538aba1b36",
+      "query": "should I use v8 or istanbul coverage provider in vitest",
+      "expectedFiles": [
+        "vitest__guide__coverage.md"
+      ],
+      "style": "question",
+      "rationale": "The page gives parallel pros/cons lists for the v8 and istanbul providers (speed, memory, runtime support) to help pick between them."
+    },
+    {
+      "id": "q-6d689451e6",
+      "query": "how to test accessibility roles and labels of a page in vitest browser mode",
+      "expectedFiles": [
+        "vitest__guide__browser__aria-snapshots.md"
+      ],
+      "style": "how-to",
+      "rationale": "The ARIA snapshots guide shows toMatchAriaSnapshot()/toMatchAriaInlineSnapshot() asserting against the accessibility tree (roles, accessible names) rather than raw HTML."
+    },
+    {
+      "id": "q-bb325a567a",
+      "query": "ReferenceError: __dirname is not defined",
+      "expectedFiles": [
+        "vitest__config__injectcjsglobals.md"
+      ],
+      "style": "error-text",
+      "rationale": "The page contains this exact error text and explains it's thrown when injectCjsGlobals is disabled and a CommonJS variable is referenced in an ES module."
+    },
+    {
+      "id": "q-c2d7ce715f",
+      "query": "how do I connect fastify to a postgres database",
+      "expectedFiles": [
+        "fastify__Guides__Database.md"
+      ],
+      "style": "how-to",
+      "rationale": "The Postgres section shows installing @fastify/postgres and registering it with a connectionString, with a full working route example."
+    },
+    {
+      "id": "q-e2a9371bc7",
+      "query": "kubernetes readinessProbe fastify 127.0.0.1",
+      "expectedFiles": [
+        "fastify__Guides__Recommendations.md"
+      ],
+      "style": "keywords",
+      "rationale": "The Kubernetes section explains readinessProbe uses the pod IP, Fastify listens on 127.0.0.1 by default, and the app must listen on 0.0.0.0 or a custom hostname."
+    },
+    {
+      "id": "q-5e494b33c2",
+      "query": "how to enable http2 over https in fastify",
+      "expectedFiles": [
+        "fastify__Reference__HTTP2.md"
+      ],
+      "style": "how-to",
+      "rationale": "The Secure (HTTPS) section gives the exact code for http2: true with https key/cert options."
+    },
+    {
+      "id": "q-d698312e90",
+      "query": "how can I get fastify route params to type-check automatically from my zod schema without writing extra TypeScript types",
+      "expectedFiles": [
+        "fastify__Reference__Type-Providers.md"
+      ],
+      "style": "question",
+      "rationale": "The page's intro and Zod section describe Type Providers inferring types from inline schema, reducing the need for separate associated types, with a withTypeProvider<ZodTypeProvider>() example."
+    },
+    {
+      "id": "q-6e28eae9fe",
+      "query": "vite optimizeDeps.force ignore cached dependencies",
+      "expectedFiles": [
+        "vite__config__dep-optimization-options.md"
+      ],
+      "style": "keywords",
+      "rationale": "The optimizeDeps.force entry states it forces dependency pre-bundling, ignoring previously cached optimized dependencies."
+    },
+    {
+      "id": "q-af81161de3",
+      "query": "why doesn't my vite module update when I edit a re-exported value",
+      "expectedFiles": [
+        "vite__guide__api-hmr.md"
+      ],
+      "style": "question",
+      "rationale": "The hot.accept(cb) section explains that Vite's HMR doesn't swap re-exports automatically; the HMR boundary module is responsible for updating re-exports itself using let."
+    },
+    {
+      "id": "q-6926872b7c",
+      "query": "how to speed up vite dev server startup and reload times",
+      "expectedFiles": [
+        "vite__guide__performance.md"
+      ],
+      "style": "how-to",
+      "rationale": "The whole guide targets slow server starts and page loads, covering browser extension interference, resolve operations, barrel files, and server.warmup."
+    },
+    {
+      "id": "q-12caf29d9f",
+      "query": "new MockedClass() instanceof MockedClass returns false",
+      "expectedFiles": [
+        "vitest__api__mock.md"
+      ],
+      "style": "error-text",
+      "rationale": "The Class Support warning shows exactly this scenario: a constructor that returns an object makes 'Newt instanceof IncorrectDogClass' false, and explains why."
+    },
+    {
+      "id": "q-9a95538928",
+      "query": "how do I check that a button is disabled in a vitest browser mode test",
+      "expectedFiles": [
+        "vitest__api__browser__assertions.md"
+      ],
+      "style": "question",
+      "rationale": "The toBeDisabled section documents exactly this assertion with an HTML button example and expect.element(...).toBeDisabled() usage."
+    },
+    {
+      "id": "q-f90b6856e2",
+      "query": "how to automatically restore all spies before every test in vitest",
+      "expectedFiles": [
+        "vitest__config__restoremocks.md"
+      ],
+      "style": "how-to",
+      "rationale": "The restoreMocks config option page states it calls vi.restoreAllMocks() before each test, restoring original implementations of vi.spyOn spies."
+    },
+    {
+      "id": "q-a73b49aebc",
+      "query": "share one database connection across every test in a file instead of creating a new one each time",
+      "expectedFiles": [
+        "vitest__guide__test-context.md"
+      ],
+      "style": "keywords",
+      "rationale": "The File Scope fixtures section shows a database fixture initialized once per test file and reused across 'first test' and 'second test' examples, described in the user's own words rather than the doc's 'scope: file' terminology."
+    },
+    {
+      "id": "q-795ee82ec3",
+      "query": "how do I stop my fastify server from accepting requests until it's authenticated with an external provider",
+      "expectedFiles": [
+        "fastify__Guides__Delay-Accepting-Requests.md"
+      ],
+      "style": "question",
+      "rationale": "The guide's entire pattern is denying requests (503 + Retry-After) via an onRequest hook until an OAuth-style webhook sets a magicKey decorator."
+    },
+    {
+      "id": "q-fd040bac42",
+      "query": "Fastify process remaining stuck and not processing any other requests after receiving one with the Content-Type application/json",
+      "expectedFiles": [
+        "fastify__Guides__Serverless.md"
+      ],
+      "style": "error-text",
+      "rationale": "This is a verbatim warning in the Google Cloud Functions section explaining why a custom contentTypeParser is required on that platform."
+    },
+    {
+      "id": "q-d2a3083c20",
+      "query": "how to type a fastify decorator without using global declaration merging",
+      "expectedFiles": [
+        "fastify__Reference__TypeScript.md"
+      ],
+      "style": "how-to",
+      "rationale": "The getDecorator<T> section is explicitly framed as an 'Alternative to Module Augmentation' that avoids globally modifying the Fastify instance's types."
+    },
+    {
+      "id": "q-f270128dfa",
+      "query": "vite createServer InlineConfig programmatic API",
+      "expectedFiles": [
+        "vite__guide__api-javascript.md"
+      ],
+      "style": "keywords",
+      "rationale": "Both createServer's type signature/example and the InlineConfig interface are documented in this exact section."
+    },
+    {
+      "id": "q-6558a337d4",
+      "query": "how to load values from a .env file inside vite.config.js",
+      "expectedFiles": [
+        "vite__config__index.md"
+      ],
+      "style": "how-to",
+      "rationale": "The 'Using Environment Variables in Config' section gives the exact loadEnv() example for pulling .env values into the config itself."
+    },
+    {
+      "id": "q-455a7668c6",
+      "query": "why doesn't vite let me import node built-in modules in browser-side code",
+      "expectedFiles": [
+        "vite__guide__philosophy.md"
+      ],
+      "style": "question",
+      "rationale": "The Philosophy page states plainly 'Node.js modules cannot be used in the browser' as one of Vite's opinionated modern-web constraints, phrased in the user's own words rather than the doc's."
+    },
+    {
+      "id": "q-af58668768",
+      "query": "vitest onTestRunEnd custom reporter testModules unhandledErrors",
+      "expectedFiles": [
+        "vitest__api__advanced__reporters.md"
+      ],
+      "style": "keywords",
+      "rationale": "onTestRunEnd's exact signature (testModules, unhandledErrors, reason) and a worked example are documented in this reporters reference."
+    },
+    {
+      "id": "q-557cce3fca",
+      "query": "is it safe to let a custom vitest browser command write files based on input from the browser",
+      "expectedFiles": [
+        "vitest__api__browser__commands.md"
+      ],
+      "style": "question",
+      "rationale": "The Security warning explicitly covers this: custom commands run in the Node process and don't automatically inherit path/write protections, so browser-provided input must be validated."
+    },
+    {
+      "id": "q-f42d4cbed9",
+      "query": "retry a flaky test only when the error message matches a specific pattern",
+      "expectedFiles": [
+        "vitest__config__retry.md"
+      ],
+      "style": "how-to",
+      "rationale": "The 'condition' subsection documents exactly this: a RegExp or function tested against the error to decide whether to retry."
+    },
+    {
+      "id": "q-319f685821",
+      "query": "why doesn't mocking work when one function in a module calls another function from the same module",
+      "expectedFiles": [
+        "vitest__guide__mocking__modules.md"
+      ],
+      "style": "question",
+      "rationale": "The 'Mocking Modules Pitfalls' section explains that vi.spyOn/vi.mock can't intercept an internal call like foobar() calling foo() within the same file, described here without reusing the doc's own wording."
+    },
+    {
+      "id": "q-265a720606",
+      "query": "unknown extension .css error vitest jsdom happy-dom",
+      "expectedFiles": [
+        "vitest__guide__environment.md"
+      ],
+      "style": "error-text",
+      "rationale": "The environment guide documents this exact error and the server.deps.inline fix for CSS/asset imports through external dependencies under jsdom/happy-dom."
+    },
+    {
+      "id": "q-b2c75c0816",
+      "query": "roll back database changes automatically after each test instead of writing manual cleanup code",
+      "expectedFiles": [
+        "vitest__guide__recipes__db-transaction.md"
+      ],
+      "style": "how-to",
+      "rationale": "The recipe's whole point is wrapping each test in a transaction (via aroundEach) that rolls back automatically, eliminating per-test DB cleanup code."
+    },
+    {
+      "id": "q-bf5baeddc4",
+      "query": "how can I tell when a client closes the connection before my fastify route finishes responding",
+      "expectedFiles": [
+        "fastify__Guides__Detecting-When-Clients-Abort.md"
+      ],
+      "style": "question",
+      "rationale": "The guide's core solution is listening for request.raw.on('close') and checking request.raw.aborted to detect an intentional client disconnect."
+    },
+    {
+      "id": "q-333b1242df",
+      "query": "body should have required property 'name'",
+      "expectedFiles": [
+        "fastify__Reference__Validation-and-Serialization.md"
+      ],
+      "style": "error-text",
+      "rationale": "This exact string is the example 400 response payload shown in the Error Handling section when schema validation fails."
+    },
+    {
+      "id": "q-3b8d23b006",
+      "query": "vite preview server default port 4173",
+      "expectedFiles": [
+        "vite__config__preview-options.md"
+      ],
+      "style": "keywords",
+      "rationale": "preview.port documents a default of 4173 and how it differs from the dev server's port."
+    },
+    {
+      "id": "q-b187c6e4f6",
+      "query": "how do I run my own express server and let vite handle transforms in middleware mode for SSR",
+      "expectedFiles": [
+        "vite__guide__ssr.md"
+      ],
+      "style": "how-to",
+      "rationale": "The 'Setting Up the Dev Server' section gives a full express example using createViteServer with server.middlewareMode: true and appType: 'custom'."
+    },
+    {
+      "id": "q-a70198ff7f",
+      "query": "Cannot access '__vi_import_0__' before initialization",
+      "expectedFiles": [
+        "vitest__api__vi.md"
+      ],
+      "style": "error-text",
+      "rationale": "This is the exact error message quoted in the vi.hoisted section when trying to use an imported variable inside vi.hoisted before imports run."
+    },
+    {
+      "id": "q-508acced6e",
+      "query": "how to take a screenshot of a specific element in a vitest browser test",
+      "expectedFiles": [
+        "vitest__api__browser__context.md"
+      ],
+      "style": "how-to",
+      "rationale": "The page export's screenshot() method is documented to screenshot 'the test iframe or a specific element'."
+    },
+    {
+      "id": "q-c60de3b851",
+      "query": "vitest fake timers nextTick pool forks hang",
+      "expectedFiles": [
+        "vitest__config__faketimers.md"
+      ],
+      "style": "keywords",
+      "rationale": "fakeTimers.toFake explicitly warns that mocking nextTick with --pool=forks hangs because Node uses process.nextTick internally in child_process."
+    },
+    {
+      "id": "q-84cc0cd819",
+      "query": "is it safe to disable per-file test isolation if my tests use vi.stubGlobal",
+      "expectedFiles": [
+        "vitest__guide__recipes__disable-isolation.md"
+      ],
+      "style": "question",
+      "rationale": "The 'When isolation matters' checklist explicitly lists calling vi.stubGlobal or vi.stubEnv as a reason isolation should stay on."
+    },
+    {
+      "id": "q-ff34cc014c",
+      "query": "how do I snapshot test an object that has a random id or timestamp field",
+      "expectedFiles": [
+        "vitest__guide__learn__snapshots.md"
+      ],
+      "style": "how-to",
+      "rationale": "The 'Handling Dynamic Values' section shows passing property matchers like expect.any(Number)/expect.any(Date) to toMatchSnapshot to pin structure while ignoring volatile fields."
+    },
+    {
+      "id": "q-6bc549fd96",
+      "query": "why do my afterEach hooks run in reverse order in vitest",
+      "expectedFiles": [
+        "vitest__config__sequence.md"
+      ],
+      "style": "question",
+      "rationale": "sequence.hooks defaults to 'stack', which orders 'after' hooks in reverse of their definition order; described in the user's own words without naming the option."
+    },
+    {
+      "id": "q-8b77b18413",
+      "query": "how do I intercept fetch calls in my tests without changing my application code",
+      "expectedFiles": [
+        "vitest__guide__mocking__requests.md"
+      ],
+      "style": "question",
+      "rationale": "The guide recommends Mock Service Worker specifically because it intercepts requests 'without changing any of your application code'."
+    },
+    {
+      "id": "q-2ca8476469",
+      "query": "how to limit vitest to using only half of my cpu cores",
+      "expectedFiles": [
+        "vitest__config__maxworkers.md"
+      ],
+      "style": "how-to",
+      "rationale": "maxWorkers accepts a percentage string like '50%' to compute worker count as a percentage of available parallelism, shown in the Percent example."
+    },
+    {
+      "id": "q-915b88e611",
+      "query": "how do I test a fastify plugin with node's test runner",
+      "expectedFiles": [
+        "fastify__Guides__Testing.md"
+      ],
+      "style": "how-to",
+      "rationale": "The 'Plugins' section walks through building myFirstPlugin.js and a matching test file that registers it with fastify.register and calls fastify.inject to verify decorators and the route work."
+    },
+    {
+      "id": "q-f6a93d0070",
+      "query": "pino-pretty needs to be installed as a dev dependency",
+      "expectedFiles": [
+        "fastify__Reference__Logging.md"
+      ],
+      "style": "error-text",
+      "rationale": "This is the verbatim warning text shown after the environment-specific logging config example, explaining pino-pretty isn't bundled for performance reasons."
+    },
+    {
+      "id": "q-8139c1e0ef",
+      "query": "FSTDEP023 disableRequestLogging deprecated",
+      "expectedFiles": [
+        "fastify__Reference__Warnings.md"
+      ],
+      "style": "keywords",
+      "rationale": "The Fastify Deprecation Codes table lists FSTDEP023 exactly: 'disableRequestLogging top-level option is deprecated', with the LogController-based fix."
+    },
+    {
+      "id": "q-3ce3ca7634",
+      "query": "vite server.allowedHosts DNS rebinding attack",
+      "expectedFiles": [
+        "vite__config__server-options.md"
+      ],
+      "style": "keywords",
+      "rationale": "The danger callout under server.allowedHosts explicitly warns that setting it to true exposes the dev server to DNS rebinding attacks and recommends an explicit host list."
+    },
+    {
+      "id": "q-6262884eac",
+      "query": "when should I use the public folder instead of importing an image in vite",
+      "expectedFiles": [
+        "vite__guide__assets.md"
+      ],
+      "style": "question",
+      "rationale": "The 'Choosing between imports and the public directory' tip states to prefer importing assets unless you specifically need the guarantees the public directory provides (no hashing, exact filename)."
+    },
+    {
+      "id": "q-e29bf73927",
+      "query": "deploy vite site to github pages with base path",
+      "expectedFiles": [
+        "vite__guide__static-deploy.md"
+      ],
+      "style": "how-to",
+      "rationale": "The GitHub Pages section explains setting base to '/' vs '/<REPO>/' depending on the deployment URL, plus the Actions workflow to publish it."
+    },
+    {
+      "id": "q-a8a2d4df95",
+      "query": "vmThreads vmForks worker memory limit recycle",
+      "expectedFiles": [
+        "vitest__config__vmmemorylimit.md"
+      ],
+      "style": "keywords",
+      "rationale": "vmMemoryLimit's doc explains this option only applies to the vmForks and vmThreads pools and details the recycling cost trade-off between them."
+    },
+    {
+      "id": "q-be4524e255",
+      "query": "auto restore vi.spyOn without afterEach using the using keyword",
+      "expectedFiles": [
+        "vitest__guide__recipes__explicit-resources.md"
+      ],
+      "style": "how-to",
+      "rationale": "The page shows declaring a spy with 'using spy = vi.spyOn(...)' so restoration happens automatically when the block exits, instead of an afterEach(() => vi.restoreAllMocks())."
+    },
+    {
+      "id": "q-aec9d1215c",
+      "query": "vitest process all CSS files include regex",
+      "expectedFiles": [
+        "vitest__config__css.md"
+      ],
+      "style": "keywords",
+      "rationale": "The css.include tip gives the exact regex /.+/ to process all CSS files through the Vite pipeline instead of returning empty strings."
+    },
+    {
+      "id": "q-abb21557e4",
+      "query": "vitest rerun whole suite when vite config changes",
+      "expectedFiles": [
+        "vitest__config__forcereruntriggers.md"
+      ],
+      "style": "question",
+      "rationale": "forceRerunTriggers defaults to a glob including '**/vite.config.*' and '**/vitest.config.*', triggering a full suite rerun when those files change, especially with --changed."
+    },
+    {
+      "id": "q-5bceabb593",
+      "query": "how to test setInterval code without waiting in vitest",
+      "expectedFiles": [
+        "vitest__guide__mocking__timers.md"
+      ],
+      "style": "how-to",
+      "rationale": "The timers guide shows executeEveryMinute using setInterval, tested with fake timers and vi.advanceTimersToNextTimer() instead of letting the test actually wait a minute."
+    },
+    {
+      "id": "q-0f67d1c485",
+      "query": "vitest ui localhost:51204 token error",
+      "expectedFiles": [
+        "vitest__guide__ui.md"
+      ],
+      "style": "error-text",
+      "rationale": "The UI guide notes the default URL http://localhost:51204/__vitest__/ and that if it errors you must open it with the token printed in the terminal, e.g. ?token=..."
+    },
+    {
+      "id": "q-486a114fe2",
+      "query": "how do I avoid repeating an address schema across the body and headers of a fastify route",
+      "expectedFiles": [
+        "fastify__Guides__Fluent-Schema.md"
+      ],
+      "style": "question",
+      "rationale": "The page's 'Reuse' section shows fluent-json-schema's addSchema() with the $ref-way, reusing an addressSchema definition for both body.residence and body.office via S.ref()."
+    },
+    {
+      "id": "q-511fedf78a",
+      "query": "fastify plugin ecosystem list requirements tests documentation license",
+      "expectedFiles": [
+        "fastify__Guides__Write-Plugin.md"
+      ],
+      "style": "keywords",
+      "rationale": "The Documentation and Test sections state plainly that a plugin without good docs or tests will not be accepted to the ecosystem list, and licensing/linter preferences are covered too."
+    },
+    {
+      "id": "q-2d768a2302",
+      "query": "how do I get security patches for a fastify minor release without automatically pulling in breaking changes",
+      "expectedFiles": [
+        "fastify__Reference__LTS.md"
+      ],
+      "style": "how-to",
+      "rationale": "The 'Security Releases and Semver' box explains using the tilde (~) range qualifier, e.g. \"fastify\": \"~3.15.x\", to get patches for 3.15 while avoiding automatic breaking security updates."
+    },
+    {
+      "id": "q-00667394fb",
+      "query": "how do I expose a global build-time constant like an app version string to my frontend code",
+      "expectedFiles": [
+        "vite__config__shared-options.md"
+      ],
+      "style": "question",
+      "rationale": "The `define` option section gives exactly this example (`__APP_VERSION__: JSON.stringify('v1.0.0')`) for defining global constant replacements at dev/build time, without using the word 'define' in the query."
+    },
+    {
+      "id": "q-bb25111d37",
+      "query": "Error [ERR_REQUIRE_ESM]: require() of ES Module not supported vite.config.js",
+      "expectedFiles": [
+        "vite__guide__troubleshooting.md"
+      ],
+      "style": "error-text",
+      "rationale": "The 'This package is ESM only' section under Config quotes this exact error and explains the fix (convert config to ESM or rename to .mjs/.mts)."
+    },
+    {
+      "id": "q-669aeaf390",
+      "query": "how do I render preload link tags from vite's manifest file in my own backend template",
+      "expectedFiles": [
+        "vite__guide__backend-integration.md"
+      ],
+      "style": "how-to",
+      "rationale": "Step 4 of the guide details exactly which <link rel=\"stylesheet\">, <script type=\"module\"> and <link rel=\"modulepreload\"> tags a backend should emit from manifest.json, with a full worked example and pseudo-implementation of importedChunks."
+    },
+    {
+      "id": "q-ec813bfd4b",
+      "query": "Error: ENOSPC: System limit for number of file watchers reached",
+      "expectedFiles": [
+        "vite__guide__troubleshooting.md"
+      ],
+      "style": "error-text",
+      "rationale": "The 'Vite crashes with ENOSPC error' section quotes this exact message and gives the fs.inotify.max_user_watches fix."
+    },
+    {
+      "id": "q-db55c3fb62",
+      "query": "vitest TestCollection allSuites allTests generator iterate",
+      "expectedFiles": [
+        "vitest__api__advanced__test-collection.md"
+      ],
+      "style": "keywords",
+      "rationale": "The page documents the allSuites() and allTests() generator methods on TestCollection for iterating over nested suites/tests, plus size, at, array, tests and suites."
+    },
+    {
+      "id": "q-1c117fa35a",
+      "query": "how do I click the delete button inside the table row that mentions Vitest",
+      "expectedFiles": [
+        "vitest__api__browser__locators.md"
+      ],
+      "style": "question",
+      "rationale": "The opening example under the testing-library comparison is exactly this scenario: page.getByRole('row').filter({ hasText: 'Vitest' }).getByRole('button', { name: /delete/i }).click(), described here without reusing 'locator' or 'filter' vocabulary."
+    },
+    {
+      "id": "q-10e86b6781",
+      "query": "vitest allowOnly CI default true false",
+      "expectedFiles": [
+        "vitest__config__allowonly.md"
+      ],
+      "style": "keywords",
+      "rationale": "The page defines allowOnly's type (boolean), default (!process.env.CI) and CLI flags, and explains that in CI, tests marked .only fail the suite by default unless allowOnly is set to true."
+    },
+    {
+      "id": "q-cdfd44da42",
+      "query": "how to connect vitest browser tests to a playwright server running in docker",
+      "expectedFiles": [
+        "vitest__config__browser__playwright.md"
+      ],
+      "style": "how-to",
+      "rationale": "The connectOptions section gives a full Docker Compose example running `playwright run-server` and configuring wsEndpoint/exposeNetwork to connect Vitest to it."
+    },
+    {
+      "id": "q-54b8c60c5a",
+      "query": "some of my tests fail only when run in parallel with others because they share a fixed port or temp directory, how do I keep most tests fast but isolate those",
+      "expectedFiles": [
+        "vitest__guide__recipes__parallel-sequential.md"
+      ],
+      "style": "question",
+      "rationale": "The page's whole premise is this exact problem, solved by splitting into a 'Parallel' and a 'Sequential' project with fileParallelism: false on the latter."
+    },
+    {
+      "id": "q-b27e1a6e18",
+      "query": "fastify decorate mongodb connector plugin bootstrap order",
+      "expectedFiles": [
+        "fastify__Guides__Getting-Started.md"
+      ],
+      "style": "keywords",
+      "rationale": "The MongoDB example shows fastify-plugin wrapping a dbConnector that uses the decorate API, and the doc explains register() loads plugins in declared order so the db is ready before routes use it."
+    },
+    {
+      "id": "q-e5161d55f4",
+      "query": "why doesn't fastify.use() work for express middleware anymore",
+      "expectedFiles": [
+        "fastify__Reference__Middleware.md"
+      ],
+      "style": "question",
+      "rationale": "States plainly: 'As of Fastify v3.0.0, middleware is not supported out of the box and requires an external plugin such as @fastify/express or @fastify/middie.'"
+    },
+    {
+      "id": "q-ebdf311788",
+      "query": "// bad, nothing is assignable to never (except for itself)",
+      "expectedFiles": [
+        "fastify__Guides__Write-Type-Provider.md"
+      ],
+      "style": "error-text",
+      "rationale": "This exact code comment appears in the doc's example of a non-substitutable custom type provider interface, followed by the fix using unknown instead of never."
+    },
+    {
+      "id": "q-b2693c05da",
+      "query": "what does vite's new hotUpdate hook do differently from handleHotUpdate",
+      "expectedFiles": [
+        "vite__changes__hotupdate-hook.md"
+      ],
+      "style": "question",
+      "rationale": "Explains hotUpdate is called per-environment (unlike handleHotUpdate which mixes client/SSR modules) and also fires for create/delete watch events, not just update."
+    },
+    {
+      "id": "q-57c05c3f0c",
+      "query": "vite ssr.noExternal bundle dependency into server build",
+      "expectedFiles": [
+        "vite__config__ssr-options.md"
+      ],
+      "style": "keywords",
+      "rationale": "The ssr.noExternal option entry directly describes preventing dependencies from being externalized so they get bundled into the SSR build."
+    },
+    {
+      "id": "q-943a7fa596",
+      "query": "why do my users get broken js chunk imports right after I push a new deploy",
+      "expectedFiles": [
+        "vite__guide__build.md"
+      ],
+      "style": "question",
+      "rationale": "The Load Error Handling section describes exactly this: old assets get deleted on new deployments, causing import errors for users who loaded the site before the deploy, and recommends the vite:preloadError event plus Cache-Control: no-cache."
+    },
+    {
+      "id": "q-26ec30d1cd",
+      "query": "how to make a vite plugin run before vite's own core plugins",
+      "expectedFiles": [
+        "vite__guide__using-plugins.md"
+      ],
+      "style": "how-to",
+      "rationale": "Documents the enforce: 'pre' modifier which invokes a plugin before Vite core plugins, with a code example."
+    },
+    {
+      "id": "q-33d24c4132",
+      "query": "is it safe to expose the vitest api server to the network",
+      "expectedFiles": [
+        "vitest__config__api.md"
+      ],
+      "style": "question",
+      "rationale": "The security advice explicitly warns that exposing host beyond localhost lets anyone who connects run arbitrary code unless api.allowWrite and api.allowExec are set to false."
+    },
+    {
+      "id": "q-45ca2f87fd",
+      "query": "why do my visual regression screenshot tests fail in ci but pass on my machine",
+      "expectedFiles": [
+        "vitest__guide__browser__visual-regression-testing.md"
+      ],
+      "style": "question",
+      "rationale": "Covers environmental sensitivity of screenshots and explicitly warns that running vitest --update locally 'defeats the whole point' since references generated on one machine fail elsewhere, recommending CI-generated or cloud-service references instead."
+    },
+    {
+      "id": "q-1e933f11b8",
+      "query": "vitest expect.schemaMatching zod valibot arktype",
+      "expectedFiles": [
+        "vitest__guide__recipes__schema-matching.md"
+      ],
+      "style": "keywords",
+      "rationale": "Documents expect.schemaMatching as an asymmetric matcher usable with Zod, Valibot, and ArkType Standard Schema objects, with code examples for each."
+    },
+    {
+      "id": "q-154daf0202",
+      "query": "does vitest run all my test files in parallel or one at a time",
+      "expectedFiles": [
+        "vitest__guide__learn__writing-tests.md"
+      ],
+      "style": "question",
+      "rationale": "The Running Tests section states Vitest runs all test files in parallel by default using child processes, while tests within a single file run sequentially unless test.concurrent is used."
+    },
+    {
+      "id": "q-b02e65fe9c",
+      "query": "how to filter out noisy console logs from a third party library in vitest",
+      "expectedFiles": [
+        "vitest__config__onconsolelog.md"
+      ],
+      "style": "how-to",
+      "rationale": "onConsoleLog is documented as a custom handler for console methods, with the doc noting it 'can be useful for filtering out logs from third-party libraries' and a matching code example."
+    },
+    {
+      "id": "q-23a3634b1b",
+      "query": "how do I decorate the fastify instance from inside a plugin without creating a new encapsulation scope",
+      "expectedFiles": [
+        "fastify__Reference__Plugins.md"
+      ],
+      "style": "how-to",
+      "rationale": "The 'Handle the scope' section explains that register normally creates a new scope, and shows using fastify-plugin or the 'skip-override' hidden property so a decorator stays visible to the parent instance."
+    },
+    {
+      "id": "q-731e466ac7",
+      "query": "where should a complete beginner start reading the fastify docs",
+      "expectedFiles": [
+        "fastify__index.md"
+      ],
+      "style": "question",
+      "rationale": "The page states verbatim: 'Complete newcomers to Fastify should first read our Getting Started guide.'"
+    },
+    {
+      "id": "q-eb1feb5829",
+      "query": "fastify prototype poisoning attack guide",
+      "expectedFiles": [
+        "fastify__Guides__Index.md"
+      ],
+      "style": "keywords",
+      "rationale": "The TOC lists 'Prototype Poisoning: A description of how the prototype poisoning attack works and is mitigated.'"
+    },
+    {
+      "id": "q-23d26320cd",
+      "query": "why did vite replace esbuild and rollup with a single rust based bundler",
+      "expectedFiles": [
+        "vite__guide__why.md"
+      ],
+      "style": "question",
+      "rationale": "The 'A Unified Toolchain' section explains Rolldown was built in Rust to unify esbuild's dev compilation and Rollup's production bundling into one pipeline."
+    },
+    {
+      "id": "q-c77ddd7e3f",
+      "query": "vite command line flag to force re-bundling and ignore the dependency cache",
+      "expectedFiles": [
+        "vite__guide__cli.md"
+      ],
+      "style": "how-to",
+      "rationale": "The dev-server options table lists `--force`: 'Force the optimizer to ignore the cache and re-bundle (boolean)'."
+    },
+    {
+      "id": "q-3d57e79473",
+      "query": "vite worker bundle output format iife es module default",
+      "expectedFiles": [
+        "vite__config__worker-options.md"
+      ],
+      "style": "keywords",
+      "rationale": "worker.format is documented as Type: 'es' | 'iife', Default: 'iife', for the output format of the worker bundle."
+    },
+    {
+      "id": "q-cbe6ac0d80",
+      "query": "Timeout leaking in test/checkout-screen.test.tsx",
+      "expectedFiles": [
+        "vitest__config__detectasyncleaks.md"
+      ],
+      "style": "error-text",
+      "rationale": "This is the exact example error output shown in the detectAsyncLeaks doc for an uncleaned setTimeout."
+    },
+    {
+      "id": "q-11b8f37943",
+      "query": "stop vitest test run early after a certain number of failures",
+      "expectedFiles": [
+        "vitest__config__bail.md"
+      ],
+      "style": "how-to",
+      "rationale": "The bail option page: 'Stop test execution when given number of tests have failed,' aimed at speeding up CI by not running further tests after failures."
+    },
+    {
+      "id": "q-04f14f21b3",
+      "query": "vitest globals true jest style testing-library auto cleanup",
+      "expectedFiles": [
+        "vitest__config__globals.md"
+      ],
+      "style": "keywords",
+      "rationale": "The globals config doc explains passing --globals/globals:true for Jest-like global APIs and notes @testing-library/react relies on globals for auto cleanup."
+    },
+    {
+      "id": "q-1949b91df3",
+      "query": "does test.concurrent run tests on separate threads or the same worker",
+      "expectedFiles": [
+        "vitest__guide__parallelism.md"
+      ],
+      "style": "question",
+      "rationale": "The Test Parallelism section states Vitest doesn't create extra workers for concurrent tests—they all run in the same worker as the file they belong to."
+    },
+    {
+      "id": "q-4c7e5dff52",
+      "query": "order that beforeAll beforeEach afterEach and afterAll run in nested describe blocks",
+      "expectedFiles": [
+        "vitest__guide__lifecycle.md"
+      ],
+      "style": "question",
+      "rationale": "The 'Nested Suites' section gives a full worked example and console output tracing the exact hierarchical hook execution order for outer/inner describe blocks."
+    },
+    {
+      "id": "q-1770427f59",
+      "query": "expect.assert narrow type typescript undefined",
+      "expectedFiles": [
+        "vitest__guide__recipes__type-narrowing.md"
+      ],
+      "style": "keywords",
+      "rationale": "The entire recipe documents expect.assert as an assertion function that both throws at runtime and narrows a possibly-undefined/null TypeScript type, unlike toBeTruthy."
+    },
+    {
+      "id": "q-9558ceef1f",
+      "query": "how do I use express middleware in fastify v3",
+      "expectedFiles": [
+        "fastify__Guides__Migration-Guide-V3.md"
+      ],
+      "style": "how-to",
+      "rationale": "The 'Changed middleware support' section shows the v2 vs v3 code diff: register @fastify/express or @fastify/middie before calling fastify.use()."
+    },
+    {
+      "id": "q-1f614b222e",
+      "query": "FST_ERR_CTP_INVALID_MEDIA_TYPE",
+      "expectedFiles": [
+        "fastify__Reference__ContentTypeParser.md"
+      ],
+      "style": "error-text",
+      "rationale": "The page states verbatim: 'Unsupported content types will throw an FST_ERR_CTP_INVALID_MEDIA_TYPE error.'"
+    },
+    {
+      "id": "q-bc53d53e78",
+      "query": "why does fastify forbid binary addons",
+      "expectedFiles": [
+        "fastify__Reference__Principles.md"
+      ],
+      "style": "question",
+      "rationale": "The 'Good Developer Experience' section explains binary addons are forbidden because most JS developers lack access to a compiler."
+    },
+    {
+      "id": "q-5794b1e4f9",
+      "query": "RunnableDevEnvironment FetchableDevEnvironment communication levels",
+      "expectedFiles": [
+        "vite__guide__api-environment-frameworks.md"
+      ],
+      "style": "keywords",
+      "rationale": "The 'DevEnvironment Communication Levels' section defines both classes and how they differ in how they exchange values with runtimes."
+    },
+    {
+      "id": "q-24ed52fbe5",
+      "query": "how do I migrate off server.moduleGraph and server.transformRequest in vite 6",
+      "expectedFiles": [
+        "vite__changes__per-environment-apis.md"
+      ],
+      "style": "how-to",
+      "rationale": "The Migration Guide list maps server.moduleGraph -> environment.moduleGraph and server.transformRequest(url, ssr) -> environment.transformRequest(url)."
+    },
+    {
+      "id": "q-92ff3b307e",
+      "query": "why does vite bundle lodash-es into one file during dev",
+      "expectedFiles": [
+        "vite__guide__dep-pre-bundling.md"
+      ],
+      "style": "question",
+      "rationale": "The 'Performance' rationale explains lodash-es ships 600+ internal ESM modules, so Vite pre-bundles it into one module to avoid hundreds of simultaneous browser requests."
+    },
+    {
+      "id": "q-3e5cb716fc",
+      "query": "how do I add React Server Components support to vite",
+      "expectedFiles": [
+        "vite__plugins__index.md"
+      ],
+      "style": "how-to",
+      "rationale": "The @vitejs/plugin-rsc entry states it provides RSC support via the Environment API and gives the create-vite --template rsc command."
+    },
+    {
+      "id": "q-e15fa8e0d3",
+      "query": "vitest testTagsFilter testIds createSpecification",
+      "expectedFiles": [
+        "vitest__api__advanced__test-specification.md"
+      ],
+      "style": "keywords",
+      "rationale": "The TestSpecification reference documents createSpecification's filter options including testIds and testTagsFilter directly."
+    },
+    {
+      "id": "q-05a9297590",
+      "query": "how to test a vue component that portals its content outside the render container",
+      "expectedFiles": [
+        "vitest__api__browser__vue.md"
+      ],
+      "style": "how-to",
+      "rationale": "The baseElement section explicitly discusses testing a portal component whose HTML renders directly in document.body outside the container div, via the baseElement option."
+    },
+    {
+      "id": "q-3a33df136c",
+      "query": "vitest test has a tag that is not defined in the config",
+      "expectedFiles": [
+        "vitest__config__stricttags.md"
+      ],
+      "style": "error-text",
+      "rationale": "strictTags's description and example show Vitest throwing exactly this error for a mistyped/undeclared tag like 'fortnend'."
+    },
+    {
+      "id": "q-872fe6a91e",
+      "query": "how do I pass data from vitest globalSetup to my test files",
+      "expectedFiles": [
+        "vitest__config__globalsetup.md"
+      ],
+      "style": "how-to",
+      "rationale": "The globalSetup page explains globals aren't shared directly but shows using project.provide() in setup and inject() in tests to pass serializable data."
+    },
+    {
+      "id": "q-25fee0b1a2",
+      "query": "what's the difference between waiting for a value and waiting for an assertion to pass in vitest",
+      "expectedFiles": [
+        "vitest__guide__recipes__wait-for.md"
+      ],
+      "style": "question",
+      "rationale": "The page contrasts expect.poll (retries an assertion) with vi.waitFor (retries work until it stops throwing and returns a value), including a comparison table."
+    },
+    {
+      "id": "q-18ac2f8b55",
+      "query": "how can a route handler reach the parent fastify instance through the reply object",
+      "expectedFiles": [
+        "fastify__Reference__Reply.md"
+      ],
+      "style": "question",
+      "rationale": "The `.server` property section documents reply.server as a reference to the fastify instance scoped to the current encapsulation context, with a decorate/rep.server.util() example."
+    },
+    {
+      "id": "q-c836632b88",
+      "query": "FST_ERR_DEC_UNDECLARED",
+      "expectedFiles": [
+        "fastify__Reference__Decorators.md"
+      ],
+      "style": "error-text",
+      "rationale": "Both the getDecorator and setDecorator sections state this exact error code is thrown when the referenced decorator was never defined."
+    },
+    {
+      "id": "q-98051e85c7",
+      "query": "how to migrate away from app.use() middleware in fastify v4",
+      "expectedFiles": [
+        "fastify__Guides__Migration-Guide-V4.md"
+      ],
+      "style": "how-to",
+      "rationale": "The 'Removed app.use()' breaking-change entry explains middleware support is gone in v4 and points to @fastify/middie/@fastify/express or hooks as the replacement."
+    },
+    {
+      "id": "q-1111eeeb3f",
+      "query": "vite import.meta.env VITE_ prefix client expose",
+      "expectedFiles": [
+        "vite__guide__env-and-mode.md"
+      ],
+      "style": "keywords",
+      "rationale": "The Env Variables section explains only VITE_-prefixed variables are exposed to client code, illustrated with a VITE_SOME_KEY vs DB_PASSWORD example."
+    },
+    {
+      "id": "q-6338d6fe0e",
+      "query": "why does vite sometimes break typescript types between minor releases",
+      "expectedFiles": [
+        "vite__releases.md"
+      ],
+      "style": "question",
+      "rationale": "The Semantic Versioning Edge Cases > TypeScript Definitions section explicitly says incompatible type changes can ship in minor versions, partly because TypeScript itself does the same."
+    },
+    {
+      "id": "q-57f1b371b3",
+      "query": "vite plugin count transformed modules per environment perEnvironmentState",
+      "expectedFiles": [
+        "vite__changes__shared-plugins-during-build.md"
+      ],
+      "style": "keywords",
+      "rationale": "The migration guide walks through exactly this CountTransformedModulesPlugin example and introduces the perEnvironmentState helper to fix per-environment state."
+    },
+    {
+      "id": "q-567da84cb6",
+      "query": "why couldn't older vite tell whether a processed module belonged to the client build or the ssr build",
+      "expectedFiles": [
+        "vite__guide__api-environment-instances.md"
+      ],
+      "style": "question",
+      "rationale": "The Separate Module Graphs section notes Vite v5 had one mixed Client/SSR module graph where an unprocessed node's environment couldn't be determined, unlike the isolated per-environment graphs this page describes."
+    },
+    {
+      "id": "q-ed1ed88efb",
+      "query": "how do I rerun tests when a file they don't import, like an email template, changes in watch mode",
+      "expectedFiles": [
+        "vitest__guide__recipes__watch-templates.md"
+      ],
+      "style": "how-to",
+      "rationale": "The page's opening example is exactly email templates loaded via fs.readFile, solved with the watchTriggerPatterns config option."
+    },
+    {
+      "id": "q-af18f4b5ec",
+      "query": "ERR_REQUIRE_ASYNC_MODULE",
+      "expectedFiles": [
+        "vitest__config__pool.md"
+      ],
+      "style": "error-text",
+      "rationale": "The vmThreads section documents this exact error thrown when require()-ing an ESM module whose graph has top-level await inside vm pools."
+    },
+    {
+      "id": "q-25026a2fa4",
+      "query": "how can I mock an entire class with vi.fn in vitest",
+      "expectedFiles": [
+        "vitest__guide__mocking__classes.md"
+      ],
+      "style": "how-to",
+      "rationale": "The whole page is dedicated to recreating a class with a single vi.fn() call, including mocking its constructor, static methods, and instance methods."
+    },
+    {
+      "id": "q-4b3b8270ef",
+      "query": "vitest disableConsoleIntercept stop intercepting console log output",
+      "expectedFiles": [
+        "vitest__config__disableconsoleintercept.md"
+      ],
+      "style": "keywords",
+      "rationale": "This is the dedicated config option page explaining that disabling console interception restores normal synchronous terminal logging during tests."
+    },
+    {
+      "id": "q-8b4e875dc2",
+      "query": "You cannot use this option with --watch enabled",
+      "expectedFiles": [
+        "vitest__guide__cli.md"
+      ],
+      "style": "error-text",
+      "rationale": "This is the exact warning shown in the `--shard` CLI section explaining that shard mode is incompatible with watch mode."
+    },
+    {
+      "id": "q-e9e2f72ae0",
+      "query": "how do I access the route config and schema now that request.context is deprecated in fastify",
+      "expectedFiles": [
+        "fastify__Guides__Migration-Guide-V5.md"
+      ],
+      "style": "question",
+      "rationale": "The FSTDEP012 row in the deprecation table says request.context is deprecated and to use request.routeOptions.config or .schema instead; the intro to that section states route definition access now goes through request.routeOptions."
+    },
+    {
+      "id": "q-c31c1376e5",
+      "query": "if one fastify plugin registers a decorator, can a sibling plugin registered separately see it",
+      "expectedFiles": [
+        "fastify__Reference__Encapsulation.md"
+      ],
+      "style": "question",
+      "rationale": "The worked example shows publicContext's `foo` decorator is undefined inside authenticatedContext, and explains parent contexts cannot access entities from descendant/sibling contexts unless fastify-plugin is used."
+    },
+    {
+      "id": "q-e7bb455b85",
+      "query": "is it safe to use a fastify route param value directly as a filesystem path",
+      "expectedFiles": [
+        "fastify__Reference__Request.md"
+      ],
+      "style": "question",
+      "rationale": "The security note explicitly warns that params are percent-decoded and untrusted, giving the `..%2ffile` -> `../file` example, and says not to use them as filesystem paths without validating/containing them."
+    },
+    {
+      "id": "q-e2ad9fd873",
+      "query": "how do I migrate away from server.ssrLoadModule in vite",
+      "expectedFiles": [
+        "vite__changes__ssr-using-modulerunner.md"
+      ],
+      "style": "how-to",
+      "rationale": "The page's first line states server.ssrLoadModule has been replaced by importing from a Module Runner, and points to moduleRunner.import(url) as the replacement."
+    },
+    {
+      "id": "q-13c40f5100",
+      "query": "vite hotUpdate hook return empty array full reload",
+      "expectedFiles": [
+        "vite__guide__api-environment-plugins.md"
+      ],
+      "style": "keywords",
+      "rationale": "The hotUpdate hook section has an explicit code example titled 'Return an empty array and perform a full reload' that invalidates modules and calls hot.send({type:'full-reload'})."
+    },
+    {
+      "id": "q-64c8259c06",
+      "query": "does vite check my typescript types when it builds, or just strip them out",
+      "expectedFiles": [
+        "vite__guide__features.md"
+      ],
+      "style": "question",
+      "rationale": "The TypeScript > Transpile Only section states Vite only performs transpilation on .ts files and does NOT perform type checking, recommending tsc --noEmit separately."
+    },
+    {
+      "id": "q-b8a53b10d6",
+      "query": "vitest createReport writeFile scoped output directory custom reporter",
+      "expectedFiles": [
+        "vitest__api__advanced__vitest.md"
+      ],
+      "style": "keywords",
+      "rationale": "The createReport/Report.writeFile sections document writing files into a scoped .vitest/<scope>/ directory for custom reporters and other integrations."
+    },
+    {
+      "id": "q-70982f9bc9",
+      "query": "expectTypeOf toExtend vs toMatchTypeOf deprecated",
+      "expectedFiles": [
+        "vitest__api__expect-typeof.md"
+      ],
+      "style": "keywords",
+      "rationale": "toMatchTypeOf's entry is explicitly marked deprecated with 'Use toExtend instead', and the toExtend section right after describes the replacement matcher."
+    },
+    {
+      "id": "q-24c35cc306",
+      "query": "how do I run only the tests whose full name matches a pattern",
+      "expectedFiles": [
+        "vitest__config__testnamepattern.md"
+      ],
+      "style": "how-to",
+      "rationale": "testNamePattern's description says 'Run tests with full names matching the pattern' and documents the -t/--testNamePattern CLI flag with an OnlyRunThis example."
+    },
+    {
+      "id": "q-de954155b0",
+      "query": "Segmentation fault (core dumped) running vitest",
+      "expectedFiles": [
+        "vitest__guide__common-errors.md"
+      ],
+      "style": "error-text",
+      "rationale": "The 'Segfaults and Native Code Errors' section lists this exact error text among native-module crashes under pool: 'threads' and recommends switching to pool: 'forks'."
+    },
+    {
+      "id": "q-00206f9357",
+      "query": "how do I freeze the clock and set a fake current date in a vitest test",
+      "expectedFiles": [
+        "vitest__guide__mocking__dates.md"
+      ],
+      "style": "how-to",
+      "rationale": "The page's example uses vi.useFakeTimers() and vi.setSystemTime(date) to control Date.now() inside a business-hours test."
+    },
+    {
+      "id": "q-066e0d8d79",
+      "query": "I need a locator for something like a table row with an action button, not a standard accessibility role",
+      "expectedFiles": [
+        "vitest__guide__recipes__browser-locators.md"
+      ],
+      "style": "question",
+      "rationale": "The page opens by saying built-in locators run out for shapes that don't fit ARIA, like a row in a custom table component, then walks through locators.extend with a getRowWithAction example using filter({has})."
+    }
+  ]
+}

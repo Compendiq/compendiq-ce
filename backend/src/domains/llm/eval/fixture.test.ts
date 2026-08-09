@@ -79,6 +79,55 @@ describe('assertFixturePower (#1102)', () => {
   });
 });
 
+describe('the shipped fixture (#1102)', () => {
+  it('validates against the corpus, clears the power floor, and matches the manifest it was labelled from', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const { createHash } = await import('node:crypto');
+    const { CORPUS_DIR } = await import('./fixture.js');
+
+    const raw = JSON.parse(readFileSync(join(import.meta.dirname, 'fixture.json'), 'utf8'));
+    const parsed = loadFixture(raw, loadCorpus());
+    assertFixturePower(parsed);
+
+    // Re-vendoring the corpus without re-labelling would leave the fixture
+    // pointing at text that no longer says what the labeller read. The hash
+    // is what makes that loud instead of silent.
+    const manifestSha = createHash('sha256')
+      .update(readFileSync(join(CORPUS_DIR, 'MANIFEST.json')))
+      .digest('hex');
+    expect(parsed.corpusManifestSha).toBe(manifestSha);
+  });
+
+  it('spreads across query styles, so the score is not one phrasing measured 144 times', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const parsed = loadFixture(JSON.parse(readFileSync(join(import.meta.dirname, 'fixture.json'), 'utf8')), loadCorpus());
+
+    const styles = new Map<string, number>();
+    for (const l of parsed.labels) styles.set(l.style, (styles.get(l.style) ?? 0) + 1);
+
+    // Every style present, and none dominating: keyword-only queries flatter
+    // FTS, natural questions flatter the vector leg, and a fixture made of
+    // one of them measures half the system.
+    expect([...styles.keys()].sort()).toEqual(['error-text', 'how-to', 'keywords', 'question']);
+    for (const count of styles.values()) {
+      expect(count).toBeGreaterThanOrEqual(10);
+      expect(count / parsed.labels.length).toBeLessThan(0.6);
+    }
+  });
+
+  it('does not concentrate on a handful of pages', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const parsed = loadFixture(JSON.parse(readFileSync(join(import.meta.dirname, 'fixture.json'), 'utf8')), loadCorpus());
+
+    // A fixture whose queries all point at ten pages measures those ten pages.
+    const distinct = new Set(parsed.labels.flatMap((l) => l.expectedFiles));
+    expect(distinct.size).toBeGreaterThan(parsed.labels.length * 0.75);
+  });
+});
+
 describe('the vendored corpus itself (#1102)', () => {
   it('has a manifest that matches what is actually on disk', () => {
     // A page added or removed without re-running the vendor script would
