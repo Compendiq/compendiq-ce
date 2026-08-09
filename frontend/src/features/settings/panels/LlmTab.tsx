@@ -255,7 +255,7 @@ export function LlmTab() {
             Bounds on how AI streams are served. Changes take effect within 60 seconds.
           </p>
         </div>
-        <div className="rounded-lg border border-border/30 bg-background/50 p-4">
+        <div className="rounded-lg border border-border bg-background/50 p-4">
           <div className="flex items-center justify-between gap-4">
             <div>
               <label
@@ -288,7 +288,7 @@ export function LlmTab() {
                   );
                 }
               }}
-              className="w-24 rounded-lg border border-border/40 bg-background/50 px-3 py-1.5 text-right text-sm outline-none focus:ring-1 focus:ring-primary/30"
+              className="w-24 rounded-lg border border-border bg-background/50 px-3 py-1.5 text-right text-sm outline-none focus:ring-1 focus:ring-ring"
             />
           </div>
         </div>

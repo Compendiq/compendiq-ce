@@ -526,7 +526,7 @@ describe('GraphPage', () => {
 
   it('paints node labels in a dark ink on the light theme (#941)', async () => {
     const { useThemeStore } = await import('../../stores/theme-store');
-    act(() => useThemeStore.getState().setTheme('frost-steel'));
+    act(() => useThemeStore.getState().setTheme('paper'));
 
     const fillStyles = await captureLabelFillStyles();
 
@@ -536,12 +536,12 @@ describe('GraphPage', () => {
     expect(labelFill).toBeDefined();
     expect(labelLuminance(labelFill)).toBeLessThan(0.2);
 
-    act(() => useThemeStore.getState().setTheme('slate-steel'));
+    act(() => useThemeStore.getState().setTheme('graphite'));
   });
 
   it('keeps node labels light on the dark theme (#941)', async () => {
     const { useThemeStore } = await import('../../stores/theme-store');
-    act(() => useThemeStore.getState().setTheme('slate-steel'));
+    act(() => useThemeStore.getState().setTheme('graphite'));
 
     const fillStyles = await captureLabelFillStyles();
 

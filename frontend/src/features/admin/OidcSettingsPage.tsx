@@ -412,7 +412,7 @@ function ProviderTab({ disabled }: { disabled?: boolean }) {
         </div>
       </div>
 
-      <div className="flex items-center justify-between border-t border-border/50 pt-4">
+      <div className="flex items-center justify-between border-t border-border pt-4">
         <label className="flex items-center gap-2 text-sm">
           <input
             type="checkbox"
@@ -427,7 +427,7 @@ function ProviderTab({ disabled }: { disabled?: boolean }) {
         <button
           onClick={handleSave}
           disabled={disabled || saveMutation.isPending}
-          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
           data-testid="oidc-save-btn"
         >
           {saveMutation.isPending && <Loader2 size={14} className="animate-spin" />}
@@ -508,7 +508,7 @@ function MappingsTab({ disabled }: { disabled?: boolean }) {
         <button
           onClick={() => setShowForm(true)}
           disabled={disabled}
-          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
           data-testid="create-mapping-btn"
         >
           <Plus size={16} />
@@ -597,7 +597,7 @@ function MappingsTab({ disabled }: { disabled?: boolean }) {
         <div className="nm-card overflow-hidden">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-border/50 text-left text-xs text-muted-foreground">
+              <tr className="border-b border-border text-left text-xs text-muted-foreground">
                 <th className="px-4 py-3 font-medium">OIDC Group</th>
                 <th className="px-4 py-3 font-medium">Role</th>
                 <th className="px-4 py-3 font-medium">Space</th>
@@ -679,7 +679,7 @@ export function OidcSettingsPage() {
 
       {/* Header */}
       <div>
-        <h1 className="text-2xl font-bold">SSO / OIDC</h1>
+        <h1 className="text-lg font-semibold">SSO / OIDC</h1>
         <p className="text-sm text-muted-foreground">
           Configure single sign-on with your identity provider
         </p>

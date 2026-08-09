@@ -67,7 +67,7 @@ export function RegistrationPolicyTab() {
         </p>
       </div>
 
-      <div className="rounded-lg border border-border/30 bg-background/50 p-4">
+      <div className="rounded-lg border border-border bg-background/50 p-4">
         <label htmlFor="registration-mode" className="mb-1.5 block text-sm font-medium">
           Self-registration
         </label>
@@ -75,7 +75,7 @@ export function RegistrationPolicyTab() {
           id="registration-mode"
           value={mode}
           onChange={(e) => setMode(e.target.value as RegistrationMode)}
-          className="w-full rounded-lg border border-border/40 bg-background/50 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary/30"
+          className="w-full rounded-lg border border-border bg-background/50 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring"
           data-testid="registration-mode-select"
         >
           <option value="closed">Closed — only administrators can create accounts</option>
@@ -97,7 +97,7 @@ export function RegistrationPolicyTab() {
         )}
       </div>
 
-      <div className="flex items-center gap-3 border-t border-border/40 pt-4">
+      <div className="flex items-center gap-3 border-t border-border pt-4">
         <button
           onClick={handleSave}
           disabled={!hasChanges || mutation.isPending}

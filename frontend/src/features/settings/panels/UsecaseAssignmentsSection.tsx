@@ -43,7 +43,7 @@ export function UsecaseAssignmentsSection({ assignments, providers, onChange }: 
     staleTime: 30_000,
   });
   return (
-    <div className="border-border/50 space-y-2 rounded-md border p-4">
+    <div className="border-border space-y-2 rounded-md border p-4">
       <h3 className="text-sm font-semibold">Use case assignments</h3>
       {USECASES_ORDERED.map((u) => {
         const row = assignments[u];

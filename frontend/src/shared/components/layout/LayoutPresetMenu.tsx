@@ -55,7 +55,7 @@ export function LayoutPresetMenu({
       <DropdownMenu.Trigger asChild>
         <button
           type="button"
-          className="app-search flex h-9 items-center gap-2 rounded-lg px-2.5 text-xs font-medium text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
+          className="app-search flex h-9 items-center gap-2 rounded-lg px-2.5 text-xs font-medium text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
           aria-label="Layout presets"
           title="Layout presets"
         >
@@ -68,7 +68,7 @@ export function LayoutPresetMenu({
         <DropdownMenu.Content
           align="end"
           sideOffset={8}
-          className="z-50 w-64 rounded-xl border border-border/55 bg-card/95 p-1.5 shadow-xl backdrop-blur-xl"
+          className="z-50 w-64 nm-card-elevated p-1.5"
           aria-label="Layout presets"
         >
           <DropdownMenu.Label className="px-2.5 pb-1 pt-2 text-[11px] font-semibold text-muted-foreground">

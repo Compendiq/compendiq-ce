@@ -367,7 +367,7 @@ export function BubbleMenuContent({
       ref={rootRef}
       data-testid="editor-bubble-menu"
       className={cn(
-        'flex flex-col rounded-lg border border-border bg-card shadow-lg',
+        'flex flex-col nm-card-elevated',
         'motion-safe:animate-in motion-safe:fade-in-0 motion-safe:zoom-in-95',
       )}
     >

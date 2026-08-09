@@ -125,7 +125,7 @@ export function TagEditor({
         {tags.map((tag) => (
           <span
             key={tag}
-            className="inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-background/45 px-3 py-1 text-xs font-medium text-muted-foreground transition-colors hover:border-border"
+            className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background/45 px-3 py-1 text-xs font-medium text-muted-foreground transition-colors hover:border-border"
           >
             <Tag size={10} className="opacity-60" />
             {tag}
@@ -160,7 +160,7 @@ export function TagEditor({
               placeholder="Add a tag..."
               maxLength={MAX_TAG_LENGTH}
               disabled={isLoading}
-              className="w-full rounded-xl border border-border/60 bg-background/60 px-3 py-2 pl-8 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground/50 focus:border-primary disabled:opacity-50"
+              className="w-full rounded-xl border border-border bg-background/60 px-3 py-2 pl-8 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground/50 focus:border-primary disabled:opacity-50"
               data-testid="tag-input"
               aria-label="New tag name"
               aria-autocomplete="list"
@@ -176,7 +176,7 @@ export function TagEditor({
             type="button"
             onClick={() => handleAddTag(input)}
             disabled={isLoading || !input.trim()}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-border/60 bg-background/55 px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-background hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+            className="inline-flex items-center gap-1.5 rounded-xl border border-border bg-background/55 px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-background hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
             data-testid="add-tag-button"
           >
             <Plus size={14} />
@@ -190,7 +190,7 @@ export function TagEditor({
             ref={suggestionsRef}
             role="listbox"
             data-testid="tag-suggestions"
-            className="absolute z-20 mt-1 max-h-48 w-full overflow-y-auto rounded-xl border border-border/60 bg-card/95 shadow-lg backdrop-blur-xl"
+            className="absolute z-20 mt-1 max-h-48 w-full overflow-y-auto nm-card-elevated"
           >
             {filteredSuggestions.map((suggestion, index) => (
               <li

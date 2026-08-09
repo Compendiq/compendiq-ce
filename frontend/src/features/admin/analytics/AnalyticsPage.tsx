@@ -115,7 +115,7 @@ export function AnalyticsPage() {
   if (!analyticsEnabled) {
     return (
       <div className="space-y-6" data-testid="analytics-gate">
-        <h1 className="text-2xl font-semibold">Enterprise Analytics</h1>
+        <h1 className="text-lg font-semibold">Enterprise Analytics</h1>
         <div className="nm-card p-8 text-center">
           <BarChart3 className="mx-auto mb-3 h-12 w-12 text-muted-foreground/50" />
           <h2 className="text-lg font-medium mb-2">Advanced Analytics</h2>
@@ -139,7 +139,7 @@ export function AnalyticsPage() {
       {/* Header */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-semibold">Enterprise Analytics</h1>
+          <h1 className="text-lg font-semibold">Enterprise Analytics</h1>
           <p className="text-sm text-muted-foreground mt-1">
             Knowledge base health, AI usage, search effectiveness, and content gaps.
           </p>

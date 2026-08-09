@@ -123,7 +123,7 @@ export function ChatVisionCapability({ vision }: { vision: boolean | null }) {
         */}
         {probeError && (
           <details className="group" data-testid="vision-probe-error">
-            <summary className="inline-flex cursor-pointer list-none items-center gap-1 rounded text-xs text-muted-foreground transition-colors marker:content-none hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
+            <summary className="inline-flex cursor-pointer list-none items-center gap-1 rounded text-xs text-muted-foreground transition-colors marker:content-none hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
               <ChevronRight
                 size={12}
                 className="shrink-0 transition-transform group-open:rotate-90"
@@ -133,7 +133,7 @@ export function ChatVisionCapability({ vision }: { vision: boolean | null }) {
             </summary>
             <p
               data-testid="vision-probe-error-text"
-              className="mt-1.5 max-h-32 overflow-y-auto rounded-md border border-border/50 bg-background/50 px-2.5 py-2 font-mono text-[11px] leading-relaxed break-words whitespace-pre-wrap text-muted-foreground"
+              className="mt-1.5 max-h-32 overflow-y-auto rounded-md border border-border bg-background/50 px-2.5 py-2 font-mono text-[11px] leading-relaxed break-words whitespace-pre-wrap text-muted-foreground"
             >
               {probeError}
             </p>

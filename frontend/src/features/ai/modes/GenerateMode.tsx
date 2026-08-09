@@ -66,8 +66,8 @@ function ParentPagePicker({
         type="button"
         onClick={() => setIsOpen(!isOpen)}
         className={cn(
-          'flex w-full items-center justify-between gap-2 rounded-lg border border-border/40 bg-background/50 px-3 py-1.5 text-left text-sm',
-          'hover:border-border/60 focus:outline-none focus:ring-1 focus:ring-primary/30',
+          'flex w-full items-center justify-between gap-2 rounded-lg border border-border bg-background/50 px-3 py-1.5 text-left text-sm',
+          'hover:border-border focus:outline-none focus:ring-1 focus:ring-ring',
         )}
       >
         <span className={parentId ? 'text-foreground' : 'text-muted-foreground'}>
@@ -98,8 +98,8 @@ function ParentPagePicker({
       </button>
 
       {isOpen && (
-        <div className="absolute z-50 mt-1 w-full rounded-lg border border-border/40 bg-card shadow-lg backdrop-blur-md">
-          <div className="flex items-center gap-2 border-b border-border/30 px-3 py-2">
+        <div className="absolute z-50 mt-1 w-full nm-card-elevated">
+          <div className="flex items-center gap-2 border-b border-border px-3 py-2">
             <Search size={14} className="text-muted-foreground" />
             <input
               value={search}
@@ -472,7 +472,7 @@ export function GenerateModeInput() {
         />
       )}
 
-      <div ref={surfaceRef} className="mt-3 space-y-3 border-t border-border/40 pt-3">
+      <div ref={surfaceRef} className="mt-3 space-y-3 border-t border-border pt-3">
         {/* No `formats` prop: Generate offers everything the extractor supports
             (#1132), and the zone derives its accept list and every string it
             renders from that default.
@@ -499,7 +499,7 @@ export function GenerateModeInput() {
               checked={searchWeb}
               onChange={(e) => setSearchWeb(e.target.checked)}
               disabled={isStreaming}
-              className="rounded border-border/40"
+              className="rounded border-border"
             />
             <Globe size={14} />
             Search web for reference material

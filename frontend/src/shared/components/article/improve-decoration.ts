@@ -11,7 +11,7 @@ import type { Editor as EditorType } from '@tiptap/react';
  * decoration — a pure view overlay that never touches the document, preserving
  * #716's "document is never mutated until accept" guarantee. Styled by
  * `.ai-improve-selection` in `frontend/src/index.css` (theme tokens, works in
- * both Slate Steel and Frost Steel).
+ * both Graphite and Paper).
  */
 
 /** Class applied to the decorated range; styled in `frontend/src/index.css`. */

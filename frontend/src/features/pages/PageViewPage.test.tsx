@@ -851,19 +851,29 @@ describe('PageViewPage', () => {
     };
 
     it('renders an opaque under-mask behind the edit toolbar', () => {
-      const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
+      render(<PageViewPage />, { wrapper: createWrapper() });
       fireEvent.click(screen.getByText('Edit'));
 
-      // The sticky toolbar wrapper establishes its own stacking context
-      // (isolate) so the negative-z mask sits behind it, not behind the page.
-      const toolbar = container.querySelector('.sticky.top-0');
+      const mask = screen.getByTestId('edit-toolbar-mask');
+
+      // Resolve the wrapper THROUGH the mask rather than by querying
+      // `.sticky.top-0`: the article route now has two sticky-top-0 elements
+      // (the context strip and this toolbar), and the bare selector silently
+      // returned whichever came first in the DOM.
+      const toolbar = mask.parentElement;
       expect(toolbar).not.toBeNull();
+      // The wrapper establishes its own stacking context (isolate) so the
+      // negative-z mask sits behind it, not behind the page.
+      expect(toolbar!.className).toContain('sticky');
+      expect(toolbar!.className).toContain('top-0');
       expect(toolbar!.className).toContain('isolate');
 
-      const mask = screen.getByTestId('edit-toolbar-mask');
-      expect(toolbar!.contains(mask)).toBe(true);
-      expect(mask.className).toContain('bg-background');
-      expect(mask.className).not.toContain('bg-background/');
+      // Opaque, and in the colour of the surface it hides content against. On
+      // an article route the main column is the pane, so that is `bg-card` —
+      // `bg-background` would paint a chassis-coloured band across a white
+      // document.
+      expect(mask.className).toContain('bg-card');
+      expect(mask.className).not.toContain('bg-card/');
       expect(mask.className).toContain('z-[-1]');
       // Flush with the toolbar on every edge but the top.
       expect(mask.className).toContain('inset-x-0');

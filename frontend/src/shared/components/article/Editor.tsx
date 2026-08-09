@@ -348,7 +348,7 @@ function StatusLabelInsert({ editor }: { editor: EditorType }) {
         <Badge size={16} />
       </ToolbarButton>
       {open && (
-        <div className="absolute top-full left-0 z-50 mt-1 w-52 rounded-lg border border-border bg-card p-3 shadow-lg">
+        <div className="absolute top-full left-0 z-50 mt-1 w-52 nm-card-elevated p-3">
           <div className="mb-2 flex gap-1">
             {STATUS_COLORS.map((c) => (
               <button
@@ -493,7 +493,7 @@ function PanelInsert({ editor }: { editor: EditorType }) {
         <Info size={16} />
       </ToolbarButton>
       {open && (
-        <div className="absolute top-full left-0 z-50 mt-1 rounded-lg border border-border/50 bg-card p-2 shadow-lg min-w-max">
+        <div className="absolute top-full left-0 z-50 mt-1 nm-card-elevated p-2 min-w-max">
           <p className="mb-1.5 px-1 text-[12px] font-medium text-muted-foreground uppercase tracking-wider">Panel</p>
           <div className="grid grid-cols-2 gap-1">
             {PANEL_TYPES.map(({ value, label, Icon, swatch }) => (
@@ -583,7 +583,7 @@ function ColorPickerDropdown({
           align="start"
           sideOffset={4}
           aria-label={`${title} swatches`}
-          className="z-50 rounded-lg border border-border bg-card p-2.5 shadow-lg outline-none"
+          className="z-50 nm-card-elevated p-2.5 outline-none"
         >
           <div className="grid grid-cols-4 gap-1.5">
             {PRESET_COLORS.map((c) => (
@@ -597,7 +597,7 @@ function ColorPickerDropdown({
                   onSelect(c.value);
                   setOpen(false);
                 }}
-                className="h-7 w-7 rounded-md border border-border/50 transition-transform hover:scale-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                className="h-7 w-7 rounded-md border border-border transition-transform focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
                 style={{ backgroundColor: c.value }}
               />
             ))}
@@ -1023,7 +1023,7 @@ function LayoutPresetPicker({ editor }: { editor: EditorType }) {
         <Columns2 size={16} />
       </ToolbarButton>
       {open && (
-        <div className="absolute top-full left-0 z-50 mt-1 rounded-lg border border-border/50 bg-card p-2 shadow-lg min-w-max">
+        <div className="absolute top-full left-0 z-50 mt-1 nm-card-elevated p-2 min-w-max">
           <p className="mb-1.5 px-1 text-[12px] font-medium text-muted-foreground uppercase tracking-wider">Page Layout</p>
           <div className="flex gap-1">
             {LAYOUT_PRESETS.map((preset) => (
@@ -1637,7 +1637,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
   return (
     <div className={cn('relative', naked ? '' : 'nm-card', headerNumbering && 'header-numbering')}>
       {editable && editor && !hideToolbar && (
-        <div className="sticky top-0 z-30 border-b border-border/30 bg-card px-1">
+        <div className="sticky top-0 z-30 border-b border-border bg-card px-1">
           <EditorToolbar editor={editor} headerNumbering={headerNumbering} onToggleHeaderNumbering={toggleHeaderNumbering} vimEnabled={vimEnabled} onToggleVim={toggleVim} />
           <TableContextToolbar editor={editor} />
           <LayoutContextToolbar editor={editor} />
@@ -1656,7 +1656,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
           'prose max-w-none',
           !isLight && 'prose-invert',
           '[&_.tiptap]:min-h-[200px] [&_.tiptap]:px-10 [&_.tiptap]:py-6 [&_.tiptap]:outline-none',
-          '[&_table]:border-collapse [&_td]:border [&_td]:border-border/50 [&_td]:p-2 [&_th]:border [&_th]:border-border/50 [&_th]:bg-foreground/5 [&_th]:p-2',
+          '[&_table]:border-collapse [&_td]:border [&_td]:border-border [&_td]:p-2 [&_th]:border [&_th]:border-border [&_th]:bg-foreground/5 [&_th]:p-2',
           '[&_pre]:rounded-md [&_pre]:bg-foreground/5 [&_pre:not([data-title])]:p-4 [&_pre[data-title]]:px-4 [&_pre[data-title]]:pb-4',
           '[&_ul[data-type=taskList]]:list-none [&_ul[data-type=taskList]]:pl-0',
         )}

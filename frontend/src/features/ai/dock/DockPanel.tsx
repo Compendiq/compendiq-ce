@@ -31,7 +31,17 @@ import { useDockActions } from './use-dock-actions';
  * keeps the hoisted provider inert on article routes where the assistant was
  * never opened.
  */
-export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void; variant?: 'column' | 'sheet' }) {
+/**
+ * `variant`:
+ *  - `column` — the standalone right-hand column (retired on desktop, kept for
+ *    any caller that still wants a self-contained panel)
+ *  - `sheet`  — the mobile bottom sheet
+ *  - `tab`    — mounted inside ArticleRightPane as one of its three views. The
+ *    pane supplies the header and the collapse control, so this variant renders
+ *    neither; two stacked headers were the tell that a column had been stuffed
+ *    into a tab.
+ */
+export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void; variant?: 'column' | 'sheet' | 'tab' }) {
   const {
     page, pageId, messages, messagesEndRef, isStreaming, isThinking, thinkingElapsed,
     streamingContent, input, setInput, modelsError, refetchModels, model, chatVision,
@@ -189,7 +199,12 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
     >
       {/* Header — h-10 and px-3 exactly matching ArticleRightPane's
           "Properties" header, so the two panels share a baseline. Violet marks
-          the surface as the AI one (ADR-010 v0.5); it never fills a control. */}
+          the surface as the AI one (ADR-010 v0.5); it never fills a control.
+
+          Not rendered in the `tab` variant: the inspector already has a header
+          naming the page and a collapse control, and the tab itself says
+          "Assistant". */}
+      {variant !== 'tab' && (
       <div className="flex h-10 shrink-0 items-center justify-between gap-2 px-3">
         <span className="flex min-w-0 items-center gap-1.5">
           <Sparkles size={13} className="shrink-0 text-status-ai" aria-hidden />
@@ -197,7 +212,7 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
         </span>
         <button
           onClick={onClose}
-          className="shrink-0 rounded-lg p-1 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+          className="shrink-0 rounded-lg p-1 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           aria-label="Close AI assistant"
           title="Close assistant (Esc)"
           data-testid="ai-dock-close"
@@ -209,6 +224,7 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
           {variant === 'sheet' ? <X size={15} /> : <PanelRightClose size={14} />}
         </button>
       </div>
+      )}
 
       {/* Streaming indicator: a violet hairline under the header, visible even
           when the thread is scrolled away from the in-flight answer. */}
@@ -307,7 +323,7 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
                   disabled={disabled}
                   title={isImprove ? improveChipHint(improvementType) : hint}
                   className={cn(
-                    'flex h-7 items-center gap-1.5 rounded-md border border-border-interactive px-2.5 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:opacity-50',
+                    'flex h-7 items-center gap-1.5 rounded-md border border-border-interactive px-2.5 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50',
                     // Half of a split control: the caret picks up the right end.
                     isImprove && 'relative rounded-r-none hover:z-10 focus-visible:z-10',
                   )}
@@ -365,7 +381,7 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
                     // that makes the pair read as one chip; z-10 on hover/focus
                     // lifts whichever half is being addressed so its own border
                     // and ring win over its neighbour's.
-                    className="relative -ml-px flex h-7 w-7 items-center justify-center rounded-md rounded-l-none border border-border-interactive text-muted-foreground transition-colors hover:z-10 hover:bg-foreground/5 hover:text-foreground focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:opacity-50"
+                    className="relative -ml-px flex h-7 w-7 items-center justify-center rounded-md rounded-l-none border border-border-interactive text-muted-foreground transition-colors hover:z-10 hover:bg-foreground/5 hover:text-foreground focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
                     data-testid="ai-dock-improve-types-toggle"
                   >
                     <ChevronDown
@@ -474,7 +490,7 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
             onClick={() => void ask()}
             disabled={isStreaming || !input.trim() || !model}
             aria-label={isStreaming ? 'Sending…' : 'Send message'}
-            className="flex shrink-0 self-end items-center rounded-md border border-primary bg-primary px-2.5 py-1.5 text-sm font-medium text-primary-foreground transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:opacity-50"
+            className="flex shrink-0 self-end items-center rounded-md border border-primary bg-primary px-2.5 py-1.5 text-sm font-medium text-primary-foreground transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
             data-testid="ai-dock-send"
           >
             {isStreaming ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
@@ -550,7 +566,7 @@ function ImprovementTypeDrawer({ id, value, onChange, disabled, onKeyDown }: Imp
               aria-pressed={selected}
               title={IMPROVEMENT_DESCRIPTIONS[type]}
               className={cn(
-                'flex h-6 items-center rounded-md px-2 text-[11px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:opacity-50',
+                'flex h-6 items-center rounded-md px-2 text-[11px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50',
                 selected
                   ? 'nm-pill-active font-medium text-action'
                   : 'border border-border-interactive text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
@@ -583,12 +599,12 @@ function ImprovementTypeDrawer({ id, value, onChange, disabled, onKeyDown }: Imp
 function DockEmptyState({ pageTitle }: { pageTitle: string | undefined }) {
   return (
     <div className="flex h-full flex-col items-center justify-center px-2 text-center" data-testid="ai-dock-empty">
-      <div className="relative mb-4 flex h-14 w-14 items-center justify-center">
-        <div className="absolute inset-0 rounded-full bg-status-ai/10 blur-2xl" aria-hidden />
-        <div className="relative flex h-11 w-11 items-center justify-center rounded-full bg-status-ai/12 ring-1 ring-status-ai/25">
-          <Sparkles size={22} className="text-status-ai" aria-hidden />
-        </div>
-      </div>
+      {/* A plain glyph, not a glowing disc. This was a 56px blurred halo behind
+          a ringed circle behind the icon — three stacked decorations to say
+          "AI", in the one panel whose job is to get out of the way until it has
+          something to show. Violet still marks AI (ADR-010); it just does not
+          need a light source to do it. */}
+      <Sparkles size={20} className="mb-3 text-status-ai" aria-hidden />
       {/* The headline names the scope rather than repeating the composer's
           own placeholder back at the reader. On a 420px column the page title
           is the one piece of orientation worth spending two lines on: it is

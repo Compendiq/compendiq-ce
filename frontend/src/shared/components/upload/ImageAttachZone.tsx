@@ -169,7 +169,7 @@ export function ImageAttachZone({
             className={cn(
               'shrink-0 rounded p-1 text-muted-foreground transition-colors',
               'hover:bg-foreground/10 hover:text-foreground',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
               'disabled:opacity-50',
             )}
             data-testid={`${testIdPrefix}-remove`}
@@ -191,7 +191,7 @@ export function ImageAttachZone({
         className={cn(
           'shrink-0 rounded-lg border border-border-interactive p-2',
           'text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground',
-          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
           'disabled:opacity-50',
         )}
         data-testid={`${testIdPrefix}-trigger`}

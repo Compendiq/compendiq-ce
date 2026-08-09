@@ -110,7 +110,7 @@ export function McpDocsTab() {
       </div>
 
       {/* Enable/Disable */}
-      <div className="flex items-center justify-between rounded-xl border border-border/40 bg-foreground/[0.03] p-4">
+      <div className="flex items-center justify-between rounded-xl border border-border bg-foreground/[0.03] p-4">
         <div>
           <div className="text-sm font-medium">Enable MCP Docs</div>
           <div className="text-xs text-muted-foreground">When enabled, users can attach external URLs to Q&amp;A queries</div>
@@ -122,7 +122,7 @@ export function McpDocsTab() {
           aria-checked={form.enabled}
           data-testid="mcp-docs-toggle"
         >
-          <span className={`absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${form.enabled ? 'translate-x-5' : ''}`} />
+          <span className={`absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white transition-transform ${form.enabled ? 'translate-x-5' : ''}`} />
         </button>
       </div>
 
@@ -135,14 +135,14 @@ export function McpDocsTab() {
               <input
                 value={form.url}
                 onChange={(e) => updateField('url', e.target.value)}
-                className="flex-1 rounded-lg border border-border/40 bg-foreground/[0.03] px-3 py-2 text-sm outline-none focus:border-primary/50"
+                className="flex-1 rounded-lg border border-border bg-foreground/[0.03] px-3 py-2 text-sm outline-none focus:border-primary/50"
                 placeholder="http://mcp-docs:3100/mcp"
                 data-testid="mcp-docs-url"
               />
               <button
                 onClick={() => testMutation.mutate()}
                 disabled={testMutation.isPending}
-                className="flex items-center gap-1.5 rounded-lg border border-border/40 bg-foreground/[0.03] px-3 py-2 text-sm hover:bg-foreground/[0.06] disabled:opacity-50"
+                className="flex items-center gap-1.5 rounded-lg border border-border bg-foreground/[0.03] px-3 py-2 text-sm hover:bg-foreground/[0.06] disabled:opacity-50"
                 data-testid="mcp-docs-test"
               >
                 {testMutation.isPending ? (
@@ -201,13 +201,13 @@ export function McpDocsTab() {
                 value={newDomain}
                 onChange={(e) => setNewDomain(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && addDomain()}
-                className="flex-1 rounded-lg border border-border/40 bg-foreground/[0.03] px-3 py-2 text-sm outline-none focus:border-primary/50"
+                className="flex-1 rounded-lg border border-border bg-foreground/[0.03] px-3 py-2 text-sm outline-none focus:border-primary/50"
                 placeholder="e.g. docs.example.com or *.mozilla.org"
                 data-testid="mcp-docs-domain-input"
               />
               <button
                 onClick={addDomain}
-                className="flex items-center gap-1 rounded-lg border border-border/40 bg-foreground/[0.03] px-3 py-2 text-sm hover:bg-foreground/[0.06]"
+                className="flex items-center gap-1 rounded-lg border border-border bg-foreground/[0.03] px-3 py-2 text-sm hover:bg-foreground/[0.06]"
               >
                 <Plus size={14} /> Add
               </button>
@@ -217,7 +217,7 @@ export function McpDocsTab() {
                 {activeDomains.map((domain) => (
                   <span
                     key={domain}
-                    className="inline-flex items-center gap-1 rounded-full border border-border/40 bg-foreground/[0.03] px-2.5 py-1 text-xs"
+                    className="inline-flex items-center gap-1 rounded-full border border-border bg-foreground/[0.03] px-2.5 py-1 text-xs"
                   >
                     {domain}
                     <button onClick={() => removeDomain(domain)} className="text-muted-foreground hover:text-red-400">
@@ -239,7 +239,7 @@ export function McpDocsTab() {
                 onChange={(e) => updateField('cacheTtl', parseInt(e.target.value, 10) || 3600)}
                 min={60}
                 max={86400}
-                className="w-full rounded-lg border border-border/40 bg-foreground/[0.03] px-3 py-2 text-sm outline-none focus:border-primary/50"
+                className="w-full rounded-lg border border-border bg-foreground/[0.03] px-3 py-2 text-sm outline-none focus:border-primary/50"
                 data-testid="mcp-docs-cache-ttl"
               />
               <p className="mt-1 text-xs text-muted-foreground">How long to cache fetched docs (60–86400)</p>
@@ -252,7 +252,7 @@ export function McpDocsTab() {
                 onChange={(e) => updateField('maxContentLength', parseInt(e.target.value, 10) || 50000)}
                 min={1000}
                 max={500000}
-                className="w-full rounded-lg border border-border/40 bg-foreground/[0.03] px-3 py-2 text-sm outline-none focus:border-primary/50"
+                className="w-full rounded-lg border border-border bg-foreground/[0.03] px-3 py-2 text-sm outline-none focus:border-primary/50"
                 data-testid="mcp-docs-max-length"
               />
               <p className="mt-1 text-xs text-muted-foreground">Max characters per fetched document</p>
@@ -263,11 +263,11 @@ export function McpDocsTab() {
 
       {/* Save button */}
       {isDirty && (
-        <div className="sticky bottom-0 flex justify-end border-t border-border/40 bg-card/80 pt-4 backdrop-blur-sm">
+        <div className="sticky bottom-0 flex justify-end border-t border-border bg-card pt-4">
           <button
             onClick={() => saveMutation.mutate(form)}
             disabled={saveMutation.isPending}
-            className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+            className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
             data-testid="mcp-docs-save"
           >
             {saveMutation.isPending && <Loader2 size={14} className="animate-spin" />}

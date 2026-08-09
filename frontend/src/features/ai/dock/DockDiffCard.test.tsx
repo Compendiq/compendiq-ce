@@ -14,7 +14,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { toast } from 'sonner';
 import { AiProvider, useAiContext } from '../AiContext';
-import { AiDock } from './AiDock';
+import { DockPanel } from './DockPanel';
 import { useAiDockStore } from '../../../stores/ai-dock-store';
 import { useArticleViewStore } from '../../../stores/article-view-store';
 import { ApiError } from '../../../shared/lib/api';
@@ -81,7 +81,7 @@ function renderDock() {
             <Routes>
               <Route path="/pages/:id" element={<div>article</div>} />
             </Routes>
-            <AiDock />
+            <DockPanel variant="tab" onClose={() => {}} />
           </AiProvider>
         </MemoryRouter>
       </LazyMotion>

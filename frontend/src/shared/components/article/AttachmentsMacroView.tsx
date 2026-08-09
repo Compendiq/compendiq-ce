@@ -98,9 +98,9 @@ export function AttachmentsMacroView({ editor }: NodeViewProps) {
 
   return (
     <NodeViewWrapper className="confluence-attachments-macro my-4">
-      <div className="rounded-lg border border-border/50 bg-card/50 overflow-hidden">
+      <div className="rounded-lg border border-border bg-card overflow-hidden">
         {/* Header */}
-        <div className="flex items-center gap-2 px-4 py-2.5 border-b border-border/30 bg-muted/30">
+        <div className="flex items-center gap-2 px-4 py-2.5 border-b border-border bg-muted/30">
           <File size={14} className="text-muted-foreground" />
           <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
             Attachments

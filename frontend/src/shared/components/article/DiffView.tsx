@@ -64,7 +64,7 @@ export function DiffView({ original, improved, onAccept, onReject, isAccepting =
       className="nm-card overflow-hidden"
     >
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-border/50 px-4 py-3">
+      <div className="flex items-center justify-between border-b border-border px-4 py-3">
         <div className="flex items-center gap-4">
           <h3 className="text-sm font-medium">Changes</h3>
           <span className="text-xs text-success">+{stats.additions}</span>
@@ -73,7 +73,7 @@ export function DiffView({ original, improved, onAccept, onReject, isAccepting =
 
         <div className="flex items-center gap-2">
           {/* View toggle */}
-          <div className="flex rounded-md border border-border/50">
+          <div className="flex rounded-md border border-border">
             <button
               onClick={() => setViewMode('unified')}
               className={cn(
@@ -158,11 +158,11 @@ export function DiffView({ original, improved, onAccept, onReject, isAccepting =
 
       {/* Actions */}
       {(onAccept || onReject) && (
-        <div className="flex items-center justify-end gap-3 border-t border-border/50 px-4 py-3">
+        <div className="flex items-center justify-end gap-3 border-t border-border px-4 py-3">
           {onReject && (
             <button
               onClick={onReject}
-              className="flex items-center gap-1.5 rounded-lg border border-border/50 px-4 py-2 text-sm text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+              className="flex items-center gap-1.5 rounded-lg border border-border px-4 py-2 text-sm text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
             >
               <X size={14} /> Reject
             </button>
@@ -171,7 +171,7 @@ export function DiffView({ original, improved, onAccept, onReject, isAccepting =
             <button
               onClick={onAccept}
               disabled={isAccepting}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
             >
               {isAccepting ? (
                 <><Loader2 size={14} className="animate-spin" /> Applying…</>

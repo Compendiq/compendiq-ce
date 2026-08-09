@@ -33,7 +33,7 @@ export function TrashPage() {
           <ArrowLeft size={18} />
         </button>
         <div>
-          <h1 className="text-2xl font-bold">Trash</h1>
+          <h1 className="text-lg font-semibold">Trash</h1>
           <p className="text-sm text-muted-foreground">
             Deleted pages are automatically purged 30 days after deletion
           </p>

@@ -286,12 +286,19 @@ export function AiAssistantPage() {
           Group A (left): which mode are we in. Inset segmented control.
           Group B (right): what's the model + what's the context window +
             what options are on. Outlined chips of uniform 28 px height. */}
-      <div className="sticky top-0 z-20 isolate -mx-1 space-y-3 bg-background/85 px-1 py-1 backdrop-blur">
+      {/* Opaque, no blur. The `inset-0` under-mask directly below already
+          guarantees occlusion, so `bg-background/85 backdrop-blur` on the bar
+          itself was belt-and-braces over something already solid — and blur is
+          the most expensive thing the compositor does, here on a bar that is
+          composited on every scroll frame. (Missed by the glass sweep: its
+          regex required a suffix, `backdrop-blur-sm`, and this is the bare
+          utility.) */}
+      <div className="sticky top-0 z-20 isolate -mx-1 space-y-3 bg-background px-1 py-1">
       <div
         aria-hidden
         className="pointer-events-none absolute inset-0 z-[-1] bg-background"
       />
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-2 rounded-xl border border-border/40 bg-card/50 px-3 py-2 backdrop-blur-sm">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-2 rounded-xl border border-border bg-card px-3 py-2">
         {/* Group A — mode segmented control */}
         {/* Horizontally scrollable below the width that fits all six modes.
             At 390px the row previously cut off mid-word after "Summar…", so
@@ -350,12 +357,13 @@ export function AiAssistantPage() {
               className={cn(
                 'flex h-7 shrink-0 snap-start items-center gap-1.5 rounded-md px-2.5 text-sm transition-colors',
                 mode === key
-                  // Inset steel-tinted surface (not filled) so the active tab
-                  // doesn't compete with the steel-filled primary CTA in the
-                  // mode's input bar. Steel rather than the AI violet on
-                  // purpose: a mode tab is something you operate, and under
-                  // ADR-010 v0.5 that is exactly what steel means.
-                  ? 'bg-card text-primary-ink shadow-sm ring-1 ring-primary/35 font-medium'
+                  // `panel-tab-active` is the one active-segment treatment in
+                  // the system, shared with the inspector's view switcher, the
+                  // main nav and Settings' sub-tabs. This was a second copy of
+                  // the retired v0.5 shape — a tinted pane carrying `shadow-sm`
+                  // and a primary ring — which is how the same control ended up
+                  // looking different on four routes.
+                  ? 'panel-tab-active font-medium'
                   : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
               )}
             >
@@ -367,7 +375,7 @@ export function AiAssistantPage() {
         <div className="flex-1" />
 
         {/* Group B — context + options. Each chip is 28 px tall (h-7),
-            border-border/40 at rest, tinted on active. The divider between
+            border-border at rest, tinted on active. The divider between
             the model dropdown and the toggles separates "infrastructure" the
             user sets once from "context flags" they flip per question. */}
         <div className="flex flex-wrap items-center gap-1.5">
@@ -383,7 +391,7 @@ export function AiAssistantPage() {
               <AlertTriangle size={12} /> Models unavailable — retry
             </button>
           ) : models.length === 0 ? (
-            <span className="flex h-7 items-center gap-1.5 rounded-md border border-border/40 px-2.5 text-xs text-muted-foreground">
+            <span className="flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs text-muted-foreground">
               <Loader2 size={12} className="animate-spin" /> Loading models...
             </span>
           ) : (
@@ -417,7 +425,7 @@ export function AiAssistantPage() {
                 next.delete('pageId');
                 setSearchParams(next, { replace: true });
               }}
-              className="flex h-7 items-center gap-1.5 rounded-md border border-border-interactive bg-foreground/[0.03] px-2.5 text-xs text-muted-foreground transition-colors hover:bg-foreground/[0.07] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+              className="flex h-7 items-center gap-1.5 rounded-md border border-border-interactive bg-foreground/[0.03] px-2.5 text-xs text-muted-foreground transition-colors hover:bg-foreground/[0.07] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               title={`Answers are scoped to "${page.title}" — click to clear`}
               data-testid="ai-context-chip"
             >
@@ -433,7 +441,7 @@ export function AiAssistantPage() {
                 'flex h-7 cursor-pointer items-center gap-1.5 rounded-md border px-2.5 text-xs transition-colors',
                 includeSubPages
                   ? 'border-primary/45 bg-primary/12 text-primary-ink'
-                  : 'border-border/40 text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
+                  : 'border-border text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
               )}
               title="Include sub-pages in the AI context"
             >
@@ -459,8 +467,8 @@ export function AiAssistantPage() {
             className={cn(
               'flex h-7 cursor-pointer items-center gap-1.5 rounded-md border px-2.5 text-xs transition-colors',
               thinkingMode
-                ? 'border-purple-500/45 bg-purple-500/15 text-purple-300'
-                : 'border-border/40 text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
+                ? 'border-status-ai/45 bg-status-ai/15 text-status-ai'
+                : 'border-border text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
             )}
             title={thinkingMode
               ? 'Extended thinking is on — responses take longer but reason more carefully'
@@ -483,7 +491,7 @@ export function AiAssistantPage() {
           than leaving a tablist with nothing selected looking broken (#1126). */}
       {!modeHasTab && (
         <p
-          className="rounded-xl border border-border/40 bg-card/50 px-3 py-2 text-xs text-muted-foreground backdrop-blur-sm"
+          className="rounded-xl border border-border bg-card px-3 py-2 text-xs text-muted-foreground"
           data-testid="ai-legacy-mode-notice"
         >
           This view moved into the assistant that opens beside an article. Open the page and press{' '}
@@ -541,7 +549,7 @@ export function AiAssistantPage() {
           laptop lost them entirely, and on mobile they rendered behind the
           composer. min-h-0 lets the flex child actually shrink so the scroll
           container resolves instead of overflowing its parent. */}
-      <div className="min-h-0 flex-1 overflow-y-auto rounded-xl border border-border/40 bg-card/40 backdrop-blur-sm" data-testid="ai-message-pane">
+      <div className="min-h-0 flex-1 overflow-y-auto rounded-xl border border-border bg-card" data-testid="ai-message-pane">
         <div className="min-h-[360px] space-y-4 p-5">
           {/* Zero-embeddings notice (#938). Q&A answers via RAG over embedded
               pages; with none embedded, buildRagContext returns "No relevant
@@ -572,12 +580,13 @@ export function AiAssistantPage() {
                   Violet, not steel: under ADR-010 v0.5 --color-status-ai marks
                   "an AI does this" and steel means "you can operate this".
                   This ornament is the former — it is not clickable. */}
-              <div className="relative mb-5 flex h-20 w-20 items-center justify-center">
-                <div className="absolute inset-0 rounded-full bg-status-ai/10 blur-2xl" aria-hidden />
-                <div className="relative flex h-16 w-16 items-center justify-center rounded-full bg-status-ai/12 ring-1 ring-status-ai/25">
-                  <Bot size={32} className="text-status-ai" />
-                </div>
-              </div>
+              {/* A plain glyph, matching the dock's empty state. This was an
+                  80px blurred halo behind a 64px ringed disc behind the icon —
+                  three stacked decorations to say "AI". Violet still carries
+                  that meaning (ADR-010); it does not need a light source, and a
+                  blurred glow is the one effect this system removed everywhere
+                  else. */}
+              <Bot size={28} className="mb-4 text-status-ai" aria-hidden />
               <p className="text-lg font-medium">{getEmptyTitle(mode)}</p>
               <p className="mt-2 max-w-md text-sm text-muted-foreground">{getEmptySubtitle(mode, page)}</p>
               {mode === 'ask' && <AskExamplePrompts />}
@@ -629,7 +638,8 @@ export function AiAssistantPage() {
           mirrored -bottom-5 this bug was originally filed with is exactly that
           mistake; the strip it aimed at is gone because nothing scrolls into
           it, not because something covers it. */}
-      <div className="sticky bottom-0 z-20 isolate -mx-1 bg-background/85 px-1 py-1 backdrop-blur">
+      {/* Opaque, no blur — same reasoning as the sub-header above. */}
+      <div className="sticky bottom-0 z-20 isolate -mx-1 bg-background px-1 py-1">
         <div
           aria-hidden
           className="pointer-events-none absolute inset-0 z-[-1] bg-background"

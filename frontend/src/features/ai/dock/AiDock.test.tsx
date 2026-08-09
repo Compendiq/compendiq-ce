@@ -11,9 +11,8 @@ import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { AiProvider } from '../AiContext';
-import { AiDock } from './AiDock';
+import { DockPanel } from './DockPanel';
 import { useAiDockStore } from '../../../stores/ai-dock-store';
-import { useUiStore } from '../../../stores/ui-store';
 
 Element.prototype.scrollIntoView = vi.fn();
 
@@ -50,7 +49,11 @@ function sse(...chunks: Array<Record<string, unknown>>) {
 
 let modelsFail = false;
 
-function renderDock(initialEntry = '/pages/page-1') {
+function renderDock(
+  opts: { initialEntry?: string; onClose?: () => void } | string = {},
+) {
+  const { initialEntry = '/pages/page-1', onClose = () => {} } =
+    typeof opts === 'string' ? { initialEntry: opts } : opts;
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
@@ -62,7 +65,7 @@ function renderDock(initialEntry = '/pages/page-1') {
               <Route path="/pages/:id" element={<div>article</div>} />
               <Route path="/ai" element={<div>ai page</div>} />
             </Routes>
-            <AiDock />
+            <DockPanel variant="tab" onClose={onClose} />
           </AiProvider>
         </MemoryRouter>
       </LazyMotion>
@@ -92,7 +95,6 @@ describe('AiDock (#1126)', () => {
     vi.clearAllMocks();
     modelsFail = false;
     useAiDockStore.setState({ open: false });
-    useUiStore.setState({ aiDockWidth: 420 });
     window.innerWidth = 1400;
     apiFetchMock.mockImplementation((path: string) => {
       if (path === '/pages/page-1') return Promise.resolve(PAGE);
@@ -116,110 +118,45 @@ describe('AiDock (#1126)', () => {
     expect(screen.queryByTestId('ai-dock')).not.toBeInTheDocument();
   });
 
-  it('opens as a labelled landmark and moves focus to the composer', async () => {
+  // The `<aside aria-label="AI assistant">` assertions went with the column:
+  // the assistant is a tabpanel inside ArticleRightPane now, and that pane is
+  // the labelled landmark. Focus reaching the composer is the half of this test
+  // that was about the assistant rather than its container, and it survives.
+  //
+  // Two whole describes were removed here rather than rewritten, because the
+  // behaviour they guarded no longer has a mechanism:
+  //  - `width` covered the column's width cap and resize handle. The tab
+  //    inherits ArticleRightPane's width and its resize.
+  //  - `focus restore when opening destroyed the trigger` covered a bug where
+  //    opening the dock unmounted the very control that opened it (the pane
+  //    collapsed to its rail). A tab cannot destroy itself by being selected.
+  it('moves focus to the composer when the assistant is shown', async () => {
     renderDock();
     await openAndSettle();
 
-    const dock = screen.getByTestId('ai-dock');
-    expect(dock.tagName).toBe('ASIDE');
-    expect(dock).toHaveAttribute('aria-label', 'AI assistant');
     expect(document.activeElement).toBe(composer());
   });
 
-  it('returns focus to a surviving trigger when Escape closes it', async () => {
-    renderDock();
-    const trigger = screen.getByTestId('dock-trigger');
-    act(() => trigger.focus());
-
+  // Escape used to unmount the column and hand focus back to whatever opened
+  // it. A tabpanel does not unmount on Escape — it asks its host to show a
+  // different view, and the host owns what happens to focus. So what this
+  // pins now is the half that is still the assistant's own contract: Escape
+  // inside the composer asks to leave. In the app, `ArticleRightPane` answers
+  // by switching to Outline.
+  it('asks its host to close when Escape is pressed in the composer', async () => {
+    const onClose = vi.fn();
+    renderDock({ onClose });
     await openAndSettle();
-    expect(document.activeElement).toBe(composer());
 
     fireEvent.keyDown(composer(), { key: 'Escape' });
 
-    // The panel leaves through AnimatePresence, so the restore runs with its
-    // unmount a frame later — settle rather than racing the exit.
-    await waitFor(() => {
-      expect(screen.queryByTestId('ai-dock')).not.toBeInTheDocument();
-      expect(document.activeElement).toBe(trigger);
-    });
+    expect(onClose).toHaveBeenCalled();
   });
 
   // Two of the three real triggers are DESTROYED by opening the dock: the
   // expanded pane's "AI Assistant" row unmounts when the pane is forced to its
   // rail, and below 1100px the whole pane unmounts. Restoring
   // `document.activeElement` naively hands focus to <body> in both cases.
-  describe('focus restore when opening destroyed the trigger', () => {
-    function renderWithTrigger(ui: React.ReactNode) {
-      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-      return render(
-        <QueryClientProvider client={queryClient}>
-          <LazyMotion features={domAnimation}>
-            <MemoryRouter initialEntries={['/pages/page-1']}>
-              <AiProvider>
-                <main>{ui}</main>
-                <AiDock />
-              </AiProvider>
-            </MemoryRouter>
-          </LazyMotion>
-        </QueryClientProvider>,
-      );
-    }
-
-    /**
-     * A trigger that is torn down and rebuilt across the open, the way the
-     * article pane's is: opening forces the pane to its rail (or unmounts it
-     * entirely below 1100px), and closing renders it again. The identity of the
-     * node the user pressed does not survive, so the dock cannot restore it.
-     *
-     * The branches are wrapped differently so React cannot reconcile the two
-     * <button>s into one reused host node, as it does for an unwrapped pair.
-     */
-    function RebuiltTrigger({ hasPane }: { hasPane: boolean }) {
-      const open = useAiDockStore((s) => s.open);
-      const openDock = useAiDockStore((s) => s.openDock);
-      if (open) return hasPane ? <div><button data-ai-assistant-trigger>rail assistant</button></div> : null;
-      return <button data-ai-assistant-trigger onClick={() => openDock()}>AI Assistant</button>;
-    }
-
-    it('hands focus to the assistant trigger the article pane renders after closing', async () => {
-      renderWithTrigger(<RebuiltTrigger hasPane />);
-
-      const trigger = screen.getByText('AI Assistant');
-      act(() => trigger.focus());
-      fireEvent.click(trigger);
-      await waitFor(() => expect(screen.getByTestId('ai-dock-input')).toBeInTheDocument());
-      // The node the user pressed is gone — this is what makes a naive
-      // "restore document.activeElement" hand focus to <body>.
-      expect(trigger.isConnected).toBe(false);
-
-      fireEvent.keyDown(screen.getByTestId('ai-dock-input'), { key: 'Escape' });
-
-      await waitFor(() => {
-        expect(screen.queryByTestId('ai-dock')).not.toBeInTheDocument();
-        expect(document.activeElement).toBe(document.querySelector('[data-ai-assistant-trigger]'));
-      });
-      expect(document.activeElement).not.toBe(document.body);
-    });
-
-    it('falls back to the article itself when no trigger is on screen at all', async () => {
-      // Landing on <body> would strand the keyboard at the top of the document.
-      renderWithTrigger(<RebuiltTrigger hasPane={false} />);
-
-      const trigger = screen.getByText('AI Assistant');
-      act(() => trigger.focus());
-      fireEvent.click(trigger);
-      await waitFor(() => expect(screen.getByTestId('ai-dock-input')).toBeInTheDocument());
-      // Keep the trigger unmounted across the close so nothing can be found.
-      act(() => useAiDockStore.setState({ open: true }));
-
-      fireEvent.keyDown(screen.getByTestId('ai-dock-input'), { key: 'Escape' });
-
-      await waitFor(() => {
-        expect(screen.queryByTestId('ai-dock')).not.toBeInTheDocument();
-        expect(document.activeElement).not.toBe(document.body);
-      });
-    });
-  });
 
   // #1176: opening the assistant used to fire a full-page rewrite on the spot.
   // Nothing about the click said which of the five improvement types to use, the
@@ -330,48 +267,6 @@ describe('AiDock (#1126)', () => {
     expect(screen.queryByTestId('ai-dock-chip-improve')).not.toBeInTheDocument();
   });
 
-  describe('width', () => {
-    it('exposes a resize handle that widens as it is dragged left', async () => {
-      useUiStore.setState({ aiDockWidth: 420 });
-      renderDock();
-      await openAndSettle();
-
-      const handle = screen.getByRole('separator', { name: 'Resize AI assistant' });
-      expect(handle).toHaveAttribute('aria-orientation', 'vertical');
-
-      // The panel grows leftward, so a leftward drag must widen it — the same
-      // inversion ArticleRightPane and SidebarTreeView use.
-      fireEvent.mouseDown(handle, { clientX: 1000 });
-      fireEvent.mouseMove(document, { clientX: 940 });
-      fireEvent.mouseUp(document);
-
-      expect(useUiStore.getState().aiDockWidth).toBe(480);
-    });
-
-    it('clamps the stored width so neither pane can be crushed', () => {
-      useUiStore.getState().setAiDockWidth(10_000);
-      expect(useUiStore.getState().aiDockWidth).toBe(640);
-      useUiStore.getState().setAiDockWidth(0);
-      // Below this the diff card's Apply/Skip footer stops fitting on one line.
-      expect(useUiStore.getState().aiDockWidth).toBe(340);
-    });
-
-    it('caps its width and drops the resize handle below the wide breakpoint', async () => {
-      // A 640px dock on a 1040px viewport would leave the article a measure it
-      // cannot be read at, and there is no room to fiddle with a drag handle.
-      window.innerWidth = 900;
-      useUiStore.setState({ aiDockWidth: 640 });
-      renderDock();
-      await openAndSettle();
-
-      expect(screen.queryByRole('separator', { name: 'Resize AI assistant' })).not.toBeInTheDocument();
-      // The panel animates open from 0, so this settles rather than asserting
-      // the first painted frame.
-      await waitFor(() => {
-        expect(screen.getByTestId('ai-dock')).toHaveStyle({ width: '380px' });
-      });
-    });
-  });
 
   it('shows a violet streaming indicator and disables the composer mid-stream', async () => {
     // A stream that never resolves, so the in-flight state is observable.

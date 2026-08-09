@@ -232,7 +232,7 @@ export function ScimSettingsPage() {
             </div>
           </div>
 
-          <div className="flex items-center justify-between border-t border-border/50 pt-3">
+          <div className="flex items-center justify-between border-t border-border pt-3">
             <label className="flex items-center gap-2 text-sm">
               <input
                 type="checkbox"
@@ -246,7 +246,7 @@ export function ScimSettingsPage() {
             <button
               onClick={handleDismiss}
               disabled={!copiedConfirmed}
-              className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+              className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
               data-testid="scim-dismiss-token"
             >
               <CheckCircle2 size={14} />
@@ -260,7 +260,7 @@ export function ScimSettingsPage() {
       {!showCreateForm ? (
         <button
           onClick={() => setShowCreateForm(true)}
-          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           data-testid="generate-token-btn"
         >
           <Plus size={16} />
@@ -336,7 +336,7 @@ export function ScimSettingsPage() {
         <div className="nm-card overflow-hidden">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-border/50 text-left text-xs text-muted-foreground">
+              <tr className="border-b border-border text-left text-xs text-muted-foreground">
                 <th className="px-4 py-3 font-medium">Name</th>
                 <th className="px-4 py-3 font-medium">Created</th>
                 <th className="px-4 py-3 font-medium">Last Used</th>

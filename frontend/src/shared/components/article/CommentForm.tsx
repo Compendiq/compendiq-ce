@@ -50,7 +50,7 @@ export function CommentForm({
         placeholder={placeholder}
         rows={3}
         disabled={isSubmitting}
-        className="w-full resize-none rounded-lg border border-border/50 bg-foreground/5 px-3 py-2 text-sm outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-primary disabled:opacity-50"
+        className="w-full resize-none rounded-lg border border-border bg-foreground/5 px-3 py-2 text-sm outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-primary disabled:opacity-50"
         data-testid="comment-textarea"
       />
       <div className="flex items-center justify-end gap-2">
@@ -68,7 +68,7 @@ export function CommentForm({
         <button
           type="submit"
           disabled={!body.trim() || isSubmitting}
-          className="inline-flex items-center gap-1.5 rounded-lg border border-action bg-transparent px-3 py-1.5 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+          className="inline-flex items-center gap-1.5 rounded-lg border border-action bg-transparent px-3 py-1.5 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
           data-testid="comment-submit"
         >
           <Send size={14} />

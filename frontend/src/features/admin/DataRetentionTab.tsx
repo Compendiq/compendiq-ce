@@ -124,7 +124,7 @@ function AdminAccessDeniedRetentionSection() {
               type="button"
               onClick={() => draft !== undefined && save.mutate(draft)}
               disabled={!hasChange || save.isPending}
-              className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-3 py-1.5 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+              className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-3 py-1.5 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
               data-testid="admin-denied-retention-save-btn"
             >
               {save.isPending ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
@@ -317,7 +317,7 @@ export function DataRetentionTab() {
         <div className="nm-card overflow-hidden">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-border/50 text-left text-xs text-muted-foreground">
+              <tr className="border-b border-border text-left text-xs text-muted-foreground">
                 <th className="px-4 py-3 font-medium">Table</th>
                 <th className="px-4 py-3 font-medium">Retention (days)</th>
                 <th className="px-4 py-3 font-medium">Enabled</th>
@@ -399,12 +399,12 @@ export function DataRetentionTab() {
           className="nm-card overflow-hidden"
           data-testid="preview-results"
         >
-          <div className="border-b border-border/50 px-4 py-2.5 text-xs font-medium text-muted-foreground">
+          <div className="border-b border-border px-4 py-2.5 text-xs font-medium text-muted-foreground">
             Dry Run — rows that would be deleted
           </div>
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-border/50 text-left text-xs text-muted-foreground">
+              <tr className="border-b border-border text-left text-xs text-muted-foreground">
                 <th className="px-4 py-2 font-medium">Table</th>
                 <th className="px-4 py-2 font-medium">Retention (days)</th>
                 <th className="px-4 py-2 font-medium">Rows</th>
@@ -492,11 +492,11 @@ export function DataRetentionTab() {
       )}
 
       {/* Save button */}
-      <div className="flex items-center justify-end border-t border-border/50 pt-4">
+      <div className="flex items-center justify-end border-t border-border pt-4">
         <button
           onClick={handleSave}
           disabled={saveMutation.isPending}
-          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
           data-testid="data-retention-save-btn"
         >
           {saveMutation.isPending ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}

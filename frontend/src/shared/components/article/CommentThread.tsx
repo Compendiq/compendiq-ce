@@ -57,7 +57,7 @@ export function CommentThread({
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       className={cn(
-        'rounded-lg border border-border/30 bg-foreground/[0.02] p-3',
+        'rounded-lg border border-border bg-foreground/[0.02] p-3',
         comment.resolved && 'opacity-60',
       )}
       data-testid={`comment-thread-${comment.id}`}
@@ -151,7 +151,7 @@ export function CommentThread({
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: 'auto', opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
-            className="mt-3 space-y-2 overflow-hidden border-l-2 border-border/30 pl-4 ml-3"
+            className="mt-3 space-y-2 overflow-hidden border-l-2 border-border pl-4 ml-3"
           >
             {replies.map((reply) => (
               <div key={reply.id} className="flex items-start gap-2" data-testid={`reply-${reply.id}`}>

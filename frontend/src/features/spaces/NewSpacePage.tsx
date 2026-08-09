@@ -74,7 +74,7 @@ export function NewSpacePage() {
         Back
       </button>
 
-      <div className="rounded-xl border border-border/50 bg-card/80 p-6 shadow-lg backdrop-blur-md">
+      <div className="rounded-xl border border-border bg-card p-6">
         <div className="mb-6 flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-action/10">
             <HardDrive size={20} className="text-action" />
@@ -99,7 +99,7 @@ export function NewSpacePage() {
               value={name}
               onChange={(e) => handleNameChange(e.target.value)}
               placeholder="e.g. Engineering Docs"
-              className="w-full rounded-lg border border-border/50 bg-background/50 px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
+              className="w-full rounded-lg border border-border bg-background/50 px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-ring"
               required
               autoFocus
             />
@@ -121,7 +121,7 @@ export function NewSpacePage() {
               placeholder="e.g. ENG_DOCS"
               pattern="[A-Z0-9_]+"
               maxLength={50}
-              className="w-full rounded-lg border border-border/50 bg-background/50 px-3 py-2 text-sm font-mono text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
+              className="w-full rounded-lg border border-border bg-background/50 px-3 py-2 text-sm font-mono text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-ring"
               required
             />
             <p className="mt-1 text-[11px] text-muted-foreground">
@@ -142,7 +142,7 @@ export function NewSpacePage() {
               placeholder="What is this space for?"
               rows={3}
               maxLength={2000}
-              className="w-full rounded-lg border border-border/50 bg-background/50 px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30 resize-none"
+              className="w-full rounded-lg border border-border bg-background/50 px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-ring resize-none"
             />
           </div>
 
@@ -161,7 +161,7 @@ export function NewSpacePage() {
                   className={`rounded-md border px-2 py-1 text-[11px] transition-colors ${
                     selectedIcon === icon.value
                       ? 'border-action bg-action/10 text-action font-medium'
-                      : 'border-border/30 text-muted-foreground hover:bg-foreground/5 hover:text-foreground'
+                      : 'border-border text-muted-foreground hover:bg-foreground/5 hover:text-foreground'
                   }`}
                   title={icon.label}
                 >
@@ -183,7 +183,8 @@ export function NewSpacePage() {
             <button
               type="submit"
               disabled={!name.trim() || !key.trim() || createSpace.isPending}
-              className="rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+              // The form's submit: filled, like every other page primary.
+              className="nm-button-primary disabled:cursor-not-allowed"
             >
               {createSpace.isPending ? 'Creating...' : 'Create Space'}
             </button>

@@ -4,7 +4,6 @@ import { m } from 'framer-motion';
 import { Pin, PinOff, Clock, User, ChevronDown, ChevronUp } from 'lucide-react';
 import { toast } from 'sonner';
 import { usePinnedPages, useUnpinPage } from '../../shared/hooks/use-pages';
-import { TiltCard } from '../../shared/components/effects/TiltCard';
 import { COLLAPSED_PIN_COUNT, entranceDelay, staggerPosition } from './pinned-articles-layout';
 
 export function PinnedArticlesSection() {
@@ -92,15 +91,22 @@ export function PinnedArticlesSection() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: entranceDelay(staggerPosition(i, isExpanded)) }}
           >
-            <TiltCard className="card-stack" maxTilt={8} data-testid={`pinned-tilt-${item.id}`}>
-              <div
-                role="button"
-                tabIndex={0}
-                onClick={() => navigate(`/pages/${item.id}`)}
-                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') navigate(`/pages/${item.id}`); }}
-                className="group relative flex w-full cursor-pointer flex-col gap-2 rounded-xl border border-border/55 bg-card/80 p-4 text-left transition-colors hover:border-primary/45 hover:bg-card"
-                data-testid={`pinned-card-${item.id}`}
-              >
+            {/* The card was wrapped in a `TiltCard` carrying `card-stack`: a 3D
+                perspective rotation tracking the cursor, a drop-shadow that
+                slid with it, and two offset ghost layers faking a stack of
+                paper that rotated on hover. It is the same gesture the KPI
+                tiles lost — the clearest surviving artefact of the retired
+                neumorphic world, with no counterpart anywhere else in the app.
+                The card below already carries the whole treatment; the wrapper
+                was decoration on top of it. */}
+            <div
+              role="button"
+              tabIndex={0}
+              onClick={() => navigate(`/pages/${item.id}`)}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') navigate(`/pages/${item.id}`); }}
+              className="group relative flex w-full cursor-pointer flex-col gap-2 rounded-xl border border-border bg-card p-4 text-left transition-colors hover:border-primary/45"
+              data-testid={`pinned-card-${item.id}`}
+            >
               {/* Unpin button */}
               <button
                 onClick={(e) => handleUnpin(e, item.id, item.title)}
@@ -138,8 +144,7 @@ export function PinnedArticlesSection() {
                   {item.excerpt}
                 </p>
               )}
-              </div>
-            </TiltCard>
+            </div>
           </m.div>
         ))}
       </div>

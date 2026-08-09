@@ -231,16 +231,21 @@ export function CommandPalette() {
           >
             <Dialog.Title className="sr-only">Command palette</Dialog.Title>
             <div className={cn(
-              'nm-card overflow-hidden shadow-2xl transition-shadow duration-200',
-              isAiMode && 'shadow-[0_0_30px_-5px_rgba(168,85,247,0.4)] ring-1 ring-purple-500/30',
+              'nm-card-elevated overflow-hidden',
+              // The glow went with the rest of them: a 30px coloured bloom is
+              // the retired world's way of saying "this mode is special", and
+              // `nm-card-elevated` already carries the one overlay shadow the
+              // system has. The ring stays — that is the AI signal, and a ring
+              // is a border, not an effect.
+              isAiMode && 'ring-1 ring-status-ai/30',
             )}>
               {/* Search input */}
               <div className={cn(
-                'flex items-center gap-3 border-b border-border/50 px-4 py-3',
-                isAiMode && 'border-purple-500/30',
+                'flex items-center gap-3 border-b border-border px-4 py-3',
+                isAiMode && 'border-status-ai/30',
               )}>
                 {isAiMode ? (
-                  <Sparkles size={18} className="text-purple-400" />
+                  <Sparkles size={18} className="text-status-ai" />
                 ) : (
                   <Search size={18} className="text-muted-foreground" />
                 )}
@@ -252,7 +257,7 @@ export function CommandPalette() {
                   placeholder={isAiMode ? 'Ask AI anything...' : 'Search pages or type a command...'}
                   className={cn(
                     'flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground',
-                    isAiMode && 'text-purple-700 dark:text-purple-100 placeholder:text-purple-300/50',
+                    isAiMode && 'text-foreground placeholder:text-status-ai/50',
                   )}
                   aria-label="Search"
                   role="combobox"
@@ -261,7 +266,7 @@ export function CommandPalette() {
                   aria-activedescendant={activeOptionId}
                   autoComplete="off"
                 />
-                <kbd className="rounded border border-border/50 px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                <kbd className="rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground">
                   ESC
                 </kbd>
               </div>
@@ -276,7 +281,7 @@ export function CommandPalette() {
                 {/* AI mode result */}
                 {isAiMode && (
                   <div className="mb-2">
-                    <p className="mb-1 px-2 text-[12px] font-medium uppercase tracking-wider text-purple-400">
+                    <p className="mb-1 px-2 text-[12px] font-medium uppercase tracking-wider text-status-ai">
                       AI Assistant
                     </p>
                     <button
@@ -289,13 +294,13 @@ export function CommandPalette() {
                       className={cn(
                         'flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-sm transition-colors',
                         selectedIndex === 0
-                          ? 'bg-purple-500/20 text-purple-300'
-                          : 'text-foreground hover:bg-purple-500/10',
+                          ? 'bg-status-ai/20 text-status-ai'
+                          : 'text-foreground hover:bg-status-ai/10',
                       )}
                     >
-                      <Sparkles size={14} className="shrink-0 text-purple-400" />
+                      <Sparkles size={14} className="shrink-0 text-status-ai" />
                       <span className="font-medium">{aiQuery ? `Ask AI: ${aiQuery}` : 'Ask AI'}</span>
-                      <kbd className="ml-auto rounded border border-border/50 px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                      <kbd className="ml-auto rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground">
                         Enter
                       </kbd>
                     </button>
@@ -417,14 +422,14 @@ export function CommandPalette() {
 
               {/* Footer */}
               <div className={cn(
-                'flex items-center gap-4 border-t border-border/50 px-4 py-2 text-[11px] text-muted-foreground',
-                isAiMode && 'border-purple-500/30',
+                'flex items-center gap-4 border-t border-border px-4 py-2 text-[11px] text-muted-foreground',
+                isAiMode && 'border-status-ai/30',
               )}>
-                <span><kbd className="rounded border border-border/50 px-1 py-0.5">↑↓</kbd> Navigate</span>
-                <span><kbd className="rounded border border-border/50 px-1 py-0.5">↵</kbd> Select</span>
-                <span><kbd className="rounded border border-border/50 px-1 py-0.5">esc</kbd> Close</span>
+                <span><kbd className="rounded border border-border px-1 py-0.5">↑↓</kbd> Navigate</span>
+                <span><kbd className="rounded border border-border px-1 py-0.5">↵</kbd> Select</span>
+                <span><kbd className="rounded border border-border px-1 py-0.5">esc</kbd> Close</span>
                 {!isAiMode && (
-                  <span className="ml-auto"><kbd className="rounded border border-border/50 px-1 py-0.5">/ai</kbd> AI mode</span>
+                  <span className="ml-auto"><kbd className="rounded border border-border px-1 py-0.5">/ai</kbd> AI mode</span>
                 )}
               </div>
             </div>

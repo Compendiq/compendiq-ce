@@ -11,9 +11,8 @@ import { useSpaces, useSync, useSyncStatus } from '../../shared/hooks/use-spaces
 import { useSettings } from '../../shared/hooks/use-settings';
 import { useSearch } from '../../shared/hooks/use-search';
 import { EmptyState } from '../../shared/components/feedback/EmptyState';
-import { EmbeddingStatusBadge } from '../../shared/components/badges/EmbeddingStatusBadge';
 import { QualityScoreBadge } from '../../shared/components/badges/QualityScoreBadge';
-import { SummaryStatusBadge } from '../../shared/components/badges/SummaryStatusBadge';
+import { PageStateBadge } from '../../shared/components/badges/PageStateBadge';
 import { KPICards } from './KPICards';
 import { BulkActionBar } from './BulkActionBar';
 import { bulkWireId } from '../../shared/hooks/use-bulk-page-actions';
@@ -82,8 +81,17 @@ const PageListItem = memo(function PageListItem({
     >
       <div
         className={cn(
-          'flex w-full items-center gap-3 rounded-xl border bg-card/70 p-4 text-left transition-colors hover:border-primary/45 hover:bg-card',
-          selected ? 'border-primary/50 bg-primary/[0.07]' : 'border-border/55',
+          // A list row, not a card: px-3 py-2 and a 6px corner. `p-4` plus a
+          // 12px radius is card geometry, and forty of them stacked reads as a
+          // gallery of tiles rather than a list you scan down.
+          //
+          // Hover tints the row instead of colouring its border. An accent
+          // border on hover competes with `selected`, which is the state that
+          // actually needs to be seen across a long list.
+          'flex w-full items-center gap-3 rounded-md border px-3 py-2 text-left transition-colors',
+          selected
+            ? 'border-primary/50 bg-primary/[0.07]'
+            : 'border-border bg-card hover:bg-accent',
         )}
         data-testid={`article-hover-${pageItem.id}`}
       >
@@ -106,7 +114,9 @@ const PageListItem = memo(function PageListItem({
         >
           <div className="min-w-0 flex-1 text-left">
             <div className="flex items-center gap-2">
-              <p className="truncate font-medium">{pageItem.title}</p>
+              {/* 13px medium. At 16px the title read as a card heading, which
+                  is what made forty rows look like forty cards. */}
+              <p className="truncate text-[13px] font-medium">{pageItem.title}</p>
               {/* Source badge */}
               {pageItem.source === 'standalone' ? (
                 <span
@@ -138,7 +148,7 @@ const PageListItem = memo(function PageListItem({
                 ) : (
                   // Private = neutral gray. Was amber, but privacy carries no AI semantic.
                   <span
-                    className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border/60 bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                    className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
                     data-testid="badge-private"
                     data-visibility-badge={pageItem.id}
                   >
@@ -155,37 +165,60 @@ const PageListItem = memo(function PageListItem({
               )}
             </div>
           </div>
-          <QualityScoreBadge
-            qualityScore={pageItem.qualityScore}
+          {/* Trailing status cluster. `hidden sm:flex` because none of these
+              can shrink: at 390px they held their width, drove the title's
+              `min-w-0` block to zero, and rendered on top of the badges inside
+              it — the row showed five overlapping pills and no title.
+
+              Hidden rather than dropped, so they stay in the DOM for tests and
+              for assistive tech, and so the same row markup serves both widths.
+              The facts are not lost on mobile: every one of them is on the page
+              itself, which is one tap away. */}
+          {/* One pipeline badge, at every width, and it renders NOTHING when the
+              page is healthy or the job was deliberately skipped. This replaces
+              three near-duplicate pills ("Skipped / Skipped / Not Embedded");
+              the severity ladder and the reasoning live in PageStateBadge. */}
+          <PageStateBadge
+            embeddingDirty={pageItem.embeddingDirty}
+            summaryStatus={pageItem.summaryStatus}
             qualityStatus={pageItem.qualityStatus}
-            qualityCompleteness={pageItem.qualityCompleteness}
-            qualityClarity={pageItem.qualityClarity}
-            qualityStructure={pageItem.qualityStructure}
-            qualityAccuracy={pageItem.qualityAccuracy}
-            qualityReadability={pageItem.qualityReadability}
-            qualitySummary={pageItem.qualitySummary}
-            qualityAnalyzedAt={pageItem.qualityAnalyzedAt}
-            qualityError={pageItem.qualityError}
           />
-          <SummaryStatusBadge status={pageItem.summaryStatus} />
-          <EmbeddingStatusBadge embeddingDirty={pageItem.embeddingDirty} />
-          {/* No FreshnessBadge here: it is derived purely from lastModifiedAt,
-              which this row already prints as a date three lines above. Two
-              renderings of one field read as two facts. It stays on the page
-              detail and preview surfaces, where no raw date sits beside it. */}
-          {pageItem.labels.length > 0 && (
-            <div className="flex gap-1">
-              {pageItem.labels.slice(0, 3).map((label) => (
-                <span
-                  key={label}
-                  className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground"
-                  data-testid="label-chip"
-                >
-                  {label}
-                </span>
-              ))}
-            </div>
-          )}
+          <div className="hidden shrink-0 items-center gap-2 sm:flex">
+            {/* Only when a score EXISTS. A number about the content is not
+                pipeline state and an author acts on it differently — but
+                "Not Scored" IS pipeline state, and PageStateBadge owns that. */}
+            {pageItem.qualityScore !== null && pageItem.qualityScore !== undefined && (
+              <QualityScoreBadge
+                qualityScore={pageItem.qualityScore}
+                qualityStatus={pageItem.qualityStatus}
+                qualityCompleteness={pageItem.qualityCompleteness}
+                qualityClarity={pageItem.qualityClarity}
+                qualityStructure={pageItem.qualityStructure}
+                qualityAccuracy={pageItem.qualityAccuracy}
+                qualityReadability={pageItem.qualityReadability}
+                qualitySummary={pageItem.qualitySummary}
+                qualityAnalyzedAt={pageItem.qualityAnalyzedAt}
+                qualityError={pageItem.qualityError}
+              />
+            )}
+            {/* No FreshnessBadge here: it is derived purely from lastModifiedAt,
+                which this row already prints as a date three lines above. Two
+                renderings of one field read as two facts. It stays on the page
+                detail and preview surfaces, where no raw date sits beside it. */}
+            {pageItem.labels.length > 0 && (
+              <div className="flex gap-1">
+                {pageItem.labels.slice(0, 3).map((label) => (
+                  <span
+                    key={label}
+                    className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground"
+                    data-testid="label-chip"
+                  >
+                    {label}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
         </button>
       </div>
     </m.div>
@@ -560,19 +593,21 @@ export function PagesPage() {
   });
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Pages</h1>
-          <p className="text-sm text-muted-foreground">
+    <div className="space-y-3">
+      {/* Header. 18px semibold, not 24px bold: this is a route label, and the
+          sidebar already says where you are. The old scale plus a subtitle plus
+          `space-y-6` spent ~110px of the first viewport restating the nav. */}
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="text-lg font-semibold">Pages</h1>
+          <p className="text-[13px] text-muted-foreground">
             Browse and manage your knowledge base
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <button
             onClick={() => navigate('/trash')}
-            className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm flex items-center gap-2 px-4 py-2 text-sm hover:bg-foreground/5"
+            className="rounded-xl border border-border bg-card flex items-center gap-2 px-4 py-2 text-sm hover:bg-foreground/5"
             data-testid="trash-link"
           >
             <Trash2 size={16} />
@@ -581,13 +616,29 @@ export function PagesPage() {
           {/* Sync moved into the Last Sync KPI card, where it sits beside the
               value it acts on. Keeping a second copy here would have made the
               header four buttons wide for no added reach. */}
+          {/* The one FILLED control on this route. Everything here was an
+              outlined rectangle, so the accent never actually filled anything
+              and the page had no fast path to its own primary action — which is
+              half of what the brief asked Plane for. `nm-button-primary` is the
+              filled recipe; the outline treatment stays for secondary actions,
+              which is what makes this one read as primary. */}
           <button
             onClick={() => navigate('/pages/new')}
-            className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+            className="nm-button-primary"
           >
             <Plus size={16} />
-            <span className="hidden sm:inline">New Page</span>
-            <span className="hidden sm:inline"><ShortcutHint shortcutId="new-page" className="border-action/30 text-action/80" /></span>
+            {/* Labelled at every width. `hidden sm:inline` was survivable while
+                this was an outline square matching the one beside it; filling it
+                aimed the eye at the only control on the page whose meaning was
+                unstated. A saturated icon-only square is a worse affordance than
+                a quiet one. */}
+            <span>New Page</span>
+            {/* Full-opacity ink. At /80 on the accent fill this chip became the
+                lowest-contrast text in the frame — the theme guard measures
+                `primary-foreground` on `primary`, but nothing measures a
+                translucent variant of it, so the alpha put 11px text somewhere
+                no test was looking. */}
+            <ShortcutHint shortcutId="new-page" className="border-primary-foreground/30 bg-transparent text-primary-foreground" />
           </button>
         </div>
       </div>
@@ -609,7 +660,7 @@ export function PagesPage() {
 
       {/* Sync progress */}
       {syncStatus?.status === 'syncing' && syncStatus.progress && (
-        <div className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm p-3">
+        <div className="rounded-xl border border-border bg-card p-3">
           <div className="flex items-center justify-between text-sm">
             <span>Syncing {syncStatus.progress.space}...</span>
             <span>{syncStatus.progress.current}/{syncStatus.progress.total}</span>
@@ -625,7 +676,7 @@ export function PagesPage() {
 
       {/* Embedding progress */}
       {embeddingStatusData?.isProcessing && (
-        <div className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm flex items-center gap-3 p-3 border border-primary/30" data-testid="embedding-progress-banner">
+        <div className="rounded-xl border border-border bg-card flex items-center gap-3 p-3 border border-primary/30" data-testid="embedding-progress-banner">
           <Loader2 size={16} className="animate-spin text-action" />
           <span className="text-sm">
             Embedding in progress — {embeddingStatusData.dirtyPages} pages remaining
@@ -648,7 +699,14 @@ export function PagesPage() {
       <PinnedArticlesSection />
 
       {/* Filters */}
-      <section aria-labelledby="kb-filters-heading" className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm space-y-3 p-4">
+      {/* A control row, not a pane. This was a bordered `bg-card` box with
+          `p-4`, stacked directly under another bordered box (the status strip)
+          and above the list's own bordered rows — three nested container
+          levels before the first page. Controls do not need a container: they
+          are already legible as controls, and the box was spending ~90px of the
+          first viewport to say "these things belong together", which their
+          adjacency already said. */}
+      <section aria-labelledby="kb-filters-heading" className="space-y-3">
         <h2 id="kb-filters-heading" className="sr-only">Search and filter pages</h2>
         <div className="flex flex-wrap items-center gap-3">
           {/* Search */}
@@ -691,8 +749,21 @@ export function PagesPage() {
             )}
           </div>
 
-          {/* Search mode toggle — keyword / semantic / hybrid */}
-          <div className="flex items-center gap-1.5" data-testid="search-mode-toggle">
+          {/* Search mode toggle — keyword / semantic / hybrid.
+
+              A segmented control on a recessed track, not three loose pills.
+              The active segment used to be a near-black `bg-action` fill with a
+              coloured shadow and a ring, which read as the most important
+              control on the page — louder than "New Page", the actual primary
+              action — when all it does is pick a retrieval strategy. Neutral
+              fill plus weight carries "selected" here; the accent stays spent
+              on actions. */}
+          <div
+            className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-border bg-muted p-0.5"
+            data-testid="search-mode-toggle"
+            role="group"
+            aria-label="Search mode"
+          >
               {(['keyword', 'semantic', 'hybrid'] as const).map((m) => (
                 <button
                   key={m}
@@ -700,10 +771,10 @@ export function PagesPage() {
                   onClick={() => setFilters({ mode: m, page: 1 })}
                   aria-pressed={searchMode === m}
                   className={cn(
-                    'rounded-full px-3 py-1 text-xs font-medium transition-all capitalize',
+                    'rounded-sm px-2.5 py-1 text-xs font-medium capitalize transition-colors',
                     searchMode === m
-                      ? 'bg-action text-action-foreground shadow-md shadow-action/25 ring-1 ring-action/50'
-                      : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10 border border-transparent hover:border-border/40',
+                      ? 'nm-pill-active'
+                      : 'text-muted-foreground hover:text-foreground',
                   )}
                 >
                   {m}
@@ -779,7 +850,7 @@ export function PagesPage() {
 
         {/* Advanced filters panel */}
         {showAdvancedFilters && (
-          <div className="grid grid-cols-2 items-end gap-3 border-t border-border/40 pt-3 sm:grid-cols-3 lg:grid-cols-4" data-testid="advanced-filters-panel">
+          <div className="grid grid-cols-2 items-end gap-3 border-t border-border pt-3 sm:grid-cols-3 lg:grid-cols-4" data-testid="advanced-filters-panel">
             {/* Author filter */}
             <div className="min-w-40">
               <label htmlFor="filter-author-select" className="mb-1 block text-xs text-muted-foreground">Author</label>
@@ -912,7 +983,7 @@ export function PagesPage() {
         {activeFilters.length > 0 && (
           <div
             className={cn(
-              'flex flex-wrap items-center gap-2 border-t border-border/50 pt-3',
+              'flex flex-wrap items-center gap-2 border-t border-border pt-3',
               useSemanticSearch && 'opacity-50',
             )}
             data-testid="active-filter-pills"
@@ -997,7 +1068,7 @@ export function PagesPage() {
       {/* Space home content (when enabled and a space is selected) */}
       {showHomeContent && !forcePageList ? (
         homePageLoading ? (
-          <div className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm h-96 animate-pulse" />
+          <div className="rounded-xl border border-border bg-card h-96 animate-pulse" />
         ) : homePage ? (
           <m.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-3">
             <div className="flex items-center justify-between">
@@ -1005,13 +1076,13 @@ export function PagesPage() {
               <div className="flex gap-2">
                 <button
                   onClick={() => navigate(`/pages/${homePage.id}`)}
-                  className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
+                  className="rounded-xl border border-border bg-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
                 >
                   <FileText size={14} /> View Full Page
                 </button>
                 <button
                   onClick={() => setForcePageList(true)}
-                  className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
+                  className="rounded-xl border border-border bg-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
                   data-testid="show-page-list"
                 >
                   <List size={14} /> Show All Pages
@@ -1019,7 +1090,7 @@ export function PagesPage() {
               </div>
             </div>
             <SanitizedHtml
-              className={`rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm prose max-w-none p-6${isLight ? '' : ' prose-invert'}`}
+              className={`rounded-xl border border-border bg-card prose max-w-none p-6${isLight ? '' : ' prose-invert'}`}
               html={homeBodyHtml}
               additionalAllowedAttrs={['data-diagram-name', 'data-drawio', 'data-color', 'data-layout-type', 'data-cell-width', 'data-border']}
             />
@@ -1035,7 +1106,7 @@ export function PagesPage() {
           {searchResults.isLoadingImmediate && searchResults.immediateResults.length === 0 ? (
             <div className="space-y-3">
               {Array.from({ length: 5 }).map((_, i) => (
-                <div key={i} className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm h-16 animate-pulse" />
+                <div key={i} className="rounded-xl border border-border bg-card h-16 animate-pulse" />
               ))}
             </div>
           ) : (() => {
@@ -1070,7 +1141,7 @@ export function PagesPage() {
                     >
                       <button
                         onClick={() => navigate(`/pages/${item.id}`)}
-                        className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm transition-all hover:border-primary/50 flex w-full items-center gap-3 p-4 text-left"
+                        className="rounded-xl border border-border bg-card transition-all hover:border-primary/50 flex w-full items-center gap-3 p-4 text-left"
                         data-testid={`article-hover-${item.id}`}
                       >
                         <FileText size={18} className="shrink-0 text-muted-foreground" />
@@ -1115,7 +1186,7 @@ export function PagesPage() {
                 onClick={() => setFilters({ page: Math.max(1, page - 1) })}
                 disabled={page <= 1}
                 aria-label="Previous page"
-                className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm p-2 disabled:opacity-30"
+                className="rounded-xl border border-border bg-card p-2 disabled:opacity-30"
               >
                 <ChevronLeft size={18} />
               </button>
@@ -1126,7 +1197,7 @@ export function PagesPage() {
                 onClick={() => setFilters({ page: Math.min(searchResults.totalPages, page + 1) })}
                 disabled={page >= searchResults.totalPages}
                 aria-label="Next page"
-                className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm p-2 disabled:opacity-30"
+                className="rounded-xl border border-border bg-card p-2 disabled:opacity-30"
               >
                 <ChevronRight size={18} />
               </button>
@@ -1139,7 +1210,7 @@ export function PagesPage() {
           {isLoading ? (
             <div className="space-y-3">
               {Array.from({ length: 5 }).map((_, i) => (
-                <div key={i} className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm h-16 animate-pulse" />
+                <div key={i} className="rounded-xl border border-border bg-card h-16 animate-pulse" />
               ))}
             </div>
           ) : pagesError && !pagesData ? (
@@ -1243,7 +1314,7 @@ export function PagesPage() {
                 onClick={() => setFilters({ page: Math.max(1, page - 1) })}
                 disabled={page <= 1}
                 aria-label="Previous page"
-                className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm p-2 disabled:opacity-30"
+                className="rounded-xl border border-border bg-card p-2 disabled:opacity-30"
               >
                 <ChevronLeft size={18} />
               </button>
@@ -1254,7 +1325,7 @@ export function PagesPage() {
                 onClick={() => setFilters({ page: Math.min(pagesData.totalPages, page + 1) })}
                 disabled={page >= pagesData.totalPages}
                 aria-label="Next page"
-                className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm p-2 disabled:opacity-30"
+                className="rounded-xl border border-border bg-card p-2 disabled:opacity-30"
               >
                 <ChevronRight size={18} />
               </button>

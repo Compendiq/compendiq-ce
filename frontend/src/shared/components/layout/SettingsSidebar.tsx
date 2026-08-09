@@ -72,16 +72,24 @@ export function SettingsSidebar({ onNavigate }: { onNavigate?: () => void } = {}
       transition={reduceEffects ? { duration: 0 } : sidebarSpring}
       className="app-sidebar relative flex flex-col border-r overflow-hidden"
     >
-      <div className="panel-toolbar flex shrink-0 items-center gap-1 border-b px-2 py-2">
+      {/* Same 48px rule height as SidebarTreeView's — the two sidebars share
+          MainNavStrip precisely so this row cannot drift between routes. */}
+      <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 border-b px-2">
         <MainNavStripExpanded onNavigate={onNavigate} />
+        {/* No `ShortcutHint` here, unlike the collapsed rail's expand button
+            below. This row already carries the full Pages/AI/Graph strip, and
+            at 256px the chip pushed the button 8.8px past the sidebar's edge —
+            `overflow-hidden` on the aside then sliced the comma in half. The
+            other two collapse controls (the pages rail, the article inspector)
+            never had a chip either, so dropping it makes all three the same
+            control; the keystroke is still in the `title`. */}
         <button
           onClick={toggleTreeSidebar}
-          className="flex shrink-0 items-center gap-0.5 rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
+          className="flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
           aria-label="Collapse sidebar"
           title="Collapse sidebar (,)"
         >
           <PanelLeftClose size={14} />
-          <ShortcutHint shortcutId="toggle-sidebar" />
         </button>
       </div>
 
@@ -105,7 +113,7 @@ export function SettingsSidebar({ onNavigate }: { onNavigate?: () => void } = {}
               aria-labelledby={`settings-group-${group.id}`}
               className={cn(
                 'pb-2',
-                groupIdx > 0 && 'mt-2 border-t border-border/40 pt-2',
+                groupIdx > 0 && 'mt-2 border-t border-border pt-2',
               )}
             >
               <h2

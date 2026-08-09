@@ -253,12 +253,12 @@ export function CustomRoleEditor({ open, onOpenChange, editRole }: CustomRoleEdi
           data-testid="custom-role-editor-overlay"
         />
         <Dialog.Content
-          className="fixed left-1/2 top-1/2 z-50 w-full max-w-2xl -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-border/60 bg-card/90 shadow-2xl backdrop-blur-xl outline-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] max-h-[85vh] overflow-y-auto"
+          className="fixed left-1/2 top-1/2 z-50 w-full max-w-2xl -translate-x-1/2 -translate-y-1/2 nm-card-elevated outline-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] max-h-[85vh] overflow-y-auto"
           aria-describedby={undefined}
           data-testid="custom-role-editor"
         >
           {/* Header */}
-          <div className="flex items-center justify-between border-b border-border/50 px-5 py-4">
+          <div className="flex items-center justify-between border-b border-border px-5 py-4">
             <Dialog.Title className="flex items-center gap-2 text-base font-semibold text-foreground">
               <Shield size={18} className="text-action" />
               {isEditMode ? `Edit Role: ${editRole.displayName}` : 'Create Custom Role'}
@@ -276,7 +276,7 @@ export function CustomRoleEditor({ open, onOpenChange, editRole }: CustomRoleEdi
 
           {/* Sub-tabs (edit mode only) */}
           {isEditMode && (
-            <div className="flex gap-1 border-b border-border/50 px-5 py-2">
+            <div className="flex gap-1 border-b border-border px-5 py-2">
               <button
                 onClick={() => setActiveSection('edit')}
                 className={`rounded-md px-3 py-1.5 text-sm transition-colors ${
@@ -412,10 +412,10 @@ export function CustomRoleEditor({ open, onOpenChange, editRole }: CustomRoleEdi
                     No assignments for this role
                   </div>
                 ) : (
-                  <div className="rounded-lg border border-border/50 overflow-hidden">
+                  <div className="rounded-lg border border-border overflow-hidden">
                     <table className="w-full text-sm">
                       <thead>
-                        <tr className="border-b border-border/50 text-left text-xs text-muted-foreground">
+                        <tr className="border-b border-border text-left text-xs text-muted-foreground">
                           <th className="px-4 py-2.5 font-medium">Space</th>
                           <th className="px-4 py-2.5 font-medium">Type</th>
                           <th className="px-4 py-2.5 font-medium">Principal</th>
@@ -444,7 +444,7 @@ export function CustomRoleEditor({ open, onOpenChange, editRole }: CustomRoleEdi
           </div>
 
           {/* Footer */}
-          <div className="flex items-center justify-between border-t border-border/50 px-5 py-4">
+          <div className="flex items-center justify-between border-t border-border px-5 py-4">
             <div>
               {isEditMode && !showDeleteConfirm && (
                 <button
@@ -491,7 +491,7 @@ export function CustomRoleEditor({ open, onOpenChange, editRole }: CustomRoleEdi
                 <button
                   onClick={handleSubmit}
                   disabled={!canSubmit}
-                  className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+                  className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
                   data-testid="submit-role-btn"
                 >
                   {isPending && <Loader2 size={14} className="animate-spin" />}

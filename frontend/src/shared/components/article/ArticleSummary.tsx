@@ -113,7 +113,7 @@ export function ArticleSummary({
     if (summaryStatus === 'pending' && health?.services?.llm === false) {
       return (
         <div
-          className="mb-6 flex items-center gap-2 rounded-lg border border-border/40 bg-foreground/[0.03] px-4 py-3"
+          className="mb-6 flex items-center gap-2 rounded-lg border border-border bg-foreground/[0.03] px-4 py-3"
           data-testid="article-summary-offline"
         >
           <CloudOff size={16} className="text-muted-foreground" />
@@ -125,10 +125,10 @@ export function ArticleSummary({
     }
     return (
       <div
-        className="mb-6 flex items-center gap-2 rounded-lg border border-purple-500/20 bg-purple-500/5 px-4 py-3"
+        className="mb-6 flex items-center gap-2 rounded-lg border border-status-ai/20 bg-status-ai/5 px-4 py-3"
         data-testid="article-summary-pending"
       >
-        <Clock size={16} className={cn('text-purple-400', summaryStatus === 'summarizing' && 'animate-pulse')} />
+        <Clock size={16} className={cn('text-status-ai', summaryStatus === 'summarizing' && 'animate-pulse')} />
         <span className="text-sm text-muted-foreground">
           {summaryStatus === 'summarizing'
             ? 'Generating AI summary...'

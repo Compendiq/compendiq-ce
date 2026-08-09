@@ -19,12 +19,12 @@ import {
   History,
 } from 'lucide-react';
 import { AutoTagger } from '../../../features/pages/AutoTagger';
+import { DockPanel } from '../../../features/ai/dock/DockPanel';
 import { VersionHistory } from '../../../features/pages/VersionHistory';
 import { FreshnessBadge } from '../badges/FreshnessBadge';
 import { EmbeddingStatusBadge } from '../badges/EmbeddingStatusBadge';
 import { QualityScoreBadge } from '../badges/QualityScoreBadge';
 import { m, AnimatePresence, useReducedMotion } from 'framer-motion';
-import { ShortcutHint } from '../ShortcutHint';
 import { getShortcutHint, formatKeysForPlatform } from '../../lib/shortcut-registry';
 import { isMac as detectMac } from '../../lib/platform';
 import { toast } from 'sonner';
@@ -131,7 +131,7 @@ const OutlineNodeItem = memo(function OutlineNodeItem({
         tabIndex={0}
         aria-expanded={hasChildren ? isOpen : undefined}
         className={cn(
-          'group flex items-center gap-1.5 rounded-[10px] h-9 pr-2 text-sm cursor-pointer transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
+          'group flex items-center gap-1.5 rounded-[10px] h-9 pr-2 text-sm cursor-pointer transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background',
           isActive
             ? 'nav-selection font-medium'
             : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
@@ -193,7 +193,20 @@ const OutlineNodeItem = memo(function OutlineNodeItem({
 
 // ---------- ArticleRightPane ----------
 
-export type InspectorView = 'outline' | 'details';
+/**
+ * `assistant` joins the inspector's views (owner decision, 2026-08-06),
+ * superseding #1126's third-column dock on desktop.
+ *
+ * The dock was a separate column beside this pane, opened by a trigger with its
+ * own animation. It is now the FIRST tab in this control, and switching to it
+ * is the same instant switch as Outline <-> Details — one pane, three views,
+ * one interaction. The old arrangement asked the user to learn two different
+ * things about the same right-hand edge.
+ *
+ * Below `md` the assistant is still `AiDockSheet` (a bottom sheet), because
+ * this pane does not render at all there — see AppLayout.
+ */
+export type InspectorView = 'assistant' | 'outline' | 'details';
 
 export interface InspectorViewRequest {
   view: InspectorView;
@@ -222,28 +235,30 @@ export function ArticleRightPane({
   const setWidth = useUiStore((s) => s.setArticleSidebarWidth);
   const reduceEffects = useReducedMotion();
 
-  // The docked assistant (#1126) needs this pane in its 40px rail so the three
-  // columns fit. It is ORed in rather than written into the store: forcing the
-  // pane by calling setArticleSidebarCollapsed(true) would overwrite the user's
-  // persisted preference (zustand `persist`, key `compendiq-ui`), so closing the
-  // dock would leave their outline collapsed for good and the `.` shortcut would
-  // have quietly changed meaning.
+  // `collapsed` is the user's preference and nothing else now.
+  //
+  // #1126 ORed `dockOpen` in, because the assistant was a third column and this
+  // pane had to fall back to its 40px rail to make room. The assistant is a tab
+  // *inside* this pane now, so there is nothing to make room for — and leaving
+  // the OR in place was actively harmful. `openDock()` is still raised by Alt+I
+  // and the AI preset; `AppLayout` consumes it above `md` and re-expresses it as
+  // a tab request, but effects run after commit, so `open` is true for a frame
+  // and this pane starts collapsing.
+  //
+  // It does not cost one frame, because the width is a framer spring: sampling
+  // per rAF across the keystroke, the pane ran 280 → 1 → back to 280 over ~30
+  // frames, overshooting to 288 on the way. Half a second of the panel slamming
+  // shut and springing open on the shortcut that exists to open it.
+  //
+  // Below `md` the flag still means the bottom sheet, and the guard further down
+  // (`dockOpen && !dockLayoutIsWide`) unmounts the pane for it — which is also
+  // why the OR is not needed for that case either.
   const dockOpen = useAiDockStore((s) => s.open);
-  const openDock = useAiDockStore((s) => s.openDock);
-  const closeDock = useAiDockStore((s) => s.closeDock);
   const dockLayoutIsWide = useIsDockWideLayout();
-  const collapsed = userCollapsed || dockOpen;
+  const collapsed = userCollapsed;
   const handleExpandSidebar = useCallback(() => {
-    if (dockOpen) {
-      closeDock();
-      // The dock may be the only reason the rail is collapsed. Preserve an
-      // already-expanded preference, but honor an explicit Expand action when
-      // the user had previously collapsed the sidebar themselves.
-      if (userCollapsed) toggleSidebar();
-      return;
-    }
     toggleSidebar();
-  }, [closeDock, dockOpen, toggleSidebar, userCollapsed]);
+  }, [toggleSidebar]);
 
   const headings = useArticleViewStore((s) => s.headings);
   const editing = useArticleViewStore((s) => s.editing);
@@ -615,7 +630,7 @@ export function ArticleRightPane({
   // Collapsed rail — glass pill style
   if (collapsed) {
     const railIconBtn =
-      'rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:opacity-50';
+      'rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50';
     return (
       <>
       {/* Positioning context for the outline flyout. `mouseleave` fires on DOM
@@ -653,7 +668,14 @@ export function ArticleRightPane({
           className="app-sidebar flex flex-col items-center border-l overflow-hidden"
           data-testid="article-right-pane-rail"
         >
-          <div className="flex h-12 w-full flex-col items-center justify-center gap-0.5">
+          {/* The shortcut lives in the tooltip (and the title below), not glued
+              to the icon. A one-character hint like "." rendered as a bordered
+              chip beside a rail icon reads as stray punctuation rather than a
+              key — worst of all in the 40px collapsed rail, where it is the
+              only other mark on screen. The `title` already carries it, so
+              nothing is lost for a mouse user, and `aria-label` for everyone
+              else. */}
+          <div className="flex h-12 w-full flex-col items-center justify-center">
             <button
               onClick={handleExpandSidebar}
               className={railIconBtn}
@@ -662,7 +684,6 @@ export function ArticleRightPane({
             >
               <PanelRight size={16} />
             </button>
-            <ShortcutHint shortcutId="toggle-right-panel" />
           </div>
 
           {/* Outline flyout trigger. Hover OR focus opens it — a hover-only
@@ -719,7 +740,15 @@ export function ArticleRightPane({
                   // #1176: opening is all it does. It used to start a full-page
                   // rewrite on the same click, which is why it was called "AI
                   // Improve" and drew a wand.
-                  onClick={() => openDock()}
+                  // Expands the pane onto its Assistant tab. This used to call
+                  // `openDock()`, which after the tab move opened a column that
+                  // no longer renders — a live control that silently did
+                  // nothing.
+                  onClick={() => {
+                    inspectorViewTouchedRef.current = true;
+                    setActiveInspectorView('assistant');
+                    handleExpandSidebar();
+                  }}
                   className={railIconBtn}
                   aria-label="AI Assistant"
                   title={`AI Assistant (${formatKeysForPlatform(getShortcutHint('ai-assistant') ?? '', detectMac())})`}
@@ -908,31 +937,57 @@ export function ArticleRightPane({
       )}
       data-testid="article-right-pane"
     >
-      {/* Pane bar — orientation and pane-level controls only. */}
-      <div className="panel-toolbar flex h-12 shrink-0 items-center justify-between border-b px-3">
-        <div className="min-w-0">
-          <span className="block text-xs font-semibold text-foreground/90">Page context</span>
-          <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
-            {page?.title ?? 'Current page'}
-          </span>
-        </div>
-        <button
-          onClick={toggleSidebar}
-          className="flex shrink-0 items-center gap-0.5 rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
-          aria-label="Collapse page sidebar"
-          title="Collapse sidebar (.)"
-        >
-          <PanelRightClose size={14} />
-          <ShortcutHint shortcutId="toggle-right-panel" />
-        </button>
-      </div>
+      {/* Pane bar — the view switcher IS the header row.
+          It used to sit under a two-line label reading "Page context" over the
+          page title. Both were redundant: the article's own H1 is a few pixels
+          to the left and never scrolls out from under the context strip, so the
+          pane was spending 48px restating it. The tabs are the only thing in
+          this chrome anyone operates, so they take the row, and the rule under
+          it now lands on the same y as the sidebar's and the article strip's —
+          one line across the app instead of three near-misses.
 
-      {/* Two stable views replace one long mixed-purpose column. */}
-      <div
-        className="mx-2 mt-2 grid shrink-0 grid-cols-2 gap-1 rounded-xl bg-foreground/[0.045] p-1"
-        role="tablist"
-        aria-label="Page context views"
-      >
+          `h-12` is the shared height of that line (see SidebarTreeView and
+          PageViewPage's context strip). It is not free space: the segmented
+          control is 34px (28px segments + 2px track inset + 1px borders), so
+          the row has ~7px of breathing room and no more. */}
+      <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 border-b px-2">
+        {/* Two stable views replace one long mixed-purpose column.
+            Same segmented-control shape as the main nav and the search-mode
+            toggle: `rounded-md` track, `border-border`, `bg-muted`, 2px inset.
+            This was `rounded-xl` on `bg-foreground/[0.045]` with a 4px inset —
+            a third distinct treatment for the same interaction. */}
+        <div
+          className="grid min-w-0 flex-1 grid-cols-3 gap-0.5 rounded-md border border-border bg-muted p-0.5"
+          role="tablist"
+          aria-label="Page context views"
+        >
+        {/* First, and deliberately: the assistant is the thing people reach for
+            most on a page, and it used to be the one behind an extra step. */}
+        <button
+          type="button"
+          role="tab"
+          id="page-context-tab-assistant"
+          aria-controls="page-context-panel-assistant"
+          aria-selected={activeInspectorView === 'assistant'}
+          onClick={() => {
+            inspectorViewTouchedRef.current = true;
+            setActiveInspectorView('assistant');
+          }}
+          className={cn(
+            'flex h-7 items-center justify-center gap-1.5 rounded-sm px-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+            activeInspectorView === 'assistant'
+              ? 'panel-tab-active'
+              : 'text-muted-foreground hover:text-foreground',
+          )}
+          data-ai-assistant-trigger
+          data-testid="page-context-tab-assistant"
+        >
+          {/* Violet marks AI (ADR-010) — on the tab's glyph only, so the
+              control still reads as one of three peers rather than the
+              coloured one. */}
+          <Sparkles size={13} className={cn(activeInspectorView === 'assistant' && 'text-status-ai')} />
+          Assistant
+        </button>
         <button
           type="button"
           role="tab"
@@ -944,7 +999,7 @@ export function ArticleRightPane({
             setActiveInspectorView('outline');
           }}
           className={cn(
-            'flex h-8 items-center justify-center gap-1.5 rounded-lg px-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
+            'flex h-7 items-center justify-center gap-1.5 rounded-sm px-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
             activeInspectorView === 'outline'
               ? 'panel-tab-active'
               : 'text-muted-foreground hover:text-foreground',
@@ -967,7 +1022,7 @@ export function ArticleRightPane({
             setActiveInspectorView('details');
           }}
           className={cn(
-            'flex h-8 items-center justify-center gap-1.5 rounded-lg px-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
+            'flex h-7 items-center justify-center gap-1.5 rounded-sm px-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
             activeInspectorView === 'details'
               ? 'panel-tab-active'
               : 'text-muted-foreground hover:text-foreground',
@@ -976,7 +1031,38 @@ export function ArticleRightPane({
           <FileText size={13} />
           Details
         </button>
+        </div>
+
+        <button
+          onClick={toggleSidebar}
+          className="flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
+          aria-label="Collapse page sidebar"
+          title="Collapse sidebar (.)"
+        >
+          <PanelRightClose size={14} />
+        </button>
       </div>
+
+      {activeInspectorView === 'assistant' && (
+        <div
+          id="page-context-panel-assistant"
+          role="tabpanel"
+          aria-labelledby="page-context-tab-assistant"
+          className="flex min-h-0 flex-1 flex-col"
+        >
+          {/* `DockPanel` keeps its own composer, chips and thread; only its
+              chrome changes. `variant="tab"` drops the header and close button
+              it needed as a standalone column — this pane already has both, and
+              two headers stacked was the giveaway that a column had been
+              stuffed into a tab.
+
+              Mounting it here also preserves #1126's provider economy: the
+              panel is the only `AiContext` consumer, and it still only mounts
+              while its view is selected, so the provider stays inert on an
+              article the user never asks about. */}
+          <DockPanel variant="tab" onClose={() => setActiveInspectorView('outline')} />
+        </div>
+      )}
 
       {activeInspectorView === 'details' && (
       <div
@@ -998,7 +1084,7 @@ export function ArticleRightPane({
           <AutoTagger
             pageId={id}
             currentLabels={page?.labels ?? []}
-            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
+            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
           />
         </div>
       )}
@@ -1009,23 +1095,18 @@ export function ArticleRightPane({
           <div className="mb-1.5 px-1 text-[11px] font-semibold text-muted-foreground">
             Page actions
           </div>
-          <button
-            // #1126: opens the assistant beside the document. Opening it also
-            // forces this pane into its rail, so this button is the last thing
-            // the user sees of the expanded pane before it collapses.
-            onClick={() => openDock()}
-            className="panel-context flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-sm font-medium text-primary-ink transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:border-primary/55"
-            title={`AI Assistant (${formatKeysForPlatform(getShortcutHint('ai-assistant') ?? '', detectMac())})`}
-            data-ai-assistant-trigger
-          >
-            <Sparkles size={15} className="shrink-0 opacity-70" />
-            <span className="truncate">AI Assistant</span>
-          </button>
-
+          {/* No "AI Assistant" action here. It was a page action when the
+              assistant was a separate column — something this pane could open.
+              Now the assistant is the tab immediately to the left of Details,
+              so the button was a control that switched to its own sibling: it
+              duplicated the tablist one row below it, and it made "Page
+              actions" mean two different things (act on the page vs. change
+              which panel you are looking at). The tab, the rail icon and Alt+I
+              are the three ways in, and they are enough. */}
           <button
             onClick={handleExportPdf}
             disabled={exportPdf.isPending}
-            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground disabled:opacity-50"
+            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground disabled:opacity-50"
             title="Export as PDF"
           >
             {exportPdf.isPending ? (
@@ -1039,7 +1120,7 @@ export function ArticleRightPane({
           <button
             onClick={handlePinToggle}
             className={cn(
-              'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
+              'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background',
               isPinned
                 ? 'nav-selection font-medium'
                 : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
@@ -1050,8 +1131,8 @@ export function ArticleRightPane({
             <span className="truncate">{isPinned ? 'Pinned' : 'Pin'}</span>
           </button>
 
-          <details className="group mt-2 border-t border-border/55 pt-2">
-            <summary className="flex h-8 cursor-pointer list-none items-center gap-2 rounded-lg px-2 text-xs font-medium text-muted-foreground transition-colors marker:content-none hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
+          <details className="group mt-2 border-t border-border pt-2">
+            <summary className="flex h-8 cursor-pointer list-none items-center gap-2 rounded-lg px-2 text-xs font-medium text-muted-foreground transition-colors marker:content-none hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
               <ChevronRight
                 size={13}
                 className="shrink-0 transition-transform group-open:rotate-90"
@@ -1065,7 +1146,7 @@ export function ArticleRightPane({
                 <AutoTagger
                   pageId={id}
                   currentLabels={page?.labels ?? []}
-                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
+                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
                 />
               )}
 
@@ -1076,7 +1157,7 @@ export function ArticleRightPane({
                     <button
                       type="button"
                       className={cn(
-                        'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
+                        'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background',
                         historyOpen
                           ? 'nav-selection font-medium'
                           : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
@@ -1095,7 +1176,7 @@ export function ArticleRightPane({
                   href={`${settings.confluenceUrl.replace(/\/+$/, "")}/pages/viewpage.action?pageId=${encodeURIComponent(page.confluenceId)}`}
                   target="_blank"
                   rel="noreferrer"
-                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
+                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
                 >
                   <ExternalLink size={15} className="shrink-0 opacity-70" />
                   <span className="truncate">Open in Confluence</span>
@@ -1108,7 +1189,7 @@ export function ArticleRightPane({
                 <button
                   onClick={handleResync}
                   disabled={resyncMutation.isPending}
-                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground disabled:opacity-50"
+                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground disabled:opacity-50"
                   title="Re-sync from Confluence"
                   data-testid="article-resync-btn"
                 >
@@ -1123,7 +1204,7 @@ export function ArticleRightPane({
               <button
                 onClick={handleReembed}
                 disabled={reembedMutation.isPending}
-                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground disabled:opacity-50"
+                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground disabled:opacity-50"
                 title="Re-embed for RAG"
                 data-testid="article-reembed-btn"
               >
@@ -1138,7 +1219,7 @@ export function ArticleRightPane({
               <button
                 onClick={handleRequality}
                 disabled={requalityMutation.isPending}
-                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground disabled:opacity-50"
+                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground disabled:opacity-50"
                 title="Re-check quality"
                 data-testid="article-requality-btn"
               >
@@ -1153,7 +1234,7 @@ export function ArticleRightPane({
           </details>
 
           <details className="group mt-1">
-            <summary className="flex h-8 cursor-pointer list-none items-center gap-2 rounded-lg px-2 text-xs font-medium text-muted-foreground transition-colors marker:content-none hover:bg-destructive/8 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
+            <summary className="flex h-8 cursor-pointer list-none items-center gap-2 rounded-lg px-2 text-xs font-medium text-muted-foreground transition-colors marker:content-none hover:bg-destructive/8 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
               <ChevronRight
                 size={13}
                 className="shrink-0 transition-transform group-open:rotate-90"
@@ -1163,7 +1244,7 @@ export function ArticleRightPane({
             </summary>
             <button
               onClick={handleDelete}
-              className="mt-0.5 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-destructive/80 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 hover:bg-destructive/8 hover:text-destructive"
+              className="mt-0.5 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-destructive/80 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring hover:bg-destructive/8 hover:text-destructive"
               title={`Delete (${formatKeysForPlatform(getShortcutHint('delete-page') ?? '', detectMac())})`}
             >
               <Trash2 size={15} className="shrink-0 opacity-70" />
@@ -1175,7 +1256,7 @@ export function ArticleRightPane({
 
       {/* Page facts are structured for scanning; health badges remain semantic. */}
       {page && !editing && (
-        <div className="border-t border-border/55 px-3 py-4">
+        <div className="border-t border-border px-3 py-4">
           <div className="text-[11px] font-semibold text-muted-foreground">Page details</div>
           <dl className="mt-2 divide-y divide-border/45 text-xs">
             <div className="flex items-center justify-between gap-3 py-2">
@@ -1271,7 +1352,7 @@ export function ArticleRightPane({
         )}
 
         {/* Outline tree — with scroll mask */}
-        <div className="mt-1 flex-1 overflow-y-auto border-t border-border/55 p-2 scroll-mask" data-testid="article-outline-tree">
+        <div className="mt-1 flex-1 overflow-y-auto border-t border-border p-2 scroll-mask" data-testid="article-outline-tree">
         {headings.length === 0 ? (
           <div className="flex h-full min-h-40 flex-col items-center justify-center px-5 text-center">
             <span className="flex size-9 items-center justify-center rounded-xl bg-foreground/[0.05] text-muted-foreground">
@@ -1318,7 +1399,7 @@ export function ArticleRightPane({
         onKeyDown={handleResizeKeyDown}
         className={cn(
           'group absolute bottom-0 left-0 top-0 z-10 flex w-2 cursor-col-resize items-center justify-start outline-none',
-          'focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60',
+          'focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
         )}
         title="Drag to resize · Double-click to reset"
       >

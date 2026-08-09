@@ -39,9 +39,9 @@ function MermaidBlockView({ node, updateAttributes, editor }: NodeViewProps) {
 
   return (
     <NodeViewWrapper className="mermaid-diagram-wrapper" data-testid="mermaid-block">
-      <div className="rounded-lg border border-border/50 bg-foreground/5 overflow-hidden">
+      <div className="rounded-lg border border-border bg-foreground/5 overflow-hidden">
         {/* Toolbar */}
-        <div className="flex items-center justify-between border-b border-border/50 px-3 py-1.5">
+        <div className="flex items-center justify-between border-b border-border px-3 py-1.5">
           <span className="text-xs text-muted-foreground font-medium">Mermaid Diagram</span>
           <div className="flex items-center gap-1">
             {isEditable && (

@@ -151,19 +151,24 @@ export function UsersAdminPage() {
   return (
     <section className="space-y-6">
       <header className="flex items-start justify-between gap-4">
-        <div>
-          <h2 className="text-xl font-semibold tracking-[-0.01em]">Users</h2>
-          <p className="text-sm text-muted-foreground">
+        {/* `min-w-0` on the prose, `shrink-0` on the actions. Without it the
+            description refused to wrap, pushed the button group past the
+            available width, and stacked "Bulk import" above "Create user" in a
+            column — two peer actions reading as a hierarchy. Prose is the thing
+            that should reflow; controls are not. */}
+        <div className="min-w-0">
+          <h2 className="text-[15px] font-semibold">Users</h2>
+          <p className="text-[13px] text-muted-foreground">
             Lifecycle management for user accounts. Role assignment and space permissions live under{' '}
             <a className="underline" href="/settings/security/rbac">RBAC</a>.
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
           {bulkEnabled && someSelected && (
             <button
               type="button"
               onClick={() => setShowBulkAction(true)}
-              className="rounded-md border border-border/60 px-4 py-2 text-sm font-medium hover:bg-foreground/5"
+              className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-foreground/5"
               data-testid="users-bulk-action-btn"
             >
               Bulk actions ({selectedUserIds.size})
@@ -173,7 +178,7 @@ export function UsersAdminPage() {
             <button
               type="button"
               onClick={() => setShowBulkImport(true)}
-              className="rounded-md border border-border/60 px-4 py-2 text-sm font-medium hover:bg-foreground/5"
+              className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-foreground/5"
               data-testid="users-bulk-import-btn"
             >
               Bulk import
@@ -182,7 +187,7 @@ export function UsersAdminPage() {
           <button
             type="button"
             onClick={() => setShowCreate(true)}
-            className="rounded-md border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+            className="nm-button-primary"
           >
             Create user
           </button>
@@ -210,10 +215,15 @@ export function UsersAdminPage() {
 
       {isLoading && <p className="text-sm text-muted-foreground">Loading users…</p>}
 
+      {/* The table carries no box of its own: it already sits inside the
+          settings pane, so a border here made a bordered box inside a bordered
+          box — the nesting the finish review flagged. A table is legible as a
+          table from its own rules; the header rule separates it from the
+          heading above, and the row rules do the rest. */}
       {data?.users && (
-        <div className="overflow-hidden rounded-md border">
+        <div className="overflow-hidden">
           <table className="w-full text-sm">
-            <thead className="bg-muted/40 text-left text-xs uppercase tracking-wide">
+            <thead className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
               <tr>
                 {bulkEnabled && (
                   <th className="w-10 p-3">
@@ -408,7 +418,7 @@ function UserCreateDialog({ onClose, onSubmit, isSubmitting }: UserCreateDialogP
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
       <form
         onSubmit={handleSubmit}
-        className="w-full max-w-md space-y-4 rounded-md bg-background p-6 shadow-lg"
+        className="w-full max-w-md space-y-4 nm-card-elevated p-6"
       >
         <h3 className="text-lg font-semibold">Create user</h3>
         <div className="space-y-3">
@@ -501,7 +511,7 @@ function UserCreateDialog({ onClose, onSubmit, isSubmitting }: UserCreateDialogP
           </button>
           <button
             type="submit"
-            className="rounded-md border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+            className="rounded-md border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             disabled={isSubmitting}
           >
             {isSubmitting ? 'Creating…' : 'Create'}

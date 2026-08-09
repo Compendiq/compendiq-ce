@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="slate-steel" data-theme-type="dark" class="dark">
+<html lang="en" data-theme="graphite" data-theme-type="dark" class="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -13,8 +13,8 @@
     <link rel="manifest" href="/site.webmanifest" />
     <!-- Browser chrome (mobile address bar / PWA surround) blends with the page
          surface, so these are the theme BACKGROUNDS, not the accent. -->
-    <meta name="theme-color" content="#0b121c" media="(prefers-color-scheme: dark)" />
-    <meta name="theme-color" content="#f4f5f7" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0d0e11" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#fbfbfc" media="(prefers-color-scheme: light)" />
 
     <!--
       Open Graph — og:image MUST be an absolute URL for social scrapers.
@@ -46,36 +46,59 @@
       // Keep this table in sync with RETIRED_LIGHT_THEME_IDS in
       // src/stores/theme-store.ts, which does the same remap for the store.
       (function() {
-        var VALID = { 'slate-steel': 'dark', 'frost-steel': 'light' };
-        var RETIRED = {
-          'honey-linen': 'frost-steel',
-          'polar-slate': 'frost-steel',
-          'parchment-glow': 'frost-steel',
-          'sunrise-cream': 'frost-steel',
-          'cloud-white': 'frost-steel',
-          'graphite-honey': 'slate-steel'
+        var DARK = 'graphite', LIGHT = 'paper';
+        // Superseded palette IDs, mapped onto the light/dark side they were on
+        // so an upgrading user paints the right BRIGHTNESS at first frame.
+        var RETIRED_LIGHT = {
+          'honey-linen': 1, 'polar-slate': 1, 'parchment-glow': 1,
+          'sunrise-cream': 1, 'cloud-white': 1, 'frost-steel': 1
         };
+
+        function apply(theme) {
+          var isLight = theme === LIGHT;
+          document.documentElement.setAttribute('data-theme', theme);
+          document.documentElement.dataset.themeType = isLight ? 'light' : 'dark';
+          document.documentElement.classList.toggle('dark', !isLight);
+        }
+
+        function systemTheme() {
+          try {
+            return window.matchMedia('(prefers-color-scheme: light)').matches ? LIGHT : DARK;
+          } catch (e) { return DARK; }
+        }
+
         try {
           var raw = localStorage.getItem('compendiq-theme')
                   || localStorage.getItem('atlasmind-theme')
                   || localStorage.getItem('kb-theme');
-          if (raw) {
-            var parsed = JSON.parse(raw);
-            var theme = parsed && parsed.state && parsed.state.theme;
-            if (theme && RETIRED[theme]) theme = RETIRED[theme];
-            if (theme && VALID[theme]) {
-              var type = VALID[theme];
-              document.documentElement.setAttribute('data-theme', theme);
-              document.documentElement.dataset.themeType = type;
-              document.documentElement.classList.toggle('dark', type === 'dark');
-            }
-          }
-        } catch(e) {}
+          var state = raw ? (JSON.parse(raw) || {}).state : null;
+
+          // Current shape: { preference: 'system' | 'dark' | 'light' }.
+          var preference = state && state.preference;
+          if (preference === 'dark') return apply(DARK);
+          if (preference === 'light') return apply(LIGHT);
+          if (preference === 'system') return apply(systemTheme());
+
+          // Legacy shape: { theme: '<palette id>' }, written before the
+          // preference split. A user who explicitly picked a palette under the
+          // old system kept a fixed choice, so honour its brightness rather
+          // than silently converting them to `system`; the store's rehydrate
+          // does the matching remap.
+          var legacy = state && state.theme;
+          if (legacy) return apply(RETIRED_LIGHT[legacy] || legacy === LIGHT ? LIGHT : DARK);
+
+          // Nothing stored: brand-new user, and the default is `system`.
+          apply(systemTheme());
+        } catch (e) {
+          apply(DARK);
+        }
       })();
     </script>
   </head>
-  <!-- No `bg-background` here: index.css paints <body> with the gradient
-       chassis (--surface-backdrop), and a solid utility would cover it. -->
+  <!-- Background comes from index.css's `body { background: var(--surface-backdrop) }`,
+       which is now a flat colour. A `bg-background` utility here would be
+       redundant rather than harmful, but keeping the paint in one place means
+       first paint and post-hydration cannot disagree. -->
   <body class="h-screen overflow-hidden text-foreground antialiased">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>

@@ -254,7 +254,11 @@ function SheetSurface({ onClose, reduceEffects }: { onClose: () => void; reduceE
       style={{ height }}
       className={cn(
         'fixed inset-x-0 bottom-0 z-50 flex flex-col overflow-hidden rounded-t-2xl',
-        'border-t border-border bg-background shadow-[0_-12px_36px_-8px_var(--nm-shadow-out-strong)]',
+        // `--nm-shadow-out-strong` is one of the retired extrusion tokens and
+        // resolves to `transparent`, so this rendered nothing at all — a dead
+        // shadow that read as live. The sheet is an overlay, so it takes the
+        // one overlay shadow, same as the comments drawer.
+        'border-t border-border bg-background shadow-[var(--shadow-overlay)]',
         // Height is a plain inline style with a CSS transition rather than a
         // framer `animate` value, so the drag tracks the finger with no
         // animation frame between them. The transition is what makes the
@@ -285,7 +289,7 @@ function SheetSurface({ onClose, reduceEffects }: { onClose: () => void; reduceE
         aria-controls="ai-dock-sheet"
         aria-label={expanded ? 'Collapse assistant' : 'Expand assistant'}
         title={expanded ? 'Collapse assistant' : 'Expand assistant'}
-        className="group flex h-7 w-full shrink-0 touch-none select-none items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40"
+        className="group flex h-7 w-full shrink-0 touch-none select-none items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
         data-testid="ai-dock-sheet-grabber"
       >
         {/* The handle is a control, so it takes --color-border-interactive —

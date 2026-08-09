@@ -15,16 +15,16 @@ import {
 
 describe('theme-store', () => {
   beforeEach(() => {
-    useThemeStore.setState({ theme: 'slate-steel' });
+    useThemeStore.setState({ theme: 'graphite' });
   });
 
-  it('has slate-steel as the default theme', () => {
-    expect(useThemeStore.getState().theme).toBe('slate-steel');
+  it('has graphite as the default theme', () => {
+    expect(useThemeStore.getState().theme).toBe('graphite');
   });
 
   it('sets a new theme', () => {
-    useThemeStore.getState().setTheme('frost-steel');
-    expect(useThemeStore.getState().theme).toBe('frost-steel');
+    useThemeStore.getState().setTheme('paper');
+    expect(useThemeStore.getState().theme).toBe('paper');
   });
 
   it('defines exactly 2 themes (1 dark + 1 light)', () => {
@@ -77,69 +77,69 @@ describe('theme-store', () => {
   });
 
   it('exports correct default theme constants', () => {
-    expect(DEFAULT_DARK_THEME).toBe('slate-steel');
-    expect(DEFAULT_LIGHT_THEME).toBe('frost-steel');
+    expect(DEFAULT_DARK_THEME).toBe('graphite');
+    expect(DEFAULT_LIGHT_THEME).toBe('paper');
   });
 
   it('sets light theme', () => {
-    useThemeStore.getState().setTheme('frost-steel');
-    expect(useThemeStore.getState().theme).toBe('frost-steel');
+    useThemeStore.getState().setTheme('paper');
+    expect(useThemeStore.getState().theme).toBe('paper');
   });
 
   it('sets dark theme', () => {
-    useThemeStore.getState().setTheme('slate-steel');
-    expect(useThemeStore.getState().theme).toBe('slate-steel');
+    useThemeStore.getState().setTheme('graphite');
+    expect(useThemeStore.getState().theme).toBe('graphite');
   });
 
   describe('isLightTheme', () => {
-    it('returns true for frost-steel', () => {
-      expect(isLightTheme('frost-steel')).toBe(true);
+    it('returns true for paper', () => {
+      expect(isLightTheme('paper')).toBe(true);
     });
 
-    it('returns false for slate-steel', () => {
-      expect(isLightTheme('slate-steel')).toBe(false);
+    it('returns false for graphite', () => {
+      expect(isLightTheme('graphite')).toBe(false);
     });
   });
 
   describe('applyThemeToDocument', () => {
     it('sets data-theme attribute on document root', () => {
-      applyThemeToDocument('frost-steel');
-      expect(document.documentElement.getAttribute('data-theme')).toBe('frost-steel');
+      applyThemeToDocument('paper');
+      expect(document.documentElement.getAttribute('data-theme')).toBe('paper');
     });
 
-    it('sets data-theme-type to dark for slate-steel', () => {
-      applyThemeToDocument('slate-steel');
+    it('sets data-theme-type to dark for graphite', () => {
+      applyThemeToDocument('graphite');
       expect(document.documentElement.dataset.themeType).toBe('dark');
     });
 
-    it('sets data-theme-type to light for frost-steel', () => {
-      applyThemeToDocument('frost-steel');
+    it('sets data-theme-type to light for paper', () => {
+      applyThemeToDocument('paper');
       expect(document.documentElement.dataset.themeType).toBe('light');
     });
 
     it('adds the dark class when applying a dark theme', () => {
       document.documentElement.classList.remove('dark');
-      applyThemeToDocument('slate-steel');
+      applyThemeToDocument('graphite');
       expect(document.documentElement.classList.contains('dark')).toBe(true);
     });
 
     it('removes the dark class when applying a light theme', () => {
       document.documentElement.classList.add('dark');
-      applyThemeToDocument('frost-steel');
+      applyThemeToDocument('paper');
       expect(document.documentElement.classList.contains('dark')).toBe(false);
     });
   });
 
   describe('setTheme applies to document', () => {
     it('updates data-theme when setTheme is called (dark)', () => {
-      useThemeStore.getState().setTheme('slate-steel');
-      expect(document.documentElement.getAttribute('data-theme')).toBe('slate-steel');
+      useThemeStore.getState().setTheme('graphite');
+      expect(document.documentElement.getAttribute('data-theme')).toBe('graphite');
       expect(document.documentElement.dataset.themeType).toBe('dark');
     });
 
-    it('updates data-theme-type to light when switching to frost-steel', () => {
-      useThemeStore.getState().setTheme('frost-steel');
-      expect(document.documentElement.getAttribute('data-theme')).toBe('frost-steel');
+    it('updates data-theme-type to light when switching to paper', () => {
+      useThemeStore.getState().setTheme('paper');
+      expect(document.documentElement.getAttribute('data-theme')).toBe('paper');
       expect(document.documentElement.dataset.themeType).toBe('light');
     });
   });
@@ -166,13 +166,13 @@ describe('theme-store', () => {
 
     it('accepts the two current theme IDs as valid', () => {
       const validIds = [...THEME_IDS] as string[];
-      expect(validIds).toContain('slate-steel');
-      expect(validIds).toContain('frost-steel');
+      expect(validIds).toContain('graphite');
+      expect(validIds).toContain('paper');
     });
 
     it('passes through current theme IDs unchanged', () => {
-      expect(validateThemeId('slate-steel')).toBe('slate-steel');
-      expect(validateThemeId('frost-steel')).toBe('frost-steel');
+      expect(validateThemeId('graphite')).toBe('graphite');
+      expect(validateThemeId('paper')).toBe('paper');
     });
 
     it('falls back retired light themes to the light default (no silent dark flip)', () => {
@@ -198,13 +198,63 @@ describe('theme-store', () => {
     // Users hold these in localStorage, so each must land on the replacement
     // of the SAME brightness — a light-theme user must not be flipped to dark.
     it('migrates the retired honey pair to its steel replacement', () => {
-      expect(validateThemeId('honey-linen')).toBe('frost-steel');
-      expect(validateThemeId('graphite-honey')).toBe('slate-steel');
+      expect(validateThemeId('honey-linen')).toBe('paper');
+      expect(validateThemeId('graphite-honey')).toBe('graphite');
     });
 
     it('lands a migrated honey theme on the matching brightness', () => {
       expect(isLightTheme(validateThemeId('honey-linen'))).toBe(true);
       expect(isLightTheme(validateThemeId('graphite-honey'))).toBe(false);
     });
+  });
+});
+
+/**
+ * Rehydration is the entire point of persisting a preference: a user who picks
+ * dark must still be in dark after a reload.
+ *
+ * These drive the real persist middleware against real localStorage rather than
+ * the in-memory store, because the failure mode is specifically that the store
+ * comes up with its initial state and writes that over the stored one — which
+ * an in-memory `setState` test cannot see.
+ */
+describe('theme preference survives a reload', () => {
+  it('rehydrates an explicitly stored dark preference', async () => {
+    localStorage.setItem(
+      'compendiq-theme',
+      JSON.stringify({ state: { preference: 'dark' }, version: 0 }),
+    );
+
+    await useThemeStore.persist.rehydrate();
+
+    expect(useThemeStore.getState().preference).toBe('dark');
+    expect(useThemeStore.getState().theme).toBe(DEFAULT_DARK_THEME);
+    expect(JSON.parse(localStorage.getItem('compendiq-theme')!).state.preference).toBe('dark');
+  });
+
+  it('rehydrates an explicitly stored light preference', async () => {
+    localStorage.setItem(
+      'compendiq-theme',
+      JSON.stringify({ state: { preference: 'light' }, version: 0 }),
+    );
+
+    await useThemeStore.persist.rehydrate();
+
+    expect(useThemeStore.getState().preference).toBe('light');
+    expect(useThemeStore.getState().theme).toBe(DEFAULT_LIGHT_THEME);
+  });
+
+  it('never freezes the resolved palette into storage', async () => {
+    localStorage.setItem(
+      'compendiq-theme',
+      JSON.stringify({ state: { preference: 'system' }, version: 0 }),
+    );
+
+    await useThemeStore.persist.rehydrate();
+
+    expect(useThemeStore.getState().preference).toBe('system');
+    // A stored palette would win over the live OS reading on the next boot,
+    // which is how "follow the OS" silently stops following.
+    expect(JSON.parse(localStorage.getItem('compendiq-theme')!).state.theme).toBeUndefined();
   });
 });

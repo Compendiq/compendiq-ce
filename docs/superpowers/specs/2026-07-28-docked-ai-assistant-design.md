@@ -2,7 +2,38 @@
 
 **Date:** 2026-07-28
 **Issue:** #1126 (AI context switching UX)
-**Status:** Approved design, not yet planned
+**Status:** Shipped, with one element superseded — see the amendment below.
+
+> ## Amendment (2026-08-06, UI overhaul)
+>
+> **The desktop container changed; the thesis did not.** Everything below about
+> the assistant being a *tool beside the document* rather than a destination
+> still holds, and is still how the app behaves. What changed is the container
+> at `md` and up: this spec's **third column** beside `ArticleRightPane` is
+> retired, and the assistant is now the first of three **tabs** inside that
+> pane (Assistant / Outline / Details).
+>
+> The reason is the one this spec argues from. A third column put three
+> vertical rules across a 1440px window and left the document — the thing the
+> route exists for — squeezed between two slabs of chrome, which is a version
+> of the same "the AI competes with the work" problem the column was meant to
+> solve. As a tab it switches instantly, costs no horizontal space, and there
+> is one right-hand edge to learn instead of two.
+>
+> Consequences for readers of this document:
+>
+> - The dock's own width preference, resize handle and open/close spring are
+>   gone. The assistant inherits the inspector pane's width and resize.
+>   `ui-store`'s `aiDockWidth` is deleted.
+> - `ai-dock-store.open` now means "the **mobile sheet** is up". At `md` and up
+>   `AppLayout` consumes it and re-expresses it as a tab request.
+> - The **bottom sheet below `md` survives exactly as specified here**, modal
+>   behaviour and detents included.
+> - Everything else in this spec — chips seeding one thread, `Apply` going
+>   through `POST /llm/improvements/apply`, conversations keyed by page,
+>   opening running nothing (#1176) — is unchanged.
+>
+> Current topology of record: `docs/architecture/04-frontend-structure.md`.
 
 ## Problem
 

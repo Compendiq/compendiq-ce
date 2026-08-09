@@ -73,30 +73,30 @@ describe('Zustand selector patterns', () => {
 
   describe('useThemeStore selectors', () => {
     beforeEach(() => {
-      useThemeStore.setState({ theme: 'slate-steel' });
+      useThemeStore.setState({ theme: 'graphite' });
     });
 
     it('theme selector returns current theme', () => {
       const selector = (s: ReturnType<typeof useThemeStore.getState>) => s.theme;
-      expect(selector(useThemeStore.getState())).toBe('slate-steel');
+      expect(selector(useThemeStore.getState())).toBe('graphite');
     });
 
     it('setTheme selector is a stable function', () => {
       const setTheme = useThemeStore.getState().setTheme;
       expect(typeof setTheme).toBe('function');
 
-      setTheme('frost-steel');
-      expect(useThemeStore.getState().theme).toBe('frost-steel');
+      setTheme('paper');
+      expect(useThemeStore.getState().theme).toBe('paper');
     });
 
     it('theme selector reflects setTheme changes', () => {
       const selector = (s: ReturnType<typeof useThemeStore.getState>) => s.theme;
 
-      useThemeStore.getState().setTheme('frost-steel');
-      expect(selector(useThemeStore.getState())).toBe('frost-steel');
+      useThemeStore.getState().setTheme('paper');
+      expect(selector(useThemeStore.getState())).toBe('paper');
 
-      useThemeStore.getState().setTheme('slate-steel');
-      expect(selector(useThemeStore.getState())).toBe('slate-steel');
+      useThemeStore.getState().setTheme('graphite');
+      expect(selector(useThemeStore.getState())).toBe('graphite');
     });
   });
 
@@ -146,7 +146,7 @@ describe('Zustand selector patterns', () => {
         sidebarCollapsed: false,
         treeSidebarCollapsed: false,
       });
-      useThemeStore.setState({ theme: 'slate-steel' });
+      useThemeStore.setState({ theme: 'graphite' });
       useCommandPaletteStore.getState().close();
     });
 
@@ -158,7 +158,7 @@ describe('Zustand selector patterns', () => {
 
     it('changing theme store does not affect ui store', () => {
       const sidebarBefore = useUiStore.getState().sidebarCollapsed;
-      useThemeStore.getState().setTheme('frost-steel');
+      useThemeStore.getState().setTheme('paper');
       expect(useUiStore.getState().sidebarCollapsed).toBe(sidebarBefore);
     });
 

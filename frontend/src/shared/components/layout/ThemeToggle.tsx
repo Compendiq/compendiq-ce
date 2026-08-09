@@ -1,27 +1,53 @@
-import { Sun, Moon } from 'lucide-react';
-import { useThemeStore, isLightTheme, DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME } from '../../../stores/theme-store';
+import { Sun, Moon, Monitor } from 'lucide-react';
+import { useThemeStore, type ThemePreference } from '../../../stores/theme-store';
 
 /**
- * Header toggle that switches between dark and light modes.
- * Dark → slate-steel, Light → frost-steel.
+ * Header control cycling System → Light → Dark.
+ *
+ * It cycles a three-way *preference* rather than toggling two palettes,
+ * because `system` is the default: a two-state toggle would give a user no way
+ * back to "follow my OS" once they had touched it, quietly turning the default
+ * into a one-way door on first click.
+ *
+ * The icon reports the preference, not the painted palette — under `system`
+ * that is the monitor glyph, so the control never claims the user chose dark
+ * when the OS did.
  */
-export function ThemeToggle() {
-  const theme = useThemeStore((s) => s.theme);
-  const setTheme = useThemeStore((s) => s.setTheme);
-  const light = isLightTheme(theme);
+/* An explicit successor map rather than an array plus modulo: it is total over
+   ThemePreference, so adding a fourth preference is a type error here instead
+   of a silently skipped rung. */
+const NEXT: Record<ThemePreference, ThemePreference> = {
+  system: 'light',
+  light: 'dark',
+  dark: 'system',
+};
 
-  function toggle() {
-    setTheme(light ? DEFAULT_DARK_THEME : DEFAULT_LIGHT_THEME);
-  }
+const LABEL: Record<ThemePreference, string> = {
+  system: 'match system',
+  light: 'light',
+  dark: 'dark',
+};
+
+export function ThemeToggle() {
+  const preference = useThemeStore((s) => s.preference);
+  const setPreference = useThemeStore((s) => s.setPreference);
+
+  const next = NEXT[preference];
 
   return (
     <button
-      onClick={toggle}
-      className="nm-icon-button hover:bg-foreground/10"
-      aria-label={light ? 'Switch to dark mode' : 'Switch to light mode'}
-      title={light ? 'Switch to dark mode' : 'Switch to light mode'}
+      onClick={() => setPreference(next)}
+      className="nm-icon-button"
+      aria-label={`Theme: ${LABEL[preference]}. Switch to ${LABEL[next]}.`}
+      title={`Theme: ${LABEL[preference]} — click for ${LABEL[next]}`}
     >
-      {light ? <Moon size={16} /> : <Sun size={16} />}
+      {preference === 'system' ? (
+        <Monitor size={16} />
+      ) : preference === 'light' ? (
+        <Sun size={16} />
+      ) : (
+        <Moon size={16} />
+      )}
     </button>
   );
 }

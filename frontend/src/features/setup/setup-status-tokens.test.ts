@@ -30,12 +30,12 @@ const SETUP_DIR = import.meta.dirname;
 const cssPath = resolve(SETUP_DIR, '../../index.css');
 const css = readFileSync(cssPath, 'utf-8');
 
-// Status tokens live in the per-theme blocks, but the card gradient the banner
-// tints is declared once per theme *type* — dark's in `@theme`, light's in the
-// shared `[data-theme-type="light"]` block that frost-steel inherits.
+// Status tokens and the card surface both live in the per-theme blocks. The
+// card was a gradient under the retired system, so this file used to measure
+// every colour stop; it is one flat value now, which means one measurement per
+// theme instead of a worst-stop search.
 const darkBlock = extractBlock(css, '@theme {');
-const lightBlock = extractBlock(css, '[data-theme="frost-steel"] {');
-const lightSharedBlock = extractBlock(css, '[data-theme-type="light"] {');
+const lightBlock = extractBlock(css, '[data-theme="paper"] {');
 
 /** Literal Tailwind status-colour utilities: `bg-emerald-500/10`, `text-red-300`, … */
 const LITERAL_SHADE = /\b(?:bg|text|border|ring|fill|stroke|from|via|to)-(?:emerald|green|red|rose|lime)-\d{2,3}\b/;
@@ -61,17 +61,8 @@ function token(block: string, name: string): string {
   return m[1].toLowerCase();
 }
 
-/** Read the colour stops of a `--token: linear-gradient(…)` declaration. */
-function gradientStops(block: string, name: string): string[] {
-  const m = new RegExp(`${name}:\\s*linear-gradient\\(([^)]*)\\)`).exec(block);
-  if (!m) throw new Error(`gradient not found: ${name}`);
-  const stops = m[1].match(/#[0-9a-fA-F]{6}/g);
-  if (!stops?.length) throw new Error(`gradient has no hex stops: ${name}`);
-  return stops.map((s) => s.toLowerCase());
-}
-
 // --- WCAG 2.1 relative luminance / contrast (SC 1.4.3, 1.4.11) ---
-// Same math as neumorphic-themes.test.ts, kept local so this file stands alone.
+// Same math as workspace-themes.test.ts, kept local so this file stands alone.
 function luminance(hex: string): number {
   const [r, g, b] = [1, 3, 5].map((i) => {
     const c = parseInt(hex.slice(i, i + 2), 16) / 255;
@@ -114,7 +105,7 @@ describe('Setup wizard states status in semantic tokens', () => {
     expect(
       offences,
       'Literal Tailwind status shades are dark-theme tuned and are NOT remapped\n' +
-      'for Frost Steel (index.css remaps amber/yellow only). Use the semantic\n' +
+      'for Paper (index.css remaps amber/yellow only). Use the semantic\n' +
       '--color-status-* tokens instead:\n' + offences.join('\n'),
     ).toEqual([]);
   });
@@ -122,8 +113,8 @@ describe('Setup wizard states status in semantic tokens', () => {
 
 describe('Measured contrast — status ink on the wizard banner', () => {
   const themes = [
-    { name: 'Slate Steel', block: darkBlock, surfaceBlock: darkBlock },
-    { name: 'Frost Steel', block: lightBlock, surfaceBlock: lightSharedBlock },
+    { name: 'Graphite', block: darkBlock },
+    { name: 'Paper', block: lightBlock },
   ];
 
   // Two tint strengths are in use on the wizard's `nm-card`: LlmStep's banner
@@ -135,22 +126,20 @@ describe('Measured contrast — status ink on the wizard banner', () => {
     { label: '20% tint (CompleteStep disc)', alpha: 0.2, floor: 3 },
   ];
 
-  for (const { name, block, surfaceBlock } of themes) {
+  for (const { name, block } of themes) {
     for (const role of ['connected', 'disconnected'] as const) {
       const ink = token(block, `--color-status-${role}`);
-      const stops = gradientStops(surfaceBlock, '--surface-card');
+      const cardSurface = token(block, '--color-card');
 
       for (const { label, alpha, floor } of surfaces) {
         it(`${name}: status-${role} clears ${floor}:1 on the ${label}`, () => {
-          for (const stop of stops) {
-            const composite = over(ink, stop, alpha);
-            const ratio = contrast(ink, composite);
-            expect(
-              ratio,
-              `status-${role} (${ink}) on ${composite} — its own ${alpha * 100}% tint over ` +
-              `card stop ${stop} — measured ${ratio.toFixed(2)}:1, need ≥${floor}:1`,
-            ).toBeGreaterThanOrEqual(floor);
-          }
+          const composite = over(ink, cardSurface, alpha);
+          const ratio = contrast(ink, composite);
+          expect(
+            ratio,
+            `status-${role} (${ink}) on ${composite} — its own ${alpha * 100}% tint over ` +
+            `the card surface ${cardSurface} — measured ${ratio.toFixed(2)}:1, need ≥${floor}:1`,
+          ).toBeGreaterThanOrEqual(floor);
         });
       }
     }

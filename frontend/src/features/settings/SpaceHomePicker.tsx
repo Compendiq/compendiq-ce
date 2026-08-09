@@ -99,7 +99,7 @@ export function SpaceHomePicker({
           data-testid={`space-home-picker-trigger-${spaceKey}`}
           onClick={(e) => e.stopPropagation()}
           className={cn(
-            'flex shrink-0 items-center gap-1.5 rounded-md border border-border/50 px-2.5 py-1 text-xs',
+            'flex shrink-0 items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs',
             'transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
             canManage
               ? 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground'
@@ -116,7 +116,7 @@ export function SpaceHomePicker({
           align="end"
           sideOffset={6}
           onClick={(e) => e.stopPropagation()}
-          className="z-50 w-80 rounded-lg border border-border bg-card p-3 shadow-lg outline-none"
+          className="z-50 w-80 nm-card-elevated p-3 outline-none"
           data-testid={`space-home-picker-content-${spaceKey}`}
         >
           <div className="mb-2 flex items-start justify-between gap-2">
@@ -162,7 +162,7 @@ export function SpaceHomePicker({
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder={`Search pages in ${spaceKey}…`}
-              className="w-full rounded-md border border-border/50 bg-background py-1.5 pl-7 pr-2 text-xs focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
+              className="w-full rounded-md border border-border bg-background py-1.5 pl-7 pr-2 text-xs focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-ring"
               data-testid={`space-home-picker-search-${spaceKey}`}
               autoFocus
             />
@@ -218,7 +218,7 @@ export function SpaceHomePicker({
 
           {/* "Use Confluence default" — clears the override. Disabled when
               there isn't one to clear, so the action is unambiguous. */}
-          <div className="mt-2 flex items-center justify-end border-t border-border/40 pt-2">
+          <div className="mt-2 flex items-center justify-end border-t border-border pt-2">
             <button
               type="button"
               onClick={() => setOverride(null)}

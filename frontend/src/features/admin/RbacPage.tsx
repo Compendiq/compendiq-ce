@@ -233,7 +233,7 @@ function RolesTab() {
         {advancedRbac && (
           <button
             onClick={handleCreate}
-            className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+            className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             data-testid="create-custom-role-btn"
           >
             <Plus size={16} />
@@ -259,7 +259,7 @@ function RolesTab() {
       {advancedRbac && (
         <button
           onClick={handleCreate}
-          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           data-testid="create-custom-role-btn"
         >
           <Plus size={16} />
@@ -375,7 +375,7 @@ function GroupsTab() {
       {!showCreateForm ? (
         <button
           onClick={() => setShowCreateForm(true)}
-          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           data-testid="create-group-btn"
         >
           <Plus size={16} />
@@ -472,7 +472,7 @@ function GroupsTab() {
 
             {/* Members section (expandable) */}
             {expandedGroupId === group.id && (
-              <div className="mt-3 border-t border-border/50 pt-3 space-y-3">
+              <div className="mt-3 border-t border-border pt-3 space-y-3">
                 {/* Add member form */}
                 <div className="flex gap-2" data-testid={`add-member-form-${group.id}`}>
                   <select
@@ -591,7 +591,7 @@ function SpacePermissionsTab() {
           {!showAssignForm ? (
             <button
               onClick={() => setShowAssignForm(true)}
-              className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+              className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               data-testid="add-assignment-btn"
             >
               <Plus size={16} />
@@ -672,7 +672,7 @@ function SpacePermissionsTab() {
             <div className="nm-card overflow-hidden" data-testid="permissions-list">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="border-b border-border/50 text-left text-xs text-muted-foreground">
+                  <tr className="border-b border-border text-left text-xs text-muted-foreground">
                     <th className="px-4 py-3 font-medium">Type</th>
                     <th className="px-4 py-3 font-medium">Name</th>
                     <th className="px-4 py-3 font-medium">Role</th>
@@ -746,7 +746,7 @@ export function RbacPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Access Control</h1>
+          <h1 className="text-lg font-semibold">Access Control</h1>
           <p className="text-sm text-muted-foreground">
             Manage roles, groups, and space-level permissions
           </p>

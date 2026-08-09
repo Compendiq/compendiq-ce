@@ -191,7 +191,7 @@ function WebhooksTabInner() {
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="flex items-center gap-2 text-2xl font-bold">
+          <h1 className="flex items-center gap-2 text-lg font-semibold">
             <Webhook size={22} className="text-action" />
             Webhook endpoints
           </h1>
@@ -204,7 +204,7 @@ function WebhooksTabInner() {
         <button
           type="button"
           onClick={() => setModal({ kind: 'create' })}
-          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           data-testid="webhooks-new-btn"
         >
           <Plus size={14} />
@@ -235,7 +235,7 @@ function WebhooksTabInner() {
         </div>
       ) : subscriptions.length === 0 ? (
         <div
-          className="rounded-lg border border-border/40 bg-foreground/[0.02] p-6 text-center text-sm text-muted-foreground"
+          className="rounded-lg border border-border bg-foreground/[0.02] p-6 text-center text-sm text-muted-foreground"
           data-testid="webhooks-empty"
         >
           No webhook endpoints configured.
@@ -347,7 +347,7 @@ function SubscriptionRow({
 
   return (
     <li
-      className="rounded-lg border border-border/40 bg-card/50 p-4 backdrop-blur-sm"
+      className="rounded-lg border border-border bg-card p-4"
       data-testid={`webhook-row-${sub.id}`}
     >
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -500,13 +500,13 @@ function DialogShell({
         <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
         <Dialog.Content
           className={cn(
-            'fixed left-1/2 top-1/2 z-50 w-full -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-border/60 bg-card/90 shadow-2xl backdrop-blur-xl outline-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 max-h-[85vh] overflow-y-auto',
+            'fixed left-1/2 top-1/2 z-50 w-full -translate-x-1/2 -translate-y-1/2 nm-card-elevated outline-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 max-h-[85vh] overflow-y-auto',
             widthClass ?? 'max-w-lg',
           )}
           aria-describedby={undefined}
           data-testid={testid}
         >
-          <div className="flex items-center justify-between border-b border-border/50 px-5 py-4">
+          <div className="flex items-center justify-between border-b border-border px-5 py-4">
             <Dialog.Title className="text-base font-semibold">{title}</Dialog.Title>
             <Dialog.Close asChild>
               <button
@@ -705,7 +705,7 @@ function CreateEditDialog({
               'grid grid-cols-2 gap-2 rounded-md border bg-foreground/[0.02] p-2',
               inlineError?.field === 'eventTypes'
                 ? 'border-destructive'
-                : 'border-border/40',
+                : 'border-border',
             )}
             data-testid="webhook-events-select"
           >
@@ -800,7 +800,7 @@ function CreateEditDialog({
         )}
       </div>
 
-      <div className="mt-5 flex items-center justify-end gap-2 border-t border-border/50 pt-4">
+      <div className="mt-5 flex items-center justify-end gap-2 border-t border-border pt-4">
         <button
           type="button"
           onClick={onClose}
@@ -815,7 +815,7 @@ function CreateEditDialog({
             mutation.mutate();
           }}
           disabled={!canSubmit || mutation.isPending}
-          className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-3 py-1.5 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+          className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-3 py-1.5 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
           data-testid="webhook-save-btn"
         >
           {mutation.isPending && <Loader2 size={14} className="animate-spin" />}
@@ -954,7 +954,7 @@ function RotateSecretDialog({
         )}
       </div>
 
-      <div className="mt-5 flex items-center justify-end gap-2 border-t border-border/50 pt-4">
+      <div className="mt-5 flex items-center justify-end gap-2 border-t border-border pt-4">
         <button
           type="button"
           onClick={onClose}
@@ -970,7 +970,7 @@ function RotateSecretDialog({
               mutation.mutate();
             }}
             disabled={!canSubmit || mutation.isPending}
-            className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-3 py-1.5 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+            className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-3 py-1.5 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
             data-testid="webhook-rotate-submit-btn"
           >
             {mutation.isPending && <Loader2 size={14} className="animate-spin" />}
@@ -1100,7 +1100,7 @@ function TestDeliveryDialog({ subscription, onClose }: TestDialogProps) {
         )}
       </div>
 
-      <div className="mt-5 flex items-center justify-end gap-2 border-t border-border/50 pt-4">
+      <div className="mt-5 flex items-center justify-end gap-2 border-t border-border pt-4">
         <button
           type="button"
           onClick={onClose}
@@ -1116,7 +1116,7 @@ function TestDeliveryDialog({ subscription, onClose }: TestDialogProps) {
             mutation.mutate();
           }}
           disabled={!eventType || mutation.isPending}
-          className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-3 py-1.5 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+          className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-3 py-1.5 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
           data-testid="webhook-test-submit-btn"
         >
           {mutation.isPending ? (
@@ -1167,7 +1167,7 @@ function DeliveryHistoryDialog({ subscription, onClose }: HistoryDialogProps) {
         </div>
       ) : deliveries.length === 0 ? (
         <div
-          className="rounded-lg border border-border/40 bg-foreground/[0.02] p-6 text-center text-sm text-muted-foreground"
+          className="rounded-lg border border-border bg-foreground/[0.02] p-6 text-center text-sm text-muted-foreground"
           data-testid="webhook-history-empty"
         >
           No deliveries recorded yet.
@@ -1175,7 +1175,7 @@ function DeliveryHistoryDialog({ subscription, onClose }: HistoryDialogProps) {
       ) : (
         <table className="w-full text-xs" data-testid="webhook-history-table">
           <thead className="text-left text-muted-foreground">
-            <tr className="border-b border-border/40">
+            <tr className="border-b border-border">
               <th className="pb-2 pl-1 pr-2 font-medium">#</th>
               <th className="pb-2 pr-2 font-medium">Status</th>
               <th className="pb-2 pr-2 font-medium">HTTP</th>
@@ -1196,7 +1196,7 @@ function DeliveryHistoryDialog({ subscription, onClose }: HistoryDialogProps) {
         </table>
       )}
 
-      <div className="mt-5 flex items-center justify-end border-t border-border/50 pt-4">
+      <div className="mt-5 flex items-center justify-end border-t border-border pt-4">
         <button
           type="button"
           onClick={onClose}
@@ -1222,7 +1222,7 @@ function DeliveryRow({
     <>
       <tr
         onClick={onToggle}
-        className="cursor-pointer border-b border-border/20 hover:bg-foreground/[0.03]"
+        className="cursor-pointer border-b border-border hover:bg-foreground/[0.03]"
         data-testid={`webhook-delivery-row-${delivery.id}`}
       >
         <td className="py-2 pl-1 pr-2 font-mono">{delivery.attemptNumber}</td>
@@ -1272,7 +1272,7 @@ function StatusChip({ status }: { status: WebhookDelivery['status'] }) {
     success: 'bg-emerald-500/15 text-emerald-300',
     failure: 'bg-destructive/15 text-destructive',
     timeout: 'bg-amber-500/15 text-amber-300',
-    ssrf_blocked: 'bg-purple-500/15 text-purple-300',
+    ssrf_blocked: 'bg-status-ai/15 text-status-ai',
   };
   return (
     <span
@@ -1329,7 +1329,7 @@ function DeleteConfirmDialog({
           ?
         </div>
       </div>
-      <div className="mt-5 flex items-center justify-end gap-2 border-t border-border/50 pt-4">
+      <div className="mt-5 flex items-center justify-end gap-2 border-t border-border pt-4">
         <button
           type="button"
           onClick={onClose}
