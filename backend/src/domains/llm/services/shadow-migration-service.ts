@@ -717,6 +717,12 @@ export async function performShadowSwap(opts?: {
   lockTimeoutMs?: number;
   maxAttempts?: number;
 }): Promise<void> {
+  // Symmetric with rollback and cleanup (review r10): after a post-swap
+  // revert the state returns to `ready` and the card offers Swap again
+  // immediately, while that revert's own whole-corpus recompute is still
+  // reading both tables — so the swap would spend its entire lock budget
+  // losing to this branch's own background work and answer 503.
+  await waitForEdgeRefresh();
   const status = await getShadowMigrationStatus();
   if (!status || status.status !== 'active') {
     throw new Error('No active shadow migration to swap');

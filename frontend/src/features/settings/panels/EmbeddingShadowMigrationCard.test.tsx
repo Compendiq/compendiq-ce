@@ -73,17 +73,33 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
     expect(container.querySelector('[data-testid="shadow-migration-card"]')).toBeNull();
   });
 
-  it('shows an ETA from measured throughput while backfilling, and names the index phase instead (review r9)', async () => {
-    // The issue asks for progress AND an ETA. Half done after an hour → about
-    // an hour left.
-    vi.setSystemTime(new Date('2026-08-06T11:00:00.000Z'));
-    mockApi({
-      active: true,
-      migration: { phase: 'backfilling', model: 'm', dimensions: 1024, totalPages: 100, backfilledPages: 50, stragglerPages: 50, indexed: true, indexReady: false, startedAt: '2026-08-06T10:00:00.000Z' },
+  it('estimates from progress it WATCHED, not from startedAt (review r9/r10)', async () => {
+    // A re-run after a crashed worker leaves startedAt hours in the past with
+    // the pages already done, so startedAt ÷ done divided idle time into the
+    // work and advertised hundreds of hours for a run with minutes left.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-08-07T10:00:00.000Z')); // a full day after startedAt
+    const statuses = [
+      { phase: 'backfilling', model: 'm', dimensions: 1024, totalPages: 100, backfilledPages: 50, stragglerPages: 50, indexed: true, indexReady: false, startedAt: '2026-08-06T10:00:00.000Z' },
+      { phase: 'backfilling', model: 'm', dimensions: 1024, totalPages: 100, backfilledPages: 60, stragglerPages: 40, indexed: true, indexReady: false, startedAt: '2026-08-06T10:00:00.000Z' },
+    ];
+    let call = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      const body = { active: true, migration: statuses[Math.min(call++, statuses.length - 1)] };
+      return new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
     });
+
     const { unmount } = renderCard(null);
-    expect(await screen.findByText(/1\.0 h remaining/i)).toBeInTheDocument();
+    // First sample only establishes the baseline — no estimate yet, and in
+    // particular not the ~24h-inflated one startedAt would have produced.
+    expect(await screen.findByText(/50\/100/)).toBeInTheDocument();
+    expect(screen.queryByText(/remaining/i)).toBeNull();
+
+    // 10 pages watched over 60s → 40 remaining ≈ 4 min.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(await screen.findByText(/4 min remaining/i)).toBeInTheDocument();
     unmount();
+    vi.useRealTimers();
 
     // Pages done, index building: no page counter to extrapolate from, so it
     // names the phase rather than showing a countdown it cannot honour.

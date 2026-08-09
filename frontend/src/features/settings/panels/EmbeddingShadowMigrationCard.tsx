@@ -48,6 +48,27 @@ interface ShadowStatus {
  * destructive EmbeddingReembedBanner as the recommended path for model
  * changes.
  */
+/**
+ * First sample of a backfill this card has seen. Reset when the counter moves
+ * backwards — a new migration, or an abort — so a stale baseline can never
+ * outlive the run it measured.
+ */
+let etaBaseline: { at: number; done: number; startedAt: string } | null = null;
+
+function etaFromObservedRate(m: { backfilledPages: number; totalPages: number; startedAt: string }): string | null {
+  const now = Date.now();
+  if (!etaBaseline || etaBaseline.startedAt !== m.startedAt || m.backfilledPages < etaBaseline.done) {
+    etaBaseline = { at: now, done: m.backfilledPages, startedAt: m.startedAt };
+    return null;
+  }
+  const observed = m.backfilledPages - etaBaseline.done;
+  const elapsed = now - etaBaseline.at;
+  const remaining = m.totalPages - m.backfilledPages;
+  // 5 pages of watched progress: below that the sample says nothing.
+  if (observed < 5 || elapsed <= 0 || remaining <= 0) return null;
+  return formatEta((elapsed / observed) * remaining);
+}
+
 /** Coarse on purpose: an ETA to the minute would imply precision this has none of. */
 function formatEta(ms: number): string {
   const minutes = Math.round(ms / 60_000);
@@ -176,18 +197,19 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
   }
 
   if (migration.phase === 'backfilling') {
-    // The issue asks for progress AND an ETA. Extrapolate from measured
-    // throughput rather than guessing: elapsed ÷ done × remaining. It is
-    // suppressed below 5 pages, where the sample is too small to mean
-    // anything, and once the pages are done — the index build that follows
-    // has no page counter to extrapolate from, so the card names that phase
-    // instead of showing a countdown it cannot honour (review r9).
+    // The issue asks for progress AND an ETA. Rate comes from progress this
+    // card has WATCHED, never from `startedAt` ÷ pages done (review r10):
+    // `startedAt` is the migration's start, not the backfill's, and
+    // `rerunShadowBackfill` deliberately leaves it alone — so after a crashed
+    // worker resumed a day later, the idle day was divided into the pages and
+    // the card advertised hundreds of hours for a run with minutes left. The
+    // cost is that the estimate appears a few polls in rather than at once,
+    // which is the honest trade: an ETA that counts idle time as work is
+    // worse than no ETA. Suppressed during the index build too, which has no
+    // page counter to extrapolate from — the card names that phase instead
+    // (review r9).
     const buildingIndex = migration.stragglerPages === 0 && !migration.indexReady;
-    const elapsedMs = Date.now() - new Date(migration.startedAt).getTime();
-    const eta =
-      !buildingIndex && migration.backfilledPages >= 5 && migration.backfilledPages < migration.totalPages
-        ? formatEta((elapsedMs / migration.backfilledPages) * (migration.totalPages - migration.backfilledPages))
-        : null;
+    const eta = !buildingIndex ? etaFromObservedRate(migration) : null;
 
     return (
       <div className="nm-card border-info/30 p-3 text-sm" data-testid="shadow-migration-card">

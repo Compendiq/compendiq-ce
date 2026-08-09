@@ -12,14 +12,14 @@ flowchart LR
         direction TB
         rF["foundation<br/>health, auth, settings,<br/>admin, admin-embedding-locks,<br/>rbac, notifications, setup"]
         rC["confluence<br/>spaces, sync, attachments"]
-        rL["llm<br/>llm-ask (SSE), improve, generate,<br/>summarize, diagram, conversations,<br/>embeddings, models, admin, pdf,<br/>prepare-image"]
+        rL["llm<br/>llm-ask (SSE), improve, generate,<br/>summarize, diagram, conversations,<br/>embeddings, embedding-shadow, models,<br/>admin, pdf, prepare-image"]
         rK["knowledge<br/>pages CRUD, relocate, versions, tags,<br/>embeddings, duplicates, pinned,<br/>templates, comments, search,<br/>analytics, export/import"]
     end
 
     subgraph domains["domains/"]
         direction TB
         dC["<b>confluence</b><br/>confluence-client<br/>sync-service<br/>attachment-handler<br/>subpage-context<br/>sync-overview-service"]
-        dL["<b>llm</b><br/>openai-compatible-client<br/>llm-provider-service<br/>llm-provider-resolver<br/>llm-provider-bootstrap<br/>embedding-service<br/>rag-service<br/>llm-cache + cache-bus<br/>vision-probe<br/>model-capabilities"]
+        dL["<b>llm</b><br/>openai-compatible-client<br/>llm-provider-service<br/>llm-provider-resolver<br/>llm-provider-bootstrap<br/>embedding-service<br/>shadow-migration-service<br/>rag-service<br/>llm-cache + cache-bus<br/>vision-probe<br/>model-capabilities"]
         dK["<b>knowledge</b><br/>auto-tagger<br/>quality-worker<br/>summary-worker<br/>version-tracker<br/>duplicate-detector<br/>page-relocate-service"]
     end
 
@@ -124,6 +124,26 @@ existing `llm → core` rule, so no new rule is needed.
 (`model-capabilities.ts`'s `getVisionCapability`) — the same `core` + `llm`
 composition every other `routes/llm` file already does — so no new arrow, and
 in particular no `llm → confluence` edge.
+
+`domains/llm/services/shadow-migration-service.ts` (#1116) owns the
+zero-downtime embedding-model change: it issues **runtime DDL** for the
+`embedding_next` / `page_avg_embedding_next` shadow columns, runs the backfill
+worker behind the `shadow-reembed` queue, and performs the rename-swap,
+rollback and cleanup. Its arrows stay inside `llm → core`
+(`core/db/postgres.ts`, `core/services/queue-service.ts`,
+`core/services/redis-cache.ts` for the graph-cache invalidation,
+`core/enterprise/loader.ts` for the org-policy precedence check). It also
+reaches `embedding-service.ts` — its own domain sibling — through a **dynamic**
+import, because `embedding-service` imports it for the dual-write and a static
+edge would close the cycle at module-init time. `routes/llm/llm-embedding-shadow.ts`
+is the admin surface (start / status / swap / rollback / cleanup / backfill),
+`requireAdmin` on every route.
+
+The guard it exports the other way round, `assertNoShadowMigration` /
+`assertShadowRollbackWindowClear` in `embedding-service.ts`, is called from
+`routes/knowledge/pages-crud.ts` and `routes/foundation/admin.ts` as well as
+`routes/llm` — the same `routes/* → domains/llm` composition those files
+already do for `processDirtyPages`.
 
 ## Background workers
 
