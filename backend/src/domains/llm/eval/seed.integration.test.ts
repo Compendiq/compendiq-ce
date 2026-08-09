@@ -8,12 +8,16 @@ import { query } from '../../../core/db/postgres.js';
 
 const MODEL_DIMS = 384; // the small CI model's dimension, deliberately != the schema's 1024
 
-const { generateEmbeddingMock } = vi.hoisted(() => ({
-  generateEmbeddingMock: vi.fn(async (_cfg: unknown, _model: string, input: string | string[]) => {
+// Named so beforeEach can RE-INSTALL it: a bare mockClear() keeps the last
+// test's mockImplementation, which is how the truncation-probe tests below
+// silently broke the seeding tests above them.
+const { generateEmbeddingMock, defaultEmbeddingImpl } = vi.hoisted(() => {
+  const defaultEmbeddingImpl = async (_cfg: unknown, _model: string, input: string | string[]) => {
     const texts = Array.isArray(input) ? input : [input];
-    return texts.map((_, i) => Array.from({ length: MODEL_DIMS }, (_, j) => Math.sin((j + 1) * (i + 2)) * 0.01));
-  }),
-}));
+    return texts.map((_, i) => Array.from({ length: 384 }, (_, j) => Math.sin((j + 1) * (i + 2)) * 0.01));
+  };
+  return { generateEmbeddingMock: vi.fn(defaultEmbeddingImpl), defaultEmbeddingImpl };
+});
 vi.mock('../services/openai-compatible-client.js', async () => {
   const actual = await vi.importActual<typeof import('../services/openai-compatible-client.js')>(
     '../services/openai-compatible-client.js',
@@ -21,7 +25,7 @@ vi.mock('../services/openai-compatible-client.js', async () => {
   return { ...actual, generateEmbedding: generateEmbeddingMock };
 });
 
-const { seedCorpus, ensureVectorDimensions, configureEmbeddingProvider, resetEvalCorpus, EVAL_SPACE_KEY } = await import('./seed.js');
+const { seedCorpus, ensureVectorDimensions, configureEmbeddingProvider, resetEvalCorpus, assertModelReadsFullChunk, TruncatingModelError, EVAL_SPACE_KEY } = await import('./seed.js');
 const { loadCorpus } = await import('./fixture.js');
 
 const dbAvailable = await isDbAvailable();
@@ -52,7 +56,8 @@ describe.skipIf(!dbAvailable)('eval seeder (#1102)', () => {
        VALUES ($1::uuid, $1::text, $1::text || '@t', 'admin', 'x') ON CONFLICT (id) DO NOTHING`,
       [USER],
     );
-    generateEmbeddingMock.mockClear();
+    generateEmbeddingMock.mockReset();
+    generateEmbeddingMock.mockImplementation(defaultEmbeddingImpl);
   });
 
   it('retypes both vector columns to the probed dimension and rebuilds the indexes', async () => {
@@ -101,6 +106,29 @@ describe.skipIf(!dbAvailable)('eval seeder (#1102)', () => {
       const row = await query<{ n: number }>(`SELECT COUNT(*)::int AS n FROM pages WHERE id = $1`, [pageId]);
       expect(row.rows[0]!.n).toBe(1);
     }
+  });
+
+  it('refuses a model that truncates the input, which would score text it never read', async () => {
+    // The real failure: all-minilm returns BYTE-IDENTICAL vectors for two
+    // 5400-character texts differing only in their last word, while the run
+    // still reports "100% embedded" and a confident Recall@K.
+    const CFG = { providerId: 'x', id: 'x', name: 'x', baseUrl: '', apiKey: null, authType: 'none' as const, verifySsl: true, defaultModel: 'm' };
+    const truncated = Array.from({ length: 8 }, (_, i) => i / 8);
+    generateEmbeddingMock.mockImplementation(async () => [truncated]);
+
+    await expect(assertModelReadsFullChunk(CFG, 'truncating-model')).rejects.toBeInstanceOf(TruncatingModelError);
+    await expect(assertModelReadsFullChunk(CFG, 'truncating-model')).rejects.toThrow(/truncating the input/i);
+  });
+
+  it('accepts a model whose vector responds to the end of the chunk', async () => {
+    const CFG = { providerId: 'x', id: 'x', name: 'x', baseUrl: '', apiKey: null, authType: 'none' as const, verifySsl: true, defaultModel: 'm' };
+    let call = 0;
+    generateEmbeddingMock.mockImplementation(async () => {
+      call++;
+      return [Array.from({ length: 8 }, (_, i) => Math.sin((i + 1) * call))];
+    });
+
+    await expect(assertModelReadsFullChunk(CFG, 'honest-model')).resolves.toBeUndefined();
   });
 
   it('refuses an implausible dimension rather than issuing the DDL', async () => {

@@ -9,7 +9,9 @@
  */
 import { query } from '../../../core/db/postgres.js';
 import { markdownToHtml } from '../../../core/services/content-converter.js';
-import { embedPage } from '../services/embedding-service.js';
+import { embedPage, CHUNK_HARD_LIMIT } from '../services/embedding-service.js';
+import { generateEmbedding } from '../services/openai-compatible-client.js';
+import type { ProviderConfig } from '../services/openai-compatible-client.js';
 import { logger } from '../../../core/utils/logger.js';
 import { loadCorpus, type CorpusPage } from './fixture.js';
 
@@ -79,6 +81,45 @@ export async function ensureVectorDimensions(dims: number): Promise<void> {
      ON CONFLICT (setting_key) DO UPDATE SET setting_value = $1, updated_at = NOW()`,
     [String(dims)],
   );
+}
+
+export class TruncatingModelError extends Error {}
+
+/**
+ * Refuse to measure with a model that cannot read a whole chunk.
+ *
+ * The corpus chunks out at up to `CHUNK_HARD_LIMIT` characters — headings are
+ * gone by the time `chunkText` sees the converted text, so most pages become
+ * one section that the paragraph splitter cannot break, and `pushChunk` emits
+ * right up to the ceiling. A model with a small context window silently embeds
+ * only the prefix: the run still reports "100% embedded" and produces a
+ * confident Recall@K describing text the model never saw.
+ *
+ * Detected empirically rather than by consulting a model card, because
+ * neither the OpenAI-compatible API nor Ollama's `/v1` exposes a context
+ * length: embed two chunk-sized texts that differ ONLY in their last word. A
+ * model reading the whole input must produce different vectors. `all-minilm`
+ * returns byte-identical ones here — which is how this was found.
+ */
+export async function assertModelReadsFullChunk(cfg: ProviderConfig, model: string): Promise<void> {
+  const filler = 'alpha '.repeat(Math.ceil(CHUNK_HARD_LIMIT / 6));
+  const [head] = await generateEmbedding(cfg, model, `${filler} ZEBRAQUIRK`);
+  const [tail] = await generateEmbedding(cfg, model, `${filler} OMEGADIFFER`);
+  if (!head || !tail) {
+    throw new TruncatingModelError(`Model ${model} returned no embedding for the truncation probe`);
+  }
+
+  const dot = head.reduce((sum, v, i) => sum + v * (tail[i] ?? 0), 0);
+  const norm = Math.sqrt(head.reduce((s, v) => s + v * v, 0)) * Math.sqrt(tail.reduce((s, v) => s + v * v, 0));
+  const cosine = norm === 0 ? 1 : dot / norm;
+
+  if (cosine > 1 - 1e-9) {
+    throw new TruncatingModelError(
+      `Model ${model} produced the same vector for two ${CHUNK_HARD_LIMIT}-character texts differing only in their final word ` +
+        `(cosine ${cosine.toFixed(9)}) — it is truncating the input. Every metric would then describe the prefix the model ` +
+        'happened to read, not the corpus. Use a model whose context covers a whole chunk.',
+    );
+  }
 }
 
 export const EVAL_SPACE_KEY = 'EVAL';

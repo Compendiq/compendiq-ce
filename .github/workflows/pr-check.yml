@@ -157,7 +157,7 @@ jobs:
       JWT_SECRET: ci-test-secret-that-is-at-least-32-characters-long
       PAT_ENCRYPTION_KEY: ci-test-encryption-key-at-least-32-chars
       EVAL_EMBEDDING_BASE_URL: http://localhost:11434/v1
-      EVAL_EMBEDDING_MODEL: all-minilm
+      EVAL_EMBEDDING_MODEL: nomic-embed-text
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -195,8 +195,11 @@ jobs:
         if: steps.scope.outputs.run == 'true'
         run: npm run build -w @compendiq/contracts
 
-      # ~45 MB. Pulled rather than baked because the service container image is
-      # shared; if this becomes the job's bottleneck, bake a custom image.
+      # nomic-embed-text (~274 MB) rather than a smaller model: the corpus
+      # chunks out at up to CHUNK_HARD_LIMIT (6000) characters, and all-minilm's
+      # 256-token window silently embedded only the prefix — it returns
+      # byte-identical vectors for two 5400-char texts differing in their last
+      # word. assertModelReadsFullChunk fails the run if that recurs.
       - name: Pull the embedding model
         if: steps.scope.outputs.run == 'true'
         run: |
@@ -204,7 +207,7 @@ jobs:
             curl -sf http://localhost:11434/api/version && break
             sleep 2
           done
-          curl -sf -X POST http://localhost:11434/api/pull -d '{"name":"all-minilm"}' | tail -1
+          curl -sf -X POST http://localhost:11434/api/pull -d '{"name":"nomic-embed-text"}' | tail -1
 
       - name: Run the retrieval eval
         if: steps.scope.outputs.run == 'true'

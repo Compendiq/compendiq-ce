@@ -21,7 +21,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { query, closePool, runMigrations } from '../src/core/db/postgres.js';
 import { generateEmbedding } from '../src/domains/llm/services/openai-compatible-client.js';
 import { loadCorpus, loadFixture, assertFixturePower } from '../src/domains/llm/eval/fixture.js';
-import { seedCorpus, ensureVectorDimensions, configureEmbeddingProvider, resetEvalCorpus } from '../src/domains/llm/eval/seed.js';
+import { seedCorpus, ensureVectorDimensions, configureEmbeddingProvider, resetEvalCorpus, assertModelReadsFullChunk } from '../src/domains/llm/eval/seed.js';
 import { runEval } from '../src/domains/llm/eval/runner.js';
 import { flushSearchAnalytics } from '../src/domains/llm/services/rag-service.js';
 import { recallAtK, meanReciprocalRank, pairedBootstrapCi, winLoss, type QueryRun } from '../src/domains/llm/eval/metrics.js';
@@ -69,13 +69,18 @@ async function main(): Promise<void> {
   // whole point of running a small model in CI is that it is not the 1024-dim
   // production one, and a hardcoded number would silently be wrong the first
   // time the model changes.
-  const probe = await generateEmbedding(
-    { providerId: 'eval', id: 'eval', name: 'eval', baseUrl, apiKey: null, authType: 'none', verifySsl: true, defaultModel: model },
-    model,
-    'dimension probe',
-  );
+  const evalProviderConfig = {
+    providerId: 'eval', id: 'eval', name: 'eval', baseUrl,
+    apiKey: null, authType: 'none' as const, verifySsl: true, defaultModel: model,
+  };
+  const probe = await generateEmbedding(evalProviderConfig, model, 'dimension probe');
   const dims = probe[0]?.length ?? 0;
   console.log(`model ${model} → ${dims} dimensions`);
+
+  // Before anything is embedded: a model that truncates would produce a
+  // confident score describing the prefix it happened to read.
+  await assertModelReadsFullChunk(evalProviderConfig, model);
+
   await ensureVectorDimensions(dims);
 
   const corpus = loadCorpus();
