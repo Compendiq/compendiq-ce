@@ -84,6 +84,26 @@ export async function ensureVectorDimensions(dims: number): Promise<void> {
 export const EVAL_SPACE_KEY = 'EVAL';
 
 /**
+ * Clear any previous corpus before seeding.
+ *
+ * Without this, a second run against the same database inserts a SECOND copy
+ * of every page. Retrieval then splits between the identical twins, the
+ * fixture's expected id competes with a page whose text is character-for-
+ * character the same, and recall roughly halves — which the comparison mode
+ * dutifully reports as a credible regression caused by the change under test.
+ * Found by running the eval against its own baseline and getting a regression
+ * out of identical code.
+ *
+ * CASCADE reaches page_embeddings and page_relationships; search_analytics is
+ * cleared separately because it references users rather than pages and would
+ * otherwise accumulate a run's worth of rows each time.
+ */
+export async function resetEvalCorpus(): Promise<void> {
+  await query(`TRUNCATE pages CASCADE`);
+  await query(`TRUNCATE search_analytics`);
+}
+
+/**
  * Insert every corpus page and embed it. Returns the filename → page id map
  * the fixture is resolved through; page ids are assigned here and differ
  * between runs, which is why the fixture never stores them.

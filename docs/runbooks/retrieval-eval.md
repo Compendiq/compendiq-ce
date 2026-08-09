@@ -39,6 +39,13 @@ CI runs the same script in the `retrieval-eval` job on any PR touching
 `rag-service`, `embedding-service`, `llm-provider-resolver` or `eval/`, and
 uploads its report as an artifact — download that to use as a baseline.
 
+Re-running against the same database is safe: the script clears the previous
+corpus before seeding. It has to — without that, a second run leaves two
+identical copies of every page, retrieval splits between the twins, and recall
+roughly halves, which the comparison reports as a credible regression caused
+by whatever you were testing. That is not hypothetical; it is how the bug was
+found.
+
 ## Reading the verdict
 
 ```

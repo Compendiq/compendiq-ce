@@ -21,7 +21,7 @@ vi.mock('../services/openai-compatible-client.js', async () => {
   return { ...actual, generateEmbedding: generateEmbeddingMock };
 });
 
-const { seedCorpus, ensureVectorDimensions, configureEmbeddingProvider, EVAL_SPACE_KEY } = await import('./seed.js');
+const { seedCorpus, ensureVectorDimensions, configureEmbeddingProvider, resetEvalCorpus, EVAL_SPACE_KEY } = await import('./seed.js');
 const { loadCorpus } = await import('./fixture.js');
 
 const dbAvailable = await isDbAvailable();
@@ -81,6 +81,26 @@ describe.skipIf(!dbAvailable)('eval seeder (#1102)', () => {
     const after = await query<{ n: number }>(`SELECT COUNT(*)::int AS n FROM page_embeddings`);
     expect(after.rows[0]!.n).toBe(before.rows[0]!.n);
     expect(before.rows[0]!.n).toBeGreaterThan(0);
+  });
+
+  it('reseeding replaces the corpus instead of duplicating it', async () => {
+    // The bug this exists for: a second run against the same database left two
+    // identical copies of every page, retrieval split between the twins, and
+    // the comparison reported a credible REGRESSION for identical code.
+    await ensureVectorDimensions(MODEL_DIMS);
+    await configureEmbeddingProvider({ baseUrl: 'http://stub/v1', model: 'stub-embed' });
+    const corpus = loadCorpus().slice(0, 3);
+
+    await seedCorpus(USER, { corpus });
+    await resetEvalCorpus();
+    const second = await seedCorpus(USER, { corpus });
+
+    const pages = await query<{ n: number }>(`SELECT COUNT(*)::int AS n FROM pages`);
+    expect(pages.rows[0]!.n).toBe(3);
+    for (const pageId of second.pageIdByFile.values()) {
+      const row = await query<{ n: number }>(`SELECT COUNT(*)::int AS n FROM pages WHERE id = $1`, [pageId]);
+      expect(row.rows[0]!.n).toBe(1);
+    }
   });
 
   it('refuses an implausible dimension rather than issuing the DDL', async () => {

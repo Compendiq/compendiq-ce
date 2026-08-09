@@ -21,12 +21,13 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { query, closePool, runMigrations } from '../src/core/db/postgres.js';
 import { generateEmbedding } from '../src/domains/llm/services/openai-compatible-client.js';
 import { loadCorpus, loadFixture, assertFixturePower } from '../src/domains/llm/eval/fixture.js';
-import { seedCorpus, ensureVectorDimensions, configureEmbeddingProvider } from '../src/domains/llm/eval/seed.js';
+import { seedCorpus, ensureVectorDimensions, configureEmbeddingProvider, resetEvalCorpus } from '../src/domains/llm/eval/seed.js';
 import { runEval } from '../src/domains/llm/eval/runner.js';
+import { flushSearchAnalytics } from '../src/domains/llm/services/rag-service.js';
 import { recallAtK, meanReciprocalRank, pairedBootstrapCi, winLoss, type QueryRun } from '../src/domains/llm/eval/metrics.js';
 
 const TOP_K = [1, 3, 5, 10] as const;
-const EVAL_USER = 'aaaaaaaa-1102-4000-8000-00000000eva1';
+const EVAL_USER = 'aaaaaaaa-1102-4000-8000-000000001102';
 
 interface Report {
   model: string;
@@ -80,6 +81,10 @@ async function main(): Promise<void> {
   const corpus = loadCorpus();
   const fixture = loadFixture(JSON.parse(readFileSync(new URL('../src/domains/llm/eval/fixture.json', import.meta.url), 'utf8')), corpus);
   assertFixturePower(fixture);
+
+  // Before seeding, not after: a leftover corpus from a previous run would
+  // double every page and halve recall.
+  await resetEvalCorpus();
 
   console.log(`seeding ${corpus.length} pages…`);
   const seeded = await seedCorpus(EVAL_USER, {
@@ -153,4 +158,11 @@ main()
     console.error(err instanceof Error ? err.message : err);
     process.exitCode = 1;
   })
-  .finally(() => closePool());
+  // Every query the eval runs is recorded through the same analytics path the
+  // product uses, and those writes are batched. Closing the pool first makes
+  // them fail with a connection timeout AFTER the report has printed — noise
+  // that reads like a harness fault.
+  .finally(async () => {
+    await flushSearchAnalytics().catch(() => {});
+    await closePool();
+  });
