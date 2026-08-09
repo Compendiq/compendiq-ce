@@ -230,6 +230,27 @@ describe('pairedSignificance (#1102, review r1)', () => {
   });
 });
 
+describe('the disposable-database rule (#1102, review r4)', () => {
+  // The guard lives in scripts/run-retrieval-eval.ts, which has no test of its
+  // own; round 3's verification used four names that all happened to avoid the
+  // token-delimiter asymmetry, which is why it shipped refusing `test`.
+  const DISPOSABLE = /eval|test|scratch|sandbox/i;
+  const NEVER = /prod|live|main|staging/i;
+  const admits = (name: string) => DISPOSABLE.test(name) && !NEVER.test(name);
+
+  it('admits the names its own error message tells the operator to use', () => {
+    for (const name of ['kb_eval', 'kb_creator_test', 'test', 'testdb', 'eval-db', 'scratch1', 'sandbox']) {
+      expect(admits(name), name).toBe(true);
+    }
+  });
+
+  it('refuses anything that looks like real data, including names that also say eval', () => {
+    for (const name of ['kb_creator_prod', 'compendiq', 'production_eval', 'staging_eval', 'live_eval', 'mainline']) {
+      expect(admits(name), name).toBe(false);
+    }
+  });
+});
+
 describe('winLoss (#1102)', () => {
   it('reports per-query movement, which the aggregate hides', () => {
     const baseline = [run('q1', [99, 1], [1]), run('q2', [2], [2]), run('q3', [3], [3])];

@@ -216,9 +216,15 @@ export async function configureEmbeddingProvider(opts: {
   model: string;
   name?: string;
 }): Promise<string> {
+  // is_default = FALSE (review r4): `llm_providers_one_default` is a unique
+  // partial index, so hard-coding true dies on a raw duplicate-key error
+  // against any database where a provider was ever configured — precisely the
+  // restored-copy case EVAL_ALLOW_DESTRUCTIVE exists to admit. The eval never
+  // needs a default: it pins the embedding use case explicitly below, and
+  // resolveUsecase reads the assignment before any default.
   const provider = await query<{ id: string }>(
     `INSERT INTO llm_providers (name, base_url, auth_type, verify_ssl, is_default, default_model)
-     VALUES ($1, $2, 'none', true, true, $3)
+     VALUES ($1, $2, 'none', true, false, $3)
      RETURNING id`,
     [opts.name ?? 'eval-embedding', opts.baseUrl, opts.model],
   );

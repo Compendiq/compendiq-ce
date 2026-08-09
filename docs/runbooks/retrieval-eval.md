@@ -50,6 +50,12 @@ CI runs the same script in the `retrieval-eval` job on any PR touching
 uploads its report as an artifact. Use that artifact to *read* a run, not as a
 `--baseline` for a local candidate — see the environment caveat above.
 
+**To compare your change against `dev`, measure both sides yourself, in one
+place:** check out the merge base, run with `--out /tmp/baseline.json`, check
+out your branch, and run again with `--baseline /tmp/baseline.json`. Same
+machine, same Ollama, same index build — which is the only way the paired test
+is reading your change rather than the environment.
+
 Re-running against the same database is safe: the script clears the previous
 corpus before seeding. It has to — without that, a second run leaves two
 identical copies of every page, retrieval splits between the twins, and recall

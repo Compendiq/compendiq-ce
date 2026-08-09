@@ -233,8 +233,10 @@ jobs:
         run: npx tsx scripts/run-retrieval-eval.ts --out retrieval-eval.json
         working-directory: backend
 
-      # The report is the artefact a retrieval PR compares against: download
-      # the baseline run's copy and pass it as --baseline locally.
+      # The report is for READING a run, not as a --baseline for a local
+      # candidate: the two sides would differ in machine and HNSW graph, which
+      # is enough to move a query (review r4, and the runbook says the same).
+      # To compare against dev, measure both sides in one environment.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: steps.scope.outputs.run == 'true'
         with:

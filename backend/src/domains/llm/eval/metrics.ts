@@ -59,7 +59,11 @@ export interface BootstrapCi {
   observedDelta: number;
   lower: number;
   upper: number;
-  /** The gate: a change is credible when the interval does not straddle zero. */
+  /**
+   * DESCRIPTIVE ONLY — not the gate. `pairedSignificance` replaced it (review
+   * r1): with binary per-query scores this fires at four discordant pairs for
+   * ANY fixture size, at a true two-sided p of 0.125.
+   */
   excludesZero: boolean;
   iterations: number;
   confidence: number;
@@ -166,7 +170,9 @@ export function pairedSignificance(
 
   if (!binary) {
     // Graded scores (a fixture with multi-page expectations) are outside
-    // McNemar's assumptions; the caller falls back to the interval.
+    // McNemar's assumptions. The caller REPORTS and does not gate — it does
+    // not fall back to the interval as a decision rule, which is what this
+    // comment used to imply (review r4).
     return { method: 'bootstrap-percentile', wins, losses, pValue: null, significant: false, direction: 'none' };
   }
 

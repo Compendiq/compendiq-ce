@@ -19,7 +19,7 @@
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { markdownToHtml, htmlToText } from '../src/core/services/content-converter.js';
-import { query, closePool, runMigrations } from '../src/core/db/postgres.js';
+import { query, closePool, closeVectorPool, runMigrations } from '../src/core/db/postgres.js';
 import { generateEmbedding } from '../src/domains/llm/services/openai-compatible-client.js';
 import { loadCorpus, loadFixture, assertFixturePower } from '../src/domains/llm/eval/fixture.js';
 import { seedCorpus, ensureVectorDimensions, configureEmbeddingProvider, resetEvalCorpus, assertModelReadsFullChunk } from '../src/domains/llm/eval/seed.js';
@@ -57,7 +57,14 @@ function arg(name: string): string | undefined {
  * laptop, a staging box and production all differ in host but the fatal
  * mistake is pointing this at a database that holds real pages.
  */
-const DISPOSABLE_DB_PATTERN = /(^|_)eval($|_)|_test($|_)|^kb_eval$|^compendiq_eval$/i;
+// Substring, not token-delimited (review r4): the refusal tells the operator to
+// use a name containing "eval" or "test", and the first version then refused
+// `test`, `testdb` and `eval-db` with that very message — a loop whose only
+// exit was the blanket override, which is the wrong habit to teach for a
+// destructive script. Widening admits `production_eval`, so the production
+// words are refused outright and win over the allow-list.
+const DISPOSABLE_DB_PATTERN = /eval|test|scratch|sandbox/i;
+const NEVER_DISPOSABLE_PATTERN = /prod|live|main|staging/i;
 
 function assertDisposableDatabase(url: string): void {
   if (process.env.EVAL_ALLOW_DESTRUCTIVE === 'yes-wipe-this-database') return;
@@ -69,12 +76,13 @@ function assertDisposableDatabase(url: string): void {
     throw new Error('POSTGRES_URL is not a valid URL — refusing to run a destructive eval against it');
   }
 
-  if (!DISPOSABLE_DB_PATTERN.test(dbName)) {
+  if (!DISPOSABLE_DB_PATTERN.test(dbName) || NEVER_DISPOSABLE_PATTERN.test(dbName)) {
     throw new Error(
       `Refusing to run: this script TRUNCATES pages, page_embeddings, page_relationships and ` +
-        `search_analytics and RETYPES the vector columns, and "${dbName}" does not look disposable ` +
-        `(expected a name containing "eval" or "test"). Point POSTGRES_URL at a throwaway database, ` +
-        `or set EVAL_ALLOW_DESTRUCTIVE=yes-wipe-this-database if you genuinely mean this one.`,
+        `search_analytics and RETYPES the vector columns, and "${dbName}" does not look disposable. ` +
+        `Its name must contain "eval", "test", "scratch" or "sandbox", and must not contain ` +
+        `"prod", "live", "main" or "staging". Point POSTGRES_URL at a throwaway database, or set ` +
+        `EVAL_ALLOW_DESTRUCTIVE=yes-wipe-this-database if you genuinely mean this one.`,
     );
   }
 }
@@ -216,5 +224,11 @@ main()
   // that reads like a harness fault.
   .finally(async () => {
     await flushSearchAnalytics().catch(() => {});
+    // BOTH pools (review r4): the vector leg runs on its own via
+    // getVectorPool, and leaving it open made the process sit for pg's 30s
+    // idle timeout after printing the verdict — indistinguishable from a hang
+    // at the exact moment the operator is reading the result, and a Ctrl-C
+    // there replaces the exit code that carries the regression signal.
+    await closeVectorPool().catch(() => {});
     await closePool();
   });
