@@ -70,6 +70,19 @@ N named `openai-compatible` providers in `llm_providers` table, configured via S
 
 Mocks exist for CI only (Confluence, Ollama, Redis aren't reachable there).
 
+**Carve-out — the retrieval eval (#1102) runs a REAL embedding model in CI.**
+The `retrieval-eval` job in `pr-check.yml` brings up Ollama as a service
+container and embeds the vendored corpus with `nomic-embed-text`, because a
+quality metric computed against mocked vectors measures the mock. The model
+must read a whole chunk: `all-minilm`'s 256-token window silently embedded
+about a sixth of each one, so `assertModelReadsFullChunk` now refuses any
+model that returns the same vector for two chunk-sized texts differing only in
+their final word. It is a dedicated
+job, scoped to PRs that touch retrieval, so the fast path never waits on it.
+The rule above still holds everywhere else — and note this model is for
+detecting *regressions in retrieval logic*, never for judging a model upgrade:
+those comparisons need the real candidates and stay on #1113's rig.
+
 - DB tests → real Postgres, never mocked.
 - Backend route tests → mock external HTTP and auth via `vi.spyOn()` passthroughs; nothing else.
 - Frontend tests → mock fetch/MSW at the network boundary, not internal components.
