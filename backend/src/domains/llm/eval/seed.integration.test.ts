@@ -28,6 +28,13 @@ vi.mock('../services/openai-compatible-client.js', async () => {
 const { seedCorpus, ensureVectorDimensions, configureEmbeddingProvider, resetEvalCorpus, assertModelReadsFullChunk, TruncatingModelError, EVAL_SPACE_KEY } = await import('./seed.js');
 const { loadCorpus } = await import('./fixture.js');
 
+// Real corpus prose, so the probe carries the token density a real chunk does
+// — repeated filler words are ~6 chars/token, corpus text is ~4 (review r2).
+const SAMPLE = loadCorpus()
+  .map((p) => p.markdown)
+  .join('\n\n')
+  .slice(0, 20_000);
+
 const dbAvailable = await isDbAvailable();
 const USER = 'aaaaaaaa-1102-4000-8000-000000000002';
 
@@ -108,6 +115,11 @@ describe.skipIf(!dbAvailable)('eval seeder (#1102)', () => {
     }
   });
 
+  it('refuses a probe sample shorter than a real chunk, which would certify nothing', async () => {
+    const CFG = { providerId: 'x', id: 'x', name: 'x', baseUrl: '', apiKey: null, authType: 'none' as const, verifySsl: true, defaultModel: 'm' };
+    await expect(assertModelReadsFullChunk(CFG, 'm', 'too short')).rejects.toThrow(/real corpus text/i);
+  });
+
   it('refuses a model that truncates the input, which would score text it never read', async () => {
     // The real failure: all-minilm returns BYTE-IDENTICAL vectors for two
     // 5400-character texts differing only in their last word, while the run
@@ -116,8 +128,8 @@ describe.skipIf(!dbAvailable)('eval seeder (#1102)', () => {
     const truncated = Array.from({ length: 8 }, (_, i) => i / 8);
     generateEmbeddingMock.mockImplementation(async () => [truncated]);
 
-    await expect(assertModelReadsFullChunk(CFG, 'truncating-model')).rejects.toBeInstanceOf(TruncatingModelError);
-    await expect(assertModelReadsFullChunk(CFG, 'truncating-model')).rejects.toThrow(/truncating the input/i);
+    await expect(assertModelReadsFullChunk(CFG, 'truncating-model', SAMPLE)).rejects.toBeInstanceOf(TruncatingModelError);
+    await expect(assertModelReadsFullChunk(CFG, 'truncating-model', SAMPLE)).rejects.toThrow(/truncating the input/i);
   });
 
   it('accepts a model whose vector responds to the end of the chunk', async () => {
@@ -128,7 +140,7 @@ describe.skipIf(!dbAvailable)('eval seeder (#1102)', () => {
       return [Array.from({ length: 8 }, (_, i) => Math.sin((i + 1) * call))];
     });
 
-    await expect(assertModelReadsFullChunk(CFG, 'honest-model')).resolves.toBeUndefined();
+    await expect(assertModelReadsFullChunk(CFG, 'honest-model', SAMPLE)).resolves.toBeUndefined();
   });
 
   it('refuses an implausible dimension rather than issuing the DDL', async () => {

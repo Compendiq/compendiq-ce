@@ -72,8 +72,12 @@ Mocks exist for CI only (Confluence, Ollama, Redis aren't reachable there).
 
 **Carve-out — the retrieval eval (#1102) runs a REAL embedding model in CI.**
 The `retrieval-eval` job in `pr-check.yml` brings up Ollama as a service
-container and embeds the vendored corpus with `all-minilm`, because a quality
-metric computed against mocked vectors measures the mock. It is a dedicated
+container and embeds the vendored corpus with `nomic-embed-text`, because a
+quality metric computed against mocked vectors measures the mock. The model
+must read a whole chunk: `all-minilm`'s 256-token window silently embedded
+about a sixth of each one, so `assertModelReadsFullChunk` now refuses any
+model that returns the same vector for two chunk-sized texts differing only in
+their final word. It is a dedicated
 job, scoped to PRs that touch retrieval, so the fast path never waits on it.
 The rule above still holds everywhere else — and note this model is for
 detecting *regressions in retrieval logic*, never for judging a model upgrade:

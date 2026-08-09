@@ -18,6 +18,7 @@
  *   POSTGRES_URL              a database this script may TRUNCATE and RETYPE
  */
 import { readFileSync, writeFileSync } from 'node:fs';
+import { markdownToHtml, htmlToText } from '../src/core/services/content-converter.js';
 import { query, closePool, runMigrations } from '../src/core/db/postgres.js';
 import { generateEmbedding } from '../src/domains/llm/services/openai-compatible-client.js';
 import { loadCorpus, loadFixture, assertFixturePower } from '../src/domains/llm/eval/fixture.js';
@@ -77,13 +78,15 @@ async function main(): Promise<void> {
   const dims = probe[0]?.length ?? 0;
   console.log(`model ${model} → ${dims} dimensions`);
 
+  const corpus = loadCorpus();
+
   // Before anything is embedded: a model that truncates would produce a
-  // confident score describing the prefix it happened to read.
-  await assertModelReadsFullChunk(evalProviderConfig, model);
+  // confident score describing the prefix it happened to read. Probed with the
+  // corpus's OWN text, whose token density is what a real chunk carries.
+  const longestPage = corpus.reduce((a, b) => (b.markdown.length > a.markdown.length ? b : a));
+  await assertModelReadsFullChunk(evalProviderConfig, model, htmlToText(await markdownToHtml(longestPage.markdown)));
 
   await ensureVectorDimensions(dims);
-
-  const corpus = loadCorpus();
   const fixture = loadFixture(JSON.parse(readFileSync(new URL('../src/domains/llm/eval/fixture.json', import.meta.url), 'utf8')), corpus);
   assertFixturePower(fixture);
 

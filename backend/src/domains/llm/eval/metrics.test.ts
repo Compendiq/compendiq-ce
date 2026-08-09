@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { recallAtK, meanReciprocalRank, pairedBootstrapCi, pairedSignificance, winLoss, type QueryRun } from './metrics.js';
+import { recallAtK, meanReciprocalRank, pairedBootstrapCi, pairedSignificance, mcnemarExactTwoSided, winLoss, type QueryRun } from './metrics.js';
 
 // #1102 — the scoring half of the eval harness. Pure functions over recorded
 // runs, so these hold whatever the retrieval stack did. Every expectation is
@@ -198,6 +198,19 @@ describe('pairedSignificance (#1102, review r1)', () => {
 
     expect(verdict.pValue).toBeCloseTo(0.109375, 6);
     expect(verdict.significant).toBe(false);
+  });
+
+  it('stays finite when the discordant count is large (review r2)', () => {
+    // C(n,i) over 2**n overflowed to NaN past ~1024 pairs, and `p < 0.05` then
+    // silently went false — the gate vanishing when the evidence was strongest.
+    expect(mcnemarExactTwoSided(0, 2000)).toBeCloseTo(0, 10);
+    expect(mcnemarExactTwoSided(1000, 1000)).toBeCloseTo(1, 6);
+    expect(Number.isNaN(mcnemarExactTwoSided(3, 2000))).toBe(false);
+    // …and it still agrees with the hand-checked small cases.
+    expect(mcnemarExactTwoSided(0, 4)).toBeCloseTo(0.125, 12);
+    expect(mcnemarExactTwoSided(0, 6)).toBeCloseTo(0.03125, 12);
+    expect(mcnemarExactTwoSided(2, 8)).toBeCloseTo(0.109375, 12);
+    expect(mcnemarExactTwoSided(0, 0)).toBe(1);
   });
 
   it('reports improvement direction symmetrically', () => {

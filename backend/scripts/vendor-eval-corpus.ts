@@ -11,11 +11,14 @@
  * the closest public analogue to a technical knowledge base. See
  * corpus/LICENSE-ATTRIBUTION.md for the notices this obliges us to carry.
  *
- * Usage (clones are shallow, ~30s):
- *   git clone --depth 1 https://github.com/fastify/fastify.git   /tmp/corpus-src/fastify
- *   git clone --depth 1 https://github.com/vitest-dev/vitest.git /tmp/corpus-src/vitest
- *   git clone --depth 1 https://github.com/vitejs/vite.git       /tmp/corpus-src/vite
- *   npx tsx scripts/vendor-eval-corpus.ts /tmp/corpus-src
+ * Usage — FULL clones, not --depth 1 (review r2): reproducing the corpus means
+ * checking out the commit recorded in MANIFEST.json, and a shallow clone cannot
+ * reach an older commit once upstream has moved.
+ *   git clone https://github.com/fastify/fastify.git   /tmp/corpus-src/fastify
+ *   git clone https://github.com/vitest-dev/vitest.git /tmp/corpus-src/vitest
+ *   git clone https://github.com/vitejs/vite.git       /tmp/corpus-src/vite
+ *   npx tsx scripts/vendor-eval-corpus.ts /tmp/corpus-src          # reproduce the pins
+ *   npx tsx scripts/vendor-eval-corpus.ts /tmp/corpus-src --update # move to HEAD (obliges a re-label)
  */
 import { readdirSync, readFileSync, writeFileSync, mkdirSync, rmSync, existsSync, statSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
@@ -76,21 +79,25 @@ if (!cloneRoot) {
   process.exit(1);
 }
 
-if (existsSync(OUT_DIR)) rmSync(OUT_DIR, { recursive: true });
-mkdirSync(OUT_DIR, { recursive: true });
-
-const manifest: Array<{ file: string; title: string; source: string; repo: string; commit: string; path: string; license: string }> = [];
-
 // Honour the recorded pins when a manifest is already present, so a refresh
 // REPRODUCES the corpus instead of silently taking whatever the default branch
 // happens to be today (review r1 — the attribution claimed reproducibility the
 // script did not deliver). Pass --update to deliberately move to the clones'
 // current HEADs, which then obliges a re-label.
+//
+// Read BEFORE the wipe below (review r2): the manifest lives inside OUT_DIR,
+// so reading it afterwards found nothing, every pin was undefined, and the
+// checkout was dead code while three documents claimed otherwise.
 const pinnedCommits = new Map<string, string>();
 if (!process.argv.includes('--update') && existsSync(join(OUT_DIR, 'MANIFEST.json'))) {
   const previous = JSON.parse(readFileSync(join(OUT_DIR, 'MANIFEST.json'), 'utf8')) as { pages: Array<{ source: string; commit: string }> };
   for (const page of previous.pages) pinnedCommits.set(page.source, page.commit);
 }
+
+if (existsSync(OUT_DIR)) rmSync(OUT_DIR, { recursive: true });
+mkdirSync(OUT_DIR, { recursive: true });
+
+const manifest: Array<{ file: string; title: string; source: string; repo: string; commit: string; path: string; license: string }> = [];
 
 const notices: string[] = [];
 

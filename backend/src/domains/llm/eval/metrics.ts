@@ -192,16 +192,42 @@ export function mcnemarExactTwoSided(wins: number, losses: number): number {
   const n = wins + losses;
   if (n === 0) return 1;
   const k = Math.min(wins, losses);
-  let cumulative = 0;
-  for (let i = 0; i <= k; i++) cumulative += binomialCoefficient(n, i);
-  const p = (2 * cumulative) / 2 ** n;
-  return Math.min(1, p);
+
+  // Two numeric failure modes, both silent (review r2). Summing raw C(n,i)
+  // over 2**n overflows to NaN past ~1024 pairs, and building the pmf from
+  // 2**-n instead UNDERFLOWS to zero past ~1070 — either way `p < 0.05`
+  // quietly flips and the gate disappears exactly when the evidence is
+  // largest. Today's fixture caps n at 144; a bigger one is the documented
+  // direction of travel, so neither ceiling is left in place.
+  if (n <= 1000) {
+    // Exact, built incrementally: pmf(0) = 2^-n, pmf(i) = pmf(i-1)·(n-i+1)/i.
+    let pmf = Math.pow(2, -n);
+    let cumulative = pmf;
+    for (let i = 1; i <= k; i++) {
+      pmf = (pmf * (n - i + 1)) / i;
+      cumulative += pmf;
+    }
+    return Math.min(1, 2 * cumulative);
+  }
+
+  // Beyond that the normal approximation with a continuity correction is what
+  // McNemar's test conventionally uses anyway, and it agrees with the exact
+  // form to several decimals well before this boundary.
+  const z = Math.max(0, Math.abs(wins - losses) - 1) / Math.sqrt(n);
+  return Math.min(1, 2 * (1 - standardNormalCdf(z)));
 }
 
-function binomialCoefficient(n: number, k: number): number {
-  let result = 1;
-  for (let i = 1; i <= k; i++) result = (result * (n - i + 1)) / i;
-  return result;
+/** Abramowitz & Stegun 7.1.26 — accurate to ~1.5e-7, far tighter than any p we compare against 0.05. */
+function standardNormalCdf(z: number): number {
+  const sign = z < 0 ? -1 : 1;
+  const x = Math.abs(z) / Math.SQRT2;
+  const t = 1 / (1 + 0.3275911 * x);
+  const y =
+    1 -
+    ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t + 0.254829592) *
+      t *
+      Math.exp(-x * x);
+  return 0.5 * (1 + sign * y);
 }
 
 export interface WinLossTable {

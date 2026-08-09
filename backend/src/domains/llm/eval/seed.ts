@@ -101,8 +101,25 @@ export class TruncatingModelError extends Error {}
  * model reading the whole input must produce different vectors. `all-minilm`
  * returns byte-identical ones here — which is how this was found.
  */
-export async function assertModelReadsFullChunk(cfg: ProviderConfig, model: string): Promise<void> {
-  const filler = 'alpha '.repeat(Math.ceil(CHUNK_HARD_LIMIT / 6));
+export async function assertModelReadsFullChunk(
+  cfg: ProviderConfig,
+  model: string,
+  chunkSample: string,
+): Promise<void> {
+  // The filler must be REAL corpus text (review r2). The first version repeated
+  // 'alpha ', which is one token per six characters in every BPE vocabulary —
+  // so a 6000-character probe carried ~1000 tokens while a 6000-character
+  // corpus chunk carries ~1500-2000 (embedding-service.ts pins that estimate,
+  // and all-minilm's 256-token window measured out at ~1000 characters on this
+  // corpus, i.e. ~3.9 chars/token). The probe therefore certified models with
+  // a ~1000-token window that still truncate two thirds of every real chunk —
+  // exactly the failure it exists to catch.
+  const filler = chunkSample.slice(0, CHUNK_HARD_LIMIT);
+  if (filler.length < CHUNK_HARD_LIMIT) {
+    throw new TruncatingModelError(
+      `Truncation probe needs ${CHUNK_HARD_LIMIT} characters of real corpus text, got ${filler.length}`,
+    );
+  }
   const [head] = await generateEmbedding(cfg, model, `${filler} ZEBRAQUIRK`);
   const [tail] = await generateEmbedding(cfg, model, `${filler} OMEGADIFFER`);
   if (!head || !tail) {
@@ -115,7 +132,7 @@ export async function assertModelReadsFullChunk(cfg: ProviderConfig, model: stri
 
   if (cosine > 1 - 1e-9) {
     throw new TruncatingModelError(
-      `Model ${model} produced the same vector for two ${CHUNK_HARD_LIMIT}-character texts differing only in their final word ` +
+      `Model ${model} produced the same vector for two ${CHUNK_HARD_LIMIT}-character corpus-text samples differing only in their final word ` +
         `(cosine ${cosine.toFixed(9)}) — it is truncating the input. Every metric would then describe the prefix the model ` +
         'happened to read, not the corpus. Use a model whose context covers a whole chunk.',
     );
