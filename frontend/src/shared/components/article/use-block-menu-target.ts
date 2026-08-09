@@ -8,6 +8,7 @@ import {
   setBlockMenuTarget,
   setDragHandleLocked,
 } from './block-menu-decoration';
+import { absorbPortalEscape } from '../../lib/absorb-portal-escape';
 
 /**
  * #1179 — the block context menu's open/close state and the editor-level side
@@ -101,30 +102,13 @@ export function useBlockMenuTarget(editor: EditorType): UseBlockMenuTargetResult
  * `onKeyDown`'s handler never runs at all in three of its four cells, so it is
  * not a containment mechanism even where the grid now shows it green.
  *
- * Both halves are needed, for different reasons:
- *
- * - `preventDefault()` so Radix skips its own dismissal — we close here
- *   instead, so `close` runs once rather than twice. Since **#1206** it is also
- *   the signal `use-keyboard-shortcuts` reads: that hook now yields a
- *   single-key shortcut whose keystroke is already `defaultPrevented`, which is
- *   what keeps `PageViewPage`'s `Escape` from running `handleCancelEditing()`
- *   and throwing the user out of the editor. Before #1206 the hook gated solely
- *   on `isEditableTarget(event)` — false for a portalled Radix layer — and this
- *   menu needed `stopPropagation` to survive at all.
- * - `stopPropagation()` on the NATIVE event, so the key reaches no document
- *   listener whatsoever. `use-keyboard-shortcuts` is not the only thing bound
- *   to `document`, and the others have no reason to consult a flag Radix set.
- *   This is the half that does not depend on the listener being well behaved,
- *   which is why it stays now that #1206 has fixed the shared hook.
+ * The behaviour lives in `shared/lib/absorb-portal-escape.ts` now, because the
+ * block menu is no longer the only portalled layer over the editor that needs
+ * it — `TagPopover` does too, and a helper named for the block menu would be
+ * lying there. This alias stays because `block-menu-escape.test.tsx` imports it
+ * by name and `EditorBlockMenu.test.tsx` asserts the literal call site.
  *
  * The selection bubble menu avoids all of this only because its buttons
  * `preventDefault` on mousedown, so focus never leaves `.tiptap`.
  */
-export function absorbBlockMenuEscape(
-  event: { preventDefault: () => void; stopPropagation: () => void },
-  close: () => void,
-): void {
-  event.preventDefault();
-  event.stopPropagation();
-  close();
-}
+export const absorbBlockMenuEscape = absorbPortalEscape;
