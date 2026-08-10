@@ -352,9 +352,9 @@ export function EditorBlockMenu({
             onClick={deleteBlock}
             data-testid="block-menu-delete"
             className={cn(
-              'mx-2 flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm font-medium transition-colors',
-              'text-destructive hover:bg-destructive/10',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-destructive',
+              'mx-2 flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm font-medium',
+              // One shared destructive treatment — see nm-action-destructive.
+              'nm-action-destructive',
             )}
           >
             <Trash2 size={15} />
