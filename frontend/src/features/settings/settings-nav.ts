@@ -39,14 +39,21 @@ export interface SettingsNavItem {
 interface SettingsNavGroup {
   id: SettingsCategoryId;
   label: string;
-  items: SettingsNavItem[];
+  items: readonly SettingsNavItem[];
 }
 
-function navItem(
-  id: string,
+/**
+ * The `const Id` type parameter keeps each item's id as a string *literal*
+ * in the config's type, which is what lets `SettingsPanelId` below be
+ * derived from SETTINGS_NAV instead of restated in a mirror list — a
+ * missed or renamed id is then a type error at every
+ * `SETTINGS_PANELS.<id>` callsite, not an import-time crash.
+ */
+function navItem<const Id extends string>(
+  id: Id,
   label: string,
   options: Omit<SettingsNavItem, 'id' | 'label'> = {},
-): SettingsNavItem {
+): SettingsNavItem & { id: Id } {
   return { id, label, ...options };
 }
 
@@ -54,7 +61,7 @@ function navItem(
  * Grouped nav config. Order within each group controls rail rendering order;
  * order of groups controls top-to-bottom rail order.
  */
-export const SETTINGS_NAV: readonly SettingsNavGroup[] = [
+export const SETTINGS_NAV = [
   {
     id: 'personal',
     label: 'Personal',
@@ -112,7 +119,7 @@ export const SETTINGS_NAV: readonly SettingsNavGroup[] = [
       navItem('diagnostics', 'Diagnostics', { adminOnly: true }),
     ],
   },
-] as const;
+] as const satisfies readonly SettingsNavGroup[];
 
 export interface AccessContext {
   isAdmin: boolean;
@@ -151,3 +158,57 @@ export function firstVisiblePath(ctx: AccessContext): string {
   // Fallback — should be unreachable because `confluence` is always visible.
   return CONFLUENCE_SETTINGS_PATH;
 }
+
+/**
+ * Flat panel lookup keyed by nav-item id — the wayfinding source of truth.
+ *
+ * In-app copy that points at a settings panel (a breadcrumb-style "Settings"
+ * chain, an `<a href>` into `/settings/...`) must take the label/path from
+ * here rather than restating them: the IA has been renamed before (LLM →
+ * AI Models, Spaces → Spaces & Sync, RBAC → Access Control) and every literal
+ * that restated the old rail went stale in place — including a real link to a
+ * route that 404s. `settings-wayfinding.test.ts` scans the source tree for
+ * literals that drift from this table.
+ */
+export interface SettingsPanelRef {
+  /** Full `/settings/<category>/<item>` path. */
+  path: string;
+  /** Rail label — the name wayfinding copy must call this panel. */
+  label: string;
+}
+
+/**
+ * Union of the item ids in SETTINGS_NAV, *derived* from the config — the
+ * `const Id` parameter on `navItem()` plus `as const satisfies` on the array
+ * keep every id as a literal in the config's type, so there is no mirror
+ * list to fall out of sync and no module-init throw waiting on `/pages`,
+ * `/ai` and the setup wizard (settings-nav is imported well beyond the
+ * lazy-loaded SettingsLayout).
+ */
+export type SettingsPanelId = (typeof SETTINGS_NAV)[number]['items'][number]['id'];
+
+/**
+ * Compile-time tripwire, kept beside the union it guards: if a future edit
+ * collapses SettingsPanelId to `string` (a widening annotation back on
+ * SETTINGS_NAV, or navItem() losing its const type parameter), the
+ * constraint below fails `npm run typecheck` here, by name.
+ * `noUncheckedIndexedAccess` would flag the collapse too, but as a
+ * misleading "possibly undefined" at every SETTINGS_PANELS.<id> callsite.
+ */
+type LiteralUnionOnly<T extends true> = T;
+export type SettingsPanelIdIsLiteralUnion = LiteralUnionOnly<
+  string extends SettingsPanelId ? false : true
+>;
+
+export const SETTINGS_PANELS = Object.fromEntries(
+  SETTINGS_NAV.flatMap((group) =>
+    group.items.map((item): [SettingsPanelId, SettingsPanelRef] => [
+      item.id,
+      { path: `/settings/${group.id}/${item.id}`, label: item.label },
+    ]),
+  ),
+  // The assertion narrows Object.fromEntries' string keys back to the id
+  // union. It is derivation, not restatement: keys and union both come from
+  // the same SETTINGS_NAV walk, so every id is present by construction —
+  // settings-nav.test.ts still asserts the two sets match.
+) as Readonly<Record<SettingsPanelId, SettingsPanelRef>>;

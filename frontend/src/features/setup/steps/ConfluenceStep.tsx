@@ -139,9 +139,10 @@ export function ConfluenceStep({ onNext, onBack }: ConfluenceStepProps) {
 
       {/* #1127: the space picker is the consequence of a passing probe, so it
           lives in this step rather than a sixth one — the whole point is that
-          the admin never has to go looking for Settings → Spaces. It is purely
-          additive: `testSuccess` alone still enables Continue below, and the
-          panel's own sync state is deliberately not consulted there. */}
+          the admin never has to go looking for Settings → Spaces & Sync. It
+          is purely additive: `testSuccess` alone still enables Continue
+          below, and the panel's own sync state is deliberately not consulted
+          there. */}
       {testSuccess === true && <SpaceSyncPanel />}
 
       <div className="mt-6 flex items-center justify-between">

@@ -180,9 +180,12 @@ export function LlmAuditPage() {
               and avoid storing prompt content by default.
             </p>
             <p className="text-xs text-muted-foreground">
+              {/* No panel views the ops audit log since the IA consolidation —
+                  the old pointer named a Security → Audit panel that no longer
+                  exists — so the actionable reference is the admin API. */}
               Need basic ops auditing today? Login, sync, admin, and PAT events
-              are recorded in the regular <strong>Audit Log</strong>{' '}
-              (Settings → Security → Audit) on every edition.
+              are recorded on every edition — admins can query them via{' '}
+              <code className="rounded bg-foreground/10 px-1">GET /api/admin/audit-log</code>.
             </p>
           </div>
         </m.div>

@@ -25,6 +25,7 @@ import {
   QualityModeInput, QUALITY_EMPTY_TITLE, qualityEmptySubtitle,
 } from './modes';
 import { isZeroEmbeddings } from '../../shared/hooks/use-pages';
+import { SETTINGS_PANELS } from '../settings/settings-nav';
 import { ShortcutHint } from '../../shared/components/ShortcutHint';
 
 // ---------------------------------------------------------------------------
@@ -570,8 +571,8 @@ export function AiAssistantPage() {
               <AlertTriangle size={16} className="mt-0.5 shrink-0" />
               <span>
                 Pages not embedded yet — configure an embedding provider in
-                Settings → LLM and run an embedding pass. Until then, Q&amp;A has
-                no knowledge-base context to draw on.
+                Settings → {SETTINGS_PANELS.models.label} and run an embedding pass.
+                Until then, Q&amp;A has no knowledge-base context to draw on.
               </span>
             </div>
           )}

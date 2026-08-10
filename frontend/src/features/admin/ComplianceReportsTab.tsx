@@ -1,5 +1,5 @@
 /**
- * Settings → Compliance Reports tab (EE-gated).
+ * Reports sub-tab of Settings → Data & Compliance (EE-gated).
  *
  * Surfaces the seven SOC 2 / ISO 27001 reports from
  * `Compendiq/compendiq-ee#115`. Each report is a one-shot generator: the
@@ -47,6 +47,7 @@ import { apiFetch, ApiError } from '../../shared/lib/api';
 import { useAuthStore } from '../../stores/auth-store';
 import { cn } from '../../shared/lib/cn';
 import { ErrorState } from '../../shared/components/feedback/ErrorState';
+import { SETTINGS_PANELS } from '../settings/settings-nav';
 
 // ── Catalogue ──────────────────────────────────────────────────────────
 //
@@ -417,8 +418,8 @@ export function ComplianceReportsTab() {
               <h2 className="text-base font-medium">Compliance reports require an Enterprise license</h2>
               <p className="mt-1 text-sm text-muted-foreground">
                 The SOC 2 / ISO 27001 evidence-packet generator is part of the Compendiq
-                Enterprise tier. Configure a valid license in Settings → License to enable
-                the seven reports.
+                Enterprise tier. Configure a valid license in Settings → {SETTINGS_PANELS.license.label} to
+                enable the seven reports.
               </p>
             </div>
           </div>

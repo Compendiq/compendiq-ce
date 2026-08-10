@@ -924,9 +924,10 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
    It exists because there were three of these and they disagreed. The block
    menu used `text-destructive` + `hover:bg-destructive/10` + a destructive
    focus ring; the article inspector used `text-destructive/80` +
-   `hover:bg-destructive/8` + the normal ring; and Settings → LLM providers
-   used *nothing at all* — `Delete` was an unstyled button identical in weight
-   to `Edit`, `Set default` and `Test` beside it, and its confirm step reached
+   `hover:bg-destructive/8` + the normal ring; and the provider list (now
+   Settings → AI Models) used *nothing at all* — `Delete` was an unstyled
+   button identical in weight to `Edit`, `Set default` and `Test` beside it,
+   and its confirm step reached
    for a `text-error` class that is not defined anywhere in the token set, so
    the one moment the UI meant to turn red it rendered as plain text.
 

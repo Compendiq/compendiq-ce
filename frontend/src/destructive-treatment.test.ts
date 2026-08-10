@@ -8,8 +8,9 @@ import { resolve, join } from 'path';
  * Three of them disagreed on the surfaces the design critique looked at: the
  * editor block menu used `text-destructive` + `hover:bg-destructive/10` + a
  * destructive focus ring; the article inspector used `text-destructive/80` +
- * `hover:bg-destructive/8` + the ordinary ring; and Settings → LLM providers
- * used nothing at all — `Delete` was an unstyled button identical in weight to
+ * `hover:bg-destructive/8` + the ordinary ring; and the provider list (now
+ * Settings → AI Models) used nothing at all — `Delete` was an unstyled button
+ * identical in weight to
  * `Edit`, `Set default` and `Test` beside it, and its confirm step reached for
  * `text-error`, a class this project does not define, so the one moment the UI
  * meant to turn red it rendered as plain text.

@@ -844,7 +844,7 @@ describe('PagesPage', () => {
       // the empty state must not imply embedding alone would find a match.
       expect(await screen.findByText('No matching pages', undefined, { timeout: 2000 })).toBeInTheDocument();
       expect(
-        screen.getByText('Keyword search found no matches. Semantic search is unavailable until pages are embedded — configure an embedding provider in Settings → LLM and run an embedding pass.'),
+        screen.getByText('Keyword search found no matches. Semantic search is unavailable until pages are embedded — configure an embedding provider in Settings → AI Models and run an embedding pass.'),
       ).toBeInTheDocument();
       expect(screen.getByTestId('no-embeddings-warning')).toBeInTheDocument();
     });

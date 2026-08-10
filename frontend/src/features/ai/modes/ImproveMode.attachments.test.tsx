@@ -313,7 +313,7 @@ describe('ImproveMode attachments (#1154, #1131 gap-fill)', () => {
     await waitFor(() => {
       expect(toastErrorMock).toHaveBeenCalledWith(
         "The model assigned to chat (llama3) can't read images — "
-        + 'assign a vision-capable model in Settings → LLM.',
+        + 'assign a vision-capable model in Settings → AI Models.',
       );
     });
     expect(mockPrepareImage).not.toHaveBeenCalled();

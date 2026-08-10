@@ -24,6 +24,7 @@
  */
 
 import { useCallback, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import * as Dialog from '@radix-ui/react-dialog';
 import { toast } from 'sonner';
@@ -35,6 +36,7 @@ import type {
 import { fetchJson } from '../../shared/lib/fetch-json';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
 import { cn } from '../../shared/lib/cn';
+import { SETTINGS_PANELS } from '../settings/settings-nav';
 
 // Local fetch helper — same shape as BulkUserImportModal so the 404-on-
 // missing-overlay branch lights up consistently.
@@ -82,6 +84,7 @@ function UserBulkActionDialogInner({
   onClose,
   selectedUserIds,
 }: UserBulkActionDialogProps) {
+  const { isEnterprise, hasFeature } = useEnterprise();
   const queryClient = useQueryClient();
 
   const [actionKind, setActionKind] = useState<ActionKind>('change-role');
@@ -299,9 +302,17 @@ function UserBulkActionDialogInner({
                   placeholder="group id (UUID)"
                   data-testid="bulk-action-group"
                 />
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Pick the group id from <a href="/settings/security/rbac" className="underline">Settings → RBAC → Groups</a>.
-                </p>
+                {/* The Roles (RBAC) sub-tab is EE-gated — mirror
+                    AccessControlWrapper's visibility, same as UsersAdminPage's
+                    pointer: this dialog's own gate is bulk_user_operations, a
+                    DIFFERENT flag, and on a licence without advanced_rbac
+                    SubTabs falls back to the first visible tab for the unknown
+                    ?sub=, so the link would silently reload-in-place. */}
+                {isEnterprise && hasFeature('advanced_rbac') && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Pick the group id from <Link to={`${SETTINGS_PANELS.access.path}?sub=rbac`} className="underline">Settings → {SETTINGS_PANELS.access.label} → Roles</Link>.
+                  </p>
+                )}
               </label>
             )}
 

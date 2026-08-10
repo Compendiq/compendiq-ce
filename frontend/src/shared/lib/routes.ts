@@ -16,3 +16,23 @@
  * two against drifting apart.
  */
 export const CONFLUENCE_SETTINGS_PATH = '/settings/personal/confluence';
+
+/**
+ * Rail label of the Settings → AI Models panel (admin LLM / embedding /
+ * workers configuration), for `shared/` copy that names the panel without
+ * importing `features/settings/settings-nav`.
+ *
+ * Must match the label of the `ai/models` nav item; settings-nav.test.ts
+ * guards the two against drifting apart, and settings-wayfinding.test.ts
+ * holds wayfinding copy to it.
+ */
+export const AI_MODELS_SETTINGS_LABEL = 'AI Models';
+
+/**
+ * Path of the Settings → AI Models panel, for `shared/` components that link
+ * into it (ServiceStatus's health-alert CTA). Same arrangement as
+ * CONFLUENCE_SETTINGS_PATH: must match the path settings-nav.ts derives for
+ * the `ai/models` nav item; settings-nav.test.ts guards the pair, and
+ * settings-wayfinding.test.ts holds every mirror constant to a live path.
+ */
+export const AI_MODELS_SETTINGS_PATH = '/settings/ai/models';

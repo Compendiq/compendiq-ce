@@ -1,5 +1,5 @@
 /**
- * Settings → Users admin page (#304).
+ * Users sub-tab of Settings → Access Control (#304).
  *
  * Distinct from `RbacPage` (which manages role assignment and space/group
  * memberships). This page owns the user *lifecycle*: create, edit metadata,
@@ -7,11 +7,13 @@
  */
 
 import { useMemo, useState, type ChangeEvent, type FormEvent } from 'react';
+import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { apiFetch } from '../../shared/lib/api';
 import type { AdminUser, AdminUserRole } from '@compendiq/contracts';
 import { useAuthStore } from '../../stores/auth-store';
+import { SETTINGS_PANELS } from '../settings/settings-nav';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
 import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
 import { BulkUserImportModal } from './BulkUserImportModal';
@@ -29,7 +31,7 @@ interface CreateUserResponse {
 export function UsersAdminPage() {
   const queryClient = useQueryClient();
   const currentUserId = useAuthStore((s) => s.user?.id);
-  const { hasFeature } = useEnterprise();
+  const { isEnterprise, hasFeature } = useEnterprise();
   // EE #116: bulk import + multi-select bulk actions are gated by the
   // `bulk_user_operations` feature flag. The whole UI degrades to the
   // CE #304 single-user CRUD when the flag is off — no bulk button, no
@@ -159,8 +161,17 @@ export function UsersAdminPage() {
         <div className="min-w-0">
           <h2 className="text-[15px] font-semibold">Users</h2>
           <p className="text-[13px] text-muted-foreground">
-            Lifecycle management for user accounts. Role assignment and space permissions live under{' '}
-            <a className="underline" href="/settings/security/rbac">RBAC</a>.
+            Lifecycle management for user accounts.
+            {/* The Roles (RBAC) sub-tab is EE-gated — mirror AccessControlWrapper's
+                visibility, because SubTabs falls back to the first visible tab for
+                an unknown ?sub=, and in CE that is this very page: the link would
+                be a silent reload-in-place. */}
+            {isEnterprise && hasFeature('advanced_rbac') && (
+              <>
+                {' '}Role assignment and space permissions live under{' '}
+                <Link className="underline" to={`${SETTINGS_PANELS.access.path}?sub=rbac`}>Roles</Link>.
+              </>
+            )}
           </p>
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-2">

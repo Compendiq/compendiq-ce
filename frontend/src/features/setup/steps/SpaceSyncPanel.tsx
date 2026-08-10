@@ -5,6 +5,7 @@ import { CheckSquare, Loader2, RefreshCw, Square } from 'lucide-react';
 import { apiFetch } from '../../../shared/lib/api';
 import { useSyncStatus } from '../../../shared/hooks/use-spaces';
 import { cn } from '../../../shared/lib/cn';
+import { SETTINGS_PANELS } from '../../settings/settings-nav';
 
 interface AvailableSpace {
   key: string;
@@ -24,7 +25,7 @@ interface SyncedSpace {
  *
  * The point of the feature is that an admin finishes the wizard with pages
  * actually arriving, instead of landing on an empty app and having to discover
- * Settings → Spaces on their own. Two rules follow from that and are load-
+ * Settings → Spaces & Sync on their own. Two rules follow from that and are load-
  * bearing:
  *
  *  1. **Sync is fire-and-forget.** `POST /api/sync` returns as soon as the
@@ -142,7 +143,7 @@ export function SpaceSyncPanel() {
       </h3>
       <p className="mt-1 text-xs text-muted-foreground">
         Compendiq indexes the spaces you pick here. Syncing runs in the background — you can
-        continue setup right away, and change this later in Settings → Spaces.
+        continue setup right away, and change this later in Settings → {SETTINGS_PANELS.spaces.label}.
       </p>
 
       {loadingSpaces && (
@@ -164,7 +165,7 @@ export function SpaceSyncPanel() {
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
             Your connection is saved — retry, or continue setup and pick spaces later in
-            Settings → Spaces.
+            Settings → {SETTINGS_PANELS.spaces.label}.
           </p>
           <button
             type="button"
@@ -184,7 +185,7 @@ export function SpaceSyncPanel() {
           data-testid="spaces-empty"
         >
           Your personal access token can&apos;t see any spaces yet. Ask a Confluence admin for
-          access, then sync from Settings → Spaces.
+          access, then sync from Settings → {SETTINGS_PANELS.spaces.label}.
         </p>
       )}
 
@@ -317,7 +318,7 @@ export function SpaceSyncPanel() {
           <p className="text-sm font-medium text-status-disconnected">Couldn&apos;t start the sync</p>
           <p className="mt-1 text-xs text-muted-foreground">
             {startSync.error instanceof Error ? startSync.error.message : 'The request failed.'}{' '}
-            Your connection is saved — you can continue setup and sync from Settings → Spaces.
+            Your connection is saved — you can continue setup and sync from Settings → {SETTINGS_PANELS.spaces.label}.
           </p>
           <button
             type="button"

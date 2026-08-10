@@ -251,8 +251,8 @@ describe.skipIf(!dbAvailable)('model capabilities', () => {
     });
 
     /**
-     * Reading must never probe: the badge fetches this on every Settings → LLM
-     * paint, and a probe costs a chat completion.
+     * Reading must never probe: the badge fetches this on every paint of
+     * Settings → AI Models, and a probe costs a chat completion.
      */
     it('never probes', async () => {
       const id = await seedProvider();

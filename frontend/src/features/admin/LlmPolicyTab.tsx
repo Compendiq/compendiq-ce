@@ -8,6 +8,7 @@ import {
 import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
+import { SETTINGS_PANELS } from '../settings/settings-nav';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -156,7 +157,7 @@ export function LlmPolicyTab() {
           Provider
         </label>
         <p className="mb-2 text-xs text-muted-foreground">
-          Locked LLM provider for the organization. Choose any provider configured in Settings → LLM.
+          Locked LLM provider for the organization. Choose any provider configured in Settings → {SETTINGS_PANELS.models.label}.
         </p>
         <select
           id="llm-policy-provider-select"

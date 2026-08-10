@@ -51,7 +51,7 @@ Fastify 5 · pgvector (HNSW, `bge-m3`, 1024-dim) · BullMQ (toggleable via `USE_
 
 ## LLM Provider Model (ADR-021)
 
-N named `openai-compatible` providers in `llm_providers` table, configured via Settings → LLM. Each use case (chat / summary / quality / auto_tag / embedding) inherits a default or pins an explicit `provider+model`. Ollama uses its `/v1` shim — not a separate protocol. Queue + per-provider circuit breakers wrap every outbound call in `openai-compatible-client.ts`.
+N named `openai-compatible` providers in `llm_providers` table, configured via Settings → AI Models. Each use case (chat / summary / quality / auto_tag / embedding) inherits a default or pins an explicit `provider+model`. Ollama uses its `/v1` shim — not a separate protocol. Queue + per-provider circuit breakers wrap every outbound call in `openai-compatible-client.ts`.
 
 **Legacy env vars** (`OLLAMA_BASE_URL`, `OPENAI_*`, `LLM_BEARER_TOKEN`, `DEFAULT_LLM_MODEL`, `SUMMARY_MODEL`, `QUALITY_MODEL`, `LLM_MAX_CONCURRENT_STREAMS_PER_USER`, `COMPENDIQ_LICENSE_KEY`) are **deprecated bootstrap fallbacks** — consulted only on fresh install when the DB row / `admin_settings` value is absent. Don't add new env-driven LLM config; extend the providers table or `admin_settings` instead.
 
@@ -280,7 +280,7 @@ card and its own trigger** (`composerRowClass`), because `order-*` moves boxes w
 moving the tab sequence (WCAG 2.4.3) — don't reintroduce `order-*` anywhere in a composer;
 `expectComposerFocusOrder` fails on it.
 
-**A wrong verdict is correctable, and `probe_error` is admin-only** (#1184). Settings → LLM
+**A wrong verdict is correctable, and `probe_error` is admin-only** (#1184). Settings → AI Models
 carries a **Re-check** control on the chat row — `POST /admin/llm-usecases/chat/reprobe-vision`,
 a blocking probe of the pair `resolveUsecase('chat')` resolves — plus a disclosure exposing
 `probed_at` and `probe_error` from `GET /admin/llm-usecases/chat/vision-capability`. Both are

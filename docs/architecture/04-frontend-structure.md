@@ -188,7 +188,7 @@ flowchart TB
   to a boolean: `false` is "probed and refused", `null` is "not established" —
   which is usually *not probed yet*, since `getVisionCapability` is a cache read
   that schedules a refresh and returns `null` on the spot — and `VisionBadge`
-  (`shared/components/badges/`, also shown on the Settings → LLM chat assignment)
+  (`shared/components/badges/`, also shown on the Settings → AI → AI Models chat assignment)
   renders them as different words. No copy may claim a probe ran.
 - The verdict is about the **chat use-case default**, never the model dropdown.
   `/llm/generate` and `/llm/improve` both gate on `resolveUsecase('chat')` and
