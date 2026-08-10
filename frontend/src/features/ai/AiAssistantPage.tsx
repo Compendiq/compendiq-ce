@@ -17,7 +17,7 @@ import { averageSourceSimilarity } from './source-confidence';
 import { StreamingMessage } from './StreamingMessage';
 import { useAiContext, type Mode, type Message } from './AiContext';
 import {
-  AskModeInput, AskExamplePrompts, ASK_EMPTY_TITLE, ASK_EMPTY_SUBTITLE,
+  AskModeInput, AskExamplePrompts, ASK_EMPTY_TITLE, ASK_EMPTY_SUBTITLE, NO_EMBEDDINGS_NOTICE_ID,
   ImproveTypeSelector, ImproveDiffView, ImproveModeInput, IMPROVE_EMPTY_TITLE, improveEmptySubtitle,
   GenerateModeInput, GENERATE_EMPTY_TITLE, GENERATE_EMPTY_SUBTITLE,
   SummarizeModeInput, SUMMARIZE_EMPTY_TITLE, summarizeEmptySubtitle,
@@ -560,6 +560,10 @@ export function AiAssistantPage() {
               a misleading answer. */}
           {mode === 'ask' && isZeroEmbeddings(embeddingStatus) && (
             <div
+              // The id is the aria-describedby target of the example-prompt
+              // chips below, which go inert under the same condition — the
+              // banner's text doubles as their programmatic disabled reason.
+              id={NO_EMBEDDINGS_NOTICE_ID}
               data-testid="ai-no-embeddings-notice"
               className="flex items-start gap-3 rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm text-warning"
             >

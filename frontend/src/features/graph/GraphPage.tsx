@@ -7,6 +7,7 @@ import { ZoomIn, ZoomOut, Maximize, RefreshCw, Info, Layers, Grid3x3, Filter, Se
 import { cn } from '../../shared/lib/cn';
 import { useSearch } from '../../shared/hooks/use-standalone';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
+import { useEmbeddingStatus, isZeroEmbeddings } from '../../shared/hooks/use-pages';
 import { useAuthStore } from '../../stores/auth-store';
 import { useGraphData, useLocalGraphData, useRefreshGraph, type LocalGraphFilters, type GraphMeta } from './graph-hooks';
 
@@ -73,6 +74,19 @@ const EDGE_COLORS: Record<string, string> = {
 };
 
 const MAX_TOOLTIP_LABELS = 5;
+
+/**
+ * Node count at or below which /graph skips the pick-a-page landing and just
+ * renders the full graph. The landing exists because the global hairball is
+ * unusable — and the force simulation slow — past a few hundred pages: the
+ * constraint is simulation/render cost and visual legibility, not transfer
+ * size. At ≤50 nodes the simulation settles instantly and every label stays
+ * readable, so interposing a picker that says "the knowledge graph is large"
+ * before a graph this small is pure friction (the gate was observed firing
+ * at 6 pages total). 50 keeps a wide margin under the "few hundred" where
+ * the hairball actually breaks down.
+ */
+const SMALL_GRAPH_NODE_LIMIT = 50;
 
 // #941: node text/border colours must adapt to the active theme. On the light
 // theme the previously-hardcoded white label was invisible against the pale
@@ -178,9 +192,27 @@ export function GraphPage() {
     labels: labels.length > 0 ? labels : undefined,
   }), [edgeTypes, minScore, labels]);
 
-  // #360: only fetch the global graph when the user opted into the
-  // hairball view (otherwise we render an article picker instead).
-  const wantsGlobal = !focusPageId && showFullGraph;
+  // The landing gate used to branch on nothing: every visit without ?focus
+  // or ?full got the pick-a-page screen, which blames scale ("the knowledge
+  // graph is large") even on a six-page corpus — and even when the true
+  // blocker was configuration (nothing embedded yet), a state the user only
+  // discovered after clicking "Show full graph anyway". Probe the real state
+  // first: /embeddings/status is a cheap, RBAC-scoped counts endpoint
+  // (shared query cache with the AI surfaces), so its totalPages is exactly
+  // the population the global graph would render as nodes.
+  const landingGate = !focusPageId && !showFullGraph;
+  const { data: embeddingStatus, isError: statusProbeFailed } = useEmbeddingStatus(landingGate);
+  const zeroEmbedded = isZeroEmbeddings(embeddingStatus);
+  // Small corpora skip the size gate entirely — see SMALL_GRAPH_NODE_LIMIT.
+  // A fresh instance (totalPages === 0) counts as small so it reaches the
+  // real "no accessible pages" empty state instead of a picker over nothing.
+  const corpusIsSmall =
+    !!embeddingStatus && !zeroEmbedded && embeddingStatus.totalPages <= SMALL_GRAPH_NODE_LIMIT;
+
+  // #360: only fetch the global graph when the user opted into the hairball
+  // view — or when the corpus is small enough that the gate would be pure
+  // friction (otherwise we render an article picker instead).
+  const wantsGlobal = !focusPageId && (showFullGraph || corpusIsSmall);
   const globalQuery = useGraphData(viewMode, filterSpaces, wantsGlobal);
   const localQuery = useLocalGraphData(focusPageId, filters);
   const activeQuery = focusPageId ? localQuery : (wantsGlobal ? globalQuery : null);
@@ -390,11 +422,44 @@ export function GraphPage() {
   const tooltipTop = Math.min(tooltipPos.y - 8, (typeof window !== 'undefined' ? window.innerHeight : 800) - tooltipMaxH - 16);
   const tooltipLeft = Math.min(tooltipPos.x + 12, (typeof window !== 'undefined' ? window.innerWidth : 1200) - 280);
 
-  // #360: when no article is focused and the user hasn't opted into the
-  // global view, render an article picker instead of fetching a hairball.
-  // This is the new default state for the Graph page — Obsidian/Logseq-style
-  // local-graph-first UX that scales to large knowledge bases.
-  if (!focusPageId && !showFullGraph) {
+  // Loading state — also shown while the landing probe below is in flight,
+  // so the picker cannot flash up for a corpus the probe is about to reveal
+  // as small or unembedded.
+  const probingLanding = landingGate && !corpusIsSmall && !embeddingStatus && !statusProbeFailed;
+  if (isLoading || probingLanding) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <div className="nm-card flex flex-col items-center gap-4 p-8">
+          <RefreshCw className="h-8 w-8 animate-spin text-action" />
+          <p className="text-muted-foreground">Loading knowledge graph...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // #360, reordered: when no article is focused and the user hasn't opted
+  // into the global view, branch on the probed state rather than assuming
+  // scale:
+  //   - pages exist but none embedded → the not-embedded empty state up
+  //     front (it used to hide behind "Show full graph anyway", so the gate
+  //     blamed scale when the real blocker was configuration);
+  //   - small corpus → no gate at all, fall through to the graph
+  //     (wantsGlobal above already started the fetch);
+  //   - large corpus, or the probe failed → the pick-a-page gate, unchanged.
+  if (landingGate && !corpusIsSmall) {
+    if (embeddingStatus && zeroEmbedded) {
+      // Synthesized from /embeddings/status — the same RBAC-scoped page
+      // counts GraphMeta carries. Relationships were never measured on this
+      // path, so none are claimed.
+      return (
+        <GraphEmptyState
+          meta={{
+            pagesTotal: embeddingStatus.totalPages,
+            pagesEmbedded: embeddingStatus.embeddedPages,
+          }}
+        />
+      );
+    }
     return (
       <ArticlePickerLanding
         onPick={(pageId) => {
@@ -404,18 +469,6 @@ export function GraphPage() {
         }}
         onShowFullGraph={() => setShowFullGraph(true)}
       />
-    );
-  }
-
-  // Loading state
-  if (isLoading) {
-    return (
-      <div className="flex h-full items-center justify-center">
-        <div className="nm-card flex flex-col items-center gap-4 p-8">
-          <RefreshCw className="h-8 w-8 animate-spin text-action" />
-          <p className="text-muted-foreground">Loading knowledge graph...</p>
-        </div>
-      </div>
     );
   }
 
@@ -763,8 +816,18 @@ function ArticlePickerLanding({ onPick, onShowFullGraph }: ArticlePickerLandingP
 
 // ---------- Empty-state branches (#358) ----------
 
+/**
+ * The subset of GraphMeta the empty state consumes. `relationshipsTotal` is
+ * optional because the landing gate synthesizes this object straight from
+ * /embeddings/status (the same RBAC-scoped page counts) without fetching the
+ * graph — the page counts there are real, relationships were never measured,
+ * and the footer only claims them when a caller actually has them.
+ */
+type EmptyStateMeta = Pick<GraphMeta, 'pagesTotal' | 'pagesEmbedded'> &
+  Partial<Pick<GraphMeta, 'relationshipsTotal'>>;
+
 interface GraphEmptyStateProps {
-  meta: GraphMeta | undefined;
+  meta: EmptyStateMeta | undefined;
 }
 
 /**
@@ -819,7 +882,8 @@ function GraphEmptyState({ meta }: GraphEmptyStateProps) {
         <p className="text-sm text-muted-foreground">{body}</p>
         {meta && (
           <p className="text-xs text-muted-foreground/70">
-            {meta.pagesTotal} pages · {meta.pagesEmbedded} embedded · {meta.relationshipsTotal} relationships
+            {meta.pagesTotal} pages · {meta.pagesEmbedded} embedded
+            {meta.relationshipsTotal !== undefined && ` · ${meta.relationshipsTotal} relationships`}
           </p>
         )}
         {isAdmin && meta && meta.pagesEmbedded > 0 && meta.relationshipsTotal === 0 && (

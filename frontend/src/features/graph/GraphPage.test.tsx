@@ -591,13 +591,35 @@ describe('GraphPage', () => {
 
   // ---------- #360: ego-graph default + filter sidebar + URL state ----------
 
-  it('renders the article-picker landing by default — does NOT fetch the global graph (#360)', async () => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
-      ok: true,
-      status: 200,
-      headers: new Headers({ 'content-type': 'application/json' }),
-      json: async () => mockGraphData,
-    } as Response);
+  /**
+   * URL-routed fetch mock. The landing gate now probes /embeddings/status
+   * before deciding what to render, so tests exercising the default `/graph`
+   * entry must answer that URL with an explicit corpus shape instead of
+   * letting a single canned body answer every request.
+   */
+  function mockFetchRoutes(routes: Array<[match: string, body: unknown]>) {
+    return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      const hit = routes.find(([match]) => url.includes(match));
+      if (!hit) throw new Error(`Unexpected fetch in test: ${url}`);
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        json: async () => hit[1],
+      } as Response;
+    });
+  }
+
+  const largeEmbeddedStatus = {
+    totalPages: 500, embeddedPages: 480, dirtyPages: 20, totalEmbeddings: 4000, isProcessing: false,
+  };
+
+  it('renders the article-picker landing for a large corpus — does NOT fetch the global graph (#360)', async () => {
+    const fetchSpy = mockFetchRoutes([
+      ['/embeddings/status', largeEmbeddedStatus],
+      ['/pages/graph', mockGraphData],
+    ]);
 
     render(<GraphPage />, { wrapper: createWrapper(['/graph']) });
 
@@ -611,12 +633,10 @@ describe('GraphPage', () => {
   });
 
   it('clicking "Show full graph anyway" sets ?full=1 and fetches the global graph (#360)', async () => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
-      ok: true,
-      status: 200,
-      headers: new Headers({ 'content-type': 'application/json' }),
-      json: async () => mockGraphData,
-    } as Response);
+    const fetchSpy = mockFetchRoutes([
+      ['/embeddings/status', largeEmbeddedStatus],
+      ['/pages/graph', mockGraphData],
+    ]);
 
     render(<GraphPage />, { wrapper: createWrapper(['/graph']) });
 
@@ -627,6 +647,57 @@ describe('GraphPage', () => {
       const calls = fetchSpy.mock.calls.map((c) => String(c[0]));
       expect(calls.some((u) => u.includes('/pages/graph?'))).toBe(true);
     });
+  });
+
+  // ---------- landing gate branches on real state (design critique P1) ----------
+  // The old gate branched on nothing: every `/graph` visit without ?focus or
+  // ?full got "Pick a page to explore — the knowledge graph is large", even at
+  // 6 pages total, and even when the true blocker was that nothing was
+  // embedded — a state that only surfaced after clicking through the escape
+  // hatch. The gate now probes /embeddings/status first.
+
+  it('shows the not-embedded state up front when pages exist but none are embedded', async () => {
+    const fetchSpy = mockFetchRoutes([
+      // The measured workspace: 6 pages, 0 embedded — the gate used to blame
+      // scale here while the real cause was configuration.
+      ['/embeddings/status', { totalPages: 6, embeddedPages: 0, dirtyPages: 6, totalEmbeddings: 0, isProcessing: false }],
+    ]);
+
+    render(<GraphPage />, { wrapper: createWrapper(['/graph']) });
+
+    expect(await screen.findByText(/Pages not embedded yet/)).toBeInTheDocument();
+    // The scale-blaming picker must not render over a configuration problem.
+    expect(screen.queryByTestId('graph-picker-landing')).not.toBeInTheDocument();
+    // Real page counts are shown; relationships were never measured on this
+    // path, so the footer must not claim a number for them.
+    expect(screen.getByText(/6 pages · 0 embedded/)).toBeInTheDocument();
+    expect(screen.queryByText(/relationships/)).not.toBeInTheDocument();
+    // And no graph payload was fetched to reach this verdict.
+    const calls = fetchSpy.mock.calls.map((c) => String(c[0]));
+    expect(calls.some((u) => u.includes('/pages/graph'))).toBe(false);
+  });
+
+  it('shows the not-embedded state for a large unembedded corpus too — config trumps scale', async () => {
+    mockFetchRoutes([
+      ['/embeddings/status', { totalPages: 500, embeddedPages: 0, dirtyPages: 500, totalEmbeddings: 0, isProcessing: false }],
+    ]);
+
+    render(<GraphPage />, { wrapper: createWrapper(['/graph']) });
+
+    expect(await screen.findByText(/Pages not embedded yet/)).toBeInTheDocument();
+    expect(screen.queryByTestId('graph-picker-landing')).not.toBeInTheDocument();
+  });
+
+  it('renders the graph directly for a small embedded corpus — no pick-a-page gate', async () => {
+    mockFetchRoutes([
+      ['/embeddings/status', { totalPages: 6, embeddedPages: 6, dirtyPages: 0, totalEmbeddings: 12, isProcessing: false }],
+      ['/pages/graph', mockGraphData],
+    ]);
+
+    render(<GraphPage />, { wrapper: createWrapper(['/graph']) });
+
+    expect(await screen.findByTestId('mock-force-graph')).toBeInTheDocument();
+    expect(screen.queryByTestId('graph-picker-landing')).not.toBeInTheDocument();
   });
 
   it('focus mode sends edgeTypes and minScore filter params to /graph/local (#360)', async () => {

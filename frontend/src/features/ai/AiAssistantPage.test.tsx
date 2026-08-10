@@ -1536,6 +1536,60 @@ describe('AiAssistantPage', () => {
 
       expect(screen.queryByTestId('ai-no-embeddings-notice')).not.toBeInTheDocument();
     });
+
+    // The example-prompt chips invite exactly the retrieval the banner says
+    // is absent ("Find pages that look like duplicates…"), ~12px below it.
+    // While the banner's own condition holds they must be inert — visually
+    // muted AND semantically disabled, with the banner as the programmatic
+    // reason — and they re-enable when embeddings exist.
+    it('disables the example prompts while nothing is embedded, naming the notice as the reason', () => {
+      mockEmbeddingStatus = {
+        data: { totalPages: 10, embeddedPages: 0, dirtyPages: 10, totalEmbeddings: 0, isProcessing: false },
+      };
+
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      const chips = screen.getAllByTestId('ask-example-prompt');
+      expect(chips.length).toBeGreaterThan(0);
+      for (const chip of chips) {
+        // aria-disabled, not native disabled: the chips stay focusable so a
+        // keyboard/SR user can land on one and hear why it is inert.
+        expect(chip).toHaveAttribute('aria-disabled', 'true');
+        expect(chip).toHaveAttribute('aria-describedby', 'ai-no-embeddings-notice');
+        expect(chip.className).toContain('opacity-50');
+      }
+
+      // The describedby id must resolve to the visible banner, so the linkage
+      // is real and not a dangling reference.
+      const notice = document.getElementById('ai-no-embeddings-notice');
+      expect(notice).toBe(screen.getByTestId('ai-no-embeddings-notice'));
+      expect(notice?.textContent).toMatch(/not embedded/i);
+
+      // aria-disabled does not block events, so the click handler itself must
+      // refuse: the composer must not be seeded with an unanswerable prompt.
+      fireEvent.click(chips[0]);
+      expect(screen.getByTestId('ask-input')).toHaveValue('');
+    });
+
+    it('re-enables the example prompts once embeddings exist', () => {
+      mockEmbeddingStatus = {
+        data: { totalPages: 10, embeddedPages: 10, dirtyPages: 0, totalEmbeddings: 10, isProcessing: false },
+      };
+
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      const chips = screen.getAllByTestId('ask-example-prompt');
+      expect(chips.length).toBeGreaterThan(0);
+      for (const chip of chips) {
+        expect(chip).not.toHaveAttribute('aria-disabled');
+        expect(chip).not.toHaveAttribute('aria-describedby');
+        expect(chip.className).not.toContain('opacity-50');
+      }
+
+      // Clicking an enabled chip fills the composer with its prompt.
+      fireEvent.click(chips[0]);
+      expect(screen.getByTestId('ask-input')).toHaveValue(chips[0].textContent);
+    });
   });
 
   describe('performance: stable message IDs (#521)', () => {

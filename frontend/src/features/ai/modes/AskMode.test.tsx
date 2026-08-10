@@ -30,7 +30,12 @@ let promptSourceData: {
   spaces?: { key: string }[];
 } = {};
 
-vi.mock('../../../shared/hooks/use-pages', () => ({
+// importActual keeps the real `isZeroEmbeddings` helper exported — the
+// component imports it from this same module, so the mock must not drop it.
+vi.mock('../../../shared/hooks/use-pages', async () => ({
+  ...(await vi.importActual<typeof import('../../../shared/hooks/use-pages')>(
+    '../../../shared/hooks/use-pages',
+  )),
   usePage: () => ({ data: undefined }),
   useEmbeddingStatus: () => ({ data: undefined }),
   usePages: () => ({ data: promptSourceData.pages ? { items: promptSourceData.pages } : undefined }),
