@@ -1165,14 +1165,46 @@ export function PagesPage() {
                     >
                       <button
                         onClick={() => navigate(`/pages/${item.id}`)}
-                        className="rounded-xl border border-border bg-card transition-all hover:border-primary/50 flex w-full items-center gap-3 p-4 text-left"
+                        // Same content-driven wrap as the browse rows above
+                        // (PageListItem): the similarity chip is `shrink-0`, so
+                        // below `sm` the truncating title absorbed the entire
+                        // width deficit. `max-sm:flex-wrap` lets the chip drop
+                        // to its own line instead — and only when the title
+                        // actually needs the width (see the title block below).
+                        // Every added class is `max-sm:*`, so `sm+` keeps
+                        // today's single-line layout untouched.
+                        className="rounded-xl border border-border bg-card transition-all hover:border-primary/50 flex w-full items-center gap-3 p-4 text-left max-sm:flex-wrap max-sm:gap-y-1"
                         data-testid={`article-hover-${item.id}`}
                       >
                         <FileText size={18} className="shrink-0 text-muted-foreground" />
-                        <div className="min-w-0 flex-1 text-left">
+                        {/* `basis-auto` makes the wrap content-driven —
+                            `flex-1`'s basis of 0 never triggers a line break —
+                            but this row's anatomy differs from the browse row's
+                            in one load-bearing way: the file icon is the FIRST
+                            flex item inside the wrap container (the browse
+                            row's checkbox sits outside it), and a block whose
+                            content overflows the line wraps WHOLESALE below
+                            the icon, stranding an 18px glyph alone on its own
+                            line. The max-width clamp — 100% minus the icon's
+                            18px and the 12px `gap-3` — caps the block's
+                            hypothetical main size at exactly the space beside
+                            the icon, so the block always shares the icon's
+                            line and the chip is the thing that wraps. */}
+                        <div className="min-w-0 flex-1 text-left max-sm:basis-auto max-sm:max-w-[calc(100%-30px)]">
                           <p className="truncate font-medium">{item.title}</p>
+                          {/* `contain:inline-size` zeroes the excerpt's
+                              contribution to the block's intrinsic width.
+                              Without it the excerpt's unwrapped length — not
+                              the title's — decides the block's content size,
+                              and a two-line excerpt is nearly always wider
+                              than a phone row, so the chip would drop on
+                              virtually every row: forced in practice, not
+                              content-driven. Contained, the nowrap title alone
+                              drives the wrap. The excerpt's own rendering is
+                              unchanged — it still fills the block's final
+                              width and clamps at two lines. */}
                           {item.excerpt && (
-                            <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{item.excerpt}</p>
+                            <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground max-sm:[contain:inline-size]">{item.excerpt}</p>
                           )}
                           {item.spaceKey && (
                             <span className="mt-1 inline-block text-xs text-muted-foreground">{item.spaceKey}</span>
