@@ -465,11 +465,16 @@ export interface SearchAnalyticsExtras {
  * Ground truth from `page_embeddings`, deliberately NOT `pages.embedding_status`
  * — a failed or interrupted run can leave the status column stale, and the
  * destructive re-embed window (TRUNCATE → gradual refill) is exactly when this
- * number must not lie. The denominator is what embedPage will actually embed:
- * non-deleted, non-folder pages with content, visible to the caller, and at
- * least MIN_EMBEDDABLE_TEXT_CHARS of extracted text — `body_text` is the
- * stored htmlToText output, so `char_length(body_text)` tracks embedPage's
- * own skip check. Without that last filter a corpus with a few structural
+ * number must not lie. The denominator approximates what embedPage will
+ * embed: non-deleted, non-folder pages with content, visible to the caller,
+ * and at least MIN_EMBEDDABLE_TEXT_CHARS of extracted text. Since #1265
+ * embedPage's own skip check runs on the MARKDOWN form first and falls back
+ * to the text form, so the relationship is one-way by construction: every
+ * page this denominator counts (text form ≥ floor) will embed, while a page
+ * whose Markdown clears the floor on syntax alone (an image-only page's
+ * `![alt](url)`) may embed without being counted — which cannot depress
+ * coverage, since such pages join neither the numerator's filter nor the
+ * denominator. Without the length filter a corpus with a few structural
  * stub pages would read "degraded" forever.
  */
 export interface EmbeddingCoverage {

@@ -277,22 +277,28 @@ by name. MRR moved with those same four queries, and `pairedSignificance`
 returns no verdict for a graded score at all. So the honest conclusion is
 "unproven, and not worth the cost", not "it hurts".
 
-Three caveats that matter more than the numbers:
+Three caveats mattered more than the numbers **at the time of that
+measurement** (pre-#1265, when the chunker was dead code):
 
 1. **The section half never fired.** `section_title === page_title` for all 488
-   chunks, because `htmlToText` strips the `#` markers before `chunkText`'s
-   heading regex sees them — so what was measured is a bare page title, not
+   chunks, because `htmlToText` stripped the `#` markers before `chunkText`'s
+   heading regex saw them — so what was measured was a bare page title, not
    `"{title} — {section}"`.
 2. **The prefix was ~0.6% of the embedded text**, not the ~1.6% the configured
-   chunk size implies, because most chunks reach `CHUNK_HARD_LIMIT` (6000)
+   chunk size implies, because most chunks reached `CHUNK_HARD_LIMIT` (6000)
    rather than the 1500-char target — same root cause.
 3. **The corpus is OSS markdown documentation**, whose pages usually open with
    their own title. Real Confluence pages need not, which is exactly the case
    the prefix was meant to serve.
 
-Re-measure after the chunker actually splits on sections; until then this is
-an open question, not a closed one. Reproduce with
-`backend/scripts/compare-embedding-variants.mts`.
+**The "re-measure after the chunker actually splits" trigger has fired:**
+#1265 (PR #1266) made the structure-aware chunker live — the embedding input
+is Markdown from `htmlToEmbeddingText(body_html)`, sections split at real
+headings, `section_title` carries real (flattened) heading prose, and the
+chunking change alone measured Recall@1 0.3889 → 0.5069 / MRR 0.5830 → 0.6501
+on the #1102 fixture. The title-prefix question specifically (this section's
+subject) remains open and re-measurable with real sections now; reproduce
+with `backend/scripts/compare-embedding-variants.mts`.
 
 The invariant that work exposed is kept regardless: **every document-side embed
 must send the model byte-identical text** — the live embed in `embedPage`, its

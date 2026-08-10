@@ -22,7 +22,8 @@ const mocks = vi.hoisted(() => ({
     },
     model: 'bge-m3',
   }),
-  htmlToText: vi.fn(),
+  htmlToEmbeddingText: vi.fn(),
+  htmlToText: vi.fn(() => ''),
   toSql: vi.fn().mockReturnValue('[0.1,0.2]'),
   acquireEmbeddingLock: vi.fn().mockResolvedValue('fake-lock-id-for-tests'),
   releaseEmbeddingLock: vi.fn().mockResolvedValue(undefined),
@@ -74,7 +75,12 @@ vi.mock('./shadow-migration-service.js', () => ({
 }));
 
 vi.mock('../../../core/services/content-converter.js', () => ({
-  htmlToText: mocks.htmlToText,
+  htmlToEmbeddingText: mocks.htmlToEmbeddingText,
+  // embedPage's short-markdown fallback (#1265 review M1) imports this too.
+  htmlToText: (...args: unknown[]) => mocks.htmlToText(...args),
+  // embedPage's embeddability floor flattens the markdown first (#1265);
+  // identity keeps the mocked lengths meaningful.
+  markdownToSnippetText: vi.fn((s: string) => s),
 }));
 
 vi.mock('pgvector', () => ({
@@ -199,8 +205,8 @@ describe('embedding-service', () => {
     // Holder-epoch guard renew-if-mine (issue #913): default still-ours.
     mocks.refreshEmbeddingLock.mockResolvedValue(FAKE_LOCK_ID);
     mocks.enqueueJob.mockResolvedValue('reembed-all');
-    // Default: htmlToText returns non-trivial text so embedPage proceeds
-    mocks.htmlToText.mockReturnValue('Some substantial page content for embedding that is long enough');
+    // Default: htmlToEmbeddingText returns non-trivial text so embedPage proceeds
+    mocks.htmlToEmbeddingText.mockReturnValue('Some substantial page content for embedding that is long enough');
     // Default: getSharedLlmSettings returns standard Ollama settings
     vi.mocked(getSharedLlmSettings).mockResolvedValue({
       llmProvider: 'ollama',
@@ -334,8 +340,19 @@ describe('embedding-service', () => {
       expect(chunks).toHaveLength(0);
     });
 
-    it('should split on heading boundaries', () => {
+    it('packs small adjacent sections into one chunk titled by the opening section (#1265)', () => {
       const text = '## Section One\nSome content here.\n## Section Two\nMore content here.';
+      const chunks = chunkText(text, 'Title', 'SPACE', 'conf-1');
+      // Two tiny sections fit the 1,500-char target together — one chunk,
+      // not one per heading; Section Two's heading stays visible in the text.
+      expect(chunks).toHaveLength(1);
+      expect(chunks[0].metadata.section_title).toBe('Section One');
+      expect(chunks[0].text).toContain('## Section Two');
+    });
+
+    it('splits sections into separate chunks once they cannot pack under the target', () => {
+      const big = (label: string) => `## ${label}\n${`${label} body sentence with enough words to matter. `.repeat(25)}`;
+      const text = `${big('Section One')}\n${big('Section Two')}`;
       const chunks = chunkText(text, 'Title', 'SPACE', 'conf-1');
       expect(chunks.length).toBeGreaterThanOrEqual(2);
       expect(chunks[0].metadata.section_title).toBe('Section One');
@@ -1262,8 +1279,8 @@ describe('embedding-service', () => {
   });
 
   it('should not infinite-loop when all pages are too short to embed', async () => {
-    // htmlToText returns text shorter than 20 chars -> embedPage skips
-    mocks.htmlToText.mockReturnValue('short');
+    // htmlToEmbeddingText returns text shorter than 20 chars -> embedPage skips
+    mocks.htmlToEmbeddingText.mockReturnValue('short');
 
     const pages = [makePage('short-1'), makePage('short-2')];
 
@@ -1312,14 +1329,30 @@ describe('embedPage', () => {
     mockClient.release.mockResolvedValue(undefined);
     mocks.getPool.mockReturnValue({ connect: vi.fn().mockResolvedValue(mockClient) });
     mocks.toSql.mockReturnValue('[0.1,0.2]');
-    mocks.htmlToText.mockReturnValue('Some substantial page content for embedding that is long enough');
+    mocks.htmlToEmbeddingText.mockReturnValue('Some substantial page content for embedding that is long enough');
     mocks.providerGenerateEmbedding.mockImplementation((_userId: string, texts: string[]) =>
       Promise.resolve(texts.map(() => new Array(1024).fill(0.1))),
     );
   });
 
+  it('embeds via the text-form fallback when the Markdown lands under the floor (#1265 M1)', async () => {
+    // A macro-placeholder page: Markdown shrinks below 20 chars but the text
+    // form is long — the page must EMBED (the coverage probe counts it), not
+    // settle. No test covered the positive half of the fallback before
+    // (#1266 review r2, M-6).
+    // Once-queued so the long fallback text cannot leak into the sibling
+    // short/empty-page tests, which rely on the default empty fallback.
+    mocks.htmlToEmbeddingText.mockReturnValueOnce('[Children pages]');
+    mocks.htmlToText.mockReturnValueOnce('Children pages listed here with enough rendered text to matter');
+
+    const count = await embedPage('user-1', 105, 'Macro Page', 'DEV', '<div>macro</div>');
+
+    expect(count).toBeGreaterThan(0);
+    expect(mocks.htmlToText).toHaveBeenCalledWith('<div>macro</div>');
+  });
+
   it('should mark page as not dirty when text is too short', async () => {
-    mocks.htmlToText.mockReturnValue('tiny');
+    mocks.htmlToEmbeddingText.mockReturnValue('tiny');
     mocks.query.mockResolvedValue({ rows: [] });
 
     const result = await embedPage('user-1', 101, 'Short Page', 'DEV', '<p>tiny</p>');
@@ -1335,8 +1368,8 @@ describe('embedPage', () => {
     );
   });
 
-  it('should mark page as not dirty when htmlToText returns empty string', async () => {
-    mocks.htmlToText.mockReturnValue('');
+  it('should mark page as not dirty when the extracted text is empty', async () => {
+    mocks.htmlToEmbeddingText.mockReturnValue('');
     mocks.query.mockResolvedValue({ rows: [] });
 
     const result = await embedPage('user-1', 102, 'Empty Page', 'DEV', '<p></p>');
@@ -1411,6 +1444,13 @@ describe('embedPage', () => {
     const count = await embedPage('u1', 1, 'Title', 'DEV', '<p>Content</p>');
 
     expect(count).toBeGreaterThan(0);
+    // The converter must receive the page's body_html — no test asserted the
+    // argument before, so a wrong-argument refactor stayed green (#1265).
+    // The second argument is the log context the fallback warn carries.
+    expect(mocks.htmlToEmbeddingText).toHaveBeenCalledWith('<p>Content</p>', {
+      pageId: 1,
+      pageTitle: 'Title',
+    });
 
     const calls = mockClient.query.mock.calls.map((c) => c[0] as string);
 
@@ -1441,12 +1481,12 @@ describe('chunkText', () => {
     });
   });
 
-  it('should split on heading boundaries', () => {
+  it('packs two tiny sections into one chunk titled by the first (#1265)', () => {
     const text = '# Introduction\nSome intro text.\n\n# Details\nMore details here.';
     const chunks = chunkText(text, 'My Doc', 'SPACE', 'doc-1');
-    expect(chunks.length).toBeGreaterThanOrEqual(2);
+    expect(chunks).toHaveLength(1);
     expect(chunks[0].metadata.section_title).toBe('Introduction');
-    expect(chunks[1].metadata.section_title).toBe('Details');
+    expect(chunks[0].text).toContain('# Details');
   });
 
   it('should return empty array for empty text', () => {
@@ -1653,7 +1693,7 @@ describe('chunkText', () => {
       mocks.query.mockReset();
       mocks.providerGenerateEmbedding.mockReset();
       mocks.toSql.mockReset();
-      mocks.htmlToText.mockReset();
+      mocks.htmlToEmbeddingText.mockReset();
       // Re-apply defaults
       mockClient.query.mockResolvedValue({ rows: [], rowCount: 0 });
       mockClient.release.mockResolvedValue(undefined);
@@ -1665,12 +1705,17 @@ describe('chunkText', () => {
     });
 
     it('skips an oversized batch (HTTP 400 context-length) and continues embedding remaining batches', async () => {
-      // Make htmlToText return enough text to produce multiple chunks
-      const textWith3Chunks = Array.from(
-        { length: 3 },
-        (_, i) => `## Section ${i}\n${'content '.repeat(10)}`,
+      // Twelve ~1,450-char sections: too big to pack pairwise (2x > the
+      // 1,500-char target), so chunkText yields 12 chunks = TWO provider
+      // batches at batchSize 10. The old 3-chunk fixture fit one batch, so
+      // "continues with remaining batches" was asserted against a run that
+      // had no remaining batches (and passed with >= 0 — vacuous, #1265
+      // verification finding 11).
+      const textWith12Chunks = Array.from(
+        { length: 12 },
+        (_, i) => `## Section ${i}\n${`content for section ${i} `.repeat(65)}`,
       ).join('\n');
-      mocks.htmlToText.mockReturnValue(textWith3Chunks);
+      mocks.htmlToEmbeddingText.mockReturnValue(textWith12Chunks);
 
       // Phase 2 (BEGIN/DELETE/INSERT×N/UPDATE/COMMIT) handled by mockClient.query default
       // Pool query is NOT used in Phase 2
@@ -1693,12 +1738,13 @@ describe('chunkText', () => {
 
       // Should not throw even though first batch failed
       const count = await embedPage('user-1', 101, 'Page', 'DEV', '<p>content</p>');
-      // Some chunks should have been embedded (from the successful second batch)
-      expect(count).toBeGreaterThanOrEqual(0);
+      // The second batch (chunks 10-11) must actually land: a regression that
+      // stops after a skipped batch returns 0, which the old >= 0 accepted.
+      expect(count).toBe(2);
     });
 
     it('rethrows non-context-length errors from embedPage', async () => {
-      mocks.htmlToText.mockReturnValue('Some content for the page that is long enough');
+      mocks.htmlToEmbeddingText.mockReturnValue('Some content for the page that is long enough');
       // Phase 1 throws a server error — no client is opened, no pool query needed.
       // Production-shaped LlmHttpError, not a plain Error (#1185 / PR #1214 review).
       const serverErr = new LlmHttpError('generateEmbedding', 500, 'internal server error');
@@ -1713,7 +1759,7 @@ describe('chunkText', () => {
     });
 
     it('when EVERY batch is skipped (all context-length): preserves embeddings, leaves page dirty/failed, no DELETE or embedded UPDATE', async () => {
-      mocks.htmlToText.mockReturnValue('Some content for the page that is long enough');
+      mocks.htmlToEmbeddingText.mockReturnValue('Some content for the page that is long enough');
 
       // Every Phase 1 batch rejects with a context-length error → allEmbeddings
       // stays empty. Production-shaped LlmHttpError with bypassCircuitBreaker
@@ -1877,7 +1923,7 @@ describe('chunkText', () => {
       mocks.listActiveEmbeddingLocks.mockResolvedValue([]);
       mocks.forceReleaseEmbeddingLock.mockResolvedValue({ released: true, previousHolderEpoch: null });
       mocks.invalidateGraphCache.mockResolvedValue(undefined);
-      mocks.htmlToText.mockReturnValue('Some substantial page content for embedding that is long enough');
+      mocks.htmlToEmbeddingText.mockReturnValue('Some substantial page content for embedding that is long enough');
       vi.mocked(getSharedLlmSettings).mockResolvedValue({
         llmProvider: 'ollama',
         ollamaModel: 'qwen3.5',
@@ -2070,7 +2116,7 @@ describe('chunkText', () => {
       mocks.isEmbeddingLocked.mockResolvedValue(false);
       mocks.listActiveEmbeddingLocks.mockResolvedValue([]);
       mocks.invalidateGraphCache.mockResolvedValue(undefined);
-      mocks.htmlToText.mockReturnValue('Some substantial page content for embedding that is long enough');
+      mocks.htmlToEmbeddingText.mockReturnValue('Some substantial page content for embedding that is long enough');
       vi.mocked(getSharedLlmSettings).mockResolvedValue({
         llmProvider: 'ollama',
         ollamaModel: 'qwen3.5',

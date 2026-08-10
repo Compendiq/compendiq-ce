@@ -7,6 +7,7 @@ import {
   getAttachmentImageSource,
   getLocalFilenameForImageSource,
 } from './image-references.js';
+import { logger } from '../utils/logger.js';
 
 // SECURITY: All innerHTML usage below is in server-side JSDOM context (Node.js),
 // NOT browser DOM. JSDOM is used purely as an HTML parser/transformer for
@@ -3040,10 +3041,143 @@ export async function markdownToHtml(markdown: string, options?: MarkdownToHtmlO
 }
 
 /**
- * Strips all HTML tags, returning plain text (for full-text search + embedding input).
+ * Strips all HTML tags, returning plain text (for full-text search — and, until
+ * #1265, the embedding input; see htmlToEmbeddingText for why that moved).
  */
 export function htmlToText(html: string): string {
   const dom = new JSDOM(`<body>${html}</body>`, { contentType: 'text/html' });
   const text = dom.window.document.body.textContent ?? '';
   return he.decode(text).replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Structure-preserving text for the embedding pipeline (#1265).
+ *
+ * `chunkText` (embedding-service) splits on Markdown atx headings
+ * (`^#{1,6}\s`) and blank-line paragraph boundaries — but `htmlToText`'s
+ * final `replace(/\s+/g, ' ')` collapses every newline, so neither splitter
+ * could ever match its output: every page ≤ CHUNK_HARD_LIMIT embedded as one
+ * chunk, longer pages split at arbitrary word boundaries with no overlap, and
+ * `section_title` metadata always equalled the page title. The
+ * structure-aware chunking was dead code from the day it shipped.
+ *
+ * This routes the embedding input through `htmlToMarkdown` instead — per
+ * ADR-003, Markdown is already the canonical LLM-facing form of page content
+ * (auto-tagger, quality worker, and subpage context all convert the same
+ * way), and the converter is configured with `headingStyle: 'atx'`, which is
+ * exactly the shape `chunkText`'s heading split expects. Consequences, all
+ * deliberate:
+ * - stored `chunk_text` (and so RAG context handed to the chat model) is
+ *   Markdown-shaped — better for the LLM, mildly syntax-flavoured in any UI
+ *   excerpt that renders a vector chunk verbatim. (Known exception: a table
+ *   nested inside a table stays raw HTML — the gfm turndown plugin bails on
+ *   nesting. It is still text; nothing downstream parses chunk_text.);
+ * - `body_text` (FTS, snippets, the coverage probe's length check) stays
+ *   `htmlToText` — this function changes only what gets chunked + embedded;
+ * - changed chunk text means existing embeddings describe text that is no
+ *   longer produced: taking this live on real data means **re-running
+ *   embedPage per page** — `UPDATE pages SET embedding_dirty = TRUE` and let
+ *   the worker re-chunk (per-page transactional delete+insert; search stays
+ *   warm throughout). #1116's shadow path is NOT sufficient on its own: it
+ *   re-embeds the *stored* `chunk_text` into the shadow column and never
+ *   re-chunks, so it would faithfully preserve the pre-#1265 blobs.
+ *
+ * `data:` URI destinations are stripped (`(data:uri-omitted`): DOMPurify
+ * permits `data:` on <img>, so one Markdown import carrying a 120 KB base64
+ * image would otherwise become ~19 pure-base64 chunks — junk vectors, junk
+ * provider payloads, and page_embeddings bloat. The alt text survives; only
+ * the payload goes.
+ *
+ * Falls back to `htmlToText` if the Markdown conversion throws (measured
+ * trigger: ~2,000-deep tag nesting overflows the recursion in turndown) — a
+ * page that defeats the converter must still embed as a flat blob (the
+ * pre-#1265 behaviour) rather than not at all.
+ */
+export function htmlToEmbeddingText(
+  html: string,
+  logContext: Record<string, unknown> = {},
+): string {
+  try {
+    const md = htmlToMarkdown(flattenTableCellsForEmbedding(html)).trim();
+    return md.replace(/\(\s*data:[^)\s]{40,}/g, '(data:uri-omitted');
+  } catch (err) {
+    // logContext exists so this warn can carry the pageId — the fallback
+    // silently flips a page to a different text shape, and a context-free
+    // warning left no way to enumerate affected pages once logs rotate.
+    logger.warn(
+      { err, ...logContext },
+      'htmlToMarkdown failed for embedding input — falling back to plain text',
+    );
+    return htmlToText(html);
+  }
+}
+
+/**
+ * Collapse each table cell's block content to plain inline text before the
+ * Markdown conversion (#1265 verification, finding 2). Confluence wraps cell
+ * content in `<p>`, and turndown-gfm emits those paragraph breaks as blank
+ * lines INSIDE the pipe row — which the fence-aware paragraph splitter then
+ * reads as boundaries, tearing large tables mid-cell and stranding the
+ * header row. With single-line cells every row is one line, the whole table
+ * is one paragraph block, and the header travels with its rows. Inline marks
+ * inside cells are flattened to text — cells are data; their emphasis is not
+ * retrieval signal.
+ */
+function flattenTableCellsForEmbedding(html: string): string {
+  if (!/<t[dh][\s>]/i.test(html)) return html;
+  const dom = new JSDOM(`<body>${html}</body>`, { contentType: 'text/html' });
+  const doc = dom.window.document;
+  for (const cell of Array.from(doc.querySelectorAll('td, th'))) {
+    // Skip cells that contain a nested table — the gfm plugin bails on those
+    // and keeps raw HTML; flattening would silently delete the inner table.
+    if (cell.querySelector('table')) continue;
+    // An <img> has no textContent — replace it with its alt text first, or a
+    // diagram-in-a-table cell (a common KB shape) embeds as EMPTY and loses
+    // the only retrievable signal it has (#1266 review r2, N-1).
+    for (const img of Array.from(cell.querySelectorAll('img'))) {
+      img.replaceWith(doc.createTextNode(img.getAttribute('alt') ?? ''));
+    }
+    const text = (cell.textContent ?? '').replace(/\s+/g, ' ').trim();
+    cell.textContent = text;
+  }
+  return doc.body.innerHTML;
+}
+
+/**
+ * Flatten Markdown-shaped chunk text into a plain-prose excerpt for search
+ * snippets (#1265). Vector-sourced results carry Markdown `chunk_text` now,
+ * while keyword-fallback rows carry plain `body_text` — without this, one
+ * result list mixed the two shapes, and an image-led chunk's first 300 chars
+ * were mostly `![name](/api/attachments/…)` syntax. Images collapse to their
+ * alt text, links to their label, fence/heading markers drop, and the common
+ * backslash escapes unescape (`2\*3` → `2*3`). Idempotent on plain text.
+ * A display affordance, not a renderer — never used on the LLM-facing path,
+ * which keeps the full Markdown deliberately.
+ */
+export function markdownToSnippetText(md: string): string {
+  return (
+    md
+      .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+      .replace(/^\s{0,3}(?:`{3,}|~{3,}).*$/gm, '')
+      .replace(/^#{1,6}\s+/gm, '')
+      // Blockquote markers (panels render as "> **INFO:** …") and thematic
+      // breaks are chrome, not prose.
+      .replace(/^\s{0,3}>\s?/gm, '')
+      .replace(/^\s{0,3}((\*\s*){3,}|-{3,}|_{3,})\s*$/gm, '')
+      // Emphasis pairs: turndown escapes LITERAL asterisks/underscores, so an
+      // unescaped pair here is real formatting — safe to strip. The guards
+      // keep this from eating identifiers on PLAIN-text inputs (keyword rows
+      // pass through here too): no opener straight after a word character or
+      // backslash (`snake_case_name` never opens), no closer straight before
+      // one.
+      .replace(/(?<![\\\w])(\*\*|__)(.+?)(?<!\\)\1(?!\w)/g, '$2')
+      .replace(/(?<![\\\w])([*_])([^*_\n]+?)(?<!\\)\1(?!\w)/g, '$2')
+      // turndown backslash-escapes far more than the bracket set — the
+      // numbered-heading case ("1\. Introduction") is ubiquitous, and a
+      // literal backslash doubles ("C:\\Users").
+      .replace(/\\([\\*_[\]#|`~.>+()!-])/g, '$1')
+      .replace(/\s+/g, ' ')
+      .trim()
+  );
 }
