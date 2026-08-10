@@ -19,6 +19,7 @@ import {
   type EmbeddingCoverage,
 } from '../../domains/llm/services/rag-service.js';
 import { getRagFetchWidth } from '../../core/services/admin-settings-service.js';
+import { markdownToSnippetText } from '../../core/services/content-converter.js';
 import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
 import { generateEmbedding } from '../../domains/llm/services/openai-compatible-client.js';
 import { CircuitBreakerOpenError } from '../../core/services/circuit-breaker.js';
@@ -238,7 +239,9 @@ export async function searchRoutes(fastify: FastifyInstance) {
         // range is [-1,1], not [0,1]; see `SearchResult.vectorScore` in
         // rag-service.ts (#1117).
         rank: r.score,
-        snippet: r.chunkText.slice(0, 300),
+        // chunk_text is Markdown-shaped since #1265; flatten for display so
+        // vector snippets match the keyword rows' plain-text shape.
+        snippet: markdownToSnippetText(r.chunkText).slice(0, 300),
         score: r.score,
         similarity: r.vectorScore,
       }));
@@ -299,7 +302,9 @@ export async function searchRoutes(fastify: FastifyInstance) {
         // Same three-field contract as the semantic branch above: `rank` orders,
         // `similarity` is the renderable cosine or null (#1117).
         rank: r.score,
-        snippet: r.chunkText.slice(0, 300),
+        // chunk_text is Markdown-shaped since #1265; flatten for display so
+        // vector snippets match the keyword rows' plain-text shape.
+        snippet: markdownToSnippetText(r.chunkText).slice(0, 300),
         score: r.score,
         similarity: r.vectorScore,
       }));

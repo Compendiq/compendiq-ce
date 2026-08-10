@@ -3069,22 +3069,58 @@ export function htmlToText(html: string): string {
  * deliberate:
  * - stored `chunk_text` (and so RAG context handed to the chat model) is
  *   Markdown-shaped — better for the LLM, mildly syntax-flavoured in any UI
- *   excerpt that renders a vector chunk verbatim;
+ *   excerpt that renders a vector chunk verbatim. (Known exception: a table
+ *   nested inside a table stays raw HTML — the gfm turndown plugin bails on
+ *   nesting. It is still text; nothing downstream parses chunk_text.);
  * - `body_text` (FTS, snippets, the coverage probe's length check) stays
  *   `htmlToText` — this function changes only what gets chunked + embedded;
  * - changed chunk text means existing embeddings describe text that is no
- *   longer produced: taking this live on real data is a re-embed, via
- *   #1116's non-destructive shadow path.
+ *   longer produced: taking this live on real data means **re-running
+ *   embedPage per page** — `UPDATE pages SET embedding_dirty = TRUE` and let
+ *   the worker re-chunk (per-page transactional delete+insert; search stays
+ *   warm throughout). #1116's shadow path is NOT sufficient on its own: it
+ *   re-embeds the *stored* `chunk_text` into the shadow column and never
+ *   re-chunks, so it would faithfully preserve the pre-#1265 blobs.
  *
- * Falls back to `htmlToText` if the Markdown conversion throws — a page that
- * defeats turndown must still embed as a flat blob (the pre-#1265 behaviour)
- * rather than not at all.
+ * `data:` URI destinations are stripped (`(data:uri-omitted`): DOMPurify
+ * permits `data:` on <img>, so one Markdown import carrying a 120 KB base64
+ * image would otherwise become ~19 pure-base64 chunks — junk vectors, junk
+ * provider payloads, and page_embeddings bloat. The alt text survives; only
+ * the payload goes.
+ *
+ * Falls back to `htmlToText` if the Markdown conversion throws (measured
+ * trigger: ~2,000-deep tag nesting overflows the recursion in turndown) — a
+ * page that defeats the converter must still embed as a flat blob (the
+ * pre-#1265 behaviour) rather than not at all.
  */
 export function htmlToEmbeddingText(html: string): string {
   try {
-    return htmlToMarkdown(html).trim();
+    const md = htmlToMarkdown(html).trim();
+    return md.replace(/\(\s*data:[^)\s]{40,}/g, '(data:uri-omitted');
   } catch (err) {
     logger.warn({ err }, 'htmlToMarkdown failed for embedding input — falling back to plain text');
     return htmlToText(html);
   }
+}
+
+/**
+ * Flatten Markdown-shaped chunk text into a plain-prose excerpt for search
+ * snippets (#1265). Vector-sourced results carry Markdown `chunk_text` now,
+ * while keyword-fallback rows carry plain `body_text` — without this, one
+ * result list mixed the two shapes, and an image-led chunk's first 300 chars
+ * were mostly `![name](/api/attachments/…)` syntax. Images collapse to their
+ * alt text, links to their label, fence/heading markers drop, and the common
+ * backslash escapes unescape (`2\*3` → `2*3`). Idempotent on plain text.
+ * A display affordance, not a renderer — never used on the LLM-facing path,
+ * which keeps the full Markdown deliberately.
+ */
+export function markdownToSnippetText(md: string): string {
+  return md
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/^\s{0,3}(?:`{3,}|~{3,}).*$/gm, '')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/\\([*_[\]#|`~])/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
 }

@@ -439,11 +439,20 @@ whitespace collapse (`replace(/\s+/g, ' ')`) destroyed both: every page
 at arbitrary word boundaries with no overlap, and `section_title` chunk
 metadata always equalled the page title — the structure-aware chunking was
 dead code from the day it shipped. Stored `chunk_text` is Markdown-shaped as a
-result (better for the chat model reading RAG context; mildly syntax-flavoured
-in UI excerpts that render a vector chunk verbatim). Because the fix changes
-what gets embedded, rolling it onto real data is a re-embed — via #1116's
-non-destructive shadow path, never the destructive one (epic #1100, owner
-decision 7).
+result (better for the chat model reading RAG context; search snippets are
+flattened back to prose via `markdownToSnippetText`).
+
+**Rolling the fix onto existing data means re-running `embedPage` per page**:
+`UPDATE pages SET embedding_dirty = TRUE` and let the embedding worker
+re-chunk (each page is a transactional delete+insert, so search stays warm
+throughout — non-destructive in practice). **#1116's shadow path is NOT the
+vehicle for this**: `shadowEmbedExistingRows` re-embeds the *stored*
+`chunk_text` into the shadow column and never re-chunks, so it would
+faithfully preserve pre-#1265 blob chunks. (For a combined model+chunking
+migration — #1114 — re-chunk via the dirty sweep first or extend the shadow
+path; decide there.) Until the sweep runs, the index mixes blob-shaped and
+section-shaped chunks under one model — comparable scores, but
+`section_title` is only trustworthy on re-embedded pages.
 
 ## Client-side Markdown → HTML (inline selection improve, #708)
 

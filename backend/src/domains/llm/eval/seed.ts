@@ -88,10 +88,11 @@ export class TruncatingModelError extends Error {}
 /**
  * Refuse to measure with a model that cannot read a whole chunk.
  *
- * The corpus chunks out at up to `CHUNK_HARD_LIMIT` characters — headings are
- * gone by the time `chunkText` sees the converted text, so most pages become
- * one section that the paragraph splitter cannot break, and `pushChunk` emits
- * right up to the ceiling. A model with a small context window silently embeds
+ * The corpus can chunk out at up to `CHUNK_HARD_LIMIT` characters — since
+ * #1265 the structure-aware splitter usually lands near the ~1,500-char
+ * target, but an oversized unbreakable region (a giant fenced block, a
+ * minified blob) still rides `pushChunk` right up to the ceiling, so the
+ * requirement stands. A model with a small context window silently embeds
  * only the prefix: the run still reports "100% embedded" and produces a
  * confident Recall@K describing text the model never saw.
  *

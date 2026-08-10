@@ -3,7 +3,7 @@ import { query, getPool } from '../../../core/db/postgres.js';
 import { resolveUsecase } from './llm-provider-resolver.js';
 import { generateEmbedding } from './openai-compatible-client.js';
 import { LlmHttpError } from './llm-http-error.js';
-import { htmlToEmbeddingText } from '../../../core/services/content-converter.js';
+import { htmlToEmbeddingText, htmlToText } from '../../../core/services/content-converter.js';
 import { logger } from '../../../core/utils/logger.js';
 import { safeIntOr } from '../../../core/utils/safe-int.js';
 import { invalidateGraphCache, acquireEmbeddingLock, releaseEmbeddingLock, refreshEmbeddingLock, isEmbeddingLocked, getRedisClient, listActiveEmbeddingLocks } from '../../../core/services/redis-cache.js';
@@ -238,7 +238,96 @@ function pushChunk(
 }
 
 /**
+ * Per-line "part of a fenced code block" flags, used to keep both structural
+ * splitters out of fences (#1265 review B1): a ```` ``` ```` block full of
+ * YAML/shell comments must never fabricate sections, and a blank line inside
+ * a fence is not a paragraph boundary. A fence closes on a line opening with
+ * at least as many of the same fence character; an unclosed fence runs to the
+ * end (CommonMark behaviour), which fails safe — no splits inside it.
+ */
+function fencedLineFlags(lines: string[]): boolean[] {
+  const flags = new Array<boolean>(lines.length).fill(false);
+  let inFence = false;
+  let fenceChar = '';
+  let fenceLen = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i]!.match(/^\s{0,3}(`{3,}|~{3,})/);
+    if (!inFence) {
+      if (m) {
+        inFence = true;
+        fenceChar = m[1]![0]!;
+        fenceLen = m[1]!.length;
+        flags[i] = true;
+      }
+    } else {
+      flags[i] = true;
+      if (m && m[1]![0] === fenceChar && m[1]!.length >= fenceLen) {
+        inFence = false;
+      }
+    }
+  }
+  return flags;
+}
+
+/**
+ * Split Markdown into sections at unfenced atx-heading lines. Each section
+ * (except a headingless preamble) begins with its own heading line.
+ */
+function splitMarkdownSections(text: string): string[] {
+  const lines = text.split('\n');
+  const fenced = fencedLineFlags(lines);
+  const sections: string[] = [];
+  let current: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!fenced[i] && /^#{1,6}\s/.test(lines[i]!) && current.length > 0) {
+      sections.push(current.join('\n'));
+      current = [];
+    }
+    current.push(lines[i]!);
+  }
+  if (current.length) sections.push(current.join('\n'));
+  return sections;
+}
+
+/** Fence-aware paragraph split: blank lines outside fences delimit. */
+function splitMarkdownParagraphs(text: string): string[] {
+  const lines = text.split('\n');
+  const fenced = fencedLineFlags(lines);
+  const paras: string[] = [];
+  let current: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!fenced[i] && lines[i]!.trim() === '') {
+      if (current.length) {
+        paras.push(current.join('\n'));
+        current = [];
+      }
+      continue;
+    }
+    current.push(lines[i]!);
+  }
+  if (current.length) paras.push(current.join('\n'));
+  return paras;
+}
+
+/**
  * Split text into chunks, preferring heading/paragraph boundaries.
+ *
+ * Live behaviour since #1265 (the input is Markdown now — see
+ * htmlToEmbeddingText; before that, whitespace-collapsed text made every
+ * splitter below unreachable):
+ * - sections start at unfenced atx headings (fence-aware — a `# comment`
+ *   inside a code block is content, not a boundary);
+ * - a section's title comes from its FIRST line only. The old `m`-flagged
+ *   search could grab an in-fence comment from anywhere in a headingless
+ *   section and present it as the section title in RAG context;
+ * - consecutive small sections are PACKED into one chunk up to the target
+ *   size, titled by the packed run's opening section — one-chunk-per-heading
+ *   turned a 300-heading page into 301 rows, and a heading-only sliver into
+ *   a chunk competing for a top-K slot (#1265 review M7). The later
+ *   headings' text stays visible inside the chunk (`## …` lines survive);
+ * - an oversized section still splits on (fence-aware) paragraph boundaries
+ *   with word overlap, and pushChunk's CHUNK_HARD_LIMIT backstop is
+ *   unchanged.
  */
 export function chunkText(
   text: string,
@@ -250,41 +339,40 @@ export function chunkText(
 ): Array<{ text: string; metadata: ChunkMetadata }> {
   const maxChars = chunkSize * CHARS_PER_TOKEN;
   const overlapChars = chunkOverlap * CHARS_PER_TOKEN;
-
-  // Split on headings first (lines starting with # or lines with === or ---)
-  const sections = text.split(/(?=^#{1,6}\s)/m);
   const chunks: Array<{ text: string; metadata: ChunkMetadata }> = [];
+  const makeMeta = (sectionTitle: string): ChunkMetadata => ({
+    page_title: pageTitle,
+    section_title: sectionTitle,
+    space_key: spaceKey,
+    confluence_id: confluenceId,
+  });
 
-  let currentSection = pageTitle;
+  const sections = splitMarkdownSections(text);
+
+  // The last real heading seen — titles oversized-section chunks, and the
+  // packed run that opens with each section.
+  let runningTitle = pageTitle;
+  let packed = '';
+  let packedTitle = pageTitle;
+  const flushPacked = () => {
+    if (packed.trim()) pushChunk(chunks, packed, makeMeta(packedTitle));
+    packed = '';
+  };
 
   for (const section of sections) {
     const trimmed = section.trim();
     if (!trimmed) continue;
 
-    // Extract section title
-    const headingMatch = trimmed.match(/^#{1,6}\s+(.+?)$/m);
-    if (headingMatch) {
-      currentSection = headingMatch[1]!;
-    }
+    const headingMatch = trimmed.match(/^#{1,6}\s+(.+?)(?:\n|$)/);
+    if (headingMatch) runningTitle = headingMatch[1]!.trim();
 
-    const meta: ChunkMetadata = {
-      page_title: pageTitle,
-      section_title: currentSection,
-      space_key: spaceKey,
-      confluence_id: confluenceId,
-    };
-
-    if (trimmed.length <= maxChars) {
-      // Section fits within the target — still enforce the hard limit
-      pushChunk(chunks, trimmed, meta);
-    } else {
-      // Split large sections on paragraph boundaries
-      const paragraphs = trimmed.split(/\n\n+/);
+    if (trimmed.length > maxChars) {
+      flushPacked();
+      const paragraphs = splitMarkdownParagraphs(trimmed);
       let currentChunk = '';
-
       for (const para of paragraphs) {
         if ((currentChunk + '\n\n' + para).length > maxChars && currentChunk) {
-          pushChunk(chunks, currentChunk, meta);
+          pushChunk(chunks, currentChunk, makeMeta(runningTitle));
           // Keep overlap from end of previous chunk
           const words = currentChunk.split(/\s+/);
           const overlapWords = Math.ceil(overlapChars / 5);
@@ -293,12 +381,19 @@ export function chunkText(
           currentChunk = currentChunk ? currentChunk + '\n\n' + para : para;
         }
       }
-
       if (currentChunk.trim()) {
-        pushChunk(chunks, currentChunk, meta);
+        pushChunk(chunks, currentChunk, makeMeta(runningTitle));
       }
+      continue;
     }
+
+    if (packed && packed.length + trimmed.length + 2 > maxChars) {
+      flushPacked();
+    }
+    if (!packed) packedTitle = runningTitle;
+    packed = packed ? `${packed}\n\n${trimmed}` : trimmed;
   }
+  flushPacked();
 
   return chunks;
 }
@@ -351,10 +446,16 @@ export async function embedPage(
   // Markdown-shaped, structure-preserving (#1265): this is what makes
   // chunkText's heading/paragraph splitting live code — htmlToText's
   // whitespace collapse made every page <= CHUNK_HARD_LIMIT a single chunk.
-  // (The coverage probe's char_length(body_text) mirror of this skip check
-  // reads the htmlToText-shaped column; the two lengths can disagree by a
-  // few syntax characters around the 20-char floor, which is noise.)
-  const plainText = htmlToEmbeddingText(bodyHtml);
+  let plainText = htmlToEmbeddingText(bodyHtml);
+  if (plainText.length < MIN_EMBEDDABLE_TEXT_CHARS) {
+    // Markdown can come out SHORTER than the text form — macro placeholders
+    // shrink ("[Children pages]" vs the longer rendered text) — and the
+    // coverage probe counts pages by char_length(body_text). Settling a page
+    // the probe still counts would hold coverage below 1.0 forever (#1265
+    // review M1), so fall back to the text form before settling: a page the
+    // probe counts either embeds or is genuinely empty in both shapes.
+    plainText = htmlToText(bodyHtml);
+  }
   if (!plainText || plainText.length < MIN_EMBEDDABLE_TEXT_CHARS) {
     logger.debug({ pageId, pageTitle }, 'Skipping empty/short page for embedding');
     await query(

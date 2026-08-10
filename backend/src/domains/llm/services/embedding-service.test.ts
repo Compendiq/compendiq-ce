@@ -75,6 +75,8 @@ vi.mock('./shadow-migration-service.js', () => ({
 
 vi.mock('../../../core/services/content-converter.js', () => ({
   htmlToEmbeddingText: mocks.htmlToEmbeddingText,
+  // embedPage's short-markdown fallback (#1265 review M1) imports this too.
+  htmlToText: vi.fn(() => ''),
 }));
 
 vi.mock('pgvector', () => ({
@@ -334,8 +336,19 @@ describe('embedding-service', () => {
       expect(chunks).toHaveLength(0);
     });
 
-    it('should split on heading boundaries', () => {
+    it('packs small adjacent sections into one chunk titled by the opening section (#1265)', () => {
       const text = '## Section One\nSome content here.\n## Section Two\nMore content here.';
+      const chunks = chunkText(text, 'Title', 'SPACE', 'conf-1');
+      // Two tiny sections fit the 1,500-char target together — one chunk,
+      // not one per heading; Section Two's heading stays visible in the text.
+      expect(chunks).toHaveLength(1);
+      expect(chunks[0].metadata.section_title).toBe('Section One');
+      expect(chunks[0].text).toContain('## Section Two');
+    });
+
+    it('splits sections into separate chunks once they cannot pack under the target', () => {
+      const big = (label: string) => `## ${label}\n${`${label} body sentence with enough words to matter. `.repeat(25)}`;
+      const text = `${big('Section One')}\n${big('Section Two')}`;
       const chunks = chunkText(text, 'Title', 'SPACE', 'conf-1');
       expect(chunks.length).toBeGreaterThanOrEqual(2);
       expect(chunks[0].metadata.section_title).toBe('Section One');
@@ -1411,6 +1424,9 @@ describe('embedPage', () => {
     const count = await embedPage('u1', 1, 'Title', 'DEV', '<p>Content</p>');
 
     expect(count).toBeGreaterThan(0);
+    // The converter must receive the page's body_html — no test asserted the
+    // argument before, so a wrong-argument refactor stayed green (#1265).
+    expect(mocks.htmlToEmbeddingText).toHaveBeenCalledWith('<p>Content</p>');
 
     const calls = mockClient.query.mock.calls.map((c) => c[0] as string);
 
@@ -1441,12 +1457,12 @@ describe('chunkText', () => {
     });
   });
 
-  it('should split on heading boundaries', () => {
+  it('packs two tiny sections into one chunk titled by the first (#1265)', () => {
     const text = '# Introduction\nSome intro text.\n\n# Details\nMore details here.';
     const chunks = chunkText(text, 'My Doc', 'SPACE', 'doc-1');
-    expect(chunks.length).toBeGreaterThanOrEqual(2);
+    expect(chunks).toHaveLength(1);
     expect(chunks[0].metadata.section_title).toBe('Introduction');
-    expect(chunks[1].metadata.section_title).toBe('Details');
+    expect(chunks[0].text).toContain('# Details');
   });
 
   it('should return empty array for empty text', () => {
