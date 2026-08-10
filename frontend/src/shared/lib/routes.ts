@@ -27,3 +27,12 @@ export const CONFLUENCE_SETTINGS_PATH = '/settings/personal/confluence';
  * holds wayfinding copy to it.
  */
 export const AI_MODELS_SETTINGS_LABEL = 'AI Models';
+
+/**
+ * Path of the Settings → AI Models panel, for `shared/` components that link
+ * into it (ServiceStatus's health-alert CTA). Same arrangement as
+ * CONFLUENCE_SETTINGS_PATH: must match the path settings-nav.ts derives for
+ * the `ai/models` nav item; settings-nav.test.ts guards the pair, and
+ * settings-wayfinding.test.ts holds every mirror constant to a live path.
+ */
+export const AI_MODELS_SETTINGS_PATH = '/settings/ai/models';

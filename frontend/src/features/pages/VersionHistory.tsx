@@ -13,6 +13,7 @@ import { DiffView } from '../../shared/components/article/DiffView';
 import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
 import { cn } from '../../shared/lib/cn';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
+import { SETTINGS_PANELS } from '../settings/settings-nav';
 
 // Response/type shapes are the single source of truth in @compendiq/contracts
 // (PageVersionsResponseSchema / PageVersionDetailSchema). Don't re-declare them.
@@ -111,7 +112,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
     backfillStatus === 'skipped_no_credentials' || backfillStatus === 'failed'
       ? versionsData?.backfillDetail ??
         (backfillStatus === 'skipped_no_credentials'
-          ? 'Historical versions could not be imported: no Confluence credentials are configured for your account. Add your PAT in Settings → Confluence.'
+          ? `Historical versions could not be imported: no Confluence credentials are configured for your account. Add your PAT in Settings → ${SETTINGS_PANELS.confluence.label}.`
           : 'Importing historical versions from Confluence failed — the list below may be incomplete.')
       : null;
 

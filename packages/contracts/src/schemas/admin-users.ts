@@ -1,5 +1,5 @@
 /**
- * Admin CRUD schemas for the Settings → Users admin page (#304).
+ * Admin CRUD schemas for the Users sub-tab of Settings → Access Control (#304).
  *
  * These routes are distinct from the RBAC routes in `rbac.ts`:
  *   - RBAC handles role assignment and group memberships (who can do what)

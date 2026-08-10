@@ -84,6 +84,7 @@ function UserBulkActionDialogInner({
   onClose,
   selectedUserIds,
 }: UserBulkActionDialogProps) {
+  const { isEnterprise, hasFeature } = useEnterprise();
   const queryClient = useQueryClient();
 
   const [actionKind, setActionKind] = useState<ActionKind>('change-role');
@@ -301,9 +302,17 @@ function UserBulkActionDialogInner({
                   placeholder="group id (UUID)"
                   data-testid="bulk-action-group"
                 />
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Pick the group id from <Link to={`${SETTINGS_PANELS.access.path}?sub=rbac`} className="underline">Settings → {SETTINGS_PANELS.access.label} → Roles</Link>.
-                </p>
+                {/* The Roles (RBAC) sub-tab is EE-gated — mirror
+                    AccessControlWrapper's visibility, same as UsersAdminPage's
+                    pointer: this dialog's own gate is bulk_user_operations, a
+                    DIFFERENT flag, and on a licence without advanced_rbac
+                    SubTabs falls back to the first visible tab for the unknown
+                    ?sub=, so the link would silently reload-in-place. */}
+                {isEnterprise && hasFeature('advanced_rbac') && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Pick the group id from <Link to={`${SETTINGS_PANELS.access.path}?sub=rbac`} className="underline">Settings → {SETTINGS_PANELS.access.label} → Roles</Link>.
+                  </p>
+                )}
               </label>
             )}
 

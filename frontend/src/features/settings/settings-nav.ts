@@ -39,14 +39,21 @@ export interface SettingsNavItem {
 interface SettingsNavGroup {
   id: SettingsCategoryId;
   label: string;
-  items: SettingsNavItem[];
+  items: readonly SettingsNavItem[];
 }
 
-function navItem(
-  id: string,
+/**
+ * The `const Id` type parameter keeps each item's id as a string *literal*
+ * in the config's type, which is what lets `SettingsPanelId` below be
+ * derived from SETTINGS_NAV instead of restated in a mirror list — a
+ * missed or renamed id is then a type error at every
+ * `SETTINGS_PANELS.<id>` callsite, not an import-time crash.
+ */
+function navItem<const Id extends string>(
+  id: Id,
   label: string,
   options: Omit<SettingsNavItem, 'id' | 'label'> = {},
-): SettingsNavItem {
+): SettingsNavItem & { id: Id } {
   return { id, label, ...options };
 }
 
@@ -54,7 +61,7 @@ function navItem(
  * Grouped nav config. Order within each group controls rail rendering order;
  * order of groups controls top-to-bottom rail order.
  */
-export const SETTINGS_NAV: readonly SettingsNavGroup[] = [
+export const SETTINGS_NAV = [
   {
     id: 'personal',
     label: 'Personal',
@@ -112,7 +119,7 @@ export const SETTINGS_NAV: readonly SettingsNavGroup[] = [
       navItem('diagnostics', 'Diagnostics', { adminOnly: true }),
     ],
   },
-] as const;
+] as const satisfies readonly SettingsNavGroup[];
 
 export interface AccessContext {
   isAdmin: boolean;
@@ -171,43 +178,37 @@ export interface SettingsPanelRef {
 }
 
 /**
- * Typed mirror of the item ids in SETTINGS_NAV. TypeScript cannot derive the
- * literal-id union through `navItem()` without an `as const` restructuring of
- * the whole config, so the ids are restated here; settings-nav.test.ts
- * asserts the two sets match exactly, so adding, removing or renaming a nav
- * item without updating this list fails the suite.
+ * Union of the item ids in SETTINGS_NAV, *derived* from the config — the
+ * `const Id` parameter on `navItem()` plus `as const satisfies` on the array
+ * keep every id as a literal in the config's type, so there is no mirror
+ * list to fall out of sync and no module-init throw waiting on `/pages`,
+ * `/ai` and the setup wizard (settings-nav is imported well beyond the
+ * lazy-loaded SettingsLayout).
  */
-const SETTINGS_PANEL_IDS = [
-  'confluence',
-  'ai-prompts',
-  'theme',
-  'spaces',
-  'labels',
-  'models',
-  'ai-safety',
-  'access',
-  'compliance',
-  'integrations',
-  'license',
-  'diagnostics',
-] as const;
+export type SettingsPanelId = (typeof SETTINGS_NAV)[number]['items'][number]['id'];
 
-export type SettingsPanelId = (typeof SETTINGS_PANEL_IDS)[number];
+/**
+ * Compile-time tripwire, kept beside the union it guards: if a future edit
+ * collapses SettingsPanelId to `string` (a widening annotation back on
+ * SETTINGS_NAV, or navItem() losing its const type parameter), the
+ * constraint below fails `npm run typecheck` here, by name.
+ * `noUncheckedIndexedAccess` would flag the collapse too, but as a
+ * misleading "possibly undefined" at every SETTINGS_PANELS.<id> callsite.
+ */
+type LiteralUnionOnly<T extends true> = T;
+export type SettingsPanelIdIsLiteralUnion = LiteralUnionOnly<
+  string extends SettingsPanelId ? false : true
+>;
 
-function panelRef(id: SettingsPanelId): SettingsPanelRef {
-  for (const group of SETTINGS_NAV) {
-    const item = group.items.find((i) => i.id === id);
-    if (item) {
-      return { path: `/settings/${group.id}/${item.id}`, label: item.label };
-    }
-  }
-  // Module-init throw: a panel id in the mirror list but absent from the nav
-  // is a config bug, and failing loud here beats a dead link rendering.
-  throw new Error(`settings-nav: no nav item with id "${id}"`);
-}
-
-export const SETTINGS_PANELS: Readonly<Record<SettingsPanelId, SettingsPanelRef>> =
-  Object.fromEntries(SETTINGS_PANEL_IDS.map((id) => [id, panelRef(id)])) as Record<
-    SettingsPanelId,
-    SettingsPanelRef
-  >;
+export const SETTINGS_PANELS = Object.fromEntries(
+  SETTINGS_NAV.flatMap((group) =>
+    group.items.map((item): [SettingsPanelId, SettingsPanelRef] => [
+      item.id,
+      { path: `/settings/${group.id}/${item.id}`, label: item.label },
+    ]),
+  ),
+  // The assertion narrows Object.fromEntries' string keys back to the id
+  // union. It is derivation, not restatement: keys and union both come from
+  // the same SETTINGS_NAV walk, so every id is present by construction —
+  // settings-nav.test.ts still asserts the two sets match.
+) as Readonly<Record<SettingsPanelId, SettingsPanelRef>>;

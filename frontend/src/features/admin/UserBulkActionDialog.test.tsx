@@ -253,6 +253,33 @@ describe('UserBulkActionDialog', () => {
     });
   });
 
+  it('hides the Roles hint when advanced_rbac is not licensed (bulk ops on)', () => {
+    // A licence can grant bulk_user_operations without advanced_rbac. The
+    // Roles sub-tab is then invisible, and SubTabs falls back to the first
+    // visible tab for an unknown ?sub= — the link would silently land the
+    // admin back where they came from. Same gate as UsersAdminPage's pointer.
+    mockHasFeature = (f) => f === 'bulk_user_operations';
+
+    render(
+      <UserBulkActionDialog
+        open={true}
+        onClose={() => {}}
+        selectedUserIds={SAMPLE_IDS}
+      />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.change(screen.getByTestId('bulk-action-kind'), {
+      target: { value: 'add-to-group' },
+    });
+
+    // The group input itself stays — only the dead pointer goes.
+    expect(screen.getByTestId('bulk-action-group')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('link', { name: /Settings → Access Control → Roles/ }),
+    ).not.toBeInTheDocument();
+  });
+
   it('shows inline error on 400 and surfaces the message', async () => {
     mockFetch({
       status: 400,

@@ -42,6 +42,14 @@ const FRONTEND_SRC = resolve(__dirname);
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const BACKEND_SRC = join(REPO_ROOT, 'backend', 'src');
 
+// Local by necessity, like every other source-sweeping guard's walker
+// (flat-components, destructive-treatment, ui-text-legibility …): none of
+// them exports a shareable walk(), so there is nothing to import. This one's
+// exclusion list is the union of theirs (node_modules, dist) plus
+// `__fixtures__`, and it deliberately does NOT strip comments — a stale
+// comment is how the next stale copy gets written (see the header), and a
+// naive `//` stripper would blank everything after `https://` on a line,
+// hiding real callsites. Raw source is scanned instead.
 function walk(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
     const full = join(dir, entry);

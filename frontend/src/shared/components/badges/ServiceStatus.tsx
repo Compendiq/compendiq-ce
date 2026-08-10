@@ -4,6 +4,10 @@ import { m, AnimatePresence } from 'framer-motion';
 import { AlertTriangle, X, Wifi, WifiOff, Server } from 'lucide-react';
 import { cn } from '../../lib/cn';
 import { useAuthStore } from '../../../stores/auth-store';
+import {
+  AI_MODELS_SETTINGS_LABEL,
+  AI_MODELS_SETTINGS_PATH,
+} from '../../lib/routes';
 
 interface HealthStatus {
   status: string;
@@ -74,7 +78,13 @@ export function ServiceStatus() {
               icon: Server,
               colorClass: 'text-warning',
               bgClass: 'border-warning/40 bg-warning/10',
-              link: { to: '/settings/ai/models', label: 'Check LLM settings' },
+              // Label and path come from routes.ts so this operator-facing
+              // CTA cannot drift from the rail again — it used to say "Check
+              // LLM settings", naming a panel no rail item carries.
+              link: {
+                to: AI_MODELS_SETTINGS_PATH,
+                label: `Check ${AI_MODELS_SETTINGS_LABEL} settings`,
+              },
             });
           }
           if (data.services?.redis === false) {

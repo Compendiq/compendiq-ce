@@ -6,9 +6,12 @@ import {
   firstVisiblePath,
   type AccessContext,
   type SettingsNavItem,
-  type SettingsPanelId,
 } from './settings-nav';
-import { AI_MODELS_SETTINGS_LABEL, CONFLUENCE_SETTINGS_PATH } from '../../shared/lib/routes';
+import {
+  AI_MODELS_SETTINGS_LABEL,
+  AI_MODELS_SETTINGS_PATH,
+  CONFLUENCE_SETTINGS_PATH,
+} from '../../shared/lib/routes';
 
 function ctx(partial: Partial<AccessContext> = {}): AccessContext {
   return {
@@ -101,9 +104,9 @@ describe('SETTINGS_NAV shape', () => {
 });
 
 describe('SETTINGS_PANELS', () => {
-  // SETTINGS_PANEL_IDS is a typed mirror of the nav item ids (TS cannot derive
-  // the literal union through navItem()); this is the guard that keeps the
-  // mirror honest in both directions.
+  // SettingsPanelId and SETTINGS_PANELS are both *derived* from SETTINGS_NAV
+  // (const type parameter on navItem() + `as const satisfies`), so these two
+  // assertions guard the derivation itself, not a hand-kept mirror.
   it('mirrors the nav item ids exactly', () => {
     const navIds = SETTINGS_NAV.flatMap((g) => g.items.map((i) => i.id)).sort();
     expect(Object.keys(SETTINGS_PANELS).sort()).toEqual(navIds);
@@ -112,17 +115,27 @@ describe('SETTINGS_PANELS', () => {
   it('derives each path and label from the nav config', () => {
     for (const group of SETTINGS_NAV) {
       for (const item of group.items) {
-        const ref = SETTINGS_PANELS[item.id as SettingsPanelId];
+        const ref = SETTINGS_PANELS[item.id];
         expect(ref.path).toBe(`/settings/${group.id}/${item.id}`);
         expect(ref.label).toBe(item.label);
       }
     }
   });
 
+  // NOTE: the "SettingsPanelId stays a literal union" tripwire lives in
+  // settings-nav.ts itself (SettingsPanelIdIsLiteralUnion) — tsconfig.json
+  // excludes *.test.ts from `npm run typecheck`, so a type-level probe here
+  // would never run.
+
   // shared/lib/routes.ts mirrors this label so shared/ components can name
   // the panel without importing features/ — same arrangement as
   // CONFLUENCE_SETTINGS_PATH above.
   it('keeps the shared AI Models label constant in sync', () => {
     expect(SETTINGS_PANELS.models.label).toBe(AI_MODELS_SETTINGS_LABEL);
+  });
+
+  it('keeps the shared AI Models path constant in sync', () => {
+    // ServiceStatus's health-alert CTA links via this constant from shared/.
+    expect(SETTINGS_PANELS.models.path).toBe(AI_MODELS_SETTINGS_PATH);
   });
 });
