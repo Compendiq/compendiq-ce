@@ -110,13 +110,26 @@ const PageListItem = memo(function PageListItem({
         )}
         <button
           onClick={() => onNavigate(pageItem.id)}
-          className="flex min-w-0 flex-1 items-center gap-4"
+          // Below `sm` the button wraps and the title block goes `basis-full`,
+          // so the pipeline badge drops onto its own line instead of
+          // compressing the block. At `sm+` the max-sm classes are inert and
+          // the single-line layout is untouched.
+          className="flex min-w-0 flex-1 items-center gap-4 max-sm:flex-wrap max-sm:gap-y-1"
         >
-          <div className="min-w-0 flex-1 text-left">
-            <div className="flex items-center gap-2">
+          <div className="min-w-0 flex-1 text-left max-sm:basis-full">
+            {/* Title line. Every badge beside the title is `shrink-0`, so the
+                title was the only thing that could give way: at 390px the
+                metadata took its width first and the title — the one thing
+                identifying a row — absorbed the entire deficit ("Incident
+                runbook: Postgres c…", "Quart…"). Below `sm` the title takes
+                the full row (`max-sm:w-full`) and the badges wrap to their own
+                line beneath it: identity beats metadata on a phone, and a
+                taller row beats an unreadable one. DOM order is unchanged, so
+                the button's accessible name reads exactly as before. */}
+            <div className="flex items-center gap-2 max-sm:flex-wrap max-sm:gap-y-1">
               {/* 13px medium. At 16px the title read as a card heading, which
                   is what made forty rows look like forty cards. */}
-              <p className="truncate text-[13px] font-medium">{pageItem.title}</p>
+              <p className="truncate text-[13px] font-medium max-sm:w-full">{pageItem.title}</p>
               {/* Source badge */}
               {pageItem.source === 'standalone' ? (
                 <span
