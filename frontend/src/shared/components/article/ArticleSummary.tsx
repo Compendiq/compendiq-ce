@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import { cn } from '../../lib/cn';
 import { formatRelativeTime } from '../../lib/format-relative-time';
 import { useSummaryRegenerate } from '../../hooks/use-pages';
+import { isSummaryStale } from '../../lib/article-lede';
 import type { SummaryStatus } from '../../hooks/use-pages';
 import { useAuthStore } from '../../../stores/auth-store';
 import { SanitizedHtml } from '../SanitizedHtml';
@@ -16,6 +17,13 @@ interface ArticleSummaryProps {
   summaryGeneratedAt: string | null;
   summaryModel: string | null;
   summaryError: string | null;
+  /**
+   * The article opens with a lede of its own, so this block should defer to it
+   * and start collapsed. An explicit choice for this page always wins.
+   */
+  deferToLede?: boolean;
+  /** Page's last-modified timestamp, for the staleness check. */
+  lastModifiedAt?: string | null;
 }
 
 interface HealthStatus {
@@ -24,19 +32,41 @@ interface HealthStatus {
   };
 }
 
-const COLLAPSE_KEY = 'article-summary-collapsed';
+/**
+ * Per page. This used to be one global `article-summary-collapsed` flag, so the
+ * chevron on any one summary silently set an app-wide preference — collapse the
+ * summary on a page you already know, and every other page's summary is
+ * collapsed too, with nothing saying so.
+ */
+const COLLAPSE_KEY_PREFIX = 'article-summary-collapsed:';
+const LEGACY_GLOBAL_COLLAPSE_KEY = 'article-summary-collapsed';
 
-function getCollapseState(): boolean {
+function collapseKey(pageId: string): string {
+  return `${COLLAPSE_KEY_PREFIX}${pageId}`;
+}
+
+/**
+ * The stored value records an EXPLICIT user choice only. When there is none,
+ * the default is computed per page (defer to a lede if the article has one), so
+ * absence must stay distinguishable from `false` — hence the null check rather
+ * than a `=== 'true'` coercion.
+ */
+function getCollapseState(pageId: string, deferToLede: boolean): boolean {
   try {
-    return localStorage.getItem(COLLAPSE_KEY) === 'true';
+    // One-time cleanup: the global key is meaningless now, and leaving it
+    // behind would strand a `true` in storage forever.
+    localStorage.removeItem(LEGACY_GLOBAL_COLLAPSE_KEY);
+    const stored = localStorage.getItem(collapseKey(pageId));
+    if (stored === null) return deferToLede;
+    return stored === 'true';
   } catch {
-    return false;
+    return deferToLede;
   }
 }
 
-function setCollapseState(collapsed: boolean): void {
+function setCollapseState(pageId: string, collapsed: boolean): void {
   try {
-    localStorage.setItem(COLLAPSE_KEY, String(collapsed));
+    localStorage.setItem(collapseKey(pageId), String(collapsed));
   } catch {
     // Ignore storage errors
   }
@@ -49,8 +79,14 @@ export function ArticleSummary({
   summaryGeneratedAt,
   summaryModel,
   summaryError,
+  deferToLede = false,
+  lastModifiedAt = null,
 }: ArticleSummaryProps) {
-  const [collapsed, setCollapsed] = useState(getCollapseState);
+  // Initialiser runs once per mount, and PageViewPage keys this component on the
+  // page id so navigating between articles genuinely remounts it — without that
+  // key React would reconcile by position and carry one page's collapse state
+  // onto the next.
+  const [collapsed, setCollapsed] = useState(() => getCollapseState(pageId, deferToLede));
   const regenerateMutation = useSummaryRegenerate();
   // #356: backend route is admin-only (`requireAdmin`). Hide the
   // Regenerate / Retry buttons for non-admins so we don't ship a
@@ -80,10 +116,16 @@ export function ArticleSummary({
   const toggleCollapse = useCallback(() => {
     setCollapsed((prev) => {
       const next = !prev;
-      setCollapseState(next);
+      setCollapseState(pageId, next);
       return next;
     });
-  }, []);
+  }, [pageId]);
+
+  // Same predicate the summary worker uses to re-queue a stale summary. It runs
+  // on a batch interval, so between an edit and the next batch the page shows a
+  // summary of content that no longer exists — this is the only thing that says
+  // so, and unlike Regenerate it is not admin-gated.
+  const stale = isSummaryStale(lastModifiedAt, summaryGeneratedAt);
 
   const handleRegenerate = useCallback(() => {
     regenerateMutation.mutate(pageId, {
@@ -169,9 +211,15 @@ export function ArticleSummary({
   // Summarized state: show the full banner
   if (summaryStatus !== 'summarized' || !summaryHtml) return null;
 
+  // Violet, not teal, for every part of this block. ADR-010 reserves violet for
+  // AI and teal for brand + interaction; this block used to switch families
+  // between states — status-ai while pending, primary once delivered — so the
+  // same Sparkles glyph read violet in the Assistant tab and teal here, one
+  // click apart on the same route. Teal additionally implied the card was a
+  // control.
   return (
     <div
-      className="mb-6 rounded-lg border border-primary/20 bg-primary/5"
+      className="mb-6 rounded-lg border border-status-ai/20 bg-status-ai/5"
       data-testid="article-summary"
     >
       <div
@@ -181,17 +229,40 @@ export function ArticleSummary({
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleCollapse(); } }}
         className="flex w-full cursor-pointer items-center justify-between px-4 py-3 text-left"
       >
-        <div className="flex items-center gap-2">
-          <Sparkles size={16} className="text-primary" />
-          <span className="text-sm font-medium text-foreground">AI Summary</span>
+        {/* `min-w-0` + `shrink-0` per item: once this block defers to the lede,
+            the collapsed header IS the whole component on a phone, and the row
+            used to wrap into "AI / Summary", "2d / ago" and a hyphen-broken
+            "(gemma-4-e4b-it- / mlx)" — the least important fact taking a third
+            of the width. Nothing wraps now; the model name is the one part that
+            drops below `sm`, because it is the one nobody reads on a phone. */}
+        <div className="flex min-w-0 items-center gap-2">
+          {/* status-ai, not primary: violet marks AI in every state (#1250). */}
+          <Sparkles size={16} className="shrink-0 text-status-ai" />
+          <span className="shrink-0 whitespace-nowrap text-sm font-medium text-foreground">
+            AI Summary
+          </span>
           {summaryGeneratedAt && (
-            <span className="text-xs text-muted-foreground">
+            <span className="shrink-0 whitespace-nowrap text-xs text-muted-foreground">
               {formatRelativeTime(summaryGeneratedAt)}
             </span>
           )}
           {summaryModel && (
-            <span className="text-xs text-muted-foreground/60">
+            <span className="hidden truncate text-xs text-muted-foreground/60 sm:inline">
               ({summaryModel})
+            </span>
+          )}
+          {/* Amber, and in the HEADER rather than the body: the header renders
+              whether or not the block is collapsed, so deferring to the lede can
+              never hide the fact that the summary describes older content.
+              ADR-010 reserves amber for exactly this — attention, not refusal. */}
+          {stale && (
+            <span
+              className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning"
+              data-testid="article-summary-stale"
+              title="This page has been edited since the summary was generated. A new summary is queued automatically."
+            >
+              <AlertCircle size={12} className="shrink-0" />
+              Page edited since
             </span>
           )}
         </div>
@@ -220,7 +291,7 @@ export function ArticleSummary({
 
       {!collapsed && (
         <SanitizedHtml
-          className="border-t border-primary/10 px-4 pb-4 pt-2 text-sm text-foreground/90 prose prose-sm max-w-none dark:prose-invert"
+          className="border-t border-status-ai/10 px-4 pb-4 pt-2 text-sm text-foreground/90 prose prose-sm max-w-none dark:prose-invert"
           data-testid="article-summary-content"
           html={summaryHtml}
         />
