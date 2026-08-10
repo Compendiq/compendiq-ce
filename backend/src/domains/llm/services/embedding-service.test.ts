@@ -77,6 +77,9 @@ vi.mock('../../../core/services/content-converter.js', () => ({
   htmlToEmbeddingText: mocks.htmlToEmbeddingText,
   // embedPage's short-markdown fallback (#1265 review M1) imports this too.
   htmlToText: vi.fn(() => ''),
+  // embedPage's embeddability floor flattens the markdown first (#1265);
+  // identity keeps the mocked lengths meaningful.
+  markdownToSnippetText: vi.fn((s: string) => s),
 }));
 
 vi.mock('pgvector', () => ({
@@ -1426,7 +1429,11 @@ describe('embedPage', () => {
     expect(count).toBeGreaterThan(0);
     // The converter must receive the page's body_html — no test asserted the
     // argument before, so a wrong-argument refactor stayed green (#1265).
-    expect(mocks.htmlToEmbeddingText).toHaveBeenCalledWith('<p>Content</p>');
+    // The second argument is the log context the fallback warn carries.
+    expect(mocks.htmlToEmbeddingText).toHaveBeenCalledWith('<p>Content</p>', {
+      pageId: 1,
+      pageTitle: 'Title',
+    });
 
     const calls = mockClient.query.mock.calls.map((c) => c[0] as string);
 
@@ -1681,12 +1688,17 @@ describe('chunkText', () => {
     });
 
     it('skips an oversized batch (HTTP 400 context-length) and continues embedding remaining batches', async () => {
-      // Make htmlToEmbeddingText return enough text to produce multiple chunks
-      const textWith3Chunks = Array.from(
-        { length: 3 },
-        (_, i) => `## Section ${i}\n${'content '.repeat(10)}`,
+      // Twelve ~1,450-char sections: too big to pack pairwise (2x > the
+      // 1,500-char target), so chunkText yields 12 chunks = TWO provider
+      // batches at batchSize 10. The old 3-chunk fixture fit one batch, so
+      // "continues with remaining batches" was asserted against a run that
+      // had no remaining batches (and passed with >= 0 — vacuous, #1265
+      // verification finding 11).
+      const textWith12Chunks = Array.from(
+        { length: 12 },
+        (_, i) => `## Section ${i}\n${`content for section ${i} `.repeat(65)}`,
       ).join('\n');
-      mocks.htmlToEmbeddingText.mockReturnValue(textWith3Chunks);
+      mocks.htmlToEmbeddingText.mockReturnValue(textWith12Chunks);
 
       // Phase 2 (BEGIN/DELETE/INSERT×N/UPDATE/COMMIT) handled by mockClient.query default
       // Pool query is NOT used in Phase 2
@@ -1709,8 +1721,9 @@ describe('chunkText', () => {
 
       // Should not throw even though first batch failed
       const count = await embedPage('user-1', 101, 'Page', 'DEV', '<p>content</p>');
-      // Some chunks should have been embedded (from the successful second batch)
-      expect(count).toBeGreaterThanOrEqual(0);
+      // The second batch (chunks 10-11) must actually land: a regression that
+      // stops after a skipped batch returns 0, which the old >= 0 accepted.
+      expect(count).toBe(2);
     });
 
     it('rethrows non-context-length errors from embedPage', async () => {

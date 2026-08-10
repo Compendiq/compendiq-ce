@@ -78,7 +78,7 @@ sequenceDiagram
     Note over ES,OL: Embedding worker (separate loop)
     ES->>DB: SELECT pages WHERE embedding_dirty = true LIMIT N
     loop per page
-        ES->>ES: chunk(body_text)
+        ES->>ES: chunk(htmlToEmbeddingText(body_html))<br/>Markdown, fence-aware, section-packed (#35;1265)
         ES->>OL: POST /api/embeddings (bge-m3)
         OL-->>ES: vector[1024]
         ES->>DB: INSERT page_embeddings

@@ -1007,12 +1007,18 @@ async function applyConflictPolicyForExistingPage(
            author = $8,
            last_modified_at = $9,
            last_synced = NOW(),
+           -- Gate on BOTH text and html drift (#1265): the embedding input
+           -- is Markdown derived from body_html now, so html-only changes
+           -- (heading levels, links, task state, converter upgrades) must
+           -- re-embed even when the flattened body_text is identical.
            embedding_dirty = CASE
-             WHEN body_text IS DISTINCT FROM $5 THEN TRUE
+             WHEN body_text IS DISTINCT FROM $5
+               OR body_html IS DISTINCT FROM $4 THEN TRUE
              ELSE embedding_dirty
            END,
            summary_status = CASE
-             WHEN body_text IS DISTINCT FROM $5 THEN 'pending'
+             WHEN body_text IS DISTINCT FROM $5
+               OR body_html IS DISTINCT FROM $4 THEN 'pending'
              ELSE summary_status
            END,
            -- Clear local-edit markers (#305): the page is now back in

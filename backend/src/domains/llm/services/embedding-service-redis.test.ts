@@ -55,6 +55,9 @@ vi.mock('./openai-compatible-client.js', () => ({
 vi.mock('../../../core/services/content-converter.js', () => ({
   htmlToEmbeddingText: vi.fn().mockReturnValue('some text'),
   htmlToText: vi.fn(() => ''),
+  // embedPage's embeddability floor flattens the markdown first (#1265);
+  // identity keeps the mocked lengths meaningful.
+  markdownToSnippetText: vi.fn((s: string) => s),
 }));
 
 vi.mock('pgvector', () => ({

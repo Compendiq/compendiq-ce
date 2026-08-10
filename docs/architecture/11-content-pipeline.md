@@ -11,7 +11,7 @@ representations that flow through the rest of the system.
 | **XHTML Storage** | `pages.body_storage` | Round-trip to Confluence. Push-back **is** live in CE: `POST /api/pages` calls `createPage()` and `PUT /api/pages/:id` calls `updatePage()` for Confluence-sourced pages. Standalone articles leave it `NULL` until they are relocated into Confluence (#1123). |
 | **HTML (clean)** | `pages.body_html` | TipTap editor, viewer UI, diff UI |
 | **Plain text** | `pages.body_text` | FTS (`tsvector`), snippets, coverage probe |
-| **Markdown** | not stored — derived per call | LLM prompts (Ollama / OpenAI); **embedding/chunking input** since #1265 (`htmlToEmbeddingText`) |
+| **Markdown** | no page column — derived per call; **persisted as `page_embeddings.chunk_text`** for embedded pages since #1265 | LLM prompts (Ollama / OpenAI); **embedding/chunking input** since #1265 (`htmlToEmbeddingText`); chunk_text reaches RAG context, citations and (flattened) search snippets |
 | **Uploaded document** | not stored — discarded after extraction | LLM reference material (AI Improve / AI Generate upload) |
 
 ## Flow

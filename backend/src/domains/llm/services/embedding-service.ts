@@ -3,7 +3,11 @@ import { query, getPool } from '../../../core/db/postgres.js';
 import { resolveUsecase } from './llm-provider-resolver.js';
 import { generateEmbedding } from './openai-compatible-client.js';
 import { LlmHttpError } from './llm-http-error.js';
-import { htmlToEmbeddingText, htmlToText } from '../../../core/services/content-converter.js';
+import {
+  htmlToEmbeddingText,
+  htmlToText,
+  markdownToSnippetText,
+} from '../../../core/services/content-converter.js';
 import { logger } from '../../../core/utils/logger.js';
 import { safeIntOr } from '../../../core/utils/safe-int.js';
 import { invalidateGraphCache, acquireEmbeddingLock, releaseEmbeddingLock, refreshEmbeddingLock, isEmbeddingLocked, getRedisClient, listActiveEmbeddingLocks } from '../../../core/services/redis-cache.js';
@@ -195,8 +199,15 @@ export function splitByWords(text: string, maxChars: number): string[] {
         result.push(current);
         current = '';
       }
-      for (let offset = 0; offset < word.length; offset += maxChars) {
-        result.push(word.slice(offset, offset + maxChars));
+      let start = 0;
+      while (start < word.length) {
+        let end = Math.min(start + maxChars, word.length);
+        // Never split a surrogate pair: a slice ending on a lone high
+        // surrogate stores U+FFFD and hands the provider a malformed token.
+        const code = word.charCodeAt(end - 1);
+        if (end < word.length && code >= 0xd800 && code <= 0xdbff) end--;
+        result.push(word.slice(start, end));
+        start = end;
       }
       continue;
     }
@@ -349,6 +360,14 @@ export function chunkText(
 
   const sections = splitMarkdownSections(text);
 
+  // Below this size a would-be chunk is a sliver — a bare heading line, a
+  // one-line list stub — that embeds as title-shaped noise and competes for
+  // a top-K slot with zero answerable content. Slivers are carried into the
+  // neighbouring chunk instead of flushed alone (#1265 verification, 5).
+  // Scaled with the target so a deliberately tiny chunkSize (tests; extreme
+  // admin settings) still splits rather than being swallowed by the floor.
+  const MIN_FLUSH_CHARS = Math.min(200, Math.ceil(maxChars / 4));
+
   // The last real heading seen — titles oversized-section chunks, and the
   // packed run that opens with each section.
   let runningTitle = pageTitle;
@@ -364,19 +383,38 @@ export function chunkText(
     if (!trimmed) continue;
 
     const headingMatch = trimmed.match(/^#{1,6}\s+(.+?)(?:\n|$)/);
-    if (headingMatch) runningTitle = headingMatch[1]!.trim();
+    // Chunk metadata must carry the heading's PROSE — the raw line is
+    // turndown-escaped/decorated ("1\. Introduction", "**Bold** [x](url)")
+    // and renders verbatim in citations and RAG context headers.
+    if (headingMatch) {
+      const flat = markdownToSnippetText(headingMatch[1]!);
+      runningTitle = flat || headingMatch[1]!.trim();
+    }
 
     if (trimmed.length > maxChars) {
-      flushPacked();
-      const paragraphs = splitMarkdownParagraphs(trimmed);
+      // A small pending pack (typically the previous sliver of prose) rides
+      // into this section's first chunk instead of flushing as its own row.
       let currentChunk = '';
+      if (packed && packed.length < MIN_FLUSH_CHARS) {
+        currentChunk = packed;
+        packed = '';
+      } else {
+        flushPacked();
+      }
+      const paragraphs = splitMarkdownParagraphs(trimmed);
       for (const para of paragraphs) {
-        if ((currentChunk + '\n\n' + para).length > maxChars && currentChunk) {
+        if (
+          (currentChunk + '\n\n' + para).length > maxChars &&
+          currentChunk.length >= MIN_FLUSH_CHARS
+        ) {
           pushChunk(chunks, currentChunk, makeMeta(runningTitle));
-          // Keep overlap from end of previous chunk
-          const words = currentChunk.split(/\s+/);
-          const overlapWords = Math.ceil(overlapChars / 5);
-          currentChunk = words.slice(-overlapWords).join(' ') + '\n\n' + para;
+          // Keep overlap from the end of the previous chunk. Slice the raw
+          // character tail (starting at a whitespace boundary) rather than
+          // re-joining words with spaces — a word-join flattened the line
+          // structure of any code or table content it carried forward.
+          const tail = currentChunk.slice(-overlapChars);
+          const firstBreak = tail.search(/\s/);
+          currentChunk = (firstBreak >= 0 ? tail.slice(firstBreak + 1) : tail) + '\n\n' + para;
         } else {
           currentChunk = currentChunk ? currentChunk + '\n\n' + para : para;
         }
@@ -387,7 +425,7 @@ export function chunkText(
       continue;
     }
 
-    if (packed && packed.length + trimmed.length + 2 > maxChars) {
+    if (packed && packed.length + trimmed.length + 2 > maxChars && packed.length >= MIN_FLUSH_CHARS) {
       flushPacked();
     }
     if (!packed) packedTitle = runningTitle;
@@ -402,7 +440,7 @@ export function chunkText(
  * Read chunk settings from admin_settings table.
  * Falls back to module-level defaults if not found.
  */
-async function getAdminChunkSettings(): Promise<{ chunkSize: number; chunkOverlap: number }> {
+export async function getAdminChunkSettings(): Promise<{ chunkSize: number; chunkOverlap: number }> {
   const result = await query<{ setting_key: string; setting_value: string }>(
     `SELECT setting_key, setting_value FROM admin_settings
      WHERE setting_key IN ('embedding_chunk_size', 'embedding_chunk_overlap')`,
@@ -446,14 +484,20 @@ export async function embedPage(
   // Markdown-shaped, structure-preserving (#1265): this is what makes
   // chunkText's heading/paragraph splitting live code — htmlToText's
   // whitespace collapse made every page <= CHUNK_HARD_LIMIT a single chunk.
-  let plainText = htmlToEmbeddingText(bodyHtml);
-  if (plainText.length < MIN_EMBEDDABLE_TEXT_CHARS) {
-    // Markdown can come out SHORTER than the text form — macro placeholders
-    // shrink ("[Children pages]" vs the longer rendered text) — and the
-    // coverage probe counts pages by char_length(body_text). Settling a page
-    // the probe still counts would hold coverage below 1.0 forever (#1265
-    // review M1), so fall back to the text form before settling: a page the
-    // probe counts either embeds or is genuinely empty in both shapes.
+  let plainText = htmlToEmbeddingText(bodyHtml, { pageId, pageTitle });
+  // The embeddability floor is measured on the FLATTENED text, not the raw
+  // Markdown: a bare `![diagram.png](/api/attachments/…)` clears 20 chars on
+  // syntax alone, and image-only pages settled (never embedded) before
+  // #1265 — a URL-only chunk is retrieval noise, not signal. Flattening
+  // keeps alt text, so an image whose alt genuinely describes it still
+  // embeds.
+  if (markdownToSnippetText(plainText).length < MIN_EMBEDDABLE_TEXT_CHARS) {
+    // Markdown can also come out SHORTER than the text form — macro
+    // placeholders shrink ("[Children pages]" vs the longer rendered text) —
+    // and the coverage probe counts pages by char_length(body_text). Settling
+    // a page the probe still counts would hold coverage below 1.0 forever
+    // (#1265 review M1), so fall back to the text form before settling: a
+    // page the probe counts either embeds or is genuinely empty both ways.
     plainText = htmlToText(bodyHtml);
   }
   if (!plainText || plainText.length < MIN_EMBEDDABLE_TEXT_CHARS) {

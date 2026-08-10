@@ -3093,14 +3093,48 @@ export function htmlToText(html: string): string {
  * page that defeats the converter must still embed as a flat blob (the
  * pre-#1265 behaviour) rather than not at all.
  */
-export function htmlToEmbeddingText(html: string): string {
+export function htmlToEmbeddingText(
+  html: string,
+  logContext: Record<string, unknown> = {},
+): string {
   try {
-    const md = htmlToMarkdown(html).trim();
+    const md = htmlToMarkdown(flattenTableCellsForEmbedding(html)).trim();
     return md.replace(/\(\s*data:[^)\s]{40,}/g, '(data:uri-omitted');
   } catch (err) {
-    logger.warn({ err }, 'htmlToMarkdown failed for embedding input — falling back to plain text');
+    // logContext exists so this warn can carry the pageId — the fallback
+    // silently flips a page to a different text shape, and a context-free
+    // warning left no way to enumerate affected pages once logs rotate.
+    logger.warn(
+      { err, ...logContext },
+      'htmlToMarkdown failed for embedding input — falling back to plain text',
+    );
     return htmlToText(html);
   }
+}
+
+/**
+ * Collapse each table cell's block content to plain inline text before the
+ * Markdown conversion (#1265 verification, finding 2). Confluence wraps cell
+ * content in `<p>`, and turndown-gfm emits those paragraph breaks as blank
+ * lines INSIDE the pipe row — which the fence-aware paragraph splitter then
+ * reads as boundaries, tearing large tables mid-cell and stranding the
+ * header row. With single-line cells every row is one line, the whole table
+ * is one paragraph block, and the header travels with its rows. Inline marks
+ * inside cells are flattened to text — cells are data; their emphasis is not
+ * retrieval signal.
+ */
+function flattenTableCellsForEmbedding(html: string): string {
+  if (!/<t[dh][\s>]/i.test(html)) return html;
+  const dom = new JSDOM(`<body>${html}</body>`, { contentType: 'text/html' });
+  const doc = dom.window.document;
+  for (const cell of Array.from(doc.querySelectorAll('td, th'))) {
+    // Skip cells that contain a nested table — the gfm plugin bails on those
+    // and keeps raw HTML; flattening would silently delete the inner table.
+    if (cell.querySelector('table')) continue;
+    const text = (cell.textContent ?? '').replace(/\s+/g, ' ').trim();
+    cell.textContent = text;
+  }
+  return doc.body.innerHTML;
 }
 
 /**
@@ -3115,12 +3149,28 @@ export function htmlToEmbeddingText(html: string): string {
  * which keeps the full Markdown deliberately.
  */
 export function markdownToSnippetText(md: string): string {
-  return md
-    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
-    .replace(/^\s{0,3}(?:`{3,}|~{3,}).*$/gm, '')
-    .replace(/^#{1,6}\s+/gm, '')
-    .replace(/\\([*_[\]#|`~])/g, '$1')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return (
+    md
+      .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+      .replace(/^\s{0,3}(?:`{3,}|~{3,}).*$/gm, '')
+      .replace(/^#{1,6}\s+/gm, '')
+      // Blockquote markers (panels render as "> **INFO:** …") and thematic
+      // breaks are chrome, not prose.
+      .replace(/^\s{0,3}>\s?/gm, '')
+      .replace(/^\s{0,3}((\*\s*){3,}|-{3,}|_{3,})\s*$/gm, '')
+      // Emphasis pairs: turndown escapes LITERAL asterisks/underscores, so an
+      // unescaped pair here is real formatting — safe to strip. The guards
+      // keep this from eating identifiers on PLAIN-text inputs (keyword rows
+      // pass through here too): no opener straight after a word character or
+      // backslash (`snake_case_name` never opens), no closer straight before
+      // one.
+      .replace(/(?<![\\\w])(\*\*|__)(.+?)(?<!\\)\1(?!\w)/g, '$2')
+      .replace(/(?<![\\\w])([*_])([^*_\n]+?)(?<!\\)\1(?!\w)/g, '$2')
+      // turndown backslash-escapes far more than the bracket set — the
+      // numbered-heading case ("1\. Introduction") is ubiquitous.
+      .replace(/\\([*_[\]#|`~.>+()!-])/g, '$1')
+      .replace(/\s+/g, ' ')
+      .trim()
+  );
 }
