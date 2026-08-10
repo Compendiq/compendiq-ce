@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Settings, ArrowLeft, Trash2 } from 'lucide-react';
 import {
@@ -25,9 +25,25 @@ export function SpaceSettingsPage() {
   const [icon, setIcon] = useState<string | undefined>(undefined);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
-  // Populate form from space data
+  // Populate the form from space data ONCE per space key. `space` is a
+  // `find()` over the list query, so any refetch whose payload is not
+  // deep-equal (a pageCount bump, another user's edit) hands this component a
+  // fresh reference — and the app query client refetches mid-edit (staleTime
+  // 30s + refetchOnWindowFocus). Seeding keyed on the reference silently
+  // snapped the form back to server state over unsaved edits. The ref also
+  // carries the server state the submit's ''-vs-omit decision needs, advanced
+  // on every successful save — never read from the live query row, which a
+  // racing post-save refetch leaves stale.
+  const savedRef = useRef<{ key: string; description: string | null; icon: string | null } | null>(
+    null,
+  );
   useEffect(() => {
-    if (space) {
+    if (space && savedRef.current?.key !== space.key) {
+      savedRef.current = {
+        key: space.key,
+        description: space.description ?? null,
+        icon: space.icon || null,
+      };
       setName(space.name);
       setDescription(space.description ?? '');
       setIcon(space.icon || undefined);
@@ -39,7 +55,11 @@ export function SpaceSettingsPage() {
       e.preventDefault();
       if (!key || !name.trim()) return;
 
+      // The last state this form saved (or was seeded from) — NOT the live
+      // query row, which is stale between a save and its refetch landing.
+      const saved = savedRef.current;
       try {
+        const trimmedDescription = description.trim();
         await updateSpace.mutateAsync({
           key,
           // The update schema takes strings, not null: '' clears a previously
@@ -47,16 +67,26 @@ export function SpaceSettingsPage() {
           // is omitted entirely (JSON.stringify drops undefined) so a plain
           // rename does not write an empty string over NULL.
           name: name.trim(),
-          description: description.trim() || (space?.description ? '' : undefined),
-          icon: icon ?? (space?.icon ? '' : undefined),
+          description: trimmedDescription || (saved?.description ? '' : undefined),
+          icon: icon ?? (saved?.icon ? '' : undefined),
         });
+        // Advance the baseline so a second edit in the same session decides
+        // ''-vs-omit against this save. Only on success — a failed save
+        // changed nothing on the server.
+        if (saved) {
+          savedRef.current = {
+            key: saved.key,
+            description: trimmedDescription || null,
+            icon: icon ?? null,
+          };
+        }
         toast.success('Space updated');
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Failed to update space';
         toast.error(message);
       }
     },
-    [key, name, description, icon, space, updateSpace],
+    [key, name, description, icon, updateSpace],
   );
 
   const handleDelete = useCallback(async () => {

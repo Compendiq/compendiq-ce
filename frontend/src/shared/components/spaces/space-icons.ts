@@ -2,7 +2,7 @@ import {
   Book,
   Briefcase,
   Code,
-  Globe,
+  GraduationCap,
   HardDrive,
   Heart,
   Lightbulb,
@@ -26,11 +26,20 @@ export interface SpaceIconOption {
  * local-space identity resolves the stored value through this one map, so the
  * picker on /spaces/new, the sidebar space selector and Space Settings cannot
  * disagree about which picture a value names.
+ *
+ * Two glyphs are banned from the catalogue because the SAME sidebar control
+ * already spends them on chrome: HardDrive is the fallback for a local space
+ * that never chose an icon, and Globe marks every Confluence space and "All
+ * Spaces". A local space wearing either would be indistinguishable from the
+ * state the glyph names. 'globe' WAS catalogued until PR #1256's review;
+ * previously-saved rows fall back to HardDrive via the unrecognised-value
+ * path in getSpaceIcon below. GraduationCap backfills the slot (unused
+ * anywhere else in the app) so the picker keeps ten options.
  */
 export const SPACE_ICONS: readonly SpaceIconOption[] = [
   { value: 'book', label: 'Book', Icon: Book },
   { value: 'code', label: 'Code', Icon: Code },
-  { value: 'globe', label: 'Globe', Icon: Globe },
+  { value: 'graduation-cap', label: 'Learning', Icon: GraduationCap },
   { value: 'shield', label: 'Shield', Icon: Shield },
   { value: 'zap', label: 'Zap', Icon: Zap },
   { value: 'rocket', label: 'Rocket', Icon: Rocket },

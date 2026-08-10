@@ -4,15 +4,15 @@ import sensible from '@fastify/sensible';
 import { ZodError } from 'zod';
 import { localSpacesRoutes } from './local-spaces.js';
 
-vi.mock('../../core/services/redis-cache.js', () => {
-  return {
-    RedisCache: class MockRedisCache {
-      get = vi.fn().mockResolvedValue(null);
-      set = vi.fn().mockResolvedValue(undefined);
-      invalidate = vi.fn().mockResolvedValue(undefined);
-    },
-  };
-});
+// The REAL RedisCache over a mocked redis client (same pattern as
+// routes/confluence/spaces.test.ts, #352): `invalidateAcrossUsers` walks SCAN
+// cursors and DELs the returned keys, and the cross-user invalidation tests
+// below assert that fan-out. Defaults return an empty SCAN page so the walk
+// terminates immediately for tests that don't care about the cache.
+const mockRedisGet = vi.fn().mockResolvedValue(null);
+const mockRedisSetEx = vi.fn().mockResolvedValue('OK');
+const mockRedisScan = vi.fn().mockResolvedValue({ cursor: '0', keys: [] });
+const mockRedisDel = vi.fn().mockResolvedValue(0);
 
 // #1166 asserts the PAGE_MOVED metadata, so the spy is addressable.
 const mockLogAuditEvent = vi.fn().mockResolvedValue(undefined);
@@ -95,7 +95,12 @@ describe('Local Spaces Routes', () => {
       request.username = 'testuser';
       request.userRole = 'admin';
     });
-    app.decorate('redis', {});
+    app.decorate('redis', {
+      get: mockRedisGet,
+      setEx: mockRedisSetEx,
+      scan: mockRedisScan,
+      del: mockRedisDel,
+    });
 
     await app.register(localSpacesRoutes, { prefix: '/api' });
     await app.ready();
@@ -110,6 +115,10 @@ describe('Local Spaces Routes', () => {
     // Default: page access allowed; no Confluence space assignments.
     mockUserCanAccessPage.mockResolvedValue(true);
     mockGetUserAccessibleSpaces.mockResolvedValue([]);
+    // Re-arm Redis SCAN/DEL so the walk terminates immediately for tests that
+    // don't care about cache invalidation; tests that DO care override this.
+    mockRedisScan.mockReset().mockResolvedValue({ cursor: '0', keys: [] });
+    mockRedisDel.mockReset().mockResolvedValue(0);
   });
 
   // ── GET /api/spaces/local ─────────────────────────────────────────────
@@ -318,6 +327,83 @@ describe('Local Spaces Routes', () => {
     });
 
     expect(response.statusCode).toBe(409);
+  });
+
+  // ── Cross-user cache invalidation (#352 pattern, PR #1256 review F-B) ──
+  //
+  // GET /spaces/local serves a GLOBALLY-scoped list (no per-user filter in
+  // its SQL) out of a per-user cache with a 15-minute TTL. A local space's
+  // name and icon are chrome every user's sidebar renders, so a mutation
+  // that only invalidates the acting user's cache leaves every other user
+  // on the stale row for up to the TTL. Each mutation must SCAN the shared
+  // `kb:*:spaces:*` namespace — NOT the per-user `kb:test-user-id:spaces:*`
+  // one — exactly as PUT /spaces/:key/home does (#352).
+
+  it('POST /spaces/local invalidates the spaces cache across ALL users, not just the creator', async () => {
+    mockQueryFn.mockResolvedValueOnce({ rows: [] }); // duplicate check
+    mockQueryFn.mockResolvedValueOnce({ rows: [] }); // INSERT
+    // Two other users hold a cached spaces list; both entries must go.
+    mockRedisScan.mockResolvedValueOnce({
+      cursor: '0',
+      keys: ['kb:alice:spaces:local-spaces:list', 'kb:bob:spaces:local-spaces:list'],
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/spaces/local',
+      payload: { key: 'MYSPACE', name: 'My Space', icon: 'rocket' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockRedisScan).toHaveBeenCalledWith('0', { MATCH: 'kb:*:spaces:*', COUNT: 100 });
+    expect(mockRedisDel).toHaveBeenCalledWith([
+      'kb:alice:spaces:local-spaces:list',
+      'kb:bob:spaces:local-spaces:list',
+    ]);
+  });
+
+  it('PUT /spaces/local/:key invalidates the spaces cache across ALL users, not just the editor', async () => {
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'local', created_by: 'test-user-id' }] });
+    mockQueryFn.mockResolvedValueOnce({ rows: [] }); // UPDATE
+    mockRedisScan.mockResolvedValueOnce({
+      cursor: '0',
+      keys: ['kb:alice:spaces:local-spaces:list', 'kb:bob:spaces:local-spaces:list'],
+    });
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/spaces/local/PROJ',
+      payload: { icon: 'rocket' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockRedisScan).toHaveBeenCalledWith('0', { MATCH: 'kb:*:spaces:*', COUNT: 100 });
+    expect(mockRedisDel).toHaveBeenCalledWith([
+      'kb:alice:spaces:local-spaces:list',
+      'kb:bob:spaces:local-spaces:list',
+    ]);
+  });
+
+  it('DELETE /spaces/local/:key invalidates the spaces cache across ALL users, not just the deleter', async () => {
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'local' }] });
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '0' }] });
+    mockQueryFn.mockResolvedValueOnce({ rows: [] }); // DELETE
+    mockRedisScan.mockResolvedValueOnce({
+      cursor: '0',
+      keys: ['kb:alice:spaces:local-spaces:list', 'kb:bob:spaces:local-spaces:list'],
+    });
+
+    const response = await app.inject({
+      method: 'DELETE',
+      url: '/api/spaces/local/PROJ',
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockRedisScan).toHaveBeenCalledWith('0', { MATCH: 'kb:*:spaces:*', COUNT: 100 });
+    expect(mockRedisDel).toHaveBeenCalledWith([
+      'kb:alice:spaces:local-spaces:list',
+      'kb:bob:spaces:local-spaces:list',
+    ]);
   });
 
   // ── GET /api/spaces/:key/tree ─────────────────────────────────────────

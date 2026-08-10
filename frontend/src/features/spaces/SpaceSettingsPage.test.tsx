@@ -44,15 +44,25 @@ function renderPage(spaceKey = 'NOTES') {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
-  return render(
+  // Fresh element objects per call: reusing one element reference lets React
+  // bail out of re-rendering the unchanged subtree entirely.
+  const makeUi = () => (
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[`/spaces/${spaceKey}/settings`]}>
         <Routes>
           <Route path="/spaces/:key/settings" element={<SpaceSettingsPage />} />
         </Routes>
       </MemoryRouter>
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
+  const view = render(makeUi());
+  return {
+    ...view,
+    /** Re-render the same tree — the mocked useLocalSpaces re-reads
+     * `mockLocalSpaces`, so reassigning it first simulates a refetch
+     * delivering fresh references. */
+    rerenderPage: () => view.rerender(makeUi()),
+  };
 }
 
 describe('SpaceSettingsPage', () => {
@@ -147,6 +157,72 @@ describe('SpaceSettingsPage', () => {
   it('shows not found message for unknown space', () => {
     renderPage('UNKNOWN');
     expect(screen.getByText('Space not found or is not a local space.')).toBeInTheDocument();
+  });
+
+  describe('form seeding vs background refetches (#1256 review F-A)', () => {
+    it('keeps unsaved edits when a refetch returns a fresh-reference row with the same key', () => {
+      mockLocalSpaces = [{ ...defaultLocalSpaces[0]!, icon: 'rocket' }];
+      const { rerenderPage } = renderPage();
+
+      // Hold unsaved edits in all three seeded fields.
+      fireEvent.change(screen.getByLabelText('Space Name'), { target: { value: 'Draft name' } });
+      fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'Draft description' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Rocket' })); // deselect the icon
+
+      // The list query refetches mid-edit (staleTime 30s + refetchOnWindowFocus)
+      // and the payload is not deep-equal — pageCount bumped server-side — so
+      // structural sharing hands the component a fresh-reference row. Seeding
+      // keyed on that reference silently snapped the form back to server state.
+      mockLocalSpaces = [{ ...defaultLocalSpaces[0]!, icon: 'rocket', pageCount: 6 }];
+      rerenderPage();
+
+      expect((screen.getByLabelText('Space Name') as HTMLInputElement).value).toBe('Draft name');
+      expect((screen.getByLabelText('Description') as HTMLTextAreaElement).value).toBe('Draft description');
+      expect(screen.getByRole('button', { name: 'Rocket' })).toHaveAttribute('aria-pressed', 'false');
+    });
+
+    it('still seeds the form when the space row first arrives (loading → data)', () => {
+      mockLocalSpaces = [];
+      const { rerenderPage } = renderPage();
+      expect(screen.getByText('Space not found or is not a local space.')).toBeInTheDocument();
+
+      mockLocalSpaces = [...defaultLocalSpaces];
+      rerenderPage();
+
+      expect((screen.getByLabelText('Space Name') as HTMLInputElement).value).toBe('My Notes');
+      expect((screen.getByLabelText('Description') as HTMLTextAreaElement).value).toBe('Personal notes');
+    });
+
+    it('clears an icon picked and deselected in the same session even while the query row is stale', async () => {
+      // The space starts with no icon. The user picks Rocket and saves; the
+      // post-save refetch has NOT landed yet, so the query row still says
+      // icon: null.
+      mockUpdateMutateAsync.mockResolvedValue({});
+      renderPage();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Rocket' }));
+      fireEvent.click(screen.getByText('Save Changes'));
+      await waitFor(() => {
+        expect(mockUpdateMutateAsync).toHaveBeenCalledWith(
+          expect.objectContaining({ icon: 'rocket' }),
+        );
+      });
+
+      // Second edit in the same session: deselect and save again. Deciding
+      // ''-vs-omit against the stale query row omits the field entirely, the
+      // server keeps 'rocket', and the save reports success while changing
+      // nothing. The form must decide against what IT last saved.
+      fireEvent.click(screen.getByRole('button', { name: 'Rocket' }));
+      fireEvent.click(screen.getByText('Save Changes'));
+      await waitFor(() => {
+        expect(mockUpdateMutateAsync).toHaveBeenLastCalledWith({
+          key: 'NOTES',
+          name: 'My Notes',
+          description: 'Personal notes',
+          icon: '',
+        });
+      });
+    });
   });
 
   describe('space icon', () => {
