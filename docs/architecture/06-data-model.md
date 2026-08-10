@@ -98,7 +98,7 @@ erDiagram
         uuid user_id FK
         int page_id FK
         int chunk_index
-        text chunk_text
+        text chunk_text "source text; NOT what is embedded"
         vector embedding "1024 dims (bge-m3)"
         jsonb metadata
     }
@@ -259,6 +259,23 @@ erDiagram
         timestamptz created_at
     }
 ```
+
+**`chunk_text` is the source text, not the embedded text (#1108).** What goes to
+the embedding model is `buildEmbeddingText(chunk_text, page_title, section_title)`
+— `"{title} — {section}\n\n{chunk}"` — so a page whose body never repeats its own
+title is still findable by it. The prefix is applied at embed time and
+deliberately not stored, because `chunk_text` has two other readers:
+`/api/search` returns `chunkText.slice(0, 300)` as the result snippet, and
+`buildRagContext` already prints its own `[Source N: "title" (Section: …)]`
+header above each block. Storing the prefix would restate the heading in both.
+
+Every document-side embed must build its text the same way — the live embed in
+`embedPage`, its shadow dual-write, and #1116's backfill, which rebuilds the
+prefix from the row's `metadata`. A divergence there would change the embedded
+text and the model in the same swap, with identical dimensions and row counts
+to show for it; `shadow-migration-service.integration.test.ts` pins the two
+paths to the same output.
+
 
 ## Notable conventions
 
