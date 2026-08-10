@@ -2,6 +2,11 @@ import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { QualityScoreBadge } from './QualityScoreBadge';
 
+/** How many of the meter's four segments are filled. */
+function filledSegments(badge: HTMLElement): number {
+  return badge.querySelectorAll('[data-filled="true"]').length;
+}
+
 describe('QualityScoreBadge', () => {
   // ---- Null / pending state ----
 
@@ -34,13 +39,16 @@ describe('QualityScoreBadge', () => {
 
   // ---- Failed state ----
 
-  it('renders "Analysis Failed" with soft-red tinted pill (AA-pass)', () => {
+  it('renders "Analysis Failed" in amber, from tokens rather than hex literals', () => {
     render(<QualityScoreBadge qualityScore={null} qualityStatus="failed" />);
     const badge = screen.getByTestId('badge-failed');
     expect(badge).toHaveTextContent('Analysis Failed');
-    expect(badge.className).toContain('bg-[#fae2e0]');
-    expect(badge.className).toContain('text-[#7a1e1a]');
-    expect(badge.className).not.toMatch(/amber|warning|yellow|primary/);
+    // Failure is the one quality state that IS attention-worthy, so it is the
+    // one that earns amber. Via --color-warning, so the palette tests can see
+    // it — the previous hex literals were invisible to them.
+    expect(badge.className).toContain('text-warning');
+    expect(badge.className).toContain('bg-warning/10');
+    expect(badge.className).not.toMatch(/#[0-9a-fA-F]{6}/);
     expect(badge).toHaveAttribute('data-status', 'failed');
   });
 
@@ -58,46 +66,88 @@ describe('QualityScoreBadge', () => {
 
   // ---- Skipped state ----
 
-  it('renders "Skipped" with neutral warm-gray tint (AA-pass)', () => {
+  it('renders "Skipped" neutral, from tokens rather than hex literals', () => {
     render(<QualityScoreBadge qualityScore={null} qualityStatus="skipped" />);
     const badge = screen.getByTestId('badge-skipped');
     expect(badge).toHaveTextContent('Skipped');
-    expect(badge.className).toContain('bg-[#efeeea]');
-    expect(badge.className).toContain('text-[#5f5c54]');
+    expect(badge.className).toContain('text-muted-foreground');
     expect(badge.className).not.toMatch(/amber|warning|yellow|primary/);
+    expect(badge.className).not.toMatch(/#[0-9a-fA-F]{6}/);
     expect(badge).toHaveAttribute('data-status', 'skipped');
   });
 
   // ---- Score-based states ----
 
-  it('renders "Excellent" with green styling for score 90-100', () => {
+  it('renders "Excellent" for score 90-100, neutral with a full meter', () => {
     render(<QualityScoreBadge qualityScore={95} qualityStatus="analyzed" />);
     const badge = screen.getByTestId('quality-score-badge');
     expect(badge).toHaveTextContent('95 Excellent');
-    expect(badge.className).toContain('text-status-connected');
-    expect(badge.className).toContain('bg-status-connected/20');
+    expect(badge.className).toContain('text-foreground');
     expect(badge).toHaveAttribute('data-score', '95');
+    expect(filledSegments(badge)).toBe(4);
   });
 
-  it('renders "Good" with blue styling for score 70-89', () => {
+  it('renders "Good" for score 70-89 with three of four segments', () => {
     render(<QualityScoreBadge qualityScore={78} qualityStatus="analyzed" />);
     const badge = screen.getByTestId('quality-score-badge');
     expect(badge).toHaveTextContent('78 Good');
-    expect(badge.className).toContain('text-status-embedding');
+    expect(filledSegments(badge)).toBe(3);
   });
 
-  it('renders "Needs Work" with yellow styling for score 50-69', () => {
+  it('renders "Needs Work" for score 50-69 with two of four segments', () => {
     render(<QualityScoreBadge qualityScore={55} qualityStatus="analyzed" />);
     const badge = screen.getByTestId('quality-score-badge');
     expect(badge).toHaveTextContent('55 Needs Work');
-    expect(badge.className).toContain('text-status-syncing');
+    expect(filledSegments(badge)).toBe(2);
   });
 
-  it('renders "Poor" with red styling for score 0-49', () => {
+  it('renders "Poor" for score 0-49 with one of four segments', () => {
     render(<QualityScoreBadge qualityScore={30} qualityStatus="analyzed" />);
     const badge = screen.getByTestId('quality-score-badge');
     expect(badge).toHaveTextContent('30 Poor');
-    expect(badge.className).toContain('text-status-disconnected');
+    expect(filledSegments(badge)).toBe(1);
+  });
+
+  // ---- The score is neutral; only the pipeline STATES wear status colours ----
+
+  it.each([
+    [95, 'Excellent'],
+    [78, 'Good'],
+    [55, 'Needs Work'],
+    [30, 'Poor'],
+  ])('score %i (%s) reaches for no status colour and no hex literal', (score) => {
+    render(<QualityScoreBadge qualityScore={score} qualityStatus="analyzed" />);
+    const badge = screen.getByTestId('quality-score-badge');
+    // Quality is a measurement, not a pipeline state. Painting it in the status
+    // palette put a page scoring 65 in the same amber as a space mid-sync, and
+    // one scoring 74 in the same teal as "embedding", on the densest scanning
+    // surface in the app. If this fails, that regression is back.
+    expect(badge.className).not.toMatch(
+      /status-(connected|syncing|embedding|disconnected)/,
+    );
+    expect(badge.className).not.toMatch(/\b(bg|text|border)-(primary|warning|success|destructive)\b/);
+    expect(badge.className).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
+  });
+
+  it('keeps the number and the word, so the meter is never the only channel', () => {
+    // WCAG 1.4.1: the meter is aria-hidden and purely a scanning aid.
+    render(<QualityScoreBadge qualityScore={74} qualityStatus="analyzed" />);
+    const badge = screen.getByTestId('quality-score-badge');
+    expect(badge).toHaveTextContent('74 Good');
+    expect(screen.getByTestId('quality-meter')).toHaveAttribute('aria-hidden', 'true');
+  });
+
+  it('renders no meter for the non-score states', () => {
+    const { rerender } = render(
+      <QualityScoreBadge qualityScore={null} qualityStatus="analyzing" />,
+    );
+    expect(screen.queryByTestId('quality-meter')).toBeNull();
+    rerender(<QualityScoreBadge qualityScore={null} qualityStatus="failed" />);
+    expect(screen.queryByTestId('quality-meter')).toBeNull();
+    rerender(<QualityScoreBadge qualityScore={null} qualityStatus="skipped" />);
+    expect(screen.queryByTestId('quality-meter')).toBeNull();
+    rerender(<QualityScoreBadge qualityScore={null} qualityStatus="pending" />);
+    expect(screen.queryByTestId('quality-meter')).toBeNull();
   });
 
   it('renders score 90 as "Excellent" (boundary)', () => {

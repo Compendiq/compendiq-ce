@@ -211,9 +211,15 @@ export function ArticleSummary({
   // Summarized state: show the full banner
   if (summaryStatus !== 'summarized' || !summaryHtml) return null;
 
+  // Violet, not teal, for every part of this block. ADR-010 reserves violet for
+  // AI and teal for brand + interaction; this block used to switch families
+  // between states — status-ai while pending, primary once delivered — so the
+  // same Sparkles glyph read violet in the Assistant tab and teal here, one
+  // click apart on the same route. Teal additionally implied the card was a
+  // control.
   return (
     <div
-      className="mb-6 rounded-lg border border-primary/20 bg-primary/5"
+      className="mb-6 rounded-lg border border-status-ai/20 bg-status-ai/5"
       data-testid="article-summary"
     >
       <div
@@ -230,7 +236,8 @@ export function ArticleSummary({
             of the width. Nothing wraps now; the model name is the one part that
             drops below `sm`, because it is the one nobody reads on a phone. */}
         <div className="flex min-w-0 items-center gap-2">
-          <Sparkles size={16} className="shrink-0 text-primary" />
+          {/* status-ai, not primary: violet marks AI in every state (#1250). */}
+          <Sparkles size={16} className="shrink-0 text-status-ai" />
           <span className="shrink-0 whitespace-nowrap text-sm font-medium text-foreground">
             AI Summary
           </span>
@@ -284,7 +291,7 @@ export function ArticleSummary({
 
       {!collapsed && (
         <SanitizedHtml
-          className="border-t border-primary/10 px-4 pb-4 pt-2 text-sm text-foreground/90 prose prose-sm max-w-none dark:prose-invert"
+          className="border-t border-status-ai/10 px-4 pb-4 pt-2 text-sm text-foreground/90 prose prose-sm max-w-none dark:prose-invert"
           data-testid="article-summary-content"
           html={summaryHtml}
         />

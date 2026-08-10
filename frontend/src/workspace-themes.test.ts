@@ -604,3 +604,65 @@ describe('Retired palettes leave no residue', () => {
     expect(css).not.toMatch(/Space Grotesk/);
   });
 });
+
+describe('Colour carries meaning, and only its own', () => {
+  const badgePath = resolve(__dirname, 'shared/components/badges/QualityScoreBadge.tsx');
+  const badgeSource = readFileSync(badgePath, 'utf-8');
+
+  // Quality is a measurement, not a pipeline state. It used to be painted with
+  // the status palette — ≥70 in `status-embedding` (teal) and ≥50 in
+  // `status-syncing` (amber) — so on the Pages list a page scoring 65 wore the
+  // same amber as a space mid-sync, and one scoring 74 the same teal as
+  // "embedding". Those are the two most tightly reserved hues in the system
+  // (amber = warning only, teal = brand AND interaction), on the densest
+  // scanning surface in the app.
+  //
+  // This guard lives beside the palette rather than only in the component's own
+  // test because it is a statement about what the palette MEANS, and the next
+  // person to reach for a ready-made status colour will be reading these tokens.
+  it('the quality score does not wear the pipeline status palette', () => {
+    const scoreBands = /score >= (?:90|70|50)[\s\S]{0,400}?status-(connected|syncing|embedding|disconnected)/;
+    expect(
+      badgeSource,
+      'quality score bands must not resolve status-* colours; the score is neutral and carries its band in the meter',
+    ).not.toMatch(scoreBands);
+  });
+
+  it('the quality badge carries no hardcoded hex literals', () => {
+    // Two literals (#fae2e0/#7a1e1a and #efeeea/#5f5c54) used to live here — a
+    // warm beige that existed nowhere else in a palette declared neutral, and
+    // which every test in this file was structurally blind to.
+    const hexes = badgeSource.match(/#[0-9a-fA-F]{6}\b/g) ?? [];
+    expect(hexes, `move these onto tokens so this file can see them: ${hexes.join(', ')}`).toEqual([]);
+  });
+
+  // Amber is reserved for warning and attention. Failure is the one quality
+  // state that qualifies, so it is the one that may keep it.
+  it('amber survives on the failed state only', () => {
+    expect(badgeSource).toMatch(/status === 'failed'[\s\S]{0,300}?warning/);
+  });
+
+  it('inline code resolves its own token in BOTH themes', () => {
+    // Paper used to hardcode `color: oklch(0.45 0.15 25)` — a red — over its own
+    // --inline-code-color (#7041a8), so the token was dead and the two themes
+    // rendered different hues rather than one hue at two lightnesses.
+    expect(token(darkBlock, '--inline-code-color')).toBeTruthy();
+    expect(token(lightBlock, '--inline-code-color')).toBeTruthy();
+
+    const lightInlineCode = /\[data-theme-type="light"\][^{]*\.prose[^{]*code\)[^{]*\{([^}]*)\}/.exec(css);
+    expect(lightInlineCode, 'light-theme inline-code rule not found').not.toBeNull();
+    expect(
+      lightInlineCode![1],
+      'the light theme must resolve --inline-code-color, not override it with a literal',
+    ).not.toMatch(/(^|[\s;])color:/);
+  });
+
+  it('text selection is styled from the accent, in both themes', () => {
+    // With no ::selection rule the editor's highest-frequency interaction
+    // rendered at the UA default blue, in a palette declared neutral-plus-teal.
+    const selection = /::selection\s*\{([^}]*)\}/.exec(css);
+    expect(selection, 'no ::selection rule found').not.toBeNull();
+    expect(selection![1]).toMatch(/var\(--color-primary\)/);
+    expect(selection![1], 'selection must not hardcode a colour').not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
+  });
+});
