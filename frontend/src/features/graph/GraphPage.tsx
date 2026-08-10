@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { m } from 'framer-motion';
 import ForceGraph2D from 'react-force-graph-2d';
 import { toast } from 'sonner';
-import { ZoomIn, ZoomOut, Maximize, RefreshCw, Info, Layers, Grid3x3, Filter, Search, X, Settings, Loader2 } from 'lucide-react';
+import { ZoomIn, ZoomOut, Maximize, RefreshCw, Info, Layers, Grid3x3, Filter, Search, X, Settings, Loader2, AlertTriangle } from 'lucide-react';
 import { cn } from '../../shared/lib/cn';
 import { useSearch } from '../../shared/hooks/use-standalone';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
@@ -197,22 +197,43 @@ export function GraphPage() {
   // graph is large") even on a six-page corpus — and even when the true
   // blocker was configuration (nothing embedded yet), a state the user only
   // discovered after clicking "Show full graph anyway". Probe the real state
-  // first: /embeddings/status is a cheap, RBAC-scoped counts endpoint
-  // (shared query cache with the AI surfaces), so its totalPages is exactly
-  // the population the global graph would render as nodes.
+  // first: /embeddings/status is a cheap counts endpoint (shared query cache
+  // with the AI surfaces). Its totalPages is a close PROXY for the graph's
+  // node population, not an exact count — status counts every page visible
+  // to the caller (accessible Confluence spaces plus shared standalone plus
+  // the caller's own private standalone pages) while the graph route filters
+  // on accessible space keys only, and a ?space= filter narrows the graph
+  // but never this probe. Both drifts are small, and the only cost of error
+  // is showing or skipping a gate, which is all this coarse size check
+  // decides.
   const landingGate = !focusPageId && !showFullGraph;
-  const { data: embeddingStatus, isError: statusProbeFailed } = useEmbeddingStatus(landingGate);
+  const {
+    data: embeddingStatus,
+    isError: statusProbeFailed,
+    failureCount: statusFailureCount,
+  } = useEmbeddingStatus(landingGate);
   const zeroEmbedded = isZeroEmbeddings(embeddingStatus);
   // Small corpora skip the size gate entirely — see SMALL_GRAPH_NODE_LIMIT.
-  // A fresh instance (totalPages === 0) counts as small so it reaches the
+  // Deliberately regardless of embedding state: at this size the fetch is
+  // cheap, three of the four edge types (labels, links, parent/child) exist
+  // without embeddings, and if nothing renders the route's own empty states
+  // explain why with real, graph-scoped meta. A fresh instance
+  // (totalPages === 0) counts as small for the same reason — it reaches the
   // real "no accessible pages" empty state instead of a picker over nothing.
   const corpusIsSmall =
-    !!embeddingStatus && !zeroEmbedded && embeddingStatus.totalPages <= SMALL_GRAPH_NODE_LIMIT;
+    !!embeddingStatus && embeddingStatus.totalPages <= SMALL_GRAPH_NODE_LIMIT;
+  // The skip-gate decision latches one-way: the status query re-polls every
+  // 3s while an embedding pass is processing, and a corpus crossing the
+  // limit mid-sync must not swap a rendered graph back to the picker under
+  // the user. Leaving and returning to /graph re-decides.
+  const smallCorpusLatchRef = useRef(false);
+  if (corpusIsSmall) smallCorpusLatchRef.current = true;
+  const skipSizeGate = smallCorpusLatchRef.current;
 
   // #360: only fetch the global graph when the user opted into the hairball
   // view — or when the corpus is small enough that the gate would be pure
   // friction (otherwise we render an article picker instead).
-  const wantsGlobal = !focusPageId && (showFullGraph || corpusIsSmall);
+  const wantsGlobal = !focusPageId && (showFullGraph || skipSizeGate);
   const globalQuery = useGraphData(viewMode, filterSpaces, wantsGlobal);
   const localQuery = useLocalGraphData(focusPageId, filters);
   const activeQuery = focusPageId ? localQuery : (wantsGlobal ? globalQuery : null);
@@ -422,16 +443,25 @@ export function GraphPage() {
   const tooltipTop = Math.min(tooltipPos.y - 8, (typeof window !== 'undefined' ? window.innerHeight : 800) - tooltipMaxH - 16);
   const tooltipLeft = Math.min(tooltipPos.x + 12, (typeof window !== 'undefined' ? window.innerWidth : 1200) - 280);
 
-  // Loading state — also shown while the landing probe below is in flight,
-  // so the picker cannot flash up for a corpus the probe is about to reveal
-  // as small or unembedded.
-  const probingLanding = landingGate && !corpusIsSmall && !embeddingStatus && !statusProbeFailed;
+  // Hold the loading card while the landing probe's FIRST attempt is in
+  // flight — tens of milliseconds against a healthy backend — so the picker
+  // cannot flash up for a corpus the probe is about to reveal as small.
+  // First attempt only: once one attempt has failed (failureCount > 0) the
+  // picker renders immediately instead of stalling behind the query client's
+  // retry backoff. If a later retry still resolves small, the picker
+  // upgrades to the graph — content arriving late beats a spinner that may
+  // never end. The probe card names what is actually happening rather than
+  // promising a graph the verdict may decline to load.
+  const probingLanding =
+    landingGate && !skipSizeGate && !embeddingStatus && !statusProbeFailed && statusFailureCount === 0;
   if (isLoading || probingLanding) {
     return (
       <div className="flex h-full items-center justify-center">
         <div className="nm-card flex flex-col items-center gap-4 p-8">
           <RefreshCw className="h-8 w-8 animate-spin text-action" />
-          <p className="text-muted-foreground">Loading knowledge graph...</p>
+          <p className="text-muted-foreground">
+            {isLoading ? 'Loading knowledge graph...' : 'Checking your knowledge base…'}
+          </p>
         </div>
       </div>
     );
@@ -440,28 +470,20 @@ export function GraphPage() {
   // #360, reordered: when no article is focused and the user hasn't opted
   // into the global view, branch on the probed state rather than assuming
   // scale:
-  //   - pages exist but none embedded → the not-embedded empty state up
-  //     front (it used to hide behind "Show full graph anyway", so the gate
-  //     blamed scale when the real blocker was configuration);
   //   - small corpus → no gate at all, fall through to the graph
   //     (wantsGlobal above already started the fetch);
+  //   - pages exist but none embedded → the pick-a-page gate stays fully
+  //     operable (search, local graphs and the full-graph escape hatch all
+  //     work without embeddings — label, link and parent/child edges need
+  //     none) with a notice above it naming the configuration gap, so the
+  //     screen stops blaming scale for a setup problem;
   //   - large corpus, or the probe failed → the pick-a-page gate, unchanged.
-  if (landingGate && !corpusIsSmall) {
-    if (embeddingStatus && zeroEmbedded) {
-      // Synthesized from /embeddings/status — the same RBAC-scoped page
-      // counts GraphMeta carries. Relationships were never measured on this
-      // path, so none are claimed.
-      return (
-        <GraphEmptyState
-          meta={{
-            pagesTotal: embeddingStatus.totalPages,
-            pagesEmbedded: embeddingStatus.embeddedPages,
-          }}
-        />
-      );
-    }
+  if (landingGate && !skipSizeGate) {
     return (
       <ArticlePickerLanding
+        unembeddedWorkspacePages={
+          embeddingStatus && zeroEmbedded ? embeddingStatus.totalPages : undefined
+        }
         onPick={(pageId) => {
           const next = new URLSearchParams(searchParams);
           next.set('focus', pageId);
@@ -717,6 +739,17 @@ export function GraphPage() {
 interface ArticlePickerLandingProps {
   onPick: (pageId: string) => void;
   onShowFullGraph: () => void;
+  /**
+   * When set, no page visible to the caller has an embedding yet and this is
+   * the status endpoint's visible-page count — a WORKSPACE total, not a graph
+   * node count (the two predicates differ around standalone pages). Renders a
+   * notice above the picker naming the configuration gap. The picker stays
+   * fully operable underneath it: label, link and parent/child edges exist
+   * without embeddings, so local graphs and the full-graph escape hatch may
+   * still have content to show — replacing the picker with a dead-end empty
+   * state here would hide a renderable graph.
+   */
+  unembeddedWorkspacePages?: number;
 }
 
 /**
@@ -729,7 +762,7 @@ interface ArticlePickerLandingProps {
  * "Show full graph anyway" stays available as an opt-in escape hatch with a
  * warning so power users on small corpora aren't blocked.
  */
-function ArticlePickerLanding({ onPick, onShowFullGraph }: ArticlePickerLandingProps) {
+function ArticlePickerLanding({ onPick, onShowFullGraph, unembeddedWorkspacePages }: ArticlePickerLandingProps) {
   const [q, setQ] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
   const { data, isLoading } = useSearch({ q: q.trim(), page: 1 });
@@ -743,6 +776,25 @@ function ArticlePickerLanding({ onPick, onShowFullGraph }: ArticlePickerLandingP
   return (
     <div className="flex h-full items-center justify-center p-6">
       <div className="nm-card w-full max-w-xl p-6" data-testid="graph-picker-landing">
+        {/* Same treatment as the /ai zero-embeddings notice: amber is the
+            reserved attention colour, and a missing embedding provider is the
+            one genuinely attention-worthy state on this screen. Fresh copy on
+            purpose — the Settings wayfinding strings live in GraphEmptyState
+            and are owned elsewhere. */}
+        {unembeddedWorkspacePages !== undefined && (
+          <div
+            data-testid="graph-not-embedded-notice"
+            className="mb-4 flex items-start gap-3 rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm text-warning"
+          >
+            <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+            <span>
+              Pages not embedded yet — none of the {unembeddedWorkspacePages}{' '}
+              pages you can access have embeddings, so similarity connections
+              are missing from the graph. Label, link and parent/child
+              connections can still appear.
+            </span>
+          </div>
+        )}
         <h2 className="mb-1 text-lg font-semibold">Pick a page to explore</h2>
         <p className="mb-4 text-sm text-muted-foreground">
           The knowledge graph is large — start from one page and expand from
@@ -816,18 +868,8 @@ function ArticlePickerLanding({ onPick, onShowFullGraph }: ArticlePickerLandingP
 
 // ---------- Empty-state branches (#358) ----------
 
-/**
- * The subset of GraphMeta the empty state consumes. `relationshipsTotal` is
- * optional because the landing gate synthesizes this object straight from
- * /embeddings/status (the same RBAC-scoped page counts) without fetching the
- * graph — the page counts there are real, relationships were never measured,
- * and the footer only claims them when a caller actually has them.
- */
-type EmptyStateMeta = Pick<GraphMeta, 'pagesTotal' | 'pagesEmbedded'> &
-  Partial<Pick<GraphMeta, 'relationshipsTotal'>>;
-
 interface GraphEmptyStateProps {
-  meta: EmptyStateMeta | undefined;
+  meta: GraphMeta | undefined;
 }
 
 /**
@@ -882,8 +924,7 @@ function GraphEmptyState({ meta }: GraphEmptyStateProps) {
         <p className="text-sm text-muted-foreground">{body}</p>
         {meta && (
           <p className="text-xs text-muted-foreground/70">
-            {meta.pagesTotal} pages · {meta.pagesEmbedded} embedded
-            {meta.relationshipsTotal !== undefined && ` · ${meta.relationshipsTotal} relationships`}
+            {meta.pagesTotal} pages · {meta.pagesEmbedded} embedded · {meta.relationshipsTotal} relationships
           </p>
         )}
         {isAdmin && meta && meta.pagesEmbedded > 0 && meta.relationshipsTotal === 0 && (

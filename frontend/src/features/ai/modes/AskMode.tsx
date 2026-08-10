@@ -307,10 +307,17 @@ export function AskExamplePrompts() {
               }
             }}
             className={cn(
-              'group flex w-full items-start gap-2.5 rounded-lg border border-border bg-foreground/[0.03] px-3 py-2.5 text-left text-sm text-foreground/85 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              'group flex w-full items-start gap-2.5 rounded-lg border border-border px-3 py-2.5 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
               notEmbedded
-                ? 'cursor-not-allowed opacity-50'
-                : 'hover:border-primary/40 hover:bg-foreground/[0.06] hover:text-foreground focus-visible:border-primary/60',
+                // Explicit muted token, NOT opacity: compositing half-alpha
+                // over the card surface lands differently per theme (measured
+                // 3.64:1 Graphite vs 2.66:1 Paper for opacity-50), while
+                // text-muted-foreground is tuned per palette so both themes
+                // read the same register (6.9:1 / 5.8:1 on the card). The
+                // dropped background tint and hover treatments carry the rest
+                // of the inert reading.
+                ? 'cursor-not-allowed text-muted-foreground'
+                : 'bg-foreground/[0.03] text-foreground/85 hover:border-primary/40 hover:bg-foreground/[0.06] hover:text-foreground focus-visible:border-primary/60',
             )}
             data-testid="ask-example-prompt"
           >

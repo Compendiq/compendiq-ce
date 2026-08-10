@@ -1556,7 +1556,13 @@ describe('AiAssistantPage', () => {
         // keyboard/SR user can land on one and hear why it is inert.
         expect(chip).toHaveAttribute('aria-disabled', 'true');
         expect(chip).toHaveAttribute('aria-describedby', 'ai-no-embeddings-notice');
-        expect(chip.className).toContain('opacity-50');
+        // Muting must be an explicit per-theme token, never opacity: alpha
+        // compositing lands differently per theme (2.66:1 on Paper vs 3.64:1
+        // on Graphite for opacity-50), so the two themes stop reading the
+        // same.
+        expect(chip.className).toContain('cursor-not-allowed');
+        expect(chip.className).toContain('text-muted-foreground');
+        expect(chip.className).not.toContain('opacity-');
       }
 
       // The describedby id must resolve to the visible banner, so the linkage
@@ -1583,7 +1589,8 @@ describe('AiAssistantPage', () => {
       for (const chip of chips) {
         expect(chip).not.toHaveAttribute('aria-disabled');
         expect(chip).not.toHaveAttribute('aria-describedby');
-        expect(chip.className).not.toContain('opacity-50');
+        expect(chip.className).not.toContain('cursor-not-allowed');
+        expect(chip.className).not.toContain('text-muted-foreground');
       }
 
       // Clicking an enabled chip fills the composer with its prompt.

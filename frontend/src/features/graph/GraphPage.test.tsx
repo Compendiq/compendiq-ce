@@ -626,6 +626,8 @@ describe('GraphPage', () => {
     expect(await screen.findByTestId('graph-picker-landing')).toBeInTheDocument();
     expect(screen.getByTestId('graph-picker-input')).toBeInTheDocument();
     expect(screen.getByTestId('graph-show-full-btn')).toBeInTheDocument();
+    // Embeddings exist, so no not-embedded notice sits above the picker.
+    expect(screen.queryByTestId('graph-not-embedded-notice')).not.toBeInTheDocument();
 
     // Critically: no global /pages/graph fetch should have fired in default mode.
     const calls = fetchSpy.mock.calls.map((c) => String(c[0]));
@@ -654,38 +656,44 @@ describe('GraphPage', () => {
   // ?full got "Pick a page to explore — the knowledge graph is large", even at
   // 6 pages total, and even when the true blocker was that nothing was
   // embedded — a state that only surfaced after clicking through the escape
-  // hatch. The gate now probes /embeddings/status first.
+  // hatch. The gate now probes /embeddings/status first. The not-embedded
+  // verdict renders a notice ABOVE the picker, never a replacement for it:
+  // label, link and parent/child edges exist without embeddings (a
+  // dimension-change re-embed truncates page_embeddings but leaves
+  // page_relationships intact), so a dead-end empty state here would hide a
+  // renderable graph.
 
-  it('shows the not-embedded state up front when pages exist but none are embedded', async () => {
+  /** Two-node graph payload with no embeddings but a label edge — the
+   * "relationships survive a re-embed" shape the gate must not hide. */
+  const unembeddedNodes = [
+    { id: '1', confluenceId: 'page-1', spaceKey: 'DEV', title: 'Getting Started', labels: ['howto'], embeddingStatus: 'pending', embeddingCount: 0, lastModifiedAt: null, parentId: null },
+    { id: '2', confluenceId: 'page-2', spaceKey: 'DEV', title: 'Deployment Guide', labels: ['howto'], embeddingStatus: 'pending', embeddingCount: 0, lastModifiedAt: null, parentId: null },
+  ];
+
+  it('names configuration, not scale: a large unembedded corpus keeps the picker operable under a notice', async () => {
     const fetchSpy = mockFetchRoutes([
-      // The measured workspace: 6 pages, 0 embedded — the gate used to blame
-      // scale here while the real cause was configuration.
-      ['/embeddings/status', { totalPages: 6, embeddedPages: 0, dirtyPages: 6, totalEmbeddings: 0, isProcessing: false }],
-    ]);
-
-    render(<GraphPage />, { wrapper: createWrapper(['/graph']) });
-
-    expect(await screen.findByText(/Pages not embedded yet/)).toBeInTheDocument();
-    // The scale-blaming picker must not render over a configuration problem.
-    expect(screen.queryByTestId('graph-picker-landing')).not.toBeInTheDocument();
-    // Real page counts are shown; relationships were never measured on this
-    // path, so the footer must not claim a number for them.
-    expect(screen.getByText(/6 pages · 0 embedded/)).toBeInTheDocument();
-    expect(screen.queryByText(/relationships/)).not.toBeInTheDocument();
-    // And no graph payload was fetched to reach this verdict.
-    const calls = fetchSpy.mock.calls.map((c) => String(c[0]));
-    expect(calls.some((u) => u.includes('/pages/graph'))).toBe(false);
-  });
-
-  it('shows the not-embedded state for a large unembedded corpus too — config trumps scale', async () => {
-    mockFetchRoutes([
       ['/embeddings/status', { totalPages: 500, embeddedPages: 0, dirtyPages: 500, totalEmbeddings: 0, isProcessing: false }],
     ]);
 
     render(<GraphPage />, { wrapper: createWrapper(['/graph']) });
 
-    expect(await screen.findByText(/Pages not embedded yet/)).toBeInTheDocument();
-    expect(screen.queryByTestId('graph-picker-landing')).not.toBeInTheDocument();
+    // The notice names the real blocker, with its count labelled as a
+    // workspace total — status counts pages the graph's space filter may
+    // not, so it must never be presented as a graph node count.
+    const notice = await screen.findByTestId('graph-not-embedded-notice');
+    expect(notice.textContent).toMatch(/not embedded/i);
+    expect(notice.textContent).toContain('500');
+    expect(notice.textContent).toMatch(/pages you can access/);
+
+    // NOTHING becomes unreachable behind the notice: search, local graphs
+    // and the full-graph escape hatch all work without embeddings.
+    expect(screen.getByTestId('graph-picker-landing')).toBeInTheDocument();
+    expect(screen.getByTestId('graph-picker-input')).toBeInTheDocument();
+    expect(screen.getByTestId('graph-show-full-btn')).toBeInTheDocument();
+
+    // And no graph payload was fetched to reach the verdict.
+    const calls = fetchSpy.mock.calls.map((c) => String(c[0]));
+    expect(calls.some((u) => u.includes('/pages/graph'))).toBe(false);
   });
 
   it('renders the graph directly for a small embedded corpus — no pick-a-page gate', async () => {
@@ -697,6 +705,141 @@ describe('GraphPage', () => {
     render(<GraphPage />, { wrapper: createWrapper(['/graph']) });
 
     expect(await screen.findByTestId('mock-force-graph')).toBeInTheDocument();
+    expect(screen.queryByTestId('graph-picker-landing')).not.toBeInTheDocument();
+  });
+
+  it('a small unembedded corpus renders the graph route directly — label/link/parent edges need no embeddings', async () => {
+    mockFetchRoutes([
+      ['/embeddings/status', { totalPages: 2, embeddedPages: 0, dirtyPages: 2, totalEmbeddings: 0, isProcessing: false }],
+      ['/pages/graph', {
+        nodes: unembeddedNodes,
+        edges: [{ source: '1', target: '2', type: 'label_overlap', score: 1 }],
+        meta: { pagesTotal: 2, pagesEmbedded: 0, relationshipsTotal: 1, relationshipsByType: { label_overlap: 1 } },
+      }],
+    ]);
+
+    render(<GraphPage />, { wrapper: createWrapper(['/graph']) });
+
+    // Zero embeddings does NOT mean nothing to render.
+    expect(await screen.findByTestId('mock-force-graph')).toBeInTheDocument();
+    expect(screen.queryByTestId('graph-picker-landing')).not.toBeInTheDocument();
+  });
+
+  it('a small unembedded corpus with no relationships reaches the real not-embedded empty state', async () => {
+    mockFetchRoutes([
+      ['/embeddings/status', { totalPages: 2, embeddedPages: 0, dirtyPages: 2, totalEmbeddings: 0, isProcessing: false }],
+      ['/pages/graph', {
+        nodes: unembeddedNodes,
+        edges: [],
+        meta: { pagesTotal: 2, pagesEmbedded: 0, relationshipsTotal: 0, relationshipsByType: {} },
+      }],
+    ]);
+
+    render(<GraphPage />, { wrapper: createWrapper(['/graph']) });
+
+    // Graph-scoped meta, fetched for real — never synthesized from the probe.
+    expect(await screen.findByText(/Pages not embedded yet/)).toBeInTheDocument();
+    expect(screen.getByText(/2 pages · 0 embedded · 0 relationships/)).toBeInTheDocument();
+  });
+
+  it('renders the graph at exactly the 50-page limit — the boundary is inclusive', async () => {
+    mockFetchRoutes([
+      ['/embeddings/status', { totalPages: 50, embeddedPages: 50, dirtyPages: 0, totalEmbeddings: 100, isProcessing: false }],
+      ['/pages/graph', mockGraphData],
+    ]);
+
+    render(<GraphPage />, { wrapper: createWrapper(['/graph']) });
+
+    expect(await screen.findByTestId('mock-force-graph')).toBeInTheDocument();
+    expect(screen.queryByTestId('graph-picker-landing')).not.toBeInTheDocument();
+  });
+
+  it('keeps the gate at 51 pages — one past the limit', async () => {
+    const fetchSpy = mockFetchRoutes([
+      ['/embeddings/status', { totalPages: 51, embeddedPages: 51, dirtyPages: 0, totalEmbeddings: 102, isProcessing: false }],
+    ]);
+
+    render(<GraphPage />, { wrapper: createWrapper(['/graph']) });
+
+    expect(await screen.findByTestId('graph-picker-landing')).toBeInTheDocument();
+    const calls = fetchSpy.mock.calls.map((c) => String(c[0]));
+    expect(calls.some((u) => u.includes('/pages/graph'))).toBe(false);
+  });
+
+  it('falls back to the picker when the status probe fails — degraded, never a dead end', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/embeddings/status')) {
+        return {
+          ok: false,
+          status: 500,
+          headers: new Headers({ 'content-type': 'application/json' }),
+          json: async () => ({ message: 'status unavailable' }),
+        } as Response;
+      }
+      throw new Error(`Unexpected fetch in test: ${url}`);
+    });
+
+    render(<GraphPage />, { wrapper: createWrapper(['/graph']) });
+
+    expect(await screen.findByTestId('graph-picker-landing')).toBeInTheDocument();
+    // No verdict was reached, so no not-embedded claim is invented…
+    expect(screen.queryByTestId('graph-not-embedded-notice')).not.toBeInTheDocument();
+    // …and no graph fetch fired either.
+    const calls = fetchSpy.mock.calls.map((c) => String(c[0]));
+    expect(calls.some((u) => u.includes('/pages/graph'))).toBe(false);
+  });
+
+  it('holds a probe card — not the picker, not a graph promise — while the first probe attempt is in flight', () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise(() => {}));
+
+    render(<GraphPage />, { wrapper: createWrapper(['/graph']) });
+
+    // No picker flash for a corpus the probe may reveal as small…
+    expect(screen.queryByTestId('graph-picker-landing')).not.toBeInTheDocument();
+    // …and the card names the probe instead of promising a graph the
+    // verdict may decline to load.
+    expect(screen.getByText('Checking your knowledge base…')).toBeInTheDocument();
+    expect(screen.queryByText('Loading knowledge graph...')).not.toBeInTheDocument();
+  });
+
+  it('latches the skip-gate decision — a status poll crossing the limit must not yank the graph', async () => {
+    mockFetchRoutes([
+      ['/embeddings/status', { totalPages: 6, embeddedPages: 6, dirtyPages: 0, totalEmbeddings: 12, isProcessing: false }],
+      ['/pages/graph', mockGraphData],
+    ]);
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <LazyMotion features={domAnimation}>
+          <MemoryRouter initialEntries={['/graph']}>
+            <GraphPage />
+          </MemoryRouter>
+        </LazyMotion>
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByTestId('mock-force-graph')).toBeInTheDocument();
+
+    // The status query re-polls every 3s while an embedding pass is
+    // processing; simulate the corpus crossing the limit mid-visit through
+    // the query cache — the same write a poll response performs.
+    act(() => {
+      queryClient.setQueryData(['embeddings', 'status'], {
+        totalPages: 60, embeddedPages: 60, dirtyPages: 0, totalEmbeddings: 120, isProcessing: true,
+      });
+    });
+    // TanStack notifies subscribers through its scheduler, not synchronously
+    // inside the act() above — flush a macrotask so the re-render (if any)
+    // has landed before asserting that nothing swapped. Without this the
+    // assertions run ahead of the update and pass even without the latch.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    // Still the graph — never the picker — for the rest of the visit.
+    expect(screen.getByTestId('mock-force-graph')).toBeInTheDocument();
     expect(screen.queryByTestId('graph-picker-landing')).not.toBeInTheDocument();
   });
 
