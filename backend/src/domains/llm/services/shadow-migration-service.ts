@@ -7,7 +7,6 @@ import { enqueueJob, getJobStatus } from '../../../core/services/queue-service.j
 import { getReembedHistoryRetention } from '../../../core/services/admin-settings-service.js';
 import { logger } from '../../../core/utils/logger.js';
 import { getEnterprisePlugin } from '../../../core/enterprise/loader.js';
-import { buildEmbeddingText } from './embedding-service.js';
 import { invalidateGraphCache } from '../../../core/services/redis-cache.js';
 import pgvector from 'pgvector';
 
@@ -504,13 +503,8 @@ async function shadowEmbedExistingRows(
   cfg: NonNullable<Awaited<ReturnType<typeof providerConfigFor>>>,
   model: string,
 ): Promise<void> {
-  const rows = await query<{ chunk_index: number; chunk_text: string; metadata: { page_title?: string; section_title?: string } | null }>(
-    // metadata comes along because the embedded text is title-prefixed
-    // (#1108) and the prefix is rebuilt from page_title/section_title. Embed
-    // the bare chunk_text here and the shadow column would be built
-    // differently from the live one, so the swap would change the model AND
-    // the text in the same step — with nothing to show it.
-    `SELECT chunk_index, chunk_text, metadata FROM page_embeddings WHERE page_id = $1 AND embedding_next IS NULL ORDER BY chunk_index`,
+  const rows = await query<{ chunk_index: number; chunk_text: string }>(
+    `SELECT chunk_index, chunk_text FROM page_embeddings WHERE page_id = $1 AND embedding_next IS NULL ORDER BY chunk_index`,
     [pageId],
   );
   if (rows.rows.length === 0) return;
@@ -518,11 +512,7 @@ async function shadowEmbedExistingRows(
   const embeddings: Array<{ chunkIndex: number; text: string; embedding: number[] }> = [];
   for (let i = 0; i < rows.rows.length; i += EMBED_BATCH) {
     const slice = rows.rows.slice(i, i + EMBED_BATCH);
-    const vectors = await generateEmbedding(
-      cfg,
-      model,
-      slice.map((r) => buildEmbeddingText(r.chunk_text, r.metadata?.page_title ?? '', r.metadata?.section_title ?? '')),
-    );
+    const vectors = await generateEmbedding(cfg, model, slice.map((r) => r.chunk_text));
     for (let j = 0; j < slice.length; j++) {
       embeddings.push({ chunkIndex: slice[j]!.chunk_index, text: slice[j]!.chunk_text, embedding: vectors[j]! });
     }

@@ -240,36 +240,6 @@ function pushChunk(
 /**
  * Split text into chunks, preferring heading/paragraph boundaries.
  */
-/**
- * #1108 — the text a chunk is EMBEDDED as: its title and section, then the
- * chunk itself.
- *
- * `chunkText` stores the title only in `metadata.page_title`, so a page called
- * "Prototype Poisoning" whose body never repeats that phrase cannot be found
- * by searching for it. Prefixing puts those terms in the vector.
- *
- * Applied at EMBED time, not stored — a deliberate deviation from the issue's
- * "prepend to each chunk's text", because `chunk_text` has two other readers
- * and prefixing the stored value regresses both. `buildRagContext` already
- * emits `[Source N: "title" (Section: …)]` above every block, so a prefixed
- * body would repeat the title twice per source in the prompt; and
- * `/api/search` shows `chunkText.slice(0, 300)` as the result snippet, where
- * the prefix would eat ~50 characters restating the heading the user is
- * already looking at. Embedding-time prefixing gets the retrieval benefit with
- * neither cost, and keeps `chunk_text` the source text that #1116's
- * write-back guard (`chunk_text = $4`) compares against.
- *
- * Every document-side embed must route through this — the live embed, the
- * dual-write, and #1116's backfill — or a page's vector and its neighbours'
- * disagree about what was embedded, which no dimension check can see.
- */
-export function buildEmbeddingText(chunk: string, pageTitle: string, sectionTitle: string): string {
-  // A section that never got a heading carries the page title as its section
-  // (see `currentSection` below), and "X — X" wastes tokens on a repeat.
-  const heading = sectionTitle && sectionTitle !== pageTitle ? `${pageTitle} — ${sectionTitle}` : pageTitle;
-  return `${heading}\n\n${chunk}`;
-}
-
 export function chunkText(
   text: string,
   pageTitle: string,
@@ -419,7 +389,7 @@ export async function embedPage(
 
   for (let i = 0; i < chunks.length; i += batchSize) {
     const batch = chunks.slice(i, i + batchSize);
-    const texts = batch.map((c) => buildEmbeddingText(c.text, c.metadata.page_title, c.metadata.section_title));
+    const texts = batch.map((c) => c.text);
 
     try {
       const embeddings = await generateEmbedding(embedConfig, embedModel, texts);
@@ -485,10 +455,7 @@ export async function embedPage(
         const vectors = await generateEmbedding(
           shadowTarget.cfg,
           shadowTarget.model,
-          // Same prefix as the live embed above (#1108): the shadow column
-          // must be built the way the live column was, or the swap changes
-          // two things at once and the comparison means nothing.
-          slice.map((e) => buildEmbeddingText(e.text, e.metadata.page_title, e.metadata.section_title)),
+          slice.map((e) => e.text),
         );
         for (let j = 0; j < slice.length; j++) shadowEmbeddings.push(vectors[j] ?? null);
       }

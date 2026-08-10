@@ -260,22 +260,20 @@ erDiagram
     }
 ```
 
-**`chunk_text` is the source text, not the embedded text (#1108).** What goes to
-the embedding model is `buildEmbeddingText(chunk_text, page_title, section_title)`
-— `"{title} — {section}\n\n{chunk}"` — so a page whose body never repeats its own
-title is still findable by it. The prefix is applied at embed time and
-deliberately not stored, because `chunk_text` has two other readers:
-`/api/search` returns `chunkText.slice(0, 300)` as the result snippet, and
-`buildRagContext` already prints its own `[Source N: "title" (Section: …)]`
-header above each block. Storing the prefix would restate the heading in both.
+**`chunk_text` is what gets embedded, verbatim (#1108).** Prefixing the page
+title and section into the embedded text was measured on #1102's harness and
+**rejected**: on `bge-m3` it cost Recall@1 (0.597 → 0.569) and MRR (0.699 →
+0.682); on Qwen3-Embedding-4B it cost the same two while moving Recall@5 by
+5 wins / 3 losses — McNemar p = 0.73, i.e. noise. The title is already carried
+in `metadata.page_title`, and the keyword leg indexes it through `pages.tsv`
+(`title || body_text`), so the vector leg does not need it repeated.
 
-Every document-side embed must build its text the same way — the live embed in
-`embedPage`, its shadow dual-write, and #1116's backfill, which rebuilds the
-prefix from the row's `metadata`. A divergence there would change the embedded
-text and the model in the same swap, with identical dimensions and row counts
-to show for it; `shadow-migration-service.integration.test.ts` pins the two
-paths to the same output.
-
+The invariant that work exposed is kept: **every document-side embed must send
+the model byte-identical text** — the live embed in `embedPage`, its shadow
+dual-write, and #1116's backfill. A divergence there changes the embedded text
+and the model in the same swap, with identical dimensions and row counts to
+show for it; `shadow-migration-service.integration.test.ts` pins the paths
+together, which matters most for #1114's query-side prefix.
 
 ## Notable conventions
 

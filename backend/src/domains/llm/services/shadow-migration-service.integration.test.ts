@@ -532,33 +532,22 @@ describe.skipIf(!dbAvailable)('#1116 shadow migration service', () => {
       return pageId;
     }
 
-    it('embeds the SAME text in the live path and the backfill (#1108)', async () => {
-      // The invariant the title prefix creates. embedPage prefixes from the
-      // chunk's metadata; the backfill re-reads rows and must rebuild the
-      // identical prefix from the stored metadata. If the two ever diverge,
-      // the swap changes the model AND the text in one step, and nothing
-      // downstream can tell — same dimensions, same row count, worse recall.
+    it('embeds the SAME text in the live path and the backfill', async () => {
+      // #1108 measured the title prefix and it did not survive, but the
+      // invariant it exposed is worth keeping: whatever the live embed sends
+      // to the model, the backfill must send byte-for-byte. A divergence
+      // changes the embedded TEXT and the MODEL in the same swap, with
+      // identical dimensions and row counts to show for it — and #1114 is
+      // about to add a query-side prefix, which is exactly the kind of change
+      // that leaks into the document path.
       const pageId = await seedEmbeddedPage('Doc A');
       await query(`DELETE FROM page_embeddings WHERE page_id = $1`, [pageId]);
 
-      // 1. live embed
       generateEmbeddingMock.mockClear();
       await embedPage(USER, pageId, 'Doc A', 'SPACE', '<p>alpha content about hooks and plugins, long enough to embed properly</p>');
       const liveTexts = generateEmbeddingMock.mock.calls.flatMap((c) => c[2] as string[]);
       expect(liveTexts.length).toBeGreaterThan(0);
-      expect(liveTexts.every((t) => t.startsWith('Doc A'))).toBe(true);
 
-      // …and the STORED text is the bare chunk, not the prefixed one: it is
-      // what /api/search shows as a snippet and what buildRagContext repeats
-      // under its own [Source] header.
-      const stored = await query<{ chunk_text: string }>(
-        `SELECT chunk_text FROM page_embeddings WHERE page_id = $1 ORDER BY chunk_index`,
-        [pageId],
-      );
-      expect(stored.rows.every((r) => !r.chunk_text.startsWith('Doc A —'))).toBe(true);
-      expect(stored.rows.every((r) => !r.chunk_text.startsWith('Doc A\n\n'))).toBe(true);
-
-      // 2. the backfill, over those same rows
       await startShadowMigration({ providerId: shadowProviderId, model: SHADOW_MODEL });
       generateEmbeddingMock.mockClear();
       await runShadowBackfillJob();
