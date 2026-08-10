@@ -32,6 +32,7 @@ import { ArticleViewer } from '../../shared/components/article/ArticleViewer';
 import { DrawioEditor } from '../../shared/components/diagrams/DrawioEditor';
 import { apiFetch } from '../../shared/lib/api';
 import { ArticleSummary } from '../../shared/components/article/ArticleSummary';
+import { hasSubstantialLede } from '../../shared/lib/article-lede';
 import type { TocHeading } from '../../shared/components/article/TableOfContents';
 import { PageViewSkeleton } from '../../shared/components/feedback/Skeleton';
 import { TagPopover } from '../../shared/components/TagPopover';
@@ -1020,12 +1021,20 @@ export function PageViewPage() {
 
             {page.summaryStatus && (
               <ArticleSummary
+                // Keyed on the page so navigating between articles remounts the
+                // block; without it React reconciles by position and one page's
+                // collapse state would carry onto the next.
+                key={page.id}
                 pageId={page.id}
                 summaryHtml={page.summaryHtml}
                 summaryStatus={page.summaryStatus}
                 summaryGeneratedAt={page.summaryGeneratedAt}
                 summaryModel={page.summaryModel}
                 summaryError={page.summaryError}
+                lastModifiedAt={page.lastModifiedAt}
+                // When the article opens with a lede of its own, that lede is
+                // the author's summary and should win the first screen.
+                deferToLede={hasSubstantialLede(page.bodyHtml)}
               />
             )}
 

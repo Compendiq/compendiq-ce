@@ -256,7 +256,7 @@ describe('ArticleSummary', () => {
     expect(screen.getByTestId('article-summary-content')).toBeInTheDocument();
   });
 
-  it('persists collapse state in localStorage', () => {
+  it('persists the collapse choice per page, not globally', () => {
     const { unmount } = render(
       <ArticleSummary
         pageId="p1"
@@ -269,13 +269,15 @@ describe('ArticleSummary', () => {
       { wrapper: createWrapper() },
     );
 
-    // Collapse
     fireEvent.click(screen.getByText('AI Summary'));
-    expect(localStorage.getItem('article-summary-collapsed')).toBe('true');
+    expect(localStorage.getItem('article-summary-collapsed:p1')).toBe('true');
+    // The old global key must not be written, or one page's chevron silently
+    // sets an app-wide preference.
+    expect(localStorage.getItem('article-summary-collapsed')).toBeNull();
 
     unmount();
 
-    // Re-render should start collapsed
+    // A DIFFERENT page is unaffected by p1's choice.
     render(
       <ArticleSummary
         pageId="p2"
@@ -287,7 +289,155 @@ describe('ArticleSummary', () => {
       />,
       { wrapper: createWrapper() },
     );
+    expect(screen.getByTestId('article-summary-content')).toBeInTheDocument();
+  });
+
+  it('restores the same page\'s collapse choice on return', () => {
+    localStorage.setItem('article-summary-collapsed:p1', 'true');
+    render(
+      <ArticleSummary
+        pageId="p1"
+        summaryHtml="<p>Summary</p>"
+        summaryStatus="summarized"
+        summaryGeneratedAt={null}
+        summaryModel={null}
+        summaryError={null}
+      />,
+      { wrapper: createWrapper() },
+    );
     expect(screen.queryByTestId('article-summary-content')).not.toBeInTheDocument();
+  });
+
+  it('clears the legacy global collapse key so no stale true survives', () => {
+    localStorage.setItem('article-summary-collapsed', 'true');
+    render(
+      <ArticleSummary
+        pageId="p1"
+        summaryHtml="<p>Summary</p>"
+        summaryStatus="summarized"
+        summaryGeneratedAt={null}
+        summaryModel={null}
+        summaryError={null}
+      />,
+      { wrapper: createWrapper() },
+    );
+    expect(localStorage.getItem('article-summary-collapsed')).toBeNull();
+    // ...and it does not govern this page: with no per-page choice the default
+    // applies, which here (no lede declared) is expanded.
+    expect(screen.getByTestId('article-summary-content')).toBeInTheDocument();
+  });
+
+  // ---- Deferring to the article's own lede ----
+
+  describe('deferToLede', () => {
+    const summarized = {
+      summaryHtml: '<p>Summary</p>',
+      summaryStatus: 'summarized' as const,
+      summaryGeneratedAt: null,
+      summaryModel: null,
+      summaryError: null,
+    };
+
+    it('starts collapsed when the article opens with its own lede', () => {
+      render(<ArticleSummary pageId="p1" {...summarized} deferToLede />, {
+        wrapper: createWrapper(),
+      });
+      expect(screen.queryByTestId('article-summary-content')).not.toBeInTheDocument();
+      // The header still renders — deferring hides the paraphrase, not the block.
+      expect(screen.getByText('AI Summary')).toBeInTheDocument();
+    });
+
+    it('starts expanded when the article has no lede to defer to', () => {
+      render(<ArticleSummary pageId="p1" {...summarized} deferToLede={false} />, {
+        wrapper: createWrapper(),
+      });
+      expect(screen.getByTestId('article-summary-content')).toBeInTheDocument();
+    });
+
+    it('is only a default — an explicit choice for this page wins', () => {
+      localStorage.setItem('article-summary-collapsed:p1', 'false');
+      render(<ArticleSummary pageId="p1" {...summarized} deferToLede />, {
+        wrapper: createWrapper(),
+      });
+      expect(screen.getByTestId('article-summary-content')).toBeInTheDocument();
+    });
+
+    it('can still be expanded by the reader when it deferred', () => {
+      render(<ArticleSummary pageId="p1" {...summarized} deferToLede />, {
+        wrapper: createWrapper(),
+      });
+      fireEvent.click(screen.getByText('AI Summary'));
+      expect(screen.getByTestId('article-summary-content')).toBeInTheDocument();
+      expect(localStorage.getItem('article-summary-collapsed:p1')).toBe('false');
+    });
+  });
+
+  // ---- Staleness ----
+
+  describe('stale summary', () => {
+    const base = {
+      pageId: 'p1',
+      summaryHtml: '<p>Summary</p>',
+      summaryStatus: 'summarized' as const,
+      summaryModel: null,
+      summaryError: null,
+    };
+
+    it('flags a summary generated before the last edit', () => {
+      render(
+        <ArticleSummary
+          {...base}
+          summaryGeneratedAt="2026-08-01T12:00:00Z"
+          lastModifiedAt="2026-08-09T12:00:00Z"
+        />,
+        { wrapper: createWrapper() },
+      );
+      expect(screen.getByTestId('article-summary-stale')).toBeInTheDocument();
+    });
+
+    it('says nothing when the summary is current', () => {
+      render(
+        <ArticleSummary
+          {...base}
+          summaryGeneratedAt="2026-08-09T12:00:00Z"
+          lastModifiedAt="2026-08-01T12:00:00Z"
+        />,
+        { wrapper: createWrapper() },
+      );
+      expect(screen.queryByTestId('article-summary-stale')).not.toBeInTheDocument();
+    });
+
+    // The whole point of putting it in the header: deferring to the lede must
+    // never hide the fact that the summary describes content that changed.
+    it('stays visible while the block is collapsed', () => {
+      render(
+        <ArticleSummary
+          {...base}
+          summaryGeneratedAt="2026-08-01T12:00:00Z"
+          lastModifiedAt="2026-08-09T12:00:00Z"
+          deferToLede
+        />,
+        { wrapper: createWrapper() },
+      );
+      expect(screen.queryByTestId('article-summary-content')).not.toBeInTheDocument();
+      expect(screen.getByTestId('article-summary-stale')).toBeInTheDocument();
+    });
+
+    // Regenerate is admin-only (#356). Staleness is the signal a viewer gets,
+    // so it must not be gated the same way.
+    it('shows to non-admin viewers, who have no Regenerate control', () => {
+      useAuthStore.setState({ user: { id: '2', username: 'viewer', role: 'user' } });
+      render(
+        <ArticleSummary
+          {...base}
+          summaryGeneratedAt="2026-08-01T12:00:00Z"
+          lastModifiedAt="2026-08-09T12:00:00Z"
+        />,
+        { wrapper: createWrapper() },
+      );
+      expect(screen.getByTestId('article-summary-stale')).toBeInTheDocument();
+      expect(screen.queryByTestId('summary-regenerate-button')).not.toBeInTheDocument();
+    });
   });
 
   it('renders nothing when summarized but no summaryHtml', () => {
