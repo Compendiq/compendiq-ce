@@ -1394,6 +1394,34 @@ Confluence DC semantics (per Atlassian's official documentation, not the issue b
 - After `reciprocalRankFusion`, iterate the merged list and keep only entries where `userCanAccessPage(userId, page.id)` is true. Slice to `topK` at the end to keep the response size stable.
 - Rank order is preserved — the post-filter is a `filter`, not a re-rank.
 
+> **Amended (#1103, 2026-08-10):** the per-leg stage limit is now
+> `resolveStageLimit(topK, fetchWidth, aclEnforced)` =
+> `max(fetchWidth, topK)`, with `ceil(topK * 1.5)` kept as an **additional
+> floor** when the flag is on — compensation can only ever add candidates
+> (its old form fetched 8/leg on the EE chat path vs CE's 10, a net
+> under-fetch, #1263). `fetchWidth` is the `rag_fetch_width` row in
+> `admin_settings` (default 10 — the legacy per-leg limit — clamped to
+> [10, 200], TTL-cached in `admin-settings-service.ts`). **Two consequences
+> below are amended with it:** the fetch width and the `topK` floor apply in
+> BOTH branches, so "CE deployments and EE without the flag: zero behaviour
+> change" now covers the ACE consultation and the post-filter only — a CE
+> `/api/search?mode=hybrid&limit=20` fetches 20 rows/leg where it used to
+> fetch an unsatisfiable 10. And the post-filter's cost bound is no longer
+> "N ≤ topK×1.5": the merged set is up to 2× the stage limit (up to 2×200
+> at an admin-raised width). Mitigations: checks run in order-preserving
+> parallel batches of 10, the walk stops once `topK` candidates have
+> *passed* (a caller denied on most candidates still examines the whole
+> merged set), and `userCanAccessPage`'s space branch now reads the ADR-022
+> request-scoped memo — which also means that for `inherit_perms = true`
+> pages the post-filter re-affirms the same space snapshot the legs already
+> enforced in SQL rather than consulting a fresh source: a deliberate,
+> small trade of defence-in-depth for per-candidate round-trips (the
+> `inherit_perms = false` ACE branch, the filter's real job, is untouched).
+> A batched ACL check is required work for the PR that actually raises the
+> width (#1104). Fusion note: when the stage limit exceeds the configured
+> width, ranking uses a stable head (`fuseWithStableHead`) — the ACL floor
+> widens the pool the filter walks, never the head ordering.
+
 **Rationale:**
 - **Ancestor inheritance is resolved at sync time, not query time.** The RAG post-filter calls `userCanAccessPage` N times per query (N ≤ topK×1.5, typically ≤15 in observed deployments). Each call is 1-3 pooled SQL queries. Resolving inheritance at query time would require either walking the ancestor chain per candidate (unbounded fan-out on hot paths) or duplicating the ancestor-walk logic into `userCanAccessPage` (tight coupling). Putting the walk in the sync path keeps the query path O(topK) and lets us reuse the existing `userCanAccessPage` as-is.
 - **`source` + `synced_at` columns instead of a second table.** Adds two columns to `access_control_entries`; preserves the existing uniqueness constraint and the `userCanAccessPage` query path. A separate `confluence_page_aces` table would double the join count on a request-hot function for no correctness benefit.

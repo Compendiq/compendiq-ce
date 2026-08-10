@@ -14,9 +14,11 @@ import {
   recordSearchAnalytics,
   getEmbeddingCoverage,
   deriveDegradedReason,
+  resolveStageLimit,
   type DegradedReason,
   type EmbeddingCoverage,
 } from '../../domains/llm/services/rag-service.js';
+import { getRagFetchWidth } from '../../core/services/admin-settings-service.js';
 import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
 import { generateEmbedding } from '../../domains/llm/services/openai-compatible-client.js';
 import { CircuitBreakerOpenError } from '../../core/services/circuit-breaker.js';
@@ -188,15 +190,32 @@ export async function searchRoutes(fastify: FastifyInstance) {
       const questionEmbedding = await generateSearchEmbedding(request, q, 'semantic', reply);
       if (!questionEmbedding) return;
 
-      const vectorResults = await vectorSearch(userId, questionEmbedding, limit);
+      // Fetch width decoupled from return width here too (#1103): the vector
+      // leg counts CHUNKS while `limit` counts pages-after-dedup, so fetching
+      // exactly `limit` rows under-delivers whenever one page's chunks occupy
+      // several top slots. Widening is order-preserving in this mode — cosine
+      // ordering is a stable prefix, so a deeper fetch can only append pages
+      // after the ones a narrower fetch found, never reorder them. (Exact
+      // while ef_search is constant, i.e. stage limits <= RAG_EF_SEARCH/2 =
+      // 50 — always true at the default width. An admin-raised width beyond
+      // that raises ef with it, exploring more of the HNSW graph, which can
+      // genuinely surface a nearer neighbour above previous results — an
+      // accuracy improvement, not the RRF dilution the hybrid path guards
+      // against.)
+      const stageLimit = resolveStageLimit(limit, await getRagFetchWidth(), false);
+      const vectorResults = await vectorSearch(userId, questionEmbedding, stageLimit);
 
-      // Deduplicate by pageId (take best chunk per page)
+      // Deduplicate by pageId (take best chunk per page), then honour the
+      // caller's return width — the wider fetch is ranking headroom, not a
+      // bigger response.
       const seen = new Set<number>();
-      const deduped = vectorResults.filter((r) => {
-        if (seen.has(r.pageId)) return false;
-        seen.add(r.pageId);
-        return true;
-      });
+      const deduped = vectorResults
+        .filter((r) => {
+          if (seen.has(r.pageId)) return false;
+          seen.add(r.pageId);
+          return true;
+        })
+        .slice(0, limit);
 
       const maxScore = deduped.length > 0 ? Math.max(...deduped.map((r) => r.score)) : null;
       recordSearchAnalytics(userId, q, deduped.length, maxScore, 'semantic', {

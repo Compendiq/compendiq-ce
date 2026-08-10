@@ -14,6 +14,11 @@ import { isFeatureEnabled } from '../../../core/enterprise/loader.js';
 import { ENTERPRISE_FEATURES } from '../../../core/enterprise/features.js';
 import pgvector from 'pgvector';
 import { logger } from '../../../core/utils/logger.js';
+import {
+  getRagFetchWidth,
+  RAG_FETCH_WIDTH_DEFAULT,
+  RAG_FETCH_WIDTH_MAX,
+} from '../../../core/services/admin-settings-service.js';
 import { withSpan, recordHistogram } from '../../../telemetry.js';
 import { MIN_EMBEDDABLE_TEXT_CHARS } from './embedding-service.js';
 
@@ -37,6 +42,37 @@ const STAGE_DURATION_OPTS = {
 const parsed = parseInt(process.env.RAG_EF_SEARCH ?? '100', 10);
 const RAG_EF_SEARCH = Number.isFinite(parsed) && parsed > 0 && parsed <= 10000 ? parsed : 100;
 
+// The fetch-width knob itself (constants, clamp, 60s TTL cache, invalidation)
+// lives in core/services/admin-settings-service.ts so the admin surface
+// (routes/foundation — which the ESLint boundaries bar from importing this
+// domain) can share one definition with retrieval. Re-exported here because
+// this module is where the width is consumed and documented.
+export { RAG_FETCH_WIDTH_DEFAULT, RAG_FETCH_WIDTH_MAX };
+
+/**
+ * Per-leg stage limit for one hybrid search. The width is a floor on ranking
+ * headroom, never a cap on the caller: a `topK` above the configured width
+ * (interactive search allows up to 20) must still be satisfiable. The EE ACL
+ * post-filter keeps its 1.5x-of-topK compensation as an additional floor — it
+ * may only ever ADD candidates. Its old form (`aclEnforced ? ceil(topK*1.5) :
+ * default 10`) fetched 8/leg on the EE chat path vs CE's 10, a net
+ * under-fetch filed as #1263.
+ *
+ * Two honest caveats, both deliberate:
+ * - The unit is CHUNK rows on the vector leg but the caller's topK counts
+ *   PAGES after dedup-by-page, so on a corpus of long multi-chunk pages a
+ *   stage limit of N can still yield fewer than N distinct pages. Truly
+ *   page-denominated fetching is #1106's page-merge work; the floor here
+ *   makes the limit satisfiable when chunks-per-page is small, not always.
+ * - The result can exceed RAG_FETCH_WIDTH_MAX: that constant caps the admin
+ *   knob, while topK is the caller's own contract (Zod caps interactive
+ *   search at 20; internal callers bound themselves).
+ */
+export function resolveStageLimit(topK: number, fetchWidth: number, aclEnforced: boolean): number {
+  const base = Math.max(fetchWidth, topK);
+  return aclEnforced ? Math.max(base, Math.ceil(topK * 1.5)) : base;
+}
+
 interface SearchResult {
   pageId: number;           // integer PK from pages table — used for dedup
   // NULL for locally-created (standalone) pages — they have no Confluence
@@ -56,16 +92,20 @@ interface SearchResult {
    * common two-leg case, but it is **not** bounded there: the vector leg is
    * per-CHUNK, so one page occupying several of the top slots has its
    * contributions summed (that is why the best-chunk rule below exists). The
-   * worst case is therefore a function of the per-stage limit, and it is easy to
-   * underestimate — `rrfWorstCase` below computes it, and a test pins the two
-   * figures that matter rather than leaving them as prose:
+   * worst case is therefore a function of the per-stage limit — since #1103,
+   * `resolveStageLimit` (fetch width, floored at topK and at 1.5x topK under
+   * EE ACL). At the defaults that gives, via `rrfWorstCase` (a test pins the
+   * figures rather than leaving them as prose):
    *
-   * - chat path (`/llm/ask`, topK 5 → stage limit 10, or 8 under EE ACL):
-   *   at most ~0.17, comfortably under ConfidenceBadge's 0.4 threshold, which
-   *   is why reading this field as a cosine produced "Low confidence" every time.
-   * - `/api/search` under EE ACL with `limit=20` → stage limit 30: up to ~0.42,
-   *   which is **over** that threshold. Nothing thresholds it on that path, but
-   *   do not restate the chat-path bound as a global one.
+   * - chat path (`/llm/ask`, topK 5 → stage limit 10): at most ~0.17, which
+   *   sat under ConfidenceBadge's old 0.4 cosine threshold — why reading this
+   *   field as a cosine produced "Low confidence" every time (#1117 moved the
+   *   badge onto `vectorScore`).
+   * - `/api/search` with `limit=20` → stage limit 20 (30 under EE ACL): up to
+   *   ~0.30 / ~0.42. Do not restate the chat-path bound as a global one.
+   * - an admin-raised `rag_fetch_width` raises the bound with it —
+   *   `rrfWorstCase(width, true)` is the formula, and at the 200 cap it
+   *   passes 1.0.
    *
    * Either way it is not a similarity — see `vectorScore`.
    */
@@ -106,7 +146,7 @@ interface SearchResult {
  * Tradeoff: higher ef_search = better recall but slower query.
  * Default PostgreSQL ef_search is 40; we use 100 for better RAG recall.
  */
-export async function vectorSearch(userId: string, questionEmbedding: number[], limit = 10): Promise<SearchResult[]> {
+export async function vectorSearch(userId: string, questionEmbedding: number[], limit = RAG_FETCH_WIDTH_DEFAULT): Promise<SearchResult[]> {
   return withSpan(
     'rag.vector_search',
     async (span) => {
@@ -117,7 +157,18 @@ export async function vectorSearch(userId: string, questionEmbedding: number[], 
       const client = await getVectorPool().connect();
       try {
         await client.query('BEGIN');
-        await client.query(`SET LOCAL hnsw.ef_search = ${Number(RAG_EF_SEARCH)}`);
+        // ef_search must cover the requested LIMIT: HNSW returns at most
+        // ef_search rows (verified against pgvector 0.8.5 — LIMIT 200 with
+        // ef_search 100 yields 100 rows), so a #1103 fetch width above
+        // RAG_EF_SEARCH would silently plateau while the keyword leg kept
+        // widening. 2x, not 1x: ef_search == k is HNSW's worst recall
+        // setting — the graph walk needs headroom beyond the return size.
+        // Clamped to pgvector's [1, 1000] bound for future internal callers;
+        // no HTTP path can exceed it today (Zod caps limit at 20, the width
+        // knob at 200).
+        await client.query(
+          `SET LOCAL hnsw.ef_search = ${Math.min(1000, Math.max(Number(RAG_EF_SEARCH), 2 * Number(limit)))}`,
+        );
 
         const result = await client.query<{
           page_id: number;
@@ -176,7 +227,7 @@ export async function vectorSearch(userId: string, questionEmbedding: number[], 
  * Scoped to: Confluence pages in user's selected spaces + standalone articles
  * the user can access (shared, or private and owned by the user).
  */
-export async function keywordSearch(userId: string, questionText: string, limit = 10): Promise<SearchResult[]> {
+export async function keywordSearch(userId: string, questionText: string, limit = RAG_FETCH_WIDTH_DEFAULT): Promise<SearchResult[]> {
   // Use plainto_tsquery which safely handles arbitrary user input
   // (no need to manually sanitize or construct tsquery syntax)
   const trimmed = questionText.trim();
@@ -320,6 +371,61 @@ function reciprocalRankFusion(
       vectorScore: entry.vectorScore,
       keywordRank: entry.keywordRank,
     }));
+}
+
+/**
+ * Fusion with a STABLE HEAD (#1103). When the stage limit exceeds the ranking
+ * width — i.e. the caller's topK floored the fetch above the configured
+ * width — plain RRF over the deep legs demonstrably dilutes the head: RRF's
+ * k=60 is nearly flat across ranks, so a mediocre page appearing deep in BOTH
+ * legs outranks a rank-1 single-leg hit. Measured at retrieval topK=20 on
+ * #1102's fixture, wide fusion moved Recall@1 0.3889 → 0.2222 and MRR 0.5830
+ * → 0.4566 while Recall@20 improved 0.9236 → 0.9514 — more right answers in
+ * the set, drowned at the top.
+ *
+ * So the head takes its ORDER from fusion over the first `rankWidth` rows of
+ * each leg — the same page sequence a narrower request returns — and the
+ * extra candidates the deeper fetch surfaced are APPENDED, ranked by fusion
+ * over the full legs. Asking for more results yields the same first results,
+ * plus more; it never reorders the top. When the legs are within `rankWidth`
+ * this is plain RRF.
+ *
+ * The head's ENTRIES, though, come from the wide fusion: the deeper fetch may
+ * have retrieved better evidence for a head page (its best vector chunk at a
+ * leg rank beyond `rankWidth`, say), and discarding that would hand the LLM a
+ * keyword body-excerpt where a purpose-built vector chunk exists, and the
+ * wire a `similarity: null` for a page the vector leg did retrieve. Order
+ * from the narrow fusion, objects from the wide one.
+ *
+ * `rankWidth` is the configured fetch width alone — BOTH floors on the stage
+ * limit (the caller's topK, and the EE ACL post-filter's 1.5x compensation)
+ * are pool padding for satisfiability/filtering, never ranking decisions, so
+ * the stable head applies identically in CE and under EE ACL.
+ *
+ * Note the array is ordered by the pipeline, not by `score`; `score` remains
+ * an opaque ordering byproduct (see its JSDoc) — consumers must never re-sort
+ * by it.
+ */
+export function fuseWithStableHead(
+  vectorResults: SearchResult[],
+  keywordResults: SearchResult[],
+  rankWidth: number,
+): SearchResult[] {
+  if (vectorResults.length <= rankWidth && keywordResults.length <= rankWidth) {
+    return reciprocalRankFusion(vectorResults, keywordResults);
+  }
+  const head = reciprocalRankFusion(
+    vectorResults.slice(0, rankWidth),
+    keywordResults.slice(0, rankWidth),
+  );
+  const wide = reciprocalRankFusion(vectorResults, keywordResults);
+  // Head pages are found from prefixes of the same legs, so head ⊆ wide.
+  const wideById = new Map(wide.map((r) => [r.pageId, r]));
+  const headIds = new Set(head.map((r) => r.pageId));
+  return [
+    ...head.map((r) => wideById.get(r.pageId)!),
+    ...wide.filter((r) => !headIds.has(r.pageId)),
+  ];
 }
 
 /**
@@ -544,19 +650,30 @@ async function hybridSearchInner(
   // this function see a consistent value for this request.
   const aclEnforced = isFeatureEnabled(ENTERPRISE_FEATURES.RAG_PERMISSION_ENFORCEMENT);
 
-  // Overfetch compensation: when the ACL post-filter is active, some
-  // candidates will be dropped. Bump the per-stage candidate pool by 1.5x
-  // (rounded up) so the post-filter has headroom to still return `topK`
-  // rows. When the flag is OFF we preserve v0.3 behaviour exactly — the
-  // default per-stage limit (10) kicks in because we pass `undefined`.
-  const stageLimit = aclEnforced ? Math.ceil(topK * 1.5) : undefined;
+  // Decouple fetch width from return width (#1103): both legs pull the
+  // configured candidate budget (`rag_fetch_width` in admin_settings;
+  // default 10 — deliberately the legacy per-leg limit, see
+  // RAG_FETCH_WIDTH_DEFAULT for the measured regression a wide fetch causes
+  // without a reranker), then the pipeline slices to `topK` after ranking.
+  // The EE ACL post-filter's 1.5x compensation survives as an additional
+  // floor inside resolveStageLimit — headroom only ever adds (#1263).
+  // The width read is TTL-cached (admin-settings-service), so this is a DB
+  // round-trip at most once a minute — and it is chained, not awaited, so the
+  // cache-miss case overlaps the embedding call and the coverage probe below
+  // instead of serialising in front of them.
+  const fetchWidthPromise = getRagFetchWidth();
+  const stageLimitPromise = fetchWidthPromise.then((fetchWidth) =>
+    resolveStageLimit(topK, fetchWidth, aclEnforced),
+  );
 
   let vectorResults: SearchResult[] = [];
   let embeddingFailed = false;
 
   // Start keyword search outside the try block so DB errors in keyword
   // search are not silently caught as "embedding failures".
-  const keywordPromise = keywordSearch(userId, question, stageLimit);
+  const keywordPromise = stageLimitPromise.then((stageLimit) =>
+    keywordSearch(userId, question, stageLimit),
+  );
   // Observe the promise so a rejection can never go unhandled if the embedding
   // path short-circuits (e.g. rethrowing CircuitBreakerOpenError) before the
   // `await keywordPromise` below runs. This no-op observer does not consume the
@@ -582,7 +699,7 @@ async function hybridSearchInner(
     const { config, model } = await resolveUsecase('embedding');
     const embeddings = await generateEmbedding(config, model, question);
     const questionEmbedding = embeddings[0]!;
-    vectorResults = await vectorSearch(userId, questionEmbedding, stageLimit);
+    vectorResults = await vectorSearch(userId, questionEmbedding, await stageLimitPromise);
   } catch (err) {
     // Let circuit breaker errors propagate for proper 503 handling
     if (err instanceof CircuitBreakerOpenError) {
@@ -608,6 +725,9 @@ async function hybridSearchInner(
   span?.setAttribute('rag.vector_hits', vectorResults.length);
   span?.setAttribute('rag.keyword_hits', keywordResults.length);
   span?.setAttribute('rag.search_type', searchType);
+  // The one retrieval input that varies at runtime (admin knob + floors) —
+  // without it, traces cannot be partitioned by width after a tuning change.
+  span?.setAttribute('rag.stage_limit', await stageLimitPromise);
   if (coverage) {
     span?.setAttribute('rag.embedding_coverage', coverage.coverage);
   }
@@ -621,29 +741,61 @@ async function hybridSearchInner(
     keywordHits: keywordResults.length,
   }, 'Search results');
 
-  // Combine with RRF — output is already one entry per pageId.
-  const merged = reciprocalRankFusion(vectorResults, keywordResults);
+  // Rank width = the configured width alone. Both floors on the stage limit
+  // — the caller's topK and the EE ACL 1.5x compensation — are pool padding
+  // for satisfiability/filtering; they must widen the POOL, never re-rank
+  // the HEAD (see fuseWithStableHead). This deliberately CHANGES pre-#1103
+  // EE ordering at topK >= 7, which fused over the full 1.5x pool: that was
+  // the same head dilution measured on CE, worst exactly where the pool was
+  // widest, and the stable head now applies identically in both editions.
+  const merged = fuseWithStableHead(vectorResults, keywordResults, await fetchWidthPromise);
 
   // Per-page ACL post-filter: when enabled, drop candidates the caller can
   // no longer read (Confluence restriction added between sync and query,
   // ACE synced for a page whose space the user lost access to, etc.). The
-  // filter preserves RRF rank order — `userCanAccessPage` is O(small) and
-  // runs N≤ceil(topK*1.5) times, which is acceptable per plan §2.
+  // filter preserves RRF rank order.
+  //
+  // Cost shape (#1103): the merged set is up to 2x the stage limit — at the
+  // defaults that is unchanged from before, but an admin-raised width
+  // multiplies it (up to 2x200 at the cap), and each `userCanAccessPage` is
+  // 1-3 sequential queries. Two bounds apply: checks run in fixed-size
+  // parallel batches (order-preserving — verdicts are awaited per batch and
+  // appended in merged order), and the walk stops once topK candidates have
+  // PASSED. A caller denied on most candidates still examines the whole
+  // merged set — batching caps the latency, not the query count; a batched
+  // rbac API is #1104's problem when the width actually rises.
   if (aclEnforced) {
+    // Half the default main pool (PG_POOL_MAX = 20, core/db/postgres.ts):
+    // each check is 1-3 queries, so one batch peaks at ~10 checkouts and two
+    // concurrent EE searches queue instead of exhausting the pool. Revisit
+    // together with the batched rbac API when #1104 raises the width.
+    const ACL_CHECK_BATCH = 10;
     const filtered: SearchResult[] = [];
-    for (const r of merged) {
-      if (await userCanAccessPage(userId, r.pageId)) {
-        filtered.push(r);
+    let examined = 0;
+    for (let i = 0; i < merged.length && filtered.length < topK; i += ACL_CHECK_BATCH) {
+      const batch = merged.slice(i, i + ACL_CHECK_BATCH);
+      const verdicts = await Promise.all(
+        batch.map((r) => userCanAccessPage(userId, r.pageId)),
+      );
+      examined += batch.length;
+      for (let j = 0; j < batch.length; j++) {
+        if (verdicts[j]) filtered.push(batch[j]!);
       }
     }
+    // `candidatesKept` saturates at ~topK because of the early stop — it is
+    // NOT an ACL rejection rate. `candidatesExamined` is the denominator for
+    // that: examined - kept = denials seen before the walk stopped.
     logger.debug(
       {
         userId,
         candidatesBeforeFilter: merged.length,
-        candidatesAfterFilter: filtered.length,
+        candidatesExamined: examined,
+        candidatesKept: filtered.length,
       },
       'RAG per-page ACL post-filter applied',
     );
+    // The batch step can overshoot topK by up to ACL_CHECK_BATCH-1 passers;
+    // this slice is the response-size contract, not dead code.
     const topResults = filtered.slice(0, topK);
 
     // Record search analytics (non-blocking)
@@ -651,7 +803,10 @@ async function hybridSearchInner(
     // this column would silently make new rows incomparable with every
     // historical one — migration 088 added `rerank_score` for the #1104 stage
     // precisely so this value never changes meaning. See the score-semantics
-    // note in docs/architecture/09-flow-rag-chat.md.
+    // note in docs/architecture/09-flow-rag-chat.md. One caveat since #1103:
+    // the value's SCALE tracks the stage limit (rrfWorstCase rises with the
+    // fetch width), so rows straddling a `rag_fetch_width` change are only
+    // loosely comparable — the same caveat RAG_EF_SEARCH always carried.
     // Keep this branch and the non-ACL one below in step.
     const maxScore = topResults.length > 0 ? Math.max(...topResults.map((r) => r.score)) : null;
     trackSearchAnalytics(userId, question, topResults.length, maxScore, searchType, analyticsExtras);
@@ -659,7 +814,10 @@ async function hybridSearchInner(
     return topResults;
   }
 
-  const topResults = merged.slice(0, topK);
+  // Math.max guards a non-positive topK (unreachable from HTTP — Zod floors
+  // limit at 1 — but slice(0, -1) would silently return all-but-last where
+  // the ACL branch above returns []; keep the branches agreeing).
+  const topResults = merged.slice(0, Math.max(0, topK));
 
   // Record search analytics (non-blocking)
   // Deliberately still the RRF fusion value, NOT `vectorScore` — see the ACL

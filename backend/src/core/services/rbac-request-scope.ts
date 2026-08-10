@@ -51,9 +51,19 @@ export function enterRbacScope(): RbacScope {
   return scope;
 }
 
-export function setScopedSpaces(spaces: string[]): void {
+/**
+ * Store the resolved space list — but only when it was resolved for the same
+ * user the scope belongs to. The read path has always gated on a matching
+ * `userId`; without the same guard here, a resolver call for a DIFFERENT user
+ * inside one request would poison the request user's memo, and everything
+ * behind `getUserAccessibleSpacesMemoized` — including the
+ * `userCanAccessPage` authorization path — would answer from the wrong
+ * user's space set. No current caller mixes users in one request; this guard
+ * is what keeps that a non-event when one eventually does.
+ */
+export function setScopedSpaces(userId: string, spaces: string[]): void {
   const scope = storage.getStore();
-  if (scope) scope.spaces = spaces;
+  if (scope && scope.userId === userId) scope.spaces = spaces;
 }
 
 /**

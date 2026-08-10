@@ -40,21 +40,22 @@ sequenceDiagram
         EMB-->>BE: q_vector[N]
         BE->>RBAC: getUserAccessibleSpacesMemoized(userId)
         RBAC-->>BE: readableSpaceKeys[] (request-scoped)
+        note right of BE: per-leg stage limit = fetch width (#35;1103)<br/>admin_settings 'rag_fetch_width' (default 10),<br/>floored at topK (+ 1.5x topK under EE ACL)
         par vector + keyword
-            BE->>RAG: vectorSearch(userId, q_vector)
+            BE->>RAG: vectorSearch(userId, q_vector, stageLimit)
             RAG->>PG: WHERE cp.space_key = ANY(readableSpaceKeys) ...
-            PG-->>RAG: top-K chunks
+            PG-->>RAG: top fetch-width chunks
         and
-            BE->>RAG: keywordSearch(userId, question)
+            BE->>RAG: keywordSearch(userId, question, stageLimit)
             RAG->>PG: tsvector search WHERE same space filter
             PG-->>RAG: matches
         end
-        RAG-->>BE: merged + deduped + ranked
+        RAG-->>BE: merged + deduped + ranked (fetch-width wide)
         opt RAG_PERMISSION_ENFORCEMENT (EE)
-            BE->>RBAC: userCanAccessPage(userId, pageId) for each candidate
+            BE->>RBAC: userCanAccessPage(userId, pageId) per candidate,<br/>stopping once topK have passed
             RBAC-->>BE: filter decision (per-page read ACE honoured)
-            note right of BE: candidates were overfetched 1.5x<br/>at vector/fts stage to compensate
         end
+        note right of BE: slice to topK after ranking —<br/>fetch width is ranking headroom (#35;1104's rerank input)
         opt includeSubPages
             BE->>RBAC: userCanAccessPage(userId, parentPageId)
             RBAC-->>BE: allow / deny (#35;814 — skip tree on deny)
@@ -117,22 +118,26 @@ RRF fusion previously *overwrote* `score` with the fusion value and discarded
 the cosine. That value is ~0.016 for a single rank in one leg and ~0.033 for the
 common two-leg case, and it is **not** bounded there: the vector leg is
 per-chunk, so one page occupying several top slots has its contributions summed.
-The worst case is a function of the per-stage limit, which differs by caller:
+The worst case is a function of the per-stage limit — since #1103 that is
+`resolveStageLimit`: the fetch width (`rag_fetch_width` in `admin_settings`,
+default 10), floored at `topK` and at `ceil(topK×1.5)` under EE ACL. At the
+defaults:
 
 | Path | topK | stage limit | worst-case fusion score |
 |---|---|---|---|
-| `/llm/ask` (chat) | 5 | 10 (CE) | ~0.169 |
-| `/llm/ask` under EE ACL | 5 | `ceil(5×1.5)` = 8 | ~0.141 |
+| `/llm/ask` (chat) | 5 | 10 (the width) | ~0.169 |
+| `/api/search` at `limit=20` | 20 | 20 (topK floor) | ~0.302 |
 | `/api/search` under EE ACL | 20 | `ceil(20×1.5)` = 30 | ~0.419 |
+| admin-raised width `w` | ≤ `w` | `w` (knob capped at 200; a larger topK still floors it) | `rrfWorstCase(w, true)` — passes 1.0 at the cap |
 
-`ConfidenceBadge` sits on the chat path only and reads the value as a cosine
-(`>= 0.7` high, `>= 0.4` medium). The chat-path maximum of ~0.169 is well under
-that floor, which is why **every** hybrid knowledge-base answer rendered "Low
-confidence" — and web sources, handed a flat `score: 1`, were the only ones that
-could raise the average. Note the chat-path bound is *not* global: the
-`/api/search` figure clears 0.4, and nothing thresholds it there. `rrfWorstCase`
-in `rag-service.ts` computes these and a test pins them, because the prose
-version of this table has been wrong twice.
+`ConfidenceBadge` used to read the value as a cosine (`>= 0.7` high, `>= 0.4`
+medium). The chat-path maximum of ~0.169 is well under that floor, which is why
+**every** hybrid knowledge-base answer rendered "Low confidence" — and web
+sources, handed a flat `score: 1`, were the only ones that could raise the
+average. #1117 moved the badge onto the cosine (`similarity` on the wire); the
+fusion value stays ordering-only. `rrfWorstCase` in `rag-service.ts` computes
+these and a test pins them, because the prose version of this table has been
+wrong twice.
 
 Fusion now carries the per-leg values alongside the fused score instead of
 replacing them; ordering is unchanged.
@@ -252,10 +257,58 @@ retrieval on per-page read ACEs. The sync path (ADR-023) writes Confluence's
 effective read restrictions — resolved through the ancestor chain at sync
 time — into `access_control_entries` with `source='confluence'`, so the
 query-time check is a single consistent `userCanAccessPage` call per
-candidate. Candidates are overfetched at 1.5× `topK` at the vector and FTS
-stages to give the filter headroom. When the feature is off (CE or EE
-without the flag), neither the overfetch nor the second post-filter runs —
-behaviour matches v0.3.
+candidate. The merged set is up to **2× the stage limit** — unchanged at the
+defaults, but an admin-raised #1103 width multiplies it, up to 2×200 at the
+cap — and each check costs 1-3 queries. Two bounds apply: checks run in
+order-preserving parallel batches of 10, and the walk stops once `topK`
+candidates have **passed**. Note the stop bounds successes, not work — a
+caller denied on most candidates still examines the whole merged set; a
+batched ACL check is #1104's required companion to actually raising the
+width. The stage limit keeps `ceil(topK × 1.5)` as an additional floor so ACL
+headroom can only ever add candidates (its old form fetched *fewer* rows than
+CE on the chat path — #1263). The post-filter's debug log reports
+`candidatesExamined` and `candidatesKept` — kept saturates near `topK` by
+design and is **not** a rejection rate; examined − kept is the denial count
+seen before the walk stopped. When the feature is off (CE or EE without the
+flag), the second post-filter does not run; the fetch width applies either
+way.
+
+**Fusion has a stable head.** When the stage limit exceeds the configured
+width (`/api/search?mode=hybrid&limit=11..20` at the default width in CE, and
+every EE-ACL request whose `ceil(topK×1.5)` floor exceeds it), fusion runs
+twice: the head takes its **order** from RRF over the first width rows of each
+leg — the same page sequence a narrower request returns — its **entries** from
+the wide fusion (so evidence the deeper fetch retrieved for a head page, like
+a better vector chunk, is kept), and the extra candidates are appended, ranked
+by wide fusion (`fuseWithStableHead`). Measured at retrieval topK=20 on
+#1102's fixture, plain wide fusion improved Recall@20 0.9236 → 0.9514 (the old
+code could not return an answer beyond its 10-row legs at all) but diluted the
+head — Recall@1 0.3889 → 0.2222, MRR 0.5830 → 0.4566 — the same flat-`k` RRF
+mechanism as the width-30 regression below. Stable-head keeps "show me more
+results" append-only: the first results never reorder. The rank width is the
+configured width **alone** — both floors on the stage limit (the caller's
+topK, and the EE ACL 1.5× compensation) are pool padding for
+satisfiability/filtering, never ranking decisions. That deliberately changes
+pre-#1103 EE ordering at `topK ≥ 7`, which fused over the full 1.5× pool:
+the same dilution, worst exactly where the pool was widest.
+
+`/api/search?mode=semantic` shares the decoupling: it fetches
+`resolveStageLimit(limit, width, false)` chunks and slices to `limit` after
+dedupe-by-page — fetching exactly `limit` chunks under-delivered whenever one
+page's chunks occupied several top slots. Widening there is order-preserving
+(cosine order is a stable prefix) while `ef_search` is constant — true at the
+default width; an admin-raised width past `RAG_EF_SEARCH/2` raises `ef` with
+it, which can surface genuinely nearer neighbours above previous results. The
+residual chunks-vs-pages gap (a stage limit of N can still dedupe to fewer
+than N pages on long-page corpora) is #1106's page-merge work, in both modes.
+
+**The width's default (10) is deliberately the legacy per-leg limit.** On
+#1102's fixture, width 30 with plain RRF regressed Recall@5 0.8819 → 0.7153
+and MRR 0.5831 → 0.4016 while Recall@10 *improved* — RRF's `k=60` is nearly
+flat across ranks, so a deep fetch lets mediocre both-legs pages outrank a
+rank-1 single-leg hit. The right answers are in the wider pool but drowned in
+the top 5; re-scoring that pool is the #1104 reranker's job, and that PR is
+what raises the effective width.
 
 The `includeSubPages` branch (#814) is gated independently of the RAG
 retrieval filters, since it injects a caller-supplied page tree rather than

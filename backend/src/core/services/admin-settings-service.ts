@@ -1,5 +1,7 @@
 import { query } from '../db/postgres.js';
 import { makeCachedSetting } from './cached-setting.js';
+import { safeIntOr } from '../utils/safe-int.js';
+import { logger } from '../utils/logger.js';
 
 /**
  * Returns the embedding vector dimension used by the shared `page_embeddings`
@@ -20,6 +22,91 @@ export async function getEmbeddingDimensions(): Promise<number> {
     if (Number.isFinite(n) && n > 0) return n;
   }
   return parseInt(process.env.EMBEDDING_DIMENSIONS ?? '1024', 10);
+}
+
+/**
+ * Per-leg retrieval candidate fetch width (#1103): how many rows each RAG
+ * retrieval leg pulls before fusion and ranking, decoupled from the number of
+ * results the caller gets back. `resolveStageLimit` (rag-service.ts) floors
+ * the effective per-leg limit at `topK` (and at `ceil(topK*1.5)` under the EE
+ * ACL post-filter), so this knob can only ever ADD ranking headroom.
+ *
+ * **The default deliberately stays at the legacy per-leg limit (10), because
+ * a wide fetch without a reranker is a measured regression, not headroom.**
+ * On #1102's fixture, width 30 with plain RRF scored Recall@5 0.7153 / MRR
+ * 0.4016 against the width-10 baseline's 0.8819 / 0.5831 (29 losses, 5 wins)
+ * — while Recall@10 *improved* (0.9236 → 0.9444). RRF with k=60 is nearly
+ * flat across ranks, so once the legs run deep, a mediocre page appearing in
+ * BOTH legs (~2/(70..90) ≈ 0.024) outranks a rank-1 single-leg hit
+ * (1/61 ≈ 0.016): the right answers are *in* the wider pool but drowned
+ * inside the top 5. That is precisely the re-scoring job a cross-encoder
+ * does — #1104 raises the effective width together with the stage that can
+ * consume it. Do not raise this default on its own.
+ */
+export const RAG_FETCH_WIDTH_DEFAULT = 10;
+
+/**
+ * Ceiling on the admin-configured fetch width. This caps the *knob*, not the
+ * stage limit: `resolveStageLimit`'s topK floors can exceed it for a caller
+ * that legitimately asks for more rows (interactive search's Zod schema caps
+ * `limit` at 20 today; internal callers own their topK). Values below the
+ * default fall back to it — a sub-legacy width has no upside and silently
+ * recreates the #1263 under-fetch (`parseInt('1e3') === 1`).
+ */
+export const RAG_FETCH_WIDTH_MAX = 200;
+
+/** 60-second in-process cache, mirroring `getStreamCap` (sse-stream-limiter). */
+const RAG_FETCH_WIDTH_CACHE_TTL_MS = 60_000;
+let ragFetchWidthCache: { value: number; expiresAt: number } | null = null;
+
+/**
+ * Resolve the configured fetch width from the `rag_fetch_width` row in
+ * `admin_settings`, clamped to [RAG_FETCH_WIDTH_DEFAULT, RAG_FETCH_WIDTH_MAX].
+ * Deliberately **no env fallback** — this knob postdates the admin_settings
+ * convention and ADR-021 forbids new env-driven LLM config. Cached in-process
+ * for 60 s so the retrieval hot path pays no per-request round-trip; #1118's
+ * PUT handler must call {@link invalidateRagFetchWidthCache} after writing
+ * (other processes converge within the TTL, as with the stream cap).
+ *
+ * Soft-fails to the default: this read failing must degrade the *tuning*,
+ * never the search — the retrieval legs surface a genuinely broken database.
+ */
+export async function getRagFetchWidth(): Promise<number> {
+  if (ragFetchWidthCache && Date.now() < ragFetchWidthCache.expiresAt) {
+    return ragFetchWidthCache.value;
+  }
+
+  let resolved = RAG_FETCH_WIDTH_DEFAULT;
+  try {
+    const r = await query<{ setting_value: string }>(
+      `SELECT setting_value FROM admin_settings WHERE setting_key = 'rag_fetch_width'`,
+    );
+    // safeIntOr with min = DEFAULT: sub-legacy widths (including typo shapes
+    // parseInt truncates, e.g. '1e3' → 1) fall back to the default — see
+    // RAG_FETCH_WIDTH_MAX's JSDoc.
+    resolved = Math.min(
+      safeIntOr(r.rows[0]?.setting_value, RAG_FETCH_WIDTH_DEFAULT, RAG_FETCH_WIDTH_DEFAULT),
+      RAG_FETCH_WIDTH_MAX,
+    );
+  } catch (err) {
+    // Mirrors getStreamCap (sse-stream-limiter): log — an admin_settings-only
+    // failure while retrieval stays healthy must not be invisible — and cache
+    // the safe default for the TTL, so a persistent failure costs one failing
+    // SELECT per minute, not one per search. The default is the value the
+    // knob would resolve to on most deployments anyway.
+    logger.warn({ err }, 'Failed to resolve rag_fetch_width — using default fetch width');
+  }
+
+  ragFetchWidthCache = { value: resolved, expiresAt: Date.now() + RAG_FETCH_WIDTH_CACHE_TTL_MS };
+  return resolved;
+}
+
+/**
+ * Called after writing `rag_fetch_width` (admin PUT, #1118; tests) so the new
+ * value takes effect immediately in the local process.
+ */
+export function invalidateRagFetchWidthCache(): void {
+  ragFetchWidthCache = null;
 }
 
 /**
