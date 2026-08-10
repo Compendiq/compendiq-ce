@@ -72,6 +72,19 @@ export function AskModeInput() {
     inputRef.current?.focus();
   }, [inputRef]);
 
+  // The composer is deliberately NOT gated on embedding status, unlike the
+  // example chips below (#1257 post-review, decided on backend evidence):
+  // POST /llm/ask never refuses over zero embeddings, and it is not reduced
+  // to ungrounded chat either — hybridSearch always runs its keyword FTS leg
+  // (rag-service.ts `keywordSearch`, over synced page text, no embeddings
+  // required), so a typed question can still come back grounded and cited;
+  // the route also injects page-tree context (`includeSubPages` + pageId)
+  // and MCP `externalUrls` docs, both embedding-free. Gating send here would
+  // turn a degraded-retrieval state into a total outage of those working
+  // paths. The chips differ: they are app-authored invitations to semantic
+  // jobs ("find duplicates") that specifically need the vector leg, so they
+  // stay inert until it verifiably exists. The amber banner above the thread
+  // keeps naming the degradation in both empty and answered states.
   const handleAsk = useCallback(async () => {
     if (!input.trim() || isStreaming) return;
     if (!model) {
@@ -239,10 +252,24 @@ export function AskExamplePrompts() {
 
   // The chips invite exactly the retrieval the zero-embeddings banner above
   // them says is absent — with nothing embedded, "Find pages that look like
-  // duplicates" can only produce a confident answer over no context. Same
-  // condition as the banner, so they re-enable the moment embeddings exist
-  // (the status query already polls while a pass is processing).
+  // duplicates" can only produce a confident answer over no context. They
+  // re-enable the moment embeddings exist (the status query already polls
+  // while a pass is processing).
+  //
+  // #1257 post-review: the banner's own predicate is NOT the chips' gate.
+  // `isZeroEmbeddings` is false while the status is still undefined — the
+  // first-paint window, and permanently when /embeddings/status errors —
+  // which left the chips live in exactly the windows where nothing is known
+  // to be retrievable. The chips are invitations this app authors, so they
+  // enable only on a RESOLVED status showing at least one embedded page;
+  // brief first-paint inertness on a healthy instance is honest. (A fresh
+  // install, totalPages === 0, is inert too: the banner hides there because
+  // "not embedded yet" would misname the gap, but a retrieval demo over an
+  // empty corpus is no more answerable.) `notEmbedded` still keys the
+  // aria-describedby: the banner only renders on its own verdict, and a
+  // reference to an absent node is a dangling id.
   const notEmbedded = isZeroEmbeddings(embeddingStatus);
+  const chipsInert = !embeddingStatus || embeddingStatus.embeddedPages === 0;
 
   // Suggestions are built from this instance's real content. The previous
   // hardcoded list named a tag and a space that do not exist in a fresh
@@ -265,7 +292,7 @@ export function AskExamplePrompts() {
   const pick = (prompt: string) => {
     // aria-disabled (unlike native disabled) does not block events, so both
     // the click and the keydown path funnel through this guard.
-    if (notEmbedded) return;
+    if (chipsInert) return;
     setInput(prompt);
     // Defer focus to next tick so the input mounts before we focus it.
     requestAnimationFrame(() => {
@@ -297,7 +324,7 @@ export function AskExamplePrompts() {
             // on a chip to hear WHY the suggestions are inert. This keeps them
             // focusable, announces the disabled state, and aria-describedby
             // hands AT the banner's explanation as the reason.
-            aria-disabled={notEmbedded || undefined}
+            aria-disabled={chipsInert || undefined}
             aria-describedby={notEmbedded ? NO_EMBEDDINGS_NOTICE_ID : undefined}
             onClick={() => pick(prompt)}
             onKeyDown={(e) => {
@@ -308,7 +335,7 @@ export function AskExamplePrompts() {
             }}
             className={cn(
               'group flex w-full items-start gap-2.5 rounded-lg border border-border px-3 py-2.5 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-              notEmbedded
+              chipsInert
                 // Explicit muted token, NOT opacity: compositing half-alpha
                 // over the card surface lands differently per theme (measured
                 // 3.64:1 Graphite vs 2.66:1 Paper for opacity-50), while

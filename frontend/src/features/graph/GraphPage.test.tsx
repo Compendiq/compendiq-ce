@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, onlineManager } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { GraphPage } from './GraphPage';
 
@@ -841,6 +841,245 @@ describe('GraphPage', () => {
     // Still the graph — never the picker — for the rest of the visit.
     expect(screen.getByTestId('mock-force-graph')).toBeInTheDocument();
     expect(screen.queryByTestId('graph-picker-landing')).not.toBeInTheDocument();
+  });
+
+  // ---------- #1257 post-review fixes (batch code review) ----------
+
+  // F-A: the probe card had no exit for a fetch that never SETTLES. Offline,
+  // TanStack's networkMode 'online' pauses the query (fetchStatus 'paused',
+  // failureCount frozen at 0); a hung connection stays pending forever. Both
+  // must fall through to the picker — static content that works without the
+  // verdict — instead of pinning /graph on "Checking your knowledge base…".
+
+  it('renders the picker, not a stuck probe card, when the probe is paused offline (F-A)', async () => {
+    onlineManager.setOnline(false);
+    try {
+      vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise(() => {}));
+
+      render(<GraphPage />, { wrapper: createWrapper(['/graph']) });
+
+      expect(await screen.findByTestId('graph-picker-landing')).toBeInTheDocument();
+      expect(screen.queryByText('Checking your knowledge base…')).not.toBeInTheDocument();
+    } finally {
+      onlineManager.setOnline(true);
+    }
+  });
+
+  it('bounds the pending probe: a hung status request falls through to the picker (F-A)', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise(() => {}));
+
+      render(<GraphPage />, { wrapper: createWrapper(['/graph']) });
+
+      // The card holds while the pending window is open…
+      expect(screen.getByText('Checking your knowledge base…')).toBeInTheDocument();
+
+      // …and a request still unsettled past PROBE_PENDING_TIMEOUT_MS (3s)
+      // stops holding the screen hostage.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3_100);
+      });
+
+      expect(screen.getByTestId('graph-picker-landing')).toBeInTheDocument();
+      expect(screen.queryByText('Checking your knowledge base…')).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // F-C(1): totalPages === 0 is what the probe reads mid-first-sync, so it
+  // must never latch "small" — the one-way latch would then pin the growing
+  // global graph open as the corpus passed 50, 500, 5000 until route exit.
+
+  it('never latches "small" on totalPages === 0 — first sync must not pin the graph open (F-C)', async () => {
+    mockFetchRoutes([
+      ['/embeddings/status', { totalPages: 0, embeddedPages: 0, dirtyPages: 0, totalEmbeddings: 0, isProcessing: false }],
+      ['/pages/graph', mockGraphData],
+    ]);
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <LazyMotion features={domAnimation}>
+          <MemoryRouter initialEntries={['/graph']}>
+            <GraphPage />
+          </MemoryRouter>
+        </LazyMotion>
+      </QueryClientProvider>,
+    );
+
+    // A resolved 0 keeps the picker — no skip, no graph fetch commitment.
+    expect(await screen.findByTestId('graph-picker-landing')).toBeInTheDocument();
+    expect(screen.queryByTestId('mock-force-graph')).not.toBeInTheDocument();
+
+    // The poll then discovers a corpus already past the limit. Had 0 latched
+    // "small", this would render the hairball; it must stay the picker.
+    act(() => {
+      queryClient.setQueryData(['embeddings', 'status'], {
+        totalPages: 60, embeddedPages: 10, dirtyPages: 50, totalEmbeddings: 20, isProcessing: true,
+      });
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(screen.getByTestId('graph-picker-landing')).toBeInTheDocument();
+    expect(screen.queryByTestId('mock-force-graph')).not.toBeInTheDocument();
+  });
+
+  it('latches only once the poll resolves a real count within [1, limit] (F-C)', async () => {
+    mockFetchRoutes([
+      ['/embeddings/status', { totalPages: 0, embeddedPages: 0, dirtyPages: 0, totalEmbeddings: 0, isProcessing: false }],
+      ['/pages/graph', mockGraphData],
+    ]);
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <LazyMotion features={domAnimation}>
+          <MemoryRouter initialEntries={['/graph']}>
+            <GraphPage />
+          </MemoryRouter>
+        </LazyMotion>
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByTestId('graph-picker-landing')).toBeInTheDocument();
+
+    // First sync lands the corpus inside the limit — NOW the skip engages.
+    act(() => {
+      queryClient.setQueryData(['embeddings', 'status'], {
+        totalPages: 6, embeddedPages: 6, dirtyPages: 0, totalEmbeddings: 12, isProcessing: false,
+      });
+    });
+
+    expect(await screen.findByTestId('mock-force-graph')).toBeInTheDocument();
+    expect(screen.queryByTestId('graph-picker-landing')).not.toBeInTheDocument();
+  });
+
+  // F-C(2): the status count is a PROXY (its visibility predicate and the
+  // graph's space_key-only population are non-nested), so a proxy-approved
+  // direct render can fetch a multi-hundred-node graph. The response's exact
+  // node count is the authority: over the limit, fall back to the picker —
+  // unless the user explicitly opted in.
+
+  /** 51 nodes — one past SMALL_GRAPH_NODE_LIMIT (50). */
+  const oversizedGraphPayload = {
+    nodes: Array.from({ length: 51 }, (_, i) => ({
+      id: String(i + 1),
+      confluenceId: `page-${i + 1}`,
+      spaceKey: 'DEV',
+      title: `Page ${i + 1}`,
+      labels: [],
+      embeddingStatus: 'embedded',
+      embeddingCount: 1,
+      lastModifiedAt: null,
+      parentId: null,
+    })),
+    edges: [{ source: '1', target: '2', type: 'label_overlap', score: 1 }],
+  };
+
+  it('falls back to the picker when a proxy-approved fetch exceeds the node limit (F-C)', async () => {
+    const fetchSpy = mockFetchRoutes([
+      // The proxy says 40 — under the limit, so the gate is skipped…
+      ['/embeddings/status', { totalPages: 40, embeddedPages: 40, dirtyPages: 0, totalEmbeddings: 80, isProcessing: false }],
+      // …but the graph's own population comes back at 51.
+      ['/pages/graph', oversizedGraphPayload],
+    ]);
+
+    render(<GraphPage />, { wrapper: createWrapper(['/graph']) });
+
+    expect(await screen.findByTestId('graph-picker-landing')).toBeInTheDocument();
+    expect(screen.queryByTestId('mock-force-graph')).not.toBeInTheDocument();
+
+    // This is the POST-fetch guard, not the pre-gate: the global fetch ran.
+    const calls = fetchSpy.mock.calls.map((c) => String(c[0]));
+    expect(calls.some((u) => u.includes('/pages/graph?'))).toBe(true);
+
+    // The escape hatch still works from the fallback picker: opting in
+    // renders whatever comes back, hairball included.
+    fireEvent.click(screen.getByTestId('graph-show-full-btn'));
+    expect(await screen.findByTestId('mock-force-graph')).toBeInTheDocument();
+  });
+
+  it('the explicit ?full=1 opt-in keeps rendering an over-limit graph (F-C)', async () => {
+    mockFetchRoutes([
+      ['/embeddings/status', { totalPages: 40, embeddedPages: 40, dirtyPages: 0, totalEmbeddings: 80, isProcessing: false }],
+      ['/pages/graph', oversizedGraphPayload],
+    ]);
+
+    render(<GraphPage />, { wrapper: createWrapper(['/graph?full=1']) });
+
+    expect(await screen.findByTestId('mock-force-graph')).toBeInTheDocument();
+    expect(screen.queryByTestId('graph-picker-landing')).not.toBeInTheDocument();
+  });
+
+  // F-D: once the latch renders the graph, the status query's 3s processing
+  // poll bought nothing — each result forced a full canvas repaint. The poll
+  // gates off with the latch; the picker branch keeps live status.
+
+  it('stops the status poll once the small-corpus latch renders the graph (F-D)', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchSpy = mockFetchRoutes([
+        ['/embeddings/status', { totalPages: 6, embeddedPages: 3, dirtyPages: 3, totalEmbeddings: 6, isProcessing: true }],
+        ['/pages/graph', mockGraphData],
+      ]);
+
+      render(<GraphPage />, { wrapper: createWrapper(['/graph']) });
+
+      // Flush the probe → latch → graph-fetch chain without waitFor (which
+      // cannot poll under fake timers).
+      for (let i = 0; i < 3; i++) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(10);
+        });
+      }
+      expect(screen.getByTestId('mock-force-graph')).toBeInTheDocument();
+
+      const statusCalls = () =>
+        fetchSpy.mock.calls.filter(([u]) => String(u).includes('/embeddings/status')).length;
+      const before = statusCalls();
+
+      // isProcessing:true means a live query would re-poll every 3s. Three
+      // intervals later, a gated query has fired nothing new.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      expect(statusCalls()).toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps the status poll live on the picker branch while a pass is processing (F-D)', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchSpy = mockFetchRoutes([
+        ['/embeddings/status', { totalPages: 500, embeddedPages: 10, dirtyPages: 490, totalEmbeddings: 20, isProcessing: true }],
+      ]);
+
+      render(<GraphPage />, { wrapper: createWrapper(['/graph']) });
+
+      for (let i = 0; i < 3; i++) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(10);
+        });
+      }
+      expect(screen.getByTestId('graph-picker-landing')).toBeInTheDocument();
+
+      const statusCalls = () =>
+        fetchSpy.mock.calls.filter(([u]) => String(u).includes('/embeddings/status')).length;
+      const before = statusCalls();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3_500);
+      });
+      expect(statusCalls()).toBeGreaterThan(before);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('focus mode sends edgeTypes and minScore filter params to /graph/local (#360)', async () => {

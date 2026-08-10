@@ -1597,6 +1597,36 @@ describe('AiAssistantPage', () => {
       fireEvent.click(chips[0]);
       expect(screen.getByTestId('ask-input')).toHaveValue(chips[0].textContent);
     });
+
+    // #1257 post-review (F-B): the banner's predicate (`isZeroEmbeddings`) is
+    // FALSE while the status is still undefined — the first-paint window, and
+    // permanently when /embeddings/status errors — which used to leave the
+    // chips live in exactly the windows where nothing is known to be
+    // retrievable: the confident-answer-over-no-context path this gate exists
+    // to close. Undefined/error → inert. No aria-describedby here: the banner
+    // only renders on a resolved zero verdict, and pointing at an absent node
+    // is a dangling reference.
+    it('keeps the example prompts inert while the embedding status is unknown', () => {
+      mockEmbeddingStatus = { data: undefined };
+
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      const chips = screen.getAllByTestId('ask-example-prompt');
+      expect(chips.length).toBeGreaterThan(0);
+      for (const chip of chips) {
+        expect(chip).toHaveAttribute('aria-disabled', 'true');
+        expect(chip).not.toHaveAttribute('aria-describedby');
+        expect(chip.className).toContain('cursor-not-allowed');
+        expect(chip.className).toContain('text-muted-foreground');
+      }
+
+      // No banner in this window, and no dangling reference to one.
+      expect(screen.queryByTestId('ai-no-embeddings-notice')).not.toBeInTheDocument();
+
+      // The click handler refuses too — aria-disabled blocks no events.
+      fireEvent.click(chips[0]);
+      expect(screen.getByTestId('ask-input')).toHaveValue('');
+    });
   });
 
   describe('performance: stable message IDs (#521)', () => {
