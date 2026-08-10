@@ -124,18 +124,24 @@ describe('Article reading measure', () => {
     expect(newPage).toMatch(/article-document/);
   });
 
-  // An input is inline-block, and `margin-inline: auto` is a no-op on an inline
-  // box — the title renders at the right WIDTH but stays left-aligned in a
-  // column whose body is centred. Measured, this was a 240px offset.
+  // A form control is inline-block, and `margin-inline: auto` is a no-op on an
+  // inline box — the title renders at the right WIDTH but stays left-aligned in
+  // a column whose body is centred. Measured, this was a 240px offset.
+  //
+  // Both titles are `AutoGrowTextarea` now, so `block` lives in the shared
+  // component rather than at each callsite.
+  it('gives the shared title field `block` so auto margins can centre it', () => {
+    const field = readFileSync(resolve(dir, 'shared/components/AutoGrowTextarea.tsx'), 'utf-8');
+    expect(field, 'a measured form control needs `block`, or auto margins do nothing')
+      .toMatch(/'block w-full/);
+  });
+
   it.each([
     ['features/pages/PageViewPage.tsx', 'the edit-mode title'],
     ['features/pages/NewPagePage.tsx', 'the New Page title'],
-  ])('gives %s input `block` so auto margins can centre it', (file) => {
+  ])('%s (%s) uses the shared auto-growing field, not a clipping input', (file) => {
     const src = readFileSync(resolve(dir, file), 'utf-8');
-    expect(
-      src,
-      'a measured <input> needs `block`, or auto margins do nothing',
-    ).toMatch(/className="block w-full/);
+    expect(src).toMatch(/<AutoGrowTextarea/);
   });
 
   // If these drift apart the line breaks move the moment you press Edit, and

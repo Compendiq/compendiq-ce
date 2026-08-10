@@ -36,6 +36,7 @@ import { hasSubstantialLede } from '../../shared/lib/article-lede';
 import type { TocHeading } from '../../shared/components/article/TableOfContents';
 import { PageViewSkeleton } from '../../shared/components/feedback/Skeleton';
 import { TagPopover } from '../../shared/components/TagPopover';
+import { AutoGrowTextarea } from '../../shared/components/AutoGrowTextarea';
 import { ShortcutHint } from '../../shared/components/ShortcutHint';
 import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
 import { usePresence } from './use-presence';
@@ -889,13 +890,14 @@ export function PageViewPage() {
             />
           </span>
 
-          {/* Wraps internally as well. Wrapping the outer row alone still left
-              the actions on one unshrinkable line, so "Edit" — the most used
-              control on the page — was the part clipped off the right edge. */}
-          <div className="flex flex-wrap items-center gap-1.5">
+          {/* Two tiers. The secondaries wrap among themselves; Edit is a
+              sibling of that group and `shrink-0`, so it stays pinned at the
+              end of the row instead of being the thing that wraps away. */}
+          <div className="flex items-center gap-1.5">
             <PresenceAvatarStack viewers={presenceViewers} className="mr-1" />
             {editing ? null : (
               <>
+                <div className="flex flex-wrap items-center justify-end gap-1.5">
                 {/* Relocate between a local space and Confluence (#1123).
                     Replaces the "Publish to Confluence coming soon" stub,
                     which also gated on the retired `__local__` sentinel —
@@ -936,9 +938,28 @@ export function PageViewPage() {
                   <GitGraph size={12} className="mr-1 inline" />
                   Graph
                 </button>
+                </div>
+
+                {/* Edit is the primary action on this route and used to be its
+                    quietest control: 12px ghost text in a ~24px box, identical
+                    in weight to Relocate/Verify/Graph beside it, and last in a
+                    wrapping row — so at 834px and 390px it landed alone on a
+                    second line, below the 44px thumb minimum, on the half of
+                    the route the authoring audience exists for. The comment
+                    above already called it "the most used control on the page";
+                    `flex-wrap` fixed the clipping it described, not the
+                    hierarchy.
+
+                    A bordered secondary button, deliberately NOT the filled
+                    primary: ADR-010 keeps the accent for actions and the only
+                    filled teal on this route belongs to the setup banner, so a
+                    second one would just move the competition rather than end
+                    it. `shrink-0` and outside the wrapping group, so the
+                    secondaries wrap among themselves and Edit stays pinned. */}
                 <button
                   onClick={handleStartEditing}
-                  className="flex items-center gap-1 rounded-md px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+                  className="nm-button-ghost shrink-0 max-sm:min-h-11"
+                  data-testid="edit-page-btn"
                 >
                   Edit
                   <ShortcutHint shortcutId="toggle-edit" />
@@ -963,15 +984,16 @@ export function PageViewPage() {
                 left of the measured body. */}
             <div className="border-b border-border py-5">
               <div className="article-document mx-auto max-w-[1200px] px-5 sm:px-10">
-                <input
+                {/* Type ramp is copied from the read-mode <h1> verbatim
+                    (`text-3xl sm:text-4xl leading-[1.2] tracking-[-0.02em]`) so
+                    the title does not resize or re-wrap when you toggle Edit. */}
+                <AutoGrowTextarea
                   value={editTitle}
-                  onChange={(event) => setEditTitle(event.target.value)}
-                  // `block` so the measure's `margin-inline: auto` can centre
-                  // it — an input is inline-block by default and auto margins
-                  // are a no-op on an inline box, which leaves the title
-                  // left-aligned in a column its own body is centred in.
-                  className="block w-full bg-transparent text-3xl font-bold leading-tight tracking-[-0.02em] text-foreground outline-none placeholder:text-muted-foreground/40"
+                  onValueChange={setEditTitle}
+                  className="text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground placeholder:text-muted-foreground/40 sm:text-4xl"
                   placeholder="Page title…"
+                  aria-label="Page title"
+                  data-testid="edit-title-input"
                 />
               </div>
             </div>
