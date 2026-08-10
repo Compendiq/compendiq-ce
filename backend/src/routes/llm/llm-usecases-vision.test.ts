@@ -182,7 +182,7 @@ describe.skipIf(!dbAvailable)('GET /api/admin/llm-usecases/chat/vision-capabilit
     });
 
     expect(res.statusCode).toBe(404);
-    expect(res.json().error).toContain('Settings → LLM');
+    expect(res.json().error).toContain('Settings → AI Models');
   });
 
   it('rejects a non-admin with 403', async () => {

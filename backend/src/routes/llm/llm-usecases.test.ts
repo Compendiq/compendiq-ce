@@ -321,7 +321,7 @@ describe.skipIf(!dbAvailable)('GET /api/llm/usecase-default', () => {
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(r.statusCode).toBe(404);
-    expect(r.json().error).toMatch(/Settings → LLM/);
+    expect(r.json().error).toMatch(/Settings → AI Models/);
   });
 
   describe('GET /llm/usecase-default vision field (#1154)', () => {
@@ -488,9 +488,9 @@ describe.skipIf(!dbAvailable)('GET /api/llm/usecase-default', () => {
         url: '/api/llm/usecase-default?usecase=chat',
         headers: { authorization: `Bearer ${adminToken}` },
       });
-      // Schema validation error triggers a 500, not the 404 "Configure one in Settings → LLM"
+      // Schema validation error triggers a 500, not the 404 "Configure one in Settings → AI Models"
       expect(res.statusCode).not.toBe(404);
-      expect(res.json().error).not.toMatch(/Settings → LLM/);
+      expect(res.json().error).not.toMatch(/Settings → AI Models/);
     });
   });
 });

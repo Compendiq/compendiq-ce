@@ -3,6 +3,7 @@ import { Image as ImageIcon, Loader2, X } from 'lucide-react';
 import { SUPPORTED_IMAGE_FORMATS } from '@compendiq/contracts';
 import type { PreparedImage } from '../../hooks/use-prepare-image';
 import { cn } from '../../lib/cn';
+import { AI_MODELS_SETTINGS_LABEL } from '../../lib/routes';
 import { composerRowClass } from './composer-row';
 
 /**
@@ -68,10 +69,8 @@ export function imageDisabledReason(
     return 'Waiting for the chat model — images can be attached once it loads.';
   }
   if (vision === false) {
-    // Panel name is a literal (shared/ must not import features/settings);
-    // settings-wayfinding.test.ts holds it to the live rail label.
     return `The model assigned to chat (${visionModel}) can't read images — `
-      + 'assign a vision-capable model in Settings → AI Models.';
+      + `assign a vision-capable model in Settings → ${AI_MODELS_SETTINGS_LABEL}.`;
   }
   return `Image support for the model assigned to chat (${visionModel}) isn't `
     + 'confirmed yet — try again shortly.';

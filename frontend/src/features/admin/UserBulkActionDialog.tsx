@@ -24,6 +24,7 @@
  */
 
 import { useCallback, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import * as Dialog from '@radix-ui/react-dialog';
 import { toast } from 'sonner';
@@ -301,7 +302,7 @@ function UserBulkActionDialogInner({
                   data-testid="bulk-action-group"
                 />
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Pick the group id from <a href={`${SETTINGS_PANELS.access.path}?sub=rbac`} className="underline">Settings → {SETTINGS_PANELS.access.label} → Roles</a>.
+                  Pick the group id from <Link to={`${SETTINGS_PANELS.access.path}?sub=rbac`} className="underline">Settings → {SETTINGS_PANELS.access.label} → Roles</Link>.
                 </p>
               </label>
             )}

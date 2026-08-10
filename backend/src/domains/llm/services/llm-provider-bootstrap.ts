@@ -59,7 +59,7 @@ export async function bootstrapLlmProviders(): Promise<void> {
   // Deprecation notices.
   for (const v of DEPRECATED_VARS) {
     if (process.env[v]) {
-      logger.info({ envVar: v }, 'Deprecated LLM env var is set — it has no effect after migration 054. Configure providers in Settings → LLM.');
+      logger.info({ envVar: v }, 'Deprecated LLM env var is set — it has no effect after migration 054. Configure providers in Settings → AI Models.');
     }
   }
 

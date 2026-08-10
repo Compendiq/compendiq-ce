@@ -364,7 +364,7 @@ export async function resolveImagePart(
   if (vision === false) {
     throw fastify.httpErrors.unprocessableEntity(
       `The model assigned to chat (${model}) cannot accept images. ` +
-      'Assign a vision-capable model in Settings → LLM.',
+      'Assign a vision-capable model in Settings → AI Models.',
     );
   }
   if (vision !== true) {
@@ -374,7 +374,7 @@ export async function resolveImagePart(
     throw fastify.httpErrors.unprocessableEntity(
       `Image support for the model assigned to chat (${model}) has not been ` +
       'confirmed yet. Try again shortly, or assign a known vision-capable ' +
-      'model in Settings → LLM.',
+      'model in Settings → AI Models.',
     );
   }
 

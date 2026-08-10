@@ -28,7 +28,7 @@ const USECASES: readonly LlmUsecase[] = ['chat', 'summary', 'quality', 'auto_tag
 
 /** #1184 — shared by the capability read and the manual re-probe. */
 const NO_CHAT_PROVIDER =
-  'No provider resolved for use case "chat". Configure one in Settings → LLM.';
+  'No provider resolved for use case "chat". Configure one in Settings → AI Models.';
 
 /**
  * The provider+model that `chat` currently resolves to, or null when nothing
@@ -54,7 +54,7 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
       resolved = await resolveUsecase(usecase);
     } catch {
       return reply.code(404).send({
-        error: `No provider resolved for use case "${usecase}". Configure one in Settings → LLM.`,
+        error: `No provider resolved for use case "${usecase}". Configure one in Settings → AI Models.`,
       });
     }
 
@@ -211,7 +211,7 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
   // GET /admin/llm-usecases/chat/vision-capability — the stored verdict plus
   // the evidence behind it, so the Settings badge can render `probed_at` and
   // `probe_error` on page load rather than only after a click. A pure cache
-  // read: it never probes, because it runs on every paint of Settings → LLM.
+  // read: it never probes — it runs on every paint of Settings → AI Models.
   fastify.get(
     '/admin/llm-usecases/chat/vision-capability',
     { preHandler: fastify.requireAdmin, ...ADMIN_LIMIT },

@@ -155,11 +155,11 @@ export function firstVisiblePath(ctx: AccessContext): string {
 /**
  * Flat panel lookup keyed by nav-item id — the wayfinding source of truth.
  *
- * In-app copy that points at a settings panel ("Settings → AI Models", an
- * `<a href>` into `/settings/...`) must take the label/path from here rather
- * than restating them: the IA has been renamed before (LLM → AI Models,
- * Spaces → Spaces & Sync, RBAC → Access Control) and every literal that
- * restated the old rail went stale in place — including a real link to a
+ * In-app copy that points at a settings panel (a breadcrumb-style "Settings"
+ * chain, an `<a href>` into `/settings/...`) must take the label/path from
+ * here rather than restating them: the IA has been renamed before (LLM →
+ * AI Models, Spaces → Spaces & Sync, RBAC → Access Control) and every literal
+ * that restated the old rail went stale in place — including a real link to a
  * route that 404s. `settings-wayfinding.test.ts` scans the source tree for
  * literals that drift from this table.
  */

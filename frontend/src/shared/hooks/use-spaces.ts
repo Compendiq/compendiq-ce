@@ -40,9 +40,10 @@ interface BulkSyncResult {
 }
 
 /**
- * Settings → Spaces & Sync → Sync schedule "Force Re-sync All" trigger. Unlike `useSync()` (which runs
- * the incremental `syncUser` and skips pages whose Confluence version hasn't
- * changed), this re-fetches every Confluence-sourced page the user can see —
+ * The "Force Re-sync All" trigger in Settings → Spaces & Sync → Sync schedule.
+ * Unlike `useSync()` (which runs the incremental `syncUser` and skips pages
+ * whose Confluence version hasn't changed), this re-fetches every
+ * Confluence-sourced page the user can see —
  * the same UPDATE path as the per-article Re-sync button, just expanded to
  * filter mode. Pages get `embedding_dirty = TRUE` so embeddings re-run.
  *

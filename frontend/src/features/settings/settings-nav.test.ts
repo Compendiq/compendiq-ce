@@ -8,7 +8,7 @@ import {
   type SettingsNavItem,
   type SettingsPanelId,
 } from './settings-nav';
-import { CONFLUENCE_SETTINGS_PATH } from '../../shared/lib/routes';
+import { AI_MODELS_SETTINGS_LABEL, CONFLUENCE_SETTINGS_PATH } from '../../shared/lib/routes';
 
 function ctx(partial: Partial<AccessContext> = {}): AccessContext {
   return {
@@ -117,5 +117,12 @@ describe('SETTINGS_PANELS', () => {
         expect(ref.label).toBe(item.label);
       }
     }
+  });
+
+  // shared/lib/routes.ts mirrors this label so shared/ components can name
+  // the panel without importing features/ — same arrangement as
+  // CONFLUENCE_SETTINGS_PATH above.
+  it('keeps the shared AI Models label constant in sync', () => {
+    expect(SETTINGS_PANELS.models.label).toBe(AI_MODELS_SETTINGS_LABEL);
   });
 });

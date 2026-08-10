@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { UserBulkActionDialog } from './UserBulkActionDialog';
 import { useAuthStore } from '../../stores/auth-store';
@@ -36,7 +37,10 @@ function createWrapper() {
   });
   return function Wrapper({ children }: { children: React.ReactNode }) {
     return (
-      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      <QueryClientProvider client={queryClient}>
+        {/* Router context for the dialog's <Link> into Settings → Access Control. */}
+        <MemoryRouter>{children}</MemoryRouter>
+      </QueryClientProvider>
     );
   };
 }

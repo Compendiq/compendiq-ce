@@ -133,7 +133,7 @@ export async function resolveUsecase(usecase: LlmUsecase): Promise<Resolved> {
     const orow = overrideRows.rows[0];
     if (!orow) {
       throw new Error(
-        `Org LLM policy refers to provider ${override.providerId} which no longer exists. Update the policy in Settings → LLM Policy.`,
+        `Org LLM policy refers to provider ${override.providerId} which no longer exists. Update the policy in Settings → AI Safety → LLM Policy.`,
       );
     }
     const cfg = loadProviderFromRow(orow);
@@ -177,7 +177,7 @@ export async function resolveUsecase(usecase: LlmUsecase): Promise<Resolved> {
   `;
   const r = await query<ResolveRow>(sql, [usecase]);
   const row = r.rows[0];
-  if (!row) throw new Error('No default provider configured — set one in Settings → LLM.');
+  if (!row) throw new Error('No default provider configured — set one in Settings → AI Models.');
 
   const cfg = loadProviderFromRow(row);
   const model = row.usecase_model ?? cfg.defaultModel ?? '';
