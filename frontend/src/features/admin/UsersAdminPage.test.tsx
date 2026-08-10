@@ -8,11 +8,13 @@ import { useAuthStore } from '../../stores/auth-store';
 // EE #116 — bulk UI is feature-gated. The default implementation here
 // keeps `bulk_user_operations` off so the existing CE #304 tests
 // describe the unchanged single-user CRUD path. Each test that asserts
-// the bulk affordances flips the flag explicitly.
+// the bulk affordances flips the flag explicitly. `mockIsEnterprise` is
+// mutable the same way so the EE-only Roles pointer is reachable too.
 let mockHasFeature: (f: string) => boolean = () => false;
+let mockIsEnterprise = false;
 vi.mock('../../shared/enterprise/use-enterprise', () => ({
   useEnterprise: () => ({
-    isEnterprise: false,
+    isEnterprise: mockIsEnterprise,
     hasFeature: (f: string) => mockHasFeature(f),
     ui: null,
     license: null,
@@ -66,9 +68,10 @@ let mockUsersList: typeof mockUsers = mockUsers;
 
 describe('UsersAdminPage', () => {
   beforeEach(() => {
-    // Default: bulk feature OFF. Tests that need the bulk UI flip this
-    // before render.
+    // Default: bulk feature OFF, CE edition. Tests that need the bulk UI
+    // or the EE Roles pointer flip these before render.
     mockHasFeature = () => false;
+    mockIsEnterprise = false;
     mockUsersList = mockUsers;
 
     // Pretend we're logged in as alice so self-actions are hidden.
@@ -269,6 +272,30 @@ describe('UsersAdminPage', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('bulk-import-modal')).toBeInTheDocument();
+    });
+  });
+
+  // The Roles (RBAC) pointer mirrors AccessControlWrapper's rbac-tab
+  // visibility. In CE the rbac sub-tab is invisible and SubTabs falls back
+  // to the first visible tab — this very page — so rendering the link would
+  // make it a silent reload-in-place.
+  describe('Roles pointer (EE-gated)', () => {
+    it('CE: does not render the Roles link', async () => {
+      render(<UsersAdminPage />, { wrapper: createWrapper() });
+      await waitFor(() => screen.getByText('alice'));
+
+      expect(screen.queryByRole('link', { name: 'Roles' })).not.toBeInTheDocument();
+      expect(screen.queryByText(/Role assignment and space permissions/)).not.toBeInTheDocument();
+    });
+
+    it('EE + advanced_rbac: renders a router link to the Roles sub-tab', async () => {
+      mockIsEnterprise = true;
+      mockHasFeature = (f: string) => f === 'advanced_rbac';
+      render(<UsersAdminPage />, { wrapper: createWrapper() });
+      await waitFor(() => screen.getByText('alice'));
+
+      const link = screen.getByRole('link', { name: 'Roles' });
+      expect(link).toHaveAttribute('href', '/settings/governance/access?sub=rbac');
     });
   });
 });

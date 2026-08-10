@@ -229,6 +229,15 @@ describe('UserBulkActionDialog', () => {
     fireEvent.change(screen.getByTestId('bulk-action-kind'), {
       target: { value: 'add-to-group' },
     });
+
+    // The group-picker hint links into the live Roles sub-tab as a router
+    // <Link> — the old copy was an <a href="/settings/security/rbac"> that
+    // 404'd (settings-wayfinding.test.ts guards the path; this pins the
+    // rendered element).
+    expect(
+      screen.getByRole('link', { name: /Settings → Access Control → Roles/ }),
+    ).toHaveAttribute('href', '/settings/governance/access?sub=rbac');
+
     fireEvent.change(screen.getByTestId('bulk-action-group'), {
       target: { value: 'group-eng' },
     });

@@ -116,6 +116,28 @@ const SUB_TABS_BY_PANEL: Record<string, SubTabs> = Object.fromEntries(
   }),
 );
 
+// ---------------------------------------------------------------------------
+// shared/lib/routes.ts mirror constants. An interpolated chain segment may
+// reference one of these instead of SETTINGS_PANELS — but only one that is
+// actually exported there AND whose value is live. A name-shaped allow-list
+// alone let `${BOGUS_SETTINGS_LABEL}` through: the pattern matched, the
+// constant pinned nothing.
+// ---------------------------------------------------------------------------
+interface MirrorConstant {
+  name: string;
+  kind: 'LABEL' | 'PATH';
+  value: string;
+}
+const MIRROR_CONSTANTS: MirrorConstant[] = [
+  ...readFileSync(join(FRONTEND_SRC, 'shared', 'lib', 'routes.ts'), 'utf-8').matchAll(
+    /export const (\w+_SETTINGS_(LABEL|PATH)) = '([^']+)'/g,
+  ),
+].map((m) => ({ name: m[1]!, kind: m[2]! as 'LABEL' | 'PATH', value: m[3]! }));
+
+const MIRROR_NAME_RE = MIRROR_CONSTANTS.length
+  ? new RegExp(`\\b(?:${MIRROR_CONSTANTS.map((c) => c.name).join('|')})\\b`)
+  : /$^/;
+
 // Any arrow spelling a chain might use. Bare ">" is deliberately excluded —
 // JSX like `<Settings >` would false-positive.
 const CHAIN_START = /Settings\s*(?:→|->|&gt;|›)\s*/;
@@ -145,11 +167,11 @@ function chainFailure(chain: string): string | null {
 
   let panelId: string | null = null;
   if (first.startsWith('{') || first.startsWith('$')) {
-    // JSX / template-literal interpolation: fine, but only from the table
-    // (SETTINGS_PANELS or a *_SETTINGS_LABEL / *_SETTINGS_PATH mirror that
-    // settings-nav.test.ts pins to it).
-    if (!/SETTINGS_PANELS|_SETTINGS_LABEL|_SETTINGS_PATH/.test(first)) {
-      return `interpolated segment "${first.slice(0, 40)}" must come from SETTINGS_PANELS`;
+    // JSX / template-literal interpolation: fine, but only from the table —
+    // SETTINGS_PANELS, or a mirror constant that routes.ts really exports
+    // (whose value the "found the label sources" test holds to the table).
+    if (!/SETTINGS_PANELS/.test(first) && !MIRROR_NAME_RE.test(first)) {
+      return `interpolated segment "${first.slice(0, 40)}" must come from SETTINGS_PANELS or a routes.ts *_SETTINGS_LABEL/PATH export`;
     }
     const idMatch = first.match(/SETTINGS_PANELS(?:\.([a-zA-Z]+)|\[['"]([a-z-]+)['"]\])/);
     panelId = idMatch ? (idMatch[1] ?? idMatch[2]!) : null;
@@ -196,6 +218,20 @@ describe('settings wayfinding matches the live rail', () => {
     // Files walked on both sides — an empty backend walk would silently
     // un-extend the guard.
     expect(files.some(({ path }) => path.startsWith(BACKEND_SRC))).toBe(true);
+  });
+
+  it('every routes.ts mirror constant pins a live label or path', () => {
+    // The interpolation allow-list accepts these by name, so each must
+    // exist and carry a value the table recognises — otherwise a plausibly
+    // named constant would smuggle a dead pointer past the chain check.
+    expect(MIRROR_CONSTANTS.length).toBeGreaterThan(0);
+    for (const { name, kind, value } of MIRROR_CONSTANTS) {
+      if (kind === 'LABEL') {
+        expect(PANEL_LABELS, `${name} pins "${value}", not a live panel label`).toContain(value);
+      } else {
+        expect(PANEL_PATHS.has(value), `${name} pins "${value}", not a live panel path`).toBe(true);
+      }
+    }
   });
 
   it('every "Settings → …" names a live panel (and, beyond it, that panel\'s own sub-tab)', () => {
