@@ -8,6 +8,7 @@ import { useTemplates, useUseTemplate, useImportMarkdown, useLocalSpaces } from 
 import { Editor, EditorToolbar, TableContextToolbar, LayoutContextToolbar, ColumnContextToolbar, clearDraft } from '../../shared/components/article/Editor';
 import { FeatureErrorBoundary } from '../../shared/components/feedback/FeatureErrorBoundary';
 import { LocationPicker } from '../../shared/components/LocationPicker';
+import { AutoGrowTextarea } from '../../shared/components/AutoGrowTextarea';
 import type { LocationSelection } from '../../shared/components/LocationPicker';
 import { readLastConfluenceSpace, rememberConfluenceSpace } from './last-confluence-space';
 import type { Editor as EditorType } from '@tiptap/core';
@@ -491,13 +492,15 @@ export function NewPagePage() {
               every caller, so without this the title would stretch the full
               card width while the body sat at 40rem. */}
           <div className="article-document px-5 pt-5 sm:px-10 sm:pt-8">
-            <input
+            {/* Same auto-growing field as the edit route: a title is one
+                logical line but not one visual line, and an <input> clipped it
+                mid-word with no ellipsis. */}
+            <AutoGrowTextarea
               value={title}
-              onChange={(e) => setTitle(e.target.value)}
+              onValueChange={setTitle}
               placeholder="Untitled page"
-              // `block` so the measure's `margin-inline: auto` can centre it —
-              // auto margins are a no-op on an inline-block input.
-              className="block w-full bg-transparent text-2xl font-semibold text-foreground placeholder:text-muted-foreground/50 outline-none"
+              className="text-2xl font-semibold text-foreground placeholder:text-muted-foreground/50"
+              aria-label="Page title"
               data-testid="title-input"
               autoFocus
             />
