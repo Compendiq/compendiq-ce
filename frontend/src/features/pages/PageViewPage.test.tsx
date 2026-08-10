@@ -943,11 +943,13 @@ describe('PageViewPage', () => {
       render(<PageViewPage />, { wrapper: createWrapper() });
       const badge = screen.getByTestId('badge-draft');
       expect(badge.className).not.toMatch(/orange|amber|primary|warning|yellow/);
-      // bg-foreground/10, the compositing tint the whole badge cluster now
-      // shares with the PagesPage rows — bg-muted measured 1.00:1 against a
-      // hovered bg-accent row there (accent == muted in Graphite).
+      // bg-foreground/10 + text-secondary-foreground, the recipe the whole
+      // badge cluster shares with the PagesPage rows — bg-muted measured
+      // 1.00:1 against a hovered bg-accent row there (accent == muted in
+      // Graphite), and muted-fg 3.85:1 on the tinted hovered Paper row.
       expect(badge.className).toContain('bg-foreground/10');
-      expect(badge.className).toContain('text-muted-foreground');
+      expect(badge.className).toContain('text-secondary-foreground');
+      expect(badge.className).not.toContain('text-muted-foreground');
     } finally {
       currentMockPage = mockPage;
     }

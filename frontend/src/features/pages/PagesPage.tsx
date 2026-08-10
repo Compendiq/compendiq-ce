@@ -123,10 +123,14 @@ const PageListItem = memo(function PageListItem({
                   `bg-foreground/10`, NOT `bg-muted`: the row hovers with
                   `bg-accent`, and in Graphite accent == muted (1.00:1), so a
                   bg-muted chip vanished exactly while being pointed at. The
-                  compositing tint steps up from any ground it lands on. */}
+                  compositing tint steps up from any ground it lands on.
+                  The label is `text-secondary-foreground`, not muted: the
+                  tint darkens the ground under an 11px label, and muted-fg
+                  measured 3.85:1 on a hovered Paper row — under AA. The
+                  secondary ink clears 7.3:1+ on every ground here. */}
               {pageItem.source === 'standalone' ? (
                 <span
-                  className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border bg-foreground/10 px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                  className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border bg-foreground/10 px-2 py-0.5 text-[11px] font-medium text-secondary-foreground"
                   data-testid="badge-local"
                   data-source-badge={pageItem.id}
                 >
@@ -134,7 +138,7 @@ const PageListItem = memo(function PageListItem({
                 </span>
               ) : (
                 <span
-                  className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border bg-foreground/10 px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                  className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border bg-foreground/10 px-2 py-0.5 text-[11px] font-medium text-secondary-foreground"
                   data-testid="badge-confluence"
                   data-source-badge={pageItem.id}
                 >
@@ -145,7 +149,7 @@ const PageListItem = memo(function PageListItem({
               {pageItem.source === 'standalone' && (
                 (pageItem.visibility === 'shared') ? (
                   <span
-                    className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border bg-foreground/10 px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                    className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border bg-foreground/10 px-2 py-0.5 text-[11px] font-medium text-secondary-foreground"
                     data-testid="badge-shared"
                     data-visibility-badge={pageItem.id}
                   >
@@ -154,7 +158,7 @@ const PageListItem = memo(function PageListItem({
                 ) : (
                   // Private = neutral gray. Was amber, but privacy carries no AI semantic.
                   <span
-                    className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border bg-foreground/10 px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                    className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border bg-foreground/10 px-2 py-0.5 text-[11px] font-medium text-secondary-foreground"
                     data-testid="badge-private"
                     data-visibility-badge={pageItem.id}
                   >

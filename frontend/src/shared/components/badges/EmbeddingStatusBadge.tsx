@@ -40,6 +40,12 @@ function getStatusConfig(
         // rendered the dark pill on the white page. Tokens follow the active
         // theme. (The hexes had replaced status-inactive/20, which failed AA
         // — the muted pairing passes on every surface it lands on.)
+        //
+        // Deliberately `bg-muted`, NOT the row chips' `bg-foreground/10`
+        // tint: this badge renders only on ArticleRightPane's non-hovering
+        // nm-card, where muted is a real value step. The tint recipe exists
+        // for chips on rows that hover with `bg-accent` (== muted in
+        // Graphite) — check the ground before "unifying" in either direction.
         badgeClass: 'bg-muted text-muted-foreground',
         animate: false,
       };

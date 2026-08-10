@@ -300,10 +300,10 @@ function WorkerCard({ title, statusKey, statusEndpoint, runEndpoint, rescanEndpo
           <div className="flex flex-wrap gap-2">
             <StatusPill count={status.pending} label="Pending" icon={Clock} color="bg-warning/10 text-warning" />
             {/* Neutral: "processing" is queue activity, not an informational
-                notice. `spin` is what keeps it distinguishable from the
-                equally-neutral Skipped pill — without it the two were the
-                same pill with different words. Reduced-motion handling is
-                the app's global rule. */}
+                notice. The label and the Loader2 glyph (vs Skipped's Clock)
+                are the distinguishing channel; `spin` is a redundant
+                enhancement on top — reduced-motion users may never see it,
+                so it must not be the only difference. */}
             <StatusPill count={status.processing} label="Processing" icon={Loader2} color="bg-foreground/5 text-muted-foreground" spin />
             <StatusPill count={status.completed} label="Done" icon={CheckCircle} color="bg-success/10 text-success" />
             <StatusPill count={status.skipped} label="Skipped" icon={Clock} color="bg-foreground/5 text-muted-foreground" />
