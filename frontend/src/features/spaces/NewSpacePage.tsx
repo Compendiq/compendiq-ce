@@ -134,12 +134,13 @@ export function NewSpacePage() {
             />
           </div>
 
-          {/* Icon selector */}
+          {/* Icon selector — the picker is a named group ("Space icon"), so
+              this heading is visual only, not a <label> pointing at nothing. */}
           <div>
-            <label className="mb-1.5 block text-xs font-medium text-foreground">
+            <span className="mb-1.5 block text-xs font-medium text-foreground">
               Icon
               <span className="ml-1 text-muted-foreground font-normal">(optional)</span>
-            </label>
+            </span>
             <SpaceIconPicker value={selectedIcon} onChange={setSelectedIcon} />
           </div>
 

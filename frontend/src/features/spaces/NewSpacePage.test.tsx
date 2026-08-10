@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { NewSpacePage } from './NewSpacePage';
@@ -149,6 +149,20 @@ describe('NewSpacePage', () => {
         `option "${label}" should render the ${value} glyph`,
       ).not.toBeNull();
       expect(option).toHaveAttribute('aria-pressed', 'false');
+    }
+  });
+
+  it('names the picker group and gives options the interactive treatment', () => {
+    renderPage();
+    // Same recipe as LoginVariantPicker: a named group, and operable surfaces
+    // carrying the interactive border (never the quiet hairline) plus an
+    // explicit focus-visible outline.
+    const group = screen.getByRole('group', { name: 'Space icon' });
+    const options = within(group).getAllByRole('button');
+    expect(options).toHaveLength(SPACE_ICONS.length);
+    for (const option of options) {
+      expect(option.className).toContain('focus-visible:outline');
+      expect(option.className).toMatch(/border-(border-interactive|action)\b/);
     }
   });
 

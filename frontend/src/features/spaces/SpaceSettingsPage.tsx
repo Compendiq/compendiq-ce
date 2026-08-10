@@ -42,12 +42,12 @@ export function SpaceSettingsPage() {
       try {
         await updateSpace.mutateAsync({
           key,
+          // The update schema takes strings, not null: '' clears a previously
+          // set description/icon, and when the space never had one the field
+          // is omitted entirely (JSON.stringify drops undefined) so a plain
+          // rename does not write an empty string over NULL.
           name: name.trim(),
-          description: description.trim() || undefined,
-          // The update schema takes a string, not null: '' clears a previously
-          // set icon, and when the space never had one the field is omitted
-          // entirely (JSON.stringify drops undefined) so a plain rename does
-          // not write an empty string over NULL.
+          description: description.trim() || (space?.description ? '' : undefined),
           icon: icon ?? (space?.icon ? '' : undefined),
         });
         toast.success('Space updated');
@@ -157,12 +157,13 @@ export function SpaceSettingsPage() {
             />
           </div>
 
-          {/* Icon selector */}
+          {/* Icon selector — the picker is a named group ("Space icon"), so
+              this heading is visual only, not a <label> pointing at nothing. */}
           <div>
-            <label className="mb-1.5 block text-xs font-medium text-foreground">
+            <span className="mb-1.5 block text-xs font-medium text-foreground">
               Icon
               <span className="ml-1 text-muted-foreground font-normal">(optional)</span>
-            </label>
+            </span>
             <SpaceIconPicker value={icon} onChange={setIcon} />
           </div>
 

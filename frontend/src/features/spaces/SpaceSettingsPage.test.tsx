@@ -100,6 +100,25 @@ describe('SpaceSettingsPage', () => {
     });
   });
 
+  it('clears an emptied description instead of silently keeping the old one', async () => {
+    // `description.trim() || undefined` dropped the field from the JSON body,
+    // so emptying the textarea could never clear a saved description — the
+    // same trap the icon-clear path documents. Backend accepts ''.
+    mockUpdateMutateAsync.mockResolvedValueOnce({});
+    renderPage();
+
+    fireEvent.change(screen.getByLabelText('Description'), { target: { value: '' } });
+    fireEvent.click(screen.getByText('Save Changes'));
+
+    await waitFor(() => {
+      expect(mockUpdateMutateAsync).toHaveBeenCalledWith({
+        key: 'NOTES',
+        name: 'My Notes',
+        description: '',
+      });
+    });
+  });
+
   it('shows danger zone with delete button', () => {
     renderPage();
     expect(screen.getByText('Danger Zone')).toBeInTheDocument();
