@@ -11,12 +11,17 @@ import { PagesPage } from './PagesPage';
  * first and the title absorbed the entire deficit — "Incident runbook:
  * Postgres c…", "Quart…", "On-ca…"; four of six rows unidentifiable.
  *
- * The fix is structural, not cosmetic: below `sm` the title takes the full row
- * width and the badge cluster wraps to its own line beneath it, while at `sm+`
- * the single-line layout is untouched. jsdom performs no layout, so these
- * tests assert the DOM contract the classes encode — which elements share a
- * wrap container, and which classes force the break — the same argument
- * `article-measure-dom.test.tsx` makes for the reading measure.
+ * The fix is structural and content-driven: below `sm` the row may WRAP — a
+ * long title takes the full width and the badges drop beneath it, while a
+ * short row keeps today's single line and never pays the extra height. At
+ * `sm+` the added classes are inert and the single-line layout is untouched.
+ *
+ * jsdom performs no layout, so these tests assert the DOM contract the
+ * classes encode — which elements share a wrap container, and which classes
+ * allow the break — the same argument `article-measure-dom.test.tsx` makes
+ * for the reading measure. They deliberately cannot see the built CSS: that
+ * `max-sm:basis-auto` actually beats `flex-1`'s basis in cascade order is
+ * only observable in a real browser against the compiled stylesheet.
  */
 
 function createWrapper() {
@@ -118,25 +123,28 @@ describe('PagesPage row: mobile title layout', () => {
     return await screen.findByText(pageTitle);
   }
 
-  it('gives the title the full row width below sm, single-line above', async () => {
+  it('lets the title row wrap below sm — content-driven, never forced', async () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     const title = await findTitle();
-    // `max-sm:w-full` is what forces the badges onto the next flex line; the
-    // unprefixed `truncate` keeps the title to one ellipsised line at every
-    // width, so `sm+` renders exactly as before.
+    const titleRow = title.parentElement as HTMLElement;
+    // The row must be ALLOWED to wrap below sm — without this the badges keep
+    // their width and the shrinkable title absorbs the whole deficit — and
+    // must NOT wrap at sm+, where the single-line layout is pinned.
+    expect(titleRow.className).toContain('max-sm:flex-wrap');
+    expect(titleRow.className).not.toMatch(/(?:^|\s)flex-wrap/);
+    // The unprefixed `truncate` keeps the title to one ellipsised line at
+    // every width; and no `max-sm:w-full` — a forced full-width title makes
+    // every short row pay an extra line for zero gain (56.5px → 80px at
+    // 390px, on the app's densest surface). The wrap engages only when the
+    // title's content actually needs the width.
     expect(title.className).toContain('truncate');
-    expect(title.className).toContain('max-sm:w-full');
+    expect(title.className).not.toContain('max-sm:w-full');
   });
 
   it('keeps the source/visibility badges in the title row wrap container', async () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     const title = await findTitle();
     const titleRow = title.parentElement as HTMLElement;
-    // The row must be allowed to wrap below sm — without this the full-width
-    // title and the shrink-0 badges simply overflow — and must NOT wrap at
-    // sm+, where the single-line layout is pinned.
-    expect(titleRow.className).toContain('max-sm:flex-wrap');
-    expect(titleRow.className).not.toMatch(/(?:^|\s)flex-wrap/);
     // The badges land under the title only if they live in the SAME wrap
     // container. A refactor that moves them out (say, into the trailing
     // cluster) would strand them off-screen or hide them on mobile.
@@ -144,8 +152,8 @@ describe('PagesPage row: mobile title layout', () => {
     const shared = screen.getByTestId('badge-shared');
     expect(local.parentElement).toBe(titleRow);
     expect(shared.parentElement).toBe(titleRow);
-    // shrink-0 stays: on the shared sm+ line the badges hold their width and
-    // the title is the element that truncates — that contract is unchanged.
+    // shrink-0 stays: on a shared line the badges hold their width and the
+    // title is the element that truncates — that contract is unchanged.
     expect(local.className).toContain('shrink-0');
     expect(shared.className).toContain('shrink-0');
   });
@@ -156,18 +164,36 @@ describe('PagesPage row: mobile title layout', () => {
     const titleBlock = title.parentElement?.parentElement as HTMLElement;
     const button = title.closest('button') as HTMLElement;
     // The pipeline badge ("Not indexed") is a sibling of the title block, so
-    // moving the inline badges is not enough: it would still take its width
-    // from the flex-1 block. `basis-full` breaks the button's flex line after
-    // the block, and the button must be allowed to wrap for that to happen.
-    expect(titleBlock.className).toContain('max-sm:basis-full');
+    // the title-row wrap alone is not enough: the badge would still take its
+    // width out of the flex-1 block. `basis-auto` makes the block's flex base
+    // its content size — `flex-1`'s basis of 0 never triggers a line break —
+    // so an overflowing block pushes the badge onto the next line, and a
+    // short one keeps it beside (`basis-full` here would force every row
+    // tall; content-driven is the point).
+    expect(titleBlock.className).toContain('max-sm:basis-auto');
+    expect(titleBlock.className).not.toContain('max-sm:basis-full');
     expect(button.className).toContain('max-sm:flex-wrap');
     expect(button.className).not.toMatch(/(?:^|\s)flex-wrap/);
     const stateBadge = screen.getByTestId('page-state-badge');
     expect(stateBadge).toHaveTextContent('Not indexed');
-    // It stays OUTSIDE the title block (its own wrapped line), and inside the
-    // button — rendered at every width, as page-state.ts documents.
+    // It stays OUTSIDE the title block (so it can wrap independently), and
+    // inside the button — rendered at every width, as page-state.ts documents.
     expect(button.contains(stateBadge)).toBe(true);
     expect(titleBlock.contains(stateBadge)).toBe(false);
+  });
+
+  it('keeps the select checkbox on the title line when the row grows', async () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    const title = await findTitle();
+    const row = title.closest('[data-testid^="article-hover-"]') as HTMLElement;
+    const checkbox = screen.getByTestId('page-select-std-1');
+    // A centred checkbox on a wrapped (taller) row drifts down to the author/
+    // date line. Top-aligned below sm — with a 2px nudge onto the title's
+    // ~20px line — it stays beside the thing it selects. sm+ keeps
+    // items-center: single-line rows centre exactly as before.
+    expect(row.className).toContain('items-center');
+    expect(row.className).toContain('max-sm:items-start');
+    expect(checkbox.className).toContain('max-sm:mt-0.5');
   });
 
   it('does not grow the row button beyond its text content accessible name', async () => {

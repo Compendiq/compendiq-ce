@@ -88,7 +88,11 @@ const PageListItem = memo(function PageListItem({
           // Hover tints the row instead of colouring its border. An accent
           // border on hover competes with `selected`, which is the state that
           // actually needs to be seen across a long list.
-          'flex w-full items-center gap-3 rounded-md border px-3 py-2 text-left transition-colors',
+          // `items-start` below sm: when the badge cluster wraps the row grows
+          // past one line, and a centred checkbox drifts down to the author/
+          // date line. Top-aligned (plus the input's own 2px nudge) it stays
+          // on the title line, which is the thing it selects.
+          'flex w-full items-center gap-3 rounded-md border px-3 py-2 text-left transition-colors max-sm:items-start',
           selected
             ? 'border-primary/50 bg-primary/[0.07]'
             : 'border-border bg-card hover:bg-accent',
@@ -104,32 +108,39 @@ const PageListItem = memo(function PageListItem({
             onClick={(e) => onToggleSelect(pageItem.id, e.shiftKey)}
             onChange={() => { /* click handler owns this; keeps React controlled */ }}
             aria-label={`Select ${pageItem.title}`}
-            className="size-4 shrink-0 cursor-pointer accent-[var(--color-primary)]"
+            // The 2px nudge centres the 16px box on the title's ~20px line
+            // when the row top-aligns below `sm`.
+            className="size-4 shrink-0 cursor-pointer accent-[var(--color-primary)] max-sm:mt-0.5"
             data-testid={`page-select-${pageItem.id}`}
           />
         )}
         <button
           onClick={() => onNavigate(pageItem.id)}
-          // Below `sm` the button wraps and the title block goes `basis-full`,
-          // so the pipeline badge drops onto its own line instead of
-          // compressing the block. At `sm+` the max-sm classes are inert and
-          // the single-line layout is untouched.
+          // Below `sm` the button may wrap, and `basis-auto` on the title
+          // block makes the wrap content-driven: `flex-1`'s basis of 0 never
+          // triggers a line break, so with `auto` a block whose content fits
+          // keeps today's single line, and only an overflowing one drops the
+          // pipeline badge below the block instead of compressing it. At
+          // `sm+` the max-sm classes are inert and the layout is untouched.
           className="flex min-w-0 flex-1 items-center gap-4 max-sm:flex-wrap max-sm:gap-y-1"
         >
-          <div className="min-w-0 flex-1 text-left max-sm:basis-full">
+          <div className="min-w-0 flex-1 text-left max-sm:basis-auto">
             {/* Title line. Every badge beside the title is `shrink-0`, so the
                 title was the only thing that could give way: at 390px the
                 metadata took its width first and the title — the one thing
                 identifying a row — absorbed the entire deficit ("Incident
-                runbook: Postgres c…", "Quart…"). Below `sm` the title takes
-                the full row (`max-sm:w-full`) and the badges wrap to their own
-                line beneath it: identity beats metadata on a phone, and a
-                taller row beats an unreadable one. DOM order is unchanged, so
-                the button's accessible name reads exactly as before. */}
+                runbook: Postgres c…", "Quart…"). Below `sm` this row may
+                wrap instead: a title short enough to share the line with its
+                badges keeps today's layout, and a long one takes the full
+                width while the badges drop to their own line beneath it.
+                Content-driven, not forced — short rows never pay the extra
+                line. Identity beats metadata on a phone, and a taller row
+                beats an unreadable one. DOM order is unchanged, so the
+                button's accessible name reads exactly as before. */}
             <div className="flex items-center gap-2 max-sm:flex-wrap max-sm:gap-y-1">
               {/* 13px medium. At 16px the title read as a card heading, which
                   is what made forty rows look like forty cards. */}
-              <p className="truncate text-[13px] font-medium max-sm:w-full">{pageItem.title}</p>
+              <p className="truncate text-[13px] font-medium">{pageItem.title}</p>
               {/* Source badge */}
               {pageItem.source === 'standalone' ? (
                 <span
