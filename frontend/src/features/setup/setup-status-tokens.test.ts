@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { extractBlock } from '../../test-utils';
+import { extractBlock, composite } from '../../test-utils';
 
 /**
  * The setup wizard states its connection results in colour, so those colours
@@ -62,7 +62,9 @@ function token(block: string, name: string): string {
 }
 
 // --- WCAG 2.1 relative luminance / contrast (SC 1.4.3, 1.4.11) ---
-// Same math as workspace-themes.test.ts, kept local so this file stands alone.
+// Same math as workspace-themes.test.ts, kept local so this file stands alone;
+// the alpha-composite helper is the exception and is shared from test-utils.ts,
+// because a second local copy once shipped with the signature reversed.
 function luminance(hex: string): number {
   const [r, g, b] = [1, 3, 5].map((i) => {
     const c = parseInt(hex.slice(i, i + 2), 16) / 255;
@@ -74,17 +76,6 @@ function luminance(hex: string): number {
 function contrast(a: string, b: string): number {
   const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
   return (hi + 0.05) / (lo + 0.05);
-}
-
-/** Composite `fg` at `alpha` over opaque `bg`, as the browser blends a
- *  translucent background-color over the pane beneath it. */
-function over(fg: string, bg: string, alpha: number): string {
-  const channel = (i: number) => {
-    const f = parseInt(fg.slice(i, i + 2), 16);
-    const b = parseInt(bg.slice(i, i + 2), 16);
-    return Math.round(alpha * f + (1 - alpha) * b).toString(16).padStart(2, '0');
-  };
-  return `#${channel(1)}${channel(3)}${channel(5)}`;
 }
 
 describe('Setup wizard states status in semantic tokens', () => {
@@ -133,11 +124,11 @@ describe('Measured contrast — status ink on the wizard banner', () => {
 
       for (const { label, alpha, floor } of surfaces) {
         it(`${name}: status-${role} clears ${floor}:1 on the ${label}`, () => {
-          const composite = over(ink, cardSurface, alpha);
-          const ratio = contrast(ink, composite);
+          const tinted = composite(ink, alpha, cardSurface);
+          const ratio = contrast(ink, tinted);
           expect(
             ratio,
-            `status-${role} (${ink}) on ${composite} — its own ${alpha * 100}% tint over ` +
+            `status-${role} (${ink}) on ${tinted} — its own ${alpha * 100}% tint over ` +
             `the card surface ${cardSurface} — measured ${ratio.toFixed(2)}:1, need ≥${floor}:1`,
           ).toBeGreaterThanOrEqual(floor);
         });

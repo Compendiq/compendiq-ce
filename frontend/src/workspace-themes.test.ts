@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync, statSync } from 'fs';
 import { resolve, join } from 'path';
-import { extractBlock } from './test-utils';
+import { extractBlock, composite } from './test-utils';
 import {
   THEMES,
   THEME_IDS,
@@ -91,21 +91,13 @@ function expectContrast(label: string, fg: string, bg: string, floor: number) {
   ).toBeGreaterThanOrEqual(floor);
 }
 
-/**
- * sRGB alpha-composite `fg` at `alpha` over an opaque `bg` — what the browser
- * paints for a `bg-info/10` tint. Contrast must be measured against the
- * COMPOSITE, not the token: a hue can clear AA on the raw surface and fail on
- * its own tinted panel.
- */
-function composite(fg: string, alpha: number, bg: string): string {
-  const channel = (i: number) => {
-    const f = parseInt(fg.slice(i, i + 2), 16);
-    const b = parseInt(bg.slice(i, i + 2), 16);
-    return Math.round(alpha * f + (1 - alpha) * b)
-      .toString(16)
-      .padStart(2, '0');
-  };
-  return `#${channel(1)}${channel(3)}${channel(5)}`;
+// The alpha-composite helper is shared from test-utils.ts (imported above):
+// setup-status-tokens.test.ts measures tints with the same math, and two local
+// copies with reversed signatures once invited surface-over-ink mistakes.
+
+/** Strip block and line comments so source scans don't trip on prose. */
+function stripComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
 }
 
 describe('Theme store ships exactly Graphite + Paper', () => {
@@ -773,8 +765,6 @@ describe('Colour carries meaning, and only its own', () => {
       }
       return out;
     };
-    const stripComments = (source: string) =>
-      source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
     const offenders = walk(__dirname)
       .filter((path) => /\btext-info\/\d+/.test(stripComments(readFileSync(path, 'utf-8'))))
       .map((path) => path.slice(__dirname.length + 1));
@@ -797,6 +787,39 @@ describe('Colour carries meaning, and only its own', () => {
       lightInlineCode![1],
       'the light theme must resolve --inline-code-color, not override it with a literal',
     ).not.toMatch(/(^|[\s;])color:/);
+  });
+
+  // The dark:-hex chip recipe. This app declares no `@custom-variant dark`, so
+  // a `dark:` class compiles to the OS media query — it tracks the OS, never
+  // the user's picked theme, and OS-dark + Paper rendered a dark warm-gray
+  // chip on a white surface (`bg-[#ececea] … dark:bg-[#2a2925]`). The recipe
+  // was cleared out of these surfaces one review at a time (EmbeddingStatusBadge
+  // first, then the four survivors this list added), so the converted files are
+  // pinned BY NAME: a className check inside one component's test cannot see
+  // the same recipe pasted into the next file.
+  it('converted surfaces carry no dark: variant and no hex-literal colour', () => {
+    const files = [
+      'shared/components/article/PagePreview.tsx',
+      'shared/components/badges/ConfidenceBadge.tsx',
+      'shared/components/badges/EmbeddingStatusBadge.tsx',
+      'shared/components/badges/FreshnessBadge.tsx',
+      'shared/components/badges/PageStateBadge.tsx',
+      'shared/components/badges/neutral-chip.ts',
+      'features/admin/LlmAuditPage.tsx',
+      'features/admin/OidcSettingsPage.tsx',
+      'features/admin/RbacPage.tsx',
+    ];
+    for (const rel of files) {
+      const source = stripComments(readFileSync(resolve(__dirname, rel), 'utf-8'));
+      expect(
+        source.match(/\bdark:[\w[\]/#-]+/g) ?? [],
+        `${rel} must not use dark: variants — they follow the OS, not the picked theme`,
+      ).toEqual([]);
+      expect(
+        source.match(/#[0-9a-fA-F]{3,8}\b/g) ?? [],
+        `${rel} must not hardcode hex colours — use the theme tokens`,
+      ).toEqual([]);
+    }
   });
 
   it('text selection is styled from the accent, in both themes', () => {

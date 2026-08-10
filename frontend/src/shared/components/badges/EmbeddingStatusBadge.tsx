@@ -42,10 +42,11 @@ function getStatusConfig(
         // — the muted pairing passes on every surface it lands on.)
         //
         // Deliberately `bg-muted`, NOT the row chips' `bg-foreground/10`
-        // tint: this badge renders only on ArticleRightPane's non-hovering
-        // nm-card, where muted is a real value step. The tint recipe exists
-        // for chips on rows that hover with `bg-accent` (== muted in
-        // Graphite) — check the ground before "unifying" in either direction.
+        // tint (neutral-chip.ts): this badge renders only on ArticleRightPane's
+        // non-hovering nm-card, where muted is a real value step. The tint
+        // recipe exists for chips on rows that hover with `bg-accent` (== muted
+        // in Graphite) and for the elevated hover card — check the ground
+        // before "unifying" in either direction.
         badgeClass: 'bg-muted text-muted-foreground',
         animate: false,
       };

@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
+import { neutralChipInk } from '../../shared/components/badges/neutral-chip';
 import { useAuthStore } from '../../stores/auth-store';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
 import { CustomRoleEditor } from './CustomRoleEditor';
@@ -278,8 +279,10 @@ function RolesTab() {
           <div className="flex items-center gap-2">
             <Lock size={14} className="text-action" />
             <h3 className="font-medium">{role.displayName}</h3>
+            {/* Token chip, never `dark:`-hex — with no `@custom-variant dark`,
+                `dark:` tracks the OS instead of the picked theme. */}
             {role.isSystem && (
-              <span className="rounded bg-[#ececea] px-1.5 py-0.5 text-[11px] font-medium text-[#4a4a48] dark:bg-[#2a2925] dark:text-[#c5bea9]">
+              <span className={cn('rounded px-1.5 py-0.5 text-[11px] font-medium', neutralChipInk)}>
                 System
               </span>
             )}
@@ -685,7 +688,7 @@ function SpacePermissionsTab() {
                       <td className="px-4 py-2.5">
                         <span className={cn(
                           'rounded px-2 py-0.5 text-xs font-medium',
-                          assignment.principalType === 'group' ? 'bg-action/10 text-action' : 'bg-foreground/10 text-secondary-foreground',
+                          assignment.principalType === 'group' ? 'bg-action/10 text-action' : neutralChipInk,
                         )}>
                           {assignment.principalType === 'group' ? 'Group' : 'User'}
                         </span>

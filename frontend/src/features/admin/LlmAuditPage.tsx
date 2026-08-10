@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
+import { neutralChipInk } from '../../shared/components/badges/neutral-chip';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -347,7 +348,9 @@ export function LlmAuditPage() {
                       {entry.user_id ? entry.user_id.slice(0, 8) : '—'}
                     </td>
                     <td className="px-4 py-2.5">
-                      <span className="rounded bg-[#ececea] px-2 py-0.5 text-xs text-[#4a4a48] dark:bg-[#2a2925] dark:text-[#c5bea9]">
+                      {/* Token chip, never `dark:`-hex — with no `@custom-variant
+                          dark`, `dark:` tracks the OS instead of the picked theme. */}
+                      <span className={cn('rounded px-2 py-0.5 text-xs', neutralChipInk)}>
                         {entry.action}
                       </span>
                     </td>

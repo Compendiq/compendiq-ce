@@ -22,55 +22,38 @@ function getConfidenceLevel(score: number): ConfidenceLevel {
   return 'low';
 }
 
-const levelConfig: Record<ConfidenceLevel, { label: string; dotClass: string; bgClass: string; textClass: string }> = {
-  high: {
-    label: 'High confidence',
-    dotClass: 'bg-status-connected',
-    bgClass: 'bg-status-connected/10',
-    textClass: 'text-status-connected',
-  },
-  medium: {
-    label: 'Medium confidence',
-    dotClass: 'bg-status-syncing',
-    bgClass: 'bg-status-syncing/10',
-    textClass: 'text-status-syncing',
-  },
-  low: {
-    label: 'Low confidence',
-    dotClass: 'bg-status-disconnected',
-    bgClass: 'bg-status-disconnected/10',
-    textClass: 'text-status-disconnected',
-  },
+const LEVEL_LABEL: Record<ConfidenceLevel, string> = {
+  high: 'High confidence',
+  medium: 'Medium confidence',
+  low: 'Low confidence',
 };
 
 /**
- * Displays a RAG confidence badge with a color-coded glowing dot
- * and label indicating how confident the AI answer is based on
- * source similarity scores.
+ * Similarity is a MEASUREMENT, not a pipeline state, so the badge is one
+ * neutral chip whatever the level — the argument that de-coloured
+ * QualityScoreBadge, whose neutral recipe (bg-muted/40 fill, border-border,
+ * foreground ink) this reuses so the two measurement chips read as one family.
+ *
+ * It used to wear status-connected / status-syncing / status-disconnected with
+ * a colour-coded dot, so a weak-match answer sat beside its citations in the
+ * same red as a broken connection and a partial match in the same amber as a
+ * space mid-sync. The WORD is the channel; the exact percentage stays in the
+ * tooltip. No dot: with one neutral chip a dot encodes nothing.
  */
 export function ConfidenceBadge({ score, className }: ConfidenceBadgeProps) {
   const level = getConfidenceLevel(score);
-  const config = levelConfig[level];
 
   return (
     <span
       data-testid="confidence-badge"
+      data-level={level}
       title={`Confidence: ${Math.round(score * 100)}%`}
       className={cn(
-        'inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium',
-        config.bgClass,
-        config.textClass,
+        'inline-flex items-center rounded-full border border-border bg-muted/40 px-2.5 py-0.5 text-xs font-medium text-foreground',
         className,
       )}
     >
-      <span
-        className={cn(
-          'inline-block h-2 w-2 rounded-full',
-          config.dotClass,
-        )}
-        aria-hidden="true"
-      />
-      {config.label}
+      {LEVEL_LABEL[level]}
     </span>
   );
 }

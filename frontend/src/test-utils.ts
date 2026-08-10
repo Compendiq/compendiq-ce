@@ -131,3 +131,27 @@ export function expectComposerFocusOrder(box: HTMLElement, expected: string[]): 
       'tab sequence, which is the WCAG 2.4.3 defect #1154 removed',
   ).toEqual([]);
 }
+
+/**
+ * sRGB alpha-composite: `fg` at `alpha` over an opaque `bg` — what the browser
+ * paints for a `bg-info/10` or `bg-foreground/10` tint. Contrast must be
+ * measured against the COMPOSITE, not the raw token: a hue can clear AA on the
+ * bare surface and fail on its own tinted panel.
+ *
+ * The argument order is foreground → alpha → background, reading like the
+ * class it models (`bg-info/10` … over a pane). It lives HERE because two
+ * suites measure tints and the second local copy flipped the signature —
+ * `over(fg, bg, alpha)` — and a pair of alpha-composite helpers with reversed
+ * argument orders invites composing surface-over-ink for a plausible-but-wrong
+ * ratio. One helper, one order.
+ */
+export function composite(fg: string, alpha: number, bg: string): string {
+  const channel = (i: number) => {
+    const f = parseInt(fg.slice(i, i + 2), 16);
+    const b = parseInt(bg.slice(i, i + 2), 16);
+    return Math.round(alpha * f + (1 - alpha) * b)
+      .toString(16)
+      .padStart(2, '0');
+  };
+  return `#${channel(1)}${channel(3)}${channel(5)}`;
+}
