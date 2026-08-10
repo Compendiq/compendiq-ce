@@ -3,7 +3,7 @@ import { query, getPool } from '../../../core/db/postgres.js';
 import { resolveUsecase } from './llm-provider-resolver.js';
 import { generateEmbedding } from './openai-compatible-client.js';
 import { LlmHttpError } from './llm-http-error.js';
-import { htmlToText } from '../../../core/services/content-converter.js';
+import { htmlToEmbeddingText } from '../../../core/services/content-converter.js';
 import { logger } from '../../../core/utils/logger.js';
 import { safeIntOr } from '../../../core/utils/safe-int.js';
 import { invalidateGraphCache, acquireEmbeddingLock, releaseEmbeddingLock, refreshEmbeddingLock, isEmbeddingLocked, getRedisClient, listActiveEmbeddingLocks } from '../../../core/services/redis-cache.js';
@@ -348,7 +348,13 @@ export async function embedPage(
   bodyHtml: string,
   opts?: { chunkSize?: number; chunkOverlap?: number },
 ): Promise<number> {
-  const plainText = htmlToText(bodyHtml);
+  // Markdown-shaped, structure-preserving (#1265): this is what makes
+  // chunkText's heading/paragraph splitting live code — htmlToText's
+  // whitespace collapse made every page <= CHUNK_HARD_LIMIT a single chunk.
+  // (The coverage probe's char_length(body_text) mirror of this skip check
+  // reads the htmlToText-shaped column; the two lengths can disagree by a
+  // few syntax characters around the 20-char floor, which is noise.)
+  const plainText = htmlToEmbeddingText(bodyHtml);
   if (!plainText || plainText.length < MIN_EMBEDDABLE_TEXT_CHARS) {
     logger.debug({ pageId, pageTitle }, 'Skipping empty/short page for embedding');
     await query(

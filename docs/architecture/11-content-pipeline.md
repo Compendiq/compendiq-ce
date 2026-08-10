@@ -10,8 +10,8 @@ representations that flow through the rest of the system.
 |------|-----------|-------------|
 | **XHTML Storage** | `pages.body_storage` | Round-trip to Confluence. Push-back **is** live in CE: `POST /api/pages` calls `createPage()` and `PUT /api/pages/:id` calls `updatePage()` for Confluence-sourced pages. Standalone articles leave it `NULL` until they are relocated into Confluence (#1123). |
 | **HTML (clean)** | `pages.body_html` | TipTap editor, viewer UI, diff UI |
-| **Plain text** | `pages.body_text` | Embedding input, FTS (`tsvector`) |
-| **Markdown** | not stored — derived per call | LLM prompts (Ollama / OpenAI) |
+| **Plain text** | `pages.body_text` | FTS (`tsvector`), snippets, coverage probe |
+| **Markdown** | not stored — derived per call | LLM prompts (Ollama / OpenAI); **embedding/chunking input** since #1265 (`htmlToEmbeddingText`) |
 | **Uploaded document** | not stored — discarded after extraction | LLM reference material (AI Improve / AI Generate upload) |
 
 ## Flow
@@ -421,12 +421,29 @@ here rather than in production.
   future write-back needs the exact original serialization.
 - **`body_html`** — what the viewer and TipTap editor consume; already
   sanitized so we don't run the converter on every render.
-- **`body_text`** — stripped of all tags; the input both to the embedding
-  pipeline and to the PostgreSQL `tsvector` column for hybrid search.
+- **`body_text`** — stripped of all tags; the input to the PostgreSQL
+  `tsvector` column for hybrid search (and to snippets and the embedding
+  coverage probe's length check).
 
 Markdown is regenerated on demand because (a) LLM prompt sizes vary by
 model so partial/windowed serialisation is common, and (b) the conversion
 is cheap compared to the LLM call itself.
+
+### Embedding input is Markdown, not `body_text` (#1265)
+
+`embedPage` chunks `htmlToEmbeddingText(body_html)` — `htmlToMarkdown` with a
+plain-text fallback — **not** `body_text`. `chunkText` splits on Markdown atx
+headings (`^#{1,6}\s`) and blank-line paragraph boundaries, and `htmlToText`'s
+whitespace collapse (`replace(/\s+/g, ' ')`) destroyed both: every page
+≤ `CHUNK_HARD_LIMIT` (6,000 chars) embedded as ONE chunk, longer pages split
+at arbitrary word boundaries with no overlap, and `section_title` chunk
+metadata always equalled the page title — the structure-aware chunking was
+dead code from the day it shipped. Stored `chunk_text` is Markdown-shaped as a
+result (better for the chat model reading RAG context; mildly syntax-flavoured
+in UI excerpts that render a vector chunk verbatim). Because the fix changes
+what gets embedded, rolling it onto real data is a re-embed — via #1116's
+non-destructive shadow path, never the destructive one (epic #1100, owner
+decision 7).
 
 ## Client-side Markdown → HTML (inline selection improve, #708)
 

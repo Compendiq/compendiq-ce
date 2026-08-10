@@ -53,7 +53,7 @@ vi.mock('./openai-compatible-client.js', () => ({
 }));
 
 vi.mock('../../../core/services/content-converter.js', () => ({
-  htmlToText: vi.fn().mockReturnValue('some text'),
+  htmlToEmbeddingText: vi.fn().mockReturnValue('some text'),
 }));
 
 vi.mock('pgvector', () => ({

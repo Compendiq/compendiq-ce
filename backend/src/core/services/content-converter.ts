@@ -3040,10 +3040,50 @@ export async function markdownToHtml(markdown: string, options?: MarkdownToHtmlO
 }
 
 /**
- * Strips all HTML tags, returning plain text (for full-text search + embedding input).
+ * Strips all HTML tags, returning plain text (for full-text search — and, until
+ * #1265, the embedding input; see htmlToEmbeddingText for why that moved).
  */
 export function htmlToText(html: string): string {
   const dom = new JSDOM(`<body>${html}</body>`, { contentType: 'text/html' });
   const text = dom.window.document.body.textContent ?? '';
   return he.decode(text).replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Structure-preserving text for the embedding pipeline (#1265).
+ *
+ * `chunkText` (embedding-service) splits on Markdown atx headings
+ * (`^#{1,6}\s`) and blank-line paragraph boundaries — but `htmlToText`'s
+ * final `replace(/\s+/g, ' ')` collapses every newline, so neither splitter
+ * could ever match its output: every page ≤ CHUNK_HARD_LIMIT embedded as one
+ * chunk, longer pages split at arbitrary word boundaries with no overlap, and
+ * `section_title` metadata always equalled the page title. The
+ * structure-aware chunking was dead code from the day it shipped.
+ *
+ * This routes the embedding input through `htmlToMarkdown` instead — per
+ * ADR-003, Markdown is already the canonical LLM-facing form of page content
+ * (auto-tagger, quality worker, and subpage context all convert the same
+ * way), and the converter is configured with `headingStyle: 'atx'`, which is
+ * exactly the shape `chunkText`'s heading split expects. Consequences, all
+ * deliberate:
+ * - stored `chunk_text` (and so RAG context handed to the chat model) is
+ *   Markdown-shaped — better for the LLM, mildly syntax-flavoured in any UI
+ *   excerpt that renders a vector chunk verbatim;
+ * - `body_text` (FTS, snippets, the coverage probe's length check) stays
+ *   `htmlToText` — this function changes only what gets chunked + embedded;
+ * - changed chunk text means existing embeddings describe text that is no
+ *   longer produced: taking this live on real data is a re-embed, via
+ *   #1116's non-destructive shadow path.
+ *
+ * Falls back to `htmlToText` if the Markdown conversion throws — a page that
+ * defeats turndown must still embed as a flat blob (the pre-#1265 behaviour)
+ * rather than not at all.
+ */
+export function htmlToEmbeddingText(html: string): string {
+  try {
+    return htmlToMarkdown(html).trim();
+  } catch (err) {
+    logger.warn({ err }, 'htmlToMarkdown failed for embedding input — falling back to plain text');
+    return htmlToText(html);
+  }
 }
