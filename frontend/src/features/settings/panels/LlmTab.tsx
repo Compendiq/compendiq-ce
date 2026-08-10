@@ -191,7 +191,10 @@ export function LlmTab() {
 
   return (
     <div className="space-y-6">
-      <div className="nm-card border-warning/30 p-3 text-sm text-warning">
+      {/* Muted, not amber: this is a permanent scope note with nothing to act
+          on, and amber is reserved for warnings that genuinely need attention
+          — a banner that is always amber teaches users to ignore amber. */}
+      <div className="nm-card p-3 text-sm text-muted-foreground">
         LLM provider + per-use-case assignments are shared across all users. Only admins can change them here.
       </div>
       <ProviderListSection />

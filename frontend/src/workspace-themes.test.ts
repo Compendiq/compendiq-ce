@@ -49,6 +49,25 @@ function token(block: string, name: string): string {
   return m[1].toLowerCase();
 }
 
+/**
+ * Read a token, following `var(--…)` aliases declared in the same block.
+ * The semantic trio (success / warning / destructive) is declared as
+ * references onto the status tokens, so measuring it means resolving the
+ * reference first.
+ */
+function resolveToken(block: string, name: string, depth = 0): string {
+  if (depth > 4) throw new Error(`alias chain too deep resolving ${name}`);
+  const m = new RegExp(`${name}:\\s*([^;]+);`).exec(block);
+  if (!m) throw new Error(`token not declared: ${name}`);
+  const value = m[1].trim();
+  const ref = /^var\((--[\w-]+)\)$/.exec(value);
+  if (ref) return resolveToken(block, ref[1], depth + 1);
+  if (!/^#[0-9a-fA-F]{6}$/.test(value)) {
+    throw new Error(`token is neither a 6-digit hex nor a var() reference: ${name}: ${value}`);
+  }
+  return value.toLowerCase();
+}
+
 // --- WCAG 2.1 relative luminance / contrast (SC 1.4.3, 1.4.11) ---
 function luminance(hex: string): number {
   const [r, g, b] = [1, 3, 5].map((i) => {
@@ -205,7 +224,7 @@ describe('Measured contrast — Graphite (dark)', () => {
     expectContrast(
       'destructive-foreground on destructive',
       token(darkBlock, '--color-destructive-foreground'),
-      token(darkBlock, '--color-destructive'),
+      resolveToken(darkBlock, '--color-destructive'),
       4.5,
     );
   });
@@ -286,7 +305,7 @@ describe('Measured contrast — Paper (light)', () => {
     expectContrast(
       'destructive-foreground on destructive',
       token(lightBlock, '--color-destructive-foreground'),
-      token(lightBlock, '--color-destructive'),
+      resolveToken(lightBlock, '--color-destructive'),
       4.5,
     );
   });
@@ -382,8 +401,11 @@ describe('Both themes declare a complete, symmetric token set', () => {
 
   for (const name of required) {
     it(`declares ${name} in both themes`, () => {
-      expect(() => token(darkBlock, name)).not.toThrow();
-      expect(() => token(lightBlock, name)).not.toThrow();
+      // resolveToken, not token: the semantic aliases are declared as var()
+      // references, and this test's claim is "declared in both blocks with a
+      // value that resolves" — a missing declaration still throws.
+      expect(() => resolveToken(darkBlock, name)).not.toThrow();
+      expect(() => resolveToken(lightBlock, name)).not.toThrow();
     });
   }
 
@@ -640,6 +662,71 @@ describe('Colour carries meaning, and only its own', () => {
   // state that qualifies, so it is the one that may keep it.
   it('amber survives on the failed state only', () => {
     expect(badgeSource).toMatch(/status === 'failed'[\s\S]{0,300}?warning/);
+  });
+
+  // The semantic trio IS the status palette under other names. These tokens
+  // shipped as byte-identical COPIES of the status hexes — `--color-success`
+  // was `#4ade80` and `--color-status-connected` was `#4ade80` — which held
+  // only until someone retuned one of them, at which point the ~100
+  // `text-success`/`text-warning`/`text-destructive` callsites would drift
+  // into an eighth and ninth hue nobody chose. A var() reference makes the
+  // identity structural: retuning the status token moves both, and a grep
+  // for either name finds the other.
+  it('success, warning and destructive alias the status tokens by reference, in both themes', () => {
+    const aliases = [
+      ['--color-success', '--color-status-connected'],
+      ['--color-warning', '--color-status-syncing'],
+      ['--color-destructive', '--color-status-disconnected'],
+    ] as const;
+    const themes = [
+      ['graphite', darkBlock],
+      ['paper', lightBlock],
+    ] as const;
+    for (const [themeName, block] of themes) {
+      for (const [alias, target] of aliases) {
+        const m = new RegExp(`${alias}:\\s*([^;]+);`).exec(block);
+        expect(m, `${alias} must be declared in ${themeName}`).not.toBeNull();
+        expect(
+          m![1].trim(),
+          `${alias} in ${themeName} must be var(${target}) — a raw value here re-forks the semantic palette from the status palette`,
+        ).toBe(`var(${target})`);
+      }
+    }
+  });
+
+  // Indigo (--color-info) is the one semantic hue WITHOUT a status twin, and
+  // its documented role is INFORMATIONAL: a passive notice or the Confluence
+  // info admonition panel — never a state, a measurement, a category chip or
+  // an interactive affordance. Two consequences are pinned here: it must not
+  // collide with any reserved hue (a collision is how "informational" starts
+  // meaning something else), and it must read as text on the surfaces
+  // notices sit on.
+  it('info is its own hue — colliding with no status colour or the accent — and reads AA', () => {
+    const themes = [
+      ['graphite', darkBlock, { bg: '--color-background', card: '--color-card' }],
+      ['paper', lightBlock, { bg: '--color-background', card: '--color-card' }],
+    ] as const;
+    const reserved = [
+      '--color-primary',
+      '--color-status-connected',
+      '--color-status-syncing',
+      '--color-status-embedding',
+      '--color-status-ai',
+      '--color-status-disconnected',
+      '--color-status-inactive',
+    ];
+    for (const [themeName, block, surfaces] of themes) {
+      const info = resolveToken(block, '--color-info');
+      for (const other of reserved) {
+        expect(
+          info,
+          `--color-info in ${themeName} must not collide with ${other}`,
+        ).not.toBe(resolveToken(block, other));
+      }
+      for (const [name, surfaceToken] of Object.entries(surfaces)) {
+        expectContrast(`info on ${name} (${themeName})`, info, token(block, surfaceToken), 4.5);
+      }
+    }
   });
 
   it('inline code resolves its own token in BOTH themes', () => {

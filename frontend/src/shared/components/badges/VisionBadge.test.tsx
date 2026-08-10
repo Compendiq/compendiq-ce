@@ -43,4 +43,15 @@ describe('VisionBadge', () => {
     render(<VisionBadge vision={false} />);
     expect(screen.getByTestId('vision-badge').className).not.toMatch(/warning|amber/);
   });
+
+  /**
+   * ADR-010 reserves teal for the interaction accent. A capability verdict is
+   * a static readout, so the "Vision" state may not wear `primary` — a teal
+   * chip beside real controls reads as one of them. All three states are
+   * neutral; the label is the differentiator.
+   */
+  it('the vision-capable state does not wear the teal interaction accent', () => {
+    render(<VisionBadge vision={true} />);
+    expect(screen.getByTestId('vision-badge').className).not.toMatch(/primary|status-/);
+  });
 });

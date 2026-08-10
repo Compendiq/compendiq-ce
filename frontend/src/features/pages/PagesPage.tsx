@@ -117,10 +117,12 @@ const PageListItem = memo(function PageListItem({
               {/* 13px medium. At 16px the title read as a card heading, which
                   is what made forty rows look like forty cards. */}
               <p className="truncate text-[13px] font-medium">{pageItem.title}</p>
-              {/* Source badge */}
+              {/* Source badge. Neutral, like Private below: a source is a
+                  category, not a state, so it may not borrow the status
+                  greens/indigos — the label is the differentiator. */}
               {pageItem.source === 'standalone' ? (
                 <span
-                  className="inline-flex shrink-0 items-center gap-1 rounded-full border border-success/20 bg-success/10 px-2 py-0.5 text-[11px] font-medium text-success"
+                  className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
                   data-testid="badge-local"
                   data-source-badge={pageItem.id}
                 >
@@ -128,7 +130,7 @@ const PageListItem = memo(function PageListItem({
                 </span>
               ) : (
                 <span
-                  className="inline-flex shrink-0 items-center gap-1 rounded-full border border-info/20 bg-info/10 px-2 py-0.5 text-[11px] font-medium text-info"
+                  className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
                   data-testid="badge-confluence"
                   data-source-badge={pageItem.id}
                 >
@@ -139,7 +141,7 @@ const PageListItem = memo(function PageListItem({
               {pageItem.source === 'standalone' && (
                 (pageItem.visibility === 'shared') ? (
                   <span
-                    className="inline-flex shrink-0 items-center gap-1 rounded-full border border-info/20 bg-info/10 px-2 py-0.5 text-[11px] font-medium text-info"
+                    className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
                     data-testid="badge-shared"
                     data-visibility-badge={pageItem.id}
                   >

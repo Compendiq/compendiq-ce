@@ -367,7 +367,9 @@ function PreviewStep({
             </span>
           )}
           {summary.wouldCreate > 0 && (
-            <span className="rounded-full bg-info/15 px-2 py-0.5 font-medium text-info">
+            // Neutral: "new" is the expected outcome of an import, not a
+            // notice — the coloured chips are the ones that need attention.
+            <span className="rounded-full bg-foreground/10 px-2 py-0.5 font-medium text-muted-foreground">
               {summary.wouldCreate} new
             </span>
           )}

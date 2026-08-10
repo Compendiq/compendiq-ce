@@ -1325,14 +1325,19 @@ describe('PagesPage', () => {
       });
     }
 
-    it('Local badge uses the semantic success treatment', async () => {
+    // Source and visibility are CATEGORIES, not states, so every badge in
+    // this cluster is the same neutral chip and the label/glyph is the
+    // differentiator. Local used to wear the success green and Confluence/
+    // Shared the informational indigo — status vocabulary borrowed for
+    // labels, on the densest scanning surface in the app.
+    it('Local badge is neutral — no borrowed status hue', async () => {
       mockPagesWithStandalone('private');
       render(<PagesPage />, { wrapper: createWrapper() });
       const badge = await screen.findByTestId('badge-local');
       expect(badge).toHaveTextContent('Local');
-      expect(badge.className).toContain('bg-success/10');
-      expect(badge.className).toContain('text-success');
-      expect(badge.className).not.toMatch(/emerald-500|amber|warning|yellow/);
+      expect(badge.className).toContain('bg-muted');
+      expect(badge.className).toContain('text-muted-foreground');
+      expect(badge.className).not.toMatch(/success|info|emerald-500|amber|warning|yellow/);
     });
 
     it('Private badge uses neutral gray tint, not amber/primary/warning', async () => {
@@ -1345,14 +1350,14 @@ describe('PagesPage', () => {
       expect(badge.className).toContain('text-muted-foreground');
     });
 
-    it('Shared badge uses the semantic information treatment', async () => {
+    it('Shared badge is neutral — no borrowed status hue', async () => {
       mockPagesWithStandalone('shared');
       render(<PagesPage />, { wrapper: createWrapper() });
       const badge = await screen.findByTestId('badge-shared');
       expect(badge).toHaveTextContent('Shared');
-      expect(badge.className).toContain('bg-info/10');
-      expect(badge.className).toContain('text-info');
-      expect(badge.className).not.toMatch(/sky-500|amber|warning|yellow/);
+      expect(badge.className).toContain('bg-muted');
+      expect(badge.className).toContain('text-muted-foreground');
+      expect(badge.className).not.toMatch(/success|info|sky-500|amber|warning|yellow/);
     });
   });
 

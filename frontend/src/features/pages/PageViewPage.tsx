@@ -832,17 +832,18 @@ export function PageViewPage() {
           <span className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-muted-foreground/60">
             <FileText size={12} className="shrink-0" />
             {page.spaceKey !== '__local__' && <span className="truncate">{page.spaceKey}</span>}
-            {/* Source badge */}
+            {/* Source badge. Neutral, like Private below: a source is a
+                category, not a state — the label differentiates. */}
             {page.source === 'standalone' ? (
               <span
-                className="inline-flex items-center gap-1 rounded-full border border-success/20 bg-success/10 px-2 py-0.5 text-[11px] font-medium text-success"
+                className="inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
                 data-testid="badge-local"
               >
                 Local
               </span>
             ) : (
               <span
-                className="inline-flex items-center gap-1 rounded-full border border-info/20 bg-info/10 px-2 py-0.5 text-[11px] font-medium text-info"
+                className="inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
                 data-testid="badge-confluence"
               >
                 Confluence
@@ -852,7 +853,7 @@ export function PageViewPage() {
             {page.source === 'standalone' && (
               page.visibility === 'shared' ? (
                 <span
-                  className="inline-flex items-center gap-1 rounded-full border border-info/20 bg-info/10 px-2 py-0.5 text-[11px] font-medium text-info"
+                  className="inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
                   data-testid="badge-shared"
                 >
                   <Globe size={10} /> Shared
@@ -1207,11 +1208,17 @@ function FeedbackWidget({ pageId }: { pageId: string | undefined }) {
   return (
     <div className="mt-12 border-t border-border pt-6" data-testid="feedback-widget">
       <p className="mb-3 text-sm font-medium text-muted-foreground">Was this page helpful?</p>
+      {/* Neutral controls, deliberately. Yes/No is a survey answer, not a
+          state readout — green/red here borrowed the connected/disconnected
+          vocabulary for the least consequential control on the page (the
+          VerifyButton comment below makes the same argument, twenty lines
+          down). The glyphs differentiate; press feedback comes from the
+          shared quiet-button recipe. */}
       <div className="flex gap-2">
         <button
           onClick={() => handleFeedback(true)}
           disabled={submitFeedback.isPending}
-          className="flex items-center gap-1.5 rounded-lg bg-success/10 px-4 py-2 text-sm text-success transition-colors hover:bg-success/20 disabled:opacity-50"
+          className="nm-button-ghost disabled:opacity-50"
           data-testid="feedback-helpful"
         >
           <ThumbsUp size={14} /> Yes
@@ -1219,7 +1226,7 @@ function FeedbackWidget({ pageId }: { pageId: string | undefined }) {
         <button
           onClick={() => handleFeedback(false)}
           disabled={submitFeedback.isPending}
-          className="flex items-center gap-1.5 rounded-lg bg-destructive/10 px-4 py-2 text-sm text-destructive transition-colors hover:bg-destructive/20 disabled:opacity-50"
+          className="nm-button-ghost disabled:opacity-50"
           data-testid="feedback-not-helpful"
         >
           <ThumbsDown size={14} /> No

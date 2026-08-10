@@ -38,12 +38,18 @@ describe('EmbeddingStatusBadge', () => {
     expect(badge).toHaveAttribute('data-status', 'embedding');
   });
 
-  it('renders embedded state with green styling', () => {
+  // "Embedded <date>" is the resting state of every healthy page — a
+  // freshness readout, not an event — so it may not wear the connected green:
+  // a permanent green pill on every Details tab dilutes the one hue that
+  // means "a connection is up". The live states (embedding/failed) keep
+  // their reserved hues.
+  it('renders embedded state neutral, not in the connected green', () => {
     render(<EmbeddingStatusBadge embeddingStatus="embedded" />);
     const badge = screen.getByTestId('embedding-status-badge');
     expect(badge).toHaveTextContent('Embedded');
-    expect(badge.className).toContain('text-status-connected');
-    expect(badge.className).toContain('bg-status-connected/20');
+    expect(badge.className).toContain('bg-muted');
+    expect(badge.className).toContain('text-muted-foreground');
+    expect(badge.className).not.toMatch(/status-connected|success|green/);
     expect(badge).toHaveAttribute('data-status', 'embedded');
   });
 

@@ -297,7 +297,9 @@ function WorkerCard({ title, statusKey, statusEndpoint, runEndpoint, rescanEndpo
           {/* Status pills */}
           <div className="flex flex-wrap gap-2">
             <StatusPill count={status.pending} label="Pending" icon={Clock} color="bg-warning/10 text-warning" />
-            <StatusPill count={status.processing} label="Processing" icon={Loader2} color="bg-info/10 text-info" />
+            {/* Neutral: "processing" is queue activity, not an informational
+                notice — the spinner glyph carries the in-flight signal. */}
+            <StatusPill count={status.processing} label="Processing" icon={Loader2} color="bg-foreground/5 text-muted-foreground" />
             <StatusPill count={status.completed} label="Done" icon={CheckCircle} color="bg-success/10 text-success" />
             <StatusPill count={status.skipped} label="Skipped" icon={Clock} color="bg-foreground/5 text-muted-foreground" />
             <StatusPill count={status.failed} label="Failed" icon={AlertTriangle} color="bg-destructive/10 text-destructive" />

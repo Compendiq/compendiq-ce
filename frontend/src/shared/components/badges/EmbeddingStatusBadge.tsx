@@ -51,7 +51,13 @@ function getStatusConfig(
         title: embeddedAt
           ? `Indexed for AI search on ${new Date(embeddedAt).toLocaleString()}`
           : 'Content is indexed for AI search',
-        badgeClass: 'bg-status-connected/20 text-status-connected border border-status-connected/30',
+        // Neutral, deliberately: "Embedded <date>" is the resting state of
+        // every healthy page — a freshness readout, not an event. Painting it
+        // the connected green put a permanent green pill on every Details tab
+        // and diluted the one hue that means "a connection is up". The live
+        // states above/below keep their reserved hues (teal = embedding,
+        // red on failure).
+        badgeClass: 'bg-muted text-muted-foreground',
         animate: false,
       };
     case 'failed':

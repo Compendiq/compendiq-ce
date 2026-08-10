@@ -48,12 +48,11 @@ function EmbeddingCoverageRing({ percent, isProcessing }: EmbeddingCoverageRingP
 
   const strokeDashoffset = RING_CIRCUMFERENCE - (percent / 100) * RING_CIRCUMFERENCE;
 
-  // Color based on coverage
-  const strokeColor = percent === 100
-    ? 'var(--color-success)'
-    : percent >= 75
-      ? 'var(--color-info)'
-      : 'var(--color-warning)';
+  // One neutral stroke, deliberately: coverage is a measurement and the arc
+  // LENGTH is its channel. The retired ramp (green at 100, indigo ≥75, amber
+  // below) restated the same number in borrowed status hues — amber implied a
+  // warning at 74% and the undocumented indigo meant nothing at all.
+  const strokeColor = 'var(--color-muted-foreground)';
 
   return (
     <div className="relative flex items-center justify-center" data-testid="embedding-coverage-ring">

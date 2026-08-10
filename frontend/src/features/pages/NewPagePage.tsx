@@ -366,7 +366,12 @@ export function NewPagePage() {
             </p>
           )}
 
-          {/* Metadata bar */}
+          {/* Metadata bar. The selected halves of these toggles are NEUTRAL
+              (value step + ink + measured ring), matching the toolbar's
+              pressed recipe: "selected" is an interaction state, and each
+              option used to light up in its badge's borrowed hue — green,
+              indigo, even amber on Private, on a control that warns of
+              nothing. */}
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
           {/* Article type toggle */}
           <div className="flex items-center gap-2">
@@ -378,7 +383,7 @@ export function NewPagePage() {
                 className={cn(
                   'flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors',
                   articleType === 'local'
-                    ? 'bg-success/15 text-success ring-1 ring-success/30'
+                    ? 'bg-foreground/10 text-foreground ring-1 ring-border-interactive'
                     : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10',
                 )}
                 data-testid="article-type-local"
@@ -391,7 +396,7 @@ export function NewPagePage() {
                 className={cn(
                   'flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors',
                   articleType === 'confluence'
-                    ? 'bg-info/15 text-info ring-1 ring-info/30'
+                    ? 'bg-foreground/10 text-foreground ring-1 ring-border-interactive'
                     : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10',
                 )}
                 data-testid="article-type-confluence"
@@ -433,7 +438,7 @@ export function NewPagePage() {
                   className={cn(
                     'flex items-center justify-center gap-1 rounded-lg px-2.5 py-1.5 text-sm transition-colors',
                     visibility === 'private'
-                      ? 'bg-warning/15 text-warning ring-1 ring-warning/30'
+                      ? 'bg-foreground/10 text-foreground ring-1 ring-border-interactive'
                       : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10',
                   )}
                   data-testid="visibility-private"
@@ -446,7 +451,7 @@ export function NewPagePage() {
                   className={cn(
                     'flex items-center justify-center gap-1 rounded-lg px-2.5 py-1.5 text-sm transition-colors',
                     visibility === 'shared'
-                      ? 'bg-info/15 text-info ring-1 ring-info/30'
+                      ? 'bg-foreground/10 text-foreground ring-1 ring-border-interactive'
                       : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10',
                   )}
                   data-testid="visibility-shared"

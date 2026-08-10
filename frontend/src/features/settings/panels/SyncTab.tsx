@@ -488,7 +488,9 @@ export function SyncTab() {
 const syncBadgeClasses: Record<'idle' | 'syncing' | 'embedding' | 'error', string> = {
   idle: 'border-success/30 bg-success/10 text-success',
   syncing: 'border-warning/30 bg-warning/10 text-warning',
-  embedding: 'border-info/30 bg-info/10 text-info',
+  // Teal, not indigo: `embedding` is a pipeline STATE and teal is its reserved
+  // hue (ADR-010); indigo is the informational colour and names no state.
+  embedding: 'border-status-embedding/30 bg-status-embedding/10 text-status-embedding',
   error: 'border-destructive/30 bg-destructive/10 text-destructive',
 };
 
