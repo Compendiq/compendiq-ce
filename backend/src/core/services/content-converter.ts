@@ -3131,6 +3131,12 @@ function flattenTableCellsForEmbedding(html: string): string {
     // Skip cells that contain a nested table — the gfm plugin bails on those
     // and keeps raw HTML; flattening would silently delete the inner table.
     if (cell.querySelector('table')) continue;
+    // An <img> has no textContent — replace it with its alt text first, or a
+    // diagram-in-a-table cell (a common KB shape) embeds as EMPTY and loses
+    // the only retrievable signal it has (#1266 review r2, N-1).
+    for (const img of Array.from(cell.querySelectorAll('img'))) {
+      img.replaceWith(doc.createTextNode(img.getAttribute('alt') ?? ''));
+    }
     const text = (cell.textContent ?? '').replace(/\s+/g, ' ').trim();
     cell.textContent = text;
   }
@@ -3168,8 +3174,9 @@ export function markdownToSnippetText(md: string): string {
       .replace(/(?<![\\\w])(\*\*|__)(.+?)(?<!\\)\1(?!\w)/g, '$2')
       .replace(/(?<![\\\w])([*_])([^*_\n]+?)(?<!\\)\1(?!\w)/g, '$2')
       // turndown backslash-escapes far more than the bracket set — the
-      // numbered-heading case ("1\. Introduction") is ubiquitous.
-      .replace(/\\([*_[\]#|`~.>+()!-])/g, '$1')
+      // numbered-heading case ("1\. Introduction") is ubiquitous, and a
+      // literal backslash doubles ("C:\\Users").
+      .replace(/\\([\\*_[\]#|`~.>+()!-])/g, '$1')
       .replace(/\s+/g, ' ')
       .trim()
   );

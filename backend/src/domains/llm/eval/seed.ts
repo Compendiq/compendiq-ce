@@ -90,9 +90,11 @@ export class TruncatingModelError extends Error {}
  *
  * The corpus can chunk out at up to `CHUNK_HARD_LIMIT` characters — since
  * #1265 the structure-aware splitter usually lands near the ~1,500-char
- * target, but an oversized unbreakable region (a giant fenced block, a
- * minified blob) still rides `pushChunk` right up to the ceiling, so the
- * requirement stands. A model with a small context window silently embeds
+ * target, but an oversized unbreakable region still rides `pushChunk` right
+ * up to the ceiling (a giant fenced block, a minified blob — or simply a
+ * tight list: turndown emits list items on consecutive lines with no blanks,
+ * so a 120-item list is one unbreakable paragraph; 61 of this corpus's own
+ * chunks exceed the target, max 5,998 chars). The requirement stands. A model with a small context window silently embeds
  * only the prefix: the run still reports "100% embedded" and produces a
  * confident Recall@K describing text the model never saw.
  *

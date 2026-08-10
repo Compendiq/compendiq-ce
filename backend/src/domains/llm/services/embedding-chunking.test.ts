@@ -96,25 +96,43 @@ describe('embedding text extraction (#1265)', () => {
     });
 
     it('does not treat blank lines inside a fence as paragraph boundaries', () => {
-      // An oversized section paragraph-splits — but a fence containing blank
-      // lines must ride whole, not be cut mid-fence.
-      const fenceBody = `first: 1\n\nsecond: 2\n\nthird: 3`;
-      const filler = 'Prose sentence that fills the section well beyond the packing target. '.repeat(30);
-      const md = `# Config\n\n${filler}\n\n\`\`\`yaml\n${fenceBody}\n\`\`\`\n\n${filler}`;
+      // A fence LARGER than the chunk target whose rows are separated by
+      // blank lines: a splitter that treats those blanks as boundaries
+      // scatters the rows across chunks (the first version of this test used
+      // a 3-row fence small enough to re-pack into one chunk either way —
+      // vacuous, #1266 review r2 M-4). The fence must ride whole.
+      const rows = Array.from({ length: 50 }, (_, i) => `config-key-${i}: value-for-entry-${i}`);
+      const fenceBody = rows.join('\n\n'); // ~2,500 chars with interior blank lines
+      const md = `# Config\n\nIntro sentence before the block.\n\n\`\`\`yaml\n${fenceBody}\n\`\`\`\n\nOutro sentence after the block.`;
       const chunks = chunkText(md, 'Config', 'OPS', 'p-1');
-      expect(chunks.length).toBeGreaterThan(1);
-      // The property: the paragraph splitter never CUTS the fence — any chunk
-      // touching a fence row carries the whole fence body. (The word-overlap
-      // may duplicate a small trailing fence wholesale into the next chunk;
-      // duplication is context repetition, not a split.) Under the old
-      // blank-line split the three rows land in different chunks.
-      const touching = chunks.filter((c) => /first: 1|second: 2|third: 3/.test(c.text));
-      expect(touching.length).toBeGreaterThan(0);
-      for (const c of touching) {
-        expect(c.text).toContain('first: 1');
-        expect(c.text).toContain('second: 2');
-        expect(c.text).toContain('third: 3');
-      }
+      // SOME chunk carries the COMPLETE fence — first, middle and last rows
+      // with both markers. (Other chunks may carry a trailing fragment via
+      // the word-overlap; that is context repetition, not a split.) Under a
+      // blank-line-splitting chunker the 50 rows scatter across chunks and
+      // no chunk ever holds them all — verified discriminating against the
+      // pre-fix chunker (#1266 review r2, M-4).
+      const complete = chunks.filter(
+        (c) =>
+          c.text.includes('config-key-0: value-for-entry-0') &&
+          c.text.includes('config-key-25: value-for-entry-25') &&
+          c.text.includes('config-key-49: value-for-entry-49') &&
+          (c.text.match(/```/g)?.length ?? 0) >= 2,
+      );
+      expect(complete.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('keeps image alt text when flattening table cells (#1266 r2 N-1)', () => {
+      // A diagram-in-a-table cell: the cell flattener must not reduce it to
+      // an empty cell — alt text is the only retrievable signal it has.
+      const html =
+        '<table><tr><th>Diagram</th><th>Owner</th></tr>' +
+        '<tr><td><p><img src="/api/attachments/9/net.png" alt="network topology overview"></p></td>' +
+        '<td><p>Platform team</p></td></tr></table>';
+      const md = htmlToEmbeddingText(html);
+      expect(md).toContain('network topology overview');
+      expect(md).toContain('Platform team');
+      // Single-line rows: no blank lines between the pipes of one row.
+      expect(md).not.toMatch(/\|[^\n|]*\n\n/);
     });
 
     it('packs consecutive small sections instead of one chunk per heading (#1265 M7)', () => {

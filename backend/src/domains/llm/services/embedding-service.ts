@@ -382,7 +382,12 @@ export function chunkText(
     const trimmed = section.trim();
     if (!trimmed) continue;
 
-    const headingMatch = trimmed.match(/^#{1,6}\s+(.+?)(?:\n|$)/);
+    // `.` stops at every line terminator (\n, \r, U+2028/9), so no explicit
+    // end anchor — requiring `(?:\n|$)` made the match FAIL outright on CRLF
+    // input ('# A\r\n'), silently reverting every section title to the page
+    // title (#1266 review r2, M-3). Not reachable via embedPage (the HTML
+    // parser normalises CRLF) but chunkText is exported.
+    const headingMatch = trimmed.match(/^#{1,6}\s+(.+)/);
     // Chunk metadata must carry the heading's PROSE — the raw line is
     // turndown-escaped/decorated ("1\. Introduction", "**Bold** [x](url)")
     // and renders verbatim in citations and RAG context headers.

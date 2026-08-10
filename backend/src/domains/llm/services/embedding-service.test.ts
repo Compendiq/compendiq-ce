@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
     model: 'bge-m3',
   }),
   htmlToEmbeddingText: vi.fn(),
+  htmlToText: vi.fn(() => ''),
   toSql: vi.fn().mockReturnValue('[0.1,0.2]'),
   acquireEmbeddingLock: vi.fn().mockResolvedValue('fake-lock-id-for-tests'),
   releaseEmbeddingLock: vi.fn().mockResolvedValue(undefined),
@@ -76,7 +77,7 @@ vi.mock('./shadow-migration-service.js', () => ({
 vi.mock('../../../core/services/content-converter.js', () => ({
   htmlToEmbeddingText: mocks.htmlToEmbeddingText,
   // embedPage's short-markdown fallback (#1265 review M1) imports this too.
-  htmlToText: vi.fn(() => ''),
+  htmlToText: (...args: unknown[]) => mocks.htmlToText(...args),
   // embedPage's embeddability floor flattens the markdown first (#1265);
   // identity keeps the mocked lengths meaningful.
   markdownToSnippetText: vi.fn((s: string) => s),
@@ -1332,6 +1333,22 @@ describe('embedPage', () => {
     mocks.providerGenerateEmbedding.mockImplementation((_userId: string, texts: string[]) =>
       Promise.resolve(texts.map(() => new Array(1024).fill(0.1))),
     );
+  });
+
+  it('embeds via the text-form fallback when the Markdown lands under the floor (#1265 M1)', async () => {
+    // A macro-placeholder page: Markdown shrinks below 20 chars but the text
+    // form is long — the page must EMBED (the coverage probe counts it), not
+    // settle. No test covered the positive half of the fallback before
+    // (#1266 review r2, M-6).
+    // Once-queued so the long fallback text cannot leak into the sibling
+    // short/empty-page tests, which rely on the default empty fallback.
+    mocks.htmlToEmbeddingText.mockReturnValueOnce('[Children pages]');
+    mocks.htmlToText.mockReturnValueOnce('Children pages listed here with enough rendered text to matter');
+
+    const count = await embedPage('user-1', 105, 'Macro Page', 'DEV', '<div>macro</div>');
+
+    expect(count).toBeGreaterThan(0);
+    expect(mocks.htmlToText).toHaveBeenCalledWith('<div>macro</div>');
   });
 
   it('should mark page as not dirty when text is too short', async () => {
