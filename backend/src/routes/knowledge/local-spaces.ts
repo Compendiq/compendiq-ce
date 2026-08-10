@@ -181,7 +181,13 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
       [body.key, body.name, body.description ?? null, body.icon ?? null, userId],
     );
 
-    await cache.invalidate(userId, 'spaces');
+    // Local-space rows are global chrome — every user's sidebar renders the
+    // space's name and icon — but GET /spaces/local above serves its
+    // globally-scoped list out of a PER-USER cache (15-min TTL). Invalidating
+    // only the acting user's cache left everyone else on the stale list for
+    // up to the TTL, so fan out across users exactly as
+    // routes/confluence/spaces.ts does for the custom home page (#352).
+    await cache.invalidateAcrossUsers('spaces');
     await logAuditEvent(userId, 'LOCAL_SPACE_CREATED', 'space', body.key,
       { name: body.name }, request);
 
@@ -233,7 +239,9 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
       values,
     );
 
-    await cache.invalidate(userId, 'spaces');
+    // Cross-user on purpose: name/description/icon are chrome every user's
+    // sidebar renders — see the POST handler above (#352 pattern).
+    await cache.invalidateAcrossUsers('spaces');
     await logAuditEvent(userId, 'LOCAL_SPACE_UPDATED', 'space', key, body, request);
 
     return { key, updated: true };
@@ -270,7 +278,8 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
 
     await query('DELETE FROM spaces WHERE space_key = $1', [key]);
 
-    await cache.invalidate(userId, 'spaces');
+    // Cross-user on purpose — see the POST handler above (#352 pattern).
+    await cache.invalidateAcrossUsers('spaces');
     await logAuditEvent(userId, 'LOCAL_SPACE_DELETED', 'space', key, {}, request);
 
     return { key, deleted: true };

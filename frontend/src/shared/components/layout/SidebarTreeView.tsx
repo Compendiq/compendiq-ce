@@ -10,10 +10,10 @@ import {
   PanelLeftClose,
   Plus,
   Globe,
-  HardDrive,
   Pin,
   Settings,
 } from 'lucide-react';
+import { getSpaceIcon } from '../spaces/space-icons';
 import { m, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { MainNavStripExpanded, MainNavStripCollapsed } from './MainNavStrip';
 import { usePageTree, useCreatePage, usePinnedPages } from '../../hooks/use-pages';
@@ -241,6 +241,8 @@ interface SpaceOption {
   pageCount: number;
   source: 'confluence' | 'local';
   homepageId?: string | null;
+  /** Local spaces only: the icon chosen at creation (see space-icons.ts). */
+  icon?: string | null;
 }
 
 interface SidebarTreeViewProps {
@@ -307,6 +309,7 @@ export function SidebarTreeView({
       name: s.name,
       pageCount: s.pageCount,
       source: 'local',
+      icon: s.icon,
     }));
     return result;
   }, [confluenceSpaces, localSpacesData]);
@@ -549,6 +552,14 @@ export function SidebarTreeView({
   const confluenceOptions = allSpaces.filter((s) => s.source === 'confluence');
   const localOptions = allSpaces.filter((s) => s.source === 'local');
 
+  // A local space's chosen icon (spaces.icon) brands the selector chip;
+  // unset falls back to the generic HardDrive local mark inside getSpaceIcon.
+  // Confluence spaces and "All Spaces" keep Globe.
+  const SelectedSpaceGlyph =
+    selectedSpaceOption?.source === 'local'
+      ? getSpaceIcon(selectedSpaceOption.icon)
+      : Globe;
+
   return (
     <m.aside
       ref={sidebarRef}
@@ -599,10 +610,7 @@ export function SidebarTreeView({
             aria-expanded={spaceDropdownOpen}
           >
             <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary-ink">
-              {selectedSpaceOption?.source === 'local'
-                ? <HardDrive size={14} />
-                : <Globe size={14} />
-              }
+              <SelectedSpaceGlyph size={14} />
             </span>
             <span className="min-w-0 flex-1">
               <span className="block truncate text-xs font-medium text-foreground">
@@ -667,27 +675,30 @@ export function SidebarTreeView({
                   <div className="px-2.5 py-1.5 text-[11px] font-semibold text-muted-foreground">
                     Local
                   </div>
-                  {localOptions.map((space) => (
-                    <button
-                      key={space.key}
-                      onClick={() => {
-                        setTreeSidebarSpaceKey(space.key);
-                        setSpaceDropdownOpen(false);
-                      }}
-                      className={cn(
-                        'flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs transition-all duration-200',
-                        treeSidebarSpaceKey === space.key
-                          ? 'nm-pill-active text-action font-medium'
-                          : 'text-foreground hover:bg-[var(--glass-pill-hover)]',
-                      )}
-                    >
-                      <span className="flex items-center gap-1.5 truncate">
-                        <HardDrive size={10} className="shrink-0 text-action/70" />
-                        {space.name}
-                      </span>
-                      <span className="shrink-0 text-muted-foreground ml-2">{space.pageCount}</span>
-                    </button>
-                  ))}
+                  {localOptions.map((space) => {
+                    const SpaceGlyph = getSpaceIcon(space.icon);
+                    return (
+                      <button
+                        key={space.key}
+                        onClick={() => {
+                          setTreeSidebarSpaceKey(space.key);
+                          setSpaceDropdownOpen(false);
+                        }}
+                        className={cn(
+                          'flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs transition-all duration-200',
+                          treeSidebarSpaceKey === space.key
+                            ? 'nm-pill-active text-action font-medium'
+                            : 'text-foreground hover:bg-[var(--glass-pill-hover)]',
+                        )}
+                      >
+                        <span className="flex items-center gap-1.5 truncate">
+                          <SpaceGlyph size={10} className="shrink-0 text-action/70" />
+                          {space.name}
+                        </span>
+                        <span className="shrink-0 text-muted-foreground ml-2">{space.pageCount}</span>
+                      </button>
+                    );
+                  })}
                 </>
               )}
 

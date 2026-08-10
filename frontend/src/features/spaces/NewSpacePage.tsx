@@ -2,20 +2,8 @@ import { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { HardDrive, ArrowLeft } from 'lucide-react';
 import { useCreateLocalSpace } from '../../shared/hooks/use-standalone';
+import { SpaceIconPicker } from './SpaceIconPicker';
 import { toast } from 'sonner';
-
-const SPACE_ICONS = [
-  { value: 'book', label: 'Book' },
-  { value: 'code', label: 'Code' },
-  { value: 'globe', label: 'Globe' },
-  { value: 'shield', label: 'Shield' },
-  { value: 'zap', label: 'Zap' },
-  { value: 'rocket', label: 'Rocket' },
-  { value: 'star', label: 'Star' },
-  { value: 'heart', label: 'Heart' },
-  { value: 'briefcase', label: 'Work' },
-  { value: 'lightbulb', label: 'Ideas' },
-];
 
 export function NewSpacePage() {
   const navigate = useNavigate();
@@ -146,29 +134,14 @@ export function NewSpacePage() {
             />
           </div>
 
-          {/* Icon selector */}
+          {/* Icon selector — the picker is a named group ("Space icon"), so
+              this heading is visual only, not a <label> pointing at nothing. */}
           <div>
-            <label className="mb-1.5 block text-xs font-medium text-foreground">
+            <span className="mb-1.5 block text-xs font-medium text-foreground">
               Icon
               <span className="ml-1 text-muted-foreground font-normal">(optional)</span>
-            </label>
-            <div className="flex flex-wrap gap-1.5">
-              {SPACE_ICONS.map((icon) => (
-                <button
-                  key={icon.value}
-                  type="button"
-                  onClick={() => setSelectedIcon(selectedIcon === icon.value ? undefined : icon.value)}
-                  className={`rounded-md border px-2 py-1 text-[11px] transition-colors ${
-                    selectedIcon === icon.value
-                      ? 'border-action bg-action/10 text-action font-medium'
-                      : 'border-border text-muted-foreground hover:bg-foreground/5 hover:text-foreground'
-                  }`}
-                  title={icon.label}
-                >
-                  {icon.label}
-                </button>
-              ))}
-            </div>
+            </span>
+            <SpaceIconPicker value={selectedIcon} onChange={setSelectedIcon} />
           </div>
 
           {/* Submit */}

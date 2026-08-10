@@ -64,9 +64,10 @@ const mockSpaces = [
   { key: 'OPS', name: 'Operations', homepageId: null, lastSynced: '2026-03-01T00:00:00Z', pageCount: 2, source: 'confluence' as const },
 ];
 
-const mockLocalSpaces = [
-  { key: 'NOTES', name: 'My Notes', description: null, icon: null, pageCount: 3, createdBy: null, createdAt: '2026-03-01T00:00:00Z', source: 'local' as const },
+const defaultLocalSpaces = [
+  { key: 'NOTES', name: 'My Notes', description: null, icon: null as string | null, pageCount: 3, createdBy: null, createdAt: '2026-03-01T00:00:00Z', source: 'local' as const },
 ];
+let mockLocalSpaces = [...defaultLocalSpaces];
 
 const mockCreatePageMutateAsync = vi.fn();
 vi.mock('../../hooks/use-pages', () => ({
@@ -104,6 +105,7 @@ describe('SidebarTreeView', () => {
     mockNavigate.mockClear();
     mockTreeData = { ...defaultTreeData };
     mockPinnedData = { items: [], total: 0 };
+    mockLocalSpaces = [...defaultLocalSpaces];
     useUiStore.setState({
       treeSidebarCollapsed: false,
       treeSidebarSpaceKey: undefined,
@@ -1208,6 +1210,48 @@ describe('SidebarTreeNode memoization', () => {
 
       fireEvent.click(screen.getByTestId('space-selector-toggle'));
       expect(screen.queryByTestId('space-settings-link')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('local space icons', () => {
+    // The /spaces/new picker persists `spaces.icon`, and these are the surfaces
+    // that consume it — before this, no component anywhere read the value back.
+
+    beforeEach(() => {
+      // The enclosing block's beforeEach resets the store but not this mock.
+      mockLocalSpaces = [...defaultLocalSpaces];
+    });
+
+    it('renders the chosen icon on the selector chip for a selected local space', () => {
+      mockLocalSpaces = [{ ...defaultLocalSpaces[0]!, icon: 'rocket' }];
+      useUiStore.setState({ treeSidebarSpaceKey: 'NOTES' });
+      render(<SidebarTreeView />, { wrapper: createWrapper() });
+
+      const chip = screen.getByTestId('space-selector-toggle');
+      expect(chip.querySelector('svg.lucide-rocket')).not.toBeNull();
+      expect(chip.querySelector('svg.lucide-hard-drive')).toBeNull();
+    });
+
+    it('falls back to the generic HardDrive mark when the local space has no icon', () => {
+      useUiStore.setState({ treeSidebarSpaceKey: 'NOTES' });
+      render(<SidebarTreeView />, { wrapper: createWrapper() });
+
+      const chip = screen.getByTestId('space-selector-toggle');
+      expect(chip.querySelector('svg.lucide-hard-drive')).not.toBeNull();
+    });
+
+    it('renders each local space row in the dropdown with its own icon', () => {
+      mockLocalSpaces = [
+        { ...defaultLocalSpaces[0]!, icon: 'rocket' },
+        { ...defaultLocalSpaces[0]!, key: 'SCRATCH', name: 'Scratch', icon: null },
+      ];
+      render(<SidebarTreeView />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByTestId('space-selector-toggle'));
+      const notesRow = screen.getByRole('button', { name: /My Notes/ });
+      expect(notesRow.querySelector('svg.lucide-rocket')).not.toBeNull();
+      const scratchRow = screen.getByRole('button', { name: /Scratch/ });
+      expect(scratchRow.querySelector('svg.lucide-hard-drive')).not.toBeNull();
     });
   });
 });

@@ -1,11 +1,13 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Settings, ArrowLeft, Trash2, HardDrive } from 'lucide-react';
+import { Settings, ArrowLeft, Trash2 } from 'lucide-react';
 import {
   useLocalSpaces,
   useUpdateLocalSpace,
   useDeleteLocalSpace,
 } from '../../shared/hooks/use-standalone';
+import { getSpaceIcon } from '../../shared/components/spaces/space-icons';
+import { SpaceIconPicker } from './SpaceIconPicker';
 import { toast } from 'sonner';
 
 export function SpaceSettingsPage() {
@@ -20,13 +22,31 @@ export function SpaceSettingsPage() {
 
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  const [icon, setIcon] = useState<string | undefined>(undefined);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
-  // Populate form from space data
+  // Populate the form from space data ONCE per space key. `space` is a
+  // `find()` over the list query, so any refetch whose payload is not
+  // deep-equal (a pageCount bump, another user's edit) hands this component a
+  // fresh reference — and the app query client refetches mid-edit (staleTime
+  // 30s + refetchOnWindowFocus). Seeding keyed on the reference silently
+  // snapped the form back to server state over unsaved edits. The ref also
+  // carries the server state the submit's ''-vs-omit decision needs, advanced
+  // on every successful save — never read from the live query row, which a
+  // racing post-save refetch leaves stale.
+  const savedRef = useRef<{ key: string; description: string | null; icon: string | null } | null>(
+    null,
+  );
   useEffect(() => {
-    if (space) {
+    if (space && savedRef.current?.key !== space.key) {
+      savedRef.current = {
+        key: space.key,
+        description: space.description ?? null,
+        icon: space.icon || null,
+      };
       setName(space.name);
       setDescription(space.description ?? '');
+      setIcon(space.icon || undefined);
     }
   }, [space]);
 
@@ -35,19 +55,38 @@ export function SpaceSettingsPage() {
       e.preventDefault();
       if (!key || !name.trim()) return;
 
+      // The last state this form saved (or was seeded from) — NOT the live
+      // query row, which is stale between a save and its refetch landing.
+      const saved = savedRef.current;
       try {
+        const trimmedDescription = description.trim();
         await updateSpace.mutateAsync({
           key,
+          // The update schema takes strings, not null: '' clears a previously
+          // set description/icon, and when the space never had one the field
+          // is omitted entirely (JSON.stringify drops undefined) so a plain
+          // rename does not write an empty string over NULL.
           name: name.trim(),
-          description: description.trim() || undefined,
+          description: trimmedDescription || (saved?.description ? '' : undefined),
+          icon: icon ?? (saved?.icon ? '' : undefined),
         });
+        // Advance the baseline so a second edit in the same session decides
+        // ''-vs-omit against this save. Only on success — a failed save
+        // changed nothing on the server.
+        if (saved) {
+          savedRef.current = {
+            key: saved.key,
+            description: trimmedDescription || null,
+            icon: icon ?? null,
+          };
+        }
         toast.success('Space updated');
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Failed to update space';
         toast.error(message);
       }
     },
-    [key, name, description, updateSpace],
+    [key, name, description, icon, updateSpace],
   );
 
   const handleDelete = useCallback(async () => {
@@ -62,6 +101,9 @@ export function SpaceSettingsPage() {
       toast.error(message);
     }
   }, [key, deleteSpace, navigate]);
+
+  // The saved identity mark: the space's chosen icon, HardDrive when unset.
+  const SpaceGlyph = getSpaceIcon(space?.icon);
 
   if (!space) {
     return (
@@ -107,7 +149,7 @@ export function SpaceSettingsPage() {
               Space Key
             </label>
             <div className="flex items-center gap-2 rounded-lg border border-border bg-foreground/5 px-3 py-2">
-              <HardDrive size={14} className="text-action/70" />
+              <SpaceGlyph size={14} className="text-action/70" aria-hidden="true" />
               <span className="font-mono text-sm text-muted-foreground">{key}</span>
             </div>
             <p className="mt-1 text-[11px] text-muted-foreground">
@@ -143,6 +185,16 @@ export function SpaceSettingsPage() {
               maxLength={2000}
               className="w-full rounded-lg border border-border bg-background/50 px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-ring resize-none"
             />
+          </div>
+
+          {/* Icon selector — the picker is a named group ("Space icon"), so
+              this heading is visual only, not a <label> pointing at nothing. */}
+          <div>
+            <span className="mb-1.5 block text-xs font-medium text-foreground">
+              Icon
+              <span className="ml-1 text-muted-foreground font-normal">(optional)</span>
+            </span>
+            <SpaceIconPicker value={icon} onChange={setIcon} />
           </div>
 
           {/* Page count (info) */}
