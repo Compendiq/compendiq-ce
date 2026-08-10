@@ -21,6 +21,35 @@ interface ScoreConfig {
   badgeClass: string;
   animate: boolean;
   testId?: string;
+  /** 1–4 when the badge shows a score; null for the pipeline states. */
+  band: number | null;
+}
+
+/**
+ * Quality is a *measurement*, not a pipeline state, and it is the only thing on
+ * the Pages list that used to be painted in the status palette. A page scoring
+ * 65 wore the same amber as a space mid-sync, and one scoring 74 the same teal
+ * as "embedding" — on the densest scanning surface in the app, in the two hues
+ * the system reserves most tightly (amber = warning, teal = brand AND
+ * interaction). So the split is now explicit:
+ *
+ *   - the pipeline STATES (analyzing / failed / skipped / not scored) keep
+ *     status colours, because they genuinely are states;
+ *   - the SCORE renders neutral, and carries its band in a 4-segment meter.
+ *
+ * The meter is what keeps the list scannable without colour: filled-segment
+ * count is a pre-attentive length channel, so a column of scores still reads at
+ * a glance, and it survives both themes, forced-colors and colour blindness.
+ * The number and word remain, so the meter is a redundant channel and never the
+ * only carrier (WCAG 1.4.1).
+ */
+const BAND_COUNT = 4;
+
+function bandForScore(score: number): number {
+  if (score >= 90) return 4;
+  if (score >= 70) return 3;
+  if (score >= 50) return 2;
+  return 1;
 }
 
 function getScoreConfig(
@@ -34,26 +63,29 @@ function getScoreConfig(
       label: 'Analyzing...',
       badgeClass: 'bg-status-ai/20 text-status-ai border border-status-ai/30',
       animate: true,
+      band: null,
     };
   }
 
   if (status === 'failed') {
     return {
       label: 'Analysis Failed',
-      // Soft-red tinted pill, AA-pass in light + dark.
-      badgeClass: 'bg-[#fae2e0] text-[#7a1e1a] dark:bg-[#2a1614] dark:text-[#e89c98]',
+      // The one quality state that IS attention-worthy, so it is the one that
+      // earns amber. Tokens, not hex literals, so the palette tests can see it.
+      badgeClass: 'bg-warning/10 text-warning border border-warning/30',
       animate: false,
       testId: 'badge-failed',
+      band: null,
     };
   }
 
   if (status === 'skipped') {
     return {
       label: 'Skipped',
-      // Neutral warm-gray tinted pill, AA-pass in light + dark.
-      badgeClass: 'bg-[#efeeea] text-[#5f5c54] dark:bg-[#262320] dark:text-[#a39e8c]',
+      badgeClass: 'bg-muted/40 text-muted-foreground border border-border',
       animate: false,
       testId: 'badge-skipped',
+      band: null,
     };
   }
 
@@ -62,39 +94,43 @@ function getScoreConfig(
       label: 'Not Scored',
       badgeClass: 'bg-status-inactive/20 text-status-inactive border border-status-inactive/30',
       animate: false,
+      band: null,
     };
   }
 
-  // Score-based labels
-  if (score >= 90) {
-    return {
-      label: `${score} Excellent`,
-      badgeClass: 'bg-status-connected/20 text-status-connected border border-status-connected/30',
-      animate: false,
-    };
-  }
-
-  if (score >= 70) {
-    return {
-      label: `${score} Good`,
-      badgeClass: 'bg-status-embedding/20 text-status-embedding border border-status-embedding/30',
-      animate: false,
-    };
-  }
-
-  if (score >= 50) {
-    return {
-      label: `${score} Needs Work`,
-      badgeClass: 'bg-status-syncing/20 text-status-syncing border border-status-syncing/30',
-      animate: false,
-    };
-  }
+  // Score-based labels — one neutral chip for every band; the meter carries the
+  // difference. Deliberately no per-band colour: see the note above.
+  const label =
+    score >= 90 ? 'Excellent' : score >= 70 ? 'Good' : score >= 50 ? 'Needs Work' : 'Poor';
 
   return {
-    label: `${score} Poor`,
-    badgeClass: 'bg-status-disconnected/20 text-status-disconnected border border-status-disconnected/30',
+    label: `${score} ${label}`,
+    badgeClass: 'bg-muted/40 text-foreground border border-border',
     animate: false,
+    band: bandForScore(score),
   };
+}
+
+/**
+ * Four segments, filled to the band. `aria-hidden` because the adjacent text
+ * already says "74 Good" — this is the scanning channel, not the accessible
+ * one.
+ */
+function QualityMeter({ band }: { band: number }) {
+  return (
+    <span aria-hidden="true" className="flex items-center gap-px" data-testid="quality-meter">
+      {Array.from({ length: BAND_COUNT }, (_, i) => (
+        <span
+          key={i}
+          data-filled={i < band ? 'true' : 'false'}
+          className={cn(
+            'h-2 w-[3px] rounded-[1px]',
+            i < band ? 'bg-foreground' : 'bg-border',
+          )}
+        />
+      ))}
+    </span>
+  );
 }
 
 function buildTooltip(props: QualityScoreBadgeProps): string {
@@ -159,12 +195,13 @@ export function QualityScoreBadge(props: QualityScoreBadgeProps) {
       data-status={qualityStatus ?? 'pending'}
       data-score={qualityScore ?? ''}
       className={cn(
-        'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium whitespace-nowrap',
+        'inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium whitespace-nowrap',
         config.badgeClass,
         config.animate && 'animate-pulse',
         className,
       )}
     >
+      {config.band !== null && <QualityMeter band={config.band} />}
       {config.label}
     </span>
   );

@@ -83,6 +83,30 @@ body {
   font-synthesis: style;
 }
 
+/* Text selection. There was no ::selection rule at all, which left the single
+   highest-frequency interaction in an editor rendering at the UA default —
+   Chrome's #0075FF-ish blue — in a palette declared neutral-plus-one-teal, and
+   untested for contrast in either theme.
+
+   The accent is mixed down to 28% rather than used neat: selection sits BEHIND
+   text that keeps its own colour, so it has to stay light enough for
+   `--color-text` to clear 4.5:1 on top of it in both themes. `color-mix` in
+   oklab keeps that ratio predictable when the teal is retuned, which is the
+   whole reason the two themes carry different teals in the first place.
+
+   Not set on a dark/light branch: both themes composite the same accent over
+   their own surface, so one rule tracks both. */
+::selection {
+  background: color-mix(in oklab, var(--color-primary) 28%, transparent);
+}
+
+/* ProseMirror's node selection (a whole image, macro or diagram picked as one
+   unit) is a different gesture from a text drag and must not read as one. */
+.ProseMirror-selectednode {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 2px;
+}
+
 /* Headings share the body face. There is no display voice in this system: a
    workspace heading is a wayfinding label, and a second family competing with
    it at 15–20px costs legibility without buying identity.
@@ -2058,11 +2082,20 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   --tw-prose-td-borders: var(--color-border);
 }
 
-/* Light theme inline code overrides */
+/* Light theme inline code overrides.
+
+   The `color` declaration that used to live here was `oklch(0.45 0.15 25)` — a
+   red — and it silently overrode the light theme's own `--inline-code-color`
+   (#7041a8), which the base rule above already resolves. The token was
+   therefore dead: Paper rendered inline code red while Graphite rendered it
+   violet, two different hues rather than one hue at two lightnesses, and red
+   reads as destructive in a palette where nothing else in prose is. Both themes
+   now resolve their own token, so retuning inline code means editing the token
+   and not hunting for an override. Background and border still need a theme
+   override — the light surfaces sit at different alphas. */
 [data-theme-type="light"] .prose :where(code):not(:where(pre code)) {
   background: oklch(from var(--color-muted) l c h / 0.5);
   border-color: oklch(from var(--color-border) l c h / 0.5);
-  color: oklch(0.45 0.15 25);
 }
 
 /* Light theme code blocks */
