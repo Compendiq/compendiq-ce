@@ -190,7 +190,9 @@ export function EmbeddingReembedBanner({ currentDimensions, pending }: Props) {
     }
     return (
       <div
-        className="nm-card border-info/30 flex items-center justify-between p-3 text-sm"
+        // status-embedding, not info: a re-embed in flight IS the embedding
+        // pipeline state, and teal is its reserved hue (ADR-010).
+        className="nm-card border-status-embedding/30 flex items-center justify-between p-3 text-sm"
         data-testid="reembed-progress-banner"
       >
         <span>

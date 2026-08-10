@@ -211,7 +211,14 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   --color-muted-foreground: #9ca1ad;
   --color-accent: #21242b;
   --color-accent-foreground: #eceef2;
-  --color-destructive: #f87171;
+  /* Semantic aliases — ALWAYS var() references onto the status tokens below,
+     never raw values. ~100 callsites say text-success / text-warning /
+     text-destructive, and the vocabulary they speak is the status palette
+     (green = connected/ok, amber = syncing/warning, red = disconnected/
+     destructive). These used to be byte-identical copies of the status hexes,
+     which is one retune away from an eighth and ninth hue nobody chose.
+     A raw value here fails workspace-themes.test.ts. */
+  --color-destructive: var(--color-status-disconnected);
   --color-destructive-foreground: #1a0f0f;
   /* Two border weights with different jobs:
      --color-border      hairline separators, table cells, prose rules. Quiet
@@ -227,14 +234,15 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   --color-border: #26282f;
   --color-border-interactive: #6b707b;
   --color-ring: #4dd0e1;
-  --color-success: #4ade80;
+  --color-success: var(--color-status-connected);
   /* Amber is NOT the brand here — it is reserved for warning and attention,
      which is what makes it readable as a signal when it appears. */
-  --color-warning: #fbbf24;
-  /* Deliberately the same value as --color-primary: teal is the system's one
-     accent, so "informational" and "interactive" share a hue. Keep info for
-     passive notices only — an info-coloured element that is NOT clickable is
-     fine, but never use it to mark something that is. */
+  --color-warning: var(--color-status-syncing);
+  /* Indigo = INFORMATIONAL — the one semantic hue with no status-* twin. It
+     marks a passive notice ("How web search works", the AI-safety rules
+     banner) and the Confluence info admonition panel, and nothing else: not a
+     state, not a measurement, not a category chip, and never an interactive
+     affordance. It deliberately collides with no reserved hue. */
   --color-info: #8b93f8;
 
   /* Status colors. Steel carries "embedding" (it is the system's one blue);
@@ -485,7 +493,14 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   --color-muted-foreground: #63666d;
   --color-accent: #e8e8eb;
   --color-accent-foreground: #17181a;
-  --color-destructive: #c03434;
+  /* Semantic aliases — var() references, exactly as in the dark block. The
+     re-declaration is DEFENSIVE, not load-bearing today: `data-theme` sits on
+     the root element, so the :root alias already substitutes against this
+     block's status values (verified against the built CSS). It becomes
+     load-bearing the day the attribute moves off the root or a nested themed
+     region appears, because a custom property substitutes its var() on the
+     element it is declared on — keep the pair in sync. */
+  --color-destructive: var(--color-status-disconnected);
   --color-destructive-foreground: #ffffff;
   /* Same two-weight split as dark: a quiet hairline for structure, and an
      interactive edge that clears 1.4.11's 3:1 on both background and card.
@@ -507,8 +522,9 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      3.46 muted. */
   --color-border-interactive: #7d818b;
   --color-ring: #0e7490;
-  --color-success: #16794a;
-  --color-warning: #8a5a00;
+  --color-success: var(--color-status-connected);
+  --color-warning: var(--color-status-syncing);
+  /* Indigo = informational, light sibling — see the dark block's note. */
   --color-info: #3f49b8;
 
   /* Status colors — the light-theme counterparts, all ≥4.5:1 on background

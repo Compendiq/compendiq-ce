@@ -155,7 +155,10 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
 
   if (!migration && pending) {
     return (
-      <div className="nm-card border-info/30 p-3 text-sm" data-testid="shadow-migration-card">
+      // Every phase card wears border-status-embedding/30: this surface IS
+      // the embedding pipeline, and teal is its reserved hue (ADR-010). It
+      // used to be the informational indigo, which names no state.
+      <div className="nm-card border-status-embedding/30 p-3 text-sm" data-testid="shadow-migration-card">
         <p>
           Embedding model change detected (<b>{pending.model}</b>). The zero-downtime path
           backfills the new vectors in the background — search keeps serving the current
@@ -178,7 +181,7 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
 
   if (migration.phase === 'aborting') {
     return (
-      <div className="nm-card border-info/30 p-3 text-sm" data-testid="shadow-migration-card">
+      <div className="nm-card border-status-embedding/30 p-3 text-sm" data-testid="shadow-migration-card">
         <p>
           A previous abort did not finish — the shadow columns may still exist.
           Retry to complete it; nothing else can start until it does.
@@ -212,7 +215,7 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
     const eta = !buildingIndex ? etaFromObservedRate(migration) : null;
 
     return (
-      <div className="nm-card border-info/30 p-3 text-sm" data-testid="shadow-migration-card">
+      <div className="nm-card border-status-embedding/30 p-3 text-sm" data-testid="shadow-migration-card">
         <p>
           Zero-downtime re-embed to <b>{migration.model}</b> ({migration.dimensions} dims):{' '}
           <b>
@@ -253,7 +256,7 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
 
   if (migration.phase === 'ready') {
     return (
-      <div className="nm-card border-info/30 p-3 text-sm" data-testid="shadow-migration-card">
+      <div className="nm-card border-status-embedding/30 p-3 text-sm" data-testid="shadow-migration-card">
         <p>
           Backfill complete — <b>{migration.totalPages}</b> pages carry <b>{migration.model}</b>{' '}
           vectors
@@ -291,7 +294,7 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
 
   // swapped
   return (
-    <div className="nm-card border-info/30 p-3 text-sm" data-testid="shadow-migration-card">
+    <div className="nm-card border-status-embedding/30 p-3 text-sm" data-testid="shadow-migration-card">
       <p>
         <b>{migration.model}</b> is live. Validate search quality, then clean up — or roll back
         to the previous model. Cleanup <b>deletes the old vectors</b> and ends the rollback

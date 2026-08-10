@@ -1301,34 +1301,55 @@ describe('PagesPage', () => {
       });
     }
 
-    it('Local badge uses the semantic success treatment', async () => {
+    // Source and visibility are CATEGORIES, not states, so every badge in
+    // this cluster is the same neutral chip and the label/glyph is the
+    // differentiator. Local used to wear the success green and Confluence/
+    // Shared the informational indigo — status vocabulary borrowed for
+    // labels, on the densest scanning surface in the app.
+    //
+    // The fill is the COMPOSITING TINT `bg-foreground/10`, never `bg-muted`:
+    // these rows hover with `bg-accent`, and in Graphite accent == muted
+    // (1.00:1 measured), so a bg-muted chip vanished exactly while being
+    // pointed at. The tint steps up from any ground.
+    //
+    // The label is `text-secondary-foreground`, never muted: the tint darkens
+    // the ground under the 11px label, and muted-fg measured 3.85:1 on a
+    // hovered Paper row — under AA. The secondary ink measures 8.58/7.31:1
+    // (Graphite resting/hovered) and 9.73/7.98:1 (Paper).
+    it('Local badge is a neutral tint — no borrowed status hue, no bg-muted', async () => {
       mockPagesWithStandalone('private');
       render(<PagesPage />, { wrapper: createWrapper() });
       const badge = await screen.findByTestId('badge-local');
       expect(badge).toHaveTextContent('Local');
-      expect(badge.className).toContain('bg-success/10');
-      expect(badge.className).toContain('text-success');
-      expect(badge.className).not.toMatch(/emerald-500|amber|warning|yellow/);
+      expect(badge.className).toContain('bg-foreground/10');
+      expect(badge.className).toContain('text-secondary-foreground');
+      expect(badge.className).not.toContain('bg-muted');
+      expect(badge.className).not.toContain('text-muted-foreground');
+      expect(badge.className).not.toMatch(/success|info|emerald-500|amber|warning|yellow/);
     });
 
-    it('Private badge uses neutral gray tint, not amber/primary/warning', async () => {
+    it('Private badge uses the neutral tint, not amber/primary/warning', async () => {
       mockPagesWithStandalone('private');
       render(<PagesPage />, { wrapper: createWrapper() });
       const badge = await screen.findByTestId('badge-private');
       expect(badge).toHaveTextContent('Private');
       expect(badge.className).not.toMatch(/amber|warning|yellow|primary/);
-      expect(badge.className).toContain('bg-muted');
-      expect(badge.className).toContain('text-muted-foreground');
+      expect(badge.className).toContain('bg-foreground/10');
+      expect(badge.className).toContain('text-secondary-foreground');
+      expect(badge.className).not.toContain('bg-muted');
+      expect(badge.className).not.toContain('text-muted-foreground');
     });
 
-    it('Shared badge uses the semantic information treatment', async () => {
+    it('Shared badge is a neutral tint — no borrowed status hue, no bg-muted', async () => {
       mockPagesWithStandalone('shared');
       render(<PagesPage />, { wrapper: createWrapper() });
       const badge = await screen.findByTestId('badge-shared');
       expect(badge).toHaveTextContent('Shared');
-      expect(badge.className).toContain('bg-info/10');
-      expect(badge.className).toContain('text-info');
-      expect(badge.className).not.toMatch(/sky-500|amber|warning|yellow/);
+      expect(badge.className).toContain('bg-foreground/10');
+      expect(badge.className).toContain('text-secondary-foreground');
+      expect(badge.className).not.toContain('bg-muted');
+      expect(badge.className).not.toContain('text-muted-foreground');
+      expect(badge.className).not.toMatch(/success|info|sky-500|amber|warning|yellow/);
     });
   });
 

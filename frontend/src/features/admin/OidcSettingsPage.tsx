@@ -9,6 +9,7 @@ import {
 import type { LicenseInfoResponse } from '@compendiq/contracts';
 import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
+import { neutralChipInk } from '../../shared/components/badges/neutral-chip';
 import { checkRedirectUriOrigin } from './oidc-redirect-uri';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -616,7 +617,9 @@ function MappingsTab({ disabled }: { disabled?: boolean }) {
                 >
                   <td className="px-4 py-2.5 font-mono text-xs">{mapping.oidcGroup}</td>
                   <td className="px-4 py-2.5">
-                    <span className="rounded bg-[#ececea] px-2 py-0.5 text-xs text-[#4a4a48] dark:bg-[#2a2925] dark:text-[#c5bea9]">
+                    {/* Token chip, never `dark:`-hex — with no `@custom-variant
+                        dark`, `dark:` tracks the OS instead of the picked theme. */}
+                    <span className={cn('rounded px-2 py-0.5 text-xs', neutralChipInk)}>
                       {mapping.roleName ?? `Role #${mapping.roleId}`}
                     </span>
                   </td>

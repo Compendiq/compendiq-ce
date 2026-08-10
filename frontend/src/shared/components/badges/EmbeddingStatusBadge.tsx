@@ -33,9 +33,21 @@ function getStatusConfig(
       return {
         label: 'Not Embedded',
         title: 'Content has not been indexed for AI search',
-        // Neutral warm-gray tinted pill, AA-pass in light + dark.
-        // Was bg-status-inactive/20 + text-status-inactive (2.67:1 light / 3.19:1 dark — failed AA).
-        badgeClass: 'bg-[#efeeea] text-[#5f5c54] dark:bg-[#262320] dark:text-[#a39e8c]',
+        // Token-based neutral, same as `embedded` below — the label is the
+        // differentiator. This carried hardcoded warm-gray hexes behind a
+        // `dark:` variant, and with no `@custom-variant dark` in this app,
+        // `dark:` compiles to the OS media query: OS-dark + user-picked Paper
+        // rendered the dark pill on the white page. Tokens follow the active
+        // theme. (The hexes had replaced status-inactive/20, which failed AA
+        // — the muted pairing passes on every surface it lands on.)
+        //
+        // Deliberately `bg-muted`, NOT the row chips' `bg-foreground/10`
+        // tint (neutral-chip.ts): this badge renders only on ArticleRightPane's
+        // non-hovering nm-card, where muted is a real value step. The tint
+        // recipe exists for chips on rows that hover with `bg-accent` (== muted
+        // in Graphite) and for the elevated hover card — check the ground
+        // before "unifying" in either direction.
+        badgeClass: 'bg-muted text-muted-foreground',
         animate: false,
       };
     case 'embedding':
@@ -51,7 +63,13 @@ function getStatusConfig(
         title: embeddedAt
           ? `Indexed for AI search on ${new Date(embeddedAt).toLocaleString()}`
           : 'Content is indexed for AI search',
-        badgeClass: 'bg-status-connected/20 text-status-connected border border-status-connected/30',
+        // Neutral, deliberately: "Embedded <date>" is the resting state of
+        // every healthy page — a freshness readout, not an event. Painting it
+        // the connected green put a permanent green pill on every Details tab
+        // and diluted the one hue that means "a connection is up". The live
+        // states above/below keep their reserved hues (teal = embedding,
+        // red on failure).
+        badgeClass: 'bg-muted text-muted-foreground',
         animate: false,
       };
     case 'failed':

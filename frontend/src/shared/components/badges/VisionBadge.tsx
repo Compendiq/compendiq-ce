@@ -14,8 +14,10 @@ import { cn } from '../../lib/cn';
  * row schedules a background refresh and returns `null` immediately, which is
  * every first paint for an unseen model.
  *
- * Steel and slate rather than green/amber: ADR-010 reserves amber for
- * warning/attention, and a capability verdict is information, not a warning.
+ * Neutral in every state: ADR-010 reserves amber for warning/attention and
+ * teal for the interaction accent, and a capability verdict is neither — it is
+ * a static readout, so the three labels are the differentiator. (The "Vision"
+ * state used to wear the teal, which made a badge read as a control.)
  */
 
 interface VisionStateConfig {
@@ -28,7 +30,7 @@ const CONFIG: Record<'yes' | 'no' | 'unknown', VisionStateConfig> = {
   yes: {
     label: 'Vision',
     title: 'This model has been probed with a test image and can read images.',
-    badgeClass: 'bg-primary/15 text-primary-ink',
+    badgeClass: 'bg-muted text-muted-foreground',
   },
   no: {
     label: 'Text-only',

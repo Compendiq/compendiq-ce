@@ -25,6 +25,7 @@ import {
   type PageFilterState,
 } from './pages-filter-params';
 import { cn } from '../../shared/lib/cn';
+import { neutralChipClass } from '../../shared/components/badges/neutral-chip';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 import { ShortcutHint } from '../../shared/components/ShortcutHint';
 import { SanitizedHtml } from '../../shared/components/SanitizedHtml';
@@ -142,10 +143,13 @@ const PageListItem = memo(function PageListItem({
               {/* 13px medium. At 16px the title read as a card heading, which
                   is what made forty rows look like forty cards. */}
               <p className="truncate text-[13px] font-medium">{pageItem.title}</p>
-              {/* Source badge */}
+              {/* Source badge. Neutral, like Private below: a source is a
+                  category, not a state, so it may not borrow the status
+                  greens/indigos — the label is the differentiator. The recipe
+                  and its measured rationale live in neutral-chip.ts. */}
               {pageItem.source === 'standalone' ? (
                 <span
-                  className="inline-flex shrink-0 items-center gap-1 rounded-full border border-success/20 bg-success/10 px-2 py-0.5 text-[11px] font-medium text-success"
+                  className={cn('shrink-0', neutralChipClass)}
                   data-testid="badge-local"
                   data-source-badge={pageItem.id}
                 >
@@ -153,7 +157,7 @@ const PageListItem = memo(function PageListItem({
                 </span>
               ) : (
                 <span
-                  className="inline-flex shrink-0 items-center gap-1 rounded-full border border-info/20 bg-info/10 px-2 py-0.5 text-[11px] font-medium text-info"
+                  className={cn('shrink-0', neutralChipClass)}
                   data-testid="badge-confluence"
                   data-source-badge={pageItem.id}
                 >
@@ -164,7 +168,7 @@ const PageListItem = memo(function PageListItem({
               {pageItem.source === 'standalone' && (
                 (pageItem.visibility === 'shared') ? (
                   <span
-                    className="inline-flex shrink-0 items-center gap-1 rounded-full border border-info/20 bg-info/10 px-2 py-0.5 text-[11px] font-medium text-info"
+                    className={cn('shrink-0', neutralChipClass)}
                     data-testid="badge-shared"
                     data-visibility-badge={pageItem.id}
                   >
@@ -173,7 +177,7 @@ const PageListItem = memo(function PageListItem({
                 ) : (
                   // Private = neutral gray. Was amber, but privacy carries no AI semantic.
                   <span
-                    className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                    className={cn('shrink-0', neutralChipClass)}
                     data-testid="badge-private"
                     data-visibility-badge={pageItem.id}
                   >

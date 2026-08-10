@@ -3,6 +3,7 @@ import { m, AnimatePresence } from 'framer-motion';
 import { FileText } from 'lucide-react';
 import { usePage } from '../../hooks/use-pages';
 import { FreshnessBadge } from '../badges/FreshnessBadge';
+import { neutralChipInk } from '../badges/neutral-chip';
 import { cn } from '../../lib/cn';
 
 interface PagePreviewProps {
@@ -88,7 +89,13 @@ export function PagePreview({ pageId, children, className }: PagePreviewProps) {
                     </p>
                   )}
                   <div className="flex items-center gap-2">
-                    <span className="rounded bg-[#ececea] px-1.5 py-0.5 text-[11px] text-[#4a4a48] dark:bg-[#2a2925] dark:text-[#c5bea9]">
+                    {/* Token chip, never `dark:`-hex: with no `@custom-variant
+                        dark` in this app, `dark:` tracks the OS, so OS-dark +
+                        user-picked Paper painted a dark warm-gray chip on this
+                        white hover card. The tint recipe (neutral-chip.ts)
+                        also survives the elevated ground, where bg-muted
+                        measured 1.05:1 in Graphite. */}
+                    <span className={cn('rounded px-1.5 py-0.5 text-[11px]', neutralChipInk)}>
                       {page.spaceKey}
                     </span>
                     {page.lastModifiedAt && (

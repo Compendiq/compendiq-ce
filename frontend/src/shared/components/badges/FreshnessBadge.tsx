@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import { cn } from '../../lib/cn';
+import { neutralChipInk } from './neutral-chip';
 
 interface FreshnessBadgeProps {
   lastModified: string;
@@ -8,35 +9,36 @@ interface FreshnessBadgeProps {
 
 interface FreshnessLevel {
   label: string;
-  colorClass: string;
-  bgClass: string;
   testId?: string;
 }
 
+/**
+ * Freshness is a MEASUREMENT (days since last edit), not a pipeline state, so
+ * it renders as one neutral chip — the same argument that de-coloured
+ * QualityScoreBadge. It used to wear the full status vocabulary: Fresh in the
+ * connected green, Aging literally in `status-syncing`, Stale in the
+ * disconnected red, so a page untouched for a month read as a space mid-sync
+ * and a stale one as a broken connection. The label is the channel; the exact
+ * date stays in the tooltip.
+ *
+ * The chip is the TINT recipe (neutral-chip.ts), not `bg-muted`: this badge
+ * renders on PagePreview's nm-card-elevated hover card, where bg-muted
+ * measured 1.05:1 in Graphite — no visible pill, just bare floating text
+ * beside the space-key chip. The tint steps up from both grounds it sits on
+ * (1.33:1 on card-elevated, 1.29:1 on ArticleRightPane's nm-card in Graphite;
+ * 1.23:1 on both in Paper), the border-border hairline defines the shape, and
+ * the secondary ink measures 7.63–9.73:1 across all four.
+ */
 function getFreshnessLevel(lastModified: string): FreshnessLevel {
   const now = new Date();
   const modified = new Date(lastModified);
   const diffMs = now.getTime() - modified.getTime();
   const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
 
-  if (diffDays < 7) {
-    return { label: 'Fresh', colorClass: 'text-success', bgClass: 'bg-success/15' };
-  }
-  if (diffDays < 30) {
-    // Recent: sage green tinted pill, AA-pass in light + dark.
-    // Was amber (bg-warning/15 + text-warning) which read as a warning and
-    // failed WCAG-AA contrast (3.37:1). Sage reads as positive freshness.
-    return {
-      label: 'Recent',
-      colorClass: 'text-[#1f5a2a] dark:text-[#9ad4a8]',
-      bgClass: 'bg-[#e7f2e8] dark:bg-[#1a2a1d]',
-      testId: 'badge-recent',
-    };
-  }
-  if (diffDays < 90) {
-    return { label: 'Aging', colorClass: 'text-status-syncing', bgClass: 'bg-status-syncing/15' };
-  }
-  return { label: 'Stale', colorClass: 'text-destructive', bgClass: 'bg-destructive/15' };
+  if (diffDays < 7) return { label: 'Fresh' };
+  if (diffDays < 30) return { label: 'Recent', testId: 'badge-recent' };
+  if (diffDays < 90) return { label: 'Aging' };
+  return { label: 'Stale' };
 }
 
 export function FreshnessBadge({ lastModified, className }: FreshnessBadgeProps) {
@@ -51,9 +53,8 @@ export function FreshnessBadge({ lastModified, className }: FreshnessBadgeProps)
       title={`Last modified: ${formattedDate}`}
       data-testid={level.testId}
       className={cn(
-        'inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium',
-        level.bgClass,
-        level.colorClass,
+        'inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs font-medium',
+        neutralChipInk,
         className,
       )}
     >

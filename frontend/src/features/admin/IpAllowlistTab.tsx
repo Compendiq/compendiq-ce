@@ -511,7 +511,7 @@ export function IpAllowlistTab() {
               )}
               {testResult.isTrustedProxy && (
                 <span
-                  className="inline-flex items-center rounded-full bg-info/15 px-2 py-0.5 text-xs text-info"
+                  className="inline-flex items-center rounded-full bg-foreground/5 px-2 py-0.5 text-xs text-muted-foreground"
                   data-testid="ip-allowlist-test-trusted-proxy"
                 >
                   trusted proxy

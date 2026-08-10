@@ -112,7 +112,9 @@ export function SearxngTab() {
 
       <div className="rounded-lg border border-info/30 bg-info/10 p-3 text-sm text-info">
         <p className="font-medium">How web search works</p>
-        <p className="mt-1 text-xs text-info/80">
+        {/* Full-strength text-info: /80 measured 4.11:1 over the bg-info/10
+            tint — under AA at 12px. workspace-themes.test.ts bans text-info/NN. */}
+        <p className="mt-1 text-xs text-info">
           When users enable &quot;Search web for reference material&quot; in any AI mode, the MCP sidecar queries SearXNG,
           fetches the top results, and injects them into the LLM prompt as verified reference material.
         </p>
