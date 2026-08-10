@@ -469,7 +469,10 @@ export function ArticleViewer({
       <EditorContent
         editor={editor}
         className={cn(
-          'article-viewer prose max-w-none',
+          // `article-measure` puts the reading measure on the block CHILDREN so
+          // tables, code and diagrams can still use the full column. The editor
+          // carries the same class, so read and write cannot drift apart.
+          'article-viewer article-measure prose max-w-none',
           !isLight && 'prose-invert',
           '[&_.tiptap]:outline-none',
           // Table styles

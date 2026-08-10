@@ -1001,7 +1001,14 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       <EditorContent
         editor={editor}
         className={cn(
-          'prose max-w-none',
+          // Same measure token as ArticleViewer, so prose is the same width in
+          // both modes wherever the column is wider than the measure — i.e. the
+          // whole desktop range. It is NOT a pixel-identical guarantee: this
+          // wrapper keeps its own `px-10` gutter and the viewer has none, so
+          // below roughly 720px both are full-bleed and the editor is the
+          // gutter narrower. Every caller of Editor inherits this, so a caller
+          // that renders its own title must measure it too (see NewPagePage).
+          'article-measure prose max-w-none',
           !isLight && 'prose-invert',
           '[&_.tiptap]:min-h-[200px] [&_.tiptap]:px-10 [&_.tiptap]:py-6 [&_.tiptap]:outline-none',
           '[&_table]:border-collapse [&_td]:border [&_td]:border-border [&_td]:p-2 [&_th]:border [&_th]:border-border [&_th]:bg-foreground/5 [&_th]:p-2',
