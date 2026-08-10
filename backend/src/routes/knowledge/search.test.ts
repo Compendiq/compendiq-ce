@@ -10,6 +10,7 @@ import { LlmHttpError } from '../../domains/llm/services/llm-http-error.js';
 // in the route (and here, to construct rejections) see the real class.
 import { CircuitBreakerOpenError } from '../../core/services/circuit-breaker.js';
 import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
+import { invalidateRagFetchWidthCache } from '../../core/services/admin-settings-service.js';
 
 vi.mock('../../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
@@ -151,6 +152,10 @@ describe('Search Routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // The semantic branch reads the real fetch-width TTL cache
+    // (admin-settings-service) — clear it so no test's resolved width serves
+    // the rest of the file for 60s.
+    invalidateRagFetchWidthCache();
     // Default: recordAnalytics is a no-op
     mockRecordAnalytics.mockResolvedValue(undefined);
     // Default: fully-embedded corpus (healthy). Tests for the degraded signal

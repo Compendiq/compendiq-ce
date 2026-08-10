@@ -686,14 +686,15 @@ describe('RAG Service', () => {
       it('keeps hnsw.ef_search covering a width above RAG_EF_SEARCH', async () => {
         // HNSW returns at most ef_search rows regardless of LIMIT, so a raised
         // width must raise ef_search with it or the vector leg silently
-        // plateaus at 100 while the keyword leg keeps widening.
+        // plateaus at 100 while the keyword leg keeps widening. 2x the limit,
+        // not 1x — ef_search == k is HNSW's worst recall setting.
         routeQueries([{ setting_value: '150' }]);
         await hybridSearch('user-1', 'test query');
         const setLocal = mocks.mockClientQuery.mock.calls.find(
           (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('SET LOCAL hnsw.ef_search'),
         );
         expect(setLocal).toBeDefined();
-        expect(setLocal![0]).toContain('= 150');
+        expect(setLocal![0]).toContain('= 300');
         expect(vectorLimitParam()).toBe(150);
       });
 
@@ -846,14 +847,27 @@ describe('RAG Service', () => {
     //
     // When the topK floor pushes the fetch beyond the ranking width, plain RRF
     // over the deep legs dilutes the head (measured: Recall@1 0.3889 → 0.2222
-    // at retrieval topK=20). fuseWithStableHead ranks the head over the
-    // width-prefix of each leg and APPENDS the extras — asking for more
-    // results returns the same first results, plus more.
+    // at retrieval topK=20). fuseWithStableHead takes the head's ORDER from
+    // fusion over the width-prefix of each leg, its ENTRIES from the wide
+    // fusion (full evidence), and APPENDS the extras. The discriminating
+    // tests below plant a page deep in BOTH legs — under plain wide RRF its
+    // summed contribution (~2/73) jumps the head (that is the measured
+    // dilution mechanism), so they fail against a plain-RRF implementation,
+    // not merely pass against this one.
     describe('fuseWithStableHead (#1103)', () => {
       const vecLegs = (n: number) =>
         Array.from({ length: n }, (_, i) => makeResult(`v-${i}`, `vec chunk ${i}`, { score: 0.9 - i * 0.01 }));
       const kwLegs = (n: number) =>
         Array.from({ length: n }, (_, i) => makeResult(`k-${i}`, `kw body ${i}`, { score: 0.8 - i * 0.01, vectorScore: null, keywordRank: 0.8 - i * 0.01 }));
+      /** Legs of 20 with one page planted deep (rank 12) in BOTH legs. */
+      const legsWithDeepIntruder = () => {
+        const v = vecLegs(20);
+        const k = kwLegs(20);
+        v[11] = makeResult('both-legs-deep', 'deep chunk', { score: 0.9 - 11 * 0.01 });
+        k[11] = makeResult('both-legs-deep', 'deep body', { score: 0.8 - 11 * 0.01, vectorScore: null, keywordRank: 0.1 });
+        return { v, k };
+      };
+      const deepIntruderId = makeResult('both-legs-deep', '').pageId;
 
       it('is plain RRF when the legs fit within the rank width', () => {
         const v = vecLegs(8);
@@ -862,41 +876,52 @@ describe('RAG Service', () => {
       });
 
       it('never reorders the head when the legs run deeper than the rank width', () => {
+        const { v, k } = legsWithDeepIntruder();
+        const narrowOrder = reciprocalRankFusion(v.slice(0, 10), k.slice(0, 10)).map((r) => r.pageId);
+        const fused = fuseWithStableHead(v, k, 10);
+        // The head PAGE SEQUENCE is what a narrower request returns — the
+        // deep both-legs intruder must not have jumped in (plain wide RRF
+        // fails this: the intruder outranks the single-leg rank-1 pages).
+        expect(fused.slice(0, narrowOrder.length).map((r) => r.pageId)).toEqual(narrowOrder);
+        expect(fused.findIndex((r) => r.pageId === deepIntruderId)).toBeGreaterThanOrEqual(narrowOrder.length);
+      });
+
+      it('head entries carry the wide fusion evidence, not the narrow prefix view', () => {
+        // Page found by the keyword leg at rank 2 (inside the width) whose
+        // best VECTOR chunk sits at leg rank 12 (outside it). Its head slot
+        // must still surface the vector evidence the deeper fetch paid for:
+        // similarity on the wire, and the purpose-built vector chunk for the
+        // LLM — not the keyword body-excerpt fallback.
         const v = vecLegs(20);
         const k = kwLegs(20);
-        const narrow = reciprocalRankFusion(v.slice(0, 10), k.slice(0, 10));
+        v[11] = makeResult('evidence-page', 'purpose-built vec chunk', { score: 0.77, vectorScore: 0.77 });
+        k[1] = makeResult('evidence-page', 'kw body excerpt', { score: 0.6, vectorScore: null, keywordRank: 0.6 });
         const fused = fuseWithStableHead(v, k, 10);
-        // The head is byte-identical to what a narrower request returns.
-        expect(fused.slice(0, narrow.length)).toEqual(narrow);
+        const entry = fused.find((r) => r.pageId === makeResult('evidence-page', '').pageId);
+        expect(entry).toBeDefined();
+        expect(entry!.vectorScore).toBe(0.77);
+        expect(entry!.chunkText).toBe('purpose-built vec chunk');
+        // And it sits in the head — it was retrievable at the narrow width.
+        expect(fused.findIndex((r) => r.pageId === entry!.pageId)).toBeLessThan(10);
       });
 
       it('appends the deep-fetch extras after the head, losing none', () => {
-        const v = vecLegs(20);
-        const k = kwLegs(20);
+        // Safety property of the new function (plain RRF trivially satisfies
+        // it — the set-preservation is what future edits must not break).
+        const { v, k } = legsWithDeepIntruder();
         const fused = fuseWithStableHead(v, k, 10);
         const wide = reciprocalRankFusion(v, k);
-        // Same page SET as wide fusion — the extras are appended, not dropped.
         expect(new Set(fused.map((r) => r.pageId))).toEqual(new Set(wide.map((r) => r.pageId)));
-        // And no duplicates.
         expect(new Set(fused.map((r) => r.pageId)).size).toBe(fused.length);
       });
 
       it('a page surfacing only in the deep tail cannot displace a head entry', () => {
-        // 'both-legs-deep' appears at rank 12 in BOTH legs: under plain RRF its
-        // summed contribution (~2/73) would outrank the keyword leg's rank-1
-        // single-leg page (~1/61) — the measured dilution mechanism. Stable
-        // head keeps it in the tail.
-        const v = vecLegs(20);
-        const k = kwLegs(20);
-        v[11] = makeResult('both-legs-deep', 'deep chunk', { score: 0.9 - 11 * 0.01 });
-        k[11] = makeResult('both-legs-deep', 'deep body', { score: 0.8 - 11 * 0.01, vectorScore: null, keywordRank: 0.1 });
+        const { v, k } = legsWithDeepIntruder();
         const fused = fuseWithStableHead(v, k, 10);
-        const headIds = fused.slice(0, 20).map((r) => r.pageId);
         const kwRank1 = kwLegs(1)[0]!.pageId;
-        expect(headIds.indexOf(kwRank1)).toBeGreaterThanOrEqual(0);
-        expect(fused.findIndex((r) => r.pageId === makeResult('both-legs-deep', '').pageId)).toBeGreaterThan(
-          headIds.indexOf(kwRank1),
-        );
+        const kwRank1Pos = fused.findIndex((r) => r.pageId === kwRank1);
+        expect(kwRank1Pos).toBeGreaterThanOrEqual(0);
+        expect(fused.findIndex((r) => r.pageId === deepIntruderId)).toBeGreaterThan(kwRank1Pos);
       });
     });
 

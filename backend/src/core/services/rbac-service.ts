@@ -345,7 +345,7 @@ export async function getUserAccessibleSpacesMemoized(userId: string): Promise<s
   const scoped = getScopedSpaces(userId);
   if (scoped) return scoped;
   const spaces = await getUserAccessibleSpaces(userId);
-  setScopedSpaces(spaces);
+  setScopedSpaces(userId, spaces);
   return spaces;
 }
 

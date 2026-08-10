@@ -72,7 +72,7 @@ interface UseSearchParams {
   mode: 'keyword' | 'semantic' | 'hybrid';
   spaceKey?: string;
   page?: number;
-  /** Sort order for keyword/immediate results. Semantic & hybrid ignore this (score-ordered server-side). */
+  /** Sort order for keyword/immediate results. Semantic & hybrid ignore this (pipeline-ordered server-side — since #1103's stable-head fusion the array order is authoritative and not derivable from any score field; never re-sort it). */
   sort?: 'relevance' | 'modified' | 'title';
   /** Filter to a single author (Confluence display name). */
   author?: string;
@@ -158,7 +158,9 @@ export function useSearch({ query, mode, spaceKey, page: requestedPage = 1, sort
     if (dateFrom) sp.set('dateFrom', dateFrom);
     if (dateTo) sp.set('dateTo', dateTo);
     if (labels) sp.set('tags', labels); // FE field `labels` → backend query param `tags`
-    // Sort only affects keyword results — semantic/hybrid are score-ordered server-side.
+    // Sort only affects keyword results — semantic/hybrid arrive in the
+    // server pipeline's order (stable-head fusion, #1103), which is
+    // authoritative and never re-sorted client-side.
     if (searchMode === 'keyword' && sort !== 'relevance') sp.set('sort', sort);
     return `/search?${sp.toString()}`;
   }

@@ -273,27 +273,34 @@ seen before the walk stopped. When the feature is off (CE or EE without the
 flag), the second post-filter does not run; the fetch width applies either
 way.
 
-**Fusion has a stable head.** When the caller's `topK` floors the fetch above
-the ranking width (`/api/search?mode=hybrid&limit=11..20` at the default
-width), fusion runs twice: the head is RRF over the first `rankWidth` rows of
-each leg — byte-identical to what a narrower request returns — and the extra
-candidates the deeper fetch surfaced are appended, ranked by RRF over the full
-legs (`fuseWithStableHead`). Measured at retrieval topK=20 on #1102's fixture,
-plain wide fusion improved Recall@20 0.9236 → 0.9514 (the old code could not
-return an answer beyond its 10-row legs at all) but diluted the head —
-Recall@1 0.3889 → 0.2222, MRR 0.5830 → 0.4566 — the same flat-`k` RRF
+**Fusion has a stable head.** When the stage limit exceeds the configured
+width (`/api/search?mode=hybrid&limit=11..20` at the default width in CE, and
+every EE-ACL request whose `ceil(topK×1.5)` floor exceeds it), fusion runs
+twice: the head takes its **order** from RRF over the first width rows of each
+leg — the same page sequence a narrower request returns — its **entries** from
+the wide fusion (so evidence the deeper fetch retrieved for a head page, like
+a better vector chunk, is kept), and the extra candidates are appended, ranked
+by wide fusion (`fuseWithStableHead`). Measured at retrieval topK=20 on
+#1102's fixture, plain wide fusion improved Recall@20 0.9236 → 0.9514 (the old
+code could not return an answer beyond its 10-row legs at all) but diluted the
+head — Recall@1 0.3889 → 0.2222, MRR 0.5830 → 0.4566 — the same flat-`k` RRF
 mechanism as the width-30 regression below. Stable-head keeps "show me more
-results" append-only: the first results never reorder. `rankWidth` is the
-configured width plus the EE ACL compensation — everything except the topK
-floor, which is satisfiability padding, not a ranking decision.
+results" append-only: the first results never reorder. The rank width is the
+configured width **alone** — both floors on the stage limit (the caller's
+topK, and the EE ACL 1.5× compensation) are pool padding for
+satisfiability/filtering, never ranking decisions. That deliberately changes
+pre-#1103 EE ordering at `topK ≥ 7`, which fused over the full 1.5× pool:
+the same dilution, worst exactly where the pool was widest.
 
 `/api/search?mode=semantic` shares the decoupling: it fetches
 `resolveStageLimit(limit, width, false)` chunks and slices to `limit` after
 dedupe-by-page — fetching exactly `limit` chunks under-delivered whenever one
-page's chunks occupied several top slots, and widening is order-preserving in
-that mode (cosine order is a stable prefix). The residual chunks-vs-pages gap
-(a stage limit of N can still dedupe to fewer than N pages on long-page
-corpora) is #1106's page-merge work, in both modes.
+page's chunks occupied several top slots. Widening there is order-preserving
+(cosine order is a stable prefix) while `ef_search` is constant — true at the
+default width; an admin-raised width past `RAG_EF_SEARCH/2` raises `ef` with
+it, which can surface genuinely nearer neighbours above previous results. The
+residual chunks-vs-pages gap (a stage limit of N can still dedupe to fewer
+than N pages on long-page corpora) is #1106's page-merge work, in both modes.
 
 **The width's default (10) is deliberately the legacy per-leg limit.** On
 #1102's fixture, width 30 with plain RRF regressed Recall@5 0.8819 → 0.7153

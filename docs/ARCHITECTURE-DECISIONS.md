@@ -1412,8 +1412,15 @@ Confluence DC semantics (per Atlassian's official documentation, not the issue b
 > parallel batches of 10, the walk stops once `topK` candidates have
 > *passed* (a caller denied on most candidates still examines the whole
 > merged set), and `userCanAccessPage`'s space branch now reads the ADR-022
-> request-scoped memo. A batched ACL check is required work for the PR that
-> actually raises the width (#1104).
+> request-scoped memo — which also means that for `inherit_perms = true`
+> pages the post-filter re-affirms the same space snapshot the legs already
+> enforced in SQL rather than consulting a fresh source: a deliberate,
+> small trade of defence-in-depth for per-candidate round-trips (the
+> `inherit_perms = false` ACE branch, the filter's real job, is untouched).
+> A batched ACL check is required work for the PR that actually raises the
+> width (#1104). Fusion note: when the stage limit exceeds the configured
+> width, ranking uses a stable head (`fuseWithStableHead`) — the ACL floor
+> widens the pool the filter walks, never the head ordering.
 
 **Rationale:**
 - **Ancestor inheritance is resolved at sync time, not query time.** The RAG post-filter calls `userCanAccessPage` N times per query (N ≤ topK×1.5, typically ≤15 in observed deployments). Each call is 1-3 pooled SQL queries. Resolving inheritance at query time would require either walking the ancestor chain per candidate (unbounded fan-out on hot paths) or duplicating the ancestor-walk logic into `userCanAccessPage` (tight coupling). Putting the walk in the sync path keeps the query path O(topK) and lets us reuse the existing `userCanAccessPage` as-is.

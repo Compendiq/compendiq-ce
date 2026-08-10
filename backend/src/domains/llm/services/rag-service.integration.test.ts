@@ -603,24 +603,29 @@ describe.skipIf(!dbAvailable)('rag-service integration — per-page ACL post-fil
 
   // ── #1103 stage-limit cases ────────────────────────────────────────────────
   //
-  // Shared fixture with DETERMINISTIC per-leg ordering, so the candidate
-  // counts below can be asserted exactly rather than as ranges:
-  // - keyword leg: the query term is repeated (count - i) times in page i's
-  //   body, so ts_rank strictly decreases with i — the leg's top-N is pages
-  //   0..N-1, always.
+  // Shared fixture with a DETERMINISTIC merged-candidate count, so the
+  // assertions below can be exact rather than ranges:
   // - vector leg: page i's vector is a blend `(1 - t_i)·q + t_i·o` with t_i
   //   strictly increasing, so cosine distance to the query vector q strictly
-  //   increases with i — the leg's top-N is also pages 0..N-1. (The naive
+  //   increases with i — the leg's top-N is pages 0..N-1, always. (The naive
   //   `fakeVec(7 + i·0.001)` used elsewhere is NOT monotonic in i — measured:
-  //   page 4 lands farther from q than page 13 — which is why the old
-  //   range-based assertions here couldn't discriminate the #1263 fix.)
-  // Both legs returning the same top-N makes |merged| == per-leg limit.
+  //   page 4 lands farther from q than page 13.)
+  // - keyword leg: ONLY pages 0..8 contain the query term at all, so the
+  //   keyword leg returns at most 9 rows and — for every stage limit >= 10 —
+  //   they are a SUBSET of the vector leg's top-N. The merged union is
+  //   therefore exactly the vector stage limit, with no dependence on
+  //   ts_rank tie ordering. (An earlier version graded ts_rank by repeating
+  //   the term (count - i) times; measured, ts_rank SATURATES at ~10
+  //   repetitions and the top pages tie, so "strictly decreasing rank" was
+  //   false and the determinism rested on Postgres's heap-scan tie order.)
   function blendVec(i: number): number[] {
     const q = fakeVec(7);
     const o = fakeVec(999);
     const t = (i + 1) * 0.01;
     return q.map((v, idx) => (1 - t) * v + t * o[idx]!);
   }
+
+  const KEYWORD_MATCHING_PAGES = 9; // < every stage limit these tests exercise
 
   async function seedLimPages(user: string, count: number): Promise<void> {
     await ensureUser(user);
@@ -629,7 +634,7 @@ describe.skipIf(!dbAvailable)('rag-service integration — per-page ACL post-fil
       await insertPage({
         spaceKey: 'LIM',
         title: `Limit page ${i}`,
-        bodyText: `overfetch ${'ceil-check '.repeat(count - i)}${i}`,
+        bodyText: i < KEYWORD_MATCHING_PAGES ? `overfetch ceil-check ${i}` : `overfetch filler ${i}`,
         vec: blendVec(i),
       });
     }
@@ -672,10 +677,10 @@ describe.skipIf(!dbAvailable)('rag-service integration — per-page ACL post-fil
 
   // Regression for #1263: the EE chat path (topK=5) used to fetch
   // ceil(5*1.5) = 8 rows per leg while CE fetched 10 — ACL "compensation" as
-  // a net under-fetch. With the deterministic fixture both legs return pages
-  // 0..N-1, so the merged count IS the per-leg limit: 10 under the fix, and
-  // exactly 8 under the old code — this assertion fails against the bug it
-  // guards, deterministically.
+  // a net under-fetch. With the fixture's keyword rows a subset of the vector
+  // head, the merged count IS the vector stage limit: 10 under the fix, and
+  // at most 9 under the old code (vector {0..7} ∪ keyword ⊆ {0..8}) — this
+  // assertion fails against the bug it guards, deterministically.
   it('flag ON — chat-path (topK=5) candidates are not fewer than the old CE default (#1263)', async () => {
     ragPermissionEnforcementEnabled = true;
     const user = 'feedface-feed-face-feed-facefeedface';

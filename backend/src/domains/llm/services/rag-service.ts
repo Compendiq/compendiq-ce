@@ -161,9 +161,13 @@ export async function vectorSearch(userId: string, questionEmbedding: number[], 
         // ef_search rows (verified against pgvector 0.8.5 — LIMIT 200 with
         // ef_search 100 yields 100 rows), so a #1103 fetch width above
         // RAG_EF_SEARCH would silently plateau while the keyword leg kept
-        // widening. Floor it at the limit so the knob means what it says.
+        // widening. 2x, not 1x: ef_search == k is HNSW's worst recall
+        // setting — the graph walk needs headroom beyond the return size.
+        // Clamped to pgvector's [1, 1000] bound for future internal callers;
+        // no HTTP path can exceed it today (Zod caps limit at 20, the width
+        // knob at 200).
         await client.query(
-          `SET LOCAL hnsw.ef_search = ${Math.max(Number(RAG_EF_SEARCH), Number(limit))}`,
+          `SET LOCAL hnsw.ef_search = ${Math.min(1000, Math.max(Number(RAG_EF_SEARCH), 2 * Number(limit)))}`,
         );
 
         const result = await client.query<{
@@ -379,33 +383,49 @@ function reciprocalRankFusion(
  * → 0.4566 while Recall@20 improved 0.9236 → 0.9514 — more right answers in
  * the set, drowned at the top.
  *
- * So the head is ranked by fusion over the first `rankWidth` rows of each leg
- * — byte-identical to what a narrower request returns — and the extra
- * candidates the deeper fetch surfaced are APPENDED, ranked by fusion over
- * the full legs. Asking for more results yields the same first results, plus
- * more; it never reorders the top. When the legs are within `rankWidth` this
- * is plain RRF.
+ * So the head takes its ORDER from fusion over the first `rankWidth` rows of
+ * each leg — the same page sequence a narrower request returns — and the
+ * extra candidates the deeper fetch surfaced are APPENDED, ranked by fusion
+ * over the full legs. Asking for more results yields the same first results,
+ * plus more; it never reorders the top. When the legs are within `rankWidth`
+ * this is plain RRF.
  *
- * Note the array is ordered by the pipeline, not by `score`: a tail entry's
- * wide-fusion score can exceed a head entry's narrow-fusion score. `score`
- * remains an opaque ordering byproduct (see its JSDoc) — consumers must never
- * re-sort by it.
+ * The head's ENTRIES, though, come from the wide fusion: the deeper fetch may
+ * have retrieved better evidence for a head page (its best vector chunk at a
+ * leg rank beyond `rankWidth`, say), and discarding that would hand the LLM a
+ * keyword body-excerpt where a purpose-built vector chunk exists, and the
+ * wire a `similarity: null` for a page the vector leg did retrieve. Order
+ * from the narrow fusion, objects from the wide one.
+ *
+ * `rankWidth` is the configured fetch width alone — BOTH floors on the stage
+ * limit (the caller's topK, and the EE ACL post-filter's 1.5x compensation)
+ * are pool padding for satisfiability/filtering, never ranking decisions, so
+ * the stable head applies identically in CE and under EE ACL.
+ *
+ * Note the array is ordered by the pipeline, not by `score`; `score` remains
+ * an opaque ordering byproduct (see its JSDoc) — consumers must never re-sort
+ * by it.
  */
 export function fuseWithStableHead(
   vectorResults: SearchResult[],
   keywordResults: SearchResult[],
   rankWidth: number,
 ): SearchResult[] {
+  if (vectorResults.length <= rankWidth && keywordResults.length <= rankWidth) {
+    return reciprocalRankFusion(vectorResults, keywordResults);
+  }
   const head = reciprocalRankFusion(
     vectorResults.slice(0, rankWidth),
     keywordResults.slice(0, rankWidth),
   );
-  if (vectorResults.length <= rankWidth && keywordResults.length <= rankWidth) {
-    return head;
-  }
   const wide = reciprocalRankFusion(vectorResults, keywordResults);
+  // Head pages are found from prefixes of the same legs, so head ⊆ wide.
+  const wideById = new Map(wide.map((r) => [r.pageId, r]));
   const headIds = new Set(head.map((r) => r.pageId));
-  return [...head, ...wide.filter((r) => !headIds.has(r.pageId))];
+  return [
+    ...head.map((r) => wideById.get(r.pageId)!),
+    ...wide.filter((r) => !headIds.has(r.pageId)),
+  ];
 }
 
 /**
@@ -721,14 +741,14 @@ async function hybridSearchInner(
     keywordHits: keywordResults.length,
   }, 'Search results');
 
-  // Rank width = everything except the caller's topK floor: the configured
-  // width, plus the EE ACL compensation when active (the pre-#1103 code fused
-  // over that compensation too). The topK floor is satisfiability padding —
-  // it must widen the POOL, never re-rank the HEAD (see fuseWithStableHead).
-  const fetchWidth = await fetchWidthPromise;
-  const rankWidth = aclEnforced ? Math.max(fetchWidth, Math.ceil(topK * 1.5)) : fetchWidth;
-  // Combine with stable-head fusion — output is already one entry per pageId.
-  const merged = fuseWithStableHead(vectorResults, keywordResults, rankWidth);
+  // Rank width = the configured width alone. Both floors on the stage limit
+  // — the caller's topK and the EE ACL 1.5x compensation — are pool padding
+  // for satisfiability/filtering; they must widen the POOL, never re-rank
+  // the HEAD (see fuseWithStableHead). This deliberately CHANGES pre-#1103
+  // EE ordering at topK >= 7, which fused over the full 1.5x pool: that was
+  // the same head dilution measured on CE, worst exactly where the pool was
+  // widest, and the stable head now applies identically in both editions.
+  const merged = fuseWithStableHead(vectorResults, keywordResults, await fetchWidthPromise);
 
   // Per-page ACL post-filter: when enabled, drop candidates the caller can
   // no longer read (Confluence restriction added between sync and query,
@@ -745,6 +765,10 @@ async function hybridSearchInner(
   // merged set — batching caps the latency, not the query count; a batched
   // rbac API is #1104's problem when the width actually rises.
   if (aclEnforced) {
+    // Half the default main pool (PG_POOL_MAX = 20, core/db/postgres.ts):
+    // each check is 1-3 queries, so one batch peaks at ~10 checkouts and two
+    // concurrent EE searches queue instead of exhausting the pool. Revisit
+    // together with the batched rbac API when #1104 raises the width.
     const ACL_CHECK_BATCH = 10;
     const filtered: SearchResult[] = [];
     let examined = 0;
@@ -790,7 +814,10 @@ async function hybridSearchInner(
     return topResults;
   }
 
-  const topResults = merged.slice(0, topK);
+  // Math.max guards a non-positive topK (unreachable from HTTP — Zod floors
+  // limit at 1 — but slice(0, -1) would silently return all-but-last where
+  // the ACL branch above returns []; keep the branches agreeing).
+  const topResults = merged.slice(0, Math.max(0, topK));
 
   // Record search analytics (non-blocking)
   // Deliberately still the RRF fusion value, NOT `vectorScore` — see the ACL
