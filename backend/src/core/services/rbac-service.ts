@@ -404,9 +404,15 @@ export async function userCanAccessPage(
     return aceCheck.rows.length > 0;
   }
 
-  // Space-level access check for confluence pages
+  // Space-level access check for confluence pages. Memoized variant (ADR-022):
+  // inside a request scope this is a synchronous read of the same snapshot the
+  // retrieval legs already resolved — which both removes a per-candidate
+  // Redis/DB round-trip from the RAG ACL post-filter (whose candidate count
+  // scales with the #1103 fetch width) and keeps one request's legs and
+  // post-filter reading one consistent space set. Falls back to the raw
+  // resolver outside a scope.
   if (!page.space_key) return false;
-  const accessibleSpaces = await getUserAccessibleSpaces(userId);
+  const accessibleSpaces = await getUserAccessibleSpacesMemoized(userId);
   return accessibleSpaces.includes(page.space_key);
 }
 

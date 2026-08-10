@@ -14,7 +14,11 @@ import { isFeatureEnabled } from '../../../core/enterprise/loader.js';
 import { ENTERPRISE_FEATURES } from '../../../core/enterprise/features.js';
 import pgvector from 'pgvector';
 import { logger } from '../../../core/utils/logger.js';
-import { safeIntOr } from '../../../core/utils/safe-int.js';
+import {
+  getRagFetchWidth,
+  RAG_FETCH_WIDTH_DEFAULT,
+  RAG_FETCH_WIDTH_MAX,
+} from '../../../core/services/admin-settings-service.js';
 import { withSpan, recordHistogram } from '../../../telemetry.js';
 import { MIN_EMBEDDABLE_TEXT_CHARS } from './embedding-service.js';
 
@@ -38,56 +42,12 @@ const STAGE_DURATION_OPTS = {
 const parsed = parseInt(process.env.RAG_EF_SEARCH ?? '100', 10);
 const RAG_EF_SEARCH = Number.isFinite(parsed) && parsed > 0 && parsed <= 10000 ? parsed : 100;
 
-/**
- * Per-leg candidate fetch width (#1103): how many rows each retrieval leg
- * pulls before fusion and ranking, decoupled from the number of results the
- * caller gets back. Its floors fix two under-fetches (`resolveStageLimit`),
- * and raising it is what will hand the #1104 reranker a candidate pool worth
- * re-scoring.
- *
- * **The default deliberately stays at the legacy per-leg limit (10), because
- * a wide fetch without a reranker is a measured regression, not headroom.**
- * On #1102's fixture, width 30 with plain RRF scored Recall@5 0.7153 / MRR
- * 0.4016 against the width-10 baseline's 0.8819 / 0.5831 (29 losses, 5 wins)
- * — while Recall@10 *improved* (0.9236 → 0.9444). RRF with k=60 is nearly
- * flat across ranks, so once the legs run deep, a mediocre page appearing in
- * BOTH legs (~2/(70..90) ≈ 0.024) outranks a rank-1 single-leg hit
- * (1/61 ≈ 0.016): the right answers are *in* the wider pool but drowned
- * inside the top 5. That is precisely the re-scoring job a cross-encoder
- * does — #1104 raises the effective width together with the stage that can
- * consume it. Do not raise this default on its own.
- *
- * Admin-configurable via the `rag_fetch_width` row in `admin_settings`
- * (surfaced by #1118) — deliberately NOT an env var (ADR-021: no new
- * env-driven LLM config), and read per request so tuning takes effect without
- * a restart.
- */
-export const RAG_FETCH_WIDTH_DEFAULT = 10;
-
-/**
- * Ceiling on the admin-configured fetch width. Both legs LIMIT by this value
- * and the EE ACL post-filter runs a per-row access check over the merged set,
- * so an unbounded width is a self-inflicted DoS knob.
- */
-export const RAG_FETCH_WIDTH_MAX = 200;
-
-/**
- * Read the configured fetch width. Soft-fails to the default: this SELECT
- * failing must degrade the *tuning*, never the search — the legs themselves
- * will surface a genuinely broken database.
- */
-async function getRagFetchWidth(): Promise<number> {
-  try {
-    const result = await query<{ setting_value: string }>(
-      `SELECT setting_value FROM admin_settings WHERE setting_key = 'rag_fetch_width'`,
-    );
-    const width = safeIntOr(result.rows[0]?.setting_value, RAG_FETCH_WIDTH_DEFAULT);
-    return Math.min(width, RAG_FETCH_WIDTH_MAX);
-  } catch (err) {
-    logger.warn({ err }, 'rag_fetch_width read failed — using default fetch width');
-    return RAG_FETCH_WIDTH_DEFAULT;
-  }
-}
+// The fetch-width knob itself (constants, clamp, 60s TTL cache, invalidation)
+// lives in core/services/admin-settings-service.ts so the admin surface
+// (routes/foundation — which the ESLint boundaries bar from importing this
+// domain) can share one definition with retrieval. Re-exported here because
+// this module is where the width is consumed and documented.
+export { RAG_FETCH_WIDTH_DEFAULT, RAG_FETCH_WIDTH_MAX };
 
 /**
  * Per-leg stage limit for one hybrid search. The width is a floor on ranking
@@ -97,6 +57,16 @@ async function getRagFetchWidth(): Promise<number> {
  * may only ever ADD candidates. Its old form (`aclEnforced ? ceil(topK*1.5) :
  * default 10`) fetched 8/leg on the EE chat path vs CE's 10, a net
  * under-fetch filed as #1263.
+ *
+ * Two honest caveats, both deliberate:
+ * - The unit is CHUNK rows on the vector leg but the caller's topK counts
+ *   PAGES after dedup-by-page, so on a corpus of long multi-chunk pages a
+ *   stage limit of N can still yield fewer than N distinct pages. Truly
+ *   page-denominated fetching is #1106's page-merge work; the floor here
+ *   makes the limit satisfiable when chunks-per-page is small, not always.
+ * - The result can exceed RAG_FETCH_WIDTH_MAX: that constant caps the admin
+ *   knob, while topK is the caller's own contract (Zod caps interactive
+ *   search at 20; internal callers bound themselves).
  */
 export function resolveStageLimit(topK: number, fetchWidth: number, aclEnforced: boolean): number {
   const base = Math.max(fetchWidth, topK);
@@ -176,7 +146,7 @@ interface SearchResult {
  * Tradeoff: higher ef_search = better recall but slower query.
  * Default PostgreSQL ef_search is 40; we use 100 for better RAG recall.
  */
-export async function vectorSearch(userId: string, questionEmbedding: number[], limit = 10): Promise<SearchResult[]> {
+export async function vectorSearch(userId: string, questionEmbedding: number[], limit = RAG_FETCH_WIDTH_DEFAULT): Promise<SearchResult[]> {
   return withSpan(
     'rag.vector_search',
     async (span) => {
@@ -187,7 +157,14 @@ export async function vectorSearch(userId: string, questionEmbedding: number[], 
       const client = await getVectorPool().connect();
       try {
         await client.query('BEGIN');
-        await client.query(`SET LOCAL hnsw.ef_search = ${Number(RAG_EF_SEARCH)}`);
+        // ef_search must cover the requested LIMIT: HNSW returns at most
+        // ef_search rows (verified against pgvector 0.8.5 — LIMIT 200 with
+        // ef_search 100 yields 100 rows), so a #1103 fetch width above
+        // RAG_EF_SEARCH would silently plateau while the keyword leg kept
+        // widening. Floor it at the limit so the knob means what it says.
+        await client.query(
+          `SET LOCAL hnsw.ef_search = ${Math.max(Number(RAG_EF_SEARCH), Number(limit))}`,
+        );
 
         const result = await client.query<{
           page_id: number;
@@ -246,7 +223,7 @@ export async function vectorSearch(userId: string, questionEmbedding: number[], 
  * Scoped to: Confluence pages in user's selected spaces + standalone articles
  * the user can access (shared, or private and owned by the user).
  */
-export async function keywordSearch(userId: string, questionText: string, limit = 10): Promise<SearchResult[]> {
+export async function keywordSearch(userId: string, questionText: string, limit = RAG_FETCH_WIDTH_DEFAULT): Promise<SearchResult[]> {
   // Use plainto_tsquery which safely handles arbitrary user input
   // (no need to manually sanitize or construct tsquery syntax)
   const trimmed = questionText.trim();
@@ -621,15 +598,22 @@ async function hybridSearchInner(
   // without a reranker), then the pipeline slices to `topK` after ranking.
   // The EE ACL post-filter's 1.5x compensation survives as an additional
   // floor inside resolveStageLimit — headroom only ever adds (#1263).
-  const fetchWidth = await getRagFetchWidth();
-  const stageLimit = resolveStageLimit(topK, fetchWidth, aclEnforced);
+  // The width read is TTL-cached (admin-settings-service), so this is a DB
+  // round-trip at most once a minute — and it is chained, not awaited, so the
+  // cache-miss case overlaps the embedding call and the coverage probe below
+  // instead of serialising in front of them.
+  const stageLimitPromise = getRagFetchWidth().then((fetchWidth) =>
+    resolveStageLimit(topK, fetchWidth, aclEnforced),
+  );
 
   let vectorResults: SearchResult[] = [];
   let embeddingFailed = false;
 
   // Start keyword search outside the try block so DB errors in keyword
   // search are not silently caught as "embedding failures".
-  const keywordPromise = keywordSearch(userId, question, stageLimit);
+  const keywordPromise = stageLimitPromise.then((stageLimit) =>
+    keywordSearch(userId, question, stageLimit),
+  );
   // Observe the promise so a rejection can never go unhandled if the embedding
   // path short-circuits (e.g. rethrowing CircuitBreakerOpenError) before the
   // `await keywordPromise` below runs. This no-op observer does not consume the
@@ -655,7 +639,7 @@ async function hybridSearchInner(
     const { config, model } = await resolveUsecase('embedding');
     const embeddings = await generateEmbedding(config, model, question);
     const questionEmbedding = embeddings[0]!;
-    vectorResults = await vectorSearch(userId, questionEmbedding, stageLimit);
+    vectorResults = await vectorSearch(userId, questionEmbedding, await stageLimitPromise);
   } catch (err) {
     // Let circuit breaker errors propagate for proper 503 handling
     if (err instanceof CircuitBreakerOpenError) {
@@ -681,6 +665,9 @@ async function hybridSearchInner(
   span?.setAttribute('rag.vector_hits', vectorResults.length);
   span?.setAttribute('rag.keyword_hits', keywordResults.length);
   span?.setAttribute('rag.search_type', searchType);
+  // The one retrieval input that varies at runtime (admin knob + floors) —
+  // without it, traces cannot be partitioned by width after a tuning change.
+  span?.setAttribute('rag.stage_limit', await stageLimitPromise);
   if (coverage) {
     span?.setAttribute('rag.embedding_coverage', coverage.coverage);
   }
@@ -700,28 +687,45 @@ async function hybridSearchInner(
   // Per-page ACL post-filter: when enabled, drop candidates the caller can
   // no longer read (Confluence restriction added between sync and query,
   // ACE synced for a page whose space the user lost access to, etc.). The
-  // filter preserves RRF rank order — `userCanAccessPage` is O(small) and
-  // runs N≤ceil(topK*1.5) times, which is acceptable per plan §2.
+  // filter preserves RRF rank order.
+  //
+  // Cost shape (#1103): the merged set is up to 2x the stage limit — at the
+  // defaults that is unchanged from before, but an admin-raised width
+  // multiplies it (up to 2x200 at the cap), and each `userCanAccessPage` is
+  // 1-3 sequential queries. Two bounds apply: checks run in fixed-size
+  // parallel batches (order-preserving — verdicts are awaited per batch and
+  // appended in merged order), and the walk stops once topK candidates have
+  // PASSED. A caller denied on most candidates still examines the whole
+  // merged set — batching caps the latency, not the query count; a batched
+  // rbac API is #1104's problem when the width actually rises.
   if (aclEnforced) {
+    const ACL_CHECK_BATCH = 10;
     const filtered: SearchResult[] = [];
-    for (const r of merged) {
-      // Stop once topK candidates have passed: the slice below would drop
-      // everything after them anyway, and with the #1103 fetch width the
-      // merged set is ~3x larger than it was when this loop was written —
-      // each iteration here is a DB round-trip.
-      if (filtered.length >= topK) break;
-      if (await userCanAccessPage(userId, r.pageId)) {
-        filtered.push(r);
+    let examined = 0;
+    for (let i = 0; i < merged.length && filtered.length < topK; i += ACL_CHECK_BATCH) {
+      const batch = merged.slice(i, i + ACL_CHECK_BATCH);
+      const verdicts = await Promise.all(
+        batch.map((r) => userCanAccessPage(userId, r.pageId)),
+      );
+      examined += batch.length;
+      for (let j = 0; j < batch.length; j++) {
+        if (verdicts[j]) filtered.push(batch[j]!);
       }
     }
+    // `candidatesKept` saturates at ~topK because of the early stop — it is
+    // NOT an ACL rejection rate. `candidatesExamined` is the denominator for
+    // that: examined - kept = denials seen before the walk stopped.
     logger.debug(
       {
         userId,
         candidatesBeforeFilter: merged.length,
-        candidatesAfterFilter: filtered.length,
+        candidatesExamined: examined,
+        candidatesKept: filtered.length,
       },
       'RAG per-page ACL post-filter applied',
     );
+    // The batch step can overshoot topK by up to ACL_CHECK_BATCH-1 passers;
+    // this slice is the response-size contract, not dead code.
     const topResults = filtered.slice(0, topK);
 
     // Record search analytics (non-blocking)

@@ -48,6 +48,7 @@ vi.mock('../../domains/llm/services/rag-service.js', async () => {
     recordSearchAnalytics: (...args: unknown[]) => mockRecordAnalytics(...args),
     getEmbeddingCoverage: (...args: unknown[]) => mockGetEmbeddingCoverage(...args),
     deriveDegradedReason: actual.deriveDegradedReason,
+    resolveStageLimit: actual.resolveStageLimit,
     DEGRADED_COVERAGE_THRESHOLD: actual.DEGRADED_COVERAGE_THRESHOLD,
   };
 });
@@ -456,6 +457,43 @@ describe('Search Routes', () => {
       expect(body.hasEmbeddings).toBe(true);
       expect(body.items).toHaveLength(1);
       expect(body.items[0].title).toBe('Vector Result');
+    });
+
+    it('semantic mode fetches the stage limit, not the return limit, and slices after dedupe (#1103)', async () => {
+      // The vector leg counts CHUNKS while `limit` counts pages-after-dedup:
+      // fetching exactly `limit` rows under-delivered whenever one page's
+      // chunks occupied several top slots. The route now fetches
+      // resolveStageLimit(limit, width, false) chunks and slices to `limit`
+      // after dedupe.
+      mockQueryFn.mockResolvedValue({ rows: [] });
+      const fakeEmbedding = new Array(768).fill(0.1);
+      mockProviderGenerateEmbedding.mockResolvedValue([[...fakeEmbedding]]);
+      // Five chunks of page 1 dominate, then pages 2 and 3 — dedupe collapses
+      // the first five into one item.
+      mockVectorSearch.mockResolvedValue([
+        makeSearchResult(1, 'Long page'),
+        makeSearchResult(1, 'Long page'),
+        makeSearchResult(1, 'Long page'),
+        makeSearchResult(1, 'Long page'),
+        makeSearchResult(1, 'Long page'),
+        makeSearchResult(2, 'Second page'),
+        makeSearchResult(3, 'Third page'),
+      ]);
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/search?q=test&mode=semantic&limit=2',
+      });
+
+      expect(response.statusCode).toBe(200);
+      // Fetch width: max(default width 10, limit 2) = 10 chunks requested.
+      expect(mockVectorSearch).toHaveBeenCalledTimes(1);
+      expect(mockVectorSearch.mock.calls[0]?.[2]).toBe(10);
+      // Return width: sliced to the caller's limit AFTER dedupe-by-page.
+      const body = response.json();
+      expect(body.items).toHaveLength(2);
+      expect(body.items.map((i: { id: number }) => i.id)).toEqual([1, 2]);
+      expect(body.limit).toBe(2);
     });
 
     it('semantic mode with no embeddings → falls back to keyword', async () => {

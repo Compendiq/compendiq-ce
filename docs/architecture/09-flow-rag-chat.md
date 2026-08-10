@@ -126,9 +126,9 @@ defaults:
 | Path | topK | stage limit | worst-case fusion score |
 |---|---|---|---|
 | `/llm/ask` (chat) | 5 | 10 (the width) | ~0.169 |
-| `/api/search` at `limit=20` | 20 | 20 (topK floor) | ~0.304 |
+| `/api/search` at `limit=20` | 20 | 20 (topK floor) | ~0.302 |
 | `/api/search` under EE ACL | 20 | `ceil(20×1.5)` = 30 | ~0.419 |
-| admin-raised width `w` | any | `w` (≤ 200) | `rrfWorstCase(w, true)` — passes 1.0 at the cap |
+| admin-raised width `w` | ≤ `w` | `w` (knob capped at 200; a larger topK still floors it) | `rrfWorstCase(w, true)` — passes 1.0 at the cap |
 
 `ConfidenceBadge` used to read the value as a cosine (`>= 0.7` high, `>= 0.4`
 medium). The chat-path maximum of ~0.169 is well under that floor, which is why
@@ -257,13 +257,29 @@ retrieval on per-page read ACEs. The sync path (ADR-023) writes Confluence's
 effective read restrictions — resolved through the ancestor chain at sync
 time — into `access_control_entries` with `source='confluence'`, so the
 query-time check is a single consistent `userCanAccessPage` call per
-candidate, and the filter stops once `topK` candidates have passed — an
-admin-raised #1103 fetch width can triple the merged set, and each check is a
-DB round-trip. The stage limit keeps `ceil(topK × 1.5)` as an additional floor
-so ACL headroom can only ever add candidates (its old form fetched *fewer*
-rows than CE on the chat path — #1263). When the feature is off (CE or EE
-without the flag), the second post-filter does not run; the fetch width
-applies either way.
+candidate. The merged set is up to **2× the stage limit** — unchanged at the
+defaults, but an admin-raised #1103 width multiplies it, up to 2×200 at the
+cap — and each check costs 1-3 queries. Two bounds apply: checks run in
+order-preserving parallel batches of 10, and the walk stops once `topK`
+candidates have **passed**. Note the stop bounds successes, not work — a
+caller denied on most candidates still examines the whole merged set; a
+batched ACL check is #1104's required companion to actually raising the
+width. The stage limit keeps `ceil(topK × 1.5)` as an additional floor so ACL
+headroom can only ever add candidates (its old form fetched *fewer* rows than
+CE on the chat path — #1263). The post-filter's debug log reports
+`candidatesExamined` and `candidatesKept` — kept saturates near `topK` by
+design and is **not** a rejection rate; examined − kept is the denial count
+seen before the walk stopped. When the feature is off (CE or EE without the
+flag), the second post-filter does not run; the fetch width applies either
+way.
+
+`/api/search?mode=semantic` shares the decoupling: it fetches
+`resolveStageLimit(limit, width, false)` chunks and slices to `limit` after
+dedupe-by-page — fetching exactly `limit` chunks under-delivered whenever one
+page's chunks occupied several top slots, and widening is order-preserving in
+that mode (cosine order is a stable prefix). The residual chunks-vs-pages gap
+(a stage limit of N can still dedupe to fewer than N pages on long-page
+corpora) is #1106's page-merge work, in both modes.
 
 **The width's default (10) is deliberately the legacy per-leg limit.** On
 #1102's fixture, width 30 with plain RRF regressed Recall@5 0.8819 → 0.7153

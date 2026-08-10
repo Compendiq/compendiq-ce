@@ -64,7 +64,11 @@ vi.mock('../../../core/services/rbac-service.js', () => ({
   // flag-on post-filter branch. Tests in this file exercise the flag-off path
   // (no license registered), so this stub is never called — but the symbol
   // must exist so the ESM import resolves.
-  userCanAccessPage: vi.fn().mockResolvedValue(true),
+  // Implementation form (`vi.fn(impl)`), NOT `.mockResolvedValue(...)`: several
+  // describes call `vi.resetAllMocks()`, which wipes a queued resolved value
+  // but keeps an implementation — with the queued form, every post-reset test
+  // ran with userCanAccessPage returning undefined.
+  userCanAccessPage: vi.fn(async () => true),
 }));
 
 vi.mock('pgvector', () => ({
@@ -76,11 +80,17 @@ vi.mock('../../../core/utils/logger.js', () => ({
 }));
 
 vi.mock('../../../core/services/fts-language.js', () => ({
-  getFtsLanguage: vi.fn().mockResolvedValue('simple'),
+  // Implementation form so `vi.resetAllMocks()` cannot wipe it — with the
+  // queued `.mockResolvedValue('simple')` form, every describe that resets
+  // mocks built its keyword SQL with `plainto_tsquery('undefined', …)`, and
+  // assertions against that SQL were exercising a string no deployment
+  // produces. A test below pins the language survives into the SQL.
+  getFtsLanguage: vi.fn(async () => 'simple'),
 }));
 
 import { buildRagContext, hybridSearch, RAG_EF_SEARCH, reciprocalRankFusion, rrfWorstCase, vectorSearch, keywordSearch, recordSearchAnalytics, resolveStageLimit, RAG_FETCH_WIDTH_DEFAULT, RAG_FETCH_WIDTH_MAX } from './rag-service.js';
 import type { SearchResult } from './rag-service.js';
+import { invalidateRagFetchWidthCache } from '../../../core/services/admin-settings-service.js';
 import { CircuitBreakerOpenError } from '../../../core/services/circuit-breaker.js';
 
 describe('RAG Service', () => {
@@ -273,6 +283,9 @@ describe('RAG Service', () => {
   describe('vectorSearch (via hybridSearch)', () => {
     beforeEach(() => {
       vi.resetAllMocks();
+      // The fetch-width TTL cache (admin-settings-service) is module state —
+      // clear it so no test reads a width another test resolved.
+      invalidateRagFetchWidthCache();
       // Restore pool mock after reset
       mocks.mockPool.connect.mockResolvedValue(mocks.mockClient);
       mocks.mockClient.release.mockResolvedValue(undefined);
@@ -552,6 +565,9 @@ describe('RAG Service', () => {
     describe('admin_settings-backed width (hybridSearch wiring)', () => {
       beforeEach(() => {
         vi.resetAllMocks();
+        // Module-level TTL cache in admin-settings-service — without this,
+        // the first test's width would serve every later test.
+        invalidateRagFetchWidthCache();
         mocks.mockPool.connect.mockResolvedValue(mocks.mockClient);
         mocks.mockClient.release.mockResolvedValue(undefined);
         mocks.mockToSql.mockReturnValue('[0.1,0.2]');
@@ -625,6 +641,37 @@ describe('RAG Service', () => {
         expect(vectorLimitParam()).toBe(RAG_FETCH_WIDTH_MAX);
       });
 
+      it('floors a sub-legacy width at the default — the knob must not recreate #1263', async () => {
+        // A width below the legacy 10 has no upside and silently halves the
+        // candidate pool; `'5'` and typo-shaped values that parseInt truncates
+        // (`parseInt('1e3') === 1`) both fall back to the default.
+        routeQueries([{ setting_value: '5' }]);
+        await hybridSearch('user-1', 'test query');
+        expect(vectorLimitParam()).toBe(RAG_FETCH_WIDTH_DEFAULT);
+
+        vi.resetAllMocks();
+        invalidateRagFetchWidthCache();
+        mocks.mockPool.connect.mockResolvedValue(mocks.mockClient);
+        mocks.mockToSql.mockReturnValue('[0.1,0.2]');
+        mocks.mockResolveUsecase.mockResolvedValue({
+          config: {
+            providerId: 'p1', id: 'p1', name: 'X',
+            baseUrl: 'http://x/v1', apiKey: null,
+            authType: 'none', verifySsl: true, defaultModel: 'bge-m3',
+          },
+          model: 'bge-m3',
+        });
+        mocks.mockGenerateEmbedding.mockResolvedValue([[0.1, 0.2]]);
+        mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
+        mocks.mockClientQuery.mockImplementation(async (sql: string) => {
+          if (typeof sql === 'string' && sql.includes('page_embeddings')) return { rows: [] };
+          return undefined;
+        });
+        routeQueries([{ setting_value: '1e3' }]);
+        await hybridSearch('user-1', 'test query');
+        expect(vectorLimitParam()).toBe(RAG_FETCH_WIDTH_DEFAULT);
+      });
+
       it('soft-fails to the default when the settings read errors', async () => {
         mocks.mockQuery.mockImplementation(async (sql: string) => {
           if (sql.includes('rag_fetch_width')) throw new Error('connection reset');
@@ -634,6 +681,34 @@ describe('RAG Service', () => {
         const results = await hybridSearch('user-1', 'test query');
         expect(results).toEqual([]);
         expect(vectorLimitParam()).toBe(RAG_FETCH_WIDTH_DEFAULT);
+      });
+
+      it('keeps hnsw.ef_search covering a width above RAG_EF_SEARCH', async () => {
+        // HNSW returns at most ef_search rows regardless of LIMIT, so a raised
+        // width must raise ef_search with it or the vector leg silently
+        // plateaus at 100 while the keyword leg keeps widening.
+        routeQueries([{ setting_value: '150' }]);
+        await hybridSearch('user-1', 'test query');
+        const setLocal = mocks.mockClientQuery.mock.calls.find(
+          (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('SET LOCAL hnsw.ef_search'),
+        );
+        expect(setLocal).toBeDefined();
+        expect(setLocal![0]).toContain('= 150');
+        expect(vectorLimitParam()).toBe(150);
+      });
+
+      it('builds the keyword SQL with the real FTS language, not a wiped mock', async () => {
+        // Guards the vi.resetAllMocks() footgun: with a queued
+        // `.mockResolvedValue('simple')` the reset left getFtsLanguage
+        // returning undefined and every SQL assertion in this describe ran
+        // against `plainto_tsquery('undefined', …)`.
+        routeQueries([]);
+        await hybridSearch('user-1', 'test query');
+        const kwCall = mocks.mockQuery.mock.calls.find(
+          (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('ts_rank'),
+        );
+        expect(kwCall).toBeDefined();
+        expect(kwCall![0]).toContain("plainto_tsquery('simple'");
       });
     });
   });
@@ -788,18 +863,23 @@ describe('RAG Service', () => {
       });
 
       it('caps the chat path below the 0.4 confidence threshold at the default width', () => {
-        // /llm/ask uses topK=5 → stage limit = the default fetch width (10).
+        // /llm/ask uses topK=5 → stage limit = the default fetch width (10),
+        // under EE ACL too (max(10, ceil(5*1.5)=8) = 10 — the #1263 fix).
         // This is the bound that made "reading the fusion score as a cosine
         // always yields Low confidence" true in #1117's analysis.
         expect(rrfWorstCase(resolveStageLimit(5, RAG_FETCH_WIDTH_DEFAULT, false), true)).toBeLessThan(0.4);
+        expect(rrfWorstCase(resolveStageLimit(5, RAG_FETCH_WIDTH_DEFAULT, true), true)).toBeLessThan(0.4);
         expect(rrfWorstCase(10, true)).toBeCloseTo(0.1694, 3);
       });
 
-      it('exceeds that threshold on /api/search under EE ACL at limit=20', () => {
-        // stageLimit = max(width 10, topK 20, ceil(20*1.5)) = 30. Nothing
-        // thresholds the fusion score on that path, but the chat-path bound
-        // must not be restated as a global one — this test is the reason that
-        // distinction stays in the JSDoc.
+      it('pins the /api/search row at limit=20: ~0.302 plain, ~0.419 under EE ACL', () => {
+        // Every row of the doc table gets a pin — its prose version has now
+        // been wrong three times, most recently in this very PR (~0.304).
+        expect(resolveStageLimit(20, RAG_FETCH_WIDTH_DEFAULT, false)).toBe(20);
+        expect(rrfWorstCase(20, true)).toBeCloseTo(0.3020, 3);
+        // Nothing thresholds the fusion score on that path, but the chat-path
+        // bound must not be restated as a global one — this test is the
+        // reason that distinction stays in the JSDoc.
         expect(resolveStageLimit(20, RAG_FETCH_WIDTH_DEFAULT, true)).toBe(30);
         expect(rrfWorstCase(30, true)).toBeGreaterThan(0.4);
         expect(rrfWorstCase(30, true)).toBeCloseTo(0.4191, 3);

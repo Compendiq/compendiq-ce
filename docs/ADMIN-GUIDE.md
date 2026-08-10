@@ -349,7 +349,7 @@ RAG retrieval in CE already post-filters candidate chunks by the user's readable
 
 1. The Confluence sync calls `/rest/api/content/{pageId}/restriction` for each page (and walks ancestors — Confluence view restrictions **are** inherited) and writes the effective read list into `access_control_entries` as `source='confluence'` rows with `synced_at=<run start>`.
 2. A stale-ACE sweep at the end of the sync removes any `source='confluence'` row that wasn't refreshed this run — so restrictions removed in Confluence, or users de-listed from a restriction, propagate on the next sync.
-3. The RAG hybrid retrieval (`hybridSearch`) overfetches 1.5× `topK` at the vector + FTS stages. After the RRF merge, a second post-filter calls `userCanAccessPage(userId, pageId)` for each candidate and drops blocked pages. Rank order is preserved.
+3. The RAG hybrid retrieval (`hybridSearch`) fetches `max(rag_fetch_width, topK, ceil(topK × 1.5))` candidates per leg (see *Retrieval fetch width* below). After the RRF merge, a second post-filter calls `userCanAccessPage(userId, pageId)` per candidate — in order-preserving batches, stopping once `topK` candidates have passed — and drops blocked pages. Rank order is preserved.
 4. `source='local'` (admin-created) ACEs are never touched by sync. Manual overrides survive.
 
 **Sync cadence and leak-window behaviour**
@@ -372,6 +372,28 @@ Tier-downgrade (license change to a non-enterprise tier) disables the flag. Exis
 
 - Integration regression guard: `backend/src/domains/confluence/services/sync-service.integration.test.ts` (sync path) and `backend/src/domains/llm/services/rag-service.integration.test.ts` (query path).
 - ADR-023 documents the full design and rationale.
+
+### Retrieval fetch width (`rag_fetch_width`)
+
+How many candidate rows each RAG retrieval leg (vector + full-text) pulls
+before fusion and ranking, decoupled from how many results the caller gets
+back (#1103). `admin_settings` key `rag_fetch_width`; **default 10** (the
+legacy per-leg limit), clamped to **[10, 200]** — values below 10 or
+non-numeric values fall back to the default, values above 200 are capped.
+Read through a 60-second in-process cache, so a change takes effect within a
+minute (immediately in the process that wrote it, once the settings panel
+lands in #1118; until then the only write path is SQL).
+
+> **Do not raise this without a reranker.** More candidates is NOT more
+> recall under plain RRF fusion: measured on the retrieval eval fixture,
+> width 30 dropped Recall@5 from 0.88 to 0.72 while Recall@10 improved —
+> deep legs let mediocre pages that match both legs outrank the best
+> single-leg hit, so the right answers are in the pool but drowned in the
+> top 5. The cross-encoder reranker (#1104) is the stage that turns a wide
+> pool into better answers, and its rollout raises the effective width
+> deliberately. On EE deployments with `rag_permission_enforcement`, a
+> raised width also multiplies the per-candidate ACL checks a single search
+> can perform.
 
 ### Sync conflict resolution (Enterprise, v0.4+)
 
