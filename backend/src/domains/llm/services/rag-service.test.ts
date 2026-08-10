@@ -79,7 +79,7 @@ vi.mock('../../../core/services/fts-language.js', () => ({
   getFtsLanguage: vi.fn().mockResolvedValue('simple'),
 }));
 
-import { buildRagContext, hybridSearch, RAG_EF_SEARCH, reciprocalRankFusion, rrfWorstCase, vectorSearch, keywordSearch, recordSearchAnalytics } from './rag-service.js';
+import { buildRagContext, hybridSearch, RAG_EF_SEARCH, reciprocalRankFusion, rrfWorstCase, vectorSearch, keywordSearch, recordSearchAnalytics, resolveStageLimit, RAG_FETCH_WIDTH_DEFAULT, RAG_FETCH_WIDTH_MAX } from './rag-service.js';
 import type { SearchResult } from './rag-service.js';
 import { CircuitBreakerOpenError } from '../../../core/services/circuit-breaker.js';
 
@@ -469,19 +469,28 @@ describe('RAG Service', () => {
       }); // vector SELECT
       mocks.mockClientQuery.mockResolvedValueOnce(undefined); // COMMIT
 
-      // keyword search returns results
-      mocks.mockQuery.mockResolvedValueOnce({
-        rows: [{
-          page_id: 2,
-          confluence_id: 'page-2',
-          title: 'Keyword Page',
-          space_key: 'DEV',
-          body_text: 'Keyword content',
-          rank: 0.5,
-        }],
+      // Route on SQL text, not call order — the fetch-width read (#1103) and
+      // the coverage probe both go through query() before/alongside the
+      // keyword leg, so a queued mockResolvedValueOnce could be consumed by
+      // any of them.
+      mocks.mockQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes('ts_rank')) {
+          return {
+            rows: [{
+              page_id: 2,
+              confluence_id: 'page-2',
+              title: 'Keyword Page',
+              space_key: 'DEV',
+              body_text: 'Keyword content',
+              rank: 0.5,
+            }],
+          };
+        }
+        if (sql.includes('COUNT(*)')) {
+          return { rows: [{ embedded: 1, total: 1 }] };
+        }
+        return { rows: [] };
       });
-      // analytics insert
-      mocks.mockQuery.mockResolvedValue({ rows: [] });
 
       await hybridSearch('user-1', 'test query');
 
@@ -494,6 +503,138 @@ describe('RAG Service', () => {
       expect(analyticsCalls.length).toBeGreaterThanOrEqual(1);
       const analyticsParams = analyticsCalls[0][1] as unknown[];
       expect(analyticsParams[4]).toBe('hybrid');
+    });
+  });
+
+  describe('fetch width decoupled from topK (#1103)', () => {
+    describe('resolveStageLimit', () => {
+      it('uses the fetch width when it exceeds topK (chat path)', () => {
+        // RAG chat asks for topK=5; the legs must still fetch the full
+        // candidate budget so fusion/ranking has something to rank.
+        expect(resolveStageLimit(5, 30, false)).toBe(30);
+        expect(resolveStageLimit(5, 30, true)).toBe(30);
+      });
+
+      it('defaults to the legacy per-leg limit — over-fetch without a reranker is a measured regression', () => {
+        // Width 30 with plain RRF measured Recall@5 0.7153 vs 0.8819 on
+        // #1102's fixture (see RAG_FETCH_WIDTH_DEFAULT's JSDoc). The default
+        // must stay at the legacy 10 until #1104's reranker consumes the
+        // wider pool.
+        expect(RAG_FETCH_WIDTH_DEFAULT).toBe(10);
+      });
+
+      it('never fetches fewer than topK (search path can satisfy ?limit=20)', () => {
+        // /api/search?mode=hybrid&limit=20 with a small configured width used
+        // to cap both legs at 10 rows — the requested limit was unsatisfiable.
+        expect(resolveStageLimit(20, 10, false)).toBe(20);
+      });
+
+      it('ACL headroom only ever adds candidates, never removes them (#1263)', () => {
+        // The old `aclEnforced ? ceil(topK*1.5) : default(10)` fetched 8/leg
+        // on the EE chat path vs CE's 10 — compensation as a net under-fetch.
+        for (const topK of [1, 3, 5, 7, 10, 20]) {
+          for (const width of [1, 5, 10, 30, 50]) {
+            expect(resolveStageLimit(topK, width, true)).toBeGreaterThanOrEqual(
+              resolveStageLimit(topK, width, false),
+            );
+          }
+        }
+        // The concrete #1263 case: EE chat (topK=5) must not fetch fewer
+        // candidates than CE did before this change.
+        expect(resolveStageLimit(5, RAG_FETCH_WIDTH_DEFAULT, true)).toBeGreaterThanOrEqual(10);
+      });
+
+      it('keeps the 1.5x ACL floor when the width is small', () => {
+        expect(resolveStageLimit(20, 10, true)).toBe(30); // ceil(20 * 1.5)
+      });
+    });
+
+    describe('admin_settings-backed width (hybridSearch wiring)', () => {
+      beforeEach(() => {
+        vi.resetAllMocks();
+        mocks.mockPool.connect.mockResolvedValue(mocks.mockClient);
+        mocks.mockClient.release.mockResolvedValue(undefined);
+        mocks.mockToSql.mockReturnValue('[0.1,0.2]');
+        mocks.mockResolveUsecase.mockResolvedValue({
+          config: {
+            providerId: 'p1', id: 'p1', name: 'X',
+            baseUrl: 'http://x/v1', apiKey: null,
+            authType: 'none', verifySsl: true, defaultModel: 'bge-m3',
+          },
+          model: 'bge-m3',
+        });
+        mocks.mockGenerateEmbedding.mockResolvedValue([[0.1, 0.2]]);
+        mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
+        // vectorSearch transaction: BEGIN / SET LOCAL / SELECT / COMMIT
+        mocks.mockClientQuery.mockImplementation(async (sql: string) => {
+          if (typeof sql === 'string' && sql.includes('page_embeddings')) return { rows: [] };
+          return undefined;
+        });
+      });
+
+      /** Route query() by SQL text; `adminRows` answers the rag_fetch_width read. */
+      function routeQueries(adminRows: Array<{ setting_value: string }>) {
+        mocks.mockQuery.mockImplementation(async (sql: string) => {
+          if (sql.includes('rag_fetch_width')) return { rows: adminRows };
+          if (sql.includes('COUNT(*)')) return { rows: [{ embedded: 1, total: 1 }] };
+          return { rows: [] };
+        });
+      }
+
+      /** The LIMIT parameter handed to the vector leg's SELECT. */
+      function vectorLimitParam(): number {
+        const call = mocks.mockClientQuery.mock.calls.find(
+          (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('page_embeddings'),
+        );
+        expect(call).toBeDefined();
+        return (call![1] as unknown[])[2] as number;
+      }
+
+      /** The LIMIT parameter handed to the keyword leg's SELECT. */
+      function keywordLimitParam(): number {
+        const call = mocks.mockQuery.mock.calls.find(
+          (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('ts_rank'),
+        );
+        expect(call).toBeDefined();
+        return (call![1] as unknown[])[2] as number;
+      }
+
+      it('defaults both legs to RAG_FETCH_WIDTH_DEFAULT when no admin row exists', async () => {
+        routeQueries([]);
+        await hybridSearch('user-1', 'test query');
+        expect(vectorLimitParam()).toBe(RAG_FETCH_WIDTH_DEFAULT);
+        expect(keywordLimitParam()).toBe(RAG_FETCH_WIDTH_DEFAULT);
+      });
+
+      it('honours an admin-configured width at runtime (no restart)', async () => {
+        routeQueries([{ setting_value: '12' }]);
+        await hybridSearch('user-1', 'test query');
+        expect(vectorLimitParam()).toBe(12);
+        expect(keywordLimitParam()).toBe(12);
+      });
+
+      it('falls back to the default on a garbage admin value', async () => {
+        routeQueries([{ setting_value: 'banana' }]);
+        await hybridSearch('user-1', 'test query');
+        expect(vectorLimitParam()).toBe(RAG_FETCH_WIDTH_DEFAULT);
+      });
+
+      it('clamps an absurd admin value to RAG_FETCH_WIDTH_MAX', async () => {
+        routeQueries([{ setting_value: '100000' }]);
+        await hybridSearch('user-1', 'test query');
+        expect(vectorLimitParam()).toBe(RAG_FETCH_WIDTH_MAX);
+      });
+
+      it('soft-fails to the default when the settings read errors', async () => {
+        mocks.mockQuery.mockImplementation(async (sql: string) => {
+          if (sql.includes('rag_fetch_width')) throw new Error('connection reset');
+          if (sql.includes('COUNT(*)')) return { rows: [{ embedded: 1, total: 1 }] };
+          return { rows: [] };
+        });
+        const results = await hybridSearch('user-1', 'test query');
+        expect(results).toEqual([]);
+        expect(vectorLimitParam()).toBe(RAG_FETCH_WIDTH_DEFAULT);
+      });
     });
   });
 
@@ -646,21 +787,28 @@ describe('RAG Service', () => {
         expect(combined[0].score).toBeCloseTo(rrfWorstCase(10), 12);
       });
 
-      it('caps the chat path below the 0.4 confidence threshold', () => {
-        // /llm/ask uses topK=5, so the stage limit is the legs' default 10 (CE)
-        // or ceil(5*1.5)=8 under EE ACL. This is the bound that makes "reading
-        // the fusion score as a cosine always yields Low confidence" true.
-        expect(rrfWorstCase(10, true)).toBeLessThan(0.4);
-        expect(rrfWorstCase(8, true)).toBeLessThan(0.4);
+      it('caps the chat path below the 0.4 confidence threshold at the default width', () => {
+        // /llm/ask uses topK=5 → stage limit = the default fetch width (10).
+        // This is the bound that made "reading the fusion score as a cosine
+        // always yields Low confidence" true in #1117's analysis.
+        expect(rrfWorstCase(resolveStageLimit(5, RAG_FETCH_WIDTH_DEFAULT, false), true)).toBeLessThan(0.4);
         expect(rrfWorstCase(10, true)).toBeCloseTo(0.1694, 3);
       });
 
       it('exceeds that threshold on /api/search under EE ACL at limit=20', () => {
-        // stageLimit = ceil(20*1.5) = 30. Nothing thresholds the fusion score on
-        // that path, but the chat-path bound must not be restated as a global
-        // one — this test is the reason that distinction stays in the JSDoc.
+        // stageLimit = max(width 10, topK 20, ceil(20*1.5)) = 30. Nothing
+        // thresholds the fusion score on that path, but the chat-path bound
+        // must not be restated as a global one — this test is the reason that
+        // distinction stays in the JSDoc.
+        expect(resolveStageLimit(20, RAG_FETCH_WIDTH_DEFAULT, true)).toBe(30);
         expect(rrfWorstCase(30, true)).toBeGreaterThan(0.4);
         expect(rrfWorstCase(30, true)).toBeCloseTo(0.4191, 3);
+      });
+
+      it('an admin-raised width raises the bound with it — past 1.0 at the cap', () => {
+        // The JSDoc's warning that the fusion value is not bounded near ~0.4
+        // either: at the RAG_FETCH_WIDTH_MAX cap the worst case passes 1.
+        expect(rrfWorstCase(RAG_FETCH_WIDTH_MAX, true)).toBeGreaterThan(1);
       });
     });
 

@@ -591,65 +591,65 @@ describe.skipIf(!dbAvailable)('rag-service integration — per-page ACL post-fil
     }
   });
 
-  // Case 8: stage fetch limit is ceil(topK * 1.5) when ON, default (no
-  // explicit limit) when OFF. We verify via the pre-filter candidate count
-  // logged by the post-filter branch. For the OFF branch we assert on
-  // return-count stability instead, since the OFF branch doesn't log the
-  // pre-filter count (it doesn't run the filter at all).
+  // Case 8 (#1103): the per-leg stage limit is max(fetchWidth, topK,
+  // ceil(topK*1.5)) when the ACL post-filter is ON. At the default width (10 —
+  // the legacy per-leg limit, deliberately: see RAG_FETCH_WIDTH_DEFAULT) the
+  // binding floor per topK is max(10, ceil(topK*1.5)). We verify via the
+  // pre-filter candidate count logged by the post-filter branch; 40 seeded
+  // pages >> any floor we test, so the stage limit (not the seeded-row count)
+  // is the binding constraint.
   it.each([
-    { topK: 10, expectedCeil: 15 },
-    { topK: 7, expectedCeil: 11 },
-    { topK: 1, expectedCeil: 2 },
-  ])('flag ON — stage fetch limit = ceil(topK * 1.5) [topK=$topK]', async ({ topK, expectedCeil }) => {
+    { topK: 10, floor: 15 }, // ceil(10*1.5)
+    { topK: 7, floor: 11 }, // ceil(7*1.5)
+    { topK: 1, floor: 10 }, // the width — ceil(1*1.5)=2 may not shrink it (#1263)
+  ])(
+    'flag ON — stage fetch limit = max(width, ceil(topK*1.5)) [topK=$topK]',
+    async ({ topK, floor }) => {
+      ragPermissionEnforcementEnabled = true;
+
+      const user = 'feedface-feed-face-feed-facefeedface';
+      await ensureUser(user);
+      await ensureSpaceAndViewerRole(user, 'LIM');
+
+      for (let i = 0; i < 40; i++) {
+        await insertPage({
+          spaceKey: 'LIM',
+          title: `Limit page ${i}`,
+          bodyText: `overfetch ceil-check ${i}`,
+          vec: fakeVec(7 + i * 0.001),
+        });
+      }
+
+      const debugSpy = vi.spyOn(logger, 'debug');
+      await hybridSearch(user, 'ceil-check', topK);
+
+      // Each leg contributes up to `floor` rows; RRF dedupes by pageId, so
+      // the post-filter sees between `floor` (full overlap) and 2*`floor`
+      // (no overlap) candidates.
+      const debugCalls = debugSpy.mock.calls.filter((c) => {
+        const payload = c[0] as Record<string, unknown> | undefined;
+        return payload && typeof payload === 'object' && 'candidatesBeforeFilter' in payload;
+      });
+      expect(debugCalls.length).toBeGreaterThan(0);
+      const payload = debugCalls[0]![0] as { candidatesBeforeFilter: number };
+      expect(payload.candidatesBeforeFilter).toBeGreaterThanOrEqual(floor);
+      expect(payload.candidatesBeforeFilter).toBeLessThanOrEqual(2 * floor);
+    },
+  );
+
+  // Regression for #1263: the EE chat path (topK=5) used to fetch
+  // ceil(5*1.5) = 8 rows per leg while CE fetched 10 — ACL "compensation" as
+  // a net under-fetch. The width now floors the stage limit at 10, so with 12
+  // matching pages each leg returns a full 10 rows and the merged union can
+  // never be smaller than one leg. (The strict per-leg pin is the
+  // resolveStageLimit unit grid; this exercises the wired path end to end.)
+  it('flag ON — chat-path (topK=5) candidates are not fewer than the old CE default (#1263)', async () => {
     ragPermissionEnforcementEnabled = true;
 
     const user = 'feedface-feed-face-feed-facefeedface';
     await ensureUser(user);
     await ensureSpaceAndViewerRole(user, 'LIM');
 
-    // Seed enough candidates that the stage limit (not the seeded-row
-    // count) is the binding constraint. 30 matching pages >> any topK * 1.5
-    // we test.
-    for (let i = 0; i < 30; i++) {
-      await insertPage({
-        spaceKey: 'LIM',
-        title: `Limit page ${i}`,
-        bodyText: `overfetch ceil-check ${i}`,
-        vec: fakeVec(7 + i * 0.001),
-      });
-    }
-
-    const debugSpy = vi.spyOn(logger, 'debug');
-    await hybridSearch(user, 'ceil-check', topK);
-
-    // The post-filter debug log records the pre-filter candidate count.
-    // Since RRF dedupes by pageId and all 30 pages are unique, the vector
-    // stage and keyword stage each contribute up to `ceil(topK*1.5)` rows
-    // but they overlap, so the post-filter sees between ceil(topK*1.5) and
-    // 2*ceil(topK*1.5) candidates. We assert:
-    //   (a) candidatesBeforeFilter >= ceil(topK * 1.5)   (overfetch ran)
-    //   (b) candidatesBeforeFilter <= 2 * ceil(topK * 1.5) (no more than
-    //       both stages combined)
-    const debugCalls = debugSpy.mock.calls.filter((c) => {
-      const payload = c[0] as Record<string, unknown> | undefined;
-      return payload && typeof payload === 'object' && 'candidatesBeforeFilter' in payload;
-    });
-    expect(debugCalls.length).toBeGreaterThan(0);
-    const payload = debugCalls[0]![0] as { candidatesBeforeFilter: number };
-    expect(payload.candidatesBeforeFilter).toBeGreaterThanOrEqual(expectedCeil);
-    expect(payload.candidatesBeforeFilter).toBeLessThanOrEqual(2 * expectedCeil);
-  });
-
-  it('flag OFF — stage fetch limit is the v0.3 default (10), not topK', async () => {
-    ragPermissionEnforcementEnabled = false;
-
-    const user = 'deaddead-dead-dead-dead-deaddeaddead';
-    await ensureUser(user);
-    await ensureSpaceAndViewerRole(user, 'LIM');
-
-    // Seed 12 matching pages (more than v0.3 default 10, but a small topK
-    // below default). With the flag OFF, the stages must still pull 10
-    // candidates each (v0.3 default), so slice(0, topK=3) returns 3.
     for (let i = 0; i < 12; i++) {
       await insertPage({
         spaceKey: 'LIM',
@@ -659,17 +659,125 @@ describe.skipIf(!dbAvailable)('rag-service integration — per-page ACL post-fil
       });
     }
 
-    const results = await hybridSearch(user, 'ceil-check', 3);
-    // With flag OFF: both stages fetch up to 10 candidates each (v0.3
-    // default), RRF merges by pageId, slice(0,3) returns 3. Diverges from
-    // the brief's "topK exactly" wording on purpose — the brief's
-    // competing constraint "behaviour MUST match v0.3 exactly when OFF"
-    // wins, because passing `topK` would halve the candidate pool (default
-    // 10 → user's topK, often ≤5) and hurt recall. See the design-notes
-    // section in the PR description / commit body.
-    expect(results).toHaveLength(3);
-    // Extra check: the post-filter debug log should NOT appear in the OFF
-    // branch (the filter is never invoked).
+    const debugSpy = vi.spyOn(logger, 'debug');
+    await hybridSearch(user, 'ceil-check', 5);
+
+    const debugCalls = debugSpy.mock.calls.filter((c) => {
+      const payload = c[0] as Record<string, unknown> | undefined;
+      return payload && typeof payload === 'object' && 'candidatesBeforeFilter' in payload;
+    });
+    expect(debugCalls.length).toBeGreaterThan(0);
+    const payload = debugCalls[0]![0] as { candidatesBeforeFilter: number };
+    // Old EE behaviour: two 8-row legs. Now: two 10-row legs, union >= 10.
+    expect(payload.candidatesBeforeFilter).toBeGreaterThanOrEqual(10);
+  });
+
+  // Raising `rag_fetch_width` genuinely widens the candidate pool — this is
+  // the knob #1104's reranker turns up to get a pool worth re-scoring.
+  it('flag ON — an admin-raised rag_fetch_width widens the pre-filter pool', async () => {
+    ragPermissionEnforcementEnabled = true;
+
+    const user = 'feedface-feed-face-feed-facefeedface';
+    await ensureUser(user);
+    await ensureSpaceAndViewerRole(user, 'LIM');
+
+    await query(
+      `INSERT INTO admin_settings (setting_key, setting_value) VALUES ('rag_fetch_width', '30')
+       ON CONFLICT (setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value`,
+    );
+    for (let i = 0; i < 40; i++) {
+      await insertPage({
+        spaceKey: 'LIM',
+        title: `Limit page ${i}`,
+        bodyText: `overfetch ceil-check ${i}`,
+        vec: fakeVec(7 + i * 0.001),
+      });
+    }
+
+    const debugSpy = vi.spyOn(logger, 'debug');
+    await hybridSearch(user, 'ceil-check', 5);
+
+    const debugCalls = debugSpy.mock.calls.filter((c) => {
+      const payload = c[0] as Record<string, unknown> | undefined;
+      return payload && typeof payload === 'object' && 'candidatesBeforeFilter' in payload;
+    });
+    expect(debugCalls.length).toBeGreaterThan(0);
+    const payload = debugCalls[0]![0] as { candidatesBeforeFilter: number };
+    expect(payload.candidatesBeforeFilter).toBeGreaterThanOrEqual(30);
+    expect(payload.candidatesBeforeFilter).toBeLessThanOrEqual(60);
+  });
+
+  // Regression (#1103): /api/search?mode=hybrid&limit=12 used to be
+  // unsatisfiable — both legs capped at 10 candidates regardless of the
+  // requested limit. The stage limit is now floored at topK.
+  it('flag OFF — a topK above the old per-leg default (10) is satisfiable', async () => {
+    ragPermissionEnforcementEnabled = false;
+
+    const user = 'deaddead-dead-dead-dead-deaddeaddead';
+    await ensureUser(user);
+    await ensureSpaceAndViewerRole(user, 'LIM');
+
+    for (let i = 0; i < 14; i++) {
+      await insertPage({
+        spaceKey: 'LIM',
+        title: `Limit page ${i}`,
+        bodyText: `overfetch ceil-check ${i}`,
+        vec: fakeVec(7 + i * 0.001),
+      });
+    }
+
+    const results = await hybridSearch(user, 'ceil-check', 12);
+    expect(results).toHaveLength(12);
+  });
+
+  // The `rag_fetch_width` admin_settings row overrides the default at
+  // runtime — no restart. A width below topK is floored at topK so the
+  // caller's request stays satisfiable.
+  it('flag OFF — admin_settings rag_fetch_width caps the candidate pool', async () => {
+    ragPermissionEnforcementEnabled = false;
+
+    const user = 'deaddead-dead-dead-dead-deaddeaddead';
+    await ensureUser(user);
+    await ensureSpaceAndViewerRole(user, 'LIM');
+
+    // 12 matching pages, width 8, topK 3: each leg pulls 8 rows, so the
+    // merged pool is at most... observable only via the return set here
+    // (the OFF branch logs nothing), so pin it from the other side: topK=10
+    // with width 8 must still return 10 (floor at topK), while topK=3
+    // returns 3.
+    await query(
+      `INSERT INTO admin_settings (setting_key, setting_value) VALUES ('rag_fetch_width', '8')
+       ON CONFLICT (setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value`,
+    );
+    for (let i = 0; i < 12; i++) {
+      await insertPage({
+        spaceKey: 'LIM',
+        title: `Limit page ${i}`,
+        bodyText: `overfetch ceil-check ${i}`,
+        vec: fakeVec(7 + i * 0.001),
+      });
+    }
+
+    expect(await hybridSearch(user, 'ceil-check', 3)).toHaveLength(3);
+    expect(await hybridSearch(user, 'ceil-check', 10)).toHaveLength(10);
+  });
+
+  it('flag OFF — the post-filter never runs (no candidatesBeforeFilter log)', async () => {
+    ragPermissionEnforcementEnabled = false;
+
+    const user = 'deaddead-dead-dead-dead-deaddeaddead';
+    await ensureUser(user);
+    await ensureSpaceAndViewerRole(user, 'LIM');
+
+    for (let i = 0; i < 12; i++) {
+      await insertPage({
+        spaceKey: 'LIM',
+        title: `Limit page ${i}`,
+        bodyText: `overfetch ceil-check ${i}`,
+        vec: fakeVec(7 + i * 0.001),
+      });
+    }
+
     const debugSpy = vi.spyOn(logger, 'debug');
     await hybridSearch(user, 'ceil-check', 3);
     const filterLogs = debugSpy.mock.calls.filter((c) => {

@@ -223,7 +223,9 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     });
 
     // `score` is the retrieval ORDERING value — an RRF fusion score from
-    // hybridSearch, typically ~0.033 and bounded on this path at ~0.17 — never
+    // hybridSearch, typically ~0.033, bounded on this path at ~0.17 at the
+    // default fetch width and rising with an admin-raised `rag_fetch_width`
+    // (#1103) — never
     // near what a similarity threshold expects. It is kept because it orders
     // the array and is what
     // any existing consumer of this frame reads; it must never be rendered or
