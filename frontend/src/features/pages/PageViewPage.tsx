@@ -833,17 +833,20 @@ export function PageViewPage() {
             <FileText size={12} className="shrink-0" />
             {page.spaceKey !== '__local__' && <span className="truncate">{page.spaceKey}</span>}
             {/* Source badge. Neutral, like Private below: a source is a
-                category, not a state — the label differentiates. */}
+                category, not a state — the label differentiates. The fill is
+                `bg-foreground/10` to match the PagesPage rows, where the
+                compositing tint is what survives the hovered `bg-accent`
+                ground; one recipe for the same badge on both surfaces. */}
             {page.source === 'standalone' ? (
               <span
-                className="inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                className="inline-flex items-center gap-1 rounded-full border border-border bg-foreground/10 px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
                 data-testid="badge-local"
               >
                 Local
               </span>
             ) : (
               <span
-                className="inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                className="inline-flex items-center gap-1 rounded-full border border-border bg-foreground/10 px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
                 data-testid="badge-confluence"
               >
                 Confluence
@@ -853,7 +856,7 @@ export function PageViewPage() {
             {page.source === 'standalone' && (
               page.visibility === 'shared' ? (
                 <span
-                  className="inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                  className="inline-flex items-center gap-1 rounded-full border border-border bg-foreground/10 px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
                   data-testid="badge-shared"
                 >
                   <Globe size={10} /> Shared
@@ -861,7 +864,7 @@ export function PageViewPage() {
               ) : (
                 // Private = neutral gray. Was amber, but privacy carries no AI semantic.
                 <span
-                  className="inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                  className="inline-flex items-center gap-1 rounded-full border border-border bg-foreground/10 px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
                   data-testid="badge-private"
                 >
                   <Lock size={10} /> Private
@@ -871,7 +874,7 @@ export function PageViewPage() {
             {/* Draft indicator — neutral private-tier palette (drafts read as personal/private state, not AI). */}
             {'hasDraft' in page && Boolean((page as Record<string, unknown>).hasDraft) && (
               <span
-                className="inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                className="inline-flex items-center gap-1 rounded-full border border-border bg-foreground/10 px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
                 data-testid="badge-draft"
               >
                 <AlertCircle size={10} /> Draft

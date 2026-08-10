@@ -71,11 +71,15 @@ export function AiPromptsTab({ settings, onSave, isAdmin }: { settings: Settings
         subtitle="Override the instructions Compendiq sends to the model for each task. Leave a field empty to use the built-in prompt."
       />
 
-      {/* Active AI Safety rules info banner */}
+      {/* Active AI Safety rules info banner. Body copy is FULL-STRENGTH
+          text-info, never text-info/NN: over the bg-info/10 panel tint, /80
+          measured 4.11:1 and /70 3.36:1 — under AA for 12px text. De-emphasis
+          comes from size and weight; the hue already separates the notice
+          from body prose. */}
       {aiSafety && (aiSafety.guardrails.noFabricationEnabled || aiSafety.outputRules.stripReferences) && (
         <div className="rounded-lg border border-info/30 bg-info/10 p-3 text-sm" data-testid="ai-safety-banner">
           <p className="font-medium text-info">Active AI Safety Rules</p>
-          <ul className="mt-1 list-disc pl-5 text-xs text-info/80">
+          <ul className="mt-1 list-disc pl-5 text-xs text-info">
             {aiSafety.guardrails.noFabricationEnabled && (
               <li>No-fabrication guardrail active (prevents hallucinated references)</li>
             )}
@@ -84,7 +88,7 @@ export function AiPromptsTab({ settings, onSave, isAdmin }: { settings: Settings
             )}
           </ul>
           {isAdmin && (
-            <p className="mt-1 text-xs text-info/70">
+            <p className="mt-1 text-xs text-info">
               Manage these rules in the AI Safety tab.
             </p>
           )}

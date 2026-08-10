@@ -685,7 +685,7 @@ function SpacePermissionsTab() {
                       <td className="px-4 py-2.5">
                         <span className={cn(
                           'rounded px-2 py-0.5 text-xs font-medium',
-                          assignment.principalType === 'group' ? 'bg-action/10 text-action' : 'bg-muted text-muted-foreground',
+                          assignment.principalType === 'group' ? 'bg-action/10 text-action' : 'bg-foreground/10 text-muted-foreground',
                         )}>
                           {assignment.principalType === 'group' ? 'Group' : 'User'}
                         </span>

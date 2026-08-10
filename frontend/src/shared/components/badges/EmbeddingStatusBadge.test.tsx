@@ -17,13 +17,16 @@ describe('EmbeddingStatusBadge', () => {
 
   // ---- New 4-state embeddingStatus prop ----
 
-  it('renders not_embedded state with neutral warm-gray styling (AA-pass)', () => {
+  it('renders not_embedded state token-neutral — no hex literals, no dark: variant', () => {
     render(<EmbeddingStatusBadge embeddingStatus="not_embedded" />);
     const badge = screen.getByTestId('badge-not-embedded');
     expect(badge).toHaveTextContent('Not Embedded');
-    // Was bg-status-inactive/20 + text-status-inactive (2.67:1 light / 3.19:1 dark, failed AA).
-    expect(badge.className).toContain('bg-[#efeeea]');
-    expect(badge.className).toContain('text-[#5f5c54]');
+    // The old warm-gray hexes hid behind a `dark:` variant, which — with no
+    // `@custom-variant dark` in this app — compiles to the OS media query, so
+    // OS-dark + user-picked Paper rendered a dark pill on the white page.
+    expect(badge.className).toContain('bg-muted');
+    expect(badge.className).toContain('text-muted-foreground');
+    expect(badge.className).not.toMatch(/#[0-9a-fA-F]{3,8}|dark:/);
     expect(badge.className).not.toMatch(/amber|warning|yellow|primary/);
     expect(badge).toHaveAttribute('data-status', 'not_embedded');
   });

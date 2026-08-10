@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'fs';
-import { resolve } from 'path';
+import { readFileSync, readdirSync, statSync } from 'fs';
+import { resolve, join } from 'path';
 import { extractBlock } from './test-utils';
 import {
   THEMES,
@@ -89,6 +89,23 @@ function expectContrast(label: string, fg: string, bg: string, floor: number) {
     ratio,
     `${label}: ${fg} on ${bg} measured ${ratio.toFixed(2)}:1, need ≥${floor}:1`,
   ).toBeGreaterThanOrEqual(floor);
+}
+
+/**
+ * sRGB alpha-composite `fg` at `alpha` over an opaque `bg` — what the browser
+ * paints for a `bg-info/10` tint. Contrast must be measured against the
+ * COMPOSITE, not the token: a hue can clear AA on the raw surface and fail on
+ * its own tinted panel.
+ */
+function composite(fg: string, alpha: number, bg: string): string {
+  const channel = (i: number) => {
+    const f = parseInt(fg.slice(i, i + 2), 16);
+    const b = parseInt(bg.slice(i, i + 2), 16);
+    return Math.round(alpha * f + (1 - alpha) * b)
+      .toString(16)
+      .padStart(2, '0');
+  };
+  return `#${channel(1)}${channel(3)}${channel(5)}`;
 }
 
 describe('Theme store ships exactly Graphite + Paper', () => {
@@ -724,9 +741,47 @@ describe('Colour carries meaning, and only its own', () => {
         ).not.toBe(resolveToken(block, other));
       }
       for (const [name, surfaceToken] of Object.entries(surfaces)) {
-        expectContrast(`info on ${name} (${themeName})`, info, token(block, surfaceToken), 4.5);
+        const surface = token(block, surfaceToken);
+        expectContrast(`info on ${name} (${themeName})`, info, surface, 4.5);
+        // The surface users actually READ an info notice on is the panel's own
+        // bg-info/10 tint, not the bare surface — measure the composite too.
+        expectContrast(
+          `info on its own bg-info/10 panel over ${name} (${themeName})`,
+          info,
+          composite(info, 0.1, surface),
+          4.5,
+        );
       }
     }
+  });
+
+  // Full-strength info clears AA on its tinted panel; opacity-downgraded info
+  // text does not — text-info/80 measured 4.11:1 and text-info/70 3.36:1 over
+  // bg-info/10, both under AA at the 12px these notices use. The token maths
+  // above cannot see a `/NN` modifier baked into a class string, so this scans
+  // the sources — the "token guards miss baked literals" lesson.
+  it('no callsite opacity-downgrades info text', () => {
+    const walk = (dir: string, out: string[] = []): string[] => {
+      for (const entry of readdirSync(dir)) {
+        const full = join(dir, entry);
+        if (statSync(full).isDirectory()) {
+          if (entry === 'node_modules') continue;
+          walk(full, out);
+        } else if (/\.tsx?$/.test(entry) && !/\.test\.tsx?$/.test(entry)) {
+          out.push(full);
+        }
+      }
+      return out;
+    };
+    const stripComments = (source: string) =>
+      source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+    const offenders = walk(__dirname)
+      .filter((path) => /\btext-info\/\d+/.test(stripComments(readFileSync(path, 'utf-8'))))
+      .map((path) => path.slice(__dirname.length + 1));
+    expect(
+      offenders,
+      'text-info/NN fails AA over the bg-info/10 panel — use full-strength text-info and de-emphasise with size/weight',
+    ).toEqual([]);
   });
 
   it('inline code resolves its own token in BOTH themes', () => {

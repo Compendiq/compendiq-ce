@@ -1330,33 +1330,41 @@ describe('PagesPage', () => {
     // differentiator. Local used to wear the success green and Confluence/
     // Shared the informational indigo — status vocabulary borrowed for
     // labels, on the densest scanning surface in the app.
-    it('Local badge is neutral — no borrowed status hue', async () => {
+    //
+    // The fill is the COMPOSITING TINT `bg-foreground/10`, never `bg-muted`:
+    // these rows hover with `bg-accent`, and in Graphite accent == muted
+    // (1.00:1 measured), so a bg-muted chip vanished exactly while being
+    // pointed at. The tint steps up from any ground.
+    it('Local badge is a neutral tint — no borrowed status hue, no bg-muted', async () => {
       mockPagesWithStandalone('private');
       render(<PagesPage />, { wrapper: createWrapper() });
       const badge = await screen.findByTestId('badge-local');
       expect(badge).toHaveTextContent('Local');
-      expect(badge.className).toContain('bg-muted');
+      expect(badge.className).toContain('bg-foreground/10');
       expect(badge.className).toContain('text-muted-foreground');
+      expect(badge.className).not.toContain('bg-muted');
       expect(badge.className).not.toMatch(/success|info|emerald-500|amber|warning|yellow/);
     });
 
-    it('Private badge uses neutral gray tint, not amber/primary/warning', async () => {
+    it('Private badge uses the neutral tint, not amber/primary/warning', async () => {
       mockPagesWithStandalone('private');
       render(<PagesPage />, { wrapper: createWrapper() });
       const badge = await screen.findByTestId('badge-private');
       expect(badge).toHaveTextContent('Private');
       expect(badge.className).not.toMatch(/amber|warning|yellow|primary/);
-      expect(badge.className).toContain('bg-muted');
+      expect(badge.className).toContain('bg-foreground/10');
       expect(badge.className).toContain('text-muted-foreground');
+      expect(badge.className).not.toContain('bg-muted');
     });
 
-    it('Shared badge is neutral — no borrowed status hue', async () => {
+    it('Shared badge is a neutral tint — no borrowed status hue, no bg-muted', async () => {
       mockPagesWithStandalone('shared');
       render(<PagesPage />, { wrapper: createWrapper() });
       const badge = await screen.findByTestId('badge-shared');
       expect(badge).toHaveTextContent('Shared');
-      expect(badge.className).toContain('bg-muted');
+      expect(badge.className).toContain('bg-foreground/10');
       expect(badge.className).toContain('text-muted-foreground');
+      expect(badge.className).not.toContain('bg-muted');
       expect(badge.className).not.toMatch(/success|info|sky-500|amber|warning|yellow/);
     });
   });

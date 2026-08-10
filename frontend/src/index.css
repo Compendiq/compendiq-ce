@@ -494,9 +494,12 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   --color-accent: #e8e8eb;
   --color-accent-foreground: #17181a;
   /* Semantic aliases — var() references, exactly as in the dark block. The
-     re-declaration here is load-bearing: a custom property substitutes its
-     var() against the element it is DECLARED on, so the :root alias alone
-     would freeze the dark hex into every light-theme callsite. */
+     re-declaration is DEFENSIVE, not load-bearing today: `data-theme` sits on
+     the root element, so the :root alias already substitutes against this
+     block's status values (verified against the built CSS). It becomes
+     load-bearing the day the attribute moves off the root or a nested themed
+     region appears, because a custom property substitutes its var() on the
+     element it is declared on — keep the pair in sync. */
   --color-destructive: var(--color-status-disconnected);
   --color-destructive-foreground: #ffffff;
   /* Same two-weight split as dark: a quiet hairline for structure, and an

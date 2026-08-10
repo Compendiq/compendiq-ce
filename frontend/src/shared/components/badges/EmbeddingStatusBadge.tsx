@@ -33,9 +33,14 @@ function getStatusConfig(
       return {
         label: 'Not Embedded',
         title: 'Content has not been indexed for AI search',
-        // Neutral warm-gray tinted pill, AA-pass in light + dark.
-        // Was bg-status-inactive/20 + text-status-inactive (2.67:1 light / 3.19:1 dark — failed AA).
-        badgeClass: 'bg-[#efeeea] text-[#5f5c54] dark:bg-[#262320] dark:text-[#a39e8c]',
+        // Token-based neutral, same as `embedded` below — the label is the
+        // differentiator. This carried hardcoded warm-gray hexes behind a
+        // `dark:` variant, and with no `@custom-variant dark` in this app,
+        // `dark:` compiles to the OS media query: OS-dark + user-picked Paper
+        // rendered the dark pill on the white page. Tokens follow the active
+        // theme. (The hexes had replaced status-inactive/20, which failed AA
+        // — the muted pairing passes on every surface it lands on.)
+        badgeClass: 'bg-muted text-muted-foreground',
         animate: false,
       };
     case 'embedding':

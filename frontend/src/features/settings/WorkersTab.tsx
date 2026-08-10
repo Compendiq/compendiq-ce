@@ -172,16 +172,18 @@ function StatusBadge({ state }: { state: WorkerState }) {
 // Status pill with animated counter
 // ---------------------------------------------------------------------------
 
-function StatusPill({ count, label, icon: Icon, color }: {
+function StatusPill({ count, label, icon: Icon, color, spin }: {
   count: number;
   label: string;
   icon: typeof CheckCircle;
   color: string;
+  /** Spin the icon — the in-flight signal for the neutral Processing pill. */
+  spin?: boolean;
 }) {
   if (count === 0) return null;
   return (
     <div className={cn('flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium', color)}>
-      <Icon size={12} />
+      <Icon size={12} className={cn(spin && 'animate-spin')} />
       <AnimatedCounter value={count} className="tabular-nums" />
       <span className="text-muted-foreground/60">{label}</span>
     </div>
@@ -298,8 +300,11 @@ function WorkerCard({ title, statusKey, statusEndpoint, runEndpoint, rescanEndpo
           <div className="flex flex-wrap gap-2">
             <StatusPill count={status.pending} label="Pending" icon={Clock} color="bg-warning/10 text-warning" />
             {/* Neutral: "processing" is queue activity, not an informational
-                notice — the spinner glyph carries the in-flight signal. */}
-            <StatusPill count={status.processing} label="Processing" icon={Loader2} color="bg-foreground/5 text-muted-foreground" />
+                notice. `spin` is what keeps it distinguishable from the
+                equally-neutral Skipped pill — without it the two were the
+                same pill with different words. Reduced-motion handling is
+                the app's global rule. */}
+            <StatusPill count={status.processing} label="Processing" icon={Loader2} color="bg-foreground/5 text-muted-foreground" spin />
             <StatusPill count={status.completed} label="Done" icon={CheckCircle} color="bg-success/10 text-success" />
             <StatusPill count={status.skipped} label="Skipped" icon={Clock} color="bg-foreground/5 text-muted-foreground" />
             <StatusPill count={status.failed} label="Failed" icon={AlertTriangle} color="bg-destructive/10 text-destructive" />
