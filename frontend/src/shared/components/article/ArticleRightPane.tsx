@@ -850,14 +850,14 @@ export function ArticleRightPane({
                   )}
                 </button>
 
-                <button
-                  onClick={handleDelete}
-                  className="rounded-lg p-1.5 text-destructive/80 transition-colors hover:bg-destructive/8 hover:text-destructive"
-                  aria-label="Delete page"
-                  title={`Delete (${formatKeysForPlatform(getShortcutHint('delete-page') ?? '', detectMac())})`}
-                >
-                  <Trash2 size={16} />
-                </button>
+                {/* Delete is deliberately NOT on the collapsed rail. Expanded,
+                    it sits behind a "Danger zone" disclosure and then a confirm
+                    dialog; collapsing the pane used to PROMOTE it to a
+                    top-level icon in a column of ten unlabelled glyphs, so the
+                    safety around deleting a page became a function of a layout
+                    preference. It stays reachable by expanding the pane, from
+                    the page's own actions, and by its shortcut — none of which
+                    is a stray click away in an icon rail. */}
               </div>
             </>
           )}
@@ -1244,7 +1244,7 @@ export function ArticleRightPane({
             </summary>
             <button
               onClick={handleDelete}
-              className="mt-0.5 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-destructive/80 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring hover:bg-destructive/8 hover:text-destructive"
+              className="nm-action-destructive mt-0.5 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm"
               title={`Delete (${formatKeysForPlatform(getShortcutHint('delete-page') ?? '', detectMac())})`}
             >
               <Trash2 size={15} className="shrink-0 opacity-70" />

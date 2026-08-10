@@ -53,21 +53,33 @@ export function ConfluencePatBanner() {
   if (!settings) return null;
   if (settings.hasConfluencePat || settings.confluencePatPromptDismissed) return null;
 
+  // A strip, not a card, and a text link, not a filled button.
+  //
+  // This is an onboarding prompt that renders on EVERY authenticated route, and
+  // as a `nm-card` with an `nm-button-primary` it carried the only filled teal
+  // on screen — so on `/pages/:id` the loudest element was a setup nag and the
+  // page's own primary action was quieter than it. It also cost ~145px of an
+  // 845px phone viewport, on the route where vertical space matters most.
+  //
+  // It keeps its full reach (dismissing is still one click, and it still
+  // appears everywhere until the token exists) and loses only its rank. The
+  // copy is shortened so it fits one line at ordinary widths rather than
+  // wrapping to three; "personal access token" is retained because that is the
+  // phrase Settings → Confluence uses for the field being asked for.
   return (
     <div
       role="status"
       aria-live="polite"
       data-testid="confluence-pat-banner"
-      className="nm-card mt-2 flex flex-wrap items-center gap-3 px-3 py-2 text-sm text-foreground"
+      className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-border bg-card px-3 py-1.5 text-xs text-muted-foreground"
     >
-      <KeyRound size={16} className="shrink-0 text-primary" aria-hidden="true" />
+      <KeyRound size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" />
       <span className="min-w-0 flex-1">
-        Connect Compendiq to Confluence — add your personal access token (PAT)
-        so your spaces can sync.
+        Add your Confluence personal access token so your spaces can sync.
       </span>
       <Link
         to={CONFLUENCE_SETTINGS_PATH}
-        className="nm-button-primary shrink-0 px-3 py-1.5 text-xs"
+        className="shrink-0 rounded-md px-2 py-1 font-medium text-action underline-offset-2 transition-colors hover:bg-foreground/5 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
       >
         Configure PAT
       </Link>
@@ -76,7 +88,7 @@ export function ConfluencePatBanner() {
         onClick={() => dismiss.mutate()}
         disabled={dismiss.isPending}
         aria-label="Dismiss Confluence PAT reminder"
-        className="nm-icon-button h-8 w-8 shrink-0"
+        className="nm-icon-button size-7 shrink-0"
       >
         <X size={14} aria-hidden="true" />
       </button>

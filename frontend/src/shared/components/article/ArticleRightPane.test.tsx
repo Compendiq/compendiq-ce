@@ -810,12 +810,33 @@ describe('ArticleRightPane', () => {
     expect(mockDeletePage).not.toHaveBeenCalled();
   });
 
-  it('rail Delete button drives the same move-to-trash dialog', async () => {
+  // Behaviour change: the collapsed rail no longer offers Delete at all.
+  //
+  // Expanded, deleting sits behind a "Danger zone" disclosure and then a
+  // confirm dialog. Collapsing the pane used to PROMOTE it to a top-level icon
+  // among ten unlabelled glyphs — so the safety around destroying a page was a
+  // function of a layout preference. Sharing the confirm (which it did, and
+  // which this test used to assert) made the second step identical; it did
+  // nothing about the first one going missing.
+  it('the collapsed rail offers no Delete control', () => {
     useUiStore.setState({ articleSidebarCollapsed: true });
 
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    fireEvent.click(screen.getByLabelText('Delete page'));
+    expect(screen.queryByLabelText('Delete page')).not.toBeInTheDocument();
+  });
+
+  it('expanded, Delete still drives the move-to-trash dialog', async () => {
+    useUiStore.setState({ articleSidebarCollapsed: false });
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    // Two steps by design: the disclosure, then the confirm. That first step is
+    // exactly what the collapsed rail used to skip. (The expanded control is
+    // labelled by its visible text; `aria-label="Delete page"` belonged to the
+    // rail icon alone, which is why the check above can look for it.)
+    fireEvent.click(screen.getByText('Danger zone'));
+    fireEvent.click(screen.getByText('Delete'));
 
     expect(await screen.findByText('Move page to trash?')).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
