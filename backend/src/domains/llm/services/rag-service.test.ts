@@ -88,7 +88,7 @@ vi.mock('../../../core/services/fts-language.js', () => ({
   getFtsLanguage: vi.fn(async () => 'simple'),
 }));
 
-import { buildRagContext, hybridSearch, RAG_EF_SEARCH, reciprocalRankFusion, rrfWorstCase, vectorSearch, keywordSearch, recordSearchAnalytics, resolveStageLimit, RAG_FETCH_WIDTH_DEFAULT, RAG_FETCH_WIDTH_MAX } from './rag-service.js';
+import { buildRagContext, hybridSearch, RAG_EF_SEARCH, reciprocalRankFusion, fuseWithStableHead, rrfWorstCase, vectorSearch, keywordSearch, recordSearchAnalytics, resolveStageLimit, RAG_FETCH_WIDTH_DEFAULT, RAG_FETCH_WIDTH_MAX } from './rag-service.js';
 import type { SearchResult } from './rag-service.js';
 import { invalidateRagFetchWidthCache } from '../../../core/services/admin-settings-service.js';
 import { CircuitBreakerOpenError } from '../../../core/services/circuit-breaker.js';
@@ -840,6 +840,64 @@ describe('RAG Service', () => {
       const combined = reciprocalRankFusion([], [standalone1, standalone2]);
       // Both should survive because RRF key uses pageId, not confluenceId
       expect(combined).toHaveLength(2);
+    });
+
+    // ── #1103: stable-head fusion ────────────────────────────────────────────
+    //
+    // When the topK floor pushes the fetch beyond the ranking width, plain RRF
+    // over the deep legs dilutes the head (measured: Recall@1 0.3889 → 0.2222
+    // at retrieval topK=20). fuseWithStableHead ranks the head over the
+    // width-prefix of each leg and APPENDS the extras — asking for more
+    // results returns the same first results, plus more.
+    describe('fuseWithStableHead (#1103)', () => {
+      const vecLegs = (n: number) =>
+        Array.from({ length: n }, (_, i) => makeResult(`v-${i}`, `vec chunk ${i}`, { score: 0.9 - i * 0.01 }));
+      const kwLegs = (n: number) =>
+        Array.from({ length: n }, (_, i) => makeResult(`k-${i}`, `kw body ${i}`, { score: 0.8 - i * 0.01, vectorScore: null, keywordRank: 0.8 - i * 0.01 }));
+
+      it('is plain RRF when the legs fit within the rank width', () => {
+        const v = vecLegs(8);
+        const k = kwLegs(8);
+        expect(fuseWithStableHead(v, k, 10)).toEqual(reciprocalRankFusion(v, k));
+      });
+
+      it('never reorders the head when the legs run deeper than the rank width', () => {
+        const v = vecLegs(20);
+        const k = kwLegs(20);
+        const narrow = reciprocalRankFusion(v.slice(0, 10), k.slice(0, 10));
+        const fused = fuseWithStableHead(v, k, 10);
+        // The head is byte-identical to what a narrower request returns.
+        expect(fused.slice(0, narrow.length)).toEqual(narrow);
+      });
+
+      it('appends the deep-fetch extras after the head, losing none', () => {
+        const v = vecLegs(20);
+        const k = kwLegs(20);
+        const fused = fuseWithStableHead(v, k, 10);
+        const wide = reciprocalRankFusion(v, k);
+        // Same page SET as wide fusion — the extras are appended, not dropped.
+        expect(new Set(fused.map((r) => r.pageId))).toEqual(new Set(wide.map((r) => r.pageId)));
+        // And no duplicates.
+        expect(new Set(fused.map((r) => r.pageId)).size).toBe(fused.length);
+      });
+
+      it('a page surfacing only in the deep tail cannot displace a head entry', () => {
+        // 'both-legs-deep' appears at rank 12 in BOTH legs: under plain RRF its
+        // summed contribution (~2/73) would outrank the keyword leg's rank-1
+        // single-leg page (~1/61) — the measured dilution mechanism. Stable
+        // head keeps it in the tail.
+        const v = vecLegs(20);
+        const k = kwLegs(20);
+        v[11] = makeResult('both-legs-deep', 'deep chunk', { score: 0.9 - 11 * 0.01 });
+        k[11] = makeResult('both-legs-deep', 'deep body', { score: 0.8 - 11 * 0.01, vectorScore: null, keywordRank: 0.1 });
+        const fused = fuseWithStableHead(v, k, 10);
+        const headIds = fused.slice(0, 20).map((r) => r.pageId);
+        const kwRank1 = kwLegs(1)[0]!.pageId;
+        expect(headIds.indexOf(kwRank1)).toBeGreaterThanOrEqual(0);
+        expect(fused.findIndex((r) => r.pageId === makeResult('both-legs-deep', '').pageId)).toBeGreaterThan(
+          headIds.indexOf(kwRank1),
+        );
+      });
     });
 
     // ── #1117: the documented bounds on `score`, made executable ─────────────

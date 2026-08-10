@@ -273,6 +273,20 @@ seen before the walk stopped. When the feature is off (CE or EE without the
 flag), the second post-filter does not run; the fetch width applies either
 way.
 
+**Fusion has a stable head.** When the caller's `topK` floors the fetch above
+the ranking width (`/api/search?mode=hybrid&limit=11..20` at the default
+width), fusion runs twice: the head is RRF over the first `rankWidth` rows of
+each leg — byte-identical to what a narrower request returns — and the extra
+candidates the deeper fetch surfaced are appended, ranked by RRF over the full
+legs (`fuseWithStableHead`). Measured at retrieval topK=20 on #1102's fixture,
+plain wide fusion improved Recall@20 0.9236 → 0.9514 (the old code could not
+return an answer beyond its 10-row legs at all) but diluted the head —
+Recall@1 0.3889 → 0.2222, MRR 0.5830 → 0.4566 — the same flat-`k` RRF
+mechanism as the width-30 regression below. Stable-head keeps "show me more
+results" append-only: the first results never reorder. `rankWidth` is the
+configured width plus the EE ACL compensation — everything except the topK
+floor, which is satisfiability padding, not a ranking decision.
+
 `/api/search?mode=semantic` shares the decoupling: it fetches
 `resolveStageLimit(limit, width, false)` chunks and slices to `limit` after
 dedupe-by-page — fetching exactly `limit` chunks under-delivered whenever one

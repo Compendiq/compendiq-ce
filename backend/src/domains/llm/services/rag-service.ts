@@ -370,6 +370,45 @@ function reciprocalRankFusion(
 }
 
 /**
+ * Fusion with a STABLE HEAD (#1103). When the stage limit exceeds the ranking
+ * width — i.e. the caller's topK floored the fetch above the configured
+ * width — plain RRF over the deep legs demonstrably dilutes the head: RRF's
+ * k=60 is nearly flat across ranks, so a mediocre page appearing deep in BOTH
+ * legs outranks a rank-1 single-leg hit. Measured at retrieval topK=20 on
+ * #1102's fixture, wide fusion moved Recall@1 0.3889 → 0.2222 and MRR 0.5830
+ * → 0.4566 while Recall@20 improved 0.9236 → 0.9514 — more right answers in
+ * the set, drowned at the top.
+ *
+ * So the head is ranked by fusion over the first `rankWidth` rows of each leg
+ * — byte-identical to what a narrower request returns — and the extra
+ * candidates the deeper fetch surfaced are APPENDED, ranked by fusion over
+ * the full legs. Asking for more results yields the same first results, plus
+ * more; it never reorders the top. When the legs are within `rankWidth` this
+ * is plain RRF.
+ *
+ * Note the array is ordered by the pipeline, not by `score`: a tail entry's
+ * wide-fusion score can exceed a head entry's narrow-fusion score. `score`
+ * remains an opaque ordering byproduct (see its JSDoc) — consumers must never
+ * re-sort by it.
+ */
+export function fuseWithStableHead(
+  vectorResults: SearchResult[],
+  keywordResults: SearchResult[],
+  rankWidth: number,
+): SearchResult[] {
+  const head = reciprocalRankFusion(
+    vectorResults.slice(0, rankWidth),
+    keywordResults.slice(0, rankWidth),
+  );
+  if (vectorResults.length <= rankWidth && keywordResults.length <= rankWidth) {
+    return head;
+  }
+  const wide = reciprocalRankFusion(vectorResults, keywordResults);
+  const headIds = new Set(head.map((r) => r.pageId));
+  return [...head, ...wide.filter((r) => !headIds.has(r.pageId))];
+}
+
+/**
  * The de-facto unit tag for `search_analytics.max_score` — each value has ONE
  * documented score unit (#1117): `hybrid` and `keyword_fallback` store the RRF
  * fusion value, `semantic` the cosine, `keyword` the raw ts_rank, `faceted`
@@ -602,7 +641,8 @@ async function hybridSearchInner(
   // round-trip at most once a minute — and it is chained, not awaited, so the
   // cache-miss case overlaps the embedding call and the coverage probe below
   // instead of serialising in front of them.
-  const stageLimitPromise = getRagFetchWidth().then((fetchWidth) =>
+  const fetchWidthPromise = getRagFetchWidth();
+  const stageLimitPromise = fetchWidthPromise.then((fetchWidth) =>
     resolveStageLimit(topK, fetchWidth, aclEnforced),
   );
 
@@ -681,8 +721,14 @@ async function hybridSearchInner(
     keywordHits: keywordResults.length,
   }, 'Search results');
 
-  // Combine with RRF — output is already one entry per pageId.
-  const merged = reciprocalRankFusion(vectorResults, keywordResults);
+  // Rank width = everything except the caller's topK floor: the configured
+  // width, plus the EE ACL compensation when active (the pre-#1103 code fused
+  // over that compensation too). The topK floor is satisfiability padding —
+  // it must widen the POOL, never re-rank the HEAD (see fuseWithStableHead).
+  const fetchWidth = await fetchWidthPromise;
+  const rankWidth = aclEnforced ? Math.max(fetchWidth, Math.ceil(topK * 1.5)) : fetchWidth;
+  // Combine with stable-head fusion — output is already one entry per pageId.
+  const merged = fuseWithStableHead(vectorResults, keywordResults, rankWidth);
 
   // Per-page ACL post-filter: when enabled, drop candidates the caller can
   // no longer read (Confluence restriction added between sync and query,
@@ -733,7 +779,10 @@ async function hybridSearchInner(
     // this column would silently make new rows incomparable with every
     // historical one — migration 088 added `rerank_score` for the #1104 stage
     // precisely so this value never changes meaning. See the score-semantics
-    // note in docs/architecture/09-flow-rag-chat.md.
+    // note in docs/architecture/09-flow-rag-chat.md. One caveat since #1103:
+    // the value's SCALE tracks the stage limit (rrfWorstCase rises with the
+    // fetch width), so rows straddling a `rag_fetch_width` change are only
+    // loosely comparable — the same caveat RAG_EF_SEARCH always carried.
     // Keep this branch and the non-ACL one below in step.
     const maxScore = topResults.length > 0 ? Math.max(...topResults.map((r) => r.score)) : null;
     trackSearchAnalytics(userId, question, topResults.length, maxScore, searchType, analyticsExtras);
