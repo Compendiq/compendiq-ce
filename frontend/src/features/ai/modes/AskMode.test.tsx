@@ -30,9 +30,20 @@ let promptSourceData: {
   spaces?: { key: string }[];
 } = {};
 
-vi.mock('../../../shared/hooks/use-pages', () => ({
+// The chips gate on a RESOLVED embedding status with embedded > 0 (#1257
+// post-review), so the suite's default is a healthy resolved status — an
+// undefined feed would leave every chip inert and silently skew the tests
+// that click one. Overridable per test for the gated windows.
+let mockEmbeddingStatusData: unknown;
+
+// importActual keeps the real `isZeroEmbeddings` helper exported — the
+// component imports it from this same module, so the mock must not drop it.
+vi.mock('../../../shared/hooks/use-pages', async () => ({
+  ...(await vi.importActual<typeof import('../../../shared/hooks/use-pages')>(
+    '../../../shared/hooks/use-pages',
+  )),
   usePage: () => ({ data: undefined }),
-  useEmbeddingStatus: () => ({ data: undefined }),
+  useEmbeddingStatus: () => ({ data: mockEmbeddingStatusData }),
   usePages: () => ({ data: promptSourceData.pages ? { items: promptSourceData.pages } : undefined }),
   usePageFilterOptions: () => ({
     data: promptSourceData.labels ? { authors: [], labels: promptSourceData.labels } : undefined,
@@ -75,6 +86,9 @@ describe('AskMode', () => {
     vi.clearAllMocks();
     // Default to an empty instance so prompt-source state can't leak between tests.
     promptSourceData = {};
+    mockEmbeddingStatusData = {
+      totalPages: 4, embeddedPages: 4, dirtyPages: 0, totalEmbeddings: 8, isProcessing: false,
+    };
     useAuthStore.getState().setAuth('test-token', {
       id: '1',
       username: 'testuser',
@@ -223,6 +237,85 @@ describe('AskMode', () => {
     expect(texts).toContain('Summarize "On-call rotation and escalation policy"');
     expect(texts).toContain('Draft a how-to from pages tagged "runbook"');
     expect(texts).toContain('What changed in the OPS space in the last 7 days?');
+  });
+
+  // #1257 post-review (F-B): the chips enable only on a RESOLVED status with
+  // at least one embedded page. A fresh install (totalPages === 0) shows no
+  // zero-embeddings banner — "not embedded yet" would misname the gap — but a
+  // retrieval demo over an empty corpus is no more answerable, so the chips
+  // are inert there too, without an aria-describedby to a banner that is not
+  // in the DOM.
+  it('keeps the chips inert on a fresh install with no pages at all', () => {
+    mockEmbeddingStatusData = {
+      totalPages: 0, embeddedPages: 0, dirtyPages: 0, totalEmbeddings: 0, isProcessing: false,
+    };
+
+    const Composed = () => (
+      <>
+        <AskExamplePrompts />
+        <AskModeInput />
+      </>
+    );
+    render(<Composed />, { wrapper: createWrapper() });
+
+    const chips = screen.getAllByTestId('ask-example-prompt');
+    expect(chips.length).toBeGreaterThan(0);
+    for (const chip of chips) {
+      expect(chip).toHaveAttribute('aria-disabled', 'true');
+      expect(chip).not.toHaveAttribute('aria-describedby');
+    }
+
+    fireEvent.click(chips[0]!);
+    expect((screen.getByPlaceholderText('Ask a question...') as HTMLTextAreaElement).value).toBe('');
+  });
+
+  // #1257 post-review (F-B): the composer is DELIBERATELY not gated on
+  // embedding status — the asymmetry with the chips is the decision, so pin
+  // it. POST /llm/ask never refuses over zero embeddings, and hybridSearch's
+  // keyword FTS leg (plus page-tree and externalUrls context) still grounds a
+  // typed question without them; gating send would turn a degraded-retrieval
+  // state into a total outage of those working paths. See the note above
+  // handleAsk in AskMode.tsx.
+  it('keeps the composer send path ungated while nothing is embedded', async () => {
+    mockEmbeddingStatusData = {
+      totalPages: 10, embeddedPages: 0, dirtyPages: 10, totalEmbeddings: 0, isProcessing: false,
+    };
+    apiFetchMock.mockImplementation((path: string) => {
+      if (path === '/settings') {
+        return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+      }
+      if (path.startsWith('/ollama/models')) {
+        return Promise.resolve([{ name: 'llama3' }]);
+      }
+      if (path === '/llm/conversations') {
+        return Promise.resolve([]);
+      }
+      return Promise.resolve([]);
+    });
+
+    async function* fakeStream() {
+      yield { content: 'keyword-grounded answer' };
+    }
+    streamSSEMock.mockReturnValue(fakeStream());
+
+    render(<AskModeInput />, { wrapper: createWrapper() });
+
+    const input = screen.getByPlaceholderText('Ask a question...');
+    fireEvent.change(input, { target: { value: 'where is the deploy runbook?' } });
+
+    await waitFor(() => {
+      expect(screen.getByRole('button')).not.toBeDisabled();
+    });
+
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() => {
+      expect(streamSSEMock).toHaveBeenCalledWith(
+        '/llm/ask',
+        expect.objectContaining({ question: 'where is the deploy runbook?' }),
+        expect.any(Object),
+      );
+    });
   });
 
   it('never names a tag or space the instance does not have', () => {

@@ -4,10 +4,11 @@ import { useAiContext, nextMessageId } from '../AiContext';
 import { toast } from 'sonner';
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '../../../shared/lib/api';
+import { cn } from '../../../shared/lib/cn';
 import { useAutoGrowTextarea } from '../../../shared/hooks/use-auto-grow-textarea';
 import { PROMPT_MAX_LENGTH } from './prompt-limits';
 import { buildAskPrompts } from './ask-example-prompts';
-import { usePages, usePageFilterOptions } from '../../../shared/hooks/use-pages';
+import { usePages, usePageFilterOptions, isZeroEmbeddings } from '../../../shared/hooks/use-pages';
 import { useSpaces } from '../../../shared/hooks/use-spaces';
 
 interface McpDocsSettings {
@@ -71,6 +72,19 @@ export function AskModeInput() {
     inputRef.current?.focus();
   }, [inputRef]);
 
+  // The composer is deliberately NOT gated on embedding status, unlike the
+  // example chips below (#1257 post-review, decided on backend evidence):
+  // POST /llm/ask never refuses over zero embeddings, and it is not reduced
+  // to ungrounded chat either — hybridSearch always runs its keyword FTS leg
+  // (rag-service.ts `keywordSearch`, over synced page text, no embeddings
+  // required), so a typed question can still come back grounded and cited;
+  // the route also injects page-tree context (`includeSubPages` + pageId)
+  // and MCP `externalUrls` docs, both embedding-free. Gating send here would
+  // turn a degraded-retrieval state into a total outage of those working
+  // paths. The chips differ: they are app-authored invitations to semantic
+  // jobs ("find duplicates") that specifically need the vector leg, so they
+  // stay inert until it verifiably exists. The amber banner above the thread
+  // keeps naming the degradation in both empty and answered states.
   const handleAsk = useCallback(async () => {
     if (!input.trim() || isStreaming) return;
     if (!model) {
@@ -225,8 +239,37 @@ export const ASK_EMPTY_TITLE = 'Ask questions about your knowledge base';
 // actually distinguishes this from a plain chat box: answers cite pages.
 export const ASK_EMPTY_SUBTITLE = 'Answers are drawn from your synced pages, with links to the ones they came from';
 
+/**
+ * DOM id of the zero-embeddings notice in AiAssistantPage. The example-prompt
+ * chips below reference it via `aria-describedby` while they are inert, so
+ * the banner's explanation is programmatically the chips' disabled reason —
+ * not just text that happens to sit 12px above them.
+ */
+export const NO_EMBEDDINGS_NOTICE_ID = 'ai-no-embeddings-notice';
+
 export function AskExamplePrompts() {
-  const { setInput } = useAiContext();
+  const { setInput, embeddingStatus } = useAiContext();
+
+  // The chips invite exactly the retrieval the zero-embeddings banner above
+  // them says is absent — with nothing embedded, "Find pages that look like
+  // duplicates" can only produce a confident answer over no context. They
+  // re-enable the moment embeddings exist (the status query already polls
+  // while a pass is processing).
+  //
+  // #1257 post-review: the banner's own predicate is NOT the chips' gate.
+  // `isZeroEmbeddings` is false while the status is still undefined — the
+  // first-paint window, and permanently when /embeddings/status errors —
+  // which left the chips live in exactly the windows where nothing is known
+  // to be retrievable. The chips are invitations this app authors, so they
+  // enable only on a RESOLVED status showing at least one embedded page;
+  // brief first-paint inertness on a healthy instance is honest. (A fresh
+  // install, totalPages === 0, is inert too: the banner hides there because
+  // "not embedded yet" would misname the gap, but a retrieval demo over an
+  // empty corpus is no more answerable.) `notEmbedded` still keys the
+  // aria-describedby: the banner only renders on its own verdict, and a
+  // reference to an absent node is a dangling id.
+  const notEmbedded = isZeroEmbeddings(embeddingStatus);
+  const chipsInert = !embeddingStatus || embeddingStatus.embeddedPages === 0;
 
   // Suggestions are built from this instance's real content. The previous
   // hardcoded list named a tag and a space that do not exist in a fresh
@@ -247,6 +290,9 @@ export function AskExamplePrompts() {
   });
 
   const pick = (prompt: string) => {
+    // aria-disabled (unlike native disabled) does not block events, so both
+    // the click and the keydown path funnel through this guard.
+    if (chipsInert) return;
     setInput(prompt);
     // Defer focus to next tick so the input mounts before we focus it.
     requestAnimationFrame(() => {
@@ -273,6 +319,13 @@ export function AskExamplePrompts() {
               look more important than the composer. */}
           <button
             type="button"
+            // aria-disabled, not native disabled: a disabled button leaves the
+            // tab order, so a keyboard or screen-reader user would never land
+            // on a chip to hear WHY the suggestions are inert. This keeps them
+            // focusable, announces the disabled state, and aria-describedby
+            // hands AT the banner's explanation as the reason.
+            aria-disabled={chipsInert || undefined}
+            aria-describedby={notEmbedded ? NO_EMBEDDINGS_NOTICE_ID : undefined}
             onClick={() => pick(prompt)}
             onKeyDown={(e) => {
               if (e.key === 'Enter' || e.key === ' ') {
@@ -280,7 +333,19 @@ export function AskExamplePrompts() {
                 pick(prompt);
               }
             }}
-            className="group flex w-full items-start gap-2.5 rounded-lg border border-border bg-foreground/[0.03] px-3 py-2.5 text-left text-sm text-foreground/85 transition-colors hover:border-primary/40 hover:bg-foreground/[0.06] hover:text-foreground focus-visible:border-primary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className={cn(
+              'group flex w-full items-start gap-2.5 rounded-lg border border-border px-3 py-2.5 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              chipsInert
+                // Explicit muted token, NOT opacity: compositing half-alpha
+                // over the card surface lands differently per theme (measured
+                // 3.64:1 Graphite vs 2.66:1 Paper for opacity-50), while
+                // text-muted-foreground is tuned per palette so both themes
+                // read the same register (6.9:1 / 5.8:1 on the card). The
+                // dropped background tint and hover treatments carry the rest
+                // of the inert reading.
+                ? 'cursor-not-allowed text-muted-foreground'
+                : 'bg-foreground/[0.03] text-foreground/85 hover:border-primary/40 hover:bg-foreground/[0.06] hover:text-foreground focus-visible:border-primary/60',
+            )}
             data-testid="ask-example-prompt"
           >
             {/* No leading icon: the same Sparkles glyph on all four cards

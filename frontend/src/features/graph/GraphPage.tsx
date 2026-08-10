@@ -3,10 +3,11 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { m } from 'framer-motion';
 import ForceGraph2D from 'react-force-graph-2d';
 import { toast } from 'sonner';
-import { ZoomIn, ZoomOut, Maximize, RefreshCw, Info, Layers, Grid3x3, Filter, Search, X, Settings, Loader2 } from 'lucide-react';
+import { ZoomIn, ZoomOut, Maximize, RefreshCw, Info, Layers, Grid3x3, Filter, Search, X, Settings, Loader2, AlertTriangle } from 'lucide-react';
 import { cn } from '../../shared/lib/cn';
 import { useSearch } from '../../shared/hooks/use-standalone';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
+import { useEmbeddingStatus, isZeroEmbeddings } from '../../shared/hooks/use-pages';
 import { useAuthStore } from '../../stores/auth-store';
 import { useGraphData, useLocalGraphData, useRefreshGraph, type LocalGraphFilters, type GraphMeta } from './graph-hooks';
 
@@ -73,6 +74,51 @@ const EDGE_COLORS: Record<string, string> = {
 };
 
 const MAX_TOOLTIP_LABELS = 5;
+
+/**
+ * Node count at or below which /graph skips the pick-a-page landing and just
+ * renders the full graph. The landing exists because the global hairball is
+ * unusable — and the force simulation slow — past a few hundred pages: the
+ * constraint is simulation/render cost and visual legibility, not transfer
+ * size. At ≤50 nodes the simulation settles instantly and every label stays
+ * readable, so interposing a picker that says "the knowledge graph is large"
+ * before a graph this small is pure friction (the gate was observed firing
+ * at 6 pages total). 50 keeps a wide margin under the "few hundred" where
+ * the hairball actually breaks down.
+ */
+const SMALL_GRAPH_NODE_LIMIT = 50;
+
+/**
+ * How long the landing probe may hold its "Checking your knowledge base…"
+ * card while the request is still pending. Against a healthy backend the
+ * probe answers in tens of milliseconds; a request that is still open after
+ * this long is hung (apiFetch sets no timeout of its own), and the picker is
+ * static content that works without the verdict. The query keeps running —
+ * a late-resolving probe may still upgrade the picker to the graph, which is
+ * the existing contract for late verdicts.
+ */
+const PROBE_PENDING_TIMEOUT_MS = 3000;
+
+// #1257 post-review: these four force-graph props used to be inline closures,
+// re-allocated on every render. react-kapsule diffs props by identity, and its
+// setters call notifyRedraw — so each unrelated re-render (a status poll
+// result, a hover) forced a FULL canvas repaint. They are state-free, so they
+// hoist to module scope where their identity is permanent.
+const nodeCanvasObjectModeAll = () => 'replace' as const;
+
+function getNodeVal(node: GraphNode | ClusterNode): number {
+  return isClusterNode(node)
+    ? Math.max(5, node.articleCount)
+    : Math.max(1, (node as GraphNode).embeddingCount);
+}
+
+function getLinkColor(link: { type?: string }): string {
+  return EDGE_COLORS[link.type ?? 'embedding_similarity'] ?? 'rgba(255,255,255,0.1)';
+}
+
+function getLinkWidth(link: { score?: number }): number {
+  return Math.max(0.5, (link.score ?? 0.5) * 3);
+}
 
 // #941: node text/border colours must adapt to the active theme. On the light
 // theme the previously-hardcoded white label was invisible against the pale
@@ -178,12 +224,103 @@ export function GraphPage() {
     labels: labels.length > 0 ? labels : undefined,
   }), [edgeTypes, minScore, labels]);
 
-  // #360: only fetch the global graph when the user opted into the
-  // hairball view (otherwise we render an article picker instead).
-  const wantsGlobal = !focusPageId && showFullGraph;
+  // The landing gate used to branch on nothing: every visit without ?focus
+  // or ?full got the pick-a-page screen, which blames scale ("the knowledge
+  // graph is large") even on a six-page corpus — and even when the true
+  // blocker was configuration (nothing embedded yet), a state the user only
+  // discovered after clicking "Show full graph anyway". Probe the real state
+  // first: /embeddings/status is a cheap counts endpoint (shared query cache
+  // with the AI surfaces). Its totalPages is a close PROXY for the graph's
+  // node population, not an exact count — status counts every page visible
+  // to the caller (accessible Confluence spaces plus shared standalone plus
+  // the caller's own private standalone pages) while the graph route filters
+  // on accessible space keys only, and a ?space= filter narrows the graph
+  // but never this probe. Both drifts are small, and the only cost of error
+  // is showing or skipping a gate, which is all this coarse size check
+  // decides.
+  const landingGate = !focusPageId && !showFullGraph;
+  // #1257 post-review: the status count above is a PROXY, and the graph
+  // response's meta carries the EXACT counts. Once those exact counts have
+  // refuted a proxy-approved skip (see oversizedDirectRender below), stop
+  // trusting the proxy for the rest of the visit. State, not a ref: the
+  // refutation must force a render, and it feeds the two query gates below.
+  const [proxyRefuted, setProxyRefuted] = useState(false);
+  // #1257 post-review (see the probingLanding block below): a probe request
+  // that never settles must not hold the probe card forever. probeTimedOut
+  // flips once the pending window expires; the ref makes every dismissal
+  // one-way for the visit.
+  const [probeTimedOut, setProbeTimedOut] = useState(false);
+  const probeCardDismissedRef = useRef(false);
+  const smallCorpusLatchRef = useRef(false);
+  // #1257 post-review: once the latch has committed this visit to the graph,
+  // the status query's 3s processing poll bought nothing — its only effect
+  // was a fresh result forcing a full canvas repaint (see the hoisted props
+  // above). Gate the poll off with the latch. This reads the latch as of the
+  // PREVIOUS render (the mid-render ref write below cannot re-run this
+  // hook), which costs at most one extra poll tick before the query
+  // disables. The picker branch deliberately keeps live status, so its
+  // notice stays current and a mid-sync corpus can still upgrade to the
+  // direct render.
+  const statusEnabled = landingGate && !(smallCorpusLatchRef.current && !proxyRefuted);
+  const {
+    data: embeddingStatus,
+    isError: statusProbeFailed,
+    failureCount: statusFailureCount,
+    fetchStatus: statusFetchStatus,
+  } = useEmbeddingStatus(statusEnabled);
+  const zeroEmbedded = isZeroEmbeddings(embeddingStatus);
+  // Small corpora skip the size gate entirely — see SMALL_GRAPH_NODE_LIMIT.
+  // Deliberately regardless of embedding state: at this size the fetch is
+  // cheap, three of the four edge types (labels, links, parent/child) exist
+  // without embeddings, and if nothing renders the route's own empty states
+  // explain why with real, graph-scoped meta.
+  //
+  // Only a RESOLVED count in [1, limit] qualifies — never 0, and never an
+  // absent status. totalPages === 0 used to count as small so a fresh
+  // instance reached the graph's own empty state, but 0 is also what the
+  // probe reads mid-first-sync, and the one-way latch then pinned the
+  // growing global graph open as the corpus passed 50, 500, 5000 until
+  // route exit. A fresh instance now gets the picker (its search finds
+  // nothing and the escape hatch still reaches the real empty state), and
+  // the latch can only engage once at least one page verifiably exists.
+  const corpusIsSmall =
+    !!embeddingStatus &&
+    embeddingStatus.totalPages >= 1 &&
+    embeddingStatus.totalPages <= SMALL_GRAPH_NODE_LIMIT;
+  // The skip-gate decision latches one-way: the status query re-polls every
+  // 3s while an embedding pass is processing, and a corpus crossing the
+  // limit mid-sync must not swap a rendered graph back to the picker under
+  // the user. Leaving and returning to /graph re-decides.
+  if (corpusIsSmall) smallCorpusLatchRef.current = true;
+  const skipSizeGate = smallCorpusLatchRef.current && !proxyRefuted;
+
+  // #360: only fetch the global graph when the user opted into the hairball
+  // view — or when the corpus is small enough that the gate would be pure
+  // friction (otherwise we render an article picker instead).
+  const wantsGlobal = !focusPageId && (showFullGraph || skipSizeGate);
   const globalQuery = useGraphData(viewMode, filterSpaces, wantsGlobal);
   const localQuery = useLocalGraphData(focusPageId, filters);
   const activeQuery = focusPageId ? localQuery : (wantsGlobal ? globalQuery : null);
+
+  // #1257 post-review: post-fetch guard on the proxy. The status count and
+  // the graph's node population are non-nested predicates (see the PROXY note
+  // above), so a proxy-approved direct render can come back with a
+  // multi-hundred-node graph. When a NON-opt-in fetch returns more nodes than
+  // the limit, fall back to the picker instead of rendering the hairball the
+  // gate exists to prevent; the explicit "Show full graph anyway" path
+  // (showFullGraph) keeps rendering whatever it gets. The render branch below
+  // consults this value directly so not even one frame of the oversized graph
+  // paints; the effect then commits the refutation, which un-skips the gate,
+  // disables the global query and resumes the picker's live status.
+  const oversizedDirectRender =
+    !focusPageId &&
+    !showFullGraph &&
+    skipSizeGate &&
+    !!globalQuery.data &&
+    globalQuery.data.nodes.length > SMALL_GRAPH_NODE_LIMIT;
+  useEffect(() => {
+    if (oversizedDirectRender) setProxyRefuted(true);
+  }, [oversizedDirectRender]);
 
   const data = activeQuery?.data;
   const isLoading = activeQuery?.isLoading ?? false;
@@ -390,13 +527,88 @@ export function GraphPage() {
   const tooltipTop = Math.min(tooltipPos.y - 8, (typeof window !== 'undefined' ? window.innerHeight : 800) - tooltipMaxH - 16);
   const tooltipLeft = Math.min(tooltipPos.x + 12, (typeof window !== 'undefined' ? window.innerWidth : 1200) - 280);
 
-  // #360: when no article is focused and the user hasn't opted into the
-  // global view, render an article picker instead of fetching a hairball.
-  // This is the new default state for the Graph page — Obsidian/Logseq-style
-  // local-graph-first UX that scales to large knowledge bases.
-  if (!focusPageId && !showFullGraph) {
+  // Hold the loading card while the landing probe's FIRST attempt is in
+  // flight — tens of milliseconds against a healthy backend — so the picker
+  // cannot flash up for a corpus the probe is about to reveal as small.
+  // First attempt only: once one attempt has failed (failureCount > 0) the
+  // picker renders immediately instead of stalling behind the query client's
+  // retry backoff. If a later retry still resolves small, the picker
+  // upgrades to the graph — content arriving late beats a spinner that may
+  // never end. The probe card names what is actually happening rather than
+  // promising a graph the verdict may decline to load.
+  //
+  // #1257 post-review: the card also needs exits for a fetch that never
+  // SETTLES, or /graph is stuck on it. Two such states exist: offline,
+  // TanStack's networkMode 'online' PAUSES the query (fetchStatus 'paused',
+  // failureCount frozen at 0), and a hung connection stays pending forever
+  // (apiFetch sets no timeout). Both fall through to the picker — it is
+  // static content that works without the verdict — via the one-way
+  // dismissal ref below, which also folds in the failure cases: once the
+  // card has stood down for any reason it never comes back this visit, so a
+  // reconnect cannot swap an already-shown picker back to a spinner. A late
+  // verdict may still upgrade the picker to the graph, per the contract
+  // above.
+  //
+  // Every dismissal source below is render-visible (fetchStatus, isError and
+  // failureCount are tracked query fields; probeTimedOut is state), so the
+  // render that observes one is also the render that computes the ref into
+  // probingLanding — the mid-render ref write needs no extra render of its
+  // own.
+  if (
+    statusFetchStatus === 'paused' ||
+    probeTimedOut ||
+    statusProbeFailed ||
+    statusFailureCount > 0
+  ) {
+    probeCardDismissedRef.current = true;
+  }
+  const probingLanding =
+    landingGate && !skipSizeGate && !embeddingStatus && !probeCardDismissedRef.current;
+
+  // Bound the pending case: while the card is up and the request has neither
+  // settled nor paused, a local timer is the only thing that can end the
+  // wait. This is still an unconditional hook — no early return precedes it,
+  // the ifs above only write refs.
+  useEffect(() => {
+    if (!probingLanding) return;
+    const timer = setTimeout(() => setProbeTimedOut(true), PROBE_PENDING_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [probingLanding]);
+
+  if (isLoading || probingLanding) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <div className="nm-card flex flex-col items-center gap-4 p-8">
+          <RefreshCw className="h-8 w-8 animate-spin text-action" />
+          <p className="text-muted-foreground">
+            {isLoading ? 'Loading knowledge graph...' : 'Checking your knowledge base…'}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // #360, reordered: when no article is focused and the user hasn't opted
+  // into the global view, branch on the probed state rather than assuming
+  // scale:
+  //   - small corpus → no gate at all, fall through to the graph
+  //     (wantsGlobal above already started the fetch);
+  //   - pages exist but none embedded → the pick-a-page gate stays fully
+  //     operable (search, local graphs and the full-graph escape hatch all
+  //     work without embeddings — label, link and parent/child edges need
+  //     none) with a notice above it naming the configuration gap, so the
+  //     screen stops blaming scale for a setup problem;
+  //   - large corpus, or the probe failed → the pick-a-page gate, unchanged.
+  //
+  // oversizedDirectRender re-routes a proxy-approved render here on the same
+  // render its data lands, so the hairball never paints while the effect
+  // commits the refutation.
+  if (landingGate && (!skipSizeGate || oversizedDirectRender)) {
     return (
       <ArticlePickerLanding
+        unembeddedWorkspacePages={
+          embeddingStatus && zeroEmbedded ? embeddingStatus.totalPages : undefined
+        }
         onPick={(pageId) => {
           const next = new URLSearchParams(searchParams);
           next.set('focus', pageId);
@@ -404,18 +616,6 @@ export function GraphPage() {
         }}
         onShowFullGraph={() => setShowFullGraph(true)}
       />
-    );
-  }
-
-  // Loading state
-  if (isLoading) {
-    return (
-      <div className="flex h-full items-center justify-center">
-        <div className="nm-card flex flex-col items-center gap-4 p-8">
-          <RefreshCw className="h-8 w-8 animate-spin text-action" />
-          <p className="text-muted-foreground">Loading knowledge graph...</p>
-        </div>
-      </div>
     );
   }
 
@@ -592,13 +792,12 @@ export function GraphPage() {
           height={dimensions.height}
           nodeId="id"
           nodeCanvasObject={nodeCanvasObject}
-          nodeCanvasObjectMode={() => 'replace'}
+          // Hoisted, identity-stable props — see the module-scope note.
+          nodeCanvasObjectMode={nodeCanvasObjectModeAll}
           nodePointerAreaPaint={nodePointerAreaPaint}
-          nodeVal={(node: GraphNode | ClusterNode) =>
-            isClusterNode(node) ? Math.max(5, node.articleCount) : Math.max(1, (node as GraphNode).embeddingCount)
-          }
-          linkColor={(link: { type?: string }) => EDGE_COLORS[link.type ?? 'embedding_similarity'] ?? 'rgba(255,255,255,0.1)'}
-          linkWidth={(link: { score?: number }) => Math.max(0.5, (link.score ?? 0.5) * 3)}
+          nodeVal={getNodeVal}
+          linkColor={getLinkColor}
+          linkWidth={getLinkWidth}
           linkDirectionalParticles={0}
           onNodeClick={handleNodeClick}
           onNodeHover={handleNodeHover}
@@ -664,6 +863,17 @@ export function GraphPage() {
 interface ArticlePickerLandingProps {
   onPick: (pageId: string) => void;
   onShowFullGraph: () => void;
+  /**
+   * When set, no page visible to the caller has an embedding yet and this is
+   * the status endpoint's visible-page count — a WORKSPACE total, not a graph
+   * node count (the two predicates differ around standalone pages). Renders a
+   * notice above the picker naming the configuration gap. The picker stays
+   * fully operable underneath it: label, link and parent/child edges exist
+   * without embeddings, so local graphs and the full-graph escape hatch may
+   * still have content to show — replacing the picker with a dead-end empty
+   * state here would hide a renderable graph.
+   */
+  unembeddedWorkspacePages?: number;
 }
 
 /**
@@ -676,7 +886,7 @@ interface ArticlePickerLandingProps {
  * "Show full graph anyway" stays available as an opt-in escape hatch with a
  * warning so power users on small corpora aren't blocked.
  */
-function ArticlePickerLanding({ onPick, onShowFullGraph }: ArticlePickerLandingProps) {
+function ArticlePickerLanding({ onPick, onShowFullGraph, unembeddedWorkspacePages }: ArticlePickerLandingProps) {
   const [q, setQ] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
   const { data, isLoading } = useSearch({ q: q.trim(), page: 1 });
@@ -690,6 +900,25 @@ function ArticlePickerLanding({ onPick, onShowFullGraph }: ArticlePickerLandingP
   return (
     <div className="flex h-full items-center justify-center p-6">
       <div className="nm-card w-full max-w-xl p-6" data-testid="graph-picker-landing">
+        {/* Same treatment as the /ai zero-embeddings notice: amber is the
+            reserved attention colour, and a missing embedding provider is the
+            one genuinely attention-worthy state on this screen. Fresh copy on
+            purpose — the Settings wayfinding strings live in GraphEmptyState
+            and are owned elsewhere. */}
+        {unembeddedWorkspacePages !== undefined && (
+          <div
+            data-testid="graph-not-embedded-notice"
+            className="mb-4 flex items-start gap-3 rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm text-warning"
+          >
+            <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+            <span>
+              Pages not embedded yet — none of the {unembeddedWorkspacePages}{' '}
+              pages you can access have embeddings, so similarity connections
+              are missing from the graph. Label, link and parent/child
+              connections can still appear.
+            </span>
+          </div>
+        )}
         <h2 className="mb-1 text-lg font-semibold">Pick a page to explore</h2>
         <p className="mb-4 text-sm text-muted-foreground">
           The knowledge graph is large — start from one page and expand from
