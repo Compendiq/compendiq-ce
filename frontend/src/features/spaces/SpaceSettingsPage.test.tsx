@@ -16,9 +16,10 @@ vi.mock('react-router-dom', async () => {
   };
 });
 
-const mockLocalSpaces = [
-  { key: 'NOTES', name: 'My Notes', description: 'Personal notes', icon: null, pageCount: 5, createdBy: null, createdAt: '2026-03-01T00:00:00Z', source: 'local' as const },
+const defaultLocalSpaces = [
+  { key: 'NOTES', name: 'My Notes', description: 'Personal notes', icon: null as string | null, pageCount: 5, createdBy: null, createdAt: '2026-03-01T00:00:00Z', source: 'local' as const },
 ];
+let mockLocalSpaces = [...defaultLocalSpaces];
 
 vi.mock('../../shared/hooks/use-standalone', () => ({
   useLocalSpaces: () => ({ data: mockLocalSpaces }),
@@ -59,6 +60,7 @@ describe('SpaceSettingsPage', () => {
     mockNavigate.mockClear();
     mockUpdateMutateAsync.mockClear();
     mockDeleteMutateAsync.mockClear();
+    mockLocalSpaces = [...defaultLocalSpaces];
   });
 
   it('renders the space settings form', () => {
@@ -126,5 +128,67 @@ describe('SpaceSettingsPage', () => {
   it('shows not found message for unknown space', () => {
     renderPage('UNKNOWN');
     expect(screen.getByText('Space not found or is not a local space.')).toBeInTheDocument();
+  });
+
+  describe('space icon', () => {
+    /** The read-only Space Key row: the font-mono key beside the identity glyph. */
+    function keyRow(): HTMLElement {
+      const row = screen
+        .getAllByText('NOTES')
+        .map((el) => el.parentElement!)
+        .find((parent) => parent.querySelector('svg') !== null);
+      if (!row) throw new Error('key row with glyph not found');
+      return row;
+    }
+
+    it('renders the persisted icon in the key row and preselects it in the picker', () => {
+      mockLocalSpaces = [{ ...defaultLocalSpaces[0]!, icon: 'rocket' }];
+      renderPage();
+
+      // The read-only key row carries the space's identity mark.
+      expect(keyRow().querySelector('svg.lucide-rocket')).not.toBeNull();
+      expect(screen.getByRole('button', { name: 'Rocket' })).toHaveAttribute('aria-pressed', 'true');
+    });
+
+    it('falls back to the HardDrive mark when no icon is set', () => {
+      renderPage();
+      expect(keyRow().querySelector('svg.lucide-hard-drive')).not.toBeNull();
+    });
+
+    it('includes a newly chosen icon in the update payload', async () => {
+      mockUpdateMutateAsync.mockResolvedValueOnce({});
+      renderPage();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Code' }));
+      fireEvent.click(screen.getByText('Save Changes'));
+
+      await waitFor(() => {
+        expect(mockUpdateMutateAsync).toHaveBeenCalledWith({
+          key: 'NOTES',
+          name: 'My Notes',
+          description: 'Personal notes',
+          icon: 'code',
+        });
+      });
+    });
+
+    it('clears a previously set icon with an empty string (the schema has no null)', async () => {
+      mockLocalSpaces = [{ ...defaultLocalSpaces[0]!, icon: 'rocket' }];
+      mockUpdateMutateAsync.mockResolvedValueOnce({});
+      renderPage();
+
+      // Deselect the preselected option, then save.
+      fireEvent.click(screen.getByRole('button', { name: 'Rocket' }));
+      fireEvent.click(screen.getByText('Save Changes'));
+
+      await waitFor(() => {
+        expect(mockUpdateMutateAsync).toHaveBeenCalledWith({
+          key: 'NOTES',
+          name: 'My Notes',
+          description: 'Personal notes',
+          icon: '',
+        });
+      });
+    });
   });
 });

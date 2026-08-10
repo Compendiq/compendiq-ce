@@ -1,11 +1,13 @@
 import { useState, useCallback, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Settings, ArrowLeft, Trash2, HardDrive } from 'lucide-react';
+import { Settings, ArrowLeft, Trash2 } from 'lucide-react';
 import {
   useLocalSpaces,
   useUpdateLocalSpace,
   useDeleteLocalSpace,
 } from '../../shared/hooks/use-standalone';
+import { getSpaceIcon } from '../../shared/components/spaces/space-icons';
+import { SpaceIconPicker } from './SpaceIconPicker';
 import { toast } from 'sonner';
 
 export function SpaceSettingsPage() {
@@ -20,6 +22,7 @@ export function SpaceSettingsPage() {
 
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  const [icon, setIcon] = useState<string | undefined>(undefined);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   // Populate form from space data
@@ -27,6 +30,7 @@ export function SpaceSettingsPage() {
     if (space) {
       setName(space.name);
       setDescription(space.description ?? '');
+      setIcon(space.icon || undefined);
     }
   }, [space]);
 
@@ -40,6 +44,11 @@ export function SpaceSettingsPage() {
           key,
           name: name.trim(),
           description: description.trim() || undefined,
+          // The update schema takes a string, not null: '' clears a previously
+          // set icon, and when the space never had one the field is omitted
+          // entirely (JSON.stringify drops undefined) so a plain rename does
+          // not write an empty string over NULL.
+          icon: icon ?? (space?.icon ? '' : undefined),
         });
         toast.success('Space updated');
       } catch (err) {
@@ -47,7 +56,7 @@ export function SpaceSettingsPage() {
         toast.error(message);
       }
     },
-    [key, name, description, updateSpace],
+    [key, name, description, icon, space, updateSpace],
   );
 
   const handleDelete = useCallback(async () => {
@@ -62,6 +71,9 @@ export function SpaceSettingsPage() {
       toast.error(message);
     }
   }, [key, deleteSpace, navigate]);
+
+  // The saved identity mark: the space's chosen icon, HardDrive when unset.
+  const SpaceGlyph = getSpaceIcon(space?.icon);
 
   if (!space) {
     return (
@@ -107,7 +119,7 @@ export function SpaceSettingsPage() {
               Space Key
             </label>
             <div className="flex items-center gap-2 rounded-lg border border-border bg-foreground/5 px-3 py-2">
-              <HardDrive size={14} className="text-action/70" />
+              <SpaceGlyph size={14} className="text-action/70" aria-hidden="true" />
               <span className="font-mono text-sm text-muted-foreground">{key}</span>
             </div>
             <p className="mt-1 text-[11px] text-muted-foreground">
@@ -143,6 +155,15 @@ export function SpaceSettingsPage() {
               maxLength={2000}
               className="w-full rounded-lg border border-border bg-background/50 px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-ring resize-none"
             />
+          </div>
+
+          {/* Icon selector */}
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-foreground">
+              Icon
+              <span className="ml-1 text-muted-foreground font-normal">(optional)</span>
+            </label>
+            <SpaceIconPicker value={icon} onChange={setIcon} />
           </div>
 
           {/* Page count (info) */}
