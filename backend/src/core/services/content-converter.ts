@@ -7,6 +7,7 @@ import {
   getAttachmentImageSource,
   getLocalFilenameForImageSource,
 } from './image-references.js';
+import { logger } from '../utils/logger.js';
 
 // SECURITY: All innerHTML usage below is in server-side JSDOM context (Node.js),
 // NOT browser DOM. JSDOM is used purely as an HTML parser/transformer for
