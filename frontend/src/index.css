@@ -2279,11 +2279,10 @@ pre:focus-within .code-copy-btn,
 
    The container keeps its width and the CHILDREN carry the measure. That
    inversion is the whole trick: it needs no negative margins, and it lets a
-   table, a code block or a diagram opt back out to the full column while the
-   prose around it stays readable. Constraining the container instead (Tailwind
-   Typography's own `max-w-*`, which `max-w-none` disables here) would clamp
-   those wide blocks too, which is presumably why it was disabled in the first
-   place.
+   table, a code block or a diagram keep the full column while the prose around
+   it stays readable. Constraining the container instead (Tailwind Typography's
+   own `max-w-*`, which `max-w-none` disables here) would clamp those wide blocks
+   too, which is presumably why it was disabled in the first place.
 
    40rem measures ~76 characters per line at the article's 16px (measured in
    Chromium, not derived). That sits at the top of the classic 45–75 band,
@@ -2292,25 +2291,27 @@ pre:focus-within .code-copy-btn,
    for why it is `rem` and not the more obvious `ch`.
 
    `.article-measure` is on BOTH the reader and the editor, so what you read and
-   what you write cannot drift apart. `article-reading-measure.test.ts` fails if
-   either callsite drops it. */
-.article-measure .tiptap > * {
+   what you write cannot drift apart.
+
+   THIS IS AN ALLOW-LIST OF PROSE, not a deny-list of wide blocks, and that
+   direction is load-bearing. The first version measured `> *` and exempted a
+   list of wide selectors — and three of those selectors matched nothing the app
+   ever renders, because TipTap wraps every React node view in its own
+   `div.react-renderer.node-<name>` and the guessed `.drawio-nodeview` /
+   `[data-type='mermaidBlock']` sit a level deeper. Worse, the reader and the
+   editor do not agree on shape: a code block is a bare `<pre>` in the reader but
+   `div.react-renderer.node-codeBlock` in the editor (TitledCodeBlock uses a node
+   view), so a deny-list silently clamped code while editing and not while
+   reading — the exact read/write drift this class exists to prevent.
+
+   An allow-list cannot have that failure. An unrecognised block simply keeps the
+   full column, which is the pre-existing behaviour and visually safe; a
+   deny-list miss silently shrinks a diagram to 40rem. `article-measure-dom.test`
+   renders both components and asserts the real child shapes, because that is the
+   only thing that would have caught it. */
+.article-measure .tiptap > :is(p, h1, h2, h3, h4, h5, h6, ul, ol, dl, blockquote, hr) {
   max-width: var(--measure-article);
   margin-inline: auto;
-}
-
-/* Blocks that carry structure rather than prose take the full column back.
-   A 4-column threshold table squeezed into 68ch is not more readable, it is
-   just a table with nowhere to go. */
-.article-measure .tiptap > :is(table, pre, figure, hr, blockquote:has(table, pre)),
-.article-measure .tiptap > .tableWrapper,
-.article-measure .tiptap > .code-block-wrapper,
-.article-measure .tiptap > .confluence-layout,
-.article-measure .tiptap > .confluence-layout-section,
-.article-measure .tiptap > .drawio-nodeview,
-.article-measure .tiptap > [data-type='drawioDiagram'],
-.article-measure .tiptap > [data-type='mermaidBlock'] {
-  max-width: 100%;
 }
 
 /* The whole document column shares ONE left edge — title, labels, AI summary and
@@ -2321,10 +2322,11 @@ pre:focus-within .code-copy-btn,
    out-measured the page.
 
    The viewer container is the one child that stays full width, because it is
-   the track the break-out blocks above need. Everything else — including
-   anything added to this column later — is measured by default, which is the
-   safe direction: a new element inherits the column instead of silently
-   escaping it. */
+   the track the wide blocks above need. Everything else — including anything
+   added to this column later — is measured by default. Here that default is the
+   safe one, unlike inside `.tiptap`: these children are the app's own chrome
+   (title, labels, summary), all of them prose-shaped, and a new one inheriting
+   the column beats a new one silently escaping it. */
 .article-document > * {
   max-width: var(--measure-article);
   margin-inline: auto;

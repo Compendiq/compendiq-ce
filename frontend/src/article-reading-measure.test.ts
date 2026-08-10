@@ -49,27 +49,37 @@ describe('Article reading measure', () => {
   it('applies the measure to the block children, not the container', () => {
     // Constraining the container instead would clamp tables, code and diagrams
     // too — which is why `max-w-none` was there in the first place.
-    const rule = /\.article-measure\s+\.tiptap\s*>\s*\*\s*\{([^}]*)\}/.exec(css);
-    expect(rule, '.article-measure .tiptap > * rule not found').not.toBeNull();
-    expect(rule![1]).toMatch(/max-width:\s*var\(--measure-article\)/);
-    expect(rule![1], 'children must centre, or the column hugs one edge').toMatch(
+    const rule = /\.article-measure\s+\.tiptap\s*>\s*:is\(([^)]*)\)\s*\{([^}]*)\}/.exec(css);
+    expect(rule, 'prose allow-list rule not found').not.toBeNull();
+    expect(rule![2]).toMatch(/max-width:\s*var\(--measure-article\)/);
+    expect(rule![2], 'children must centre, or the column hugs one edge').toMatch(
       /margin-inline:\s*auto/,
     );
   });
 
-  it.each([
-    ['table', 'a wide data table'],
-    ['pre', 'a code block'],
-    ['figure', 'a captioned image'],
-    ['.tableWrapper', "TipTap's scroll wrapper"],
-    ['.code-block-wrapper', 'the titled code block'],
-    ['.confluence-layout', 'a Confluence column layout'],
-    ['.drawio-nodeview', 'a draw.io diagram'],
-  ])('lets %s (%s) break out to the full column', (selector) => {
-    const breakout = css.slice(css.indexOf('.article-measure .tiptap > :is('));
-    const block = breakout.slice(0, breakout.indexOf('}') + 1);
-    expect(block).toContain(selector);
-    expect(block).toMatch(/max-width:\s*100%/);
+  // Whether these selectors match the DOM is asserted by rendering, in
+  // `shared/components/article/article-measure-dom.test.tsx`. A CSS-text test
+  // cannot tell a live selector from a dead one — the previous version of this
+  // file certified three selectors that matched nothing the app renders.
+  it.each(['p', 'h2', 'ul', 'ol', 'blockquote', 'hr'])(
+    'measures <%s>',
+    (tag) => {
+      const rule = /\.article-measure \.tiptap > :is\(([^)]*)\)/.exec(css);
+      const tags = rule![1].split(',').map((s) => s.trim());
+      expect(tags).toContain(tag);
+    },
+  );
+
+  it('is an allow-list of prose, never a deny-list of wide blocks', () => {
+    // `> *` plus exemptions is the shape that failed: a missed exemption
+    // silently shrinks a diagram, and the reader and editor do not render the
+    // same element for a code block, so one list cannot cover both.
+    expect(/\.article-measure \.tiptap > \*/.test(css)).toBe(false);
+    const rule = /\.article-measure \.tiptap > :is\(([^)]*)\)/.exec(css);
+    for (const sel of rule![1].split(',').map((s) => s.trim())) {
+      expect(sel, `${sel} must be a bare tag name — classes and attributes can silently miss`)
+        .toMatch(/^[a-z][a-z0-9]*$/);
+    }
   });
 
   // Constraining only the prose left the title and label row ~100px to the left
@@ -88,20 +98,55 @@ describe('Article reading measure', () => {
     expect(rule![1]).toMatch(/max-width:\s*100%/);
   });
 
-  it('puts the document-column class on the article shell', () => {
+  // A single toMatch was satisfied by either read shell, so one branch could
+  // lose the class silently. Count them, and cover edit mode — which the first
+  // version missed entirely, leaving the title 1200px wide above a 40rem body.
+  it('puts the document-column class on every shell that renders a title', () => {
     const page = readFileSync(resolve(dir, 'features/pages/PageViewPage.tsx'), 'utf-8');
-    expect(page).toMatch(/article-document mx-auto max-w-\[1200px\]/);
+    const hits = page.match(/className="article-document /g) ?? [];
+    expect(
+      hits.length,
+      'expected three: the empty-page shell, the reading shell, and the edit-mode title',
+    ).toBe(3);
+
+    // The edit-mode title lives in its own wrapper, not the reading shell.
+    const editBranch = page.slice(page.indexOf('{editing ? ('), page.indexOf('data-testid="article-content-shell"'));
+    expect(
+      editBranch,
+      'the edit-mode title must be measured, or it hangs left of its own paragraphs',
+    ).toMatch(/article-document/);
+  });
+
+  // `Editor` carries `article-measure` for every caller, so any route that
+  // renders its own title beside it has to measure that title too.
+  it('measures the New Page title, which shares the Editor', () => {
+    const newPage = readFileSync(resolve(dir, 'features/pages/NewPagePage.tsx'), 'utf-8');
+    expect(newPage).toMatch(/article-document/);
+  });
+
+  // An input is inline-block, and `margin-inline: auto` is a no-op on an inline
+  // box — the title renders at the right WIDTH but stays left-aligned in a
+  // column whose body is centred. Measured, this was a 240px offset.
+  it.each([
+    ['features/pages/PageViewPage.tsx', 'the edit-mode title'],
+    ['features/pages/NewPagePage.tsx', 'the New Page title'],
+  ])('gives %s input `block` so auto margins can centre it', (file) => {
+    const src = readFileSync(resolve(dir, file), 'utf-8');
+    expect(
+      src,
+      'a measured <input> needs `block`, or auto margins do nothing',
+    ).toMatch(/className="block w-full/);
   });
 
   // If these drift apart the line breaks move the moment you press Edit, and
   // again on Save — the reader and the writer must see the same shape.
   it('is carried by BOTH the reader and the editor', () => {
+    // Matched as a class-string literal rather than by distance from `cn(` — a
+    // comment growing above it must not be able to fail this.
     expect(viewer, 'ArticleViewer lost article-measure').toMatch(
-      /className=\{cn\([\s\S]{0,400}?article-measure/,
+      /'[^']*\barticle-measure\b[^']*'/,
     );
-    expect(editor, 'Editor lost article-measure').toMatch(
-      /className=\{cn\([\s\S]{0,400}?article-measure/,
-    );
+    expect(editor, 'Editor lost article-measure').toMatch(/'[^']*\barticle-measure\b[^']*'/);
   });
 
   it('keeps max-w-none on the containers, which the child rule depends on', () => {

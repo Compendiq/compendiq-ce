@@ -486,13 +486,18 @@ export function NewPagePage() {
             </div>
           )}
 
-          {/* Title input */}
-          <div className="px-5 pt-5 sm:px-10 sm:pt-8">
+          {/* Title input. `article-document` measures it to the same column as
+              the editor's prose below — `Editor` carries `article-measure` for
+              every caller, so without this the title would stretch the full
+              card width while the body sat at 40rem. */}
+          <div className="article-document px-5 pt-5 sm:px-10 sm:pt-8">
             <input
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               placeholder="Untitled page"
-              className="w-full bg-transparent text-2xl font-semibold text-foreground placeholder:text-muted-foreground/50 outline-none"
+              // `block` so the measure's `margin-inline: auto` can centre it —
+              // auto margins are a no-op on an inline-block input.
+              className="block w-full bg-transparent text-2xl font-semibold text-foreground placeholder:text-muted-foreground/50 outline-none"
               data-testid="title-input"
               autoFocus
             />
