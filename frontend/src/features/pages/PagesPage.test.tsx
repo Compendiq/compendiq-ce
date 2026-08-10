@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor, act, cleanup } from '@testing-libra
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, RouterProvider, createMemoryRouter, useLocation } from 'react-router-dom';
 import { PagesPage } from './PagesPage';
+import { installVirtualizerRectShim } from '../../test-utils';
 
 function createWrapper() {
   const queryClient = new QueryClient({
@@ -239,31 +240,6 @@ function mockFetchWithPinnedPages(pinnedResponse: typeof mockPinnedResponse | ty
       headers: { 'Content-Type': 'application/json' },
     });
   });
-}
-
-/**
- * Mock element dimensions so @tanstack/react-virtual can compute visible items
- * in jsdom, which reports every rect as 0x0. Without it the virtual list
- * renders zero rows and any assertion about a page row silently fails.
- *
- * Returns the restore function; call it in afterEach.
- */
-function installVirtualizerRectShim(): () => void {
-  const originalGetBCR = Element.prototype.getBoundingClientRect;
-
-  Element.prototype.getBoundingClientRect = function () {
-    // Give the scroll container a usable height for the virtualizer
-    if (this.hasAttribute?.('data-scroll-container')) {
-      return { top: 0, left: 0, bottom: 800, right: 1024, width: 1024, height: 800, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
-    }
-    // For virtual list items measured by the virtualizer
-    if (this.hasAttribute?.('data-index')) {
-      return { top: 0, left: 0, bottom: 80, right: 1024, width: 1024, height: 80, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
-    }
-    return originalGetBCR.call(this);
-  };
-
-  return () => { Element.prototype.getBoundingClientRect = originalGetBCR; };
 }
 
 describe('PagesPage', () => {

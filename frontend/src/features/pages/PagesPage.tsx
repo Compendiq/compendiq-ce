@@ -88,7 +88,11 @@ const PageListItem = memo(function PageListItem({
           // Hover tints the row instead of colouring its border. An accent
           // border on hover competes with `selected`, which is the state that
           // actually needs to be seen across a long list.
-          'flex w-full items-center gap-3 rounded-md border px-3 py-2 text-left transition-colors',
+          // `items-start` below sm: when the badge cluster wraps the row grows
+          // past one line, and a centred checkbox drifts down to the author/
+          // date line. Top-aligned (plus the input's own 2px nudge) it stays
+          // on the title line, which is the thing it selects.
+          'flex w-full items-center gap-3 rounded-md border px-3 py-2 text-left transition-colors max-sm:items-start',
           selected
             ? 'border-primary/50 bg-primary/[0.07]'
             : 'border-border bg-card hover:bg-accent',
@@ -104,16 +108,36 @@ const PageListItem = memo(function PageListItem({
             onClick={(e) => onToggleSelect(pageItem.id, e.shiftKey)}
             onChange={() => { /* click handler owns this; keeps React controlled */ }}
             aria-label={`Select ${pageItem.title}`}
-            className="size-4 shrink-0 cursor-pointer accent-[var(--color-primary)]"
+            // The 2px nudge centres the 16px box on the title's ~20px line
+            // when the row top-aligns below `sm`.
+            className="size-4 shrink-0 cursor-pointer accent-[var(--color-primary)] max-sm:mt-0.5"
             data-testid={`page-select-${pageItem.id}`}
           />
         )}
         <button
           onClick={() => onNavigate(pageItem.id)}
-          className="flex min-w-0 flex-1 items-center gap-4"
+          // Below `sm` the button may wrap, and `basis-auto` on the title
+          // block makes the wrap content-driven: `flex-1`'s basis of 0 never
+          // triggers a line break, so with `auto` a block whose content fits
+          // keeps today's single line, and only an overflowing one drops the
+          // pipeline badge below the block instead of compressing it. At
+          // `sm+` the max-sm classes are inert and the layout is untouched.
+          className="flex min-w-0 flex-1 items-center gap-4 max-sm:flex-wrap max-sm:gap-y-1"
         >
-          <div className="min-w-0 flex-1 text-left">
-            <div className="flex items-center gap-2">
+          <div className="min-w-0 flex-1 text-left max-sm:basis-auto">
+            {/* Title line. Every badge beside the title is `shrink-0`, so the
+                title was the only thing that could give way: at 390px the
+                metadata took its width first and the title — the one thing
+                identifying a row — absorbed the entire deficit ("Incident
+                runbook: Postgres c…", "Quart…"). Below `sm` this row may
+                wrap instead: a title short enough to share the line with its
+                badges keeps today's layout, and a long one takes the full
+                width while the badges drop to their own line beneath it.
+                Content-driven, not forced — short rows never pay the extra
+                line. Identity beats metadata on a phone, and a taller row
+                beats an unreadable one. DOM order is unchanged, so the
+                button's accessible name reads exactly as before. */}
+            <div className="flex items-center gap-2 max-sm:flex-wrap max-sm:gap-y-1">
               {/* 13px medium. At 16px the title read as a card heading, which
                   is what made forty rows look like forty cards. */}
               <p className="truncate text-[13px] font-medium">{pageItem.title}</p>
@@ -1141,14 +1165,46 @@ export function PagesPage() {
                     >
                       <button
                         onClick={() => navigate(`/pages/${item.id}`)}
-                        className="rounded-xl border border-border bg-card transition-all hover:border-primary/50 flex w-full items-center gap-3 p-4 text-left"
+                        // Same content-driven wrap as the browse rows above
+                        // (PageListItem): the similarity chip is `shrink-0`, so
+                        // below `sm` the truncating title absorbed the entire
+                        // width deficit. `max-sm:flex-wrap` lets the chip drop
+                        // to its own line instead — and only when the title
+                        // actually needs the width (see the title block below).
+                        // Every added class is `max-sm:*`, so `sm+` keeps
+                        // today's single-line layout untouched.
+                        className="rounded-xl border border-border bg-card transition-all hover:border-primary/50 flex w-full items-center gap-3 p-4 text-left max-sm:flex-wrap max-sm:gap-y-1"
                         data-testid={`article-hover-${item.id}`}
                       >
                         <FileText size={18} className="shrink-0 text-muted-foreground" />
-                        <div className="min-w-0 flex-1 text-left">
+                        {/* `basis-auto` makes the wrap content-driven —
+                            `flex-1`'s basis of 0 never triggers a line break —
+                            but this row's anatomy differs from the browse row's
+                            in one load-bearing way: the file icon is the FIRST
+                            flex item inside the wrap container (the browse
+                            row's checkbox sits outside it), and a block whose
+                            content overflows the line wraps WHOLESALE below
+                            the icon, stranding an 18px glyph alone on its own
+                            line. The max-width clamp — 100% minus the icon's
+                            18px and the 12px `gap-3` — caps the block's
+                            hypothetical main size at exactly the space beside
+                            the icon, so the block always shares the icon's
+                            line and the chip is the thing that wraps. */}
+                        <div className="min-w-0 flex-1 text-left max-sm:basis-auto max-sm:max-w-[calc(100%-30px)]">
                           <p className="truncate font-medium">{item.title}</p>
+                          {/* `contain:inline-size` zeroes the excerpt's
+                              contribution to the block's intrinsic width.
+                              Without it the excerpt's unwrapped length — not
+                              the title's — decides the block's content size,
+                              and a two-line excerpt is nearly always wider
+                              than a phone row, so the chip would drop on
+                              virtually every row: forced in practice, not
+                              content-driven. Contained, the nowrap title alone
+                              drives the wrap. The excerpt's own rendering is
+                              unchanged — it still fills the block's final
+                              width and clamps at two lines. */}
                           {item.excerpt && (
-                            <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{item.excerpt}</p>
+                            <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground max-sm:[contain:inline-size]">{item.excerpt}</p>
                           )}
                           {item.spaceKey && (
                             <span className="mt-1 inline-block text-xs text-muted-foreground">{item.spaceKey}</span>
