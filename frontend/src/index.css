@@ -223,6 +223,17 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   --color-status-disconnected: #f87171;
   --color-status-inactive: #8b8f99;
 
+  /* Article reading measure. Both themes share it — measure is a function of
+     the type, not the palette — so it is declared once here rather than
+     redeclared per theme. See the `.article-measure` block for the reasoning.
+
+     `rem`, NOT `ch`, and that is load-bearing. `ch` resolves against the
+     element's OWN font-size, so a shared `max-width: 64ch` gives an h2 at 20px a
+     wider box than a paragraph at 16px — headings, subheadings and body each
+     landed on a different left edge, and a centred column visibly came apart.
+     `rem` is absolute, so every block in the article shares one edge. */
+  --measure-article: 40rem;
+
   /* Brand typography — self-hosted via @fontsource (privacy-safe).
      Tailwind 4 exposes these as font-display / font-sans / font-mono. */
   /* One workhorse face carries the whole application. The retired system used
@@ -2253,6 +2264,74 @@ pre:focus-within .code-copy-btn,
    measure. A future caller that renders the viewer bare must bring its own. */
 .article-viewer .tiptap {
   padding: 1.5rem 0;
+}
+
+/* ============================================
+   Article reading measure
+   ============================================
+
+   The document column is 1200px, and every block used to fill it: measured in
+   Chromium the body ran ~99 characters per line at 1280px, ~101 at 1512 and
+   ~133 at 1920. Past roughly 85 the eye starts losing the line return on the
+   sweep back, which is the wrong failure mode for a runbook read under incident
+   pressure — and collapsing the rails to "get more room" made it worse, not
+   better, because nothing capped the growth.
+
+   The container keeps its width and the CHILDREN carry the measure. That
+   inversion is the whole trick: it needs no negative margins, and it lets a
+   table, a code block or a diagram opt back out to the full column while the
+   prose around it stays readable. Constraining the container instead (Tailwind
+   Typography's own `max-w-*`, which `max-w-none` disables here) would clamp
+   those wide blocks too, which is presumably why it was disabled in the first
+   place.
+
+   40rem measures ~76 characters per line at the article's 16px (measured in
+   Chromium, not derived). That sits at the top of the classic 45–75 band,
+   generous on purpose because this is a technical workspace carrying long
+   identifiers like `LLM_MAX_QUEUE_DEPTH`, not editorial prose. See the token
+   for why it is `rem` and not the more obvious `ch`.
+
+   `.article-measure` is on BOTH the reader and the editor, so what you read and
+   what you write cannot drift apart. `article-reading-measure.test.ts` fails if
+   either callsite drops it. */
+.article-measure .tiptap > * {
+  max-width: var(--measure-article);
+  margin-inline: auto;
+}
+
+/* Blocks that carry structure rather than prose take the full column back.
+   A 4-column threshold table squeezed into 68ch is not more readable, it is
+   just a table with nowhere to go. */
+.article-measure .tiptap > :is(table, pre, figure, hr, blockquote:has(table, pre)),
+.article-measure .tiptap > .tableWrapper,
+.article-measure .tiptap > .code-block-wrapper,
+.article-measure .tiptap > .confluence-layout,
+.article-measure .tiptap > .confluence-layout-section,
+.article-measure .tiptap > .drawio-nodeview,
+.article-measure .tiptap > [data-type='drawioDiagram'],
+.article-measure .tiptap > [data-type='mermaidBlock'] {
+  max-width: 100%;
+}
+
+/* The whole document column shares ONE left edge — title, labels, AI summary and
+   body. Constraining only the prose inside `.tiptap` left the title and the
+   label row hanging ~100px to the left of the paragraphs they belong to, which
+   reads as a broken layout rather than a narrower one; and it left the AI
+   summary card wider than the article it summarises, so the paraphrase
+   out-measured the page.
+
+   The viewer container is the one child that stays full width, because it is
+   the track the break-out blocks above need. Everything else — including
+   anything added to this column later — is measured by default, which is the
+   safe direction: a new element inherits the column instead of silently
+   escaping it. */
+.article-document > * {
+  max-width: var(--measure-article);
+  margin-inline: auto;
+}
+
+.article-document > .article-viewer-container {
+  max-width: 100%;
 }
 
 /* #349: read-only viewer — let the TipTap-injected .tableWrapper handle

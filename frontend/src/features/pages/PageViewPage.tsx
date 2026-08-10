@@ -975,7 +975,11 @@ export function PageViewPage() {
           /* Empty page — no content yet */
           <div
             ref={contentRef}
-            className="mx-auto max-w-[1200px] px-5 pb-16 pt-10 sm:px-10 sm:pt-12"
+            // `article-document` measures the blocks that sit beside the prose
+            // (today: the AI summary) against the same measure, so nothing can
+            // end up wider than the article it belongs to. The 1200px shell
+            // stays — it is the track wide blocks break out into.
+            className="article-document mx-auto max-w-[1200px] px-5 pb-16 pt-10 sm:px-10 sm:pt-12"
             data-testid="article-content-shell"
           >
             <h1 className="mb-6 text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground sm:text-4xl">
@@ -998,7 +1002,11 @@ export function PageViewPage() {
              line length (60–75 characters at the default font scale). */
           <div
             ref={contentRef}
-            className="mx-auto max-w-[1200px] px-5 pb-16 pt-10 sm:px-10 sm:pt-12"
+            // `article-document` measures the blocks that sit beside the prose
+            // (today: the AI summary) against the same measure, so nothing can
+            // end up wider than the article it belongs to. The 1200px shell
+            // stays — it is the track wide blocks break out into.
+            className="article-document mx-auto max-w-[1200px] px-5 pb-16 pt-10 sm:px-10 sm:pt-12"
             data-testid="article-content-shell"
           >
             <h1 className="mb-4 text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground sm:text-4xl">

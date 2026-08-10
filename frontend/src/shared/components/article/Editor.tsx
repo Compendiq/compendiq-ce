@@ -1001,7 +1001,9 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       <EditorContent
         editor={editor}
         className={cn(
-          'prose max-w-none',
+          // Same reading measure as ArticleViewer — what you write has to be
+          // shaped like what you read, or the line breaks move on save.
+          'article-measure prose max-w-none',
           !isLight && 'prose-invert',
           '[&_.tiptap]:min-h-[200px] [&_.tiptap]:px-10 [&_.tiptap]:py-6 [&_.tiptap]:outline-none',
           '[&_table]:border-collapse [&_td]:border [&_td]:border-border [&_td]:p-2 [&_th]:border [&_th]:border-border [&_th]:bg-foreground/5 [&_th]:p-2',
