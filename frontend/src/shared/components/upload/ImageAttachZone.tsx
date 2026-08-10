@@ -68,8 +68,10 @@ export function imageDisabledReason(
     return 'Waiting for the chat model — images can be attached once it loads.';
   }
   if (vision === false) {
+    // Panel name is a literal (shared/ must not import features/settings);
+    // settings-wayfinding.test.ts holds it to the live rail label.
     return `The model assigned to chat (${visionModel}) can't read images — `
-      + 'assign a vision-capable model in Settings → LLM.';
+      + 'assign a vision-capable model in Settings → AI Models.';
   }
   return `Image support for the model assigned to chat (${visionModel}) isn't `
     + 'confirmed yet — try again shortly.';

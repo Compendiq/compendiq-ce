@@ -1,5 +1,5 @@
 /**
- * Settings → Compliance Reports tab (EE-gated).
+ * Reports sub-tab of Settings → Data & Compliance (EE-gated).
  *
  * Surfaces the seven SOC 2 / ISO 27001 reports from
  * `Compendiq/compendiq-ee#115`. Each report is a one-shot generator: the

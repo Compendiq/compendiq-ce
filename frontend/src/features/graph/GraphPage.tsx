@@ -771,7 +771,7 @@ interface GraphEmptyStateProps {
  * Differentiated empty state for the knowledge graph. Picks a message based
  * on the meta counts so users know which step they're stuck at:
  *   - no spaces accessible (RBAC)            → check sync settings
- *   - no pages embedded yet                  → embed pages from Settings → LLM
+ *   - no pages embedded yet                  → embed pages from Settings → AI Models
  *   - embedded but no relationships computed → admin can press Recompute
  * Falls back to a generic message if meta is missing (older backend).
  */
@@ -802,12 +802,12 @@ function GraphEmptyState({ meta }: GraphEmptyStateProps) {
     } else if (meta.pagesEmbedded === 0) {
       title = 'Pages not embedded yet';
       body =
-        'Pages exist but no embeddings have been generated. Configure an embedding provider in Settings → LLM, then run an embedding pass.';
+        'Pages exist but no embeddings have been generated. Configure an embedding provider in Settings → AI Models, then run an embedding pass.';
     } else if (meta.relationshipsTotal === 0) {
       title = 'Embedded — but no relationships computed yet';
       body = isAdmin
         ? 'Press Recompute below to build the relationship graph from current embeddings.'
-        : 'Ask an admin to recompute the relationship graph (Settings → Knowledge → Graph).';
+        : 'Ask an admin to recompute the relationship graph — admins see a Recompute control on this page.';
     }
   }
 

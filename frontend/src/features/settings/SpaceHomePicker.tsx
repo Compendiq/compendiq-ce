@@ -18,7 +18,7 @@ interface SpaceHomePickerProps {
 
 /**
  * #379: Per-space home page picker. Renders a small "Set home" affordance
- * inside Settings → Spaces; opens a Radix Popover with a search-style
+ * inside Settings → Spaces & Sync; opens a Radix Popover with a search-style
  * page selector scoped to the current space. The "Use Confluence default"
  * button clears the override (PUT homePageId: null).
  *

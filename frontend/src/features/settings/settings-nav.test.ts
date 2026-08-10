@@ -1,10 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import {
   SETTINGS_NAV,
+  SETTINGS_PANELS,
   canSeeItem,
   firstVisiblePath,
   type AccessContext,
   type SettingsNavItem,
+  type SettingsPanelId,
 } from './settings-nav';
 import { CONFLUENCE_SETTINGS_PATH } from '../../shared/lib/routes';
 
@@ -95,5 +97,25 @@ describe('SETTINGS_NAV shape', () => {
   it('has no duplicate `/settings/<group>/<item>` paths', () => {
     const paths = SETTINGS_NAV.flatMap((g) => g.items.map((i) => `/settings/${g.id}/${i.id}`));
     expect(new Set(paths).size).toBe(paths.length);
+  });
+});
+
+describe('SETTINGS_PANELS', () => {
+  // SETTINGS_PANEL_IDS is a typed mirror of the nav item ids (TS cannot derive
+  // the literal union through navItem()); this is the guard that keeps the
+  // mirror honest in both directions.
+  it('mirrors the nav item ids exactly', () => {
+    const navIds = SETTINGS_NAV.flatMap((g) => g.items.map((i) => i.id)).sort();
+    expect(Object.keys(SETTINGS_PANELS).sort()).toEqual(navIds);
+  });
+
+  it('derives each path and label from the nav config', () => {
+    for (const group of SETTINGS_NAV) {
+      for (const item of group.items) {
+        const ref = SETTINGS_PANELS[item.id as SettingsPanelId];
+        expect(ref.path).toBe(`/settings/${group.id}/${item.id}`);
+        expect(ref.label).toBe(item.label);
+      }
+    }
   });
 });

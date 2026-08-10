@@ -1,5 +1,5 @@
 /**
- * Settings → Users admin page (#304).
+ * Users sub-tab of Settings → Access Control (#304).
  *
  * Distinct from `RbacPage` (which manages role assignment and space/group
  * memberships). This page owns the user *lifecycle*: create, edit metadata,
@@ -12,6 +12,7 @@ import { toast } from 'sonner';
 import { apiFetch } from '../../shared/lib/api';
 import type { AdminUser, AdminUserRole } from '@compendiq/contracts';
 import { useAuthStore } from '../../stores/auth-store';
+import { SETTINGS_PANELS } from '../settings/settings-nav';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
 import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
 import { BulkUserImportModal } from './BulkUserImportModal';
@@ -160,7 +161,7 @@ export function UsersAdminPage() {
           <h2 className="text-[15px] font-semibold">Users</h2>
           <p className="text-[13px] text-muted-foreground">
             Lifecycle management for user accounts. Role assignment and space permissions live under{' '}
-            <a className="underline" href="/settings/security/rbac">RBAC</a>.
+            <a className="underline" href={`${SETTINGS_PANELS.access.path}?sub=rbac`}>Roles</a>.
           </p>
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-2">

@@ -151,3 +151,63 @@ export function firstVisiblePath(ctx: AccessContext): string {
   // Fallback — should be unreachable because `confluence` is always visible.
   return CONFLUENCE_SETTINGS_PATH;
 }
+
+/**
+ * Flat panel lookup keyed by nav-item id — the wayfinding source of truth.
+ *
+ * In-app copy that points at a settings panel ("Settings → AI Models", an
+ * `<a href>` into `/settings/...`) must take the label/path from here rather
+ * than restating them: the IA has been renamed before (LLM → AI Models,
+ * Spaces → Spaces & Sync, RBAC → Access Control) and every literal that
+ * restated the old rail went stale in place — including a real link to a
+ * route that 404s. `settings-wayfinding.test.ts` scans the source tree for
+ * literals that drift from this table.
+ */
+export interface SettingsPanelRef {
+  /** Full `/settings/<category>/<item>` path. */
+  path: string;
+  /** Rail label — the name wayfinding copy must call this panel. */
+  label: string;
+}
+
+/**
+ * Typed mirror of the item ids in SETTINGS_NAV. TypeScript cannot derive the
+ * literal-id union through `navItem()` without an `as const` restructuring of
+ * the whole config, so the ids are restated here; settings-nav.test.ts
+ * asserts the two sets match exactly, so adding, removing or renaming a nav
+ * item without updating this list fails the suite.
+ */
+const SETTINGS_PANEL_IDS = [
+  'confluence',
+  'ai-prompts',
+  'theme',
+  'spaces',
+  'labels',
+  'models',
+  'ai-safety',
+  'access',
+  'compliance',
+  'integrations',
+  'license',
+  'diagnostics',
+] as const;
+
+export type SettingsPanelId = (typeof SETTINGS_PANEL_IDS)[number];
+
+function panelRef(id: SettingsPanelId): SettingsPanelRef {
+  for (const group of SETTINGS_NAV) {
+    const item = group.items.find((i) => i.id === id);
+    if (item) {
+      return { path: `/settings/${group.id}/${item.id}`, label: item.label };
+    }
+  }
+  // Module-init throw: a panel id in the mirror list but absent from the nav
+  // is a config bug, and failing loud here beats a dead link rendering.
+  throw new Error(`settings-nav: no nav item with id "${id}"`);
+}
+
+export const SETTINGS_PANELS: Readonly<Record<SettingsPanelId, SettingsPanelRef>> =
+  Object.fromEntries(SETTINGS_PANEL_IDS.map((id) => [id, panelRef(id)])) as Record<
+    SettingsPanelId,
+    SettingsPanelRef
+  >;

@@ -40,7 +40,7 @@ interface BulkSyncResult {
 }
 
 /**
- * Settings → Sync "Force Re-sync All" trigger. Unlike `useSync()` (which runs
+ * Settings → Spaces & Sync → Sync schedule "Force Re-sync All" trigger. Unlike `useSync()` (which runs
  * the incremental `syncUser` and skips pages whose Confluence version hasn't
  * changed), this re-fetches every Confluence-sourced page the user can see —
  * the same UPDATE path as the per-article Re-sync button, just expanded to

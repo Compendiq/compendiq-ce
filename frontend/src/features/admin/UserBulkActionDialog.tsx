@@ -35,6 +35,7 @@ import type {
 import { fetchJson } from '../../shared/lib/fetch-json';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
 import { cn } from '../../shared/lib/cn';
+import { SETTINGS_PANELS } from '../settings/settings-nav';
 
 // Local fetch helper — same shape as BulkUserImportModal so the 404-on-
 // missing-overlay branch lights up consistently.
@@ -300,7 +301,7 @@ function UserBulkActionDialogInner({
                   data-testid="bulk-action-group"
                 />
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Pick the group id from <a href="/settings/security/rbac" className="underline">Settings → RBAC → Groups</a>.
+                  Pick the group id from <a href={`${SETTINGS_PANELS.access.path}?sub=rbac`} className="underline">Settings → {SETTINGS_PANELS.access.label} → Roles</a>.
                 </p>
               </label>
             )}

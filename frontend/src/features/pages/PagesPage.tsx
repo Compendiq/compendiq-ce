@@ -28,6 +28,7 @@ import { cn } from '../../shared/lib/cn';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 import { ShortcutHint } from '../../shared/components/ShortcutHint';
 import { SanitizedHtml } from '../../shared/components/SanitizedHtml';
+import { SETTINGS_PANELS } from '../settings/settings-nav';
 
 // User-facing labels for the wire values of PageSourceEnum. Shared between the
 // source-filter <option>s and the active-filter pill so they never diverge.
@@ -1122,7 +1123,7 @@ export function PagesPage() {
                     // fallback ran, so acknowledge both facts — the query
                     // matched nothing AND semantic search is unavailable
                     // (#938; copy reconciled in the #993 review).
-                    : 'Keyword search found no matches. Semantic search is unavailable until pages are embedded — configure an embedding provider in Settings → LLM and run an embedding pass.'
+                    : `Keyword search found no matches. Semantic search is unavailable until pages are embedded — configure an embedding provider in Settings → ${SETTINGS_PANELS.models.label} and run an embedding pass.`
                 }
               />
             ) : (

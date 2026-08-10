@@ -434,7 +434,7 @@ describe('ConfluenceStep', () => {
       });
       // The error names the problem and the recovery.
       expect(screen.getByTestId('sync-error')).toHaveTextContent('Sync already in progress');
-      expect(screen.getByTestId('sync-error')).toHaveTextContent('Settings → Spaces');
+      expect(screen.getByTestId('sync-error')).toHaveTextContent('Settings → Spaces & Sync');
       expect(screen.queryByTestId('sync-progress')).not.toBeInTheDocument();
 
       // A failed sync must never trap the admin in the wizard.

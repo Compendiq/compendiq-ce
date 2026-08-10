@@ -180,9 +180,12 @@ export function LlmAuditPage() {
               and avoid storing prompt content by default.
             </p>
             <p className="text-xs text-muted-foreground">
+              {/* No panel views the ops audit log since the IA consolidation —
+                  the old pointer named a Security → Audit panel that no longer
+                  exists, so the sentence states the fact without a signpost. */}
               Need basic ops auditing today? Login, sync, admin, and PAT events
-              are recorded in the regular <strong>Audit Log</strong>{' '}
-              (Settings → Security → Audit) on every edition.
+              are recorded in the regular <strong>Audit Log</strong> on every
+              edition.
             </p>
           </div>
         </m.div>
