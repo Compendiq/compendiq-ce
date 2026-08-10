@@ -98,7 +98,7 @@ erDiagram
         uuid user_id FK
         int page_id FK
         int chunk_index
-        text chunk_text "source text; NOT what is embedded"
+        text chunk_text
         vector embedding "1024 dims (bge-m3)"
         jsonb metadata
     }
@@ -260,22 +260,46 @@ erDiagram
     }
 ```
 
-**`chunk_text` is the source text, not the embedded text (#1108).** What goes to
-the embedding model is `buildEmbeddingText(chunk_text, page_title, section_title)`
-— `"{title} — {section}\n\n{chunk}"` — so a page whose body never repeats its own
-title is still findable by it. The prefix is applied at embed time and
-deliberately not stored, because `chunk_text` has two other readers:
-`/api/search` returns `chunkText.slice(0, 300)` as the result snippet, and
-`buildRagContext` already prints its own `[Source N: "title" (Section: …)]`
-header above each block. Storing the prefix would restate the heading in both.
+**`chunk_text` is what gets embedded, verbatim (#1108).** Prefixing the page
+title and section into the embedded text was tried, measured, and **not
+shipped** — but read what the measurement does and does not say before
+re-proposing it.
 
-Every document-side embed must build its text the same way — the live embed in
-`embedPage`, its shadow dual-write, and #1116's backfill, which rebuilds the
-prefix from the row's `metadata`. A divergence there would change the embedded
-text and the model in the same swap, with identical dimensions and row counts
-to show for it; `shadow-migration-service.integration.test.ts` pins the two
-paths to the same output.
+What it says: on #1102's 262-page corpus and 144-query fixture, the prefix
+produced **no credible benefit**. Recall@5 moved 5 wins / 3 losses on
+Qwen3-Embedding-4B — McNemar exact p = 0.73, i.e. noise — and was flat on
+`bge-m3`.
 
+What it does **not** say: that the prefix is harmful. Recall@1 fell by exactly
+four queries on each model (86→82 and 101→97). Four is below what any paired
+test can call: `mcnemarExactTwoSided(0, 4)` is 0.125, and `metrics.ts` says so
+by name. MRR moved with those same four queries, and `pairedSignificance`
+returns no verdict for a graded score at all. So the honest conclusion is
+"unproven, and not worth the cost", not "it hurts".
+
+Three caveats that matter more than the numbers:
+
+1. **The section half never fired.** `section_title === page_title` for all 488
+   chunks, because `htmlToText` strips the `#` markers before `chunkText`'s
+   heading regex sees them — so what was measured is a bare page title, not
+   `"{title} — {section}"`.
+2. **The prefix was ~0.6% of the embedded text**, not the ~1.6% the configured
+   chunk size implies, because most chunks reach `CHUNK_HARD_LIMIT` (6000)
+   rather than the 1500-char target — same root cause.
+3. **The corpus is OSS markdown documentation**, whose pages usually open with
+   their own title. Real Confluence pages need not, which is exactly the case
+   the prefix was meant to serve.
+
+Re-measure after the chunker actually splits on sections; until then this is
+an open question, not a closed one. Reproduce with
+`backend/scripts/compare-embedding-variants.mts`.
+
+The invariant that work exposed is kept regardless: **every document-side embed
+must send the model byte-identical text** — the live embed in `embedPage`, its
+shadow dual-write, and #1116's backfill. A divergence changes the embedded text
+and the model in the same swap, with identical dimensions and row counts to
+show for it; `shadow-migration-service.integration.test.ts` pins the paths
+together, which matters most for #1114's query-side prefix.
 
 ## Notable conventions
 
