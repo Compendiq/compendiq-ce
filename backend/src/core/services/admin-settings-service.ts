@@ -1,5 +1,7 @@
 import { query } from '../db/postgres.js';
 import { makeCachedSetting } from './cached-setting.js';
+import { safeIntOr } from '../utils/safe-int.js';
+import { logger } from '../utils/logger.js';
 
 /**
  * Returns the embedding vector dimension used by the shared `page_embeddings`
@@ -79,13 +81,20 @@ export async function getRagFetchWidth(): Promise<number> {
     const r = await query<{ setting_value: string }>(
       `SELECT setting_value FROM admin_settings WHERE setting_key = 'rag_fetch_width'`,
     );
-    const n = parseInt(r.rows[0]?.setting_value ?? '', 10);
-    if (Number.isFinite(n) && n >= RAG_FETCH_WIDTH_DEFAULT) {
-      resolved = Math.min(n, RAG_FETCH_WIDTH_MAX);
-    }
-  } catch {
-    // Keep the default; do not cache-poison a transient DB error for 60 s.
-    return RAG_FETCH_WIDTH_DEFAULT;
+    // safeIntOr with min = DEFAULT: sub-legacy widths (including typo shapes
+    // parseInt truncates, e.g. '1e3' → 1) fall back to the default — see
+    // RAG_FETCH_WIDTH_MAX's JSDoc.
+    resolved = Math.min(
+      safeIntOr(r.rows[0]?.setting_value, RAG_FETCH_WIDTH_DEFAULT, RAG_FETCH_WIDTH_DEFAULT),
+      RAG_FETCH_WIDTH_MAX,
+    );
+  } catch (err) {
+    // Mirrors getStreamCap (sse-stream-limiter): log — an admin_settings-only
+    // failure while retrieval stays healthy must not be invisible — and cache
+    // the safe default for the TTL, so a persistent failure costs one failing
+    // SELECT per minute, not one per search. The default is the value the
+    // knob would resolve to on most deployments anyway.
+    logger.warn({ err }, 'Failed to resolve rag_fetch_width — using default fetch width');
   }
 
   ragFetchWidthCache = { value: resolved, expiresAt: Date.now() + RAG_FETCH_WIDTH_CACHE_TTL_MS };

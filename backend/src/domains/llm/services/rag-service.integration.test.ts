@@ -64,11 +64,13 @@ const { hybridSearch, keywordSearch, vectorSearch, flushSearchAnalytics } = awai
 const { invalidateRagFetchWidthCache } = await import(
   '../../../core/services/admin-settings-service.js'
 );
-// The logger is spied on below (Phase D overfetch tests) to read the
-// `candidatesBeforeFilter` / `candidatesAfterFilter` counts without poking
-// at the internal vectorSearch/keywordSearch calls — ES module bindings
-// mean vi.spyOn(ragModule, 'vectorSearch') wouldn't intercept the internal
-// call from hybridSearch anyway.
+// The logger is spied on below (Phase D overfetch tests) to read the ACL
+// post-filter's `candidatesBeforeFilter` count (the log also carries
+// `candidatesExamined` / `candidatesKept` since #1103; only BeforeFilter is
+// asserted here, via `preFilterCandidates`) without poking at the internal
+// vectorSearch/keywordSearch calls — ES module bindings mean
+// vi.spyOn(ragModule, 'vectorSearch') wouldn't intercept the internal call
+// from hybridSearch anyway.
 const { logger } = await import('../../../core/utils/logger.js');
 
 const dbAvailable = await isDbAvailable();
