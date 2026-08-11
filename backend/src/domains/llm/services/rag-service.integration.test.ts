@@ -969,6 +969,13 @@ describe.skipIf(!dbAvailable)('rag-service integration — #1106 raw fetch plans
     // certifies a layer that was never at risk (#1269 review m11). Tiny
     // fixture tables make the planner prefer a seq scan on cost alone, so
     // disable it: what we assert is that the shape CAN use the index.
+    // Precondition, asserted loudly: the probe DEPENDS on seeded rows — on
+    // an empty table every plan costs ~0 and the GUC penalties stop
+    // discriminating. A concurrent suite truncating mid-file (a live
+    // scenario under parallel agents) must fail this named assertion, not
+    // silently restore the coin flip (#1269 re-verification note 3).
+    const seeded = await query<{ n: number }>('SELECT count(*)::int AS n FROM page_embeddings');
+    expect(seeded.rows[0]!.n).toBeGreaterThan(0);
     const vec = pgvector.toSql(Array.from({ length: 1024 }, (_, i) => Math.sin(i + 1) * 0.01));
     // One CLIENT, not the pool helper: SET LOCAL is transaction-scoped and
     // pooled query() calls can land on different connections, which would

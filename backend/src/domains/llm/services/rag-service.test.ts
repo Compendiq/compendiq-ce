@@ -1378,6 +1378,27 @@ describe('RAG Service', () => {
           // And widening genuinely added something after the stable head.
           expect(wide.length).toBeGreaterThan(narrow.length);
         });
+
+        it('append-only holds on the PLAIN branch too — heavy fan-out inside the rank width (#1269 B1-residual)', () => {
+          // The residual case: both wide legs total <= rankWidth distinct
+          // pages, so the old distinct-page-count fast path fused the WIDE
+          // legs directly — yet the wide raw window holds a page (the
+          // 40-chunk page 9 below) the narrow request's 40-row window never
+          // reached. Page 9 earns only its keyword rank narrowly but gains a
+          // vector contribution widely, displacing a head page. The fast
+          // path must be taken only when reconstruction is the identity.
+          const raw: ReturnType<typeof row>[] = [];
+          for (let c = 0; c < 5; c++) for (let p = 1; p <= 8; p++) raw.push(row(p, `p${p}c${c}`));
+          for (let c = 0; c < 40; c++) raw.push(row(9, `p9c${c}`));
+          const vectorLeg = (limit: number) =>
+            truncateAtDistinctPages(raw.slice(0, Math.max(limit, Math.min(PAGE_FANOUT * limit, VECTOR_RAW_LIMIT_CAP))), limit);
+          const kwAll = [row(9, 'k9'), row(2, 'k2')];
+          const keywordLeg = (limit: number) => kwAll.slice(0, limit);
+
+          const narrow = fuseWithStableHead(vectorLeg(10), keywordLeg(10), 10);
+          const wide = fuseWithStableHead(vectorLeg(20), keywordLeg(20), 10);
+          expect(wide.slice(0, narrow.length).map((r) => r.pageId)).toEqual(narrow.map((r) => r.pageId));
+        });
       });
 
       describe('raw fetch arithmetic', () => {

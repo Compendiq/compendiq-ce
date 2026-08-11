@@ -564,41 +564,32 @@ export function fuseWithStableHead(
   keywordResults: SearchResult[],
   rankWidth: number,
 ): SearchResult[] {
-  // Page-denominated since #1106: the vector leg is chunk-denominated
-  // (multi-chunk pages are real since #1265), so both the engage condition
-  // and the head window count DISTINCT PAGES, not rows — 40 rows spanning 8
-  // pages fit inside a rank width of 10 and fuse plain. A row-denominated
-  // window would slice recovered pages out of head ranking and re-create
-  // the fan-out loss one stage later; the page-prefix keeps the append-only
-  // widening property because truncateAtDistinctPages is a prefix
-  // operation. For the per-page keyword leg the two denominations are
-  // identical.
-  if (countDistinctPages(vectorResults) <= rankWidth && countDistinctPages(keywordResults) <= rankWidth) {
-    return reciprocalRankFusion(vectorResults, keywordResults);
-  }
-  // The head must fuse EXACTLY the legs a narrower request (stage limit =
-  // rankWidth) would have fetched — not the wide leg's page-prefix. The two
-  // differ precisely when the narrow fetch SHORTFALLS (fewer than rankWidth
-  // distinct pages inside its own raw window, the long-multi-chunk-page
-  // corpus #1106 exists for): the narrow request passes its whole window
-  // through and stops early, while the wide page-prefix keeps walking to a
-  // full rankWidth pages — new pages then enter head fusion and reorder the
-  // top, breaking #1103's append-only widening (#1269 review B1, verified
-  // numerically). Reconstruction is exact because the wide result's rows
-  // are a prefix of the same raw stream: in the no-shortfall case the
-  // rankWidth-th distinct page appears inside the narrow window (before the
-  // wide cut), and in the shortfall case the wide cut lies beyond the whole
-  // narrow window — either way every narrow-window row is present here.
+  // ONE construction (#1269 re-verification): the head is ALWAYS what a
+  // narrower request (stage limit = rankWidth) would have fetched, built by
+  // exact reconstruction from the wide legs — truncateAtDistinctPages over
+  // the wide leg's own narrow raw window, one shared vectorRawLimit with
+  // vectorSearch. The fast path below is a pure OPTIMIZATION, taken only
+  // when the reconstruction is the identity (each leg already equals its
+  // own narrow reconstruction), in which case head == wide and extras are
+  // empty — verified equivalent to always-construct over randomized
+  // configurations. The previous distinct-page-count fast path was a second
+  // POLICY, and it reopened the reconstruction's own hole one branch over:
+  // a wide raw window can surface a page the narrow window never reached
+  // while both legs still total <= rankWidth distinct pages (very heavy
+  // fan-out corpora), and fusing the wide legs then reorders the top.
+  //
   // The guarantee is: EXACT GIVEN THE SAME ef_search. ef varies with the
   // raw limit (constant only for stage limits <= 12), so the narrow and
   // wide REQUESTS can explore different amounts of the HNSW graph and see
   // slightly different raw streams — the reconstruction removes all
   // ALGORITHMIC divergence, which is what the pre-#1106 slice gave, and the
   // residual is graph-walk noise, not a reordering rule.
-  const head = reciprocalRankFusion(
-    truncateAtDistinctPages(vectorResults.slice(0, vectorRawLimit(rankWidth)), rankWidth),
-    truncateAtDistinctPages(keywordResults, rankWidth),
-  );
+  const narrowV = truncateAtDistinctPages(vectorResults.slice(0, vectorRawLimit(rankWidth)), rankWidth);
+  const narrowK = truncateAtDistinctPages(keywordResults, rankWidth);
+  if (narrowV.length === vectorResults.length && narrowK.length === keywordResults.length) {
+    return reciprocalRankFusion(vectorResults, keywordResults);
+  }
+  const head = reciprocalRankFusion(narrowV, narrowK);
   const wide = reciprocalRankFusion(vectorResults, keywordResults);
   // Head pages are found from prefixes of the same legs, so head ⊆ wide.
   const wideById = new Map(wide.map((r) => [r.pageId, r]));
