@@ -135,14 +135,20 @@ defaults:
 
 | Path | topK | stage limit | worst-case fusion score |
 |---|---|---|---|
-| `/llm/ask` (chat) | 5 | 10 (the width) | ~0.169 |
-| `/llm/ask` with a rerank provider assigned (#1104) | 5 | 30 (the rerank pool) | ~0.419 — assignment alone shifts the scale, on bypassed rows too |
-| `/api/search` at `limit=20` | 20 | 20 (topK floor) | ~0.302 |
-| `/api/search` under EE ACL | 20 | `ceil(20×1.5)` = 30 | ~0.419 |
-| admin-raised width `w` | ≤ `w` | `w` (knob capped at 200; a larger topK still floors it) | `rrfWorstCase(w, true)` — passes 1.0 at the cap |
+| `/llm/ask` (chat) | 5 | 10 (the width) → raw 40 | ~0.524 |
+| `/llm/ask` with a rerank provider assigned (#1104) | 5 | 30 (the rerank pool) → raw 120 | ~1.109 — assignment alone shifts the scale, on bypassed rows too |
+| `/api/search` at `limit=20` | 20 | 20 (topK floor) → raw 80 | ~0.859 |
+| `/api/search` under EE ACL | 20 | `ceil(20×1.5)` = 30 → raw 120 | ~1.109 |
+
+Since #1106 the vector leg is page-denominated: the stage limit counts
+distinct pages and the leg fetches `min(4 × stageLimit, 500)` raw CHUNK
+rows, so the summed-contribution worst case is a function of the RAW fetch
+— rows straddling the #1106 deploy are only loosely comparable, the same
+caveat the #1103 width change carried.
+| admin-raised width `w` | ≤ `w` | `w` (knob capped at 200; a larger topK still floors it) → raw `min(4w, 500)` | `rrfWorstCase(min(4w, 500), true)` — ~2.24 at the cap |
 
 `ConfidenceBadge` used to read the value as a cosine (`>= 0.7` high, `>= 0.4`
-medium). The chat-path maximum of ~0.169 is well under that floor, which is why
+medium). The pre-#1106 chat-path maximum of ~0.169 (now ~0.524 — still a fusion value, not a cosine) was well under that floor, which is why
 **every** hybrid knowledge-base answer rendered "Low confidence" — and web
 sources, handed a flat `score: 1`, were the only ones that could raise the
 average. #1117 moved the badge onto the cosine (`similarity` on the wire); the

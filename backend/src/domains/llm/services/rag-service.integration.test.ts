@@ -5,7 +5,7 @@ import {
   teardownTestDb,
   isDbAvailable,
 } from '../../../test-db-helper.js';
-import { query } from '../../../core/db/postgres.js';
+import { query, getPool } from '../../../core/db/postgres.js';
 import pgvector from 'pgvector';
 
 // Deterministic 1024-dim vector for fixtures and queries
@@ -927,5 +927,45 @@ describe.skipIf(!dbAvailable)('rag-service integration — per-page ACL post-fil
     const ids = results.map((r) => r.pageId);
     // P2 blocked, so only [P1, P3] survive in that exact order.
     expect(ids).toEqual([p1, p3]);
+  });
+});
+
+describe.skipIf(!dbAvailable)('rag-service integration — #1106 raw fetch plans onto the HNSW index', () => {
+  beforeAll(async () => {
+    await setupTestDb();
+  });
+  afterAll(async () => {
+    await teardownTestDb();
+  });
+
+  it('the widened vector query shape is HNSW-index-compatible at the raw cap', async () => {
+    // The risk an EXPLAIN guards against is a QUERY-SHAPE change defeating
+    // the index (an ORDER BY expression that stops matching the opclass) —
+    // at which point the leg silently degrades to a full scan on the chat
+    // path. Tiny fixture tables make the planner prefer a seq scan on cost
+    // alone, so disable it for the probe: what we assert is that the shape
+    // CAN use idx_page_embeddings_hnsw, not the cost-based choice on 3 rows.
+    const vec = pgvector.toSql(Array.from({ length: 1024 }, (_, i) => Math.sin(i + 1) * 0.01));
+    // One CLIENT, not the pool helper: SET LOCAL is transaction-scoped and
+    // pooled query() calls can land on different connections, which would
+    // silently turn this probe into a cost-based coin flip.
+    const client = await getPool().connect();
+    let text: string;
+    try {
+      await client.query('BEGIN');
+      await client.query('SET LOCAL enable_seqscan = off');
+      const r = await client.query<{ 'QUERY PLAN': string }>(
+        `EXPLAIN SELECT pe.page_id, pe.chunk_index, pe.embedding <=> $1 AS distance
+         FROM page_embeddings pe
+         ORDER BY pe.embedding <=> $1
+         LIMIT 500`,
+        [vec],
+      );
+      await client.query('ROLLBACK');
+      text = r.rows.map((row) => row['QUERY PLAN']).join('\n');
+    } finally {
+      client.release();
+    }
+    expect(text).toContain('idx_page_embeddings_hnsw');
   });
 });

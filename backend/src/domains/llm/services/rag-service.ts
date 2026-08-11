@@ -62,11 +62,12 @@ export { RAG_FETCH_WIDTH_DEFAULT, RAG_FETCH_WIDTH_MAX };
  * under-fetch filed as #1263.
  *
  * Two honest caveats, both deliberate:
- * - The unit is CHUNK rows on the vector leg but the caller's topK counts
- *   PAGES after dedup-by-page, so on a corpus of long multi-chunk pages a
- *   stage limit of N can still yield fewer than N distinct pages. Truly
- *   page-denominated fetching is #1106's page-merge work; the floor here
- *   makes the limit satisfiable when chunks-per-page is small, not always.
+ * - Since #1106 the vector leg IS page-denominated: `limit` counts distinct
+ *   pages, and vectorSearch over-fetches raw chunk rows (PAGE_FANOUT x,
+ *   capped) to satisfy it, so a stage limit of N yields N distinct pages
+ *   whenever the corpus has them inside the raw fetch. The shortfall case
+ *   (fewer distinct pages than N inside min(4N, 500) raw rows) passes
+ *   everything through — pre-#1106 yield is the floor.
  * - The result can exceed RAG_FETCH_WIDTH_MAX: that constant caps the admin
  *   knob, while topK is the caller's own contract (Zod caps interactive
  *   search at 20; internal callers bound themselves).
@@ -100,15 +101,22 @@ interface SearchResult {
    * EE ACL). At the defaults that gives, via `rrfWorstCase` (a test pins the
    * figures rather than leaving them as prose):
    *
-   * - chat path (`/llm/ask`, topK 5 → stage limit 10): at most ~0.17, which
-   *   sat under ConfidenceBadge's old 0.4 cosine threshold — why reading this
-   *   field as a cosine produced "Low confidence" every time (#1117 moved the
-   *   badge onto `vectorScore`). **With a rerank provider ASSIGNED (#1104)
-   *   the chat stage limit becomes the candidate pool (default 30), so the
-   *   ceiling rises to ~0.42 — merely assigning rerank shifts this value's
-   *   scale on analytics rows, reranked AND bypassed alike.**
-   * - `/api/search` with `limit=20` → stage limit 20 (30 under EE ACL): up to
-   *   ~0.30 / ~0.42. Do not restate the chat-path bound as a global one.
+   * - chat path (`/llm/ask`, topK 5 → stage limit 10 → raw fetch 40 since
+   *   #1106): at most ~0.52. (Pre-#1106 this was ~0.17 — the bound that sat
+   *   under ConfidenceBadge's old 0.4 cosine threshold and made "reading
+   *   this field as a cosine" produce Low confidence every time; #1117
+   *   moved the badge onto `vectorScore`.) **With a rerank provider
+   *   ASSIGNED (#1104) the chat stage limit becomes the candidate pool
+   *   (default 30 → raw 120), so the ceiling rises to ~1.11 — merely
+   *   assigning rerank shifts this value's scale on analytics rows,
+   *   reranked AND bypassed alike.**
+   * - `/api/search` with `limit=20` → stage limit 20 → raw 80 (EE ACL 30 →
+   *   raw 120): up to ~0.86 / ~1.11. Do not restate the chat-path bound as
+   *   a global one. #1106 re-denominated ALL these ceilings (the summed
+   *   slots are now the kept RAW chunk rows, bounded by
+   *   min(PAGE_FANOUT x stageLimit, VECTOR_RAW_LIMIT_CAP)) — analytics
+   *   max_score rows straddling the #1106 deploy are only loosely
+   *   comparable, the same caveat #1103's width change carried.
    * - an admin-raised `rag_fetch_width` raises the bound with it —
    *   `rrfWorstCase(width, true)` is the formula, and at the 200 cap it
    *   passes 1.0.
@@ -141,6 +149,15 @@ interface SearchResult {
    * is a maintenance cost, not an asset.
    */
   keywordRank: number | null;
+  /**
+   * The best chunk's `chunk_index` (document position) when this record's
+   * representative text came from the vector leg; absent for keyword-only
+   * rows. #1106 PR 2's sibling assembly anchors its contiguous window here.
+   * Document order but NOT contiguous — embedding batches skipped on a
+   * context-length 400 leave holes, so consumers order by it, never do
+   * arithmetic on it.
+   */
+  chunkIndex?: number;
   /**
    * Cross-encoder relevance in [0, 1] (#1104); null OR absent when this
    * result was never reranked — the stage is off, the pool bypassed, or this
@@ -177,6 +194,47 @@ export const RERANK_TIMEOUT_MS = 5_000;
  * Tradeoff: higher ef_search = better recall but slower query.
  * Default PostgreSQL ef_search is 40; we use 100 for better RAG recall.
  */
+/**
+ * #1106 PR 1 — page-denominated vector fetch. `limit` counts DISTINCT PAGES;
+ * the leg over-fetches `PAGE_FANOUT x limit` raw CHUNK rows (multi-chunk
+ * pages are real since #1265 and were crowding distinct pages out of the
+ * stage limit — the measured Recall@5 0.8819→0.8542 / @10 0.9236→0.9028
+ * fan-out regression) and truncates the ordered stream where the limit-th
+ * distinct page first appears. Shortfall passes everything through, so the
+ * pre-#1106 yield is a floor, never a ceiling.
+ *
+ * PAGE_FANOUT 4 is a code constant, not a knob, derived from the observed
+ * chunk-per-page density near the top of the post-#1265 ranking; the eval
+ * rig arbitrates any retune. VECTOR_RAW_LIMIT_CAP is exact arithmetic, not
+ * taste: 2 x 500 = 1000 is pgvector's ef_search ceiling, so the 2x ef
+ * headroom rule (see vectorSearch) survives at the width-200 knob cap —
+ * without the cap, width 200 would want ef 1600 and silently clamp below
+ * coverage, the exact failure class the headroom rule exists to prevent.
+ */
+export const PAGE_FANOUT = 4;
+export const VECTOR_RAW_LIMIT_CAP = 500;
+
+/**
+ * Cut an ordered row stream at the first appearance of the `maxPages`-th
+ * distinct page — a PREFIX operation (result at w1 is a prefix of result at
+ * w2 for w1 < w2), which is what lets fuseWithStableHead's page-denominated
+ * rank window inherit the append-only widening property. Chunks of
+ * already-seen pages ABOVE the cut survive (they rank above the last
+ * admitted page's entry and their RRF contributions are earned); everything
+ * below it is dropped.
+ */
+export function truncateAtDistinctPages<T extends { pageId: number }>(rows: T[], maxPages: number): T[] {
+  if (maxPages <= 0) return [];
+  const seen = new Set<number>();
+  for (let i = 0; i < rows.length; i++) {
+    if (!seen.has(rows[i]!.pageId)) {
+      seen.add(rows[i]!.pageId);
+      if (seen.size === maxPages) return rows.slice(0, i + 1);
+    }
+  }
+  return rows;
+}
+
 export async function vectorSearch(userId: string, questionEmbedding: number[], limit = RAG_FETCH_WIDTH_DEFAULT): Promise<SearchResult[]> {
   return withSpan(
     'rag.vector_search',
@@ -188,29 +246,35 @@ export async function vectorSearch(userId: string, questionEmbedding: number[], 
       const client = await getVectorPool().connect();
       try {
         await client.query('BEGIN');
-        // ef_search must cover the requested LIMIT: HNSW returns at most
+        // The RAW fetch is chunk-denominated (#1106): PAGE_FANOUT x the
+        // requested page count, capped so the ef arithmetic below stays
+        // inside pgvector's ceiling.
+        const rawLimit = Math.min(PAGE_FANOUT * Number(limit), VECTOR_RAW_LIMIT_CAP);
+        // ef_search must cover the RAW LIMIT: HNSW returns at most
         // ef_search rows (verified against pgvector 0.8.5 — LIMIT 200 with
-        // ef_search 100 yields 100 rows), so a #1103 fetch width above
-        // RAG_EF_SEARCH would silently plateau while the keyword leg kept
-        // widening. 2x, not 1x: ef_search == k is HNSW's worst recall
-        // setting — the graph walk needs headroom beyond the return size.
-        // Clamped to pgvector's [1, 1000] bound for future internal callers;
-        // no HTTP path can exceed it today (Zod caps limit at 20, the width
-        // knob at 200).
+        // ef_search 100 yields 100 rows), so a fetch above RAG_EF_SEARCH
+        // would silently plateau while the keyword leg kept widening. Since
+        // #1106 the covered quantity is the raw CHUNK fetch, not the page
+        // count — covering only `limit` would starve the truncation of the
+        // very rows it needs. 2x, not 1x: ef_search == k is HNSW's worst
+        // recall setting — the graph walk needs headroom beyond the return
+        // size. Clamped to pgvector's [1, 1000] bound; the raw cap keeps
+        // 2 x rawLimit <= 1000 at every reachable width.
         await client.query(
-          `SET LOCAL hnsw.ef_search = ${Math.min(1000, Math.max(Number(RAG_EF_SEARCH), 2 * Number(limit)))}`,
+          `SET LOCAL hnsw.ef_search = ${Math.min(1000, Math.max(Number(RAG_EF_SEARCH), 2 * rawLimit))}`,
         );
 
         const result = await client.query<{
           page_id: number;
           confluence_id: string | null;
           chunk_text: string;
+          chunk_index: number;
           // `space_key` is NULL for locally-created (standalone) pages, same as
           // `confluence_id` — `SearchResult.spaceKey` has always been nullable.
           metadata: { page_title: string; section_title: string; space_key: string | null };
           distance: number;
         }>(
-          `SELECT cp.id AS page_id, cp.confluence_id, pe.chunk_text, pe.metadata,
+          `SELECT cp.id AS page_id, cp.confluence_id, pe.chunk_text, pe.chunk_index, pe.metadata,
                   pe.embedding <=> $2 AS distance
            FROM page_embeddings pe
            JOIN pages cp ON pe.page_id = cp.id
@@ -218,22 +282,29 @@ export async function vectorSearch(userId: string, questionEmbedding: number[], 
            AND cp.deleted_at IS NULL
            ORDER BY pe.embedding <=> $2
            LIMIT $3`,
-          [vecSpaces, pgvector.toSql(questionEmbedding), limit, userId],
+          [vecSpaces, pgvector.toSql(questionEmbedding), rawLimit, userId],
         );
 
         await client.query('COMMIT');
 
-        const mapped = result.rows.map((row) => ({
-          pageId: row.page_id,
-          confluenceId: row.confluence_id,
-          chunkText: row.chunk_text,
-          pageTitle: row.metadata.page_title,
-          sectionTitle: row.metadata.section_title,
-          spaceKey: row.metadata.space_key,
-          score: 1 - row.distance, // Convert distance to similarity
-          vectorScore: 1 - row.distance,
-          keywordRank: null,
-        }));
+        // Truncate AFTER mapping so the helper works on the same shape its
+        // unit tests pin. `limit` distinct pages, fan-out bounded to chunks
+        // ranking above the last admitted page's entry.
+        const mapped = truncateAtDistinctPages(
+          result.rows.map((row) => ({
+            pageId: row.page_id,
+            confluenceId: row.confluence_id,
+            chunkText: row.chunk_text,
+            chunkIndex: row.chunk_index,
+            pageTitle: row.metadata.page_title,
+            sectionTitle: row.metadata.section_title,
+            spaceKey: row.metadata.space_key,
+            score: 1 - row.distance, // Convert distance to similarity
+            vectorScore: 1 - row.distance,
+            keywordRank: null,
+          })),
+          Number(limit),
+        );
         span?.setAttribute('rag.hits', mapped.length);
         recordHistogram(
           RETRIEVAL_STAGE_DURATION_METRIC,
@@ -319,7 +390,11 @@ export async function keywordSearch(userId: string, questionText: string, limit 
 
 /**
  * Largest RRF score a single page can reach when it occupies every one of
- * `stageLimit` vector slots, optionally plus the top keyword slot.
+ * `stageLimit` vector slots, optionally plus the top keyword slot. Since
+ * #1106 the slot count a PATH can actually reach is its kept RAW chunk rows
+ * — up to min(PAGE_FANOUT x stageLimit, VECTOR_RAW_LIMIT_CAP), reached when
+ * one giant page dominates the raw fetch (shortfall passthrough keeps all
+ * its rows). The per-path pins live in the "documented fusion bounds" test.
  *
  * Exported for the test that pins `SearchResult.score`'s documented bounds. The
  * prose version of this has been wrong twice, in both directions, because the
@@ -404,6 +479,12 @@ function reciprocalRankFusion(
     }));
 }
 
+function countDistinctPages(rows: SearchResult[]): number {
+  const seen = new Set<number>();
+  for (const r of rows) seen.add(r.pageId);
+  return seen.size;
+}
+
 /**
  * Fusion with a STABLE HEAD (#1103). When the stage limit exceeds the ranking
  * width — i.e. the caller's topK floored the fetch above the configured
@@ -414,8 +495,10 @@ function reciprocalRankFusion(
  * → 0.4566 while Recall@20 improved 0.9236 → 0.9514 — more right answers in
  * the set, drowned at the top.
  *
- * So the head takes its ORDER from fusion over the first `rankWidth` rows of
- * each leg — the same page sequence a narrower request returns — and the
+ * So the head takes its ORDER from fusion over the rows spanning the first
+ * `rankWidth` DISTINCT PAGES of each leg (#1106 — the vector leg is
+ * chunk-denominated, see truncateAtDistinctPages) — the same page sequence a
+ * narrower request returns — and the
  * extra candidates the deeper fetch surfaced are APPENDED, ranked by fusion
  * over the full legs. Asking for more results yields the same first results,
  * plus more; it never reorders the top. When the legs are within `rankWidth`
@@ -442,12 +525,21 @@ export function fuseWithStableHead(
   keywordResults: SearchResult[],
   rankWidth: number,
 ): SearchResult[] {
-  if (vectorResults.length <= rankWidth && keywordResults.length <= rankWidth) {
+  // Page-denominated since #1106: the vector leg is chunk-denominated
+  // (multi-chunk pages are real since #1265), so both the engage condition
+  // and the head window count DISTINCT PAGES, not rows — 40 rows spanning 8
+  // pages fit inside a rank width of 10 and fuse plain. A row-denominated
+  // window would slice recovered pages out of head ranking and re-create
+  // the fan-out loss one stage later; the page-prefix keeps the append-only
+  // widening property because truncateAtDistinctPages is a prefix
+  // operation. For the per-page keyword leg the two denominations are
+  // identical.
+  if (countDistinctPages(vectorResults) <= rankWidth && countDistinctPages(keywordResults) <= rankWidth) {
     return reciprocalRankFusion(vectorResults, keywordResults);
   }
   const head = reciprocalRankFusion(
-    vectorResults.slice(0, rankWidth),
-    keywordResults.slice(0, rankWidth),
+    truncateAtDistinctPages(vectorResults, rankWidth),
+    truncateAtDistinctPages(keywordResults, rankWidth),
   );
   const wide = reciprocalRankFusion(vectorResults, keywordResults);
   // Head pages are found from prefixes of the same legs, so head ⊆ wide.
