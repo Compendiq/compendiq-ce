@@ -104,7 +104,7 @@ vi.mock('../../../core/services/fts-language.js', () => ({
   getFtsLanguage: vi.fn(async () => 'simple'),
 }));
 
-import { buildRagContext, hybridSearch, RAG_EF_SEARCH, reciprocalRankFusion, fuseWithStableHead, rrfWorstCase, vectorSearch, keywordSearch, recordSearchAnalytics, resolveStageLimit, computeRetrievalConfidence, RAG_FETCH_WIDTH_DEFAULT, RAG_FETCH_WIDTH_MAX, truncateAtDistinctPages, PAGE_FANOUT, VECTOR_RAW_LIMIT_CAP } from './rag-service.js';
+import { buildRagContext, hybridSearch, RAG_EF_SEARCH, reciprocalRankFusion, fuseWithStableHead, rrfWorstCase, vectorSearch, keywordSearch, recordSearchAnalytics, resolveStageLimit, computeRetrievalConfidence, RAG_FETCH_WIDTH_DEFAULT, truncateAtDistinctPages, PAGE_FANOUT, VECTOR_RAW_LIMIT_CAP } from './rag-service.js';
 import type { SearchResult } from './rag-service.js';
 import { invalidateRagFetchWidthCache, invalidateRagRerankCandidatesCache } from '../../../core/services/admin-settings-service.js';
 import { CircuitBreakerOpenError } from '../../../core/services/circuit-breaker.js';
@@ -1235,55 +1235,51 @@ describe('RAG Service', () => {
     // global). These pin the figures so the next edit has to agree with
     // arithmetic rather than with a comment.
     describe('documented fusion bounds', () => {
-      it('matches the closed form for a page occupying every vector slot', () => {
-        // Ten chunks of ONE page is what `rrfWorstCase(10)` describes; assert the
-        // helper against the function it documents rather than against itself.
+      it('a page occupying every vector slot scores its BEST chunk only — summing is gone (#1106 v2)', () => {
+        // Ten chunks of ONE page used to sum ten reciprocal ranks; measured
+        // on the rig, that let chunk count crush chunk quality once the raw
+        // window widened (candidate-v1: R@1 0.4028→0.3333). The page now
+        // earns exactly its best chunk's contribution.
         const chunks = Array.from({ length: 10 }, (_, i) =>
           makeResult('bound-page', `chunk ${i}`, { score: 0.5 - i * 0.01 }),
         );
         const combined = reciprocalRankFusion(chunks, []);
         expect(combined).toHaveLength(1);
-        expect(combined[0].score).toBeCloseTo(rrfWorstCase(10), 12);
+        expect(combined[0].score).toBeCloseTo(rrfWorstCase(), 12);
+        expect(combined[0].score).toBeCloseTo(1 / 61, 12);
+        // The representative text and vectorScore still come from the best chunk.
+        expect(combined[0].chunkText).toBe('chunk 0');
+        expect(combined[0].vectorScore).toBeCloseTo(0.5, 12);
       });
 
-      it('caps the chat path below the 0.4 confidence threshold at the default width', () => {
-        // /llm/ask uses topK=5 → stage limit = the default fetch width (10),
-        // under EE ACL too (max(10, ceil(5*1.5)=8) = 10 — the #1263 fix).
-        // This is the bound that made "reading the fusion score as a cosine
-        // always yields Low confidence" true in #1117's analysis.
-        expect(rrfWorstCase(resolveStageLimit(5, RAG_FETCH_WIDTH_DEFAULT, false), true)).toBeLessThan(0.4);
-        expect(rrfWorstCase(resolveStageLimit(5, RAG_FETCH_WIDTH_DEFAULT, true), true)).toBeLessThan(0.4);
-        expect(rrfWorstCase(10, true)).toBeCloseTo(0.1694, 3);
+      it('later siblings add no score but a page found by BOTH legs still earns both legs', () => {
+        // Cross-leg contribution survives the cap — that dilution axis is
+        // fuseWithStableHead's job, not this one's.
+        const vec = [makeResult('p1', 'v1'), makeResult('p1', 'v2', { score: 0.4 })];
+        const kw = [makeResult('p1', 'k1', { score: 2.0, vectorScore: null, keywordRank: 2.0 })];
+        const combined = reciprocalRankFusion(vec, kw);
+        expect(combined).toHaveLength(1);
+        expect(combined[0].score).toBeCloseTo(2 / 61, 12);
+        expect(combined[0].score).toBeCloseTo(rrfWorstCase(true), 12);
       });
 
-      it('pins the /api/search row at limit=20: ~0.302 plain, ~0.419 under EE ACL', () => {
-        // Every row of the doc table gets a pin — its prose version has now
-        // been wrong three times, most recently in this very PR (~0.304).
+      it('the ceiling is width-invariant: ~0.0328 with both legs, at every reachable configuration', () => {
+        // Pre-#1106 the worst case tracked the stage limit (0.1694 at width
+        // 10, past 1.0 at the 200 cap) because per-chunk summing existed.
+        // Best-chunk-only makes 2/(k+1) the global bound — the stage limit,
+        // the rerank pool and the raw window no longer appear in the formula.
+        expect(rrfWorstCase(true)).toBeCloseTo(2 / 61, 12);
+        expect(rrfWorstCase(true)).toBeCloseTo(0.0328, 4);
+        expect(rrfWorstCase(false)).toBeCloseTo(1 / 61, 12);
+        // resolveStageLimit still floors the POOL (satisfiability), it just
+        // no longer moves the score ceiling.
+        expect(resolveStageLimit(5, RAG_FETCH_WIDTH_DEFAULT, false)).toBe(10);
+        expect(resolveStageLimit(5, RAG_FETCH_WIDTH_DEFAULT, true)).toBe(10);
+      });
+
+      it('the /api/search and EE ACL pool floors survive — they size the POOL, not the score', () => {
         expect(resolveStageLimit(20, RAG_FETCH_WIDTH_DEFAULT, false)).toBe(20);
-        expect(rrfWorstCase(20, true)).toBeCloseTo(0.3020, 3);
-        // Nothing thresholds the fusion score on that path, but the chat-path
-        // bound must not be restated as a global one — this test is the
-        // reason that distinction stays in the JSDoc.
         expect(resolveStageLimit(20, RAG_FETCH_WIDTH_DEFAULT, true)).toBe(30);
-        expect(rrfWorstCase(30, true)).toBeGreaterThan(0.4);
-        expect(rrfWorstCase(30, true)).toBeCloseTo(0.4191, 3);
-      });
-
-      it('an admin-raised width raises the bound with it — past 1.0 at the cap', () => {
-        // The JSDoc's warning that the fusion value is not bounded near ~0.4
-        // either: at the RAG_FETCH_WIDTH_MAX cap the worst case passes 1.
-        expect(rrfWorstCase(RAG_FETCH_WIDTH_MAX, true)).toBeGreaterThan(1);
-      });
-
-      it('pins the #1106 raw-denominated ceilings — the slots a path can fill are its kept RAW rows', () => {
-        // One giant page dominating the raw fetch keeps every row via
-        // shortfall passthrough, so the per-path worst case is
-        // rrfWorstCase(min(PAGE_FANOUT x stageLimit, cap)). These are the
-        // figures the score JSDoc and the 09-flow table restate.
-        expect(rrfWorstCase(Math.min(PAGE_FANOUT * 10, VECTOR_RAW_LIMIT_CAP), true)).toBeCloseTo(0.5239, 3);  // chat
-        expect(rrfWorstCase(Math.min(PAGE_FANOUT * 20, VECTOR_RAW_LIMIT_CAP), true)).toBeCloseTo(0.8589, 3);  // /api/search 20
-        expect(rrfWorstCase(Math.min(PAGE_FANOUT * 30, VECTOR_RAW_LIMIT_CAP), true)).toBeCloseTo(1.1095, 3);  // rerank pool / EE ACL
-        expect(rrfWorstCase(VECTOR_RAW_LIMIT_CAP, true)).toBeCloseTo(2.2426, 3);                              // width cap
       });
     });
 

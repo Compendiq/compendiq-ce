@@ -135,20 +135,22 @@ defaults:
 
 | Path | topK | stage limit | worst-case fusion score |
 |---|---|---|---|
-| `/llm/ask` (chat) | 5 | 10 (the width) → raw 40 | ~0.524 |
-| `/llm/ask` with a rerank provider assigned (#1104) | 5 | 30 (the rerank pool) → raw 120 | ~1.109 — assignment alone shifts the scale, on bypassed rows too |
-| `/api/search` at `limit=20` | 20 | 20 (topK floor) → raw 80 | ~0.859 |
-| `/api/search` under EE ACL | 20 | `ceil(20×1.5)` = 30 → raw 120 | ~1.109 |
+| every path since #1106 | any | any (pool sizing only) | **~0.0328** (`rrfWorstCase(true)` = 2/61) — width-invariant |
+| *historical rows (pre-#1106 summed scale)* | | | *chat ~0.169; rerank pool assigned ~0.419; `/api/search`@20 ~0.302; past 1.0 at the width cap* |
 
-Since #1106 the vector leg is page-denominated: the stage limit counts
-distinct pages and the leg fetches `min(4 × stageLimit, 500)` raw CHUNK
-rows, so the summed-contribution worst case is a function of the RAW fetch
-— rows straddling the #1106 deploy are only loosely comparable, the same
-caveat the #1103 width change carried.
-| admin-raised width `w` | ≤ `w` | `w` (knob capped at 200; a larger topK still floors it) → raw `min(4w, 500)` | `rrfWorstCase(min(4w, 500), true)` — ~2.24 at the cap |
+Since #1106 the vector leg is page-denominated (the stage limit counts
+distinct pages; the leg fetches `min(4 × stageLimit, 500)` raw CHUNK rows)
+**and fusion is best-chunk-only**: a page's vector contribution is its best
+chunk's reciprocal rank, never a per-chunk sum — measured on the rig,
+summing over the widened window recovered Recall@10 but crushed the head
+(R@1 0.4028→0.3333, MRR 0.6016→0.5503). The fusion ceiling is therefore a
+width-invariant constant, and `search_analytics.max_score` rows straddling
+the #1106 deploy are only loosely comparable (old rows carry the summed
+scale) — the same class of caveat the #1103 width change carried, in the
+shrinking direction.
 
 `ConfidenceBadge` used to read the value as a cosine (`>= 0.7` high, `>= 0.4`
-medium). The pre-#1106 chat-path maximum of ~0.169 (now ~0.524 — still a fusion value, not a cosine) was well under that floor, which is why
+medium). The chat-path maximum (~0.169 then, ~0.0328 since #1106's best-chunk-only rule — still a fusion value, not a cosine) sits well under that floor, which is why
 **every** hybrid knowledge-base answer rendered "Low confidence" — and web
 sources, handed a flat `score: 1`, were the only ones that could raise the
 average. #1117 moved the badge onto the cosine (`similarity` on the wire); the

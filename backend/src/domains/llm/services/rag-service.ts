@@ -92,34 +92,19 @@ interface SearchResult {
    * RRF fusion score from `reciprocalRankFusion`. Use it to ORDER results.
    * Never display it, never threshold it, never compare it across producers.
    *
-   * The fusion value is ~0.016 for a single rank in one leg and ~0.033 for the
-   * common two-leg case, but it is **not** bounded there: the vector leg is
-   * per-CHUNK, so one page occupying several of the top slots has its
-   * contributions summed (that is why the best-chunk rule below exists). The
-   * worst case is therefore a function of the per-stage limit — since #1103,
-   * `resolveStageLimit` (fetch width, floored at topK and at 1.5x topK under
-   * EE ACL). At the defaults that gives, via `rrfWorstCase` (a test pins the
-   * figures rather than leaving them as prose):
+   * The fusion value is ~0.016 for a single rank in one leg and ~0.033 for
+   * the common two-leg case — and since #1106's best-chunk-only rule that
+   * two-leg figure IS the ceiling: a page's vector contribution is its best
+   * chunk's reciprocal rank only (per-chunk summing measurably crushed the
+   * head — see reciprocalRankFusion), so `rrfWorstCase(true)` ≈ 0.0328
+   * bounds every path at every fetch width, rerank pool and raw chunk
+   * window alike. A test pins the figure rather than leaving it as prose.
    *
-   * - chat path (`/llm/ask`, topK 5 → stage limit 10 → raw fetch 40 since
-   *   #1106): at most ~0.52. (Pre-#1106 this was ~0.17 — the bound that sat
-   *   under ConfidenceBadge's old 0.4 cosine threshold and made "reading
-   *   this field as a cosine" produce Low confidence every time; #1117
-   *   moved the badge onto `vectorScore`.) **With a rerank provider
-   *   ASSIGNED (#1104) the chat stage limit becomes the candidate pool
-   *   (default 30 → raw 120), so the ceiling rises to ~1.11 — merely
-   *   assigning rerank shifts this value's scale on analytics rows,
-   *   reranked AND bypassed alike.**
-   * - `/api/search` with `limit=20` → stage limit 20 → raw 80 (EE ACL 30 →
-   *   raw 120): up to ~0.86 / ~1.11. Do not restate the chat-path bound as
-   *   a global one. #1106 re-denominated ALL these ceilings (the summed
-   *   slots are now the kept RAW chunk rows, bounded by
-   *   min(PAGE_FANOUT x stageLimit, VECTOR_RAW_LIMIT_CAP)) — analytics
-   *   max_score rows straddling the #1106 deploy are only loosely
-   *   comparable, the same caveat #1103's width change carried.
-   * - an admin-raised `rag_fetch_width` raises the bound with it —
-   *   `rrfWorstCase(width, true)` is the formula, and at the 200 cap it
-   *   passes 1.0.
+   * The straddle caveat runs the other way now: `max_score` analytics rows
+   * written BEFORE the #1106 deploy carry the old summed scale — up to
+   * ~0.17 on the chat path, ~0.42 with a rerank pool assigned, more at a
+   * raised width — and are only loosely comparable with new bounded rows,
+   * the same class of caveat #1103's width change carried.
    *
    * Either way it is not a similarity — see `vectorScore`.
    */
@@ -389,22 +374,22 @@ export async function keywordSearch(userId: string, questionText: string, limit 
 }
 
 /**
- * Largest RRF score a single page can reach when it occupies every one of
- * `stageLimit` vector slots, optionally plus the top keyword slot. Since
- * #1106 the slot count a PATH can actually reach is its kept RAW chunk rows
- * — up to min(PAGE_FANOUT x stageLimit, VECTOR_RAW_LIMIT_CAP), reached when
- * one giant page dominates the raw fetch (shortfall passthrough keeps all
- * its rows). The per-path pins live in the "documented fusion bounds" test.
+ * Largest RRF score a single page can reach: its best vector chunk at leg
+ * rank 1, optionally plus the top keyword slot — 1/(k+1) per leg. Bounded
+ * and WIDTH-INVARIANT since #1106's best-chunk-only rule: per-chunk summing
+ * is gone (see reciprocalRankFusion), so neither the fetch width, the
+ * rerank pool, nor the raw chunk window moves this ceiling — 2/61 ≈ 0.0328
+ * at k=60, full stop.
  *
- * Exported for the test that pins `SearchResult.score`'s documented bounds. The
- * prose version of this has been wrong twice, in both directions, because the
- * per-CHUNK vector leg lets one page's contributions sum — so the numbers live
- * here where they can be asserted instead of in a comment.
+ * Exported for the test that pins `SearchResult.score`'s documented bounds.
+ * The prose version of this has been wrong three times, in both directions,
+ * while the per-CHUNK vector leg let one page's contributions sum — the
+ * history matters for analytics: `max_score` rows written before the #1106
+ * deploy carry the old SUMMED scale (up to ~0.17 chat / ~0.42 with a rerank
+ * pool assigned) and are only loosely comparable with new bounded ones.
  */
-function rrfWorstCase(stageLimit: number, withKeywordHit = false, k = 60): number {
-  let total = 0;
-  for (let rank = 0; rank < stageLimit; rank++) total += 1 / (k + rank + 1);
-  return withKeywordHit ? total + 1 / (k + 1) : total;
+function rrfWorstCase(withKeywordHit = false, k = 60): number {
+  return withKeywordHit ? 2 / (k + 1) : 1 / (k + 1);
 }
 
 /**
@@ -426,13 +411,22 @@ function reciprocalRankFusion(
     { result: SearchResult; score: number; vectorScore: number | null; keywordRank: number | null }
   >();
 
-  // Score from vector search
+  // Score from vector search. A page's fusion contribution is its BEST
+  // chunk's reciprocal rank ONLY (#1106 measured decision): per-chunk
+  // summing over the page-denominated raw window let chunk COUNT dominate
+  // chunk QUALITY under RRF k=60 flatness — candidate-v1 on the #1102 rig
+  // recovered Recall@10 (+2 queries) but paid Recall@1 0.4028→0.3333 and
+  // MRR 0.6016→0.5503, the head-dilution failure class #1103 measured. The
+  // rows arrive distance-ordered, so the first occurrence IS the best chunk
+  // and later siblings add no score; they still compete for representative
+  // text below. Cross-LEG summing stays — a page found by both legs earns
+  // both contributions (that dilution axis is what fuseWithStableHead
+  // bounds, and it is unchanged by this cap).
   vectorResults.forEach((result, rank) => {
     const key = String(result.pageId);
     const existing = scoreMap.get(key);
     const rrf = 1 / (k + rank + 1);
     if (existing) {
-      existing.score += rrf;
       // Keep the result with the higher individual score (best chunk for context)
       if (result.score > existing.result.score) {
         existing.result = result;

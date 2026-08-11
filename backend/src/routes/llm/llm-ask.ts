@@ -263,11 +263,9 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     });
 
     // `score` is the retrieval ORDERING value — an RRF fusion score from
-    // hybridSearch, typically ~0.033, bounded on this path at ~0.52 at the
-    // default fetch width (#1106's raw chunk fetch re-denominated the
-    // ceiling) — rising to ~1.11 when a rerank provider is
-    // assigned (#1104 widens the legs to the candidate pool) or with an
-    // admin-raised `rag_fetch_width` (#1103) — never
+    // hybridSearch, typically ~0.033, and since #1106's best-chunk-only
+    // fusion rule that is also the CEILING (rrfWorstCase), invariant to the
+    // fetch width, the rerank pool and the raw chunk window alike — never
     // near what a similarity threshold expects. It is kept because it orders
     // the array and is what
     // any existing consumer of this frame reads; it must never be rendered or
