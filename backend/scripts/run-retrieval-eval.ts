@@ -42,6 +42,8 @@ interface Report {
   /** #1106 PR 2: whether sibling assembly ran (default true; --no-assemble). */
   assembleContext: boolean;
   assemblyParticipatingQueries: number;
+  /** #1107: queries led by a verified identifier pin. */
+  pinParticipatingQueries: number;
   recallAtK: Record<string, number>;
   mrr: number;
   runs: QueryRun[];
@@ -155,7 +157,7 @@ async function main(): Promise<void> {
   }
 
   console.log(`running ${fixture.labels.length} queries…`);
-  const { runs, vectorParticipatingQueries, rerankParticipatingQueries, assemblyParticipatingQueries } = await runEval(fixture, {
+  const { runs, vectorParticipatingQueries, rerankParticipatingQueries, assemblyParticipatingQueries, pinParticipatingQueries } = await runEval(fixture, {
     userId: EVAL_USER,
     pageIdByFile: seeded.pageIdByFile,
     topK: Math.max(...TOP_K),
@@ -178,6 +180,7 @@ async function main(): Promise<void> {
     corpusPages: corpus.length,
     assembleContext: !process.argv.includes('--no-assemble'),
     assemblyParticipatingQueries,
+    pinParticipatingQueries,
     queries: runs.length,
     vectorParticipatingQueries,
     rerank: rerankRequested,

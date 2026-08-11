@@ -59,6 +59,11 @@ export interface EvalRunResult {
   /** #1106 PR 2: queries in which at least one returned result carried an
    * assembled contextText. */
   assemblyParticipatingQueries: number;
+  /** #1107: queries in which a verified identifier pin led the results.
+   * No hard guard — pins legitimately fire on only the fixture's few
+   * identifier-style queries — but the COUNT is recorded so a silently
+   * dead pin path is visible in the report (the F10 lesson applied). */
+  pinParticipatingQueries: number;
   totalQueries: number;
 }
 
@@ -82,6 +87,7 @@ export async function runEval(fixture: Fixture, opts: EvalRunOptions): Promise<E
   let vectorParticipatingQueries = 0;
   let rerankParticipatingQueries = 0;
   let assemblyParticipatingQueries = 0;
+  let pinParticipatingQueries = 0;
 
   for (const label of fixture.labels) {
     // assembleContext mirrors the shipped chat configuration (#1106 PR 2).
@@ -101,6 +107,7 @@ export async function runEval(fixture: Fixture, opts: EvalRunOptions): Promise<E
     if (results.some((r) => r.vectorScore !== null)) vectorParticipatingQueries++;
     if (results.some((r) => r.rerankScore != null)) rerankParticipatingQueries++;
     if (results.some((r) => r.contextText !== undefined)) assemblyParticipatingQueries++;
+    if (results.some((r) => r.pinned === true)) pinParticipatingQueries++;
 
     const expected = label.expectedFiles.map((file) => {
       const pageId = opts.pageIdByFile.get(file);
@@ -146,5 +153,5 @@ export async function runEval(fixture: Fixture, opts: EvalRunOptions): Promise<E
       + 'check rag_context_chars_per_page and the page_embeddings sibling fetch before trusting this measurement.',
     );
   }
-  return { runs, vectorParticipatingQueries, rerankParticipatingQueries, assemblyParticipatingQueries, totalQueries: fixture.labels.length };
+  return { runs, vectorParticipatingQueries, rerankParticipatingQueries, assemblyParticipatingQueries, pinParticipatingQueries, totalQueries: fixture.labels.length };
 }
