@@ -39,6 +39,9 @@ export interface EvalRunOptions {
    * the measured configuration silently was not the shipped one.
    */
   assembleContext?: boolean;
+  /** #1107: request identifier pinning (default true — the shipped chat
+   * config); exposed so the stage is A/B-able within one tree (#1273 M10). */
+  pinIdentifiers?: boolean;
   /**
    * Fraction of queries that must show at least one vector-leg hit.
    *
@@ -59,6 +62,11 @@ export interface EvalRunResult {
   /** #1106 PR 2: queries in which at least one returned result carried an
    * assembled contextText. */
   assemblyParticipatingQueries: number;
+  /** #1107: queries in which a verified identifier pin led the results.
+   * No hard guard — pins legitimately fire on only the fixture's few
+   * identifier-style queries — but the COUNT is recorded so a silently
+   * dead pin path is visible in the report (the F10 lesson applied). */
+  pinParticipatingQueries: number;
   totalQueries: number;
 }
 
@@ -82,6 +90,7 @@ export async function runEval(fixture: Fixture, opts: EvalRunOptions): Promise<E
   let vectorParticipatingQueries = 0;
   let rerankParticipatingQueries = 0;
   let assemblyParticipatingQueries = 0;
+  let pinParticipatingQueries = 0;
 
   for (const label of fixture.labels) {
     // assembleContext mirrors the shipped chat configuration (#1106 PR 2).
@@ -92,11 +101,16 @@ export async function runEval(fixture: Fixture, opts: EvalRunOptions): Promise<E
     const results = await hybridSearch(opts.userId, label.query, opts.topK, undefined, {
       rerank: opts.rerank === true,
       assembleContext: opts.assembleContext !== false,
+      // #1107 mirrors the shipped chat configuration; the fixture's
+      // negative cases (NL queries carrying identifier-shaped tokens) are
+      // what make "natural-language queries unaffected" measurable.
+      pinIdentifiers: opts.pinIdentifiers !== false,
     });
 
     if (results.some((r) => r.vectorScore !== null)) vectorParticipatingQueries++;
     if (results.some((r) => r.rerankScore != null)) rerankParticipatingQueries++;
     if (results.some((r) => r.contextText !== undefined)) assemblyParticipatingQueries++;
+    if (results.some((r) => r.pinned === true)) pinParticipatingQueries++;
 
     const expected = label.expectedFiles.map((file) => {
       const pageId = opts.pageIdByFile.get(file);
@@ -142,5 +156,5 @@ export async function runEval(fixture: Fixture, opts: EvalRunOptions): Promise<E
       + 'check rag_context_chars_per_page and the page_embeddings sibling fetch before trusting this measurement.',
     );
   }
-  return { runs, vectorParticipatingQueries, rerankParticipatingQueries, assemblyParticipatingQueries, totalQueries: fixture.labels.length };
+  return { runs, vectorParticipatingQueries, rerankParticipatingQueries, assemblyParticipatingQueries, pinParticipatingQueries, totalQueries: fixture.labels.length };
 }

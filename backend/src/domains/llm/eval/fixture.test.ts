@@ -109,10 +109,12 @@ describe('the shipped fixture (#1102)', () => {
 
     // Every style present, and none dominating: keyword-only queries flatter
     // FTS, natural questions flatter the vector leg, and a fixture made of
-    // one of them measures half the system.
-    expect([...styles.keys()].sort()).toEqual(['error-text', 'how-to', 'keywords', 'question']);
-    for (const count of styles.values()) {
-      expect(count).toBeGreaterThanOrEqual(10);
+    // one of them measures half the system. The #1107 identifier styles are
+    // deliberately SMALL probes (3 positives, 3 negatives), so they get a
+    // presence floor of their own rather than the core styles' 10.
+    expect([...styles.keys()].sort()).toEqual(['error-text', 'how-to', 'identifier', 'identifier-negative', 'keywords', 'question']);
+    for (const [style, count] of styles.entries()) {
+      expect(count).toBeGreaterThanOrEqual(style.startsWith('identifier') ? 3 : 10);
       expect(count / parsed.labels.length).toBeLessThan(0.6);
     }
   });

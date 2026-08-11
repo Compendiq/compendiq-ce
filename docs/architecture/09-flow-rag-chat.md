@@ -61,6 +61,9 @@ sequenceDiagram
         PG-->>BE: rows
         note right of BE: per page: best-chunk-anchored window under<br/>rag_context_chars_per_page (0 = off)#59; seam-trimmed,<br/>holes marked#59; contextText read ONLY by buildRagContext —<br/>chunkText stays the best chunk#59; soft-fail to chunk-level#59;<br/>rag.page_merge: assembled | none | bypassed | off (+ pages count)
     end
+    opt pinIdentifiers (#35;1107 — chat path + eval)
+        note right of BE: detectIdentifiers(question) — pure, cue/token-guarded#59;<br/>each detection VERIFIED by an indexed lookup under the<br/>same visibility + EE ACL#59; ≤ 2 verified pins PREPENDED,<br/>fused order below never re-sorted#59; rag.pinned count#59;<br/>a pinned head keeps the confidence gate unmeasurable —<br/>a verified exact match is never auto-refused#59; soft-fail
+    end
     opt includeSubPages
         BE->>RBAC: userCanAccessPage(userId, parentPageId)
         RBAC-->>BE: allow / deny (#35;814 — skip tree on deny)
@@ -209,6 +212,133 @@ never what was attempted. Note the admin analytics
 routes (`knowledge-gaps`, `content-gaps`) still apply one `max_score < 0.3`
 threshold across all rows regardless of unit — a pre-existing defect this
 table documents but #1117 did not change.
+
+## Exact-identifier pin stage (#1107)
+
+Literal identifiers — a numeric page id, an INC-2203-style key, a quoted or
+"page called …" title — get averaged away by the vector leg and diluted by
+FTS. `detectIdentifiers` (`identifier-shortcircuit.ts`, pure and
+dependency-free) recognises those shapes under structural guards: whole-
+query, quoted, or cue-adjacent only; case-sensitive where case is signal;
+short queries only (6 tokens — ONE gate; a second, tighter bound existed
+and gated nothing reachable, because every uncued shape is anchored to the
+whole query and so is one token long); at most two detections, strongest
+kind first. A QUOTED string is
+always a title, never a space key (#1273 fork F10): pages titled 'FAQ',
+'SLA' or 'API' exist, space-key detections verify nothing, and quoting a
+short title is exactly the gesture the trgm lookup serves. Multi-segment
+keys (CVE-2024-1234) capture whole — truncating at the second hyphen left a
+far less specific key that title-matches a different CVE (F7), and an
+over-long trailing segment is REFUSED rather than truncated back to the
+shorter key. The called-cue capture drops surrounding punctuation — not
+because punctuation breaks the probe (measured on Postgres 17 / pg_trgm
+1.6: punctuation and quotes are separators, so `show_trgm('FAQ?')` equals
+`show_trgm('FAQ')` and `similarity` is 1.0) but so the quoted and cued
+paths normalise onto ONE string. Where the 0.3 threshold really bites is
+trailing PROSE — `similarity('FAQ', 'FAQ right now')` is 0.2857 — and
+stripping deliberately does not address that, because trimming words would
+guess at where the title ends. For the same reason the called-cue is
+skipped entirely when the query carries quotes: the two describe one
+gesture, and the cue's greedy capture describes it worse. Space-key
+detections verify nothing by themselves — a space is not a page. Every
+detection is then VERIFIED by one indexed lookup (pages PK for ids, the
+pg_trgm title index for titles, the title index for keys) under the same
+space-visibility predicate as retrieval, plus the EE ACL batch filter.
+Each lookup returns a short ORDERED CANDIDATE LIST rather than one row,
+because page-level ACL filtering happens after the query: a single-row
+lookup that selected a restricted page suppressed the pin an accessible
+page would have received, so "Deployment Runbook" existing in both a
+restricted and a readable space pinned nothing at all (F5). **A detection
+takes its best accessible candidate or nothing — never a substitute.**
+The list is everything the lookup admitted, so the second row is a
+*neighbour*, not a second answer; sliding onto it when the
+first is already pinned would resemble de-duplication while actually
+pinning an unrelated page as a verified exact match, ahead of every fused
+result. Verified pins are PREPENDED to the
+final result set (a page already in the fused set MOVES to the head keeping
+its enriched row; the fused order below is never re-sorted), the tail
+re-slices to topK, and `rag.pinned` carries the count. The #1105 gate is
+guarded IN the confidence formula: `computeRetrievalConfidence` returns
+unmeasurable for any pinned head (#1273 review B3 — a MOVED pin keeps its
+measured scores, and without the guard pinning could CAUSE a refusal the
+unpinned ranking would not have produced), so a verified exact match is
+never auto-refused, new pin or moved. Verification is deterministic and
+namespace-aware (#1273 B1/B2): the cued numeric shape requires ≥5 digits
+(pages.id is a dense SERIAL — small integers verify against SOME row on
+every instance) and the confluence_id namespace outranks the internal PK.
+
+Three lookup rules are load-bearing and each was a wrong pin before it
+existed. (1) **The key must match as a TOKEN, not a substring.** `ILIKE
+'%INC-220%'` matches every `INC-2203` page, and the starts-with tiebreak
+then picks one confidently — and because the shorter key's own page often
+has the *longer* title, `length ASC` actively promoted the wrong ticket.
+Sequential ticket numbering makes every short key a prefix of a longer
+one, so this was ordinary, not exotic. The predicate is a boundary regex
+whose trailing half is a **lookahead**, because `-` and `.` continue an
+identifier only when a DIGIT follows. `INC-220-1` and `PROJ-12.1` are
+sub-tasks and are refused; `INC-7777-postmortem` is the same ticket with a
+word suffix and `Root cause of INC-2203.` merely ends a sentence, so both
+are admitted. Excluding either character outright lost those ordinary
+title forms. The classes are spelled **ASCII**, not `[[:alnum:]]`: under
+`en_US.utf8` that POSIX class matches CJK and Hangul, so `JPN-4242対応手順`
+— a title in a script that offers no space to delimit with — was refused
+outright. `~*` remains index-usable for `gin_trgm_ops` (verified: Bitmap
+Index Scan on `idx_pages_title_trgm`), and the interpolation is safe
+because the detector only emits `[A-Z0-9-]`.
+(2) **`NULLS LAST` on the pageId ordering.** `(cp.confluence_id = $2) DESC`
+is NULL for a locally-created page and Postgres sorts DESC as NULLS FIRST,
+so a PK match on a local page outranked the page whose `confluence_id`
+actually equalled the queried value — the precise inverse of the namespace
+preference the clause exists to state. (3) **A title pin requires an EXACT
+match, normalised for case and whitespace — not a similarity threshold, at
+any value.** This is measured, not stylistic: `similarity('Deployment
+Runbok', 'Deployment Runbook')` is 0.850 and `similarity('Deployment
+Runbook 2023', 'Deployment Runbook 2024')` is 0.846, so a *typo of the
+right page* and a *different page in a versioned family* are
+indistinguishable by threshold. The same holds for `Q1`/`Q2 Roadmap`
+(0.692), `EMEA`/`APAC` (0.630) and `v1.2`/`v1.3` (0.810). Any floor that
+admits the typo admits the wrong year, quarter or region — which this
+stage would then lead the results with, label a verified exact match, and
+suppress the refusal gate for. Fuzzy tolerance was never in the issue's
+contract; it arrived with the trigram operator. `%` stays as the
+index-driven candidate generator and equality is the verification.
+
+**The issue-key lookup probes TITLES only, and that is a precision
+decision, not an oversight** (#1273 fork F1). It was briefly two-tiered,
+falling back to a ts_rank-ordered tsv arm for pages that merely MENTION the
+key. But the shape that admits INC-2203 equally admits SHA-256, UTF-8,
+ISO-8601 and AES-256, and no structural test separates them — a prefix
+denylist would be precisely the probabilistic guard this design rejects. A
+body-mention fallback therefore pinned an arbitrary mentioning page at rank
+1 for any short query carrying a hyphenated uppercase token, with the
+confidence gate suppressed on top. A title match means the page is NAMED by
+the key; a body match means somebody mentioned it, and only the first earns
+rank 1. A key living solely in body text now rides ordinary retrieval:
+recall this stage never promised, traded for the precision it did.
+
+A new pin carries a head-of-body excerpt sized to the same
+`rag_context_chars_per_page` budget assembled pages get, falling back to
+500 chars when the knob is off (F9). It still cannot be sibling-assembled —
+it is created after that stage and has no anchor chunk to grow a window
+around — so reading the same knob is what keeps the feature's headline
+query (the exact-match page the fused legs missed) from carrying the
+thinnest context in the pipeline. Pinning a page that fused just OUTSIDE
+topK recovers its enriched row from the pre-slice pool, not merely from the
+sliced result set (F12) — that near-miss IS the diluted-exact-match case
+this stage exists for, and matching post-slice dropped its scored chunk and
+rerank score for a bare excerpt. The recovery reads the **reranked** pool
+where that stage ran, falling back to the fused candidates only for a page
+beyond the rerank pool entirely: the rerank stage builds new row objects
+rather than mutating the candidate array, so recovering from `candidates`
+would have quietly dropped the very relevance score the recovery exists to
+preserve. The operator kill switch is
+`rag_pin_identifiers` ('0' disables). Detection misses soft-fail to the
+fused order, and lookup errors are isolated PER DETECTION (F8) — one
+failing probe must not discard a second, independently verified pin. The
+fixture's
+`identifier` / `identifier-negative` styles are the measurable form of the
+acceptance criteria: exact queries pin first, natural-language queries with
+identifier-shaped tokens are provably unmoved.
 
 ## Sibling-chunk context assembly (#1106 PR 2)
 

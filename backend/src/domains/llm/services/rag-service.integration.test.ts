@@ -1016,3 +1016,355 @@ describe.skipIf(!dbAvailable)('rag-service integration — #1106 raw fetch plans
     expect(text).not.toContain('Seq Scan on page_embeddings');
   });
 });
+
+describe.skipIf(!dbAvailable)('rag-service integration — #1107 identifier pin lookups (real SQL)', () => {
+  const USER = 'aaaaaaaa-1107-4000-8000-000000001107';
+  beforeAll(async () => {
+    await setupTestDb();
+    await truncateAllTables();
+    await query(
+      `INSERT INTO users (id, username, email, role, password_hash)
+       VALUES ($1::uuid, $1::text, $1::text || '@t', 'user', 'x') ON CONFLICT (id) DO NOTHING`,
+      [USER],
+    );
+    await query(`INSERT INTO spaces (space_key, space_name) VALUES ('DEV', 'DEV') ON CONFLICT (space_key) DO NOTHING`);
+    await query(
+      `INSERT INTO roles (name, display_name, is_system, permissions)
+       VALUES ('viewer', 'Viewer', TRUE, ARRAY['read']) ON CONFLICT (name) DO NOTHING`,
+    );
+    const role = await query<{ id: number }>(`SELECT id FROM roles WHERE name = 'viewer'`);
+    await query(
+      `INSERT INTO space_role_assignments (space_key, principal_type, principal_id, role_id)
+       VALUES ('DEV', 'user', $1, $2) ON CONFLICT DO NOTHING`,
+      [USER, role.rows[0]!.id],
+    );
+    for (const [title, body] of [
+      ['INC-2203 postmortem', 'incident INC-2203 details and remediation'],
+      ['Deployment Runbook', 'how we deploy'],
+      ['Unrelated Notes', 'nothing to see'],
+    ] as Array<[string, string]>) {
+      await query(
+        `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+         VALUES (gen_random_uuid()::text, 'confluence', 'DEV', $1, $2, '', '')`,
+        [title, body],
+      );
+    }
+  });
+  afterAll(async () => {
+    await teardownTestDb();
+  });
+
+  it('verifies an issue key via the real title-ILIKE/tsv path and pins it (#1270-F11 lesson: real SQL, not a mocked shape)', async () => {
+    const out = await hybridSearch(USER, 'what is INC-2203 about', 5, undefined, { pinIdentifiers: true });
+    expect(out.length).toBeGreaterThan(0);
+    expect(out[0]!.pageTitle).toBe('INC-2203 postmortem');
+    expect(out[0]!.pinned).toBe(true);
+  });
+
+  it('verifies a quoted title via the real pg_trgm % path', async () => {
+    const out = await hybridSearch(USER, 'find "Deployment Runbook"', 5, undefined, { pinIdentifiers: true });
+    expect(out[0]!.pageTitle).toBe('Deployment Runbook');
+    expect(out[0]!.pinned).toBe(true);
+  });
+
+  it('an NL query with an uppercase token pins nothing — real end-to-end negative', async () => {
+    const out = await hybridSearch(USER, 'how does DEV handle deployment approvals', 5, undefined, { pinIdentifiers: true });
+    expect(out.every((r) => r.pinned === undefined)).toBe(true);
+  });
+
+  it("'page N' prose never pins an arbitrary page — the dense-SERIAL trap, end-to-end (#1273 B1)", async () => {
+    // The reviewer proved 'page 43561 of the deployment guide' pinned
+    // 'Quarterly planning notes'. Post-fix the cued shape needs >=5 digits
+    // AND small prose numbers never reach a lookup at all.
+    const out = await hybridSearch(USER, 'what does page 2 say', 5, undefined, { pinIdentifiers: true });
+    expect(out.every((r) => r.pinned === undefined)).toBe(true);
+  });
+
+  it('the page the key NAMES beats pages that merely CONTAIN it, regardless of heap order (#1273 B2)', async () => {
+    // Re-targeted: this was written against the body-mention tier, which
+    // fork F1 removed — mention-only pages can no longer match at all, so
+    // the old fixture made the assertion vacuous and stopped exercising
+    // the ORDER BY it exists for. The live ordering question is now among
+    // pages whose TITLES all carry the key: starts-with beats contains,
+    // shorter beats longer, and insertion order must not decide.
+    //
+    // The two CONTAINING titles are deliberately SHORTER than the
+    // starts-with one, so `length(title) ASC` alone would pick the wrong
+    // page. Only the `(cp.title ~* '^KEY…') DESC` term produces the
+    // expected answer — with equal-length fixtures this test passed on
+    // length and left the tiebreak it is named for unexercised.
+    for (const [title, body] of [
+      ['Re: INC-9001 sync', 'earliest by heap order, and the shortest title'],
+      ['Notes on INC-9001', 'also contains the key, also shorter'],
+      ['INC-9001 postmortem and remediation plan', 'full analysis of the incident'],
+    ] as Array<[string, string]>) {
+      await query(
+        `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+         VALUES (gen_random_uuid()::text, 'confluence', 'DEV', $1, $2, '', '')`,
+        [title, body],
+      );
+    }
+    const out = await hybridSearch(USER, 'what is INC-9001 about', 5, undefined, { pinIdentifiers: true });
+    expect(out[0]!.pageTitle).toBe('INC-9001 postmortem and remediation plan');
+    expect(out[0]!.pinned).toBe(true);
+  });
+
+  it('the confluence_id namespace really does outrank the internal PK (NULLS LAST)', async () => {
+    // `ORDER BY (cp.confluence_id = $2) DESC` is NULLS FIRST by SQL
+    // default, and the expression is NULL for a locally-created page — so
+    // a PK match on a local page sorted ABOVE the page whose confluence_id
+    // actually equals the queried value, inverting the preference this
+    // ORDER BY exists to state. Only real Postgres shows this.
+    const local = await query<{ id: number }>(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+       VALUES (NULL, 'standalone', 'DEV', 'Local scratch page', 'local body', '', '') RETURNING id`,
+    );
+    const localId = local.rows[0]!.id;
+    await query(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+       VALUES ($1::text, 'confluence', 'DEV', 'The page that owns this id', 'confluence body', '', '')`,
+      [String(localId)],
+    );
+    const out = await hybridSearch(USER, String(localId), 5, undefined, { pinIdentifiers: true });
+    expect(out[0]!.pinned).toBe(true);
+    expect(out[0]!.pageTitle).toBe('The page that owns this id');
+  });
+
+  it('an issue key matches as a TOKEN, never a substring — a longer key\'s page is not pinned', async () => {
+    // `ILIKE '%INC-220%'` matched every INC-2203/INC-22030 page, and the
+    // starts-with tiebreak then picked one confidently: a pin on a
+    // DIFFERENT identifier, which is the failure this stage exists to
+    // prevent. Real SQL, because the boundary is a regex behaviour.
+    // A key with NO exact-match page anywhere in the corpus, so the longer
+    // key's page is the only candidate the substring form could reach —
+    // otherwise an exact-match row elsewhere wins the ORDER BY and the
+    // test passes without exercising the boundary at all.
+    await query(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+       VALUES (gen_random_uuid()::text, 'confluence', 'DEV', 'ZZQ-44001 postmortem', 'unrelated incident', '', '')`,
+    );
+    const out = await hybridSearch(USER, 'what is ZZQ-4400 about', 5, undefined, { pinIdentifiers: true });
+    expect(out.some((r) => r.pinned)).toBe(false);
+    // The page the key genuinely names still pins, boundary and all.
+    const exact = await hybridSearch(USER, 'what is ZZQ-44001 about', 5, undefined, { pinIdentifiers: true });
+    expect(exact[0]!.pageTitle).toBe('ZZQ-44001 postmortem');
+    expect(exact[0]!.pinned).toBe(true);
+  });
+
+  it('a longer sibling key never outranks the page the queried key names — sequential numbering makes this ordinary', async () => {
+    // The reviewer's end-to-end repro: with both pages present the shorter
+    // key's own page has the LONGER title, so `length ASC` promoted the
+    // wrong ticket to rank 1 — and every 2-digit key is a prefix of some
+    // 3-digit key in a sequentially-numbered project.
+    for (const title of ['PPX-12 Spike: caching strategy for the gateway', 'PPX-123']) {
+      await query(
+        `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+         VALUES (gen_random_uuid()::text, 'confluence', 'DEV', $1, 'body', '', '')`,
+        [title],
+      );
+    }
+    const out = await hybridSearch(USER, 'what is PPX-12 about', 5, undefined, { pinIdentifiers: true });
+    expect(out[0]!.pinned).toBe(true);
+    expect(out[0]!.pageTitle).toBe('PPX-12 Spike: caching strategy for the gateway');
+  });
+
+  it('a sub-task key is a different identifier — the boundary excludes the hyphen', async () => {
+    await query(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+       VALUES (gen_random_uuid()::text, 'confluence', 'DEV', 'QQR-330-1 sub-task', 'body', '', '')`,
+    );
+    const out = await hybridSearch(USER, 'what is QQR-330 about', 5, undefined, { pinIdentifiers: true });
+    expect(out.some((r) => r.pinned)).toBe(false);
+  });
+
+  it('a title pin requires EXACT match — a sibling in a versioned family is never pinned', async () => {
+    // Measured on this Postgres: a TYPO of the right page scores 0.850
+    // ('Deployment Runbok' vs 'Deployment Runbook') and a DIFFERENT page
+    // in a versioned family scores 0.846 ('… 2023' vs '… 2024'). No
+    // threshold separates them, so a pin — which leads the results and
+    // suppresses the #1105 gate — requires equality, not similarity.
+    await query(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+       VALUES (gen_random_uuid()::text, 'confluence', 'DEV', 'Quarterly Runbook 2024', 'the 2024 one', '', '')`,
+    );
+    const wrongYear = await hybridSearch(USER, '"Quarterly Runbook 2023"', 5, undefined, { pinIdentifiers: true });
+    expect(wrongYear.some((r) => r.pinned)).toBe(false);
+
+    const typo = await hybridSearch(USER, '"Quarterly Runbok 2024"', 5, undefined, { pinIdentifiers: true });
+    expect(typo.some((r) => r.pinned)).toBe(false);
+
+    // Exact still pins, and normalisation covers case and inner spacing.
+    const exact = await hybridSearch(USER, '"Quarterly Runbook 2024"', 5, undefined, { pinIdentifiers: true });
+    expect(exact[0]!.pageTitle).toBe('Quarterly Runbook 2024');
+    expect(exact[0]!.pinned).toBe(true);
+
+    const messy = await hybridSearch(USER, '"quarterly   runbook 2024"', 5, undefined, { pinIdentifiers: true });
+    expect(messy[0]!.pageTitle).toBe('Quarterly Runbook 2024');
+    expect(messy[0]!.pinned).toBe(true);
+  });
+
+  it('normalisation applies to the STORED title too, not just the typed one', async () => {
+    // The messy-query case above exercises only the typed side. This one
+    // pins the COLUMN side: a title stored with doubled and trailing
+    // whitespace must normalise onto a cleanly typed query.
+    //
+    // It is NOT a regression test for the JS/SQL divergence — the column
+    // was already normalised before that fix, so this case passed then
+    // too. Its non-vacuity was established by deleting the column-side
+    // normalisation and watching it fail, not by reverting a commit.
+    await query(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+       VALUES (gen_random_uuid()::text, 'confluence', 'DEV', $1, 'body', '', '')`,
+      ['  Capacity   Planning  Notes '],
+    );
+    const out = await hybridSearch(USER, '"Capacity Planning Notes"', 5, undefined, { pinIdentifiers: true });
+    expect(out[0]!.pinned).toBe(true);
+    expect(out[0]!.pageTitle).toBe('  Capacity   Planning  Notes ');
+  });
+
+  it('a title carrying a NON-BREAKING space still pins — JS and SQL must normalise alike', async () => {
+    // JavaScript's \s matches U+00A0; Postgres's does not. Without
+    // translate() the SQL side produced a string the JS side could never
+    // match, so a page whose title carries the NBSP that Confluence and
+    // Word paste routinely became permanently unpinnable, silently.
+    const nbspTitle = 'Incident\u00A0Review\u00A0Board';
+    expect(nbspTitle).not.toBe('Incident Review Board');
+    await query(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+       VALUES (gen_random_uuid()::text, 'confluence', 'DEV', $1, 'body', '', '')`,
+      [nbspTitle],
+    );
+    // The user types ordinary spaces, as they always would.
+    const out = await hybridSearch(USER, '"Incident Review Board"', 5, undefined, { pinIdentifiers: true });
+    expect(out[0]!.pinned).toBe(true);
+    expect(out[0]!.pageTitle).toBe(nbspTitle);
+  });
+
+  it('a Turkish dotted capital and an uppercase Greek title pin — one normaliser, not two', async () => {
+    // Postgres lower() and JS toLowerCase() disagree on U+0130 (PG gives
+    // 'i', JS gives 'i' + U+0307) and on a word-final sigma (PG 'σ', JS
+    // 'ς'). While the query was normalised in JS and the column in SQL,
+    // these titles could not be pinned by ANY query — the unreachable
+    // value was the stored one. Both sides now run the same SQL.
+    const turkish = '\u0130stanbul Ofis Rehberi';
+    const greek = '\u039F\u0394\u0397\u0393\u039F\u03A3 \u0391\u039D\u0391\u03A0\u03A4\u03A5\u039E\u0397\u03A3';
+    for (const title of [turkish, greek]) {
+      await query(
+        `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+         VALUES (gen_random_uuid()::text, 'confluence', 'DEV', $1, 'body', '', '')`,
+        [title],
+      );
+    }
+    const tr = await hybridSearch(USER, `"${turkish}"`, 5, undefined, { pinIdentifiers: true });
+    expect(tr[0]!.pinned).toBe(true);
+    expect(tr[0]!.pageTitle).toBe(turkish);
+
+    const el = await hybridSearch(USER, `"${greek}"`, 5, undefined, { pinIdentifiers: true });
+    expect(el[0]!.pinned).toBe(true);
+    expect(el[0]!.pageTitle).toBe(greek);
+  });
+
+  it('a hyphenated WORD suffix is the same ticket; a hyphenated DIGIT is a sub-task', async () => {
+    // The boundary must reject what continues an identifier and admit what
+    // merely follows it. Excluding every hyphen got the second half wrong:
+    // `INC-7777-postmortem` is a common title form for the ticket itself.
+    for (const title of ['TKT-7777-postmortem notes', 'TKT-8888-1 sub-task']) {
+      await query(
+        `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+         VALUES (gen_random_uuid()::text, 'confluence', 'DEV', $1, 'body', '', '')`,
+        [title],
+      );
+    }
+    const wordSuffix = await hybridSearch(USER, 'what is TKT-7777 about', 5, undefined, { pinIdentifiers: true });
+    expect(wordSuffix[0]!.pinned).toBe(true);
+    expect(wordSuffix[0]!.pageTitle).toBe('TKT-7777-postmortem notes');
+
+    const subTask = await hybridSearch(USER, 'what is TKT-8888 about', 5, undefined, { pinIdentifiers: true });
+    expect(subTask.some((r) => r.pinned)).toBe(false);
+  });
+
+  it('a key adjacent to a non-spaced script still pins — the boundary is ASCII, not [[:alnum:]]', async () => {
+    // Under en_US.utf8 the POSIX class matches CJK and Hangul, so a
+    // perfectly ordinary Japanese title refused the key outright. Issue
+    // keys are ASCII by construction, so the boundary should be too.
+    await query(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+       VALUES (gen_random_uuid()::text, 'confluence', 'DEV', 'JPN-4242対応手順', '本文', '', '')`,
+    );
+    const out = await hybridSearch(USER, 'what is JPN-4242 about', 5, undefined, { pinIdentifiers: true });
+    expect(out[0]!.pinned).toBe(true);
+    expect(out[0]!.pageTitle).toBe('JPN-4242対応手順');
+  });
+
+  it('a sentence period after a key is punctuation, not a sub-task dot', async () => {
+    // `.` and `-` continue an identifier only before a DIGIT. Treating `.`
+    // as an unconditional continuation refused an ordinary title that
+    // simply ends a sentence after naming the ticket.
+    await query(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+       VALUES (gen_random_uuid()::text, 'confluence', 'DEV', 'Root cause of RCA-5150.', 'body', '', '')`,
+    );
+    const out = await hybridSearch(USER, 'what is RCA-5150 about', 5, undefined, { pinIdentifiers: true });
+    expect(out[0]!.pinned).toBe(true);
+    expect(out[0]!.pageTitle).toBe('Root cause of RCA-5150.');
+  });
+
+  it('a dotted or underscored sub-task key is a different identifier too', async () => {
+    for (const title of ['PRD-77.1 sub-task notes', 'PRD-78_old archive']) {
+      await query(
+        `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+         VALUES (gen_random_uuid()::text, 'confluence', 'DEV', $1, 'body', '', '')`,
+        [title],
+      );
+    }
+    const dotted = await hybridSearch(USER, 'what is PRD-77 about', 5, undefined, { pinIdentifiers: true });
+    expect(dotted.some((r) => r.pinned)).toBe(false);
+    const underscored = await hybridSearch(USER, 'what is PRD-78 about', 5, undefined, { pinIdentifiers: true });
+    expect(underscored.some((r) => r.pinned)).toBe(false);
+  });
+
+  it('a key living only in BODY text pins NOTHING — verification is title-only (#1273 fork F1)', async () => {
+    // The former ranked-tsv fallback verified a MENTION, and the issue-key
+    // shape admits SHA-256/UTF-8/ISO-8601 — so any short query carrying a
+    // hyphenated uppercase token pinned an arbitrary mentioning page at
+    // rank 1. The page stays reachable through ordinary retrieval; it just
+    // does not get promoted as a verified exact match.
+    await query(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+       VALUES (gen_random_uuid()::text, 'confluence', 'DEV', 'Outage timeline', 'incident SEC-0731 was contained', '', '')`,
+    );
+    const out = await hybridSearch(USER, 'what is SEC-0731 about', 5, undefined, { pinIdentifiers: true });
+    expect(out.some((r) => r.pinned)).toBe(false);
+  });
+
+  it('a technical acronym compound pins nothing even when a page MENTIONS it (#1273 fork F1)', async () => {
+    await query(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+       VALUES (gen_random_uuid()::text, 'confluence', 'DEV', 'Password storage', 'we hash passwords with SHA-256 today', '', '')`,
+    );
+    const out = await hybridSearch(USER, 'SHA-256 vs MD5', 5, undefined, { pinIdentifiers: true });
+    expect(out.some((r) => r.pinned)).toBe(false);
+  });
+
+  it('a quoted ALL-CAPS title verifies through the real trgm path (#1273 fork F10)', async () => {
+    // Quoted used to reclassify as a space key, which verifies nothing, so
+    // a page genuinely titled 'SLA' could never be pinned by naming it.
+    await query(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+       VALUES (gen_random_uuid()::text, 'confluence', 'DEV', 'SLA', 'service level agreement targets', '', '')`,
+    );
+    const out = await hybridSearch(USER, 'find "SLA"', 5, undefined, { pinIdentifiers: true });
+    expect(out[0]!.pageTitle).toBe('SLA');
+    expect(out[0]!.pinned).toBe(true);
+  });
+
+  it('the called-cue survives trailing punctuation across the real 0.3 trigram threshold (#1273 fork F13)', async () => {
+    await query(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+       VALUES (gen_random_uuid()::text, 'confluence', 'DEV', 'FAQ', 'frequently asked questions', '', '')`,
+    );
+    const out = await hybridSearch(USER, 'the page called FAQ?', 5, undefined, { pinIdentifiers: true });
+    expect(out[0]!.pageTitle).toBe('FAQ');
+    expect(out[0]!.pinned).toBe(true);
+  });
+});

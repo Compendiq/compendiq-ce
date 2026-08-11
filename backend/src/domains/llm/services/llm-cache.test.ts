@@ -75,6 +75,13 @@ describe('buildRagCacheKey', () => {
     expect(at(undefined)).not.toBe(at(6000));
   });
 
+  it('keys on the pin count — a soft-failed pin must not serve the pinned answer for the TTL (#1273 M5)', () => {
+    const at = (pinnedCount: number) =>
+      buildRagCacheKey('m', 'q', ['d1'], { provider: 'p1', pinnedCount });
+    expect(at(1)).not.toBe(at(0));
+    expect(at(1)).toBe(at(1));
+  });
+
   it('keys on the REALIZED outcome — a soft-failed chunk-level answer never occupies the assembled key (#1270 F9)', () => {
     const at = (assembledPages: number) =>
       buildRagCacheKey('m', 'q', ['d1'], { provider: 'p1', contextChars: 6000, assembledPages });

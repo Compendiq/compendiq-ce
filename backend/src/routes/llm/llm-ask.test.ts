@@ -933,7 +933,7 @@ describe('POST /api/llm/ask', () => {
       'How do I reset my password?',
       5,
       undefined,
-      { rerank: true, assembleContext: true, onRetrievalMeta: expect.any(Function) },
+      { rerank: true, assembleContext: true, pinIdentifiers: true, onRetrievalMeta: expect.any(Function) },
     );
   });
 

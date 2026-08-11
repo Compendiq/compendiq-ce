@@ -19,6 +19,7 @@ import { logger } from '../../../core/utils/logger.js';
 import {
   getRagContextCharsPerPage,
   getRagFetchWidth,
+  getRagPinIdentifiersEnabled,
   getRagRerankCandidates,
   RAG_FETCH_WIDTH_DEFAULT,
   RAG_FETCH_WIDTH_MAX,
@@ -165,6 +166,14 @@ interface SearchResult {
    * the sources map both key the Section claim on THIS.
    */
   contextSpansSections?: boolean;
+  /**
+   * #1107 — this record was pinned by a VERIFIED exact-identifier match,
+   * ahead of the fused ranking. `vectorScore` stays null (nothing was
+   * measured), which deliberately means a pinned head keeps the #1105
+   * confidence gate unmeasurable — a verified exact match must never be
+   * auto-refused.
+   */
+  pinned?: true;
   /**
    * Cross-encoder relevance in [0, 1] (#1104); null OR absent when this
    * result was never reranked — the stage is off, the pool bypassed, or this
@@ -667,6 +676,7 @@ export type DegradedReason = 'no_embeddings' | 'partial_embeddings' | 'embedding
 
 import { computeRetrievalConfidence, type RetrievalHealthCaveat } from './retrieval-confidence.js';
 import { assembleSiblingWindow } from './sibling-assembly.js';
+import { detectIdentifiers, type DetectedIdentifier } from './identifier-shortcircuit.js';
 
 /** Observability fields added by migration 088 (#1117 stage 2). */
 export interface SearchAnalyticsExtras {
@@ -887,6 +897,16 @@ export interface HybridSearchOptions {
    * degrades to chunk-level rows, never the search.
    */
   assembleContext?: boolean;
+  /**
+   * #1107 — detect literal identifiers in the query (page id, INC-style
+   * key, quoted title; see identifier-shortcircuit.ts for the shapes and
+   * guards), VERIFY each with a cheap indexed lookup under the same
+   * visibility rules as retrieval, and PIN at most two verified records
+   * ahead of the fused output. Natural-language queries are structurally
+   * unaffected (the detector's token limits and cue guards). Soft-fail:
+   * any lookup error skips the pin, never the search.
+   */
+  pinIdentifiers?: boolean;
 }
 
 export async function hybridSearch(
@@ -916,6 +936,247 @@ export async function hybridSearch(
     },
     { 'rag.top_k': topK },
   );
+}
+
+/**
+ * #1107 — how many rows each identifier lookup returns. It is not 1
+ * (#1273 fork F5): EE page-level ACL filtering runs in the caller, AFTER
+ * the query, so a single-row lookup that happened to select a restricted
+ * page suppressed the pin an ACCESSIBLE page would have received —
+ * "Deployment Runbook" existing in both HR (restricted) and ENG (readable)
+ * pinned nothing at all. A short ordered candidate list lets the caller
+ * pick the first row the user may actually read, and every branch's
+ * ORDER BY already makes that list deterministic.
+ */
+export const IDENTIFIER_LOOKUP_CANDIDATES = 5;
+
+/** Excerpt length for a pinned row when `rag_context_chars_per_page` is off. */
+const PIN_EXCERPT_FALLBACK_CHARS = 500;
+
+/**
+ * #1107 — a TITLE pin requires an EXACT match, normalised for case and
+ * whitespace. Not a similarity threshold, at any value.
+ *
+ * A threshold cannot work here, and that is measurable rather than a
+ * matter of taste. On Postgres 17 / pg_trgm 1.6, a TYPO of the page the
+ * user meant and a DIFFERENT page are not separable in EITHER direction:
+ *
+ *   similarity('Deployment Runbok',      'Deployment Runbook')      = 0.850
+ *   similarity('Deployment Runbook 2023','Deployment Runbook 2024') = 0.846
+ *   similarity('Onbaording',             'Onboarding')              = 0.467
+ *   similarity('Offboarding',            'Onboarding')              = 0.533
+ *
+ * The last pair is the one that settles it: a semantically OPPOSITE page
+ * scores HIGHER than a misspelling of the right one. So no floor admits
+ * typos without also admitting the wrong year, quarter, region — or the
+ * inverse concept — which this stage would then lead the results with,
+ * label a verified exact match, and suppress the #1105 refusal gate for.
+ * (Same family: 'Q1'/'Q2 Roadmap' 0.692, 'EMEA'/'APAC' 0.630, 'v1.2'/
+ * 'v1.3' 0.810.) Trigram similarity is also length-blind, so one constant
+ * cannot serve a 3-character acronym and a 40-character title at once.
+ *
+ * Fuzzy tolerance was never in the issue's contract; it arrived with the
+ * trigram operator. A missed pin is a silent fallback to ordinary
+ * retrieval with the refusal gate intact — the safe side of an
+ * inseparable boundary. The `%` operator stays as the index-driven
+ * candidate generator, and equality is the verification.
+ */
+/**
+ * The Unicode spaces BOTH halves of the comparison must collapse, listed
+ * once and used to build both halves — because the two drifting apart is
+ * the failure mode, not any particular character.
+ *
+ * JavaScript's `\s` matches all of these; Postgres's `\s` matches only the
+ * ASCII set. So a title carrying a non-breaking space — which Confluence
+ * and Word paste routinely — normalised to something the JS side could
+ * never produce, and the equality silently never matched: the page became
+ * permanently unpinnable, with no signal anywhere. `translate()` maps them
+ * to plain spaces in SQL before the collapse, so both sides agree.
+ */
+// Escapes, never literals: these characters are invisible in an editor, so
+// a literal list cannot be reviewed and a stray copy-paste cannot be seen.
+const UNICODE_SPACES = [
+  '\u00A0', // no-break space — the one Confluence and Word actually emit
+  '\u1680', // ogham space mark
+  '\u2000', '\u2001', '\u2002', '\u2003', '\u2004', '\u2005',
+  '\u2006', '\u2007', '\u2008', '\u2009', '\u200A', // en/em/thin/hair spaces
+  '\u202F', // narrow no-break space
+  '\u205F', // medium mathematical space
+  '\u3000', // ideographic space
+  '\uFEFF', // zero-width no-break space (BOM)
+].join('');
+const UNICODE_SPACES_AS_PLAIN = ' '.repeat(UNICODE_SPACES.length);
+
+/**
+ * Both sides of the title equality are normalised by THIS expression and
+ * nothing else — there is deliberately no JavaScript counterpart.
+ *
+ * An earlier version normalised the query in JS and the column in SQL, and
+ * kept the two in step by hand. They were not in step, in three separate
+ * ways: JS `\s` matches U+00A0 and Postgres's does not; `lower()` and
+ * `toLowerCase()` disagree on U+0130 (Turkish dotted capital İ — Postgres
+ * yields `i`, JS yields `i` plus a combining dot) and on U+1C89; and JS
+ * lowercases a word-final Σ to `ς` while Postgres yields `σ`. Each one
+ * made a whole class of titles impossible to pin — Turkish, uppercase
+ * Greek, anything pasted from Word — silently and forever, because the
+ * unreachable value was the STORED one, so no phrasing of the query could
+ * reach it.
+ *
+ * Two normalisers that must agree is the defect. One is the fix: applying
+ * the same SQL to the column and the parameter cannot diverge, and it
+ * takes Postgres's `lower()` as the single lowercaser in the path.
+ */
+const NORMALIZED_TITLE = (expr: string, spacesParam: string, plainParam: string): string =>
+  `lower(btrim(regexp_replace(translate(${expr}, ${spacesParam}, ${plainParam}), '\\s+', ' ', 'g')))`;
+
+/**
+ * #1107 — verify one detected identifier under the caller's space
+ * visibility. Returns up to IDENTIFIER_LOOKUP_CANDIDATES keyword-style
+ * SearchResults (body-text excerpt, no measured scores, `pinned: true`) in
+ * confidence order, or an empty array.
+ *
+ * The #1273 review's root-cause rule governs every branch: a lookup that
+ * returns A row must never be treated as a lookup that returned THE row.
+ * - pageId: the confluence_id namespace (what a user means by "page id")
+ *   is preferred over the internal SERIAL PK via ORDER BY, and the PK arm
+ *   only participates when the value fits int4 (B1/M2 — a 10-digit id
+ *   used to throw 22003 and soft-fail the whole lookup).
+ * - issueKey: TITLE ONLY, with a deterministic ORDER BY (title starting
+ *   with the key beats containing it, shorter beats longer). The old
+ *   single OR query returned heap order, pinning the oldest page that
+ *   mentioned the key ahead of its own postmortem (B2), and the
+ *   disjunction defeated both indexes into a seq scan (M1). The ranked tsv
+ *   BODY tier that replaced it is gone too (#1273 fork F1): the issue-key
+ *   shape is indistinguishable from ubiquitous technical compounds —
+ *   SHA-256, UTF-8, ISO-8601, AES-256 — and a body-MENTION verification
+ *   pinned an arbitrary mentioning page at rank 1 for any short query
+ *   carrying one. No structural test separates INC-2203 from SHA-256, and
+ *   a prefix denylist would be exactly the probabilistic guard this
+ *   feature was designed to avoid. A title match means the page is NAMED
+ *   by the key; a body match means someone mentioned it. Only the first
+ *   earns rank 1, so a key living solely in body text now rides normal
+ *   retrieval — recall this stage never promised, traded for the
+ *   precision it did.
+ * - title: the pg_trgm path, explicitly kind-gated — the old else-branch
+ *   would have run a fuzzy TITLE match for a revived spaceKey (M4).
+ */
+async function lookupIdentifier(
+  ident: DetectedIdentifier,
+  spaces: string[],
+  userId: string,
+): Promise<SearchResult[]> {
+  // The excerpt is sized to the SAME per-page budget assembled pages get
+  // (#1273 fork F9). A new pin is the one row sibling assembly cannot
+  // reach — it is created after that stage, and it has no anchor chunk to
+  // grow a window around — so a hardcoded 500 chars gave the feature's
+  // headline query ("find the page called X", the page missing from the
+  // fused set) the thinnest context in the pipeline. Reading the same knob
+  // keeps one operator dial over how much of a page reaches the model;
+  // 0/off falls back to the old fixed lede rather than to nothing.
+  const budget = await getRagContextCharsPerPage();
+  const excerptChars = budget > 0 ? budget : PIN_EXCERPT_FALLBACK_CHARS;
+  const select = `SELECT cp.id AS page_id, cp.confluence_id, cp.title, cp.space_key,
+                         substring(cp.body_text, 1, $5) AS excerpt
+                  FROM pages cp
+                  WHERE ${visiblePagesPredicate(1, 3)} AND cp.deleted_at IS NULL`;
+  type Row = { page_id: number; confluence_id: string | null; title: string; space_key: string | null; excerpt: string | null };
+  const limit = IDENTIFIER_LOOKUP_CANDIDATES;
+  let rows: Row[] = [];
+  if (ident.kind === 'pageId') {
+    const n = Number.parseInt(ident.value, 10);
+    const fitsInt4 = Number.isFinite(n) && n <= 2_147_483_647;
+    // Placeholders are renumbered per-branch: an UNREFERENCED parameter
+    // cannot type-infer ("could not determine data type of parameter") and
+    // kills the statement — the visibility fragment holds $1/$3.
+    // NULLS LAST is load-bearing, not decoration. `cp.confluence_id = $2`
+    // is NULL for a locally-created page, and Postgres sorts DESC as NULLS
+    // FIRST — so the null (a PK match on a local page) outranked the TRUE
+    // (the real confluence_id match), inverting the exact namespace
+    // preference this ORDER BY exists to state.
+    const r = fitsInt4
+      ? await query<Row>(
+          `${select} AND (cp.confluence_id = $2 OR cp.id = $4)
+           ORDER BY (cp.confluence_id = $2) DESC NULLS LAST, cp.id ASC LIMIT $6`,
+          [spaces, ident.value, userId, n, excerptChars, limit],
+        )
+      : await query<Row>(
+          `${select} AND cp.confluence_id = $2 ORDER BY cp.id ASC LIMIT $4`,
+          [spaces, ident.value, userId, limit, excerptChars],
+        );
+    rows = r.rows;
+  } else if (ident.kind === 'issueKey') {
+    // The key must match as a TOKEN, not a substring. `ILIKE '%INC-220%'`
+    // matches every INC-2203 / INC-22030 page, and the starts-with
+    // tiebreak then confidently picks one of them — a pin on a DIFFERENT
+    // identifier, which is the failure this whole stage is meant to
+    // prevent. The alternation is safe to interpolate because the detector
+    // only ever emits [A-Z0-9-]+ (asserted below): no regex metacharacter
+    // can reach here, and `-` is literal outside a bracket expression.
+    // `~*` is still an index-usable operator for gin_trgm_ops.
+    // The boundary rejects what CONTINUES an identifier and admits what
+    // ENDS one, and both halves took measuring to get right.
+    //
+    // The classes are spelled ASCII, not [[:alnum:]]: under en_US.utf8 that
+    // POSIX class matches CJK and Hangul, so `INC-2203対応手順` — a
+    // perfectly ordinary title in a non-spaced script — was refused. Issue
+    // keys are ASCII by construction, so an ASCII class is both correct
+    // and narrower.
+    //
+    // The trailing rule is a lookahead rather than a class because `-` and
+    // `.` only continue an identifier when a DIGIT follows: `INC-220-1`
+    // and `PROJ-12.1` are sub-tasks (refuse), while `INC-7777-postmortem`
+    // is the same ticket with a word suffix and `Root cause of INC-2203.`
+    // simply ends a sentence (admit). Excluding either character outright
+    // lost those, and both are ordinary title forms.
+    if (!/^[A-Za-z0-9-]+$/.test(ident.value)) return [];
+    const boundary = '(?![0-9A-Za-z_]|[.-][0-9])';
+    const boundedKey = `(^|[^0-9A-Za-z._-])${ident.value}${boundary}`;
+    const startsWithKey = `^${ident.value}${boundary}`;
+    const titled = await query<Row>(
+      `${select} AND cp.title ~* $2
+       ORDER BY (cp.title ~* $4) DESC, length(cp.title) ASC, cp.id ASC LIMIT $6`,
+      [spaces, boundedKey, userId, startsWithKey, excerptChars, limit],
+    );
+    rows = titled.rows;
+  } else if (ident.kind === 'title') {
+    // `%` narrows via the trigram index; normalised EQUALITY is what earns
+    // the pin (see NORMALIZED_TITLE — no threshold separates a typo from a
+    // sibling page in a versioned title family). Ordering is by id because
+    // every survivor is an exact match; the candidate list plus the ACL
+    // filter pick which same-titled page the caller may actually read.
+    // The SAME expression over the column and over the raw parameter, so
+    // the two cannot drift; translate() runs before the \s+ collapse
+    // because Postgres's \s is ASCII-only.
+    const r = await query<Row>(
+      `${select} AND cp.title % $2
+       AND ${NORMALIZED_TITLE('cp.title', '$6', '$7')} = ${NORMALIZED_TITLE('$2', '$6', '$7')}
+       ORDER BY cp.id ASC LIMIT $4`,
+      [spaces, ident.value, userId, limit, excerptChars, UNICODE_SPACES, UNICODE_SPACES_AS_PLAIN],
+    );
+    rows = r.rows;
+  } else {
+    // spaceKey (and any future kind) verifies nothing here by design — a
+    // space is not a page; #1110 is the intended consumer.
+    return [];
+  }
+  return rows.map((row) => ({
+    pageId: row.page_id,
+    confluenceId: row.confluence_id,
+    // Head-of-body excerpt — deliberately NOT sibling-assembled (assembly
+    // ran before this stage; #1273 review M7 records the scope line): for
+    // "find page X" the lede is the honest context, and an empty
+    // body_text yields an empty excerpt under a real title.
+    chunkText: row.excerpt ?? '',
+    pageTitle: row.title,
+    sectionTitle: row.title,
+    spaceKey: row.space_key,
+    // Ordering-only, like every other producer's score; pinned rows lead
+    // by ARRAY position and consumers never re-sort.
+    score: 0,
+    vectorScore: null,
+    keywordRank: null,
+    pinned: true as const,
+  }));
 }
 
 async function hybridSearchInner(
@@ -1106,6 +1367,14 @@ async function hybridSearchInner(
   let searchTypeFinal: SearchAnalyticsType = searchType;
   let rerankMax: number | null = null;
   let topResults: SearchResult[];
+  // The best row available for each page BEFORE the topK slice, used only
+  // by the pin stage's enriched-row recovery. It starts as the fused
+  // candidates and is upgraded to the reranked pool when that stage runs —
+  // otherwise recovering a page from `candidates` silently hands back the
+  // pre-rerank object, and the recovery's own comment would be claiming a
+  // rerankScore it dropped (the scored entries are new objects; the
+  // rerank stage never mutates `candidates`).
+  let enrichedPool: SearchResult[] = candidates;
   if (rerankCfg && searchType === 'hybrid' && candidates.length > 1) {
     const poolTarget = Math.max(await rerankCandidatesPromise, Math.max(0, topK));
     const pool = candidates.slice(0, poolTarget);
@@ -1141,7 +1410,9 @@ async function hybridSearchInner(
       const byIndex = new Map(scored.map((s) => [s.index, s.relevanceScore]));
       const scoredEntries = scored.map((s) => ({ ...pool[s.index]!, rerankScore: s.relevanceScore }));
       const unscored = pool.filter((_, i) => !byIndex.has(i));
-      topResults = [...scoredEntries, ...unscored].slice(0, Math.max(0, topK));
+      const reranked = [...scoredEntries, ...unscored];
+      enrichedPool = reranked;
+      topResults = reranked.slice(0, Math.max(0, topK));
       rerankMax = topResults.reduce<number | null>(
         (max, r) => (r.rerankScore != null && (max === null || r.rerankScore > max) ? r.rerankScore : max),
         null,
@@ -1262,6 +1533,86 @@ async function hybridSearchInner(
     }
   }
 
+  // ── Exact-identifier pin stage (#1107) ────────────────────────────────
+  // AFTER rerank + assembly and BEFORE analytics/confidence/meta, so every
+  // observer sees the final shape. Detection is pure and guarded
+  // (identifier-shortcircuit.ts); every detection is VERIFIED by an indexed
+  // lookup under the same space-visibility predicate as retrieval, and
+  // under EE ACL via the same batched filter. A verified page already in
+  // the fused set is MOVED to the front keeping its enriched row (assembled
+  // context included); a new one enters as a keyword-style excerpt row.
+  // At most two pins; the tail shrinks via the same topK slice; the fused
+  // order below the pins is never re-sorted. Space-key detections verify
+  // nothing here by design — a space is not a page (design of record).
+  if (opts?.pinIdentifiers && (await getRagPinIdentifiersEnabled())) {
+    try {
+      const detected = detectIdentifiers(question).filter((d) => d.kind !== 'spaceKey');
+      if (detected.length > 0) {
+        const pinSpaces = await getUserAccessibleSpaces(userId);
+        // Per-lookup isolation (#1273 fork F8): the stage's contract is
+        // "any lookup error skips THAT pin, never the search", and a
+        // single try around the loop broke it — one failing detection
+        // discarded a second, independently verified one.
+        const lookedUp: SearchResult[][] = [];
+        for (const ident of detected) {
+          try {
+            lookedUp.push(await lookupIdentifier(ident, pinSpaces, userId));
+          } catch (err) {
+            logger.warn({ err, kind: ident.kind }, 'Identifier lookup failed — skipping this pin');
+          }
+        }
+        // ACL BEFORE the winner is chosen (#1273 fork F5), still one
+        // batched query for every candidate of every detection.
+        let isAccessible: (pageId: number) => boolean = () => true;
+        if (aclEnforced) {
+          const candidateIds = lookedUp.flat().map((r) => r.pageId);
+          if (candidateIds.length > 0) {
+            const accessible = await filterAccessiblePages(userId, candidateIds);
+            isAccessible = (pageId) => accessible.has(pageId);
+          }
+        }
+        // Each detection contributes AT MOST ONE pin, and never a
+        // substitute. Sliding past an already-pinned page to the next
+        // candidate looks like de-duplication and is not: the second row
+        // is a different page that merely also matched — another page
+        // sharing the title, or another page whose title carries the key —
+        // so one user gesture producing two detections of the same page
+        // would pin an unrelated one beneath it, labelled a verified exact
+        // match, ahead of every fused result. Take the best accessible
+        // candidate; if it is already pinned, this detection has nothing
+        // left to say.
+        const verified: SearchResult[] = [];
+        for (const candidateRows of lookedUp) {
+          const pick = candidateRows.find((c) => isAccessible(c.pageId));
+          if (pick && !verified.some((v) => v.pageId === pick.pageId)) verified.push(pick);
+        }
+        if (verified.length > 0) {
+          const pinnedIds = new Set(verified.map((r) => r.pageId));
+          const head: SearchResult[] = verified.map((v) => {
+            // topResults FIRST (it alone carries assembled context), then
+            // the pre-slice pool (#1273 fork F12): a verified page that
+            // fused just OUTSIDE topK — the diluted-exact-match case this
+            // feature exists for — used to lose its scored chunk,
+            // chunkIndex and rerankScore and re-enter as a bare excerpt,
+            // while the purpose-built row sat one array away. `enrichedPool`
+            // is the RERANKED pool where that stage ran, so the recovered
+            // row keeps its relevance score; `candidates` is the last
+            // resort for a page beyond the rerank pool entirely.
+            const existing =
+              topResults.find((r) => r.pageId === v.pageId) ??
+              enrichedPool.find((r) => r.pageId === v.pageId) ??
+              candidates.find((r) => r.pageId === v.pageId);
+            return existing ? { ...existing, pinned: true as const } : v;
+          });
+          topResults = [...head, ...topResults.filter((r) => !pinnedIds.has(r.pageId))].slice(0, Math.max(0, topK));
+          span?.setAttribute('rag.pinned', verified.length);
+        }
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Identifier pin stage bypassed — serving the fused order');
+    }
+  }
+
   // Record search analytics (non-blocking)
   // `maxScore` is deliberately still the RRF fusion value, NOT `vectorScore`
   // and NOT the rerank relevance. Repointing it would silently make new rows
@@ -1273,7 +1624,12 @@ async function hybridSearchInner(
   // (rrfWorstCase rises with the fetch width), so rows straddling a
   // `rag_fetch_width` change are only loosely comparable — the same caveat
   // RAG_EF_SEARCH always carried.
-  const maxScore = topResults.length > 0 ? Math.max(...topResults.map((r) => r.score)) : null;
+  // Pinned NEW rows carry score 0 (never a fused value); excluding them
+  // keeps max_score's unit contract and stops a pinned-only head writing
+  // 0 into the knowledge-gap predicate's range (#1273 review M8). Moved
+  // pins keep their fused score and stay in the sample.
+  const scoreRows = topResults.filter((r) => r.pinned === undefined || r.vectorScore !== null || r.keywordRank !== null);
+  const maxScore = scoreRows.length > 0 ? Math.max(...scoreRows.map((r) => r.score)) : null;
   trackSearchAnalytics(userId, question, topResults.length, maxScore, searchTypeFinal, {
     ...analyticsExtras,
     rerankScore: rerankMax,
