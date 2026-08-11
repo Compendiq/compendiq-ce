@@ -104,7 +104,7 @@ vi.mock('../../../core/services/fts-language.js', () => ({
   getFtsLanguage: vi.fn(async () => 'simple'),
 }));
 
-import { buildRagContext, hybridSearch, RAG_EF_SEARCH, reciprocalRankFusion, fuseWithStableHead, rrfWorstCase, vectorSearch, keywordSearch, recordSearchAnalytics, resolveStageLimit, computeRetrievalConfidence, RAG_FETCH_WIDTH_DEFAULT, RAG_FETCH_WIDTH_MAX } from './rag-service.js';
+import { buildRagContext, hybridSearch, RAG_EF_SEARCH, reciprocalRankFusion, fuseWithStableHead, rrfWorstCase, vectorSearch, keywordSearch, recordSearchAnalytics, resolveStageLimit, computeRetrievalConfidence, RAG_FETCH_WIDTH_DEFAULT, truncateAtDistinctPages, PAGE_FANOUT, VECTOR_RAW_LIMIT_CAP, vectorRawLimit } from './rag-service.js';
 import type { SearchResult } from './rag-service.js';
 import { invalidateRagFetchWidthCache, invalidateRagRerankCandidatesCache } from '../../../core/services/admin-settings-service.js';
 import { CircuitBreakerOpenError } from '../../../core/services/circuit-breaker.js';
@@ -677,27 +677,32 @@ describe('RAG Service', () => {
       it('defaults both legs to RAG_FETCH_WIDTH_DEFAULT when no admin row exists', async () => {
         routeQueries([]);
         await hybridSearch('user-1', 'test query');
-        expect(vectorLimitParam()).toBe(RAG_FETCH_WIDTH_DEFAULT);
+        // #1106: the SQL LIMIT is the RAW chunk fetch — PAGE_FANOUT x the page width.
+        expect(vectorLimitParam()).toBe(PAGE_FANOUT * RAG_FETCH_WIDTH_DEFAULT);
         expect(keywordLimitParam()).toBe(RAG_FETCH_WIDTH_DEFAULT);
       });
 
       it('honours an admin-configured width at runtime (no restart)', async () => {
         routeQueries([{ setting_value: '12' }]);
         await hybridSearch('user-1', 'test query');
-        expect(vectorLimitParam()).toBe(12);
+        expect(vectorLimitParam()).toBe(PAGE_FANOUT * 12);
         expect(keywordLimitParam()).toBe(12);
       });
 
       it('falls back to the default on a garbage admin value', async () => {
         routeQueries([{ setting_value: 'banana' }]);
         await hybridSearch('user-1', 'test query');
-        expect(vectorLimitParam()).toBe(RAG_FETCH_WIDTH_DEFAULT);
+        // #1106: the SQL LIMIT is the RAW chunk fetch — PAGE_FANOUT x the page width.
+        expect(vectorLimitParam()).toBe(PAGE_FANOUT * RAG_FETCH_WIDTH_DEFAULT);
       });
 
       it('clamps an absurd admin value to RAG_FETCH_WIDTH_MAX', async () => {
         routeQueries([{ setting_value: '100000' }]);
         await hybridSearch('user-1', 'test query');
-        expect(vectorLimitParam()).toBe(RAG_FETCH_WIDTH_MAX);
+        // #1106: width clamps to 200, and the RAW fetch then hits its own
+        // cap — min(4 x 200, 500) = 500, the exact value that keeps 2x ef
+        // headroom inside pgvector's 1000 ceiling.
+        expect(vectorLimitParam()).toBe(VECTOR_RAW_LIMIT_CAP);
       });
 
       it('floors a sub-legacy width at the default — the knob must not recreate #1263', async () => {
@@ -706,7 +711,8 @@ describe('RAG Service', () => {
         // (`parseInt('1e3') === 1`) both fall back to the default.
         routeQueries([{ setting_value: '5' }]);
         await hybridSearch('user-1', 'test query');
-        expect(vectorLimitParam()).toBe(RAG_FETCH_WIDTH_DEFAULT);
+        // #1106: the SQL LIMIT is the RAW chunk fetch — PAGE_FANOUT x the page width.
+        expect(vectorLimitParam()).toBe(PAGE_FANOUT * RAG_FETCH_WIDTH_DEFAULT);
 
         vi.resetAllMocks();
         invalidateRagFetchWidthCache();
@@ -728,7 +734,8 @@ describe('RAG Service', () => {
         });
         routeQueries([{ setting_value: '1e3' }]);
         await hybridSearch('user-1', 'test query');
-        expect(vectorLimitParam()).toBe(RAG_FETCH_WIDTH_DEFAULT);
+        // #1106: the SQL LIMIT is the RAW chunk fetch — PAGE_FANOUT x the page width.
+        expect(vectorLimitParam()).toBe(PAGE_FANOUT * RAG_FETCH_WIDTH_DEFAULT);
       });
 
       it('soft-fails to the default when the settings read errors', async () => {
@@ -739,22 +746,25 @@ describe('RAG Service', () => {
         });
         const results = await hybridSearch('user-1', 'test query');
         expect(results).toEqual([]);
-        expect(vectorLimitParam()).toBe(RAG_FETCH_WIDTH_DEFAULT);
+        // #1106: the SQL LIMIT is the RAW chunk fetch — PAGE_FANOUT x the page width.
+        expect(vectorLimitParam()).toBe(PAGE_FANOUT * RAG_FETCH_WIDTH_DEFAULT);
       });
 
       it('keeps hnsw.ef_search covering a width above RAG_EF_SEARCH', async () => {
         // HNSW returns at most ef_search rows regardless of LIMIT, so a raised
         // width must raise ef_search with it or the vector leg silently
         // plateaus at 100 while the keyword leg keeps widening. 2x the limit,
-        // not 1x — ef_search == k is HNSW's worst recall setting.
+        // not 1x — ef_search == k is HNSW's worst recall setting. Since
+        // #1106 the covered quantity is the RAW chunk fetch: width 150 →
+        // raw min(4 x 150, 500) = 500 → ef exactly at the 1000 clamp.
         routeQueries([{ setting_value: '150' }]);
         await hybridSearch('user-1', 'test query');
         const setLocal = mocks.mockClientQuery.mock.calls.find(
           (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('SET LOCAL hnsw.ef_search'),
         );
         expect(setLocal).toBeDefined();
-        expect(setLocal![0]).toContain('= 300');
-        expect(vectorLimitParam()).toBe(150);
+        expect(setLocal![0]).toContain('= 1000');
+        expect(vectorLimitParam()).toBe(VECTOR_RAW_LIMIT_CAP);
       });
 
       it('builds the keyword SQL with the real FTS language, not a wiped mock', async () => {
@@ -941,7 +951,7 @@ describe('RAG Service', () => {
       await hybridSearch('user-1', 'question', 5, undefined, { rerank: true });
       expect(mocks.mockResolveRerank).toHaveBeenCalled();
       expect(mocks.mockRerank).not.toHaveBeenCalled();
-      expect(vectorLimit()).toBe(RAG_FETCH_WIDTH_DEFAULT);
+      expect(vectorLimit()).toBe(PAGE_FANOUT * RAG_FETCH_WIDTH_DEFAULT);
       expect(analyticsParams()[4]).toBe('hybrid');
       expect(analyticsParams()[5]).toBeNull();
     });
@@ -949,8 +959,9 @@ describe('RAG Service', () => {
     it('widens the legs to the rerank candidate pool when the stage is live', async () => {
       mocks.mockResolveRerank.mockResolvedValue(RERANK_CFG);
       await hybridSearch('user-1', 'question', 5, undefined, { rerank: true });
-      // Default pool 30 > width 10 — this is #1103's headroom finally spent.
-      expect(vectorLimit()).toBe(30);
+      // Default pool 30 > width 10 — #1103's headroom finally spent; since
+      // #1106 the SQL LIMIT is the raw chunk fetch over that pool (4 x 30).
+      expect(vectorLimit()).toBe(PAGE_FANOUT * 30);
     });
 
     it('returns relevance order, stamps rerankScore, and records hybrid_rerank + rerank_score', async () => {
@@ -1224,44 +1235,243 @@ describe('RAG Service', () => {
     // global). These pin the figures so the next edit has to agree with
     // arithmetic rather than with a comment.
     describe('documented fusion bounds', () => {
-      it('matches the closed form for a page occupying every vector slot', () => {
-        // Ten chunks of ONE page is what `rrfWorstCase(10)` describes; assert the
-        // helper against the function it documents rather than against itself.
+      it('a page occupying every vector slot scores its BEST chunk only — summing is gone (#1106 v2)', () => {
+        // Ten chunks of ONE page used to sum ten reciprocal ranks; measured
+        // on the rig, that let chunk count crush chunk quality once the raw
+        // window widened (candidate-v1: R@1 0.4028→0.3333). The page now
+        // earns exactly its best chunk's contribution.
         const chunks = Array.from({ length: 10 }, (_, i) =>
           makeResult('bound-page', `chunk ${i}`, { score: 0.5 - i * 0.01 }),
         );
         const combined = reciprocalRankFusion(chunks, []);
         expect(combined).toHaveLength(1);
-        expect(combined[0].score).toBeCloseTo(rrfWorstCase(10), 12);
+        expect(combined[0].score).toBeCloseTo(rrfWorstCase(), 12);
+        expect(combined[0].score).toBeCloseTo(1 / 61, 12);
+        // The representative text and vectorScore still come from the best chunk.
+        expect(combined[0].chunkText).toBe('chunk 0');
+        expect(combined[0].vectorScore).toBeCloseTo(0.5, 12);
       });
 
-      it('caps the chat path below the 0.4 confidence threshold at the default width', () => {
-        // /llm/ask uses topK=5 → stage limit = the default fetch width (10),
-        // under EE ACL too (max(10, ceil(5*1.5)=8) = 10 — the #1263 fix).
-        // This is the bound that made "reading the fusion score as a cosine
-        // always yields Low confidence" true in #1117's analysis.
-        expect(rrfWorstCase(resolveStageLimit(5, RAG_FETCH_WIDTH_DEFAULT, false), true)).toBeLessThan(0.4);
-        expect(rrfWorstCase(resolveStageLimit(5, RAG_FETCH_WIDTH_DEFAULT, true), true)).toBeLessThan(0.4);
-        expect(rrfWorstCase(10, true)).toBeCloseTo(0.1694, 3);
+      it('later siblings add no score but a page found by BOTH legs still earns both legs', () => {
+        // Cross-leg contribution survives the cap — that dilution axis is
+        // fuseWithStableHead's job, not this one's.
+        const vec = [makeResult('p1', 'v1'), makeResult('p1', 'v2', { score: 0.4 })];
+        const kw = [makeResult('p1', 'k1', { score: 2.0, vectorScore: null, keywordRank: 2.0 })];
+        const combined = reciprocalRankFusion(vec, kw);
+        expect(combined).toHaveLength(1);
+        expect(combined[0].score).toBeCloseTo(2 / 61, 12);
+        expect(combined[0].score).toBeCloseTo(rrfWorstCase(true), 12);
       });
 
-      it('pins the /api/search row at limit=20: ~0.302 plain, ~0.419 under EE ACL', () => {
-        // Every row of the doc table gets a pin — its prose version has now
-        // been wrong three times, most recently in this very PR (~0.304).
+      it('the ceiling is width-invariant: ~0.0328 with both legs, at every reachable configuration', () => {
+        // Pre-#1106 the worst case tracked the stage limit (0.1694 at width
+        // 10, past 1.0 at the 200 cap) because per-chunk summing existed.
+        // Best-chunk-only makes 2/(k+1) the global bound — the stage limit,
+        // the rerank pool and the raw window no longer appear in the formula.
+        expect(rrfWorstCase(true)).toBeCloseTo(2 / 61, 12);
+        expect(rrfWorstCase(true)).toBeCloseTo(0.0328, 4);
+        expect(rrfWorstCase(false)).toBeCloseTo(1 / 61, 12);
+        // resolveStageLimit still floors the POOL (satisfiability), it just
+        // no longer moves the score ceiling.
+        expect(resolveStageLimit(5, RAG_FETCH_WIDTH_DEFAULT, false)).toBe(10);
+        expect(resolveStageLimit(5, RAG_FETCH_WIDTH_DEFAULT, true)).toBe(10);
+      });
+
+      it('the /api/search and EE ACL pool floors survive — they size the POOL, not the score', () => {
         expect(resolveStageLimit(20, RAG_FETCH_WIDTH_DEFAULT, false)).toBe(20);
-        expect(rrfWorstCase(20, true)).toBeCloseTo(0.3020, 3);
-        // Nothing thresholds the fusion score on that path, but the chat-path
-        // bound must not be restated as a global one — this test is the
-        // reason that distinction stays in the JSDoc.
         expect(resolveStageLimit(20, RAG_FETCH_WIDTH_DEFAULT, true)).toBe(30);
-        expect(rrfWorstCase(30, true)).toBeGreaterThan(0.4);
-        expect(rrfWorstCase(30, true)).toBeCloseTo(0.4191, 3);
+      });
+    });
+
+    describe('page-denominated vector fetch (#1106 PR 1)', () => {
+      const row = (pageId: number, chunk: string) => makeResult(`p-${pageId}`, chunk, { pageId });
+
+      describe('truncateAtDistinctPages', () => {
+        it('cuts at the FIRST appearance of the Nth distinct page, keeping earlier repeat chunks', () => {
+          // P1c1, P2c1, P1c2, P3c1, P2c2 at maxPages 3: the cut lands ON
+          // P3c1 — P1's second chunk (above the cut) survives, P2's second
+          // (below it) does not. Fan-out is bounded to "chunks ranking above
+          // the Nth page's entry", which is the whole point.
+          const rows = [row(1, 'a'), row(2, 'b'), row(1, 'c'), row(3, 'd'), row(2, 'e')];
+          expect(truncateAtDistinctPages(rows, 3)).toEqual(rows.slice(0, 4));
+        });
+
+        it('shortfall passes everything through — today is the floor, a named degradation guarantee', () => {
+          const rows = [row(1, 'a'), row(1, 'b'), row(2, 'c')];
+          expect(truncateAtDistinctPages(rows, 5)).toEqual(rows);
+        });
+
+        it('non-positive page budget yields an empty set', () => {
+          expect(truncateAtDistinctPages([row(1, 'a')], 0)).toEqual([]);
+          expect(truncateAtDistinctPages([row(1, 'a')], -1)).toEqual([]);
+        });
+
+        it('is a PREFIX operation: result at w1 is a prefix of result at w2 for w1 < w2', () => {
+          // fuseWithStableHead's append-only widening leans on this — the
+          // page-prefix must inherit the row-prefix property.
+          const rows = [row(1, 'a'), row(2, 'b'), row(2, 'c'), row(3, 'd'), row(1, 'e'), row(4, 'f')];
+          for (let w1 = 1; w1 < 4; w1++) {
+            for (let w2 = w1 + 1; w2 <= 4; w2++) {
+              const p1 = truncateAtDistinctPages(rows, w1);
+              const p2 = truncateAtDistinctPages(rows, w2);
+              expect(p2.slice(0, p1.length)).toEqual(p1);
+            }
+          }
+        });
       });
 
-      it('an admin-raised width raises the bound with it — past 1.0 at the cap', () => {
-        // The JSDoc's warning that the fusion value is not bounded near ~0.4
-        // either: at the RAG_FETCH_WIDTH_MAX cap the worst case passes 1.
-        expect(rrfWorstCase(RAG_FETCH_WIDTH_MAX, true)).toBeGreaterThan(1);
+      describe('fuseWithStableHead page-denominated rankWidth', () => {
+        it('engages on DISTINCT-PAGE count, not row count — 40 rows over 8 pages at rankWidth 10 is plain RRF', () => {
+          // Pre-#1106 this leg (40 rows > 10) split into head+extras and the
+          // pages beyond row 10 could never enter head ranking. Eight
+          // distinct pages fit inside the rank window regardless of their
+          // chunk fan-out, so fusion must run plain over everything.
+          const vec: ReturnType<typeof row>[] = [];
+          for (let i = 0; i < 40; i++) vec.push(row((i % 8) + 1, `c${i}`));
+          const out = fuseWithStableHead(vec, [], 10);
+          expect(out).toEqual(reciprocalRankFusion(vec, []));
+        });
+
+        it('head order derives from the page-prefix of a multi-chunk leg', () => {
+          // 12 distinct pages, each as two adjacent chunks (24 rows), rank
+          // width 10: the head must be fusion over rows spanning the first
+          // 10 DISTINCT pages (20 rows), with pages 11-12 appended after —
+          // not fusion over the first 10 ROWS (5 pages).
+          const vec: ReturnType<typeof row>[] = [];
+          for (let p = 1; p <= 12; p++) { vec.push(row(p, `p${p}c1`)); vec.push(row(p, `p${p}c2`)); }
+          const out = fuseWithStableHead(vec, [], 10);
+          const headIds = out.slice(0, 10).map((r) => r.pageId);
+          expect(headIds).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+          expect(out.slice(10).map((r) => r.pageId)).toEqual([11, 12]);
+        });
+
+        it('for a per-page leg the page-prefix is exactly the row slice (keyword leg unchanged)', () => {
+          const kw = Array.from({ length: 15 }, (_, i) => row(i + 1, `k${i}`));
+          expect(truncateAtDistinctPages(kw, 10)).toEqual(kw.slice(0, 10));
+        });
+
+        it('widening stays append-only under TWO INDEPENDENT FETCHES, narrow one shortfalling (#1269 B1)', () => {
+          // The previous version of this test derived the narrow leg from
+          // the wide array (`truncateAtDistinctPages(vec, 10)`) — by
+          // construction the exact page-prefix, so the divergence it exists
+          // to catch was unrepresentable. A faithful model runs the REAL
+          // per-request pipeline twice over one raw stream: each request
+          // takes its own raw window (vectorRawLimit) and truncates at its
+          // own page budget. The fixture makes the narrow request SHORTFALL
+          // (5 distinct pages in its 40-row window — the long-multi-chunk
+          // corpus #1106 exists for) while the wide request reaches full
+          // pages; the un-reconstructed page-prefix head provably reorders
+          // the top here (verified numerically in the review).
+          const raw: ReturnType<typeof row>[] = [];
+          for (let c = 0; c < 8; c++) for (let p = 1; p <= 5; p++) raw.push(row(p, `p${p}c${c}`));
+          for (let p = 6; p <= 20; p++) raw.push(row(p, `p${p}c0`));
+          // The SHARED helper, not an inline re-derivation — the whole point
+          // of vectorRawLimit is that the fetch and the reconstruction (and
+          // this model of them) cannot drift apart.
+          const vectorLeg = (limit: number) =>
+            truncateAtDistinctPages(raw.slice(0, vectorRawLimit(limit)), limit);
+          const kwAll = [6, 1, 2, 3, 4, 5, ...Array.from({ length: 14 }, (_, i) => i + 7)].map((p) => row(p, `k${p}`));
+          const keywordLeg = (limit: number) => kwAll.slice(0, limit);
+
+          // rankWidth 10 both sides (the configured width): narrow request =
+          // stage limit 10, wide request = stage limit 20 (a larger topK).
+          const narrow = fuseWithStableHead(vectorLeg(10), keywordLeg(10), 10);
+          const wide = fuseWithStableHead(vectorLeg(20), keywordLeg(20), 10);
+          expect(wide.slice(0, narrow.length).map((r) => r.pageId)).toEqual(narrow.map((r) => r.pageId));
+          // And widening genuinely added something after the stable head.
+          expect(wide.length).toBeGreaterThan(narrow.length);
+        });
+
+        it('append-only holds on the PLAIN branch too — heavy fan-out inside the rank width (#1269 B1-residual)', () => {
+          // The residual case: both wide legs total <= rankWidth distinct
+          // pages, so the old distinct-page-count fast path fused the WIDE
+          // legs directly — yet the wide raw window holds a page (the
+          // 40-chunk page 9 below) the narrow request's 40-row window never
+          // reached. Page 9 earns only its keyword rank narrowly but gains a
+          // vector contribution widely, displacing a head page. The fast
+          // path must be taken only when reconstruction is the identity.
+          const raw: ReturnType<typeof row>[] = [];
+          for (let c = 0; c < 5; c++) for (let p = 1; p <= 8; p++) raw.push(row(p, `p${p}c${c}`));
+          for (let c = 0; c < 40; c++) raw.push(row(9, `p9c${c}`));
+          const vectorLeg = (limit: number) =>
+            truncateAtDistinctPages(raw.slice(0, vectorRawLimit(limit)), limit);
+          const kwAll = [row(9, 'k9'), row(2, 'k2')];
+          const keywordLeg = (limit: number) => kwAll.slice(0, limit);
+
+          const narrow = fuseWithStableHead(vectorLeg(10), keywordLeg(10), 10);
+          const wide = fuseWithStableHead(vectorLeg(20), keywordLeg(20), 10);
+          expect(wide.slice(0, narrow.length).map((r) => r.pageId)).toEqual(narrow.map((r) => r.pageId));
+        });
+      });
+
+      describe('raw fetch arithmetic', () => {
+        beforeEach(() => {
+          // Mock-call indexes below are per-test; without this reset they
+          // read the PREVIOUS test's accumulated calls.
+          vi.resetAllMocks();
+          mocks.mockPool.connect.mockResolvedValue(mocks.mockClient);
+          mocks.mockClient.release.mockResolvedValue(undefined);
+          mocks.mockToSql.mockReturnValue('[0.1,0.2]');
+        });
+
+        it('PAGE_FANOUT and the raw cap hold the ef headroom rule at every reachable width', () => {
+          // The cap IS the arithmetic: 2 x 500 = 1000 is exactly pgvector's
+          // ef_search ceiling, so 2x headroom survives at the width-200 knob
+          // cap; without the cap, width 200 would want ef 1600 and silently
+          // clamp below coverage.
+          expect(PAGE_FANOUT).toBe(4);
+          expect(VECTOR_RAW_LIMIT_CAP).toBe(500);
+          expect(2 * VECTOR_RAW_LIMIT_CAP).toBe(1000);
+          expect(Math.min(PAGE_FANOUT * 10, VECTOR_RAW_LIMIT_CAP)).toBe(40);   // chat, no rerank
+          expect(Math.min(PAGE_FANOUT * 30, VECTOR_RAW_LIMIT_CAP)).toBe(120);  // chat, rerank pool
+          expect(Math.min(PAGE_FANOUT * 200, VECTOR_RAW_LIMIT_CAP)).toBe(500); // width cap
+        });
+
+        it('vectorSearch fetches rawLimit chunk rows, sets ef over the RAW limit, and truncates to `limit` distinct pages', async () => {
+          mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
+          mocks.mockClientQuery.mockResolvedValueOnce(undefined); // BEGIN
+          mocks.mockClientQuery.mockResolvedValueOnce(undefined); // SET LOCAL
+          // 12 rows over 4 pages: pages 1,1,2,2,3,3,4,4,... — at limit 3 the
+          // cut lands on page 3's first row (index 4).
+          mocks.mockClientQuery.mockResolvedValueOnce({
+            rows: Array.from({ length: 12 }, (_, i) => ({
+              page_id: Math.floor(i / 2) + 1,
+              confluence_id: `page-${Math.floor(i / 2) + 1}`,
+              chunk_text: `chunk ${i}`,
+              chunk_index: i % 2,
+              metadata: { page_title: 'T', section_title: 'S', space_key: 'DEV' },
+              distance: 0.1 + i * 0.01,
+            })),
+          }); // SELECT
+          mocks.mockClientQuery.mockResolvedValueOnce(undefined); // COMMIT
+
+          const out = await vectorSearch('user-1', new Array(1024).fill(0.1), 3);
+
+          const setLocal = mocks.mockClientQuery.mock.calls[1]![0] as string;
+          // rawLimit = 4x3 = 12; ef = max(100, 2x12) = 100 (RAG_EF_SEARCH floor).
+          expect(setLocal).toContain('= 100');
+          const selectParams = mocks.mockClientQuery.mock.calls[2]![1] as unknown[];
+          expect(selectParams[2]).toBe(12);
+          // Truncated at the 3rd distinct page's first row: pages 1,1,2,2,3.
+          expect(out.map((r) => r.pageId)).toEqual([1, 1, 2, 2, 3]);
+          // chunk_index rides along for #1106 PR 2's assembly anchor.
+          expect(out[0]!.chunkIndex).toBe(0);
+        });
+
+        it('a raised width rides the RAW limit into ef: width 150 -> raw 500 (cap) -> ef 1000 (clamp)', async () => {
+          mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
+          mocks.mockClientQuery.mockResolvedValueOnce(undefined);
+          mocks.mockClientQuery.mockResolvedValueOnce(undefined);
+          mocks.mockClientQuery.mockResolvedValueOnce({ rows: [] });
+          mocks.mockClientQuery.mockResolvedValueOnce(undefined);
+
+          await vectorSearch('user-1', new Array(1024).fill(0.1), 150);
+
+          const setLocal = mocks.mockClientQuery.mock.calls[1]![0] as string;
+          expect(setLocal).toContain('= 1000');
+          const selectParams = mocks.mockClientQuery.mock.calls[2]![1] as unknown[];
+          expect(selectParams[2]).toBe(500);
+        });
       });
     });
 
@@ -1269,8 +1479,8 @@ describe('RAG Service', () => {
     //
     // Fusion overwrote `score` with the RRF value and discarded the cosine the
     // vector leg had measured. With k=60 over two legs the RRF value maxes out
-    // near 1/61 + 1/61 ≈ 0.0328 for the common case — more when one page fills
-    // several vector slots — and ConfidenceBadge reads that field as a
+    // near 1/61 + 1/61 ≈ 0.0328 for the common case — an exact bound since
+    // #1106's best-chunk-only rule — and ConfidenceBadge reads that field as a
     // cosine similarity (>= 0.7 high / >= 0.4 medium) — so every hybrid answer
     // rendered "Low confidence". The fix carries the per-leg values alongside
     // the fusion score rather than replacing them.

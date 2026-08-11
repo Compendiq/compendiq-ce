@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { KNOWLEDGE_GAP_PREDICATE_SQL, GAP_FUSION_THRESHOLD } from './_gap-predicate.js';
+import { rrfWorstCase } from '../../domains/llm/services/rag-service.js';
 import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../test-db-helper.js';
 import { query } from '../../core/db/postgres.js';
 
@@ -92,9 +94,12 @@ describe.skipIf(!dbAvailable)('Search Analytics (DB)', () => {
       query_text: string;
       occurrence_count: string;
     }>(
+      // The ROUTE's shared predicate, not an inline restatement — an inline
+      // copy kept this test green while the real predicate changed (#1269
+      // code-review layer, finding 1).
       `SELECT LOWER(TRIM(query)) AS query_text, COUNT(*) AS occurrence_count
        FROM search_analytics
-       WHERE user_id = $1 AND (result_count = 0 OR max_score < 0.3)
+       WHERE user_id = $1 AND ${KNOWLEDGE_GAP_PREDICATE_SQL}
        GROUP BY LOWER(TRIM(query))
        ORDER BY COUNT(*) DESC`,
       [userId],
@@ -128,5 +133,63 @@ describe.skipIf(!dbAvailable)('Search Analytics (DB)', () => {
        AND indexname = 'idx_search_analytics_zero_results'`,
     );
     expect(result.rows).toHaveLength(1);
+  });
+});
+
+describe.skipIf(!dbAvailable)('knowledge-gap predicate — per-unit arms (#1269)', () => {
+  const userId = 'aaaaaaaa-9999-4000-8000-0000000a0a99';
+
+  beforeAll(async () => {
+    await setupTestDb();
+  });
+
+  afterAll(async () => {
+    await teardownTestDb();
+  });
+
+  beforeEach(async () => {
+    await query('DELETE FROM search_analytics WHERE user_id = $1', [userId]);
+    await query(
+      `INSERT INTO users (id, username, email, role, password_hash)
+       VALUES ($1::uuid, 'gap-pin-user', 'gap-pin@test', 'user', 'x')
+       ON CONFLICT (id) DO NOTHING`,
+      [userId],
+    );
+  });
+
+  it('derives the fusion threshold from rrfWorstCase — strictly between single-leg and both-legs', () => {
+    expect(GAP_FUSION_THRESHOLD).toBeGreaterThan(rrfWorstCase(false));
+    expect(GAP_FUSION_THRESHOLD).toBeLessThan(rrfWorstCase(true));
+  });
+
+  it('pins every arm against real rows — the defect each arm fixes cannot silently return', async () => {
+    // (query label, result_count, max_score, search_type, expectGap)
+    const rows: Array<[string, number, number | null, string, boolean]> = [
+      ['hybrid weak',            3, rrfWorstCase(false), 'hybrid',           true],  // single-leg only
+      ['hybrid strong',          3, rrfWorstCase(true),  'hybrid',           false], // found by both legs
+      ['rerank weak',            3, 0.02,                'hybrid_rerank',    true],
+      ['fallback with results',  3, rrfWorstCase(false), 'keyword_fallback', false], // outage signal, not a gap
+      ['fallback empty',         0, null,                'keyword_fallback', true],  // result_count catches it
+      ['semantic weak',          3, 0.25,                'semantic',         true],  // cosine unit keeps 0.3
+      ['semantic strong',        3, 0.5,                 'semantic',         false],
+      ['keyword weak',           3, 0.06,                'keyword',          true],  // ts_rank unit keeps 0.3
+      ['keyword strong',         3, 0.4,                 'keyword',          false],
+    ];
+    for (const [label, count, score, type] of rows) {
+      await query(
+        `INSERT INTO search_analytics (user_id, query, result_count, max_score, search_type)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [userId, label, count, score, type],
+      );
+    }
+
+    const gaps = await query<{ q: string }>(
+      `SELECT query AS q FROM search_analytics
+       WHERE user_id = $1 AND ${KNOWLEDGE_GAP_PREDICATE_SQL}
+       ORDER BY query`,
+      [userId],
+    );
+    const expected = rows.filter(([, , , , gap]) => gap).map(([label]) => label).sort();
+    expect(gaps.rows.map((r) => r.q)).toEqual(expected);
   });
 });

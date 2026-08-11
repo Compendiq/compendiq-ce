@@ -191,18 +191,20 @@ export async function searchRoutes(fastify: FastifyInstance) {
       const questionEmbedding = await generateSearchEmbedding(request, q, 'semantic', reply);
       if (!questionEmbedding) return;
 
-      // Fetch width decoupled from return width here too (#1103): the vector
-      // leg counts CHUNKS while `limit` counts pages-after-dedup, so fetching
-      // exactly `limit` rows under-delivers whenever one page's chunks occupy
-      // several top slots. Widening is order-preserving in this mode — cosine
-      // ordering is a stable prefix, so a deeper fetch can only append pages
-      // after the ones a narrower fetch found, never reorder them. (Exact
-      // while ef_search is constant, i.e. stage limits <= RAG_EF_SEARCH/2 =
-      // 50 — always true at the default width. An admin-raised width beyond
-      // that raises ef with it, exploring more of the HNSW graph, which can
-      // genuinely surface a nearer neighbour above previous results — an
-      // accuracy improvement, not the RRF dilution the hybrid path guards
-      // against.)
+      // Fetch width decoupled from return width here too (#1103). Since
+      // #1106 the vector leg is page-denominated — `limit` counts distinct
+      // pages and vectorSearch over-fetches raw chunk rows internally, so
+      // the chunks-vs-pages under-delivery this comment used to describe is
+      // resolved at the source. Widening is order-preserving in this mode —
+      // cosine ordering is a stable prefix, so a deeper fetch can only
+      // append pages after the ones a narrower fetch found, never reorder
+      // them. (Exact while ef_search is constant: ef now covers the RAW
+      // fetch, 8x the stage limit, so the constant range is stage limits
+      // <= RAG_EF_SEARCH/8 = 12 — still true at the default width 10, but
+      // narrower than the pre-#1106 <= 50. Beyond it, a raised ef explores
+      // more of the HNSW graph and can genuinely surface a nearer neighbour
+      // above previous results — an accuracy improvement, not the RRF
+      // dilution the hybrid path guards against.)
       const stageLimit = resolveStageLimit(limit, await getRagFetchWidth(), false);
       const vectorResults = await vectorSearch(userId, questionEmbedding, stageLimit);
 

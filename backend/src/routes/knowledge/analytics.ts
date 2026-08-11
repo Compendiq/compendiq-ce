@@ -1,4 +1,5 @@
 import { FastifyInstance } from 'fastify';
+import { KNOWLEDGE_GAP_PREDICATE_SQL, GAP_AVG_MAX_SCORE_SQL } from './_gap-predicate.js';
 import { z } from 'zod';
 import { query } from '../../core/db/postgres.js';
 
@@ -30,10 +31,12 @@ export async function analyticsRoutes(fastify: FastifyInstance) {
          LOWER(TRIM(query)) AS query_text,
          COUNT(*) AS occurrence_count,
          MAX(created_at) AS last_searched,
-         AVG(max_score) AS avg_max_score
+         ${GAP_AVG_MAX_SCORE_SQL}
        FROM search_analytics
        WHERE created_at >= NOW() - ($1 || ' days')::INTERVAL
-         AND (result_count = 0 OR max_score < 0.3)
+         -- Rationale + derivation live in _gap-predicate.ts — one shared
+         -- fragment for both routes and the pinning test.
+         AND ${KNOWLEDGE_GAP_PREDICATE_SQL}
        GROUP BY LOWER(TRIM(query))
        HAVING COUNT(*) >= $2
        ORDER BY COUNT(*) DESC, MAX(created_at) DESC
