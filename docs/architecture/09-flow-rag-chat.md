@@ -227,9 +227,18 @@ always a title, never a space key (#1273 fork F10): pages titled 'FAQ',
 'SLA' or 'API' exist, space-key detections verify nothing, and quoting a
 short title is exactly the gesture the trgm lookup serves. Multi-segment
 keys (CVE-2024-1234) capture whole — truncating at the second hyphen left a
-far less specific key that title-matches a different CVE (F7) — and the
-called-cue capture drops trailing punctuation, since `similarity('FAQ',
-'FAQ?')` is 0.286, under pg_trgm's 0.3 threshold (F13). Space-key
+far less specific key that title-matches a different CVE (F7), and an
+over-long trailing segment is REFUSED rather than truncated back to the
+shorter key. The called-cue capture drops surrounding punctuation — not
+because punctuation breaks the probe (measured on Postgres 17 / pg_trgm
+1.6: punctuation and quotes are separators, so `show_trgm('FAQ?')` equals
+`show_trgm('FAQ')` and `similarity` is 1.0) but so the quoted and cued
+paths normalise onto ONE string. Where the 0.3 threshold really bites is
+trailing PROSE — `similarity('FAQ', 'FAQ right now')` is 0.2857 — and
+stripping deliberately does not address that, because trimming words would
+guess at where the title ends. For the same reason the called-cue is
+skipped entirely when the query carries quotes: the two describe one
+gesture, and the cue's greedy capture describes it worse. Space-key
 detections verify nothing by themselves — a space is not a page. Every
 detection is then VERIFIED by one indexed lookup (pages PK for ids, the
 pg_trgm title index for titles, the title index for keys) under the same
@@ -238,7 +247,13 @@ Each lookup returns a short ORDERED CANDIDATE LIST rather than one row,
 because page-level ACL filtering happens after the query: a single-row
 lookup that selected a restricted page suppressed the pin an accessible
 page would have received, so "Deployment Runbook" existing in both a
-restricted and a readable space pinned nothing at all (F5). Verified pins are PREPENDED to the
+restricted and a readable space pinned nothing at all (F5). **A detection
+takes its best accessible candidate or nothing — never a substitute.**
+The list holds everything above pg_trgm's 0.3 threshold, so the second row
+is a near-title *neighbour*, not a second answer; sliding onto it when the
+first is already pinned would resemble de-duplication while actually
+pinning an unrelated page as a verified exact match, ahead of every fused
+result. Verified pins are PREPENDED to the
 final result set (a page already in the fused set MOVES to the head keeping
 its enriched row; the fused order below is never re-sorted), the tail
 re-slices to topK, and `rag.pinned` carries the count. The #1105 gate is

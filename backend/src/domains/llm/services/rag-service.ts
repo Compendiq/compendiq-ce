@@ -1443,12 +1443,19 @@ async function hybridSearchInner(
             isAccessible = (pageId) => accessible.has(pageId);
           }
         }
+        // Each detection contributes AT MOST ONE pin, and never a
+        // substitute. Sliding past an already-pinned page to the next
+        // candidate looks like de-duplication and is not: the candidate
+        // list is everything above pg_trgm's 0.3 threshold, so the second
+        // row is a near-title NEIGHBOUR, and one user gesture that
+        // produces two detections of the same page would pin an unrelated
+        // one beneath it — labelled a verified exact match, ahead of every
+        // fused result. Take the best accessible candidate; if it is
+        // already pinned, this detection has nothing left to say.
         const verified: SearchResult[] = [];
         for (const candidateRows of lookedUp) {
-          const pick = candidateRows.find(
-            (c) => isAccessible(c.pageId) && !verified.some((v) => v.pageId === c.pageId),
-          );
-          if (pick) verified.push(pick);
+          const pick = candidateRows.find((c) => isAccessible(c.pageId));
+          if (pick && !verified.some((v) => v.pageId === pick.pageId)) verified.push(pick);
         }
         if (verified.length > 0) {
           const pinnedIds = new Set(verified.map((r) => r.pageId));

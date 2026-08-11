@@ -2150,6 +2150,30 @@ describe('exact-identifier pin stage (#1107)', () => {
     expect(out.some((r) => r.pageId === 99)).toBe(false);
   });
 
+  it('two detections resolving to the SAME page pin it once — never a substitute neighbour', async () => {
+    // The candidate list is everything above pg_trgm's 0.3 threshold, so
+    // row 2 is a near-title NEIGHBOUR, not a second answer. Sliding onto it
+    // when row 1 is already pinned looks like de-duplication and is not:
+    // one gesture would pin an unrelated page as a verified exact match,
+    // ahead of every fused result.
+    mocks.mockQuery.mockImplementation(async (sql: string) => {
+      if (typeof sql === 'string' && sql.includes('substring(cp.body_text, 1, $5)')) {
+        return {
+          rows: [
+            { page_id: 55, confluence_id: 'faq', title: 'FAQ', space_key: 'DEV', excerpt: 'the real one' },
+            { page_id: 56, confluence_id: 'faq2', title: 'FAQs archive', space_key: 'DEV', excerpt: 'a neighbour' },
+          ],
+        };
+      }
+      if (typeof sql === 'string' && sql.includes('COUNT(*)')) return { rows: [{ embedded: 2, total: 2 }] };
+      return { rows: [] };
+    });
+    // pageId + title: two detections, both resolving to page 55 here.
+    const out = await hybridSearch('user-1', 'page 43561 "FAQ"', 5, undefined, { pinIdentifiers: true });
+    expect(out.filter((r) => r.pinned).map((r) => r.pageId)).toEqual([55]);
+    expect(out.some((r) => r.pageId === 56)).toBe(false);
+  });
+
   it('the lookup asks for a CANDIDATE LIST, never a single row — ACL runs before the winner is chosen', async () => {
     routePinQueries({ page_id: 42, confluence_id: 'inc-page', title: 'INC-2203 postmortem', space_key: 'DEV', excerpt: 'x' });
     await hybridSearch('user-1', 'what is INC-2203 about', 5, undefined, { pinIdentifiers: true });

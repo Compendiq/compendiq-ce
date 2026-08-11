@@ -69,6 +69,19 @@ describe('detectIdentifiers (#1107)', () => {
       });
     });
 
+    it('REFUSES an over-long trailing segment instead of truncating to a shorter key', () => {
+      // A bare \b let the engine drop the optional group and stop at the
+      // hyphen, so CVE-2024-1234567 became CVE-2024 — precisely the
+      // wrong-identifier pin the optional group exists to prevent. An
+      // over-long token is not a key shape; refusing costs one probe.
+      expect(detectIdentifiers('CVE-2024-1234567')).toEqual([]);
+      expect(detectIdentifiers('AB-1-2-3')).toEqual([]);
+      // Single-segment over-length was already refused; keep it that way.
+      expect(detectIdentifiers('INC-12345678')).toEqual([]);
+      // A hyphenated WORD suffix is not a segment — the key still reads.
+      expect(detectIdentifiers('INC-2203-related work')).toContainEqual({ kind: 'issueKey', value: 'INC-2203' });
+    });
+
     it('still DETECTS technical acronym compounds — the safety net is the title-only lookup, not the shape (#1273 fork F1)', () => {
       // No structural test separates INC-2203 from SHA-256, and a prefix
       // denylist would be exactly the probabilistic guard this design
@@ -125,10 +138,25 @@ describe('detectIdentifiers (#1107)', () => {
     });
 
     it('strips trailing punctuation from the called-cue capture (#1273 fork F13)', () => {
-      // Measured on Postgres: similarity('FAQ', 'FAQ?') = 0.286, under
-      // pg_trgm's 0.3 threshold — the question mark alone killed the pin.
+      // NOT because punctuation breaks the trigram probe — measured on
+      // Postgres 17/pg_trgm 1.6, similarity('FAQ','FAQ?') is 1.0, because
+      // punctuation is a separator. It is stripped so the quoted and cued
+      // paths normalise onto one string; see the double-detection test.
       expect(detectIdentifiers('the page called FAQ?')).toContainEqual({ kind: 'title', value: 'FAQ' });
       expect(detectIdentifiers('page named Deployment Runbook.')).toContainEqual({ kind: 'title', value: 'Deployment Runbook' });
+    });
+
+    it('emits ONE title when quotes and the called-cue describe the same gesture', () => {
+      // Both paths fire on `page called "X"`. Before the cue was gated on
+      // quotes, the greedy capture produced a SECOND, worse title — and
+      // two detections of one page is what let the pin stage substitute an
+      // unrelated near-title neighbour underneath it.
+      expect(detectIdentifiers('page called "FAQ"')).toEqual([{ kind: 'title', value: 'FAQ' }]);
+      expect(detectIdentifiers('the page called “Incident Runbook”')).toEqual([
+        { kind: 'title', value: 'Incident Runbook' },
+      ]);
+      const trailing = detectIdentifiers('page called "FAQ" in DEV');
+      expect(trailing.filter((d) => d.kind === 'title')).toEqual([{ kind: 'title', value: 'FAQ' }]);
     });
 
     it('strips quotes the QUOTED path does not own, rather than searching for them', () => {

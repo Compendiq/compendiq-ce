@@ -47,7 +47,13 @@ const KIND_STRENGTH: Record<IdentifierKind, number> = {
 // specific key that title-matches any page naming a different 2024 CVE.
 // Multi-segment keys (CVE-YYYY-NNNN, Jira sub-task ids, versioned keys)
 // must verify whole or not at all.
-const ISSUE_KEY = /\b[A-Z][A-Z0-9]{1,9}-\d{1,6}(?:-\d{1,6})?\b/g;
+// The trailing (?!-?\d) is what makes "whole or not at all" true. A bare
+// \b lets the engine DROP the optional group and stop at the hyphen when
+// the last run is too long, so CVE-2024-1234567 silently became CVE-2024 —
+// a key that title-matches a different CVE, which is the exact failure the
+// optional group was added to prevent. Refusing beats truncating: an
+// over-long token is not a key shape, and a miss costs one probe.
+const ISSUE_KEY = /\b[A-Z][A-Z0-9]{1,9}-\d{1,6}(?:-\d{1,6})?(?!-?\d)/g;
 const WHOLE_NUMERIC = /^\d{1,10}$/;
 // >=5 digits for the CUED shape (#1273 review B1): pages.id is a dense
 // SERIAL, so "page 2" / "see page 12 above" would verify against SOME row
@@ -73,11 +79,20 @@ const CUED_SPACE_KEY = /\b(?:space|key|in)\s+([A-Z]{2,10})\b/;
 // post-fork-F1 they verify against a page TITLE only, so an ordinary
 // "SHA-256 vs MD5" question costs one indexed probe and pins nothing.
 const CALLED_CUE = /\bpage\s+(?:called|named)\s+(.{2,120})$/i;
-// Trailing punctuation is never part of a title, and it costs real recall:
-// similarity('FAQ', 'FAQ?') falls under pg_trgm's 0.3 threshold, so
-// "the page called FAQ?" verified nothing (#1273 fork F13). Trailing
-// PROSE ("FAQ right now") is left alone — trimming words would guess at
-// where the title ends, and a silent miss beats a confident wrong pin.
+// Punctuation is stripped to NORMALISE, not to fix matching. Measured on
+// Postgres 17 / pg_trgm 1.6: punctuation and quotes are separators, so
+// show_trgm('FAQ?') and show_trgm('"FAQ') both equal show_trgm('FAQ') and
+// similarity() is 1.0 — the probe already matched. An earlier version of
+// this comment claimed similarity('FAQ','FAQ?') = 0.286 and it was wrong:
+// 0.2857 is the TRAILING-PROSE case, similarity('FAQ','FAQ right now'),
+// which really does fall under the 0.3 threshold and which stripping
+// deliberately does NOT address — trimming words would guess at where the
+// title ends, and a silent miss beats a confident wrong pin.
+//
+// What stripping buys is that the quoted and called-cue paths land on the
+// SAME string, so one gesture yields one detection rather than two (`add`
+// de-dupes on kind+value). Two detections of one page is not a cosmetic
+// problem — see the no-substitute rule in the rag-service pin stage.
 const TRAILING_PUNCT = /[\s"“”„«»'’?.!,;:]+$/;
 // And the LEADING half. `page called "X"` reaches here rather than through
 // QUOTED, whose inner class needs two characters — so without this the
@@ -122,10 +137,18 @@ export function detectIdentifiers(query: string): DetectedIdentifier[] {
     // for. The bare-token space key below is unaffected.
     add('title', quoted[1]!.trim());
   }
-  const called = CALLED_CUE.exec(trimmed);
-  if (called) {
-    const title = called[1]!.trim().replace(LEADING_PUNCT, '').replace(TRAILING_PUNCT, '');
-    if (title.length >= 2) add('title', title);
+  // The called-cue is skipped when the query already carries QUOTES,
+  // because the two describe ONE gesture and the cue's greedy capture
+  // describes it worse: `page called "FAQ" in DEV` yields `FAQ` from the
+  // quotes and `FAQ" in DEV` from the cue — two title detections of one
+  // intent, which the pin stage can only resolve by pinning one page or
+  // two. Quotes are the more precise expression, so they win outright.
+  if (!quoted) {
+    const called = CALLED_CUE.exec(trimmed);
+    if (called) {
+      const title = called[1]!.trim().replace(LEADING_PUNCT, '').replace(TRAILING_PUNCT, '');
+      if (title.length >= 2) add('title', title);
+    }
   }
 
   // Space key: whole query or cue-adjacent — NEVER a bare token in prose.
