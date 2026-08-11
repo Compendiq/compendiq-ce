@@ -9,7 +9,7 @@ import {
   List, ListOrdered, CheckSquare, Quote, Minus, Undo2, Redo2, ChevronDown, Plus,
   Table as TableIcon, Image as ImageIcon, CodeSquare, Columns2, Workflow, Badge,
   ChevronsUpDown, Hash, Paperclip, ListTree, ImagePlus, Table2,
-  Images, Captions, Info, TriangleAlert, StickyNote, Lightbulb, Terminal,
+  Images, Captions, Info, TriangleAlert, StickyNote, Lightbulb,
   Palette, Highlighter,
 } from 'lucide-react';
 import { LAYOUT_PRESETS } from './article-extensions';
@@ -777,14 +777,10 @@ export function EditorToolbar({
   editor,
   headerNumbering,
   onToggleHeaderNumbering,
-  vimEnabled,
-  onToggleVim,
 }: {
   editor: EditorType;
   headerNumbering?: boolean;
   onToggleHeaderNumbering?: () => void;
-  vimEnabled?: boolean;
-  onToggleVim?: () => void;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const roving = useToolbarRovingFocus(rootRef);
@@ -896,11 +892,6 @@ export function EditorToolbar({
         {onToggleHeaderNumbering && (
           <ToolbarButton onClick={onToggleHeaderNumbering} active={headerNumbering} title="Toggle Header Numbering">
             <Hash size={16} />
-          </ToolbarButton>
-        )}
-        {onToggleVim && (
-          <ToolbarButton onClick={onToggleVim} active={vimEnabled} title="Toggle Vim Mode">
-            <Terminal size={16} />
           </ToolbarButton>
         )}
         <ToolbarButton onClick={() => editor.chain().focus().undo().run()} disabled={!editor.can().undo()} title="Undo">

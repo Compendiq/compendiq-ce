@@ -31,6 +31,7 @@ import { Editor, clearDraft } from './Editor';
 import type { Editor as EditorType } from '@tiptap/react';
 import { TextSelection } from '@tiptap/pm/state';
 import { handleTableCellTripleClick } from './table-cell-selection';
+import { useUiStore } from '../../../stores/ui-store';
 
 /**
  * The toolbar's long tail lives behind the Insert menu now. Radix menus open on
@@ -63,6 +64,25 @@ describe('Editor', () => {
     // The NodeView describe overrides this with mockResolvedValue('blob:…')
     // for tests that DO care.
     mockFetchAuthenticatedBlob.mockResolvedValue(null);
+    useUiStore.setState({ vimModeEnabled: false });
+  });
+
+  // Vim mode used to be a controlled prop / internal localStorage toggle
+  // living on the toolbar; it now reads the shared ui-store preference set
+  // from Settings -> Appearance (see ui-store.ts's vimModeEnabled and
+  // ThemeTab.tsx's toggle) so every open editor picks it up together.
+  it('activates vim mode from the shared ui-store preference, not a prop', async () => {
+    useUiStore.setState({ vimModeEnabled: true });
+    render(<Editor content="<p>seed</p>" editable={true} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('vim-mode-indicator')).toBeInTheDocument();
+    });
+  });
+
+  it('does not show the vim indicator when the preference is off', () => {
+    render(<Editor content="<p>seed</p>" editable={true} />);
+    expect(screen.queryByTestId('vim-mode-indicator')).not.toBeInTheDocument();
   });
 
   it('signals dirty via a boolean onChange, not a serialized HTML string (#954)', async () => {

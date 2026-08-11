@@ -22,6 +22,7 @@ import { cn } from '../../lib/cn';
 import { apiFetch } from '../../lib/api';
 import { fetchAuthenticatedBlob } from '../../hooks/use-authenticated-src';
 import { useIsLightTheme } from '../../hooks/use-is-light-theme';
+import { useUiStore } from '../../../stores/ui-store';
 import { MermaidBlock } from './MermaidBlockExtension';
 import {
   ConfluenceLayout,
@@ -263,8 +264,6 @@ interface EditorProps {
   pageId?: string;
   /** Callback to trigger a server-side save (used by vim :w command). */
   onSave?: () => void;
-  /** Controlled vim mode — when provided, overrides internal vim state. */
-  vimEnabled?: boolean;
 }
 
 export function TableContextToolbar({ editor }: { editor: EditorType }) {
@@ -731,13 +730,11 @@ export function clearDraft(key: string): void {
   suppressedFlushKeys.add(key);
 }
 
-const VIM_STORAGE_KEY = 'compendiq-vim-mode';
-
 function defaultVimDisplayState(): VimState {
   return { mode: 'normal', pendingKeys: '', countPrefix: '', register: '', commandBuffer: null };
 }
 
-export function Editor({ content, onChange, editable = true, placeholder, draftKey, naked = false, onEditorReady, hideToolbar = false, pageId, onSave, vimEnabled: vimEnabledProp }: EditorProps) {
+export function Editor({ content, onChange, editable = true, placeholder, draftKey, naked = false, onEditorReady, hideToolbar = false, pageId, onSave }: EditorProps) {
   const isLight = useIsLightTheme();
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   // draftKey of a debounced draft awaiting write, so unmount can flush it
@@ -764,21 +761,19 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
     });
   };
 
-  // Vim mode state — use controlled prop when provided, otherwise internal state
-  const [vimEnabledInternal, setVimEnabledInternal] = useState(() =>
-    localStorage.getItem(VIM_STORAGE_KEY) === 'true'
-  );
-  const vimEnabled = vimEnabledProp ?? vimEnabledInternal;
+  // Vim mode is a personal editing preference, toggled from Settings -> Appearance
+  // (ui-store's vimModeEnabled), not from a permanent slot in the toolbar every
+  // document loads with. A single global source means every open editor picks up
+  // the change together, rather than each instance carrying its own copy of the
+  // same on/off switch.
+  const vimEnabled = useUiStore((s) => s.vimModeEnabled);
   const [vimDisplayState, setVimDisplayState] = useState<VimState>(defaultVimDisplayState);
 
-  const toggleVim = () => {
-    setVimEnabledInternal(prev => {
-      const next = !prev;
-      localStorage.setItem(VIM_STORAGE_KEY, String(next));
-      if (!next) setVimDisplayState(defaultVimDisplayState());
-      return next;
-    });
-  };
+  // Reset the status-line state when Vim mode is turned off elsewhere (the
+  // toggle no longer lives in this component to clear it inline).
+  useEffect(() => {
+    if (!vimEnabled) setVimDisplayState(defaultVimDisplayState());
+  }, [vimEnabled]);
 
   const saveDraft = useCallback(() => {
     if (!draftKey) return;
@@ -986,7 +981,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
     <div className={cn('relative', naked ? '' : 'nm-card', headerNumbering && 'header-numbering')}>
       {editable && editor && !hideToolbar && (
         <div className="sticky top-0 z-30 border-b border-border bg-card px-1">
-          <EditorToolbar editor={editor} headerNumbering={headerNumbering} onToggleHeaderNumbering={toggleHeaderNumbering} vimEnabled={vimEnabled} onToggleVim={toggleVim} />
+          <EditorToolbar editor={editor} headerNumbering={headerNumbering} onToggleHeaderNumbering={toggleHeaderNumbering} />
           <TableContextToolbar editor={editor} />
           <LayoutContextToolbar editor={editor} />
           <ColumnContextToolbar editor={editor} />

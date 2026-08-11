@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { ThemeTab } from './ThemeTab';
 import { useThemeStore } from '../../stores/theme-store';
+import { useUiStore } from '../../stores/ui-store';
 
 // ThemeTab is a pure, self-contained panel: it reads/writes the Zustand theme
 // store and calls the `onSave` prop with `{ theme: id }` when a card is
@@ -13,6 +14,7 @@ describe('ThemeTab', () => {
 
   beforeEach(() => {
     useThemeStore.setState({ theme: 'graphite' });
+    useUiStore.setState({ vimModeEnabled: false });
     onSave = vi.fn();
   });
 
@@ -98,5 +100,35 @@ describe('ThemeTab', () => {
       'aria-pressed',
       'false',
     );
+  });
+
+  // Vim mode moved here from a permanent slot in the editor toolbar (#1270-ish
+  // — see EditorToolbar.tsx, ui-store.ts's vimModeEnabled): a personal
+  // preference, reached once, not a control every document loaded with.
+  describe('vim mode toggle', () => {
+    it('renders unchecked by default', () => {
+      render(<ThemeTab onSave={onSave} />);
+      expect(screen.getByTestId('vim-mode-toggle')).toHaveAttribute('data-state', 'unchecked');
+    });
+
+    it('reflects an already-enabled preference', () => {
+      useUiStore.setState({ vimModeEnabled: true });
+      render(<ThemeTab onSave={onSave} />);
+      expect(screen.getByTestId('vim-mode-toggle')).toHaveAttribute('data-state', 'checked');
+    });
+
+    it('toggles the shared ui-store preference, not local component state', () => {
+      render(<ThemeTab onSave={onSave} />);
+      fireEvent.click(screen.getByTestId('vim-mode-toggle'));
+      expect(useUiStore.getState().vimModeEnabled).toBe(true);
+      fireEvent.click(screen.getByTestId('vim-mode-toggle'));
+      expect(useUiStore.getState().vimModeEnabled).toBe(false);
+    });
+
+    it('does not call onSave — this is a live preference, not a form field pending a save action', () => {
+      render(<ThemeTab onSave={onSave} />);
+      fireEvent.click(screen.getByTestId('vim-mode-toggle'));
+      expect(onSave).not.toHaveBeenCalled();
+    });
   });
 });
