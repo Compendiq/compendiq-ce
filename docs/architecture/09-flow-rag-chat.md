@@ -220,9 +220,10 @@ Literal identifiers — a numeric page id, an INC-2203-style key, a quoted or
 FTS. `detectIdentifiers` (`identifier-shortcircuit.ts`, pure and
 dependency-free) recognises those shapes under structural guards: whole-
 query, quoted, or cue-adjacent only; case-sensitive where case is signal;
-short queries only (6 cued tokens is the outer gate; 4 additionally bounds
-the bare space key, the one shape that is neither whole-query-anchored nor
-cued); at most two detections, strongest kind first. A QUOTED string is
+short queries only (6 tokens — ONE gate; a second, tighter bound existed
+and gated nothing reachable, because every uncued shape is anchored to the
+whole query and so is one token long); at most two detections, strongest
+kind first. A QUOTED string is
 always a title, never a space key (#1273 fork F10): pages titled 'FAQ',
 'SLA' or 'API' exist, space-key detections verify nothing, and quoting a
 short title is exactly the gesture the trgm lookup serves. Multi-segment
@@ -249,8 +250,8 @@ lookup that selected a restricted page suppressed the pin an accessible
 page would have received, so "Deployment Runbook" existing in both a
 restricted and a readable space pinned nothing at all (F5). **A detection
 takes its best accessible candidate or nothing — never a substitute.**
-The list holds everything above pg_trgm's 0.3 threshold, so the second row
-is a near-title *neighbour*, not a second answer; sliding onto it when the
+The list is everything the lookup admitted, so the second row is a
+*neighbour*, not a second answer; sliding onto it when the
 first is already pinned would resemble de-duplication while actually
 pinning an unrelated page as a verified exact match, ahead of every fused
 result. Verified pins are PREPENDED to the
@@ -318,10 +319,15 @@ it is created after that stage and has no anchor chunk to grow a window
 around — so reading the same knob is what keeps the feature's headline
 query (the exact-match page the fused legs missed) from carrying the
 thinnest context in the pipeline. Pinning a page that fused just OUTSIDE
-topK recovers its enriched row from the pre-slice candidates, not merely
-from the sliced result set (F12) — that near-miss IS the diluted-exact-match
-case this stage exists for, and matching post-slice dropped its scored
-chunk and rerank score for a bare excerpt. The operator kill switch is
+topK recovers its enriched row from the pre-slice pool, not merely from the
+sliced result set (F12) — that near-miss IS the diluted-exact-match case
+this stage exists for, and matching post-slice dropped its scored chunk and
+rerank score for a bare excerpt. The recovery reads the **reranked** pool
+where that stage ran, falling back to the fused candidates only for a page
+beyond the rerank pool entirely: the rerank stage builds new row objects
+rather than mutating the candidate array, so recovering from `candidates`
+would have quietly dropped the very relevance score the recovery exists to
+preserve. The operator kill switch is
 `rag_pin_identifiers` ('0' disables). Detection misses soft-fail to the
 fused order, and lookup errors are isolated PER DETECTION (F8) — one
 failing probe must not discard a second, independently verified pin. The

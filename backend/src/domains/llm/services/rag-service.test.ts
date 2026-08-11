@@ -2174,6 +2174,31 @@ describe('exact-identifier pin stage (#1107)', () => {
     expect(out.some((r) => r.pageId === 56)).toBe(false);
   });
 
+  it('a pin recovered from outside topK keeps its RERANK score, not just its chunk', async () => {
+    // The rerank stage builds NEW row objects and never mutates the fused
+    // candidate array, so recovering an out-of-topK page from `candidates`
+    // silently dropped the relevance score the recovery exists to preserve.
+    // Recovery reads the reranked pool; this is that difference.
+    mocks.mockResolveRerank.mockResolvedValue({
+      config: { providerId: 'r1', id: 'r1', name: 'R', baseUrl: 'http://r/v1', apiKey: null, authType: 'none', verifySsl: true, defaultModel: 'bge-reranker' },
+      model: 'bge-reranker',
+    });
+    // Page 2 must be SCORED but land OUTSIDE topK — that is the only
+    // arrangement that exercises the fallback. Scoring it top instead put
+    // it back inside topResults, and the test passed with the pool change
+    // reverted (caught by mutating the source, not by reading it).
+    mocks.mockRerank.mockResolvedValue([
+      { index: 0, relevanceScore: 0.95 },
+      { index: 1, relevanceScore: 0.42 },
+    ]);
+    routePinQueries({ page_id: 2, confluence_id: 'page-2', title: 'Page 2', space_key: 'DEV', excerpt: 'bare excerpt' });
+    const out = await hybridSearch('user-1', 'what is INC-2203 about', 1, undefined, { pinIdentifiers: true, rerank: true });
+    expect(out.map((r) => r.pageId)).toEqual([2]);
+    expect(out[0]!.pinned).toBe(true);
+    expect(out[0]!.rerankScore).toBe(0.42);
+    expect(out[0]!.chunkText).toBe('chunk of page 2');
+  });
+
   it('the lookup asks for a CANDIDATE LIST, never a single row — ACL runs before the winner is chosen', async () => {
     routePinQueries({ page_id: 42, confluence_id: 'inc-page', title: 'INC-2203 postmortem', space_key: 'DEV', excerpt: 'x' });
     await hybridSearch('user-1', 'what is INC-2203 about', 5, undefined, { pinIdentifiers: true });

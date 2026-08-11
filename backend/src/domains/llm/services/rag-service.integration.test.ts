@@ -1087,10 +1087,16 @@ describe.skipIf(!dbAvailable)('rag-service integration — #1107 identifier pin 
     // the ORDER BY it exists for. The live ordering question is now among
     // pages whose TITLES all carry the key: starts-with beats contains,
     // shorter beats longer, and insertion order must not decide.
+    //
+    // The two CONTAINING titles are deliberately SHORTER than the
+    // starts-with one, so `length(title) ASC` alone would pick the wrong
+    // page. Only the `(cp.title ~* '^KEY…') DESC` term produces the
+    // expected answer — with equal-length fixtures this test passed on
+    // length and left the tiebreak it is named for unexercised.
     for (const [title, body] of [
-      ['Retrospective covering INC-9001 and its follow-ups', 'earliest by heap order'],
-      ['Notes referencing INC-9001 from the weekly sync', 'also contains the key'],
-      ['INC-9001 postmortem', 'full analysis of the incident'],
+      ['Re: INC-9001 sync', 'earliest by heap order, and the shortest title'],
+      ['Notes on INC-9001', 'also contains the key, also shorter'],
+      ['INC-9001 postmortem and remediation plan', 'full analysis of the incident'],
     ] as Array<[string, string]>) {
       await query(
         `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
@@ -1099,7 +1105,7 @@ describe.skipIf(!dbAvailable)('rag-service integration — #1107 identifier pin 
       );
     }
     const out = await hybridSearch(USER, 'what is INC-9001 about', 5, undefined, { pinIdentifiers: true });
-    expect(out[0]!.pageTitle).toBe('INC-9001 postmortem');
+    expect(out[0]!.pageTitle).toBe('INC-9001 postmortem and remediation plan');
     expect(out[0]!.pinned).toBe(true);
   });
 
@@ -1195,6 +1201,38 @@ describe.skipIf(!dbAvailable)('rag-service integration — #1107 identifier pin 
     const messy = await hybridSearch(USER, '"quarterly   runbook 2024"', 5, undefined, { pinIdentifiers: true });
     expect(messy[0]!.pageTitle).toBe('Quarterly Runbook 2024');
     expect(messy[0]!.pinned).toBe(true);
+  });
+
+  it('a hyphenated WORD suffix is the same ticket; a hyphenated DIGIT is a sub-task', async () => {
+    // The boundary must reject what continues an identifier and admit what
+    // merely follows it. Excluding every hyphen got the second half wrong:
+    // `INC-7777-postmortem` is a common title form for the ticket itself.
+    for (const title of ['TKT-7777-postmortem notes', 'TKT-8888-1 sub-task']) {
+      await query(
+        `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+         VALUES (gen_random_uuid()::text, 'confluence', 'DEV', $1, 'body', '', '')`,
+        [title],
+      );
+    }
+    const wordSuffix = await hybridSearch(USER, 'what is TKT-7777 about', 5, undefined, { pinIdentifiers: true });
+    expect(wordSuffix[0]!.pinned).toBe(true);
+    expect(wordSuffix[0]!.pageTitle).toBe('TKT-7777-postmortem notes');
+
+    const subTask = await hybridSearch(USER, 'what is TKT-8888 about', 5, undefined, { pinIdentifiers: true });
+    expect(subTask.some((r) => r.pinned)).toBe(false);
+  });
+
+  it('a key adjacent to a non-spaced script still pins — the boundary is ASCII, not [[:alnum:]]', async () => {
+    // Under en_US.utf8 the POSIX class matches CJK and Hangul, so a
+    // perfectly ordinary Japanese title refused the key outright. Issue
+    // keys are ASCII by construction, so the boundary should be too.
+    await query(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+       VALUES (gen_random_uuid()::text, 'confluence', 'DEV', 'JPN-4242対応手順', '本文', '', '')`,
+    );
+    const out = await hybridSearch(USER, 'what is JPN-4242 about', 5, undefined, { pinIdentifiers: true });
+    expect(out[0]!.pinned).toBe(true);
+    expect(out[0]!.pageTitle).toBe('JPN-4242対応手順');
   });
 
   it('a dotted or underscored sub-task key is a different identifier too', async () => {

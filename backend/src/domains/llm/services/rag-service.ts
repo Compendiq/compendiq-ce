@@ -958,19 +958,27 @@ const PIN_EXCERPT_FALLBACK_CHARS = 500;
  * whitespace. Not a similarity threshold, at any value.
  *
  * A threshold cannot work here, and that is measurable rather than a
- * matter of taste. On Postgres 17 / pg_trgm 1.6:
+ * matter of taste. On Postgres 17 / pg_trgm 1.6, a TYPO of the page the
+ * user meant and a DIFFERENT page are not separable in EITHER direction:
  *
  *   similarity('Deployment Runbok',      'Deployment Runbook')      = 0.850
  *   similarity('Deployment Runbook 2023','Deployment Runbook 2024') = 0.846
+ *   similarity('Onbaording',             'Onboarding')              = 0.467
+ *   similarity('Offboarding',            'Onboarding')              = 0.533
  *
- * A typo of the page the user meant and a DIFFERENT page in the same
- * versioned family are indistinguishable — and the same holds for
- * 'Q1 Roadmap'/'Q2 Roadmap' (0.692), 'EMEA…'/'APAC…' (0.630) and
- * 'v1.2'/'v1.3' (0.810). Any floor that admits the typo admits the wrong
- * year, quarter or region, which this stage would then lead the results
- * with, label a verified exact match, and suppress the #1105 refusal gate
- * for. Fuzzy tolerance was never in the issue's contract; it arrived with
- * the trigram operator. The `%` operator stays as the index-driven
+ * The last pair is the one that settles it: a semantically OPPOSITE page
+ * scores HIGHER than a misspelling of the right one. So no floor admits
+ * typos without also admitting the wrong year, quarter, region — or the
+ * inverse concept — which this stage would then lead the results with,
+ * label a verified exact match, and suppress the #1105 refusal gate for.
+ * (Same family: 'Q1'/'Q2 Roadmap' 0.692, 'EMEA'/'APAC' 0.630, 'v1.2'/
+ * 'v1.3' 0.810.) Trigram similarity is also length-blind, so one constant
+ * cannot serve a 3-character acronym and a 40-character title at once.
+ *
+ * Fuzzy tolerance was never in the issue's contract; it arrived with the
+ * trigram operator. A missed pin is a silent fallback to ordinary
+ * retrieval with the refusal gate intact — the safe side of an
+ * inseparable boundary. The `%` operator stays as the index-driven
  * candidate generator, and equality is the verification.
  */
 const normalizeTitle = (value: string): string => value.trim().replace(/\s+/g, ' ').toLowerCase();
@@ -1059,15 +1067,23 @@ async function lookupIdentifier(
     // only ever emits [A-Z0-9-]+ (asserted below): no regex metacharacter
     // can reach here, and `-` is literal outside a bracket expression.
     // `~*` is still an index-usable operator for gin_trgm_ops.
-    // The boundary excludes every character that CONTINUES an identifier,
-    // not just alphanumerics: `-`, `.` and `_`. Each one was a wrong pin —
-    // key INC-220 matching sub-task `INC-220-1`, key PROJ-12 matching
-    // `PROJ-12.1` (dotted sub-task) or `PROJ-12_old`. A delimiter that
-    // genuinely ends an identifier (space, colon, bracket, slash, comma)
-    // still admits the match.
+    // The boundary rejects what CONTINUES an identifier and admits what
+    // ENDS one, and both halves took measuring to get right.
+    //
+    // The classes are spelled ASCII, not [[:alnum:]]: under en_US.utf8 that
+    // POSIX class matches CJK and Hangul, so `INC-2203対応手順` — a
+    // perfectly ordinary title in a non-spaced script — was refused. Issue
+    // keys are ASCII by construction, so an ASCII class is both correct
+    // and narrower.
+    //
+    // The trailing rule is a lookahead rather than a class because a
+    // hyphen is only a continuation when a DIGIT follows it: `INC-220-1`
+    // is a sub-task (refuse) while `INC-7777-postmortem` is the same
+    // ticket with a word suffix (admit). Blanket-excluding `-` lost the
+    // second, which is a common title form.
     if (!/^[A-Za-z0-9-]+$/.test(ident.value)) return [];
-    const boundedKey = `(^|[^[:alnum:]._-])${ident.value}([^[:alnum:]._-]|$)`;
-    const startsWithKey = `^${ident.value}([^[:alnum:]._-]|$)`;
+    const boundedKey = `(^|[^0-9A-Za-z._-])${ident.value}(?![0-9A-Za-z._]|-[0-9])`;
+    const startsWithKey = `^${ident.value}(?![0-9A-Za-z._]|-[0-9])`;
     const titled = await query<Row>(
       `${select} AND cp.title ~* $2
        ORDER BY (cp.title ~* $4) DESC, length(cp.title) ASC, cp.id ASC LIMIT $6`,
