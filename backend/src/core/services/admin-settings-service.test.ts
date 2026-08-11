@@ -270,6 +270,24 @@ describe('confidence-threshold getters (#1105, per-basis since #1268 review)', (
     expect(await getRagConfidenceThresholdRerank()).toBe(0.5);
   });
 
+  it("treats an empty/whitespace row as UNSET — default 0, no warning (#1268 review)", async () => {
+    // A panel's "clear" writing '' must not become a once-a-minute WARN for
+    // the life of the process.
+    const { logger } = await import('../utils/logger.js');
+    vi.mocked(logger.warn).mockClear();
+    respondWith({ rag_confidence_threshold: '' });
+    expect(await getRagConfidenceThreshold()).toBe(0);
+    invalidateRagConfidenceThresholdCache();
+    respondWith({ rag_confidence_threshold: '   ' });
+    expect(await getRagConfidenceThreshold()).toBe(0);
+    expect(logger.warn).not.toHaveBeenCalled();
+    // A genuinely malformed value still warns loudly.
+    invalidateRagConfidenceThresholdCache();
+    respondWith({ rag_confidence_threshold: 'banana' });
+    expect(await getRagConfidenceThreshold()).toBe(0);
+    expect(logger.warn).toHaveBeenCalled();
+  });
+
   it('never throws when the DB query rejects — gate off', async () => {
     mockQuery.mockRejectedValue(new Error('postgres unreachable'));
     expect(await getRagConfidenceThreshold()).toBe(0);

@@ -194,7 +194,10 @@ async function readConfidenceThreshold(settingKey: string): Promise<number> {
       [settingKey],
     );
     const raw = r.rows[0]?.setting_value;
-    if (raw !== undefined) {
+    // An empty/whitespace row means UNSET, same as an absent row — a panel's
+    // "clear" writing '' must not become a once-a-minute WARN for the life
+    // of the process (#1268 review).
+    if (raw !== undefined && raw.trim() !== '') {
       // Strict shape, not bare parseFloat: '0,35' parseFloats to 0 — an
       // in-range value that silently disables the gate while looking
       // accepted, and '1' (an operator asking for maximal strictness) must

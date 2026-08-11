@@ -47,10 +47,13 @@ vi.mock('../../core/db/postgres.js', () => ({
 const mockHybridSearch = vi.fn();
 const mockBuildRagContext = vi.fn().mockReturnValue('Relevant context from the knowledge base.');
 
-vi.mock('../../domains/llm/services/rag-service.js', async (importOriginal) => ({
-  // computeRetrievalConfidence stays REAL — it is the pure function the
-  // #1105 gate reads, and stubbing it would let route and formula drift.
-  ...(await importOriginal<typeof import('../../domains/llm/services/rag-service.js')>()),
+// Closed two-export stub (#1268 review): the route reads the pure #1105
+// confidence formula REAL from the retrieval-confidence leaf module (not
+// mocked here — stubbing it would let route and formula drift), so this
+// stub no longer needs an importOriginal spread pulling rag-service's whole
+// module graph into a unit suite. A future route call to an un-stubbed
+// rag-service export fails loudly instead of running real retrieval code.
+vi.mock('../../domains/llm/services/rag-service.js', () => ({
   hybridSearch: (...args: unknown[]) => mockHybridSearch(...args),
   buildRagContext: (...args: unknown[]) => mockBuildRagContext(...args),
 }));
@@ -325,6 +328,17 @@ describe('POST /api/llm/ask', () => {
       expect(final.confidenceBasis).toBe('similarity');
       // The closest sources still travel — "one of them may still help".
       expect((final.sources as unknown[]).length).toBe(1);
+      // Live text explains the attached chips; persisted text (no sources on
+      // reload) does not — each surface's copy matches what it shows.
+      const contentFrame = events.find((f) => typeof f.content === 'string')!;
+      expect(contentFrame.content).toContain('attached as sources');
+      const upsert = mockQuery.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('INSERT INTO llm_conversations'),
+      )!;
+      const persisted = JSON.parse((upsert[1] as unknown[])[3] as string) as Array<Record<string, unknown>>;
+      const persistedTurn = persisted.find((m) => m.role === 'assistant')!;
+      expect(persistedTurn.content).not.toContain('attached as sources');
+      expect(persistedTurn.refused).toBe(true);
     });
 
     it('gate ON + rerank basis: gates on the RERANK knob, not the similarity one (#1268 B2)', async () => {
@@ -370,9 +384,15 @@ describe('POST /api/llm/ask', () => {
       // learns this only through the onRetrievalMeta callback.
       mockHybridSearch.mockImplementation(
         async (_u: unknown, _q: unknown, _k: unknown, _s: unknown, opts?: {
-          onRetrievalMeta?: (m: { degradedReason: string | null; searchType: string }) => void;
+          onRetrievalMeta?: (m: Record<string, unknown>) => void;
         }) => {
-          opts?.onRetrievalMeta?.({ degradedReason: 'embedding_failed', searchType: 'keyword_fallback' });
+          opts?.onRetrievalMeta?.({
+            degradedReason: 'embedding_failed',
+            healthCaveat: 'embedding_failed',
+            searchType: 'keyword_fallback',
+            embeddingCoverage: 0.5,
+            aclEmptied: false,
+          });
           return [];
         },
       );
@@ -431,11 +451,14 @@ describe('POST /api/llm/ask', () => {
       );
       expect(insert).toBeDefined();
       const messages = JSON.parse((insert![1] as unknown[])[3] as string) as Array<{ role: string; content: string }>;
-      const assistantTurn = messages.find((m) => m.role === 'assistant')!;
+      const assistantTurn = messages.find((m) => m.role === 'assistant')! as { role: string; content: string; refused?: boolean };
       expect(assistantTurn.content).toContain('not answering rather than guessing');
       // The persisted row has no sources column — the text must not promise
       // a list that will not exist on reload.
       expect(assistantTurn.content.toLowerCase()).not.toContain('listed below');
+      // The marker is what keeps this turn out of the model context and out
+      // of the gate's history exemption on the next turn.
+      expect(assistantTurn.refused).toBe(true);
     });
 
     it('gate ON + keyword-only results: answers — the gate never refuses what it cannot measure', async () => {
@@ -452,10 +475,14 @@ describe('POST /api/llm/ask', () => {
       expect(mockStreamChatClient).toHaveBeenCalled();
     });
 
-    it('gate ON + web search requested: answers — other grounding is in play', async () => {
+    it('gate ON + web search that RETURNED results: answers — grounding materialised', async () => {
       mockConfidenceThreshold.mockResolvedValue(0.3);
       mockHybridSearch.mockResolvedValue([]);
       mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
+      mockFetchWebSources.mockResolvedValue({
+        sources: [{ url: 'https://example.com/a', title: 'A', markdown: 'web content' }],
+        injectionWarnings: [],
+      });
       mockStreamChatClient.mockReturnValue(singleChunkGenerator('Web-grounded answer.'));
 
       const response = await app.inject({
@@ -464,6 +491,152 @@ describe('POST /api/llm/ask', () => {
       });
       expect(response.statusCode).toBe(200);
       expect(mockStreamChatClient).toHaveBeenCalled();
+    });
+
+    it('gate ON + searchWeb flag whose fetch returned NOTHING: refuses — a flag is not grounding (#1268 review)', async () => {
+      // Only grounding that materialised counts. (searchWeb is API-only on
+      // this route in the current UI — the session-sticky amplifier is
+      // includeSubPages, tested below — but the rule is uniform: a flag
+      // whose fetch returned nothing added zero grounding.)
+      mockConfidenceThreshold.mockResolvedValue(0.3);
+      mockHybridSearch.mockResolvedValue([]);
+      mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
+      mockFetchWebSources.mockResolvedValue({ sources: [], injectionWarnings: [] });
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'web question', searchWeb: true },
+      });
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+      const events = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      expect(events.find((f) => f.final === true)!.refused).toBe(true);
+    });
+
+    it('gate ON + includeSubPages on an RBAC-denied page: refuses — no tree was assembled', async () => {
+      mockConfidenceThreshold.mockResolvedValue(0.3);
+      mockHybridSearch.mockResolvedValue([]);
+      mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
+      mockUserCanAccessPage.mockResolvedValue(false);
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'tree question', includeSubPages: true, pageId: '12345' },
+      });
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+      const events = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      expect(events.find((f) => f.final === true)!.refused).toBe(true);
+    });
+
+    it('refusal NAMES requested grounding that failed to materialise — the remedy must point at the real failure', async () => {
+      // Three URLs attached, sidecar down, KB empty: the URLs are the only
+      // thing that failed, and "try rephrasing" alone would misdirect.
+      mockConfidenceThreshold.mockResolvedValue(0.3);
+      mockHybridSearch.mockResolvedValue([]);
+      mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
+      mockMcpIsEnabled.mockResolvedValue(true);
+      mockMcpFetchDocumentation.mockRejectedValue(new Error('sidecar down'));
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'documented question', externalUrls: ['https://example.com/doc'] },
+      });
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+      const events = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      const contentFrame = events.find((f) => typeof f.content === 'string')!;
+      expect(contentFrame.content).toContain('none of the attached URLs could be retrieved');
+      // The note persists too — the reload should explain the refusal the
+      // same way.
+      const insert = mockQuery.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('INSERT INTO llm_conversations'),
+      )!;
+      const persisted = JSON.parse((insert[1] as unknown[])[3] as string) as Array<{ role: string; content: string }>;
+      expect(persisted.find((m) => m.role === 'assistant')!.content).toContain('none of the attached URLs could be retrieved');
+    });
+
+    it('empty set refuses when ONLY the rerank knob is raised — the headline case belongs to no basis (#1268 review)', async () => {
+      // A rerank deployment tunes rag_confidence_threshold_rerank; an empty
+      // healthy set (basis none, score 0) must refuse under EITHER knob, or
+      // "ask something unanswerable" stays open on exactly those deployments.
+      mockConfidenceThreshold.mockResolvedValue(0);
+      mockConfidenceThresholdRerank.mockResolvedValue(0.4);
+      mockHybridSearch.mockResolvedValue([]);
+      mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'unanswerable question' },
+      });
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+      const events = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      const final = events.find((f) => f.final === true)!;
+      expect(final.refused).toBe(true);
+      expect(final.confidenceBasis).toBe('none');
+    });
+
+    it('a refused-only thread does NOT exempt the next turn — re-asking the weak question refuses again (#1268 review)', async () => {
+      mockConfidenceThreshold.mockResolvedValue(0.3);
+      // Turn 1 was a refusal (persisted with the `refused` marker); turn 2
+      // re-asks. History exists but grounds nothing — without the marker
+      // check, one Enter after any refusal replayed the refusal text as
+      // model context and answered ungated.
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (typeof sql === 'string' && sql.includes('SELECT messages FROM llm_conversations')) {
+          return {
+            rows: [{
+              messages: [
+                { role: 'user', content: 'what is our 2027 revenue target' },
+                { role: 'assistant', content: 'I could not find any knowledge-base content…', refused: true },
+              ],
+            }],
+          };
+        }
+        return { rows: [{ id: 'test-conv-id' }] };
+      });
+      mockHybridSearch.mockResolvedValue([]);
+      mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'what is our 2027 revenue target', conversationId: '5f0e8f9a-1b2c-4d3e-8f4a-5b6c7d8e9f0a' },
+      });
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+      const events = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      expect(events.find((f) => f.final === true)!.refused).toBe(true);
+    });
+
+    it('refused turns are stripped from the messages sent to the model', async () => {
+      // A refusal is persistence/UI metadata, not model context — replaying
+      // "I am not answering" invites imitation, and the `refused` field must
+      // not reach the provider wire.
+      mockConfidenceThreshold.mockResolvedValue(0);
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (typeof sql === 'string' && sql.includes('SELECT messages FROM llm_conversations')) {
+          return {
+            rows: [{
+              messages: [
+                { role: 'user', content: 'weak question' },
+                { role: 'assistant', content: 'refusal text here', refused: true },
+                { role: 'user', content: 'what is the deployment process?' },
+                { role: 'assistant', content: 'It uses CI/CD.' },
+              ],
+            }],
+          };
+        }
+        return { rows: [{ id: 'test-conv-id' }] };
+      });
+      mockHybridSearch.mockResolvedValue([]);
+      mockBuildRagContext.mockReturnValue('ctx');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('Follow-up answer.'));
+
+      await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'and staging?', conversationId: '5f0e8f9a-1b2c-4d3e-8f4a-5b6c7d8e9f0a' },
+      });
+      expect(mockStreamChatClient).toHaveBeenCalled();
+      const [, , messages] = mockStreamChatClient.mock.calls[0] as [unknown, unknown, Array<Record<string, unknown>>];
+      expect(messages.some((m) => m.content === 'refusal text here')).toBe(false);
+      expect(messages.some((m) => 'refused' in m)).toBe(false);
+      expect(messages.some((m) => m.content === 'It uses CI/CD.')).toBe(true);
     });
   });
 

@@ -189,12 +189,20 @@ export async function checkCacheWithLock(
 }
 
 /**
- * Send a cached SSE response as a single chunk and end the stream.
+ * Send a terminal SSE turn — one content chunk, an optional final frame, end
+ * of stream. Every "answer without an LLM call" path shares this shape: the
+ * cache hits (the original callers, hence the name and the `cached: true`
+ * default) and the #1105 confidence refusal (`{ cached: false }` — nothing
+ * was cached, and the flag would be a lie a future consumer might read).
+ * Keep the copies OUT of route files: a cross-cutting SSE change applied
+ * here and missed in a hand-rolled twin turns the least-exercised branch
+ * into the one differently-framed response (#1268 review).
  */
 export function sendCachedSSE(
   reply: FastifyReply,
   content: string,
   extras?: Record<string, unknown>,
+  opts?: { cached?: boolean },
 ): void {
   reply.hijack();
   reply.raw.writeHead(200, {
@@ -203,7 +211,9 @@ export function sendCachedSSE(
     'Connection': 'keep-alive',
     'X-Accel-Buffering': 'no',
   });
-  reply.raw.write(`data: ${JSON.stringify({ content, done: true, cached: true })}\n\n`);
+  const contentFrame: Record<string, unknown> = { content, done: true };
+  if (opts?.cached !== false) contentFrame.cached = true;
+  reply.raw.write(`data: ${JSON.stringify(contentFrame)}\n\n`);
   if (extras) {
     reply.raw.write(`data: ${JSON.stringify({ ...extras, done: true, final: true })}\n\n`);
   }

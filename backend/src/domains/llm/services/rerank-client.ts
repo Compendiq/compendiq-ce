@@ -24,6 +24,7 @@
  * only to throw a typed LlmHttpError like its siblings.
  */
 import { fetch as undiciFetch } from 'undici';
+import { logger } from '../../../core/utils/logger.js';
 import { enqueue } from './llm-queue.js';
 import { getProviderBreaker } from '../../../core/services/circuit-breaker.js';
 import { withSpan } from '../../../telemetry.js';
@@ -143,6 +144,16 @@ export async function rerank(
               return true;
             })
             .map((r) => ({ index: r.index, relevanceScore: r.relevance_score }));
+          // Which normalisation regime applied is otherwise invisible, and for
+          // a raw-logit provider it varies PER REQUEST with the pool's
+          // weakest member — the one signal an operator tuning
+          // rag_confidence_threshold_rerank needs in the logs (#1268 review).
+          if (mapped.some((r) => r.relevanceScore < 0 || r.relevanceScore > 1)) {
+            logger.info(
+              { providerId: cfg.providerId, model },
+              'Rerank scores were raw logits — per-set sigmoid applied; rerank confidence values are only loosely comparable across requests',
+            );
+          }
           return normalizeRerankScores(mapped).sort((a, b) => b.relevanceScore - a.relevanceScore);
         }),
       ),

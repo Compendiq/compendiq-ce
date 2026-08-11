@@ -490,13 +490,37 @@ describe('RAG Service', () => {
         return { rows: [] };
       });
 
-      const seen: Array<{ degradedReason: string | null; searchType: string }> = [];
+      const seen: Array<Record<string, unknown>> = [];
       const results = await hybridSearch('user-1', 'test query', 5, undefined, {
-        onRetrievalMeta: (meta) => seen.push(meta),
+        onRetrievalMeta: (meta) => seen.push(meta as unknown as Record<string, unknown>),
       });
 
       expect(results).toEqual([]);
-      expect(seen).toEqual([{ degradedReason: 'embedding_failed', searchType: 'hybrid' }]);
+      // searchType 'hybrid' also covers "both legs empty" — documented on
+      // RetrievalMeta: it means "not a keyword fallback", nothing more.
+      expect(seen).toEqual([{
+        degradedReason: 'embedding_failed',
+        healthCaveat: 'embedding_failed',
+        searchType: 'hybrid',
+        embeddingCoverage: 1,
+        aclEmptied: false,
+      }]);
+    });
+
+    it('a throwing onRetrievalMeta observer does not fail the search', async () => {
+      mocks.mockGenerateEmbedding.mockRejectedValue(new Error('Ollama unreachable'));
+      mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
+      mocks.mockQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes('COUNT(*)')) return { rows: [{ embedded: 1, total: 1 }] };
+        return { rows: [] };
+      });
+
+      const results = await hybridSearch('user-1', 'test query', 5, undefined, {
+        onRetrievalMeta: () => {
+          throw new Error('metrics consumer bug');
+        },
+      });
+      expect(results).toEqual([]);
     });
 
     it('should record hybrid search type when both vector and keyword succeed', async () => {
@@ -791,6 +815,28 @@ describe('RAG Service', () => {
         { ...base, pageId: 2, vectorScore: 0.88, keywordRank: null },
       ];
       expect(computeRetrievalConfidence(results)).toEqual({ score: 0.88, basis: 'similarity' });
+    });
+
+    it('a KEYWORD-LED set is unmeasurable even when a stray vector row exists (#1268 review)', () => {
+      // Mid re-embed, the vector leg returns one marginal chunk that RRF
+      // ranks BELOW several strong FTS matches. The prompt is grounded by
+      // rows the vector leg never measured — gating on the stray cosine
+      // would refuse a set whose zero-vector twin answers.
+      const results = [
+        { ...base, vectorScore: null, keywordRank: 0.6 },
+        { ...base, pageId: 2, vectorScore: null, keywordRank: 0.5 },
+        { ...base, pageId: 3, vectorScore: 0.09, keywordRank: null },
+      ];
+      expect(computeRetrievalConfidence(results)).toEqual({ score: null, basis: 'none' });
+    });
+
+    it("empty set under 'coverage_unknown' (probe failed) is unmeasurable — health that could not be verified must not refuse", () => {
+      expect(computeRetrievalConfidence([], 'coverage_unknown')).toEqual({ score: null, basis: 'none' });
+    });
+
+    it("'coverage_unknown' with NON-empty vector-led results still measures normally", () => {
+      const results = [{ ...base, vectorScore: 0.44, keywordRank: null }];
+      expect(computeRetrievalConfidence(results, 'coverage_unknown')).toEqual({ score: 0.44, basis: 'similarity' });
     });
 
     it('partial rerank coverage with no vector signal anywhere is unmeasurable, not rerank-gated', () => {
