@@ -236,8 +236,11 @@ export function invalidateRagConfidenceThresholdCache(): void {
 /**
  * Per-page char budget for #1106 PR 2's sibling-chunk context assembly.
  * `admin_settings` key `rag_context_chars_per_page`; **default 6000** — the
- * existing CHUNK_HARD_LIMIT per-page ceiling, so the default budget admits
- * roughly what one maximal chunk already could — clamped to **[0, 24000]**.
+ * existing CHUNK_HARD_LIMIT per-CHUNK ceiling, so the default budget admits
+ * roughly what one maximal chunk already could and the per-page prompt
+ * ceiling is UNCHANGED at the default — clamped to **[0, 24000]** (the cap
+ * quadruples the ceiling; there is no input-side context-window guard, so
+ * raising it is a deliberate capacity decision).
  * **0 disables assembly entirely** (the operator kill switch for small
  * local models; the design-round graft), which is why the safeIntOr floor
  * is 0 here, not the default. Non-numeric values fall back to the default.
@@ -258,10 +261,14 @@ export async function getRagContextCharsPerPage(): Promise<number> {
     const r = await query<{ setting_value: string }>(
       `SELECT setting_value FROM admin_settings WHERE setting_key = 'rag_context_chars_per_page'`,
     );
-    resolved = Math.min(
-      safeIntOr(r.rows[0]?.setting_value, RAG_CONTEXT_CHARS_DEFAULT, 0),
-      RAG_CONTEXT_CHARS_MAX,
-    );
+    // Negatives clamp to 0 (assembly OFF) rather than falling back to the
+    // default: '-1' reads as a stronger kill switch, and resolving it to
+    // 6000 would be the opposite of the operator's intent (#1270 review
+    // m11). Garbage still falls back to the default via safeIntOr.
+    const n = Number.parseInt(r.rows[0]?.setting_value ?? '', 10);
+    resolved = Number.isFinite(n)
+      ? Math.min(Math.max(n, 0), RAG_CONTEXT_CHARS_MAX)
+      : RAG_CONTEXT_CHARS_DEFAULT;
   } catch (err) {
     logger.warn({ err }, 'Failed to resolve rag_context_chars_per_page — using default budget');
   }

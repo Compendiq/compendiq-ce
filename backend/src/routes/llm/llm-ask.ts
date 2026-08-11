@@ -17,7 +17,7 @@ import { hybridSearch, buildRagContext, type RetrievalMeta } from '../../domains
 // rag-service with a closed export list, and the formula must stay REAL
 // there (stubbing it would let route and formula drift — #1268 review).
 import { computeRetrievalConfidence } from '../../domains/llm/services/retrieval-confidence.js';
-import { getRagConfidenceThreshold, getRagConfidenceThresholdRerank } from '../../core/services/admin-settings-service.js';
+import { getRagConfidenceThreshold, getRagConfidenceThresholdRerank, getRagContextCharsPerPage } from '../../core/services/admin-settings-service.js';
 import { LlmCache, buildRagCacheKey } from '../../domains/llm/services/llm-cache.js';
 import { CircuitBreakerOpenError } from '../../core/services/circuit-breaker.js';
 import { isEnabled as isMcpDocsEnabled, fetchDocumentation } from '../../core/services/mcp-docs-client.js';
@@ -264,6 +264,11 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       searchWeb: body.searchWeb,
       provider: chatConfig.providerId,
       thinking: body.thinking,
+      // #1270 review m6: the assembly budget shapes the PROMPT, so cached
+      // answers are budget-specific — an operator killing assembly (0) for
+      // a choking local model must not keep receiving answers generated
+      // from 30 KB contexts for the cache TTL. TTL-cached read, ~free.
+      contextChars: await getRagContextCharsPerPage(),
     });
 
     // `score` is the retrieval ORDERING value — an RRF fusion score from
@@ -286,7 +291,10 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         pageTitle: r.pageTitle,
         spaceKey: r.spaceKey,
         confluenceId: r.confluenceId,
-        sectionTitle: r.sectionTitle,
+        // #1270 review m7: the prompt header already refuses to label
+        // multi-section context with one section; the UI chip must agree —
+        // a merged source reports no section rather than a false one.
+        sectionTitle: (r.mergedChunkCount ?? 1) > 1 ? undefined : r.sectionTitle,
         score: r.score,
         similarity: r.vectorScore,
         // #1104: present only on reranked results; #1105's confidence formula

@@ -10,10 +10,11 @@ const chunk = (chunkIndex: number, chunkText: string) => ({ chunkIndex, chunkTex
 describe('assembleSiblingWindow (#1106 PR 2)', () => {
   it('anchors at the given chunk and expands alternately under the budget, rendering in document order', () => {
     const sibs = [chunk(0, 'aaaa'), chunk(1, 'bbbb'), chunk(2, 'CCCC'), chunk(3, 'dddd'), chunk(4, 'eeee')];
-    // Budget fits anchor + two neighbours (4+4+4 + joiners); expansion
-    // alternates prev/next from the anchor, so the window is contiguous
-    // AROUND the match — the anchor can never be the part truncated away.
-    const out = assembleSiblingWindow(sibs, 2, 14);
+    // Budget fits anchor + two neighbours (4 + (4+2) + (4+2) = 16, joiners
+    // counted per m9); expansion alternates prev/next from the anchor, so
+    // the window is contiguous AROUND the match — the anchor can never be
+    // the part truncated away.
+    const out = assembleSiblingWindow(sibs, 2, 16);
     expect(out.text).toBe('bbbb\n\nCCCC\n\ndddd');
     expect(out.mergedChunkCount).toBe(3);
   });
@@ -25,11 +26,14 @@ describe('assembleSiblingWindow (#1106 PR 2)', () => {
     expect(out.mergedChunkCount).toBe(1);
   });
 
-  it('falls back to the first sibling as anchor when the anchor index is absent (keyword-only rows)', () => {
+  it('an ABSENT anchor returns null — keyword-only rows keep their excerpt, never an unanchored page prefix (#1270 m3)', () => {
     const sibs = [chunk(3, 'first'), chunk(4, 'second')];
-    const out = assembleSiblingWindow(sibs, undefined, 100);
-    expect(out.text).toBe('first\n\nsecond');
-    expect(out.mergedChunkCount).toBe(2);
+    expect(assembleSiblingWindow(sibs, undefined, 100)).toBeNull();
+  });
+
+  it('a STALE anchor returns null — a re-embed between candidate query and sibling fetch must not produce a silent page-prefix window (#1270 m2)', () => {
+    const sibs = [chunk(0, 'intro'), chunk(1, 'body'), chunk(2, 'end')];
+    expect(assembleSiblingWindow(sibs, 7, 100)).toBeNull();
   });
 
   it('marks chunk_index holes with an ellipsis joiner — skipped embedding batches leave gaps', () => {
@@ -45,26 +49,50 @@ describe('assembleSiblingWindow (#1106 PR 2)', () => {
     // Oversized-section splits carry ~150 chars of raw tail into the next
     // chunk (embedding-service CHUNK_OVERLAP). The duplicated run must not
     // appear twice in the merged text.
+    // The REAL chunker shape: the oversized-section splitter builds the
+    // next chunk as tail + '\n\n' + para, so a genuine overlap is always
+    // followed by a paragraph break — the discriminator (#1270 B1).
     const overlap = 'shared overlap text that both chunks carry';
     const a = 'unique first part. ' + overlap;
-    const b = overlap + ' unique second part.';
+    const b = overlap + '\n\nunique second part.';
     const out = assembleSiblingWindow([chunk(0, a), chunk(1, b)], 0, 1000);
-    expect(out.text).toBe('unique first part. ' + overlap + ' unique second part.');
+    expect(out.text).toBe('unique first part. ' + overlap + '\n\nunique second part.');
   });
 
   it('refuses seam matches below the floor — short legitimately-repeated prose is not an overlap', () => {
     const a = 'first chunk ends with the';
-    const b = 'the next chunk also starts';
+    const b = 'the\n\nnext chunk also starts';
     const out = assembleSiblingWindow([chunk(0, a), chunk(1, b)], 0, 1000);
-    // 'the' (3 chars) is under SEAM_TRIM_MIN_MATCH — no trim, plain join.
+    // 'the' (3 chars) is under SEAM_TRIM_MIN_MATCH — no trim, plain join,
+    // even though the paragraph-break discriminator would accept it.
     expect(out.text).toBe(a + '\n\n' + b);
     expect(SEAM_TRIM_MIN_MATCH).toBeGreaterThanOrEqual(20);
-    expect(SEAM_TRIM_WINDOW).toBeLessThanOrEqual(400);
+    // The window must COVER the max configurable chunker overlap
+    // (512 tokens x 3 chars) — see #1270 m8.
+    expect(SEAM_TRIM_WINDOW).toBeGreaterThanOrEqual(1536);
+  });
+
+  it('a coincidental match NOT followed by a paragraph break is never trimmed — repeated table headers survive (#1270 B1)', () => {
+    // Packed-section seams carry ZERO real overlap, so any suffix/prefix
+    // match there is boilerplate coincidence. The old trim deleted a
+    // legitimate header row and glued table two under table one's header.
+    const a = 'Table one\n\n| Status | Owner | Date |\n| ok | me | x |\n| Status | Owner | Date |';
+    const b = '| Status | Owner | Date |\n| no | you | y |\n\nTable two';
+    const out = assembleSiblingWindow([chunk(0, a), chunk(1, b)], 0, 5000);
+    expect(out.text).toBe(a + '\n\n' + b);
+  });
+
+  it('joiners count against the budget — the knob is an honest per-page character bound (#1270 m9)', () => {
+    // Nine 10-char chunks with all-hole seams: text 90 + 8 joiners x 7 =
+    // 146 chars. A budget of 100 must admit only what actually fits.
+    const sibs = Array.from({ length: 9 }, (_, i) => chunk(i * 2, 'x'.repeat(10)));
+    const out = assembleSiblingWindow(sibs, 8, 100);
+    expect(out.text.length).toBeLessThanOrEqual(100);
   });
 
   it('never trims across a hole — the gap marker breaks adjacency', () => {
     const overlap = 'this text would match as a seam if the chunks were adjacent';
-    const out = assembleSiblingWindow([chunk(0, 'a. ' + overlap), chunk(4, overlap + ' b.')], 0, 1000);
+    const out = assembleSiblingWindow([chunk(0, 'a. ' + overlap), chunk(4, overlap + '\n\nb.')], 0, 1000);
     expect(out.text).toContain('[…]');
     expect(out.text.split(overlap).length).toBe(3); // appears twice — no trim
   });

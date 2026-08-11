@@ -406,8 +406,14 @@ to **[0, 24000]** — **0 disables assembly entirely**, the kill switch for
 small local models where a larger prompt costs more than the added context
 buys. Roughly: the default admits ~4 typical sections per source page, and
 the chat path carries 5 source pages, so raising this multiplies prompt
-size accordingly. Read through the same 60-second cache as the other
-retrieval knobs; #1118's panel is the write surface, SQL until then.
+size accordingly (the budget includes the joiners between sections). At
+the default the per-page ceiling is unchanged — chunks were already capped
+at 6000 chars — so the default changes the TYPICAL prompt, not the worst
+case; the 24000 cap quadruples the worst case and there is no input-side
+context-window guard, so raising it is a deliberate capacity decision.
+Negative values clamp to 0 (off). Read through the same 60-second cache as
+the other retrieval knobs; #1118's panel is the write surface, SQL until
+then.
 
 ### Retrieval-confidence refuse gate (two thresholds, one per basis)
 

@@ -219,7 +219,7 @@ each surviving page's sibling chunks into a contiguous, budget-bounded
 window: one main-pool query over the `(page_id, chunk_index)` unique index,
 then per page a best-chunk-anchored alternating expansion under
 `rag_context_chars_per_page` (admin_settings; clamped [0, 24000], **0
-disables assembly**, default 6000 = the CHUNK_HARD_LIMIT per-page ceiling),
+disables assembly**, default 6000 = the CHUNK_HARD_LIMIT per-chunk ceiling, leaving the per-page prompt ceiling unchanged at the default),
 rendered in document order with chunker seam-overlap trimmed (bounded exact
 match, ~20-char floor) and `[…]` markers at chunk_index holes (skipped
 embedding batches — order by chunk_index, never arithmetic on it). The
@@ -227,8 +227,10 @@ merged text travels in `SearchResult.contextText`, read **exclusively** by
 `buildRagContext` (`contextText ?? chunkText`, dropping the `Section:`
 header clause when the window spans sections); `chunkText` is never mutated
 — /api/search snippets and the rerank docs must keep the matching passage,
-not a page prefix. Keyword-only rows get the sibling upgrade with an
-unanchored window and `vectorScore` untouched. Soft-fail is the house
+not a page prefix. Rows without a resolvable anchor — keyword-only rows,
+and stale anchors from a page re-embedded mid-request — are deliberately
+not assembled: an unanchored window is a page prefix with no anchoring
+signal (#1270 review). Soft-fail is the house
 pattern: any error (or an empty sibling set — the re-embed TRUNCATE window,
 a concurrent atomic replace) degrades to chunk-level, never the search;
 `rag.page_merge: assembled|bypassed` and the `page_merge` stage histogram

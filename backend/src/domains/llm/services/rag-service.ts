@@ -37,7 +37,7 @@ export const RETRIEVAL_STAGE_DURATION_METRIC = 'compendiq.retrieval.stage.durati
 
 const STAGE_DURATION_OPTS = {
   unit: 'ms',
-  description: 'Latency of retrieval pipeline stages (vector/keyword legs, rerank once #1104 lands, total)',
+  description: 'Latency of retrieval pipeline stages (vector/keyword legs, rerank, page_merge, total)',
 };
 
 // Configurable ef_search: higher = better recall, slower query.
@@ -1159,13 +1159,21 @@ async function hybridSearchInner(
   // the vector pool is reserved for similarity queries) against the
   // (page_id, chunk_index) unique index. Soft-fail is the house pattern:
   // any error keeps chunk-level rows; per-page empty sibling sets (the
-  // re-embed TRUNCATE window, a concurrent atomic replace, never-embedded
-  // keyword hits) degrade only that page. Keyword-only rows get the free
-  // upgrade — real chunk text replaces the 500-char body excerpt — with an
-  // undefined anchor (no measured chunk) and vectorScore untouched (null).
+  // re-embed TRUNCATE window, a concurrent atomic replace) degrade only
+  // that page. Rows WITHOUT a resolvable anchor — keyword-only rows carry
+  // no measured chunk, and a stale anchor means the page re-embedded under
+  // us — are deliberately NOT assembled (#1270 review m2+m3): an
+  // unanchored window is a page prefix with zero anchoring signal, and on
+  // a keyword_fallback outage it would inflate five sources to intros.
   if (opts?.assembleContext && topResults.length > 0) {
     try {
       const budget = await getRagContextCharsPerPage();
+      if (budget <= 0) {
+        // 'off' is distinct from 'bypassed' (error) and from the attribute
+        // being ABSENT (flag never passed) — a trace must distinguish
+        // config from failure from not-requested (#1270 review m4).
+        span?.setAttribute('rag.page_merge', 'off');
+      }
       if (budget > 0) {
         const assembleStarted = performance.now();
         const pageIds = [...new Set(topResults.map((r) => r.pageId))];
@@ -1276,7 +1284,17 @@ export function buildRagContext(results: SearchResult[]): string {
       // must not claim multi-section text (the design round's honest-header
       // graft). Markdown headings inside the merged text carry the internal
       // structure since #1265.
-      const body = r.contextText ?? r.chunkText;
+      //
+      // Sanitized HERE, the single prompt-assembly point (#1270 review m12
+      // + CLAUDE.md security rule 3): KB content reached the chat prompt
+      // unsanitized while the rerank stage sanitized the very same text for
+      // its own egress — a pre-existing gap this PR's larger windows
+      // amplified. Detections are logged; threading them into the route's
+      // injection attestation flags is follow-up plumbing.
+      const { sanitized: body, warnings: bodyWarnings } = sanitizeLlmInput(r.contextText ?? r.chunkText);
+      if (bodyWarnings.length > 0) {
+        logger.warn({ pageId: r.pageId, warnings: bodyWarnings }, 'KB context sanitized at prompt assembly');
+      }
       const multiSection = (r.mergedChunkCount ?? 1) > 1;
       const header = multiSection
         ? `[Source ${i + 1}: "${r.pageTitle}" (Space: ${r.spaceKey || 'Local'})]`

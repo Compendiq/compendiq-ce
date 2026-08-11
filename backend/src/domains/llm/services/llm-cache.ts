@@ -76,6 +76,10 @@ export function buildRagCacheKey(
     searchWeb?: boolean;
     provider?: string;
     thinking?: boolean;
+    /** #1270 review m6: the assembly budget shapes the prompt, so answers
+     * are budget-specific — killing assembly must not replay 30 KB-context
+     * answers for the cache TTL. */
+    contextChars?: number;
   },
 ): string {
   const sortedIds = [...docIds].sort().join(',');
@@ -91,7 +95,8 @@ export function buildRagCacheKey(
   // in a separate cache namespace so a prior thinking-off answer can't be
   // replayed when the user toggles Think on (and vice versa).
   const thinkingSuffix = options?.thinking ? 'think:1' : '';
-  return KEY_PREFIX + hashLlmInputs(model, question, sortedIds, subPageSuffix, externalSuffix, webSuffix, providerSuffix, thinkingSuffix);
+  const contextSuffix = options?.contextChars !== undefined ? `ctx:${options.contextChars}` : '';
+  return KEY_PREFIX + hashLlmInputs(model, question, sortedIds, subPageSuffix, externalSuffix, webSuffix, providerSuffix, thinkingSuffix, contextSuffix);
 }
 
 export class LlmCache {

@@ -335,6 +335,11 @@ describe('rag_context_chars_per_page getter (#1106 PR 2)', () => {
     expect(await getRagContextCharsPerPage()).toBe(0);
   });
 
+  it("clamps a negative to 0 (off) — '-1' reads as a stronger kill switch, never the default (#1270 m11)", async () => {
+    respondWith('-1');
+    expect(await getRagContextCharsPerPage()).toBe(0);
+  });
+
   it('defaults to 6000 when absent, and clamps to the 24000 cap', async () => {
     respondWith();
     expect(await getRagContextCharsPerPage()).toBe(RAG_CONTEXT_CHARS_DEFAULT);

@@ -78,6 +78,8 @@ vi.mock('../../domains/llm/services/rag-service.js', () => ({
 vi.mock('../../core/services/admin-settings-service.js', () => ({
   getRagConfidenceThreshold: vi.fn(async () => 0),
   getRagConfidenceThresholdRerank: vi.fn(async () => 0),
+  // #1270 m6: the ask route reads the assembly budget into its cache key.
+  getRagContextCharsPerPage: vi.fn(async () => 6000),
 }));
 
 vi.mock('../../core/db/postgres.js', () => ({
