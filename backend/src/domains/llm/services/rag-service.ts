@@ -960,6 +960,48 @@ async function hybridSearchInner(
 }
 
 /**
+ * Retrieval confidence for the #1105 refuse gate — computed from RETRIEVAL
+ * signals only, never from LLM self-report (the guide's "confident liar"
+ * rule). Two bases, never blended (their scales are unrelated):
+ *
+ * - `rerank`: the #1104 stage ran — max rerank relevance is the best
+ *   evidence available. Deployment-specific scale (see
+ *   SearchResult.rerankScore's comparability caveat).
+ * - `similarity`: no rerank — max cosine over the returned set.
+ *   Embedding-model-specific scale.
+ * - `none`: keyword-only results carry NO measurable signal — score is
+ *   null, and the gate must not refuse what it cannot measure (refusing
+ *   every keyword-fallback would turn the degraded mode into an outage).
+ *
+ * An empty result set scores 0 with basis 'none' — the one unmeasured case
+ * that DOES refuse when the gate is on, because "no grounding at all" is
+ * exactly what the gate exists to say honestly.
+ */
+export interface RetrievalConfidence {
+  score: number | null;
+  basis: 'rerank' | 'similarity' | 'none';
+}
+
+export function computeRetrievalConfidence(results: SearchResult[]): RetrievalConfidence {
+  if (results.length === 0) return { score: 0, basis: 'none' };
+  let maxRerank: number | null = null;
+  let maxSim: number | null = null;
+  for (const r of results) {
+    if (r.rerankScore != null && (maxRerank === null || r.rerankScore > maxRerank)) {
+      maxRerank = r.rerankScore;
+    }
+    if (r.vectorScore !== null && (maxSim === null || r.vectorScore > maxSim)) {
+      maxSim = r.vectorScore;
+    }
+  }
+  if (maxRerank !== null) return { score: maxRerank, basis: 'rerank' };
+  // Clamp: cosine can run negative (see vectorScore's JSDoc); a threshold in
+  // [0,1) must still catch it, so floor at 0.
+  if (maxSim !== null) return { score: Math.max(0, maxSim), basis: 'similarity' };
+  return { score: null, basis: 'none' };
+}
+
+/**
  * Build a RAG context prompt from search results.
  */
 export function buildRagContext(results: SearchResult[]): string {

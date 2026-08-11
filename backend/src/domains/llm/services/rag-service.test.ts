@@ -104,7 +104,7 @@ vi.mock('../../../core/services/fts-language.js', () => ({
   getFtsLanguage: vi.fn(async () => 'simple'),
 }));
 
-import { buildRagContext, hybridSearch, RAG_EF_SEARCH, reciprocalRankFusion, fuseWithStableHead, rrfWorstCase, vectorSearch, keywordSearch, recordSearchAnalytics, resolveStageLimit, RAG_FETCH_WIDTH_DEFAULT, RAG_FETCH_WIDTH_MAX } from './rag-service.js';
+import { buildRagContext, hybridSearch, RAG_EF_SEARCH, reciprocalRankFusion, fuseWithStableHead, rrfWorstCase, vectorSearch, keywordSearch, recordSearchAnalytics, resolveStageLimit, computeRetrievalConfidence, RAG_FETCH_WIDTH_DEFAULT, RAG_FETCH_WIDTH_MAX } from './rag-service.js';
 import type { SearchResult } from './rag-service.js';
 import { invalidateRagFetchWidthCache, invalidateRagRerankCandidatesCache } from '../../../core/services/admin-settings-service.js';
 import { CircuitBreakerOpenError } from '../../../core/services/circuit-breaker.js';
@@ -727,6 +727,43 @@ describe('RAG Service', () => {
         expect(kwCall).toBeDefined();
         expect(kwCall![0]).toContain("plainto_tsquery('simple'");
       });
+    });
+  });
+
+  describe('computeRetrievalConfidence (#1105)', () => {
+    const base = {
+      pageId: 1, confluenceId: 'p', chunkText: 't', pageTitle: 'T',
+      sectionTitle: 'S', spaceKey: 'DEV', score: 0.03,
+    };
+
+    it('empty result set scores 0 with basis none — the one unmeasured case that refuses', () => {
+      expect(computeRetrievalConfidence([])).toEqual({ score: 0, basis: 'none' });
+    });
+
+    it('rerank evidence wins over similarity when both exist', () => {
+      const results = [
+        { ...base, vectorScore: 0.9, keywordRank: null, rerankScore: 0.4 },
+        { ...base, pageId: 2, vectorScore: 0.2, keywordRank: null, rerankScore: 0.7 },
+      ];
+      expect(computeRetrievalConfidence(results)).toEqual({ score: 0.7, basis: 'rerank' });
+    });
+
+    it('falls back to max cosine when nothing was reranked', () => {
+      const results = [
+        { ...base, vectorScore: 0.31, keywordRank: null },
+        { ...base, pageId: 2, vectorScore: 0.58, keywordRank: 0.2 },
+      ];
+      expect(computeRetrievalConfidence(results)).toEqual({ score: 0.58, basis: 'similarity' });
+    });
+
+    it('clamps a negative cosine to 0 — a threshold in [0,1) must still catch it', () => {
+      const results = [{ ...base, vectorScore: -0.2, keywordRank: null }];
+      expect(computeRetrievalConfidence(results)).toEqual({ score: 0, basis: 'similarity' });
+    });
+
+    it('keyword-only results are unmeasurable: null score, basis none', () => {
+      const results = [{ ...base, vectorScore: null, keywordRank: 0.5 }];
+      expect(computeRetrievalConfidence(results)).toEqual({ score: null, basis: 'none' });
     });
   });
 

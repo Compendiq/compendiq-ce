@@ -47,9 +47,19 @@ vi.mock('../../core/db/postgres.js', () => ({
 const mockHybridSearch = vi.fn();
 const mockBuildRagContext = vi.fn().mockReturnValue('Relevant context from the knowledge base.');
 
-vi.mock('../../domains/llm/services/rag-service.js', () => ({
+vi.mock('../../domains/llm/services/rag-service.js', async (importOriginal) => ({
+  // computeRetrievalConfidence stays REAL — it is the pure function the
+  // #1105 gate reads, and stubbing it would let route and formula drift.
+  ...(await importOriginal<typeof import('../../domains/llm/services/rag-service.js')>()),
   hybridSearch: (...args: unknown[]) => mockHybridSearch(...args),
   buildRagContext: (...args: unknown[]) => mockBuildRagContext(...args),
+}));
+
+// --- Mock: the #1105 confidence threshold (admin_settings-backed) ---
+const mockConfidenceThreshold = vi.fn(async () => 0);
+vi.mock('../../core/services/admin-settings-service.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../core/services/admin-settings-service.js')>()),
+  getRagConfidenceThreshold: () => mockConfidenceThreshold(),
 }));
 
 // --- Mock: content-converter (htmlToMarkdown used in other routes in same file) ---
@@ -191,6 +201,9 @@ describe('POST /api/llm/ask', () => {
     // Reset to defaults after clearAllMocks
     mockGetCachedResponse.mockResolvedValue(null);
     mockSetCachedResponse.mockResolvedValue(undefined);
+    // #1105 gate default: OFF — individual tests raise it and this reset
+    // keeps a raised threshold from leaking into later tests.
+    mockConfidenceThreshold.mockResolvedValue(0);
     // Default query mock: returns row with id for saveConversation INSERT
     mockQuery.mockResolvedValue({ rows: [{ id: 'test-conv-id' }] });
     mockBuildRagContext.mockReturnValue('Relevant context from the knowledge base.');
@@ -242,6 +255,114 @@ describe('POST /api/llm/ask', () => {
     // The server-resolved model ('m'), not the absent body value, is used.
     const [, model] = mockStreamChatClient.mock.calls[0] as [unknown, string];
     expect(model).toBe('m');
+  });
+
+  describe('retrieval-confidence refuse gate (#1105)', () => {
+    const lowSimResult = {
+      pageId: 1, confluenceId: 'p1', chunkText: 'weak match text',
+      pageTitle: 'Weak', sectionTitle: 'Weak', spaceKey: 'DEV',
+      score: 0.03, vectorScore: 0.12, keywordRank: null,
+    };
+    const keywordOnlyResult = {
+      pageId: 2, confluenceId: 'p2', chunkText: 'kw text',
+      pageTitle: 'KW', sectionTitle: 'KW', spaceKey: 'DEV',
+      score: 0.016, vectorScore: null, keywordRank: 0.4,
+    };
+
+    it('gate OFF (default 0): answers even with zero results — the pre-#1105 behaviour is the default', async () => {
+      mockConfidenceThreshold.mockResolvedValue(0);
+      mockHybridSearch.mockResolvedValue([]);
+      mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('Answering anyway.'));
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'unanswerable question' },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(mockStreamChatClient).toHaveBeenCalled();
+      const finals = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      expect(finals.some((f) => f.refused === true)).toBe(false);
+    });
+
+    it('gate ON + zero results: refuses honestly — no LLM call, no cache write, refused flag', async () => {
+      mockConfidenceThreshold.mockResolvedValue(0.3);
+      mockHybridSearch.mockResolvedValue([]);
+      mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'unanswerable question' },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+      const events = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      const final = events.find((f) => f.final === true)!;
+      expect(final.refused).toBe(true);
+      expect(final.confidence).toBe(0);
+      expect(final.confidenceBasis).toBe('none');
+      expect(mockSetCachedResponse).not.toHaveBeenCalled();
+    });
+
+    it('gate ON + weak similarity below threshold: refuses with the weak sources attached', async () => {
+      mockConfidenceThreshold.mockResolvedValue(0.3);
+      mockHybridSearch.mockResolvedValue([lowSimResult]);
+      mockBuildRagContext.mockReturnValue('[Source 1: weak]');
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'weakly grounded question' },
+      });
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+      const events = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      const final = events.find((f) => f.final === true)!;
+      expect(final.refused).toBe(true);
+      expect(final.confidenceBasis).toBe('similarity');
+      // The closest sources still travel — "one of them may still help".
+      expect((final.sources as unknown[]).length).toBe(1);
+    });
+
+    it('gate ON + rerank basis above threshold: answers (rerank evidence wins over weak cosine)', async () => {
+      mockConfidenceThreshold.mockResolvedValue(0.3);
+      mockHybridSearch.mockResolvedValue([{ ...lowSimResult, rerankScore: 0.85 }]);
+      mockBuildRagContext.mockReturnValue('[Source 1: strong by rerank]');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('Grounded answer.'));
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'reranked question' },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(mockStreamChatClient).toHaveBeenCalled();
+    });
+
+    it('gate ON + keyword-only results: answers — the gate never refuses what it cannot measure', async () => {
+      mockConfidenceThreshold.mockResolvedValue(0.3);
+      mockHybridSearch.mockResolvedValue([keywordOnlyResult]);
+      mockBuildRagContext.mockReturnValue('[Source 1: kw]');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('Keyword-grounded answer.'));
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'keyword question' },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(mockStreamChatClient).toHaveBeenCalled();
+    });
+
+    it('gate ON + web search requested: answers — other grounding is in play', async () => {
+      mockConfidenceThreshold.mockResolvedValue(0.3);
+      mockHybridSearch.mockResolvedValue([]);
+      mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('Web-grounded answer.'));
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'web question', searchWeb: true },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(mockStreamChatClient).toHaveBeenCalled();
+    });
   });
 
   it('should return 400 when question exceeds maximum length', async () => {

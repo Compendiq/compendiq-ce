@@ -156,6 +156,51 @@ export function invalidateRagRerankCandidatesCache(): void {
 }
 
 /**
+ * Retrieval-confidence refuse threshold (#1105), in [0, 1). **Default 0 =
+ * the gate is OFF and the confidence is diagnostic-only** — the issue's
+ * "ship diagnostic first, then enable" staging is the default state, and an
+ * absent row answers exactly like a fresh install. The value is compared
+ * against `computeRetrievalConfidence` (rag-service): max rerank relevance
+ * when the #1104 stage ran, else max cosine similarity. Both scales are
+ * deployment-specific (the embedding model moves the cosine distribution;
+ * rerank normalisation moves the relevance one — see
+ * SearchResult.rerankScore), which is precisely why this is an operator
+ * knob with no meaningful universal constant, and why the corpus-size
+ * tiering idea from `tieredMinScoreForCorpus` was deliberately NOT ported:
+ * one tunable per deployment beats three hardcoded numbers calibrated to a
+ * different distribution.
+ */
+export const RAG_CONFIDENCE_THRESHOLD_DEFAULT = 0;
+
+const RAG_CONFIDENCE_TTL_MS = 60_000;
+let ragConfidenceCache: { value: number; expiresAt: number } | null = null;
+
+/** `rag_confidence_threshold` row, TTL-cached like its sibling knobs. */
+export async function getRagConfidenceThreshold(): Promise<number> {
+  if (ragConfidenceCache && Date.now() < ragConfidenceCache.expiresAt) {
+    return ragConfidenceCache.value;
+  }
+  let resolved = RAG_CONFIDENCE_THRESHOLD_DEFAULT;
+  try {
+    const r = await query<{ setting_value: string }>(
+      `SELECT setting_value FROM admin_settings WHERE setting_key = 'rag_confidence_threshold'`,
+    );
+    const n = Number.parseFloat(r.rows[0]?.setting_value ?? '');
+    // [0, 1): 1 would refuse everything (scores are <= 1), which can only be
+    // a typo — fall back to off rather than silencing the assistant.
+    if (Number.isFinite(n) && n >= 0 && n < 1) resolved = n;
+  } catch (err) {
+    logger.warn({ err }, 'Failed to resolve rag_confidence_threshold — gate off');
+  }
+  ragConfidenceCache = { value: resolved, expiresAt: Date.now() + RAG_CONFIDENCE_TTL_MS };
+  return resolved;
+}
+
+export function invalidateRagConfidenceThresholdCache(): void {
+  ragConfidenceCache = null;
+}
+
+/**
  * Issue #257 — returns the configured re-embed-all job history retention
  * (how many completed/failed BullMQ job records are kept in Redis before
  * the oldest get swept). Default 150, clamped to [10, 10000].

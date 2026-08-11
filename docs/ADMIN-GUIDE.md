@@ -384,6 +384,21 @@ Read through a 60-second in-process cache, so a change takes effect within a
 minute (immediately in the process that wrote it, once the settings panel
 lands in #1118; until then the only write path is SQL).
 
+### Retrieval-confidence refuse gate (`rag_confidence_threshold`)
+
+When set above its default **0**, the AI assistant refuses to answer a
+knowledge-base question whose retrieval confidence (max rerank relevance
+when the rerank stage is active, else max cosine similarity) falls below the
+threshold — an honest "not enough grounded context" with the closest sources
+attached, instead of a low-grounded answer (#1105). `admin_settings` key
+`rag_confidence_threshold`, float in [0, 1); 0 (or an absent row) disables
+the gate and leaves the confidence diagnostic-only in logs/traces. Questions
+with other grounding (sub-page tree, attached URLs, web search) and
+keyword-only degraded results are never auto-refused. **The right value is
+deployment-specific** — the embedding model moves the cosine scale and the
+rerank normalisation moves the relevance scale — so start from your logged
+confidence values, not from a number someone else used.
+
 > **Do not raise this without a reranker.** More candidates is NOT more
 > recall under plain RRF fusion: measured on the retrieval eval fixture,
 > width 30 dropped Recall@5 from 0.88 to 0.72 while Recall@10 improved —

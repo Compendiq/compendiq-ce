@@ -62,6 +62,9 @@ sequenceDiagram
             note right of BE: pool = rag_rerank_candidates (default 30)<br/>docs sanitized + truncated to 2,000 chars<br/>timeout/failure = honest bypass to fused order
         end
         note right of BE: slice to topK after ranking —<br/>fetch width is ranking headroom the rerank stage spends
+        opt rag_confidence_threshold above 0 (#35;1105)
+            note right of BE: computeRetrievalConfidence —<br/>max rerank relevance, else max cosine#59;<br/>below threshold and no other grounding:<br/>honest SSE refusal + weak sources, no LLM call, no cache
+        end
         opt includeSubPages
             BE->>RBAC: userCanAccessPage(userId, parentPageId)
             RBAC-->>BE: allow / deny (#35;814 — skip tree on deny)
@@ -192,6 +195,29 @@ never what was attempted. Note the admin analytics
 routes (`knowledge-gaps`, `content-gaps`) still apply one `max_score < 0.3`
 threshold across all rows regardless of unit — a pre-existing defect this
 table documents but #1117 did not change.
+
+## Retrieval-confidence refuse gate (#1105)
+
+`computeRetrievalConfidence(results)` (rag-service, pure) reduces the
+returned set to one auditable number from RETRIEVAL signals only — never LLM
+self-report: max **rerank relevance** when the #1104 stage ran (basis
+`rerank`), else max **cosine** (basis `similarity`, clamped at 0), else
+`null` (basis `none` — keyword-only results carry no measurable signal). An
+empty set scores 0.
+
+`/llm/ask` logs it on every question (diagnostic), and refuses only when ALL
+of: the operator raised `rag_confidence_threshold` above its **0 default**
+(`admin_settings`, [0,1), TTL-cached — 0 means the gate is off and the
+number is diagnostic-only), the score is measurable and below threshold, and
+no OTHER grounding is in play (`includeSubPages`, `externalUrls`,
+`searchWeb` each add context the gate cannot see). A refusal is an honest
+SSE turn: the message + the weak sources + `refused: true` on the final
+frame (the #1119 chat surface keys on it), persisted to the conversation,
+never cached, no LLM call billed. Both scales are deployment-specific (the
+embedding model moves the cosine distribution; rerank normalisation moves
+the relevance one), which is why the threshold is an operator knob with no
+universal constant and why `tieredMinScoreForCorpus`'s hardcoded tiers were
+deliberately not ported.
 
 ## Retrieval observability (#1117 stage 2)
 

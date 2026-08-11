@@ -3,7 +3,8 @@ import { query } from '../../core/db/postgres.js';
 import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
 import { streamChat, type ChatMessage } from '../../domains/llm/services/openai-compatible-client.js';
 import { contentToText } from '../../domains/llm/services/prompts.js';
-import { hybridSearch, buildRagContext } from '../../domains/llm/services/rag-service.js';
+import { hybridSearch, buildRagContext, computeRetrievalConfidence } from '../../domains/llm/services/rag-service.js';
+import { getRagConfidenceThreshold } from '../../core/services/admin-settings-service.js';
 import { LlmCache, buildRagCacheKey } from '../../domains/llm/services/llm-cache.js';
 import { CircuitBreakerOpenError } from '../../core/services/circuit-breaker.js';
 import { isEnabled as isMcpDocsEnabled, fetchDocumentation } from '../../core/services/mcp-docs-client.js';
@@ -312,6 +313,69 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         convId = insertResult.rows[0]!.id;
       }
     };
+
+    // ── Retrieval-confidence refuse gate (#1105) ─────────────────────────
+    // Retrieval signals ONLY, never LLM self-report. Diagnostic always (log +
+    // trace); refusal only when the operator has raised
+    // `rag_confidence_threshold` above its 0 default, AND the question has no
+    // OTHER grounding in play — a sub-page tree, attached URLs or web search
+    // each add context this gate cannot see, so refusing on KB evidence
+    // alone would be wrong there. Keyword-only results (basis 'none' with a
+    // null score) are never auto-refused: the gate must not refuse what it
+    // cannot measure, and degraded keyword mode must keep answering. Placed
+    // BEFORE the cache read so a low-confidence question cannot serve a
+    // stale cached answer either.
+    const confidence = computeRetrievalConfidence(searchResults);
+    logger.debug(
+      { userId, confidence: confidence.score, basis: confidence.basis },
+      'RAG retrieval confidence',
+    );
+    const confidenceThreshold = await getRagConfidenceThreshold();
+    const otherGrounding = Boolean(
+      (includeSubPages && body.pageId) || (externalUrls && externalUrls.length > 0) || body.searchWeb,
+    );
+    if (
+      confidenceThreshold > 0
+      && !otherGrounding
+      && confidence.score !== null
+      && confidence.score < confidenceThreshold
+    ) {
+      const refusalText =
+        searchResults.length === 0
+          ? 'I could not find any knowledge-base content related to this question, so I am not answering rather than guessing. Try rephrasing, or ask about something the knowledge base covers.'
+          : 'The knowledge-base passages I found are not a strong enough match to this question to ground an answer, so I am not answering rather than guessing. The closest sources are listed below — one of them may still help directly.';
+      // The refusal is a real assistant turn: persist it so the thread reads
+      // coherently on reload, but never cache it (the threshold is runtime
+      // config) and never bill an LLM call that did not happen.
+      await saveConversation(refusalText);
+      reply.hijack();
+      reply.raw.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      reply.raw.write(`data: ${JSON.stringify({ content: refusalText, done: true })}
+
+`);
+      reply.raw.write(
+        `data: ${JSON.stringify({
+          done: true,
+          final: true,
+          // #1119 keys its refusal treatment on this flag; until it ships the
+          // text above renders as an ordinary assistant message.
+          refused: true,
+          confidence: confidence.score,
+          confidenceBasis: confidence.basis,
+          conversationId: convId,
+          sources,
+        })}
+
+`,
+      );
+      reply.raw.end();
+      return;
+    }
 
     let ragLockAcquired = false;
     if (conversationHistory.length === 0) {

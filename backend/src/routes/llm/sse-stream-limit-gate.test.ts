@@ -63,7 +63,9 @@ vi.mock('../../domains/llm/services/openai-compatible-client.js', () => ({
   invalidateDispatcher: vi.fn(),
 }));
 
-vi.mock('../../domains/llm/services/rag-service.js', () => ({
+vi.mock('../../domains/llm/services/rag-service.js', async (importOriginal) => ({
+  // Real module for the pure #1105 confidence helper the ask route calls.
+  ...(await importOriginal<typeof import('../../domains/llm/services/rag-service.js')>()),
   hybridSearch: vi.fn().mockResolvedValue([]),
   buildRagContext: vi.fn().mockReturnValue('ctx'),
 }));
