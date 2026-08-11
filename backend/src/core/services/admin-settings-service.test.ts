@@ -26,6 +26,10 @@ import {
   getLlmMaxQueueDepth,
   getRagConfidenceThreshold,
   getRagConfidenceThresholdRerank,
+  getRagContextCharsPerPage,
+  invalidateRagContextCharsCache,
+  RAG_CONTEXT_CHARS_DEFAULT,
+  RAG_CONTEXT_CHARS_MAX,
   initLlmQueueSettings,
   invalidateRagConfidenceThresholdCache,
   _resetLlmQueueSettingsForTests,
@@ -304,5 +308,46 @@ describe('confidence-threshold getters (#1105, per-basis since #1268 review)', (
     expect(await getRagConfidenceThreshold()).toBe(0.35);
     invalidateRagConfidenceThresholdCache();
     expect(await getRagConfidenceThreshold()).toBe(0.6);
+  });
+});
+
+describe('rag_context_chars_per_page getter (#1106 PR 2)', () => {
+  function respondWith(value?: string) {
+    mockQuery.mockImplementation(async () =>
+      value === undefined ? { rows: [] } : { rows: [{ setting_value: value }] },
+    );
+  }
+
+  beforeEach(() => {
+    mockQuery.mockReset();
+    invalidateRagContextCharsCache();
+  });
+
+  it('returns the persisted budget and caches it within the TTL', async () => {
+    respondWith('9000');
+    expect(await getRagContextCharsPerPage()).toBe(9000);
+    await getRagContextCharsPerPage();
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts 0 as the operator kill switch — assembly off, not a fallback to default', async () => {
+    respondWith('0');
+    expect(await getRagContextCharsPerPage()).toBe(0);
+  });
+
+  it('defaults to 6000 when absent, and clamps to the 24000 cap', async () => {
+    respondWith();
+    expect(await getRagContextCharsPerPage()).toBe(RAG_CONTEXT_CHARS_DEFAULT);
+    invalidateRagContextCharsCache();
+    respondWith('999999');
+    expect(await getRagContextCharsPerPage()).toBe(RAG_CONTEXT_CHARS_MAX);
+  });
+
+  it('falls back to the default on garbage and on DB failure', async () => {
+    respondWith('lots');
+    expect(await getRagContextCharsPerPage()).toBe(RAG_CONTEXT_CHARS_DEFAULT);
+    invalidateRagContextCharsCache();
+    mockQuery.mockRejectedValue(new Error('postgres unreachable'));
+    expect(await getRagContextCharsPerPage()).toBe(RAG_CONTEXT_CHARS_DEFAULT);
   });
 });

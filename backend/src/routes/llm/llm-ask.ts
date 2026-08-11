@@ -115,6 +115,10 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       // next breaks the ordering the pages share.
       searchResults = await hybridSearch(userId, question, 5, undefined, {
         rerank: true,
+        // #1106 PR 2: assemble each source page's sibling chunks into the
+        // context window buildRagContext reads. Chat-path only — see
+        // HybridSearchOptions.assembleContext.
+        assembleContext: true,
         // #1105: the confidence gate needs the retrieval-health verdict —
         // an empty set during a vector-leg outage must not read as "the KB
         // has nothing on this".

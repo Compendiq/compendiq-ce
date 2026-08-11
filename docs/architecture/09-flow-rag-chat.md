@@ -56,6 +56,11 @@ sequenceDiagram
         note right of BE: pool = rag_rerank_candidates (default 30)<br/>docs sanitized + truncated to 2,000 chars<br/>timeout/failure = honest bypass to fused order
     end
     note right of BE: slice to topK after ranking —<br/>fetch width is ranking headroom the rerank stage spends
+    opt assembleContext (#35;1106 PR 2 — chat path + eval)
+        BE->>PG: sibling chunks for surviving pages<br/>(main pool, ORDER BY page_id, chunk_index)
+        PG-->>BE: rows
+        note right of BE: per page: best-chunk-anchored window under<br/>rag_context_chars_per_page (0 = off)#59; seam-trimmed,<br/>holes marked#59; contextText read ONLY by buildRagContext —<br/>chunkText stays the best chunk#59; soft-fail to chunk-level
+    end
     opt includeSubPages
         BE->>RBAC: userCanAccessPage(userId, parentPageId)
         RBAC-->>BE: allow / deny (#35;814 — skip tree on deny)
@@ -204,6 +209,32 @@ never what was attempted. Note the admin analytics
 routes (`knowledge-gaps`, `content-gaps`) still apply one `max_score < 0.3`
 threshold across all rows regardless of unit — a pre-existing defect this
 table documents but #1117 did not change.
+
+## Sibling-chunk context assembly (#1106 PR 2)
+
+After the topK slice — and before analytics, the confidence computation and
+`onRetrievalMeta`, so every observer sees the final shape — the chat path
+(and the eval runner, which measures the shipped configuration) assembles
+each surviving page's sibling chunks into a contiguous, budget-bounded
+window: one main-pool query over the `(page_id, chunk_index)` unique index,
+then per page a best-chunk-anchored alternating expansion under
+`rag_context_chars_per_page` (admin_settings; clamped [0, 24000], **0
+disables assembly**, default 6000 = the CHUNK_HARD_LIMIT per-page ceiling),
+rendered in document order with chunker seam-overlap trimmed (bounded exact
+match, ~20-char floor) and `[…]` markers at chunk_index holes (skipped
+embedding batches — order by chunk_index, never arithmetic on it). The
+merged text travels in `SearchResult.contextText`, read **exclusively** by
+`buildRagContext` (`contextText ?? chunkText`, dropping the `Section:`
+header clause when the window spans sections); `chunkText` is never mutated
+— /api/search snippets and the rerank docs must keep the matching passage,
+not a page prefix. Keyword-only rows get the sibling upgrade with an
+unanchored window and `vectorScore` untouched. Soft-fail is the house
+pattern: any error (or an empty sibling set — the re-embed TRUNCATE window,
+a concurrent atomic replace) degrades to chunk-level, never the search;
+`rag.page_merge: assembled|bypassed` and the `page_merge` stage histogram
+carry the observability. Assembly touches no ranking or score field, so it
+is provably invisible to the eval's pageId scoring — the zero-discordant
+A/B in PR 2's body is the recorded evidence.
 
 ## Retrieval-confidence refuse gate (#1105)
 

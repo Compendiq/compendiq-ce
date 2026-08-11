@@ -234,6 +234,46 @@ export function invalidateRagConfidenceThresholdCache(): void {
 }
 
 /**
+ * Per-page char budget for #1106 PR 2's sibling-chunk context assembly.
+ * `admin_settings` key `rag_context_chars_per_page`; **default 6000** — the
+ * existing CHUNK_HARD_LIMIT per-page ceiling, so the default budget admits
+ * roughly what one maximal chunk already could — clamped to **[0, 24000]**.
+ * **0 disables assembly entirely** (the operator kill switch for small
+ * local models; the design-round graft), which is why the safeIntOr floor
+ * is 0 here, not the default. Non-numeric values fall back to the default.
+ * TTL-cached like the other retrieval knobs; #1118's panel is the write
+ * surface, SQL until then.
+ */
+export const RAG_CONTEXT_CHARS_DEFAULT = 6000;
+export const RAG_CONTEXT_CHARS_MAX = 24_000;
+const RAG_CONTEXT_CHARS_TTL_MS = 60_000;
+let ragContextCharsCache: { value: number; expiresAt: number } | null = null;
+
+export async function getRagContextCharsPerPage(): Promise<number> {
+  if (ragContextCharsCache && Date.now() < ragContextCharsCache.expiresAt) {
+    return ragContextCharsCache.value;
+  }
+  let resolved = RAG_CONTEXT_CHARS_DEFAULT;
+  try {
+    const r = await query<{ setting_value: string }>(
+      `SELECT setting_value FROM admin_settings WHERE setting_key = 'rag_context_chars_per_page'`,
+    );
+    resolved = Math.min(
+      safeIntOr(r.rows[0]?.setting_value, RAG_CONTEXT_CHARS_DEFAULT, 0),
+      RAG_CONTEXT_CHARS_MAX,
+    );
+  } catch (err) {
+    logger.warn({ err }, 'Failed to resolve rag_context_chars_per_page — using default budget');
+  }
+  ragContextCharsCache = { value: resolved, expiresAt: Date.now() + RAG_CONTEXT_CHARS_TTL_MS };
+  return resolved;
+}
+
+export function invalidateRagContextCharsCache(): void {
+  ragContextCharsCache = null;
+}
+
+/**
  * Issue #257 — returns the configured re-embed-all job history retention
  * (how many completed/failed BullMQ job records are kept in Redis before
  * the oldest get swept). Default 150, clamped to [10, 10000].

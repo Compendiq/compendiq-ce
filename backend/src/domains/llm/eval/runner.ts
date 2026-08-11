@@ -70,7 +70,15 @@ export async function runEval(fixture: Fixture, opts: EvalRunOptions): Promise<E
   let rerankParticipatingQueries = 0;
 
   for (const label of fixture.labels) {
-    const results = await hybridSearch(opts.userId, label.query, opts.topK, undefined, { rerank: opts.rerank === true });
+    // assembleContext mirrors the shipped chat configuration (#1106 PR 2).
+    // It provably cannot move any metric: assembly runs after the topK
+    // slice and touches no ranking field, and the runner scores pageIds
+    // only — the one-time zero-discordant A/B on the rig is the recorded
+    // evidence for that claim (PR body).
+    const results = await hybridSearch(opts.userId, label.query, opts.topK, undefined, {
+      rerank: opts.rerank === true,
+      assembleContext: true,
+    });
 
     if (results.some((r) => r.vectorScore !== null)) vectorParticipatingQueries++;
     if (results.some((r) => r.rerankScore != null)) rerankParticipatingQueries++;

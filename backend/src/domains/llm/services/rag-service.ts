@@ -17,6 +17,7 @@ import { ENTERPRISE_FEATURES } from '../../../core/enterprise/features.js';
 import pgvector from 'pgvector';
 import { logger } from '../../../core/utils/logger.js';
 import {
+  getRagContextCharsPerPage,
   getRagFetchWidth,
   getRagRerankCandidates,
   RAG_FETCH_WIDTH_DEFAULT,
@@ -27,9 +28,8 @@ import { MIN_EMBEDDABLE_TEXT_CHARS } from './embedding-service.js';
 
 /**
  * Latency histogram for retrieval pipeline stages (#1117). `stage` is the one
- * attribute: 'vector_search' | 'keyword_search' | 'total' today; 'rerank'
- * joins when #1104 lands (this instrument existing first is what makes rerank
- * latency measurable before that stage ships). Per-leg stages record
+ * attribute: 'vector_search' | 'keyword_search' | 'rerank' (#1104) |
+ * 'page_merge' (#1106 PR 2) | 'total'. Per-leg stages record
  * successful runs only; 'total' records failures too — an error's latency is
  * still latency the caller waited out.
  */
@@ -143,6 +143,22 @@ interface SearchResult {
    * arithmetic on it.
    */
   chunkIndex?: number;
+  /**
+   * #1106 PR 2 — the assembled sibling window for the LLM context, present
+   * only when `assembleContext` ran and this page had fetchable siblings.
+   * Read EXCLUSIVELY by buildRagContext (`contextText ?? chunkText`);
+   * `chunkText` stays the best chunk because /api/search snippets and the
+   * rerank docs must keep the matching passage, not a page prefix — the
+   * design-round's unanimous never-mutate-chunkText fatal. Never serialized
+   * to the wire (every consumer maps fields explicitly).
+   */
+  contextText?: string;
+  /**
+   * How many sibling chunks `contextText` spans. buildRagContext drops its
+   * `Section:` header clause above 1 — a single section label must not
+   * claim multi-section text.
+   */
+  mergedChunkCount?: number;
   /**
    * Cross-encoder relevance in [0, 1] (#1104); null OR absent when this
    * result was never reranked — the stage is off, the pool bypassed, or this
@@ -632,6 +648,7 @@ export type SearchAnalyticsType =
 export type DegradedReason = 'no_embeddings' | 'partial_embeddings' | 'embedding_failed';
 
 import { computeRetrievalConfidence, type RetrievalHealthCaveat } from './retrieval-confidence.js';
+import { assembleSiblingWindow } from './sibling-assembly.js';
 
 /** Observability fields added by migration 088 (#1117 stage 2). */
 export interface SearchAnalyticsExtras {
@@ -841,6 +858,17 @@ export interface HybridSearchOptions {
    * unchanged for every existing caller.
    */
   onRetrievalMeta?: (meta: RetrievalMeta) => void;
+  /**
+   * #1106 PR 2 — assemble each returned page's sibling chunks into a
+   * contiguous, budget-bounded context window (`contextText`), anchored at
+   * the retrieval representative. Chat-path only by design: /api/search
+   * renders per-chunk snippets and must not receive merged text, and the
+   * eval runner requests it so the rig measures the shipped chat
+   * configuration (pageIds are provably unaffected — assembly runs after
+   * the topK slice and touches no ranking field). Soft-fail: any error
+   * degrades to chunk-level rows, never the search.
+   */
+  assembleContext?: boolean;
 }
 
 export async function hybridSearch(
@@ -1122,6 +1150,60 @@ async function hybridSearchInner(
     topResults = candidates.slice(0, Math.max(0, topK));
   }
 
+  // ── Sibling-chunk context assembly (#1106 PR 2) ────────────────────────
+  // AFTER the topK slice (work only for survivors) and BEFORE analytics,
+  // the confidence computation and onRetrievalMeta — so the trace, the
+  // route gate and the meta all see the final shape, and because assembly
+  // touches no ranking or score field the confidence verdict is identical
+  // either way. The fetch runs on the MAIN pool (a plain btree lookup —
+  // the vector pool is reserved for similarity queries) against the
+  // (page_id, chunk_index) unique index. Soft-fail is the house pattern:
+  // any error keeps chunk-level rows; per-page empty sibling sets (the
+  // re-embed TRUNCATE window, a concurrent atomic replace, never-embedded
+  // keyword hits) degrade only that page. Keyword-only rows get the free
+  // upgrade — real chunk text replaces the 500-char body excerpt — with an
+  // undefined anchor (no measured chunk) and vectorScore untouched (null).
+  if (opts?.assembleContext && topResults.length > 0) {
+    try {
+      const budget = await getRagContextCharsPerPage();
+      if (budget > 0) {
+        const assembleStarted = performance.now();
+        const pageIds = [...new Set(topResults.map((r) => r.pageId))];
+        const siblings = await query<{ page_id: number; chunk_index: number; chunk_text: string }>(
+          `SELECT page_id, chunk_index, chunk_text FROM page_embeddings
+           WHERE page_id = ANY($1)
+           ORDER BY page_id, chunk_index`,
+          [pageIds],
+        );
+        const byPage = new Map<number, { chunkIndex: number; chunkText: string }[]>();
+        for (const row of siblings.rows) {
+          let list = byPage.get(row.page_id);
+          if (!list) {
+            list = [];
+            byPage.set(row.page_id, list);
+          }
+          list.push({ chunkIndex: row.chunk_index, chunkText: row.chunk_text });
+        }
+        topResults = topResults.map((r) => {
+          const window = assembleSiblingWindow(byPage.get(r.pageId) ?? [], r.chunkIndex, budget);
+          return window === null
+            ? r
+            : { ...r, contextText: window.text, mergedChunkCount: window.mergedChunkCount };
+        });
+        span?.setAttribute('rag.page_merge', 'assembled');
+        recordHistogram(
+          RETRIEVAL_STAGE_DURATION_METRIC,
+          performance.now() - assembleStarted,
+          { stage: 'page_merge' },
+          STAGE_DURATION_OPTS,
+        );
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Sibling assembly bypassed — serving chunk-level context');
+      span?.setAttribute('rag.page_merge', 'bypassed');
+    }
+  }
+
   // Record search analytics (non-blocking)
   // `maxScore` is deliberately still the RRF fusion value, NOT `vectorScore`
   // and NOT the rerank relevance. Repointing it would silently make new rows
@@ -1189,7 +1271,17 @@ export function buildRagContext(results: SearchResult[]): string {
 
   return results
     .map((r, i) => {
-      return `[Source ${i + 1}: "${r.pageTitle}" (Space: ${r.spaceKey || 'Local'}, Section: ${r.sectionTitle})]\n${r.chunkText}`;
+      // #1106 PR 2: prefer the assembled sibling window, and drop the
+      // `Section:` clause when it spans sections — a single section label
+      // must not claim multi-section text (the design round's honest-header
+      // graft). Markdown headings inside the merged text carry the internal
+      // structure since #1265.
+      const body = r.contextText ?? r.chunkText;
+      const multiSection = (r.mergedChunkCount ?? 1) > 1;
+      const header = multiSection
+        ? `[Source ${i + 1}: "${r.pageTitle}" (Space: ${r.spaceKey || 'Local'})]`
+        : `[Source ${i + 1}: "${r.pageTitle}" (Space: ${r.spaceKey || 'Local'}, Section: ${r.sectionTitle})]`;
+      return `${header}\n${body}`;
     })
     .join('\n\n---\n\n');
 }

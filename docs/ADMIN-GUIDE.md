@@ -395,6 +395,20 @@ lands in #1118; until then the only write path is SQL).
 > raised width also multiplies the per-candidate ACL checks a single search
 > can perform.
 
+### Context assembly budget (`rag_context_chars_per_page`)
+
+How many characters of each source page's sibling chunks the AI assistant's
+context window may carry, per page (#1106). The window is anchored at the
+matching chunk and expands to neighbouring sections under this budget, so
+the model sees contiguous prose instead of one arbitrary mid-page section.
+`admin_settings` key `rag_context_chars_per_page`; **default 6000**, clamped
+to **[0, 24000]** — **0 disables assembly entirely**, the kill switch for
+small local models where a larger prompt costs more than the added context
+buys. Roughly: the default admits ~4 typical sections per source page, and
+the chat path carries 5 source pages, so raising this multiplies prompt
+size accordingly. Read through the same 60-second cache as the other
+retrieval knobs; #1118's panel is the write surface, SQL until then.
+
 ### Retrieval-confidence refuse gate (two thresholds, one per basis)
 
 When raised above the default **0**, the AI assistant refuses to answer a

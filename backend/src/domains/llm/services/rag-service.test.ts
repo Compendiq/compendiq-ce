@@ -106,7 +106,7 @@ vi.mock('../../../core/services/fts-language.js', () => ({
 
 import { buildRagContext, hybridSearch, RAG_EF_SEARCH, reciprocalRankFusion, fuseWithStableHead, rrfWorstCase, vectorSearch, keywordSearch, recordSearchAnalytics, resolveStageLimit, computeRetrievalConfidence, RAG_FETCH_WIDTH_DEFAULT, truncateAtDistinctPages, PAGE_FANOUT, VECTOR_RAW_LIMIT_CAP, vectorRawLimit } from './rag-service.js';
 import type { SearchResult } from './rag-service.js';
-import { invalidateRagFetchWidthCache, invalidateRagRerankCandidatesCache } from '../../../core/services/admin-settings-service.js';
+import { invalidateRagFetchWidthCache, invalidateRagRerankCandidatesCache, invalidateRagContextCharsCache } from '../../../core/services/admin-settings-service.js';
 import { CircuitBreakerOpenError } from '../../../core/services/circuit-breaker.js';
 
 describe('RAG Service', () => {
@@ -128,6 +128,29 @@ describe('RAG Service', () => {
   });
 
   describe('buildRagContext', () => {
+    it('prefers the assembled contextText and drops the Section clause for multi-section windows (#1106 PR 2)', () => {
+      const results = [
+        {
+          pageId: 1, confluenceId: 'p1', chunkText: 'best chunk only',
+          contextText: 'merged sibling window', mergedChunkCount: 3,
+          pageTitle: 'Merged', sectionTitle: 'One Section', spaceKey: 'DEV',
+          score: 0.03, vectorScore: 0.5, keywordRank: null,
+        },
+        {
+          pageId: 2, confluenceId: 'p2', chunkText: 'plain chunk',
+          pageTitle: 'Plain', sectionTitle: 'Sec', spaceKey: 'DEV',
+          score: 0.02, vectorScore: 0.4, keywordRank: null,
+        },
+      ];
+      const ctx = buildRagContext(results);
+      expect(ctx).toContain('merged sibling window');
+      expect(ctx).not.toContain('best chunk only');
+      // A single section label must not claim a three-section window…
+      expect(ctx).not.toContain('Section: One Section');
+      // …while single-chunk rows keep their honest section header.
+      expect(ctx).toContain('Section: Sec');
+    });
+
     it('should return "no context" message for empty results', () => {
       const context = buildRagContext([]);
       expect(context).toBe('No relevant context found in the knowledge base.');
@@ -1722,5 +1745,141 @@ describe('RAG Service', () => {
       // Should NOT throw
       await expect(recordSearchAnalytics('user-1', 'test', 0, null, 'hybrid')).resolves.toBeUndefined();
     });
+  });
+});
+
+describe('sibling-chunk context assembly stage (#1106 PR 2)', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    invalidateRagFetchWidthCache();
+    invalidateRagRerankCandidatesCache();
+    invalidateRagContextCharsCache();
+    mocks.mockPool.connect.mockResolvedValue(mocks.mockClient);
+    mocks.mockClient.release.mockResolvedValue(undefined);
+    mocks.mockToSql.mockReturnValue('[0.1,0.2]');
+    mocks.mockResolveUsecase.mockResolvedValue({
+      config: {
+        providerId: 'p1', id: 'p1', name: 'X',
+        baseUrl: 'http://x/v1', apiKey: null,
+        authType: 'none', verifySsl: true, defaultModel: 'bge-m3',
+      },
+      model: 'bge-m3',
+    });
+    mocks.mockGenerateEmbedding.mockResolvedValue([[0.1, 0.2]]);
+    mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
+    mocks.mockResolveRerank.mockResolvedValue(null);
+    mocks.mockRerank.mockResolvedValue([]);
+    // Vector leg: two pages, one chunk each (page 1 anchored at chunk 2).
+    mocks.mockClientQuery.mockImplementation(async (sql: string) => {
+      if (typeof sql === 'string' && sql.includes('page_embeddings')) {
+        return {
+          rows: [1, 2].map((n) => ({
+            page_id: n,
+            confluence_id: `page-${n}`,
+            chunk_text: `best chunk of page ${n}`,
+            chunk_index: n === 1 ? 2 : 0,
+            metadata: { page_title: `Page ${n}`, section_title: `Sec ${n}`, space_key: 'DEV' },
+            distance: 0.1 * n,
+          })),
+        };
+      }
+      return undefined;
+    });
+  });
+
+  function routeMainQueries(opts: {
+    budget?: string;
+    siblings?: Array<{ page_id: number; chunk_index: number; chunk_text: string }> | 'throw';
+  }) {
+    mocks.mockQuery.mockImplementation(async (sql: string) => {
+      if (typeof sql === 'string' && sql.includes('rag_context_chars_per_page')) {
+        return opts.budget === undefined ? { rows: [] } : { rows: [{ setting_value: opts.budget }] };
+      }
+      if (typeof sql === 'string' && sql.includes('ORDER BY page_id, chunk_index')) {
+        if (opts.siblings === 'throw') throw new Error('sibling fetch died');
+        return { rows: opts.siblings ?? [] };
+      }
+      if (typeof sql === 'string' && sql.includes('COUNT(*)')) {
+        return { rows: [{ embedded: 2, total: 2 }] };
+      }
+      return { rows: [] };
+    });
+  }
+
+  function siblingFetchCalls(): number {
+    return mocks.mockQuery.mock.calls.filter(
+      (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('ORDER BY page_id, chunk_index'),
+    ).length;
+  }
+
+  it('assembles contextText anchored at the representative chunk; chunkText stays the best chunk', async () => {
+    routeMainQueries({
+      siblings: [
+        { page_id: 1, chunk_index: 1, chunk_text: 'before' },
+        { page_id: 1, chunk_index: 2, chunk_text: 'best chunk of page 1' },
+        { page_id: 1, chunk_index: 3, chunk_text: 'after' },
+        { page_id: 2, chunk_index: 0, chunk_text: 'best chunk of page 2' },
+      ],
+    });
+    const out = await hybridSearch('user-1', 'q', 5, undefined, { assembleContext: true });
+    expect(out[0]!.contextText).toBe('before\n\nbest chunk of page 1\n\nafter');
+    expect(out[0]!.mergedChunkCount).toBe(3);
+    expect(out[0]!.chunkText).toBe('best chunk of page 1');
+    expect(out[1]!.contextText).toBe('best chunk of page 2');
+    expect(out[1]!.mergedChunkCount).toBe(1);
+  });
+
+  it('soft-fails to chunk-level rows when the sibling fetch throws — same shape, no contextText', async () => {
+    routeMainQueries({ siblings: 'throw' });
+    const out = await hybridSearch('user-1', 'q', 5, undefined, { assembleContext: true });
+    expect(out).toHaveLength(2);
+    expect(out[0]!.contextText).toBeUndefined();
+    expect(out[0]!.chunkText).toBe('best chunk of page 1');
+  });
+
+  it('a page with no fetchable siblings degrades alone — the other page still assembles', async () => {
+    routeMainQueries({
+      siblings: [{ page_id: 2, chunk_index: 0, chunk_text: 'best chunk of page 2' }],
+    });
+    const out = await hybridSearch('user-1', 'q', 5, undefined, { assembleContext: true });
+    expect(out[0]!.contextText).toBeUndefined();
+    expect(out[1]!.contextText).toBe('best chunk of page 2');
+  });
+
+  it('budget 0 is the kill switch — no sibling fetch is even issued', async () => {
+    routeMainQueries({ budget: '0' });
+    await hybridSearch('user-1', 'q', 5, undefined, { assembleContext: true });
+    expect(siblingFetchCalls()).toBe(0);
+  });
+
+  it('without the flag nothing happens — no fetch, no fields', async () => {
+    routeMainQueries({});
+    const out = await hybridSearch('user-1', 'q', 5);
+    expect(siblingFetchCalls()).toBe(0);
+    expect(out[0]!.contextText).toBeUndefined();
+  });
+
+  it('rerankScore survives assembly — the spread rebuilds rows without touching ranking fields', async () => {
+    mocks.mockResolveRerank.mockResolvedValue({
+      config: {
+        providerId: 'rr-1', id: 'rr-1', name: 'Reranker',
+        baseUrl: 'http://rr/v1', apiKey: null,
+        authType: 'none', verifySsl: true, defaultModel: 'bge-reranker-v2-m3',
+      },
+      model: 'bge-reranker-v2-m3',
+    });
+    mocks.mockRerank.mockResolvedValue([
+      { index: 0, relevanceScore: 0.9 },
+      { index: 1, relevanceScore: 0.4 },
+    ]);
+    routeMainQueries({
+      siblings: [
+        { page_id: 1, chunk_index: 2, chunk_text: 'best chunk of page 1' },
+        { page_id: 2, chunk_index: 0, chunk_text: 'best chunk of page 2' },
+      ],
+    });
+    const out = await hybridSearch('user-1', 'q', 5, undefined, { rerank: true, assembleContext: true });
+    expect(out[0]!.rerankScore).toBe(0.9);
+    expect(out[0]!.contextText).toBe('best chunk of page 1');
   });
 });
