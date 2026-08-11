@@ -39,6 +39,9 @@ interface Report {
   /** #1104: whether this run measured the reranked pipeline (--rerank). */
   rerank: boolean;
   rerankParticipatingQueries: number;
+  /** #1106 PR 2: whether sibling assembly ran (default true; --no-assemble). */
+  assembleContext: boolean;
+  assemblyParticipatingQueries: number;
   recallAtK: Record<string, number>;
   mrr: number;
   runs: QueryRun[];
@@ -152,7 +155,7 @@ async function main(): Promise<void> {
   }
 
   console.log(`running ${fixture.labels.length} queries…`);
-  const { runs, vectorParticipatingQueries, rerankParticipatingQueries } = await runEval(fixture, {
+  const { runs, vectorParticipatingQueries, rerankParticipatingQueries, assemblyParticipatingQueries } = await runEval(fixture, {
     userId: EVAL_USER,
     pageIdByFile: seeded.pageIdByFile,
     topK: Math.max(...TOP_K),
@@ -161,6 +164,11 @@ async function main(): Promise<void> {
     // e.g. a local llama-server --rerank). Never enabled in CI: the CI DB
     // has no assignment, so the gate stays a plain-retrieval comparison.
     rerank: process.argv.includes('--rerank'),
+    // Assembly mirrors the shipped chat configuration by default;
+    // --no-assemble exposes the identity-A/B axis from committed code
+    // (#1270 review F10). Provably metric-invisible either way — the
+    // runner scores pageIds only — and participation-guarded in runEval.
+    assembleContext: !process.argv.includes('--no-assemble'),
   });
 
   const rerankRequested = process.argv.includes('--rerank');
@@ -168,6 +176,8 @@ async function main(): Promise<void> {
     model,
     corpusManifestSha: fixture.corpusManifestSha,
     corpusPages: corpus.length,
+    assembleContext: !process.argv.includes('--no-assemble'),
+    assemblyParticipatingQueries,
     queries: runs.length,
     vectorParticipatingQueries,
     rerank: rerankRequested,

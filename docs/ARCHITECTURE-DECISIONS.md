@@ -858,7 +858,11 @@ services:
 > truncates at the requested page count), and a page's RRF contribution is
 > its best chunk's reciprocal rank per leg — per-chunk summing was removed
 > on measured head-dilution evidence, making the fusion-score ceiling a
-> width-invariant constant. The embedding model/dimensions
+> width-invariant constant; the chat path then reassembles each surviving
+> page's sibling chunks into a budget-bounded, best-chunk-anchored context
+> window (`rag_context_chars_per_page`, 0 = off) read only by the prompt
+> builder — ranking and search snippets keep the best chunk. The embedding
+> model/dimensions
 > named below are the original defaults; the live pair is DB-configured per
 > ADR-021.
 

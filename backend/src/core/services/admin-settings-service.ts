@@ -234,6 +234,70 @@ export function invalidateRagConfidenceThresholdCache(): void {
 }
 
 /**
+ * Per-page char budget for #1106 PR 2's sibling-chunk context assembly.
+ * `admin_settings` key `rag_context_chars_per_page`; **default 6000** — the
+ * existing CHUNK_HARD_LIMIT per-CHUNK ceiling, so the default budget admits
+ * roughly what one maximal chunk already could and the per-page prompt
+ * ceiling is UNCHANGED at the default — clamped to **[0, 24000]** (the cap
+ * quadruples the ceiling; there is no input-side context-window guard, so
+ * raising it is a deliberate capacity decision).
+ * **0 disables assembly entirely** (the operator kill switch for small
+ * local models; the design-round graft). The parse is STRICT-SHAPE
+ * (/^-?\d+$/): parseInt truncation shapes — '1e4' → 1, '8,000' → 8 — would
+ * otherwise become live tiny budgets that pay the full sibling fetch to
+ * assemble nothing (#1270 review F5). Malformed values fall back to the
+ * default; negatives clamp to 0 (off).
+ * TTL-cached like the other retrieval knobs; #1118's panel is the write
+ * surface, SQL until then.
+ */
+export const RAG_CONTEXT_CHARS_DEFAULT = 6000;
+export const RAG_CONTEXT_CHARS_MAX = 24_000;
+const RAG_CONTEXT_CHARS_TTL_MS = 60_000;
+let ragContextCharsCache: { value: number; expiresAt: number } | null = null;
+let ragContextCharsLastGood: number | null = null;
+
+export async function getRagContextCharsPerPage(): Promise<number> {
+  if (ragContextCharsCache && Date.now() < ragContextCharsCache.expiresAt) {
+    return ragContextCharsCache.value;
+  }
+  let resolved = RAG_CONTEXT_CHARS_DEFAULT;
+  try {
+    const r = await query<{ setting_value: string }>(
+      `SELECT setting_value FROM admin_settings WHERE setting_key = 'rag_context_chars_per_page'`,
+    );
+    // STRICT shape, then clamp [0, MAX]. Negatives clamp to 0 (assembly
+    // OFF) rather than the default — '-1' reads as a stronger kill switch
+    // (#1270 m11). NOT safeIntOr (#1270 F5/F12): its parseInt accepts
+    // truncation shapes ('1e4' → 1) and its floor semantics would resolve
+    // '-1' to the DEFAULT, silently reversing the kill-switch decision —
+    // do not "tidy" this back into it.
+    const raw = (r.rows[0]?.setting_value ?? '').trim();
+    if (raw !== '') {
+      resolved = /^-?\d+$/.test(raw)
+        ? Math.min(Math.max(Number.parseInt(raw, 10), 0), RAG_CONTEXT_CHARS_MAX)
+        : RAG_CONTEXT_CHARS_DEFAULT;
+    }
+    ragContextCharsLastGood = resolved;
+  } catch (err) {
+    // FAIL TOWARD THE OPERATOR'S LAST KNOWN SETTING, not the default
+    // (#1270 review F8): unlike the sibling knobs — whose defaults are
+    // neutral tunings — defaulting here can turn a feature ON that the
+    // operator explicitly disabled (budget 0 for a choking local model),
+    // for a full TTL per transient settings-SELECT blip. The error path
+    // also does NOT refresh the TTL cache, so recovery is the next call.
+    logger.warn({ err }, 'Failed to resolve rag_context_chars_per_page — using last known value');
+    return ragContextCharsLastGood ?? RAG_CONTEXT_CHARS_DEFAULT;
+  }
+  ragContextCharsCache = { value: resolved, expiresAt: Date.now() + RAG_CONTEXT_CHARS_TTL_MS };
+  return resolved;
+}
+
+export function invalidateRagContextCharsCache(): void {
+  ragContextCharsCache = null;
+  ragContextCharsLastGood = null;
+}
+
+/**
  * Issue #257 — returns the configured re-embed-all job history retention
  * (how many completed/failed BullMQ job records are kept in Redis before
  * the oldest get swept). Default 150, clamped to [10, 10000].

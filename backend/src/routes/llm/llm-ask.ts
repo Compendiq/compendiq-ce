@@ -17,7 +17,7 @@ import { hybridSearch, buildRagContext, type RetrievalMeta } from '../../domains
 // rag-service with a closed export list, and the formula must stay REAL
 // there (stubbing it would let route and formula drift — #1268 review).
 import { computeRetrievalConfidence } from '../../domains/llm/services/retrieval-confidence.js';
-import { getRagConfidenceThreshold, getRagConfidenceThresholdRerank } from '../../core/services/admin-settings-service.js';
+import { getRagConfidenceThreshold, getRagConfidenceThresholdRerank, getRagContextCharsPerPage } from '../../core/services/admin-settings-service.js';
 import { LlmCache, buildRagCacheKey } from '../../domains/llm/services/llm-cache.js';
 import { CircuitBreakerOpenError } from '../../core/services/circuit-breaker.js';
 import { isEnabled as isMcpDocsEnabled, fetchDocumentation } from '../../core/services/mcp-docs-client.js';
@@ -115,6 +115,10 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       // next breaks the ordering the pages share.
       searchResults = await hybridSearch(userId, question, 5, undefined, {
         rerank: true,
+        // #1106 PR 2: assemble each source page's sibling chunks into the
+        // context window buildRagContext reads. Chat-path only — see
+        // HybridSearchOptions.assembleContext.
+        assembleContext: true,
         // #1105: the confidence gate needs the retrieval-health verdict —
         // an empty set during a vector-leg outage must not read as "the KB
         // has nothing on this".
@@ -130,6 +134,29 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       throw err;
     }
     let ragContext = buildRagContext(searchResults);
+    // ── KB-context sanitization, part 1 of 2 (#1270 review m12 + F1,
+    // CLAUDE.md security rule 3) ─────────────────────────────────────────
+    // The RAG half is sanitized HERE, BEFORE the sub-page prepend: its own
+    // framing ('[Source N: …]' headers, '---' separators followed by a
+    // bracket) cannot trigger the delimiter-injection pattern, while the
+    // sub-page tree's '--- Page: … ---' attribution markers CAN when a page
+    // body starts with "System …" — sanitizing the concatenated string ate
+    // the very markers the prompt suffix tells the model to cite. The tree
+    // is therefore sanitized per-page-BODY inside assembleSubPageContext,
+    // before markers wrap the text, and its detections arrive as
+    // `injectionWarnings` (the fetchWebSources precedent), folded into the
+    // attestation below. Detections here carry contentOrigin so the audit
+    // trail distinguishes first-party KB content — which the ASKING user
+    // did not author — from the requester's own input (#1270 review F7).
+    {
+      const { sanitized: cleanRag, warnings: ragWarnings } = sanitizeLlmInput(ragContext);
+      if (ragWarnings.length > 0) {
+        promptInjectionDetected = true;
+        await logAuditEvent(request.userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings: ragWarnings, route: '/llm/ask', source: 'kb_context', contentOrigin: 'first_party_kb' }, request);
+      }
+      if (cleanRag !== ragContext) wasSanitized = true;
+      ragContext = cleanRag;
+    }
 
     // If includeSubPages is enabled and a pageId is provided, augment the RAG context
     // with the sub-page tree content
@@ -163,8 +190,17 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         ragContext = `Page tree context:\n\n${assembled.markdown}\n\n---\n\nAdditional knowledge base context:\n\n${ragContext}`;
         multiPageSuffix = getMultiPagePromptSuffix(assembled.pageCount);
         subPageContextAssembled = true;
+        // Part 2 of 2: the tree was sanitized per-page-body inside
+        // assembleSubPageContext (markers intact); its detections join the
+        // same attestation trail.
+        if (assembled.injectionWarnings.length > 0) {
+          promptInjectionDetected = true;
+          wasSanitized = true;
+          await logAuditEvent(request.userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings: assembled.injectionWarnings, route: '/llm/ask', source: 'subpage_tree', contentOrigin: 'first_party_kb' }, request);
+        }
       }
     }
+
 
     // Fetch external documentation URLs via MCP sidecar (if provided and enabled)
     const externalDocs: Array<{ url: string; title: string; markdown: string }> = [];
@@ -260,6 +296,14 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       searchWeb: body.searchWeb,
       provider: chatConfig.providerId,
       thinking: body.thinking,
+      // #1270 reviews m6 + F9: cached answers are specific to the assembly
+      // CONFIG (the budget — killing assembly must not replay large-context
+      // answers for the TTL) AND to the realized OUTCOME (how many sources
+      // actually assembled — a soft-failed request's chunk-level answer
+      // must not be served under the healthy key for an hour after the
+      // transient recovers).
+      contextChars: await getRagContextCharsPerPage(),
+      assembledPages: searchResults.filter((r) => r.contextText !== undefined).length,
     });
 
     // `score` is the retrieval ORDERING value — an RRF fusion score from
@@ -282,7 +326,11 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         pageTitle: r.pageTitle,
         spaceKey: r.spaceKey,
         confluenceId: r.confluenceId,
-        sectionTitle: r.sectionTitle,
+        // #1270 reviews m7 + F4: the prompt header refuses to label
+        // multi-SECTION context with one section, and the UI chip agrees —
+        // keyed on the real spans-sections datum, not window size (every
+        // chunk of one oversized section shares its title).
+        sectionTitle: r.contextSpansSections === true ? undefined : r.sectionTitle,
         score: r.score,
         similarity: r.vectorScore,
         // #1104: present only on reranked results; #1105's confidence formula

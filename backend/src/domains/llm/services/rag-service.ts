@@ -17,6 +17,7 @@ import { ENTERPRISE_FEATURES } from '../../../core/enterprise/features.js';
 import pgvector from 'pgvector';
 import { logger } from '../../../core/utils/logger.js';
 import {
+  getRagContextCharsPerPage,
   getRagFetchWidth,
   getRagRerankCandidates,
   RAG_FETCH_WIDTH_DEFAULT,
@@ -27,9 +28,8 @@ import { MIN_EMBEDDABLE_TEXT_CHARS } from './embedding-service.js';
 
 /**
  * Latency histogram for retrieval pipeline stages (#1117). `stage` is the one
- * attribute: 'vector_search' | 'keyword_search' | 'total' today; 'rerank'
- * joins when #1104 lands (this instrument existing first is what makes rerank
- * latency measurable before that stage ships). Per-leg stages record
+ * attribute: 'vector_search' | 'keyword_search' | 'rerank' (#1104) |
+ * 'page_merge' (#1106 PR 2) | 'total'. Per-leg stages record
  * successful runs only; 'total' records failures too — an error's latency is
  * still latency the caller waited out.
  */
@@ -37,7 +37,7 @@ export const RETRIEVAL_STAGE_DURATION_METRIC = 'compendiq.retrieval.stage.durati
 
 const STAGE_DURATION_OPTS = {
   unit: 'ms',
-  description: 'Latency of retrieval pipeline stages (vector/keyword legs, rerank once #1104 lands, total)',
+  description: 'Latency of retrieval pipeline stages (vector/keyword legs, rerank, page_merge, total)',
 };
 
 // Configurable ef_search: higher = better recall, slower query.
@@ -144,6 +144,28 @@ interface SearchResult {
    */
   chunkIndex?: number;
   /**
+   * #1106 PR 2 — the assembled sibling window for the LLM context, present
+   * only when `assembleContext` ran and this page had fetchable siblings.
+   * Read EXCLUSIVELY by buildRagContext (`contextText ?? chunkText`);
+   * `chunkText` stays the best chunk because /api/search snippets and the
+   * rerank docs must keep the matching passage, not a page prefix — the
+   * design-round's unanimous never-mutate-chunkText fatal. Never serialized
+   * to the wire (every consumer maps fields explicitly).
+   */
+  contextText?: string;
+  /**
+   * How many sibling chunks `contextText` spans.
+   */
+  mergedChunkCount?: number;
+  /**
+   * True when the assembled window's chunks carry more than one distinct
+   * section_title (#1270 review F4 — window SIZE was a false proxy: every
+   * chunk of one oversized section shares its title, and dropping the
+   * header there removed an exactly-truthful label). buildRagContext and
+   * the sources map both key the Section claim on THIS.
+   */
+  contextSpansSections?: boolean;
+  /**
    * Cross-encoder relevance in [0, 1] (#1104); null OR absent when this
    * result was never reranked — the stage is off, the pool bypassed, or this
    * row came from a non-reranked path. The confidence formula (#1105) is the
@@ -191,6 +213,16 @@ export const PAGE_FANOUT = 4;
 export const VECTOR_RAW_LIMIT_CAP = 500;
 
 /**
+ * How many chunk_index positions EACH SIDE of the anchor the sibling fetch
+ * covers (#1270 review F2 — the fetch must be bounded). 32 x the ~1500-char
+ * typical chunk is ~48 KB per side, far beyond any reachable budget
+ * (24000-char knob cap); a page of pathologically tiny chunks may hit the
+ * range edge and assemble a smaller window — graceful, and the budget was
+ * the binding constraint anyway.
+ */
+export const SIBLING_FETCH_SPAN = 32;
+
+/**
  * The raw CHUNK-row fetch that backs a request for `limit` distinct pages.
  * One definition, two consumers — vectorSearch's SQL LIMIT and
  * fuseWithStableHead's head-window reconstruction — because the #1103
@@ -208,8 +240,10 @@ export function vectorRawLimit(limit: number): number {
  * rank window inherit the append-only widening property. Chunks of
  * already-seen pages ABOVE the cut survive — under best-chunk-only fusion
  * they contribute no score (see reciprocalRankFusion), but they still
- * compete for the representative text and feed #1106 PR 2's sibling
- * assembly; everything below the cut is dropped.
+ * compete for the representative text (and thereby pick the assembly
+ * ANCHOR — the assembly stage fetches its own sibling window from the DB
+ * and does not otherwise read these rows); everything below the cut is
+ * dropped.
  */
 export function truncateAtDistinctPages<T extends { pageId: number }>(rows: T[], maxPages: number): T[] {
   if (maxPages <= 0) return [];
@@ -632,6 +666,7 @@ export type SearchAnalyticsType =
 export type DegradedReason = 'no_embeddings' | 'partial_embeddings' | 'embedding_failed';
 
 import { computeRetrievalConfidence, type RetrievalHealthCaveat } from './retrieval-confidence.js';
+import { assembleSiblingWindow } from './sibling-assembly.js';
 
 /** Observability fields added by migration 088 (#1117 stage 2). */
 export interface SearchAnalyticsExtras {
@@ -841,6 +876,17 @@ export interface HybridSearchOptions {
    * unchanged for every existing caller.
    */
   onRetrievalMeta?: (meta: RetrievalMeta) => void;
+  /**
+   * #1106 PR 2 — assemble each returned page's sibling chunks into a
+   * contiguous, budget-bounded context window (`contextText`), anchored at
+   * the retrieval representative. Chat-path only by design: /api/search
+   * renders per-chunk snippets and must not receive merged text, and the
+   * eval runner requests it so the rig measures the shipped chat
+   * configuration (pageIds are provably unaffected — assembly runs after
+   * the topK slice and touches no ranking field). Soft-fail: any error
+   * degrades to chunk-level rows, never the search.
+   */
+  assembleContext?: boolean;
 }
 
 export async function hybridSearch(
@@ -1122,6 +1168,100 @@ async function hybridSearchInner(
     topResults = candidates.slice(0, Math.max(0, topK));
   }
 
+  // ── Sibling-chunk context assembly (#1106 PR 2) ────────────────────────
+  // AFTER the topK slice (work only for survivors) and BEFORE analytics,
+  // the confidence computation and onRetrievalMeta — so the trace, the
+  // route gate and the meta all see the final shape, and because assembly
+  // touches no ranking or score field the confidence verdict is identical
+  // either way. The fetch runs on the MAIN pool (a plain btree lookup —
+  // the vector pool is reserved for similarity queries) against the
+  // (page_id, chunk_index) unique index, and it is BOUNDED AND ANCHORED
+  // (#1270 review F2): only rows that carry a resolvable anchor
+  // participate, and per page only chunk_index within ±SIBLING_FETCH_SPAN
+  // of the anchor is fetched — an unbounded per-page fetch shipped every
+  // chunk of an 82 KB page to keep ~6000 chars, and on a keyword_fallback
+  // outage fetched everything to assemble nothing. The anchor's TEXT is
+  // verified against the retrieval row (#1270 review F3): a positional
+  // check alone let a mid-request re-embed that kept enough chunks pass,
+  // assembling unmeasured content under the old chunk's labels. Soft-fail
+  // is the house pattern: any error keeps chunk-level rows; per-page empty
+  // or mismatched sibling sets degrade only that page.
+  if (opts?.assembleContext && topResults.length > 0) {
+    try {
+      const budget = await getRagContextCharsPerPage();
+      if (budget <= 0) {
+        // 'off' is distinct from 'bypassed' (error), 'none' (ran, nothing
+        // assembled) and from the attribute being ABSENT (flag never
+        // passed) — a trace must distinguish config from failure from
+        // outcome from not-requested (#1270 reviews m4 + F6).
+        span?.setAttribute('rag.page_merge', 'off');
+      }
+      if (budget > 0) {
+        const assembleStarted = performance.now();
+        let assembledPages = 0;
+        const anchored = topResults.filter((r) => r.chunkIndex !== undefined);
+        if (anchored.length > 0) {
+          const siblings = await query<{
+            page_id: number;
+            chunk_index: number;
+            chunk_text: string;
+            section_title: string | null;
+          }>(
+            `SELECT pe.page_id, pe.chunk_index, pe.chunk_text,
+                    pe.metadata->>'section_title' AS section_title
+             FROM page_embeddings pe
+             JOIN unnest($1::int[], $2::int[]) AS a(page_id, anchor)
+               ON pe.page_id = a.page_id
+             WHERE pe.chunk_index BETWEEN a.anchor - $3 AND a.anchor + $3
+             ORDER BY pe.page_id, pe.chunk_index`,
+            [anchored.map((r) => r.pageId), anchored.map((r) => r.chunkIndex!), SIBLING_FETCH_SPAN],
+          );
+          const byPage = new Map<number, { chunkIndex: number; chunkText: string; sectionTitle: string | null }[]>();
+          for (const row of siblings.rows) {
+            let list = byPage.get(row.page_id);
+            if (!list) {
+              list = [];
+              byPage.set(row.page_id, list);
+            }
+            list.push({ chunkIndex: row.chunk_index, chunkText: row.chunk_text, sectionTitle: row.section_title });
+          }
+          topResults = topResults.map((r) => {
+            if (r.chunkIndex === undefined) return r;
+            const sibs = byPage.get(r.pageId) ?? [];
+            // F3: the anchor must still BE the text retrieval scored — a
+            // re-embed between the candidate query and this fetch (its own
+            // atomic transaction, but up to the rerank budget later) can
+            // reassign chunk_index over different content.
+            const anchorSib = sibs.find((c) => c.chunkIndex === r.chunkIndex);
+            if (!anchorSib || anchorSib.chunkText !== r.chunkText) return r;
+            const window = assembleSiblingWindow(sibs, r.chunkIndex, budget);
+            if (window === null) return r;
+            assembledPages++;
+            return {
+              ...r,
+              contextText: window.text,
+              mergedChunkCount: window.mergedChunkCount,
+              contextSpansSections: window.spansSections,
+            };
+          });
+        }
+        // 'assembled' means pages actually gained context — not "the query
+        // did not throw" (#1270 review F6). The count answers "how many".
+        span?.setAttribute('rag.page_merge', assembledPages > 0 ? 'assembled' : 'none');
+        span?.setAttribute('rag.page_merge_pages', assembledPages);
+        recordHistogram(
+          RETRIEVAL_STAGE_DURATION_METRIC,
+          performance.now() - assembleStarted,
+          { stage: 'page_merge' },
+          STAGE_DURATION_OPTS,
+        );
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Sibling assembly bypassed — serving chunk-level context');
+      span?.setAttribute('rag.page_merge', 'bypassed');
+    }
+  }
+
   // Record search analytics (non-blocking)
   // `maxScore` is deliberately still the RRF fusion value, NOT `vectorScore`
   // and NOT the rerank relevance. Repointing it would silently make new rows
@@ -1189,7 +1329,24 @@ export function buildRagContext(results: SearchResult[]): string {
 
   return results
     .map((r, i) => {
-      return `[Source ${i + 1}: "${r.pageTitle}" (Space: ${r.spaceKey || 'Local'}, Section: ${r.sectionTitle})]\n${r.chunkText}`;
+      // #1106 PR 2: prefer the assembled sibling window, and drop the
+      // `Section:` clause when it spans sections — a single section label
+      // must not claim multi-section text (the design round's honest-header
+      // graft). Markdown headings inside the merged text carry the internal
+      // structure since #1265.
+      //
+      // NOT sanitized here (#1270 re-verification N4+N5): the route
+      // sanitizes the FULL assembled KB context — this output plus the
+      // sub-page tree — in one pass, so detections reach the injection
+      // attestation flags and the audit log instead of dying in a
+      // domain-level logger.warn. Keeping this function pure is what makes
+      // that single route-level pass complete.
+      const body = r.contextText ?? r.chunkText;
+      const multiSection = r.contextSpansSections === true;
+      const header = multiSection
+        ? `[Source ${i + 1}: "${r.pageTitle}" (Space: ${r.spaceKey || 'Local'})]`
+        : `[Source ${i + 1}: "${r.pageTitle}" (Space: ${r.spaceKey || 'Local'}, Section: ${r.sectionTitle})]`;
+      return `${header}\n${body}`;
     })
     .join('\n\n---\n\n');
 }

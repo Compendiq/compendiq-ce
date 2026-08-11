@@ -395,6 +395,42 @@ lands in #1118; until then the only write path is SQL).
 > raised width also multiplies the per-candidate ACL checks a single search
 > can perform.
 
+### Context assembly budget (`rag_context_chars_per_page`)
+
+How many characters of each source page's sibling chunks the AI assistant's
+context window may carry, per page (#1106). The window is anchored at the
+matching chunk and expands to neighbouring sections under this budget, so
+the model sees contiguous prose instead of one arbitrary mid-page section.
+`admin_settings` key `rag_context_chars_per_page`; **default 6000**, clamped
+to **[0, 24000]** — **0 disables assembly entirely**, the kill switch for
+small local models where a larger prompt costs more than the added context
+buys. Roughly: the default admits ~4 typical sections per source page, and
+the chat path carries 5 source pages, so raising this multiplies prompt
+size accordingly (the budget includes the joiners between sections). At
+the default the per-page ceiling is unchanged — chunks were already capped
+at 6000 chars — so the default changes the TYPICAL prompt, not the worst
+case; the 24000 cap quadruples the worst case and there is no input-side
+context-window guard, so raising it is a deliberate capacity decision.
+Negative values clamp to 0 (off). Read through the same 60-second cache as
+the other retrieval knobs; #1118's panel is the write surface, SQL until
+then.
+
+
+
+### Knowledge-base context sanitization (always on)
+
+All knowledge-base content entering the AI assistant's prompt — retrieved
+chunks or assembled windows, and the sub-page tree — passes through the
+prompt-injection sanitizer, **independent of the assembly budget above**
+(setting the budget to 0 does not disable this). Runbook-shaped page
+content (a line starting "System:", phrases like "act as a ...") can
+therefore surface as [FILTERED] in an answer. That is the sanitizer
+working on content that pattern-matches an injection, not data corruption
+— the page itself is untouched, and the detection lands in the audit log
+tagged `source: kb_context`/`subpage_tree` with
+`contentOrigin: first_party_kb`, so it is distinguishable from an
+injection attempt in the asking user's own input.
+
 ### Retrieval-confidence refuse gate (two thresholds, one per basis)
 
 When raised above the default **0**, the AI assistant refuses to answer a
