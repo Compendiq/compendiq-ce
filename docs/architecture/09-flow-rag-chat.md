@@ -221,7 +221,10 @@ then per page a best-chunk-anchored alternating expansion under
 `rag_context_chars_per_page` (admin_settings; clamped [0, 24000], **0
 disables assembly**, default 6000 = the CHUNK_HARD_LIMIT per-chunk ceiling, leaving the per-page prompt ceiling unchanged at the default),
 rendered in document order with chunker seam-overlap trimmed (bounded exact
-match, ~20-char floor) and `[…]` markers at chunk_index holes (skipped
+match at paragraph-break positions only — a genuine splitter overlap is
+always followed by a literal `\n\n`, and matches elsewhere are boilerplate
+coincidence the trim must not eat; ~20-char floor) and `[…]` markers at
+chunk_index holes (skipped
 embedding batches — order by chunk_index, never arithmetic on it). The
 merged text travels in `SearchResult.contextText`, read **exclusively** by
 `buildRagContext` (`contextText ?? chunkText`, dropping the `Section:`

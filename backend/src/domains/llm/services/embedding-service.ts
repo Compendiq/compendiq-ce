@@ -418,11 +418,11 @@ export function chunkText(
           // re-joining words with spaces — a word-join flattened the line
           // structure of any code or table content it carried forward.
           // CONTRACT (#1270 N2): the next chunk is built as tail + a literal
-      // paragraph break + para, and sibling-assembly's seam-trim
-      // discriminator rests on that break — the seam-contract test in
-      // sibling-assembly.test.ts binds the two modules; change the joiner
-      // and that test fails loudly instead of the trim silently dying.
-      const tail = currentChunk.slice(-overlapChars);
+          // paragraph break + para, and sibling-assembly's seam-trim
+          // discriminator rests on that break — the seam-contract test in
+          // sibling-assembly.test.ts binds the two modules; change the joiner
+          // and that test fails loudly instead of the trim silently dying.
+          const tail = currentChunk.slice(-overlapChars);
           const firstBreak = tail.search(/\s/);
           currentChunk = (firstBreak >= 0 ? tail.slice(firstBreak + 1) : tail) + '\n\n' + para;
         } else {
