@@ -119,6 +119,9 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         // context window buildRagContext reads. Chat-path only — see
         // HybridSearchOptions.assembleContext.
         assembleContext: true,
+        // #1107: verified exact-identifier pins ("what is INC-2203",
+        // "find the page called X") ahead of the fused ranking.
+        pinIdentifiers: true,
         // #1105: the confidence gate needs the retrieval-health verdict —
         // an empty set during a vector-leg outage must not read as "the KB
         // has nothing on this".

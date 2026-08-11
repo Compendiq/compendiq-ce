@@ -1016,3 +1016,59 @@ describe.skipIf(!dbAvailable)('rag-service integration — #1106 raw fetch plans
     expect(text).not.toContain('Seq Scan on page_embeddings');
   });
 });
+
+describe.skipIf(!dbAvailable)('rag-service integration — #1107 identifier pin lookups (real SQL)', () => {
+  const USER = 'aaaaaaaa-1107-4000-8000-000000001107';
+  beforeAll(async () => {
+    await setupTestDb();
+    await truncateAllTables();
+    await query(
+      `INSERT INTO users (id, username, email, role, password_hash)
+       VALUES ($1::uuid, $1::text, $1::text || '@t', 'user', 'x') ON CONFLICT (id) DO NOTHING`,
+      [USER],
+    );
+    await query(`INSERT INTO spaces (space_key, space_name) VALUES ('DEV', 'DEV') ON CONFLICT (space_key) DO NOTHING`);
+    await query(
+      `INSERT INTO roles (name, display_name, is_system, permissions)
+       VALUES ('viewer', 'Viewer', TRUE, ARRAY['read']) ON CONFLICT (name) DO NOTHING`,
+    );
+    const role = await query<{ id: number }>(`SELECT id FROM roles WHERE name = 'viewer'`);
+    await query(
+      `INSERT INTO space_role_assignments (space_key, principal_type, principal_id, role_id)
+       VALUES ('DEV', 'user', $1, $2) ON CONFLICT DO NOTHING`,
+      [USER, role.rows[0]!.id],
+    );
+    for (const [title, body] of [
+      ['INC-2203 postmortem', 'incident INC-2203 details and remediation'],
+      ['Deployment Runbook', 'how we deploy'],
+      ['Unrelated Notes', 'nothing to see'],
+    ] as Array<[string, string]>) {
+      await query(
+        `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+         VALUES (gen_random_uuid()::text, 'confluence', 'DEV', $1, $2, '', '')`,
+        [title, body],
+      );
+    }
+  });
+  afterAll(async () => {
+    await teardownTestDb();
+  });
+
+  it('verifies an issue key via the real title-ILIKE/tsv path and pins it (#1270-F11 lesson: real SQL, not a mocked shape)', async () => {
+    const out = await hybridSearch(USER, 'what is INC-2203 about', 5, undefined, { pinIdentifiers: true });
+    expect(out.length).toBeGreaterThan(0);
+    expect(out[0]!.pageTitle).toBe('INC-2203 postmortem');
+    expect(out[0]!.pinned).toBe(true);
+  });
+
+  it('verifies a quoted title via the real pg_trgm % path', async () => {
+    const out = await hybridSearch(USER, 'find "Deployment Runbook"', 5, undefined, { pinIdentifiers: true });
+    expect(out[0]!.pageTitle).toBe('Deployment Runbook');
+    expect(out[0]!.pinned).toBe(true);
+  });
+
+  it('an NL query with an uppercase token pins nothing — real end-to-end negative', async () => {
+    const out = await hybridSearch(USER, 'how does DEV handle deployment approvals', 5, undefined, { pinIdentifiers: true });
+    expect(out.every((r) => r.pinned === undefined)).toBe(true);
+  });
+});

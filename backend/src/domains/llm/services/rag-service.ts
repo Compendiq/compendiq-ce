@@ -166,6 +166,14 @@ interface SearchResult {
    */
   contextSpansSections?: boolean;
   /**
+   * #1107 — this record was pinned by a VERIFIED exact-identifier match,
+   * ahead of the fused ranking. `vectorScore` stays null (nothing was
+   * measured), which deliberately means a pinned head keeps the #1105
+   * confidence gate unmeasurable — a verified exact match must never be
+   * auto-refused.
+   */
+  pinned?: true;
+  /**
    * Cross-encoder relevance in [0, 1] (#1104); null OR absent when this
    * result was never reranked — the stage is off, the pool bypassed, or this
    * row came from a non-reranked path. The confidence formula (#1105) is the
@@ -667,6 +675,7 @@ export type DegradedReason = 'no_embeddings' | 'partial_embeddings' | 'embedding
 
 import { computeRetrievalConfidence, type RetrievalHealthCaveat } from './retrieval-confidence.js';
 import { assembleSiblingWindow } from './sibling-assembly.js';
+import { detectIdentifiers, type DetectedIdentifier } from './identifier-shortcircuit.js';
 
 /** Observability fields added by migration 088 (#1117 stage 2). */
 export interface SearchAnalyticsExtras {
@@ -887,6 +896,16 @@ export interface HybridSearchOptions {
    * degrades to chunk-level rows, never the search.
    */
   assembleContext?: boolean;
+  /**
+   * #1107 — detect literal identifiers in the query (page id, INC-style
+   * key, quoted title; see identifier-shortcircuit.ts for the shapes and
+   * guards), VERIFY each with a cheap indexed lookup under the same
+   * visibility rules as retrieval, and PIN at most two verified records
+   * ahead of the fused output. Natural-language queries are structurally
+   * unaffected (the detector's token limits and cue guards). Soft-fail:
+   * any lookup error skips the pin, never the search.
+   */
+  pinIdentifiers?: boolean;
 }
 
 export async function hybridSearch(
@@ -916,6 +935,65 @@ export async function hybridSearch(
     },
     { 'rag.top_k': topK },
   );
+}
+
+/**
+ * #1107 — verify one detected identifier with a cheap indexed lookup under
+ * the caller's space visibility. Returns a keyword-style SearchResult
+ * (body-text excerpt, no measured scores, `pinned: true`) or null. Every
+ * path is a single indexed query: pages PK / confluence_id for numeric
+ * ids, the trgm title index for issue keys and titles (with a tsv phrase
+ * fallback for keys living in body text).
+ */
+async function lookupIdentifier(
+  ident: DetectedIdentifier,
+  spaces: string[],
+  userId: string,
+): Promise<SearchResult | null> {
+  const select = `SELECT cp.id AS page_id, cp.confluence_id, cp.title, cp.space_key,
+                         substring(cp.body_text, 1, 500) AS excerpt
+                  FROM pages cp
+                  WHERE ${visiblePagesPredicate(1, 3)} AND cp.deleted_at IS NULL`;
+  let rows: Array<{ page_id: number; confluence_id: string | null; title: string; space_key: string | null; excerpt: string | null }>;
+  if (ident.kind === 'pageId') {
+    const n = Number.parseInt(ident.value, 10);
+    if (!Number.isFinite(n)) return null;
+    const r = await query<(typeof rows)[number]>(
+      `${select} AND (cp.id = $2 OR cp.confluence_id = $4) LIMIT 1`,
+      [spaces, n, userId, ident.value],
+    );
+    rows = r.rows;
+  } else if (ident.kind === 'issueKey') {
+    const r = await query<(typeof rows)[number]>(
+      `${select} AND (cp.title ILIKE $2 OR cp.tsv @@ phraseto_tsquery($4, $5)) LIMIT 1`,
+      [spaces, `%${ident.value}%`, userId, await getFtsLanguage(), ident.value],
+    );
+    rows = r.rows;
+  } else {
+    // title — the existing pg_trgm path (idx_pages_title_trgm, default
+    // 0.3 threshold via the % operator).
+    const r = await query<(typeof rows)[number]>(
+      `${select} AND cp.title % $2 ORDER BY similarity(cp.title, $2) DESC LIMIT 1`,
+      [spaces, ident.value, userId],
+    );
+    rows = r.rows;
+  }
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    pageId: row.page_id,
+    confluenceId: row.confluence_id,
+    chunkText: row.excerpt ?? '',
+    pageTitle: row.title,
+    sectionTitle: row.title,
+    spaceKey: row.space_key,
+    // Ordering-only, like every other producer's score; pinned rows lead
+    // by ARRAY position and consumers never re-sort.
+    score: 0,
+    vectorScore: null,
+    keywordRank: null,
+    pinned: true,
+  };
 }
 
 async function hybridSearchInner(
@@ -1259,6 +1337,47 @@ async function hybridSearchInner(
     } catch (err) {
       logger.warn({ err }, 'Sibling assembly bypassed — serving chunk-level context');
       span?.setAttribute('rag.page_merge', 'bypassed');
+    }
+  }
+
+  // ── Exact-identifier pin stage (#1107) ────────────────────────────────
+  // AFTER rerank + assembly and BEFORE analytics/confidence/meta, so every
+  // observer sees the final shape. Detection is pure and guarded
+  // (identifier-shortcircuit.ts); every detection is VERIFIED by an indexed
+  // lookup under the same space-visibility predicate as retrieval, and
+  // under EE ACL via the same batched filter. A verified page already in
+  // the fused set is MOVED to the front keeping its enriched row (assembled
+  // context included); a new one enters as a keyword-style excerpt row.
+  // At most two pins; the tail shrinks via the same topK slice; the fused
+  // order below the pins is never re-sorted. Space-key detections verify
+  // nothing here by design — a space is not a page (design of record).
+  if (opts?.pinIdentifiers) {
+    try {
+      const detected = detectIdentifiers(question).filter((d) => d.kind !== 'spaceKey');
+      if (detected.length > 0) {
+        const pinSpaces = await getUserAccessibleSpaces(userId);
+        const lookedUp: SearchResult[] = [];
+        for (const ident of detected) {
+          const row = await lookupIdentifier(ident, pinSpaces, userId);
+          if (row && !lookedUp.some((r) => r.pageId === row.pageId)) lookedUp.push(row);
+        }
+        let verified = lookedUp;
+        if (aclEnforced && verified.length > 0) {
+          const accessible = await filterAccessiblePages(userId, verified.map((r) => r.pageId));
+          verified = verified.filter((r) => accessible.has(r.pageId));
+        }
+        if (verified.length > 0) {
+          const pinnedIds = new Set(verified.map((r) => r.pageId));
+          const head: SearchResult[] = verified.map((v) => {
+            const existing = topResults.find((r) => r.pageId === v.pageId);
+            return existing ? { ...existing, pinned: true as const } : v;
+          });
+          topResults = [...head, ...topResults.filter((r) => !pinnedIds.has(r.pageId))].slice(0, Math.max(0, topK));
+          span?.setAttribute('rag.pinned', verified.length);
+        }
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Identifier pin stage bypassed — serving the fused order');
     }
   }
 

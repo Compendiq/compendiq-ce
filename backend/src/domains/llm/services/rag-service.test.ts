@@ -1899,3 +1899,100 @@ describe('sibling-chunk context assembly stage (#1106 PR 2)', () => {
     expect(out[0]!.contextText).toBe('best chunk of page 1');
   });
 });
+
+describe('exact-identifier pin stage (#1107)', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    invalidateRagFetchWidthCache();
+    invalidateRagRerankCandidatesCache();
+    invalidateRagContextCharsCache();
+    mocks.mockPool.connect.mockResolvedValue(mocks.mockClient);
+    mocks.mockClient.release.mockResolvedValue(undefined);
+    mocks.mockToSql.mockReturnValue('[0.1,0.2]');
+    mocks.mockResolveUsecase.mockResolvedValue({
+      config: {
+        providerId: 'p1', id: 'p1', name: 'X',
+        baseUrl: 'http://x/v1', apiKey: null,
+        authType: 'none', verifySsl: true, defaultModel: 'bge-m3',
+      },
+      model: 'bge-m3',
+    });
+    mocks.mockGenerateEmbedding.mockResolvedValue([[0.1, 0.2]]);
+    mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
+    mocks.mockResolveRerank.mockResolvedValue(null);
+    mocks.mockRerank.mockResolvedValue([]);
+    // Vector leg: two ordinary pages.
+    mocks.mockClientQuery.mockImplementation(async (sql: string) => {
+      if (typeof sql === 'string' && sql.includes('page_embeddings')) {
+        return {
+          rows: [1, 2].map((n) => ({
+            page_id: n,
+            confluence_id: `page-${n}`,
+            chunk_text: `chunk of page ${n}`,
+            chunk_index: 0,
+            metadata: { page_title: `Page ${n}`, section_title: `Sec ${n}`, space_key: 'DEV' },
+            distance: 0.1 * n,
+          })),
+        };
+      }
+      return undefined;
+    });
+  });
+
+  function routePinQueries(pinRow?: { page_id: number; confluence_id: string | null; title: string; space_key: string; excerpt: string } | 'throw') {
+    mocks.mockQuery.mockImplementation(async (sql: string) => {
+      if (typeof sql === 'string' && sql.includes('substring(cp.body_text, 1, 500)')) {
+        if (pinRow === 'throw') throw new Error('lookup died');
+        return { rows: pinRow ? [pinRow] : [] };
+      }
+      if (typeof sql === 'string' && sql.includes('COUNT(*)')) return { rows: [{ embedded: 2, total: 2 }] };
+      return { rows: [] };
+    });
+  }
+
+  it('a VERIFIED issue key pins a new record at the head; the fused order below is untouched', async () => {
+    routePinQueries({ page_id: 42, confluence_id: 'inc-page', title: 'INC-2203 postmortem', space_key: 'DEV', excerpt: 'incident details' });
+    const out = await hybridSearch('user-1', 'what is INC-2203 about', 5, undefined, { pinIdentifiers: true });
+    expect(out[0]!.pageId).toBe(42);
+    expect(out[0]!.pinned).toBe(true);
+    expect(out[0]!.vectorScore).toBeNull();
+    expect(out.slice(1).map((r) => r.pageId)).toEqual([1, 2]);
+  });
+
+  it('a pinned page already in the fused set MOVES to the head keeping its enriched row', async () => {
+    routePinQueries({ page_id: 2, confluence_id: 'page-2', title: 'Page 2', space_key: 'DEV', excerpt: 'x' });
+    const out = await hybridSearch('user-1', 'what is INC-2203 about', 5, undefined, { pinIdentifiers: true });
+    expect(out.map((r) => r.pageId)).toEqual([2, 1]);
+    expect(out[0]!.pinned).toBe(true);
+    // The enriched retrieval row survives — its measured cosine included.
+    expect(out[0]!.vectorScore).not.toBeNull();
+  });
+
+  it('an UNVERIFIED detection pins nothing — detection is necessary, never sufficient', async () => {
+    routePinQueries(undefined);
+    const out = await hybridSearch('user-1', 'what is INC-9999 about', 5, undefined, { pinIdentifiers: true });
+    expect(out.map((r) => r.pageId)).toEqual([1, 2]);
+    expect(out[0]!.pinned).toBeUndefined();
+  });
+
+  it('a natural-language query issues NO lookup at all — the guards are structural', async () => {
+    routePinQueries({ page_id: 42, confluence_id: 'x', title: 'X', space_key: 'DEV', excerpt: 'x' });
+    await hybridSearch('user-1', 'how does the deployment process work here exactly', 5, undefined, { pinIdentifiers: true });
+    const lookups = mocks.mockQuery.mock.calls.filter(
+      (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('substring(cp.body_text, 1, 500)'),
+    );
+    expect(lookups).toHaveLength(0);
+  });
+
+  it('a lookup error soft-fails to the fused order', async () => {
+    routePinQueries('throw');
+    const out = await hybridSearch('user-1', 'what is INC-2203 about', 5, undefined, { pinIdentifiers: true });
+    expect(out.map((r) => r.pageId)).toEqual([1, 2]);
+  });
+
+  it('without the flag nothing happens', async () => {
+    routePinQueries({ page_id: 42, confluence_id: 'x', title: 'X', space_key: 'DEV', excerpt: 'x' });
+    const out = await hybridSearch('user-1', 'what is INC-2203 about', 5);
+    expect(out[0]!.pinned).toBeUndefined();
+  });
+});

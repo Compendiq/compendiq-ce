@@ -1297,6 +1297,60 @@
       ],
       "style": "question",
       "rationale": "The page opens by saying built-in locators run out for shapes that don't fit ARIA, like a row in a custom table component, then walks through locators.extend with a getRowWithAction example using filter({has})."
+    },
+    {
+      "id": "q-1107a00001",
+      "query": "\"Delay Accepting Requests\"",
+      "expectedFiles": [
+        "fastify__Guides__Delay-Accepting-Requests.md"
+      ],
+      "style": "identifier",
+      "rationale": "#1107 positive: a quoted exact title must pin the page first via the verified trgm lookup."
+    },
+    {
+      "id": "q-1107a00002",
+      "query": "page called Detecting When Clients Abort",
+      "expectedFiles": [
+        "fastify__Guides__Detecting-When-Clients-Abort.md"
+      ],
+      "style": "identifier",
+      "rationale": "#1107 positive: the called-cue shape within the cued token limit."
+    },
+    {
+      "id": "q-1107a00003",
+      "query": "\"Contributing To Fastify\"",
+      "expectedFiles": [
+        "fastify__Guides__Contributing.md"
+      ],
+      "style": "identifier",
+      "rationale": "#1107 positive: quoted title whose words are individually common (contributing, fastify) — fused retrieval dilutes it, the pin must not."
+    },
+    {
+      "id": "q-1107b00001",
+      "query": "does HTTP2 in fastify require TLS to work",
+      "expectedFiles": [
+        "fastify__Reference__HTTP2.md"
+      ],
+      "style": "identifier-negative",
+      "rationale": "#1107 negative: uppercase tokens (HTTP2, TLS) in a natural-language question — ranking must be unchanged vs baseline; the detector's token limit and cue guards must not fire."
+    },
+    {
+      "id": "q-1107b00002",
+      "query": "can DEV and OPS teams share one fastify logging setup",
+      "expectedFiles": [
+        "fastify__Reference__Logging.md"
+      ],
+      "style": "identifier-negative",
+      "rationale": "#1107 negative: bare space-key-shaped tokens (DEV, OPS) in prose — the exact false-positive trap the issue's Corrections name."
+    },
+    {
+      "id": "q-1107b00003",
+      "query": "what does the TypeScript reference say about CORS types",
+      "expectedFiles": [
+        "fastify__Reference__TypeScript.md"
+      ],
+      "style": "identifier-negative",
+      "rationale": "#1107 negative: uppercase CORS mid-question; normal retrieval must answer it untouched."
     }
   ]
 }

@@ -25,7 +25,7 @@ export const FixtureLabelSchema = z.object({
   query: z.string().min(3),
   /** Corpus filenames, best first. */
   expectedFiles: z.array(z.string().min(1)).min(1),
-  style: z.enum(['question', 'keywords', 'error-text', 'how-to']),
+  style: z.enum(['question', 'keywords', 'error-text', 'how-to', 'identifier', 'identifier-negative']),
   rationale: z.string().default(''),
 });
 

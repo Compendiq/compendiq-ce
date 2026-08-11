@@ -56,6 +56,9 @@ sequenceDiagram
         note right of BE: pool = rag_rerank_candidates (default 30)<br/>docs sanitized + truncated to 2,000 chars<br/>timeout/failure = honest bypass to fused order
     end
     note right of BE: slice to topK after ranking —<br/>fetch width is ranking headroom the rerank stage spends
+    opt pinIdentifiers (#35;1107 — chat path + eval)
+        note right of BE: detectIdentifiers(question) — pure, cue/token-guarded#59;<br/>each detection VERIFIED by an indexed lookup under the<br/>same visibility + EE ACL#59; ≤ 2 verified pins PREPENDED,<br/>fused order below never re-sorted#59; rag.pinned count#59;<br/>a pinned head keeps the confidence gate unmeasurable —<br/>a verified exact match is never auto-refused#59; soft-fail
+    end
     opt assembleContext (#35;1106 PR 2 — chat path + eval)
         BE->>PG: sibling chunks for surviving pages<br/>(main pool, ORDER BY page_id, chunk_index)
         PG-->>BE: rows
@@ -209,6 +212,29 @@ never what was attempted. Note the admin analytics
 routes (`knowledge-gaps`, `content-gaps`) still apply one `max_score < 0.3`
 threshold across all rows regardless of unit — a pre-existing defect this
 table documents but #1117 did not change.
+
+## Exact-identifier pin stage (#1107)
+
+Literal identifiers — a numeric page id, an INC-2203-style key, a quoted or
+"page called …" title — get averaged away by the vector leg and diluted by
+FTS. `detectIdentifiers` (`identifier-shortcircuit.ts`, pure and
+dependency-free) recognises those shapes under structural guards: whole-
+query, quoted, or cue-adjacent only; case-sensitive where case is signal;
+short queries only (4 bare / 6 cued tokens); at most two detections,
+strongest kind first. Space-key detections verify nothing by themselves — a
+space is not a page. Every detection is then VERIFIED by one indexed lookup
+(pages PK for ids, the pg_trgm title index — with a tsv phrase fallback —
+for keys and titles) under the same space-visibility predicate as
+retrieval, plus the EE ACL batch filter. Verified pins are PREPENDED to the
+final result set (a page already in the fused set MOVES to the head keeping
+its enriched row; the fused order below is never re-sorted), the tail
+re-slices to topK, and `rag.pinned` carries the count. A pinned head row
+has `vectorScore` null, which deliberately leaves the #1105 confidence gate
+unmeasurable — a verified exact match is never auto-refused. Detection
+misses and lookup errors both soft-fail to the fused order. The fixture's
+`identifier` / `identifier-negative` styles are the measurable form of the
+acceptance criteria: exact queries pin first, natural-language queries with
+identifier-shaped tokens are provably unmoved.
 
 ## Sibling-chunk context assembly (#1106 PR 2)
 

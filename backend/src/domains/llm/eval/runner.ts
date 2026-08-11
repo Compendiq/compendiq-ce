@@ -92,6 +92,10 @@ export async function runEval(fixture: Fixture, opts: EvalRunOptions): Promise<E
     const results = await hybridSearch(opts.userId, label.query, opts.topK, undefined, {
       rerank: opts.rerank === true,
       assembleContext: opts.assembleContext !== false,
+      // #1107 mirrors the shipped chat configuration; the fixture's
+      // negative cases (NL queries carrying identifier-shaped tokens) are
+      // what make "natural-language queries unaffected" measurable.
+      pinIdentifiers: true,
     });
 
     if (results.some((r) => r.vectorScore !== null)) vectorParticipatingQueries++;
