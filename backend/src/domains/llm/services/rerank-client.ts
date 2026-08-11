@@ -1,11 +1,14 @@
 /**
  * Dedicated /v1/rerank client (#1104, ADR-021 amendment).
  *
- * Rerank endpoints speak the Cohere/Jina/TEI request shape —
+ * Rerank endpoints speak the Cohere/Jina request shape —
  * `{ model, query, documents, top_n }` → `{ results: [{ index,
  * relevance_score }] }` — which is NOT OpenAI-compatible, so this is a
  * distinct client rather than a fourth method on the chat/embeddings
- * contract. It still inherits everything every outbound provider call
+ * contract. llama.cpp's `llama-server --rerank` serves this shape at
+ * /v1/rerank (verified live); **TEI does NOT** — its endpoint is a bare
+ * `POST /rerank` with `{ query, texts }` returning a bare array, and is not
+ * supported by this client. It still inherits everything every outbound provider call
  * inherits: the global LLM queue, the per-provider circuit breaker, bearer
  * auth headers, and the per-provider TLS dispatcher (via
  * `providerRequestInfra`).
@@ -30,7 +33,6 @@ import {
   type ProviderConfig,
 } from './openai-compatible-client.js';
 
-const { headers, dispatcherFor, errorDetail } = providerRequestInfra;
 
 export interface RerankResult {
   /** Index into the `documents` array handed to {@link rerank}. */
@@ -59,21 +61,38 @@ export function normalizeRerankScores(results: RerankResult[]): RerankResult[] {
   return results.map((r) => ({ ...r, relevanceScore: sigmoid(r.relevanceScore) }));
 }
 
+export interface RerankOptions {
+  /** Defaults to all documents — rag-service wants every candidate scored. */
+  topN?: number;
+  /**
+   * Hard latency budget covering QUEUE WAIT plus the request (#1267 review
+   * B3). The signal starts at call time, so a backlogged queue spends the
+   * budget waiting and the request aborts on admission instead of running
+   * anyway — a raced-and-abandoned promise held its global LLM_CONCURRENCY
+   * slot for up to the queue's own 300s timeout while the caller had long
+   * bypassed. An abort also counts as a breaker FAILURE, which is the
+   * feedback loop that turns a persistently slow reranker off for a while
+   * instead of paying full cost for bypassed results on every query.
+   */
+  timeoutMs?: number;
+}
+
 /**
  * Score `documents` against `query`. Returns one entry per requested
- * document index, ordered by descending relevance. `topN` defaults to all
- * documents — rag-service wants every candidate scored, and slices itself.
+ * document index, ordered by descending relevance.
  */
 export async function rerank(
   cfg: ProviderConfig,
   model: string,
   query: string,
   documents: string[],
-  topN?: number,
+  opts?: RerankOptions,
 ): Promise<RerankResult[]> {
   const docs = documents.map((d) =>
     d.length > RERANK_DOC_MAX_CHARS ? d.slice(0, RERANK_DOC_MAX_CHARS) : d,
   );
+  // Created before enqueue so the budget covers queue wait (see RerankOptions).
+  const deadline = opts?.timeoutMs != null ? AbortSignal.timeout(opts.timeoutMs) : undefined;
   return withSpan(
     'llm.rerank',
     () =>
@@ -81,20 +100,22 @@ export async function rerank(
         getProviderBreaker(cfg.providerId).execute(async () => {
           const res = await undiciFetch(`${cfg.baseUrl}/rerank`, {
             method: 'POST',
-            headers: headers(cfg),
+            headers: providerRequestInfra.headers(cfg),
             body: JSON.stringify({
               model,
               query,
               documents: docs,
-              top_n: topN ?? docs.length,
+              top_n: opts?.topN ?? docs.length,
             }),
-            dispatcher: dispatcherFor(cfg),
-            signal,
+            dispatcher: providerRequestInfra.dispatcherFor(cfg),
+            signal: deadline ? AbortSignal.any([signal, deadline]) : signal,
           });
           if (!res.ok) {
             // As with embeddings (#867): a deterministic 400 proves the
             // provider is reachable — it must not open the breaker.
-            throw new LlmHttpError('rerank', res.status, await errorDetail(res), res.status === 400);
+            throw new LlmHttpError(
+              'rerank', res.status, await providerRequestInfra.errorDetail(res), res.status === 400,
+            );
           }
           const body = (await res.json()) as {
             results?: Array<{ index: number; relevance_score: number }>;
@@ -102,9 +123,18 @@ export async function rerank(
           if (!Array.isArray(body.results)) {
             throw new LlmHttpError('rerank', 502, 'rerank response carried no results array');
           }
+          const seen = new Set<number>();
           const mapped = body.results
-            .filter((r) => Number.isInteger(r.index) && r.index >= 0 && r.index < docs.length
-              && Number.isFinite(r.relevance_score))
+            .filter((r) => {
+              // Bounds + finiteness + first-occurrence-wins dedup: a provider
+              // echoing an index twice would otherwise put the same chunk
+              // into the context and citations twice.
+              if (!Number.isInteger(r.index) || r.index < 0 || r.index >= docs.length) return false;
+              if (!Number.isFinite(r.relevance_score)) return false;
+              if (seen.has(r.index)) return false;
+              seen.add(r.index);
+              return true;
+            })
             .map((r) => ({ index: r.index, relevanceScore: r.relevance_score }));
           return normalizeRerankScores(mapped).sort((a, b) => b.relevanceScore - a.relevanceScore);
         }),

@@ -1372,7 +1372,14 @@ assignment as the existing five. Unlike the others it targets a `/v1/rerank`
 endpoint (Cohere/Jina/TEI shape), which is **not** OpenAI-compatible; it is
 therefore implemented as a distinct client (`rerank-client.ts`, sharing the
 request infrastructure via `providerRequestInfra`) rather than through
-`openai-compatible-client`'s chat/embeddings paths. This **narrows, not
+`openai-compatible-client`'s chat/embeddings paths. The supported shape is
+Cohere/Jina-style `/v1/rerank` (llama.cpp's `llama-server --rerank` serves
+it, verified live); **TEI's bare `POST /rerank` with `{query, texts}` and an
+array response is NOT compatible** — a TEI adapter would be its own
+decision. Note the circuit breaker is keyed per PROVIDER, not per use case:
+pointing rerank at a provider that also serves chat/embedding means rerank
+failures can open the shared breaker for those too — assign rerank its own
+provider row when that isolation matters. This **narrows, not
 reverses,** Alternative 2's "every provider is OpenAI-compatible" premise —
 it holds for chat/embeddings, not for rerank.
 
@@ -1394,10 +1401,18 @@ i.e. assign a local/trusted endpoint where that matters) and not the
 judge-billing dropdown (judge calls are chat-shaped; a rerank endpoint cannot
 serve them).
 
-**Failure is honest:** on any rerank error or on the `RERANK_TIMEOUT_MS`
-budget expiring, the stage is bypassed — the fused order is served, analytics
-record plain `hybrid` (never `hybrid_rerank`), and no score is faked or
-renormalised. `search_analytics.rerank_score` (migration 088) gets its first
+**Failure is honest, and the budget aborts:** `RERANK_TIMEOUT_MS` is
+enforced inside the client as an AbortSignal spanning queue wait plus the
+request, so an expired budget frees its global LLM-queue slot immediately
+and counts as a breaker failure — a persistently slow reranker trips the
+breaker and the stage self-disables for the cool-down instead of paying
+full cost for bypassed results (measured: pool 30 at 4 concurrent requests
+already grazes a 5s budget on fast local hardware). On any error or expiry
+the stage is bypassed — the fused order is served, analytics record plain
+`hybrid` (never `hybrid_rerank`), and no score is faked or renormalised.
+One consequence worth knowing: a reranked and a bypassed run of the same
+question can retrieve different top-K sets, and the chat cache keys on doc
+ids — the two legitimately cache as separate entries. `search_analytics.rerank_score` (migration 088) gets its first
 writer; `max_score` keeps the fusion unit.
 
 ## ADR-022: RAG retrieval honours per-user space permissions
@@ -1456,21 +1471,24 @@ Confluence DC semantics (per Atlassian's official documentation, not the issue b
 > BOTH branches, so "CE deployments and EE without the flag: zero behaviour
 > change" now covers the ACE consultation and the post-filter only — a CE
 > `/api/search?mode=hybrid&limit=20` fetches 20 rows/leg where it used to
-> fetch an unsatisfiable 10. And the post-filter's cost bound is no longer
-> "N ≤ topK×1.5": the merged set is up to 2× the stage limit (up to 2×200
-> at an admin-raised width). Mitigations: checks run in order-preserving
-> parallel batches of 10, the walk stops once `topK` candidates have
-> *passed* (a caller denied on most candidates still examines the whole
-> merged set), and `userCanAccessPage`'s space branch now reads the ADR-022
-> request-scoped memo — which also means that for `inherit_perms = true`
-> pages the post-filter re-affirms the same space snapshot the legs already
-> enforced in SQL rather than consulting a fresh source: a deliberate,
-> small trade of defence-in-depth for per-candidate round-trips (the
-> `inherit_perms = false` ACE branch, the filter's real job, is untouched).
-> A batched ACL check is required work for the PR that actually raises the
-> width (#1104). Fusion note: when the stage limit exceeds the configured
-> width, ranking uses a stable head (`fuseWithStableHead`) — the ACL floor
-> widens the pool the filter walks, never the head ordering.
+> fetch an unsatisfiable 10.
+>
+> **Amended again by #1104**, which raised the pool to the rerank candidate
+> budget (default 30, up to 100) and delivered the batched check the
+> previous paragraph of this amendment assigned to it: the post-filter is
+> now `filterAccessiblePages(userId, pageIds)` — one admin probe, one
+> memoized space resolve (ADR-022), and ONE set-based query
+> spec-matched to `userCanAccessPage` (an integration test compares the two
+> verdict-for-verdict). The old "N ≤ topK×1.5, typically ≤15 sequential
+> per-page checks" rationale bullet is superseded: the query path is one
+> round-trip regardless of pool size, and the per-page `userCanAccessPage`
+> remains the single-page API and the batch's specification. The
+> `inherit_perms = true` arm evaluates the same memoized space snapshot the
+> legs enforced in SQL — the deliberate defence-in-depth trade recorded
+> above stands; the ACE arm is the filter's real job and runs in the same
+> query. Fusion note: when the stage limit exceeds the configured width,
+> ranking uses a stable head (`fuseWithStableHead`) — the pool floors widen
+> what the filter sees, never the head ordering.
 
 **Rationale:**
 - **Ancestor inheritance is resolved at sync time, not query time.** The RAG post-filter calls `userCanAccessPage` N times per query (N ≤ topK×1.5, typically ≤15 in observed deployments). Each call is 1-3 pooled SQL queries. Resolving inheritance at query time would require either walking the ancestor chain per candidate (unbounded fan-out on hot paths) or duplicating the ancestor-walk logic into `userCanAccessPage` (tight coupling). Putting the walk in the sync path keeps the query path O(topK) and lets us reuse the existing `userCanAccessPage` as-is.

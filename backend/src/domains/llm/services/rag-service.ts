@@ -7,7 +7,7 @@ import { sanitizeLlmInput } from '../../../core/utils/sanitize-llm-input.js';
 // the readable-space set once across vectorSearch + keywordSearch. See ADR-022.
 import {
   getUserAccessibleSpacesMemoized as getUserAccessibleSpaces,
-  userCanAccessPage,
+  filterAccessiblePages,
 } from '../../../core/services/rbac-service.js';
 import { CircuitBreakerOpenError } from '../../../core/services/circuit-breaker.js';
 import { getFtsLanguage } from '../../../core/services/fts-language.js';
@@ -139,11 +139,19 @@ interface SearchResult {
    */
   keywordRank: number | null;
   /**
-   * Cross-encoder relevance in [0, 1] (#1104), or null when this result was
-   * never reranked — the stage is off, the pool bypassed, or this row came
-   * from a non-reranked path. The confidence formula (#1105) is the intended
-   * primary reader; analytics stores the returned set's max in
+   * Cross-encoder relevance in [0, 1] (#1104); null OR absent when this
+   * result was never reranked — the stage is off, the pool bypassed, or this
+   * row came from a non-reranked path. The confidence formula (#1105) is the
+   * intended primary reader; analytics stores the returned set's max in
    * `search_analytics.rerank_score`.
+   *
+   * **Comparability caveat for any threshold (#1105 read this):** the value
+   * is only comparable within one provider AND one normalisation regime. A
+   * hosted reranker emits calibrated [0,1] (~0.9 for a strong match); a raw
+   * local cross-encoder emits logits that arrive sigmoided per-set — the
+   * same strong match measured live scored 0.14 after normalisation. Any
+   * refuse-gate threshold must be a per-deployment tuning value, never a
+   * universal constant.
    */
   rerankScore?: number | null;
 }
@@ -835,9 +843,7 @@ async function hybridSearchInner(
   // merged set — batching caps the latency, not the query count; a batched
   // rbac API is #1104's problem when the width actually rises.
   // The rerank stage rescores this many head candidates when active; without
-  // it the pipeline needs only topK. The EE ACL filter below must pass
-  // enough candidates to FEED the stage — stopping at topK would hand the
-  // reranker a pool it already can't improve (#1103's hand-off note).
+  // it the pipeline needs only topK.
   const rerankCfg = await rerankCfgPromise;
   const poolTarget = rerankCfg
     ? Math.max(await rerankCandidatesPromise, Math.max(0, topK))
@@ -845,39 +851,26 @@ async function hybridSearchInner(
 
   let candidates: SearchResult[];
   if (aclEnforced) {
-    // Per-page ACL post-filter. Half the default main pool (PG_POOL_MAX =
-    // 20, core/db/postgres.ts): each check is 1-3 queries, so one batch
-    // peaks at ~10 checkouts and two concurrent EE searches queue instead
-    // of exhausting the pool. With rerank active the stop bound is the
-    // rerank pool (<= 100 by the knob's clamp → <= 2x that in checks worst
-    // case) — a batched rbac `filterAccessiblePages` remains the right next
-    // step if these bounds ever rise again.
-    const ACL_CHECK_BATCH = 10;
-    const filtered: SearchResult[] = [];
-    let examined = 0;
-    for (let i = 0; i < merged.length && filtered.length < poolTarget; i += ACL_CHECK_BATCH) {
-      const batch = merged.slice(i, i + ACL_CHECK_BATCH);
-      const verdicts = await Promise.all(
-        batch.map((r) => userCanAccessPage(userId, r.pageId)),
-      );
-      examined += batch.length;
-      for (let j = 0; j < batch.length; j++) {
-        if (verdicts[j]) filtered.push(batch[j]!);
-      }
-    }
-    // `candidatesKept` saturates at ~the stop bound — it is NOT an ACL
-    // rejection rate. `candidatesExamined` is the denominator for that:
-    // examined - kept = denials seen before the walk stopped.
+    // Per-page ACL post-filter, batched into ONE set-based query (#1104 —
+    // the "required work for the PR that actually raises the width" from
+    // ADR-023's amendment). filterAccessiblePages is spec-matched to
+    // userCanAccessPage; order is preserved because the merged array is
+    // filtered in place against the returned set. `candidatesKept` is the
+    // TRUE accessible count again — the early-stop that saturated it at
+    // topK went with the sequential walk.
+    const accessible = await filterAccessiblePages(
+      userId,
+      merged.map((r) => r.pageId),
+    );
+    candidates = merged.filter((r) => accessible.has(r.pageId));
     logger.debug(
       {
         userId,
         candidatesBeforeFilter: merged.length,
-        candidatesExamined: examined,
-        candidatesKept: filtered.length,
+        candidatesKept: candidates.length,
       },
       'RAG per-page ACL post-filter applied',
     );
-    candidates = filtered;
   } else {
     candidates = merged;
   }
@@ -900,12 +893,17 @@ async function hybridSearchInner(
       // note; the ADR-021 amendment records the egress decision).
       const docs = pool.map((r) => sanitizeLlmInput(r.chunkText).sanitized);
       const queryText = sanitizeLlmInput(question).sanitized;
-      const scored = await Promise.race([
-        rerankDocuments(rerankCfg.config, rerankCfg.model, queryText, docs),
-        new Promise<never>((_, rej) =>
-          setTimeout(() => rej(new Error(`rerank timed out after ${RERANK_TIMEOUT_MS}ms`)), RERANK_TIMEOUT_MS).unref?.(),
-        ),
-      ]);
+      // The budget is enforced INSIDE the client via an AbortSignal that
+      // spans queue wait + request (#1267 review B3): a raced-and-abandoned
+      // promise held a global LLM_CONCURRENCY slot for up to the queue's own
+      // 300s timeout, and repeated timeouts never taught the breaker
+      // anything. An abort releases the slot immediately and counts as a
+      // breaker failure — a persistently slow reranker now trips the breaker
+      // and the stage self-disables for the cool-down instead of billing
+      // full cost for bypassed results.
+      const scored = await rerankDocuments(rerankCfg.config, rerankCfg.model, queryText, docs, {
+        timeoutMs: RERANK_TIMEOUT_MS,
+      });
       // Rebuild the pool in relevance order; anything the provider did not
       // score keeps its fused position after the scored entries.
       const byIndex = new Map(scored.map((s) => [s.index, s.relevanceScore]));
@@ -917,6 +915,8 @@ async function hybridSearchInner(
         null,
       );
       searchTypeFinal = 'hybrid_rerank';
+      // Overwrite the pre-stage value so trace and analytics agree (#1267 m4).
+      span?.setAttribute('rag.search_type', searchTypeFinal);
       span?.setAttribute('rag.rerank', 'scored');
       span?.setAttribute('rag.rerank_pool', pool.length);
       recordHistogram(

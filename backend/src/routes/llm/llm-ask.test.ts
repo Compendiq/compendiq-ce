@@ -61,6 +61,8 @@ vi.mock('../../core/services/content-converter.js', () => ({
 const mockUserCanAccessPage = vi.fn();
 vi.mock('../../core/services/rbac-service.js', () => ({
   userCanAccessPage: (...args: unknown[]) => mockUserCanAccessPage(...args),
+  // #1104: the batched ACL filter; default = everything accessible.
+  filterAccessiblePages: vi.fn(async (_u: unknown, ids: number[]) => new Set(ids)),
 }));
 
 // --- Mock: subpage-context (assembleSubPageContext / getMultiPagePromptSuffix) ---

@@ -53,7 +53,7 @@ sequenceDiagram
         end
         RAG-->>BE: merged + deduped + ranked (fetch-width wide)
         opt RAG_PERMISSION_ENFORCEMENT (EE)
-            BE->>RBAC: userCanAccessPage(userId, pageId) per candidate,<br/>stopping once topK have passed
+            BE->>RBAC: filterAccessiblePages(userId, pageIds)<br/>one set-based query (#35;1104)
             RBAC-->>BE: filter decision (per-page read ACE honoured)
         end
         opt rerank use case assigned (#35;1104)
@@ -267,22 +267,18 @@ after the RRF merge when the feature is active. It calls
 retrieval on per-page read ACEs. The sync path (ADR-023) writes Confluence's
 effective read restrictions — resolved through the ancestor chain at sync
 time — into `access_control_entries` with `source='confluence'`, so the
-query-time check is a single consistent `userCanAccessPage` call per
-candidate. The merged set is up to **2× the stage limit** — unchanged at the
-defaults, but an admin-raised #1103 width multiplies it, up to 2×200 at the
-cap — and each check costs 1-3 queries. Two bounds apply: checks run in
-order-preserving parallel batches of 10, and the walk stops once `topK`
-candidates have **passed**. Note the stop bounds successes, not work — a
-caller denied on most candidates still examines the whole merged set; a
-batched ACL check is #1104's required companion to actually raising the
-width. The stage limit keeps `ceil(topK × 1.5)` as an additional floor so ACL
-headroom can only ever add candidates (its old form fetched *fewer* rows than
-CE on the chat path — #1263). The post-filter's debug log reports
-`candidatesExamined` and `candidatesKept` — kept saturates near `topK` by
-design and is **not** a rejection rate; examined − kept is the denial count
-seen before the walk stopped. When the feature is off (CE or EE without the
-flag), the second post-filter does not run; the fetch width applies either
-way.
+query-time check is `filterAccessiblePages(userId, pageIds)` (#1104): one
+admin probe, one memoized space resolve, and ONE set-based query
+spec-matched to `userCanAccessPage` — an integration test compares the two
+verdict-for-verdict. The pool it filters is up to 2× the stage limit (the
+rerank candidate budget when the stage is live), at constant query cost. The
+stage limit keeps `ceil(topK × 1.5)` as an additional floor so ACL headroom
+can only ever add candidates (its old form fetched *fewer* rows than CE on
+the chat path — #1263). The post-filter's debug log reports
+`candidatesBeforeFilter` and `candidatesKept`; kept is the true accessible
+count, so before − kept IS the ACL rejection count again. When the feature
+is off (CE or EE without the flag), the second post-filter does not run; the
+fetch width applies either way.
 
 **Fusion has a stable head.** When the stage limit exceeds the configured
 width (`/api/search?mode=hybrid&limit=11..20` at the default width in CE, and

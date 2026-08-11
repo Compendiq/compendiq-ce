@@ -417,6 +417,59 @@ export async function userCanAccessPage(
 }
 
 /**
+ * Batched {@link userCanAccessPage} (#1104): the RAG ACL post-filter walks a
+ * candidate pool that scaled from ~15 to up to 100 pages (the rerank
+ * candidate pool), and N sequential per-page checks at 1-3 queries each were
+ * the cost ADR-023's amendment flagged as "required work for the PR that
+ * actually raises the width". One admin probe + one space resolve + ONE
+ * set-based query replaces up to 3N round-trips.
+ *
+ * Semantics MUST stay bit-identical to {@link userCanAccessPage} — the
+ * per-page function is the specification, and an integration test compares
+ * the two verdict-for-verdict across every fixture shape (admin bypass,
+ * standalone shared/private/foreign, inherit_perms space check including the
+ * NULL space_key case, per-page ACE by user and by group, deleted and
+ * missing pages). Change one, change both.
+ */
+export async function filterAccessiblePages(
+  userId: string,
+  pageIds: number[],
+): Promise<Set<number>> {
+  if (pageIds.length === 0) return new Set();
+  if (await isSystemAdmin(userId)) return new Set(pageIds);
+  const accessibleSpaces = await getUserAccessibleSpacesMemoized(userId);
+  // $2 is the userId in TEXT contexts (ACE principal_id), $4 the same value
+  // in UUID contexts — one parameter cannot carry both inferred types in a
+  // single statement (`operator does not exist: text = uuid`).
+  const result = await query<{ id: number }>(
+    `SELECT p.id FROM pages p
+     WHERE p.id = ANY($1::int[])
+       AND p.deleted_at IS NULL
+       AND (
+         (p.source = 'standalone' AND (
+           p.visibility = 'shared'
+           OR (p.visibility = 'private' AND p.created_by_user_id = $4::uuid)
+         ))
+         OR (p.source <> 'standalone' AND p.inherit_perms
+             AND p.space_key = ANY($3::text[]))
+         OR (p.source <> 'standalone' AND NOT p.inherit_perms AND EXISTS (
+           SELECT 1 FROM access_control_entries ace
+           WHERE ace.resource_type = 'page' AND ace.resource_id = p.id
+             AND (
+               (ace.principal_type = 'user' AND ace.principal_id = $2)
+               OR (ace.principal_type = 'group' AND ace.principal_id ~ '^\\d+$'
+                   AND ace.principal_id::INTEGER IN (
+                 SELECT group_id FROM group_memberships WHERE user_id = $4::uuid
+               ))
+             )
+         ))
+       )`,
+    [pageIds, userId, accessibleSpaces, userId],
+  );
+  return new Set(result.rows.map((r) => r.id));
+}
+
+/**
  * #721: The spaces the user has EXPLICITLY selected for sync (their editor
  * assignments that still correspond to an existing space row) — regardless of
  * system-admin "all spaces" access. Used by GET /settings so deselecting a

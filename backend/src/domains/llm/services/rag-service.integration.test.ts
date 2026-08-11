@@ -732,6 +732,68 @@ describe.skipIf(!dbAvailable)('rag-service integration — per-page ACL post-fil
     expect(results).toHaveLength(12);
   });
 
+  it('filterAccessiblePages matches userCanAccessPage verdict-for-verdict (#1104)', async () => {
+    // The batched filter is spec-matched to the per-page function; this test
+    // IS that spec-match, across every fixture shape the per-page function
+    // distinguishes. Change one, change both.
+    ragPermissionEnforcementEnabled = true;
+    const user = 'feedface-feed-face-feed-facefeedface';
+    const stranger = 'cdcdcdcd-cdcd-cdcd-cdcd-cdcdcdcdcdcd';
+    await ensureUser(user);
+    await ensureUser(stranger);
+    await ensureSpaceAndViewerRole(user, 'EQ');
+    await query(`INSERT INTO spaces (space_key, space_name) VALUES ('NOEQ','NOEQ') ON CONFLICT DO NOTHING`);
+
+    const ids: number[] = [];
+    // inherit_perms=true in an accessible space → allowed
+    ids.push(await insertPage({ spaceKey: 'EQ', title: 'open', bodyText: 'x', vec: fakeVec(3) }));
+    // inherit_perms=true in an INACCESSIBLE space → denied
+    ids.push(await insertPage({ spaceKey: 'NOEQ', title: 'closed-space', bodyText: 'x', vec: fakeVec(3.1) }));
+    // ACE granted to the user → allowed
+    const aceMine = await insertPage({ spaceKey: 'EQ', title: 'ace-mine', bodyText: 'x', vec: fakeVec(3.2), inheritPerms: false });
+    await insertConfluenceReadAce(aceMine, user);
+    ids.push(aceMine);
+    // ACE granted to someone else → denied
+    const aceTheirs = await insertPage({ spaceKey: 'EQ', title: 'ace-theirs', bodyText: 'x', vec: fakeVec(3.3), inheritPerms: false });
+    await insertConfluenceReadAce(aceTheirs, stranger);
+    ids.push(aceTheirs);
+    // standalone shared → allowed; standalone private own → allowed;
+    // standalone private foreign → denied
+    const mk = async (visibility: string, owner: string) => {
+      const r = await query<{ id: number }>(
+        `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html, visibility, created_by_user_id)
+         VALUES (gen_random_uuid()::text, 'standalone', NULL, 'sa', 'x', '', '', $1, $2::uuid) RETURNING id`,
+        [visibility, owner],
+      );
+      return r.rows[0]!.id;
+    };
+    ids.push(await mk('shared', stranger));
+    ids.push(await mk('private', user));
+    ids.push(await mk('private', stranger));
+    // soft-deleted page → denied
+    const deleted = await insertPage({ spaceKey: 'EQ', title: 'gone', bodyText: 'x', vec: fakeVec(3.4) });
+    await query(`UPDATE pages SET deleted_at = NOW() WHERE id = $1`, [deleted]);
+    ids.push(deleted);
+    // missing id → denied
+    ids.push(99999999);
+
+    const { userCanAccessPage: perPage, filterAccessiblePages: batch } = await vi.importActual<
+      typeof import('../../../core/services/rbac-service.js')
+    >('../../../core/services/rbac-service.js');
+
+    const batchVerdicts = await batch(user, ids);
+    for (const id of ids) {
+      expect({ id, allowed: batchVerdicts.has(id) }).toEqual({ id, allowed: await perPage(user, id) });
+    }
+    // Admin bypass: everything the DB knows about is allowed.
+    const admin = '99999999-9999-9999-9999-999999999999';
+    await ensureUser(admin, 'admin');
+    const adminVerdicts = await batch(admin, ids);
+    for (const id of ids) {
+      expect(adminVerdicts.has(id)).toBe(await perPage(admin, id));
+    }
+  });
+
   it('rerank stage end-to-end: real assignment resolves, pool reranks, analytics record hybrid_rerank (#1104)', async () => {
     ragPermissionEnforcementEnabled = false;
     const user = 'deaddead-dead-dead-dead-deaddeaddead';

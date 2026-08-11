@@ -119,7 +119,9 @@ export function invalidateRagFetchWidthCache(): void {
  * page, so ~30 fused pages is the reference guide's ~20-candidate budget
  * with page-collapse headroom. Clamped to [10, 100] — every candidate is a
  * document shipped to the rerank provider and, under EE ACL, an access
- * check.
+ * check. Note the MIN acts as a validity floor, not a clamp: a sub-10
+ * value falls back to the DEFAULT (safeIntOr semantics, same as the width
+ * knob).
  */
 export const RAG_RERANK_CANDIDATES_DEFAULT = 30;
 export const RAG_RERANK_CANDIDATES_MIN = 10;

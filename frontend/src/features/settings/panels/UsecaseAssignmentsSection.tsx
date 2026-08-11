@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import type { LlmProvider, LlmUsecase, UsecaseAssignments, UsecaseDefault } from '@compendiq/contracts';
+import { LlmUsecaseSchema } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
 import { ChatVisionCapability } from './ChatVisionCapability';
 
@@ -11,7 +12,7 @@ const USECASE_LABELS: Record<LlmUsecase, string> = {
   embedding: 'Embedding',
   rerank: 'Rerank',
 };
-const USECASES_ORDERED: LlmUsecase[] = ['chat', 'summary', 'quality', 'auto_tag', 'embedding', 'rerank'];
+const USECASES_ORDERED: LlmUsecase[] = [...LlmUsecaseSchema.options];
 
 const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 
@@ -61,7 +62,7 @@ export function UsecaseAssignmentsSection({ assignments, providers, onChange }: 
                 )}
                 {u === 'rerank' && (
                   <span
-                    title="Needs a /v1/rerank-capable endpoint (Cohere / Jina / TEI shape). Leaving it unassigned disables the rerank stage — it never falls back to the default provider."
+                    title="Needs a Cohere/Jina-style /v1/rerank endpoint (llama.cpp's llama-server --rerank serves it; TEI's bare /rerank shape is NOT compatible). Leaving it unassigned disables the rerank stage — it never falls back to the default provider."
                     aria-label="rerank-info"
                     className="text-muted-foreground"
                   >
