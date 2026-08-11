@@ -143,6 +143,10 @@ describe.skipIf(!dbAvailable)('knowledge-gap predicate — per-unit arms (#1269)
     await setupTestDb();
   });
 
+  afterAll(async () => {
+    await teardownTestDb();
+  });
+
   beforeEach(async () => {
     await query('DELETE FROM search_analytics WHERE user_id = $1', [userId]);
     await query(
