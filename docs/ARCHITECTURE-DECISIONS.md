@@ -843,6 +843,19 @@ services:
 
 ## ADR-012: RAG Pipeline with pgvector
 
+> **Amended (#1265, #1103, #1104 — epic #1100):** three parts of the pipeline
+> below have evolved. (1) The chunking input is **Markdown from
+> `htmlToEmbeddingText(body_html)`**, not stripped plain text — the
+> plain-text step made the heading/paragraph strategy unreachable (#1265).
+> (2) Retrieval fetch width is decoupled from return width behind the
+> `rag_fetch_width` knob with stable-head fusion (#1103). (3) Retrieval is no
+> longer "RRF order is the final order": when a provider is assigned to the
+> `rerank` use case (ADR-021's #1104 amendment), a **cross-encoder rerank
+> stage** re-scores the fused candidate pool on the chat path before the
+> final slice, with honest bypass on failure. The embedding model/dimensions
+> named below are the original defaults; the live pair is DB-configured per
+> ADR-021.
+
 ### Context
 For the "Q&A over knowledge base" feature, we need to provide relevant article context to the LLM. Full articles don't fit in small model context windows. Semantic search outperforms keyword search for natural language questions.
 
@@ -1350,6 +1363,58 @@ Three decisions inside that are not obvious. **It fails open, so the bound is co
 
 ---
 
+### #1104 — the `rerank` use case
+
+ADR-021 is amended to add a sixth use case, `rerank`, to the provider model.
+Reranking is an outbound, provider-routed LLM call that inherits the same
+queue, per-provider circuit breaker, and per-use-case provider/model
+assignment as the existing five. Unlike the others it targets a `/v1/rerank`
+endpoint (Cohere/Jina/TEI shape), which is **not** OpenAI-compatible; it is
+therefore implemented as a distinct client (`rerank-client.ts`, sharing the
+request infrastructure via `providerRequestInfra`) rather than through
+`openai-compatible-client`'s chat/embeddings paths. The supported shape is
+Cohere/Jina-style `/v1/rerank` (llama.cpp's `llama-server --rerank` serves
+it, verified live); **TEI's bare `POST /rerank` with `{query, texts}` and an
+array response is NOT compatible** — a TEI adapter would be its own
+decision. Note the circuit breaker is keyed per PROVIDER, not per use case:
+pointing rerank at a provider that also serves chat/embedding means rerank
+failures can open the shared breaker for those too — assign rerank its own
+provider row when that isolation matters. This **narrows, not
+reverses,** Alternative 2's "every provider is OpenAI-compatible" premise —
+it holds for chat/embeddings, not for rerank.
+
+**Resolution semantics differ deliberately:** an unassigned `rerank` use case
+means the rerank stage is **disabled** (`resolveRerankUsecase` → null) —
+never "inherit the default provider". The default provider speaks
+`/chat/completions`; handing it `/v1/rerank` traffic would break retrieval
+the moment an admin configured a default. Enterprise org-policy overrides do
+not apply either, for the same shape reason. The settings grid renders the
+unassigned state as "Disabled (no reranking)".
+
+**Egress decision (the PII question #1104 raised):** an active rerank stage
+ships up to `rag_rerank_candidates` (≤ 100) truncated candidate chunks per
+query to the assigned provider. Candidates pass through `sanitize-llm-input`
+first (same prompt-injection guard as chat context). Rerank joins **neither**
+PII-policy list: not the scan call sites (like `embedding`, it is a
+corpus-infrastructure path — bulk KB egress is governed by provider choice,
+i.e. assign a local/trusted endpoint where that matters) and not the
+judge-billing dropdown (judge calls are chat-shaped; a rerank endpoint cannot
+serve them).
+
+**Failure is honest, and the budget aborts:** `RERANK_TIMEOUT_MS` is
+enforced inside the client as an AbortSignal spanning queue wait plus the
+request, so an expired budget frees its global LLM-queue slot immediately
+and counts as a breaker failure — a persistently slow reranker trips the
+breaker and the stage self-disables for the cool-down instead of paying
+full cost for bypassed results (measured: pool 30 at 4 concurrent requests
+already grazes a 5s budget on fast local hardware). On any error or expiry
+the stage is bypassed — the fused order is served, analytics record plain
+`hybrid` (never `hybrid_rerank`), and no score is faked or renormalised.
+One consequence worth knowing: a reranked and a bypassed run of the same
+question can retrieve different top-K sets, and the chat cache keys on doc
+ids — the two legitimately cache as separate entries. `search_analytics.rerank_score` (migration 088) gets its first
+writer; `max_score` keeps the fusion unit.
+
 ## ADR-022: RAG retrieval honours per-user space permissions
 
 **Date:** 2026-04-21
@@ -1406,21 +1471,24 @@ Confluence DC semantics (per Atlassian's official documentation, not the issue b
 > BOTH branches, so "CE deployments and EE without the flag: zero behaviour
 > change" now covers the ACE consultation and the post-filter only — a CE
 > `/api/search?mode=hybrid&limit=20` fetches 20 rows/leg where it used to
-> fetch an unsatisfiable 10. And the post-filter's cost bound is no longer
-> "N ≤ topK×1.5": the merged set is up to 2× the stage limit (up to 2×200
-> at an admin-raised width). Mitigations: checks run in order-preserving
-> parallel batches of 10, the walk stops once `topK` candidates have
-> *passed* (a caller denied on most candidates still examines the whole
-> merged set), and `userCanAccessPage`'s space branch now reads the ADR-022
-> request-scoped memo — which also means that for `inherit_perms = true`
-> pages the post-filter re-affirms the same space snapshot the legs already
-> enforced in SQL rather than consulting a fresh source: a deliberate,
-> small trade of defence-in-depth for per-candidate round-trips (the
-> `inherit_perms = false` ACE branch, the filter's real job, is untouched).
-> A batched ACL check is required work for the PR that actually raises the
-> width (#1104). Fusion note: when the stage limit exceeds the configured
-> width, ranking uses a stable head (`fuseWithStableHead`) — the ACL floor
-> widens the pool the filter walks, never the head ordering.
+> fetch an unsatisfiable 10.
+>
+> **Amended again by #1104**, which raised the pool to the rerank candidate
+> budget (default 30, up to 100) and delivered the batched check the
+> previous paragraph of this amendment assigned to it: the post-filter is
+> now `filterAccessiblePages(userId, pageIds)` — one admin probe, one
+> memoized space resolve (ADR-022), and ONE set-based query
+> spec-matched to `userCanAccessPage` (an integration test compares the two
+> verdict-for-verdict). The old "N ≤ topK×1.5, typically ≤15 sequential
+> per-page checks" rationale bullet is superseded: the query path is one
+> round-trip regardless of pool size, and the per-page `userCanAccessPage`
+> remains the single-page API and the batch's specification. The
+> `inherit_perms = true` arm evaluates the same memoized space snapshot the
+> legs enforced in SQL — the deliberate defence-in-depth trade recorded
+> above stands; the ACE arm is the filter's real job and runs in the same
+> query. Fusion note: when the stage limit exceeds the configured width,
+> ranking uses a stable head (`fuseWithStableHead`) — the pool floors widen
+> what the filter sees, never the head ordering.
 
 **Rationale:**
 - **Ancestor inheritance is resolved at sync time, not query time.** The RAG post-filter calls `userCanAccessPage` N times per query (N ≤ topK×1.5, typically ≤15 in observed deployments). Each call is 1-3 pooled SQL queries. Resolving inheritance at query time would require either walking the ancestor chain per candidate (unbounded fan-out on hot paths) or duplicating the ancestor-walk logic into `userCanAccessPage` (tight coupling). Putting the walk in the sync path keeps the query path O(topK) and lets us reuse the existing `userCanAccessPage` as-is.

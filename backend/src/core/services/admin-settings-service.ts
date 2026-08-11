@@ -110,6 +110,52 @@ export function invalidateRagFetchWidthCache(): void {
 }
 
 /**
+ * Rerank candidate-pool size (#1104): how many fused candidates the
+ * cross-encoder re-scores when the rerank stage is active. This is the knob
+ * that finally spends the over-fetch headroom #1103 built — when rerank is
+ * on, the retrieval legs widen to at least this pool so the reranker has
+ * something to rescue (the measured width-30-without-rerank regression is
+ * exactly what the re-scoring stage repairs). 30 default: RRF dedups by
+ * page, so ~30 fused pages is the reference guide's ~20-candidate budget
+ * with page-collapse headroom. Clamped to [10, 100] — every candidate is a
+ * document shipped to the rerank provider and, under EE ACL, an access
+ * check. Note the MIN acts as a validity floor, not a clamp: a sub-10
+ * value falls back to the DEFAULT (safeIntOr semantics, same as the width
+ * knob).
+ */
+export const RAG_RERANK_CANDIDATES_DEFAULT = 30;
+export const RAG_RERANK_CANDIDATES_MIN = 10;
+export const RAG_RERANK_CANDIDATES_MAX = 100;
+
+const RAG_RERANK_CANDIDATES_TTL_MS = 60_000;
+let ragRerankCandidatesCache: { value: number; expiresAt: number } | null = null;
+
+/** `rag_rerank_candidates` row, TTL-cached like {@link getRagFetchWidth}. */
+export async function getRagRerankCandidates(): Promise<number> {
+  if (ragRerankCandidatesCache && Date.now() < ragRerankCandidatesCache.expiresAt) {
+    return ragRerankCandidatesCache.value;
+  }
+  let resolved = RAG_RERANK_CANDIDATES_DEFAULT;
+  try {
+    const r = await query<{ setting_value: string }>(
+      `SELECT setting_value FROM admin_settings WHERE setting_key = 'rag_rerank_candidates'`,
+    );
+    resolved = Math.min(
+      safeIntOr(r.rows[0]?.setting_value, RAG_RERANK_CANDIDATES_DEFAULT, RAG_RERANK_CANDIDATES_MIN),
+      RAG_RERANK_CANDIDATES_MAX,
+    );
+  } catch (err) {
+    logger.warn({ err }, 'Failed to resolve rag_rerank_candidates — using default');
+  }
+  ragRerankCandidatesCache = { value: resolved, expiresAt: Date.now() + RAG_RERANK_CANDIDATES_TTL_MS };
+  return resolved;
+}
+
+export function invalidateRagRerankCandidatesCache(): void {
+  ragRerankCandidatesCache = null;
+}
+
+/**
  * Issue #257 — returns the configured re-embed-all job history retention
  * (how many completed/failed BullMQ job records are kept in Redis before
  * the oldest get swept). Default 150, clamped to [10, 10000].

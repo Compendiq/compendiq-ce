@@ -174,6 +174,15 @@ export const PII_LLM_JUDGE_MODE_LABELS: Readonly<
   always: 'Every scan',
 });
 
+// `rerank` (#1104) is deliberately ABSENT from both lists in this file:
+// - not a judge-billing option: judge calls are chat-shaped completions, and
+//   a rerank assignment points at a /v1/rerank endpoint that cannot serve
+//   them — offering it here would let an admin configure a dead judge;
+// - not a PII scan call site: like `embedding` (also absent), rerank is a
+//   corpus-infrastructure path that ships stored KB text to its assigned
+//   provider. The scan sites cover user-interactive drafting surfaces; bulk
+//   corpus egress is governed by provider choice, recorded in ADR-021's
+//   rerank amendment.
 export const PII_LLM_JUDGE_USECASES = [
   'chat',
   'summary',

@@ -89,6 +89,7 @@ describe('UsecaseAssignmentsSchema', () => {
       quality: { providerId: null, model: null, resolved: { providerId: p1, providerName: 'X', model: 'm' } },
       auto_tag: { providerId: null, model: null, resolved: { providerId: p1, providerName: 'X', model: 'm' } },
       embedding: { providerId: null, model: null, resolved: { providerId: p1, providerName: 'X', model: 'm' } },
+      rerank: { providerId: null, model: null, resolved: { providerId: p1, providerName: 'X', model: 'm' } },
     });
     expect(parsed.embedding).toBeDefined();
   });

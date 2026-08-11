@@ -36,6 +36,9 @@ interface Report {
   corpusPages: number;
   queries: number;
   vectorParticipatingQueries: number;
+  /** #1104: whether this run measured the reranked pipeline (--rerank). */
+  rerank: boolean;
+  rerankParticipatingQueries: number;
   recallAtK: Record<string, number>;
   mrr: number;
   runs: QueryRun[];
@@ -149,18 +152,26 @@ async function main(): Promise<void> {
   }
 
   console.log(`running ${fixture.labels.length} queries…`);
-  const { runs, vectorParticipatingQueries } = await runEval(fixture, {
+  const { runs, vectorParticipatingQueries, rerankParticipatingQueries } = await runEval(fixture, {
     userId: EVAL_USER,
     pageIdByFile: seeded.pageIdByFile,
     topK: Math.max(...TOP_K),
+    // --rerank requests the #1104 stage; it runs only when this eval DB
+    // carries a rerank use-case assignment (a provider serving /v1/rerank —
+    // e.g. a local llama-server --rerank). Never enabled in CI: the CI DB
+    // has no assignment, so the gate stays a plain-retrieval comparison.
+    rerank: process.argv.includes('--rerank'),
   });
 
+  const rerankRequested = process.argv.includes('--rerank');
   const report: Report = {
     model,
     corpusManifestSha: fixture.corpusManifestSha,
     corpusPages: corpus.length,
     queries: runs.length,
     vectorParticipatingQueries,
+    rerank: rerankRequested,
+    rerankParticipatingQueries,
     recallAtK: Object.fromEntries(TOP_K.map((k) => [`@${k}`, recallAtK(runs, k)])),
     mrr: meanReciprocalRank(runs),
     runs,
@@ -171,6 +182,9 @@ async function main(): Promise<void> {
   for (const k of TOP_K) console.log(`Recall@${k}: ${report.recallAtK[`@${k}`]!.toFixed(4)}`);
   console.log(`MRR:       ${report.mrr.toFixed(4)}`);
   console.log(`vector leg participated in ${vectorParticipatingQueries}/${runs.length} queries`);
+  if (rerankRequested) {
+    console.log(`rerank stage participated in ${rerankParticipatingQueries}/${runs.length} queries`);
+  }
 
   const baselinePath = arg('baseline');
   if (baselinePath) {
@@ -180,6 +194,16 @@ async function main(): Promise<void> {
     }
     if (baseline.model !== report.model) {
       throw new Error(`Baseline used model ${baseline.model}, this run used ${report.model} — this gate compares retrieval logic, not models (see #1113 for model comparisons)`);
+    }
+    // #1104: a reranked and a plain run measure different pipelines — a
+    // forgotten --rerank on one side would print a confident verdict about a
+    // flag, not the checkout. Old baselines predate the field; treat absent
+    // as false.
+    if ((baseline.rerank ?? false) !== report.rerank) {
+      throw new Error(
+        `Baseline rerank=${baseline.rerank ?? false} but this run rerank=${report.rerank} — `
+        + 'measure both sides with the same --rerank setting.',
+      );
     }
 
     const scoreOne = (r: QueryRun) => recallAtK([r], 5);

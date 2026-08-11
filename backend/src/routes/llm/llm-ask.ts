@@ -89,7 +89,12 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     // Perform hybrid RAG search — falls back to keyword-only if embedding fails
     let searchResults;
     try {
-      searchResults = await hybridSearch(userId, question);
+      // The chat path REQUESTS the #1104 rerank stage; it actually runs only
+      // when an admin has assigned a provider+model to the `rerank` use case
+      // (unassigned → no-op). `/api/search` deliberately does not request it
+      // — its results paginate, and reranking one page independently of the
+      // next breaks the ordering the pages share.
+      searchResults = await hybridSearch(userId, question, 5, undefined, { rerank: true });
     } catch (err) {
       if (err instanceof CircuitBreakerOpenError) {
         reply.code(503);
@@ -224,8 +229,9 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
 
     // `score` is the retrieval ORDERING value — an RRF fusion score from
     // hybridSearch, typically ~0.033, bounded on this path at ~0.17 at the
-    // default fetch width and rising with an admin-raised `rag_fetch_width`
-    // (#1103) — never
+    // default fetch width — rising to ~0.42 when a rerank provider is
+    // assigned (#1104 widens the legs to the candidate pool) or with an
+    // admin-raised `rag_fetch_width` (#1103) — never
     // near what a similarity threshold expects. It is kept because it orders
     // the array and is what
     // any existing consumer of this frame reads; it must never be rendered or
@@ -245,6 +251,14 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         sectionTitle: r.sectionTitle,
         score: r.score,
         similarity: r.vectorScore,
+        // #1104: present only on reranked results; #1105's confidence formula
+        // is the intended reader (see SearchResult.rerankScore's
+        // comparability caveat — never threshold it with a universal
+        // constant). NOTE the rerank stage changes WHICH topK land here, so
+        // ConfidenceBadge's mean-cosine sample shifts when rerank promotes
+        // keyword-only or low-cosine pages — recorded in ADR-021's #1104
+        // amendment.
+        rerankScore: r.rerankScore ?? null,
       })),
       // `url` is the discriminator the frontend keys on: these are links, not
       // pages, and routing them through `/pages/:id` lands on the not-found

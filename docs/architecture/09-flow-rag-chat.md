@@ -21,6 +21,7 @@ sequenceDiagram
     participant MCP as mcp-docs / searxng
     participant CACHE as llm-cache (Redis)
     participant PROV as chat provider<br/>(resolveUsecase('chat'))
+    participant PROV2 as rerank provider<br/>(resolveRerankUsecase — null = stage off)
     participant CONV as llm_conversations
 
     FE->>BE: POST /api/llm/ask<br/>{ question, model, conversationId,<br/>  includeSubPages, externalUrls, searchWeb }
@@ -52,10 +53,15 @@ sequenceDiagram
         end
         RAG-->>BE: merged + deduped + ranked (fetch-width wide)
         opt RAG_PERMISSION_ENFORCEMENT (EE)
-            BE->>RBAC: userCanAccessPage(userId, pageId) per candidate,<br/>stopping once topK have passed
+            BE->>RBAC: filterAccessiblePages(userId, pageIds)<br/>one set-based query (#35;1104)
             RBAC-->>BE: filter decision (per-page read ACE honoured)
         end
-        note right of BE: slice to topK after ranking —<br/>fetch width is ranking headroom (#35;1104's rerank input)
+        opt rerank use case assigned (#35;1104)
+            BE->>PROV2: POST /v1/rerank with query + candidate docs<br/>(dedicated rerank client — queue + breaker)
+            PROV2-->>BE: relevance scores [0,1]
+            note right of BE: pool = rag_rerank_candidates (default 30)<br/>docs sanitized + truncated to 2,000 chars<br/>timeout/failure = honest bypass to fused order
+        end
+        note right of BE: slice to topK after ranking —<br/>fetch width is ranking headroom the rerank stage spends
         opt includeSubPages
             BE->>RBAC: userCanAccessPage(userId, parentPageId)
             RBAC-->>BE: allow / deny (#35;814 — skip tree on deny)
@@ -126,6 +132,7 @@ defaults:
 | Path | topK | stage limit | worst-case fusion score |
 |---|---|---|---|
 | `/llm/ask` (chat) | 5 | 10 (the width) | ~0.169 |
+| `/llm/ask` with a rerank provider assigned (#1104) | 5 | 30 (the rerank pool) | ~0.419 — assignment alone shifts the scale, on bypassed rows too |
 | `/api/search` at `limit=20` | 20 | 20 (topK floor) | ~0.302 |
 | `/api/search` under EE ACL | 20 | `ceil(20×1.5)` = 30 | ~0.419 |
 | admin-raised width `w` | ≤ `w` | `w` (knob capped at 200; a larger topK still floors it) | `rrfWorstCase(w, true)` — passes 1.0 at the cap |
@@ -158,7 +165,12 @@ of this.
 
 `search_analytics.max_score` deliberately still stores the **fusion** value for
 `hybrid` and `keyword_fallback` rows. Repointing it at `vectorScore` would make
-new rows silently incomparable with historical ones. Since migration 088
+new rows silently incomparable with historical ones. Two #1104 caveats: on
+`hybrid_rerank` rows the max runs over the rerank-SELECTED top-K (which can
+include deep-fused candidates the reranker promoted), and merely assigning a
+rerank provider widens the chat legs to the candidate pool, raising the
+fusion ceiling for `hybrid` (bypassed) rows as well — the `search_type` tag
+separates units, not scales. Since migration 088
 (#1117 stage 2) `search_type` is the documented unit tag for `max_score` —
 one unit per value, pinned by the table below — and rerank scores get their
 own `rerank_score` column instead of ever overloading this one:
@@ -166,14 +178,17 @@ own `rerank_score` column instead of ever overloading this one:
 | `search_type` | `max_score` unit | writer |
 |---|---|---|
 | `hybrid` | RRF fusion value | `hybridSearch` (rag-service) |
+| `hybrid_rerank` | RRF fusion value (`rerank_score` carries the rerank scale) | `hybridSearch` with a live #1104 rerank stage |
 | `keyword_fallback` | RRF fusion value (keyword-only leg) | `hybridSearch` (rag-service) |
 | `semantic` | cosine similarity | `/api/search` semantic mode |
 | `keyword` | raw `ts_rank` | `/api/search` keyword mode |
 | `faceted` | NULL | `POST /api/search/log` |
 
 Values are enforced by the `SearchAnalyticsType` union in `rag-service.ts`,
-not a CHECK constraint; future stages (#1104 rerank, #1109 MMR, #1112
-expansion) add members **with** their writers. Note the admin analytics
+not a CHECK constraint; future stages (#1109 MMR, #1112 expansion) add
+members **with** their writers — #1104 added `hybrid_rerank` exactly this
+way. A BYPASSED rerank records plain `hybrid`: the type says what happened,
+never what was attempted. Note the admin analytics
 routes (`knowledge-gaps`, `content-gaps`) still apply one `max_score < 0.3`
 threshold across all rows regardless of unit — a pre-existing defect this
 table documents but #1117 did not change.
@@ -183,8 +198,9 @@ table documents but #1117 did not change.
 Migration 088 added three nullable columns to `search_analytics`, none
 backfilled (on pre-088 rows NULL means "not recorded", not "healthy"):
 
-- **`rerank_score`** — reserved for #1104; max rerank score of the returned
-  set in [0,1], so rerank never changes `max_score`'s meaning.
+- **`rerank_score`** — written since #1104 on `hybrid_rerank` rows: max
+  rerank relevance of the returned set in [0,1], so rerank never changes
+  `max_score`'s meaning. NULL on bypassed/non-reranked rows.
 - **`degraded_reason`** — why the vector leg under-delivered:
   `embedding_failed` (provider call threw; beats the coverage-derived reasons
   because the leg is missing entirely), `no_embeddings` (embeddable pages
@@ -244,11 +260,12 @@ reader, mirroring the trace fallback. `shutdownTelemetry` also disables the
 write-once api globals so a start→shutdown→start cycle hands out live
 instruments, not meters bound to a dead provider. One instrument:
 `compendiq.retrieval.stage.duration` (ms), attribute `stage` ∈
-`vector_search` | `keyword_search` | `total` — `rerank` joins when #1104
-lands, which is what makes rerank latency measurable before that stage ships.
-Per-leg stages record successful runs only; `total` records failures too. The
-`rerank_bypassed` counter from the issue was deliberately dropped: nothing to
-instrument until #1104 exists.
+`vector_search` | `keyword_search` | `rerank` (#1104; successful rescores
+only) | `total`. Per-leg stages record successful runs only; `total` records
+failures too. Bypass observability is the `rag.rerank` span attribute
+(`scored` | `bypassed`) on `rag.hybrid_search` plus a warn log — a bypassed
+stage records no rerank latency sample and its analytics row stays
+`hybrid`.
 
 Per ADR-023 (EE — `RAG_PERMISSION_ENFORCEMENT`), a second post-filter runs
 after the RRF merge when the feature is active. It calls
@@ -256,22 +273,18 @@ after the RRF merge when the feature is active. It calls
 retrieval on per-page read ACEs. The sync path (ADR-023) writes Confluence's
 effective read restrictions — resolved through the ancestor chain at sync
 time — into `access_control_entries` with `source='confluence'`, so the
-query-time check is a single consistent `userCanAccessPage` call per
-candidate. The merged set is up to **2× the stage limit** — unchanged at the
-defaults, but an admin-raised #1103 width multiplies it, up to 2×200 at the
-cap — and each check costs 1-3 queries. Two bounds apply: checks run in
-order-preserving parallel batches of 10, and the walk stops once `topK`
-candidates have **passed**. Note the stop bounds successes, not work — a
-caller denied on most candidates still examines the whole merged set; a
-batched ACL check is #1104's required companion to actually raising the
-width. The stage limit keeps `ceil(topK × 1.5)` as an additional floor so ACL
-headroom can only ever add candidates (its old form fetched *fewer* rows than
-CE on the chat path — #1263). The post-filter's debug log reports
-`candidatesExamined` and `candidatesKept` — kept saturates near `topK` by
-design and is **not** a rejection rate; examined − kept is the denial count
-seen before the walk stopped. When the feature is off (CE or EE without the
-flag), the second post-filter does not run; the fetch width applies either
-way.
+query-time check is `filterAccessiblePages(userId, pageIds)` (#1104): one
+admin probe, one memoized space resolve, and ONE set-based query
+spec-matched to `userCanAccessPage` — an integration test compares the two
+verdict-for-verdict. The pool it filters is up to 2× the stage limit (the
+rerank candidate budget when the stage is live), at constant query cost. The
+stage limit keeps `ceil(topK × 1.5)` as an additional floor so ACL headroom
+can only ever add candidates (its old form fetched *fewer* rows than CE on
+the chat path — #1263). The post-filter's debug log reports
+`candidatesBeforeFilter` and `candidatesKept`; kept is the true accessible
+count, so before − kept IS the ACL rejection count again. When the feature
+is off (CE or EE without the flag), the second post-filter does not run; the
+fetch width applies either way.
 
 **Fusion has a stable head.** When the stage limit exceeds the configured
 width (`/api/search?mode=hybrid&limit=11..20` at the default width in CE, and

@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import type { LlmProvider, LlmUsecase, UsecaseAssignments, UsecaseDefault } from '@compendiq/contracts';
+import { LlmUsecaseSchema } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
 import { ChatVisionCapability } from './ChatVisionCapability';
 
@@ -9,8 +10,9 @@ const USECASE_LABELS: Record<LlmUsecase, string> = {
   quality: 'Quality worker',
   auto_tag: 'Auto-tag',
   embedding: 'Embedding',
+  rerank: 'Rerank',
 };
-const USECASES_ORDERED: LlmUsecase[] = ['chat', 'summary', 'quality', 'auto_tag', 'embedding'];
+const USECASES_ORDERED: LlmUsecase[] = [...LlmUsecaseSchema.options];
 
 const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 
@@ -47,7 +49,18 @@ export function UsecaseAssignmentsSection({ assignments, providers, onChange }: 
       <h3 className="text-sm font-semibold">Use case assignments</h3>
       {USECASES_ORDERED.map((u) => {
         const row = assignments[u];
+        // A frontend bundle newer than the backend (rolling deploy, cached
+        // SPA) can receive a document without a newly added use case; an
+        // unguarded row.providerId would throw during render and take the
+        // whole route's error boundary with it (#1267 verification, 9).
+        if (!row) return null;
         const effectiveProviderId = row.providerId ?? row.resolved.providerId;
+        // #1104: assigned-but-unresolvable — a provider is chosen but the
+        // server could not resolve a model for the stage (rerank with no
+        // model anywhere). Without this, the row looks configured while the
+        // stage is silently disabled.
+        const assignedButUnresolvable =
+          u === 'rerank' && row.providerId !== null && row.resolved.providerId === NIL_UUID;
         return (
           <div key={u} data-testid={`usecase-row-${u}`} className="space-y-1.5">
             <div className="grid grid-cols-[140px_180px_1fr_auto] items-center gap-2">
@@ -58,6 +71,15 @@ export function UsecaseAssignmentsSection({ assignments, providers, onChange }: 
                     ⚠
                   </span>
                 )}
+                {u === 'rerank' && (
+                  <span
+                    title="Needs a Cohere/Jina-style /v1/rerank endpoint (llama.cpp's llama-server --rerank serves it; TEI's bare /rerank shape is NOT compatible). Leaving it unassigned disables the rerank stage — it never falls back to the default provider."
+                    aria-label="rerank-info"
+                    className="text-muted-foreground"
+                  >
+                    ⓘ
+                  </span>
+                )}
               </span>
               <select
                 className="nm-select-md"
@@ -65,7 +87,7 @@ export function UsecaseAssignmentsSection({ assignments, providers, onChange }: 
                 onChange={(e) => update(u, { providerId: e.target.value || null })}
                 data-testid={`usecase-${u}-provider`}
               >
-                <option value="">Inherit default</option>
+                <option value="">{u === 'rerank' ? 'Disabled (no reranking)' : 'Inherit default'}</option>
                 {providers.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.name}
@@ -80,9 +102,17 @@ export function UsecaseAssignmentsSection({ assignments, providers, onChange }: 
                 inheritLabel="Inherit provider's model"
               />
               <span className="flex items-center gap-2 text-muted-foreground text-xs">
-                → {row.resolved.providerName} / {row.resolved.model || '(none)'}
+                {assignedButUnresolvable
+                  ? '→ not resolvable'
+                  : `→ ${row.resolved.providerName} / ${row.resolved.model || '(none)'}`}
               </span>
             </div>
+            {assignedButUnresolvable && (
+              <p className="text-status-syncing text-xs" data-testid="usecase-rerank-unresolvable">
+                Assigned, but no model resolves — the rerank stage is disabled. Pick a model, or
+                set a default model on the provider.
+              </p>
+            )}
             {/*
               #1184: the capability affordances sit on their own line under the
               chat row. The badge alone fitted in the resolved column; the badge

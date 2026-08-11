@@ -76,6 +76,13 @@ const assignments = {
     model: null,
     resolved: { providerId: providerA.id, providerName: 'Ollama', model: 'bge-m3' },
   },
+  // #1104: unassigned rerank renders the empty sentinel — the stage is
+  // disabled, never inherited from the default provider.
+  rerank: {
+    providerId: null,
+    model: null,
+    resolved: { providerId: '00000000-0000-0000-0000-000000000000', providerName: '', model: '' },
+  },
 };
 
 function mockRoutes(options?: {
@@ -173,6 +180,34 @@ describe('LlmTab', () => {
     // All 5 use-case rows rendered.
     expect(screen.getByText('Chat')).toBeTruthy();
     expect(screen.getByText('Embedding')).toBeTruthy();
+  });
+
+  it('a rerank-only change reaches the PUT body — the save diff must not drop it (#1267 B1)', async () => {
+    // LlmTab used to keep a private five-element use-case list; the rerank
+    // row rendered and edited but diffUsecaseAssignments iterated the stale
+    // list, so a rerank-only save became "No changes" and sent nothing. Both
+    // lists now derive from LlmUsecaseSchema.options; this test pins the
+    // SAVE path, one layer above the section component's onChange.
+    const Wrapper = createWrapper();
+    const spy = mockRoutes();
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByText('Use case assignments');
+
+    fireEvent.change(screen.getByTestId('usecase-rerank-provider'), {
+      target: { value: providerB.id },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /save use-case assignments/i }));
+
+    await waitFor(() => {
+      const put = spy.mock.calls.find(
+        ([input, init]) =>
+          String(typeof input === 'string' ? input : (input as URL).toString()).endsWith('/admin/llm-usecases')
+          && (init as RequestInit | undefined)?.method === 'PUT',
+      );
+      expect(put).toBeTruthy();
+      const body = JSON.parse(String((put![1] as RequestInit).body));
+      expect(body.rerank).toEqual({ providerId: providerB.id });
+    });
   });
 
   it('changing the embedding assignment reveals the re-embed banner', async () => {

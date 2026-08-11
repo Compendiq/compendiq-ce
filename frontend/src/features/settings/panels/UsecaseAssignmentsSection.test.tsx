@@ -50,6 +50,11 @@ function makeAssignments(): UsecaseAssignments {
       model: null,
       resolved: { providerId: providerA.id, providerName: providerA.name, model: 'bge-m3' },
     },
+    rerank: {
+      providerId: null,
+      model: null,
+      resolved: { providerId: '00000000-0000-0000-0000-000000000000', providerName: '', model: '' },
+    },
   };
 }
 
@@ -65,6 +70,24 @@ describe('UsecaseAssignmentsSection', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     useAuthStore.getState().clearAuth();
+  });
+
+  it('renders the rerank row with disabled-not-inherited semantics (#1104)', () => {
+    const Wrapper = createWrapper();
+    render(
+      <UsecaseAssignmentsSection
+        assignments={makeAssignments()}
+        providers={[providerA, providerB]}
+        onChange={() => {}}
+      />,
+      { wrapper: Wrapper },
+    );
+    expect(screen.getByText('Rerank')).toBeTruthy();
+    // The unassigned option must NOT read "Inherit default" — unassigned
+    // rerank means the stage is off, and the copy has to say so.
+    const select = screen.getByTestId('usecase-rerank-provider') as HTMLSelectElement;
+    expect(select.options[0]!.text).toBe('Disabled (no reranking)');
+    expect(screen.getByLabelText('rerank-info')).toBeTruthy();
   });
 
   it('renders all 5 use-cases including embedding', () => {

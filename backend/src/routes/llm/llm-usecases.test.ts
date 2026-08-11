@@ -81,7 +81,7 @@ beforeEach(async () => {
 });
 
 describe.skipIf(!dbAvailable)('GET /api/admin/llm-usecases', () => {
-  it('returns 5 rows with resolved blocks', async () => {
+  it('returns all 6 rows with resolved blocks (#1104 adds rerank)', async () => {
     const p = await app.inject({
       method: 'POST', url: '/api/admin/llm-providers',
       headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
@@ -98,8 +98,35 @@ describe.skipIf(!dbAvailable)('GET /api/admin/llm-usecases', () => {
     });
     expect(r.statusCode).toBe(200);
     const body = r.json();
-    expect(Object.keys(body).sort()).toEqual(['auto_tag', 'chat', 'embedding', 'quality', 'summary']);
+    expect(Object.keys(body).sort()).toEqual(['auto_tag', 'chat', 'embedding', 'quality', 'rerank', 'summary']);
     expect(body.chat.resolved).toMatchObject({ providerId: id, model: 'mA' });
+    // Rerank must NOT inherit the default provider: unassigned renders the
+    // empty sentinel — the stage is disabled, not defaulted (#1104).
+    expect(body.rerank.resolved).toMatchObject({
+      providerId: '00000000-0000-0000-0000-000000000000',
+      providerName: '',
+      model: '',
+    });
+  });
+
+  it('PUT assigns rerank and GET resolves it without a default-provider fallback (#1104)', async () => {
+    const p = await app.inject({
+      method: 'POST', url: '/api/admin/llm-providers',
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+      payload: JSON.stringify({ name: 'Rerank box', baseUrl: 'http://rr/v1', authType: 'none', verifySsl: true, defaultModel: 'bge-reranker-v2-m3' }),
+    });
+    const { id } = p.json();
+    const put = await app.inject({
+      method: 'PUT', url: '/api/admin/llm-usecases',
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+      payload: JSON.stringify({ rerank: { providerId: id } }),
+    });
+    expect(put.statusCode).toBe(200);
+    const r = await app.inject({
+      method: 'GET', url: '/api/admin/llm-usecases',
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(r.json().rerank.resolved).toMatchObject({ providerId: id, model: 'bge-reranker-v2-m3' });
   });
 
   it('PUT upserts a use-case assignment and takes effect on next GET', async () => {

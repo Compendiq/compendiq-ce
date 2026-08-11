@@ -61,6 +61,8 @@ vi.mock('../../core/services/content-converter.js', () => ({
 const mockUserCanAccessPage = vi.fn();
 vi.mock('../../core/services/rbac-service.js', () => ({
   userCanAccessPage: (...args: unknown[]) => mockUserCanAccessPage(...args),
+  // #1104: the batched ACL filter; default = everything accessible.
+  filterAccessiblePages: vi.fn(async (_u: unknown, ids: number[]) => new Set(ids)),
 }));
 
 // --- Mock: subpage-context (assembleSubPageContext / getMultiPagePromptSuffix) ---
@@ -493,7 +495,15 @@ describe('POST /api/llm/ask', () => {
       payload: { question: 'How do I reset my password?', model: 'llama3' },
     });
 
-    expect(mockHybridSearch).toHaveBeenCalledWith('test-user-123', 'How do I reset my password?');
+    // The chat path requests the #1104 rerank stage explicitly; whether it
+    // runs is decided by the rerank use-case assignment inside hybridSearch.
+    expect(mockHybridSearch).toHaveBeenCalledWith(
+      'test-user-123',
+      'How do I reset my password?',
+      5,
+      undefined,
+      { rerank: true },
+    );
   });
 
   // ─── Cache hit test ──────────────────────────────────────────────────────

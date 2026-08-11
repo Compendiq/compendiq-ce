@@ -8,6 +8,7 @@ import type {
   UsecaseAssignments,
   UpdateUsecaseAssignmentsInput,
 } from '@compendiq/contracts';
+import { LlmUsecaseSchema } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
 import { ProviderListSection } from './ProviderListSection';
 import { UsecaseAssignmentsSection } from './UsecaseAssignmentsSection';
@@ -16,7 +17,11 @@ import { EmbeddingShadowMigrationCard } from './EmbeddingShadowMigrationCard';
 import { SkeletonFormFields } from '../../../shared/components/feedback/Skeleton';
 import { ErrorState } from '../../../shared/components/feedback/ErrorState';
 
-const USECASES_ORDERED: LlmUsecase[] = ['chat', 'summary', 'quality', 'auto_tag', 'embedding'];
+// Derived from the contracts enum, NOT hand-copied: a private copy here
+// omitted 'rerank' while the section component's copy had it, so the rerank
+// row rendered and edited but diffUsecaseAssignments silently dropped it
+// from every save (#1267 review B1). The schema is the single source.
+const USECASES_ORDERED: LlmUsecase[] = [...LlmUsecaseSchema.options];
 
 /** Default when the server response omits `llmMaxConcurrentStreamsPerUser`. */
 const DEFAULT_CONCURRENT_STREAMS_CAP = 3;

@@ -110,7 +110,55 @@ export async function loadProviderConfig(
   return loadProviderFromRow(row);
 }
 
+/**
+ * Rerank resolves differently from every other use case (#1104, ADR-021
+ * amendment): an unassigned `rerank` row means the rerank stage is
+ * **disabled** — this returns null — never "inherit the default provider".
+ * The default provider speaks /chat/completions and /embeddings; handing it
+ * /v1/rerank traffic would break retrieval the moment an admin configured a
+ * default provider. Enterprise usecase overrides deliberately do not apply
+ * either — the org-policy override routes chat-shaped calls.
+ *
+ * A model must resolve too: an assignment without a model falls back to the
+ * provider's default_model, and if neither exists the stage stays disabled
+ * rather than sending an empty model name to a rerank endpoint.
+ */
+export async function resolveRerankUsecase(): Promise<Resolved | null> {
+  const rows = await query<ResolveRow>(
+    `SELECT
+       a.provider_id  AS usecase_provider_id,
+       a.model        AS usecase_model,
+       p.id           AS provider_id,
+       p.name         AS provider_name,
+       p.base_url     AS provider_base_url,
+       p.api_key      AS provider_api_key,
+       p.auth_type    AS provider_auth_type,
+       p.verify_ssl   AS provider_verify_ssl,
+       p.default_model AS provider_default_model,
+       p.is_default   AS provider_is_default
+     FROM llm_usecase_assignments a
+     JOIN llm_providers p ON p.id = a.provider_id
+     WHERE a.usecase = 'rerank'`,
+  );
+  const row = rows.rows[0];
+  if (!row) return null;
+  const cfg = loadProviderFromRow(row);
+  const model = row.usecase_model || cfg.defaultModel || '';
+  if (!model) return null;
+  return { config: cfg, model };
+}
+
 export async function resolveUsecase(usecase: LlmUsecase): Promise<Resolved> {
+  // The one enforcement point for #1104's resolution invariant: rerank NEVER
+  // inherits the default provider (it speaks /v1/rerank, the default speaks
+  // /chat/completions). Every current caller routes rerank through
+  // resolveRerankUsecase already; this throw is what keeps the next dynamic
+  // caller from silently re-enabling the fallback.
+  if (usecase === 'rerank') {
+    throw new Error(
+      "resolveUsecase must not resolve 'rerank' — use resolveRerankUsecase (unassigned = stage disabled)",
+    );
+  }
   // Enterprise override: when org LLM policy is enabled, EE returns the
   // policy's (providerId, model). CE noop always returns null.
   const override = await getEnterprisePlugin().resolveUsecaseOverride?.(usecase);

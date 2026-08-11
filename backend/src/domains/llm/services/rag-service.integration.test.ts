@@ -23,7 +23,10 @@ vi.mock('./openai-compatible-client.js', async () => {
     generateEmbedding: vi.fn(async () => [fakeVec(7)]),
   };
 });
-vi.mock('./llm-provider-resolver.js', () => ({
+vi.mock('./llm-provider-resolver.js', async (importOriginal) => ({
+  // Real module for everything else — the #1104 tests exercise the REAL
+  // resolveRerankUsecase against real provider/assignment rows.
+  ...(await importOriginal<typeof import('./llm-provider-resolver.js')>()),
   resolveUsecase: vi.fn(async () => ({
     config: {
       providerId: 'stub',
@@ -37,6 +40,16 @@ vi.mock('./llm-provider-resolver.js', () => ({
     },
     model: 'stub',
   })),
+}));
+
+// #1104: the rerank HTTP boundary is stubbed; resolution runs REAL code
+// against the real llm_providers / llm_usecase_assignments tables.
+const mockRerankCall = vi.fn(async (_cfg: unknown, _model: string, _q: string, docs: string[]) =>
+  docs.map((_, i) => ({ index: docs.length - 1 - i, relevanceScore: 1 - i * 0.1 })),
+);
+vi.mock('./rerank-client.js', () => ({
+  rerank: (...args: unknown[]) => mockRerankCall(...(args as [unknown, string, string, string[]])),
+  RERANK_DOC_MAX_CHARS: 2000,
 }));
 
 // Mutable feature-flag state for the Phase D post-filter tests below.
@@ -717,6 +730,153 @@ describe.skipIf(!dbAvailable)('rag-service integration — per-page ACL post-fil
     await seedLimPages(user, 14);
     const results = await hybridSearch(user, 'ceil-check', 12);
     expect(results).toHaveLength(12);
+  });
+
+  it('filterAccessiblePages matches userCanAccessPage verdict-for-verdict (#1104)', async () => {
+    // The batched filter is spec-matched to the per-page function; this test
+    // IS that spec-match, across every fixture shape the per-page function
+    // distinguishes. Change one, change both.
+    ragPermissionEnforcementEnabled = true;
+    const user = 'feedface-feed-face-feed-facefeedface';
+    const stranger = 'cdcdcdcd-cdcd-cdcd-cdcd-cdcdcdcdcdcd';
+    await ensureUser(user);
+    await ensureUser(stranger);
+    await ensureSpaceAndViewerRole(user, 'EQ');
+    await query(`INSERT INTO spaces (space_key, space_name) VALUES ('NOEQ','NOEQ') ON CONFLICT DO NOTHING`);
+
+    const ids: number[] = [];
+    // inherit_perms=true in an accessible space → allowed
+    ids.push(await insertPage({ spaceKey: 'EQ', title: 'open', bodyText: 'x', vec: fakeVec(3) }));
+    // inherit_perms=true in an INACCESSIBLE space → denied
+    ids.push(await insertPage({ spaceKey: 'NOEQ', title: 'closed-space', bodyText: 'x', vec: fakeVec(3.1) }));
+    // ACE granted to the user → allowed
+    const aceMine = await insertPage({ spaceKey: 'EQ', title: 'ace-mine', bodyText: 'x', vec: fakeVec(3.2), inheritPerms: false });
+    await insertConfluenceReadAce(aceMine, user);
+    ids.push(aceMine);
+    // ACE granted to someone else → denied
+    const aceTheirs = await insertPage({ spaceKey: 'EQ', title: 'ace-theirs', bodyText: 'x', vec: fakeVec(3.3), inheritPerms: false });
+    await insertConfluenceReadAce(aceTheirs, stranger);
+    ids.push(aceTheirs);
+    // standalone shared → allowed; standalone private own → allowed;
+    // standalone private foreign → denied
+    const mk = async (visibility: string, owner: string) => {
+      const r = await query<{ id: number }>(
+        `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html, visibility, created_by_user_id)
+         VALUES (gen_random_uuid()::text, 'standalone', NULL, 'sa', 'x', '', '', $1, $2::uuid) RETURNING id`,
+        [visibility, owner],
+      );
+      return r.rows[0]!.id;
+    };
+    ids.push(await mk('shared', stranger));
+    ids.push(await mk('private', user));
+    ids.push(await mk('private', stranger));
+    // ACE granted via GROUP membership → allowed (the batch SQL's group arm
+    // is a hand-written re-implementation of the per-page group join — this
+    // fixture is what keeps the two from drifting, #1267 verification 7)
+    const grp = await query<{ id: number }>(
+      `INSERT INTO groups (name, description, source) VALUES ('eq-group', 'x', 'local') RETURNING id`,
+    );
+    await query(
+      `INSERT INTO group_memberships (group_id, user_id) VALUES ($1, $2::uuid)`,
+      [grp.rows[0]!.id, user],
+    );
+    const aceGroup = await insertPage({ spaceKey: 'EQ', title: 'ace-group', bodyText: 'x', vec: fakeVec(3.35), inheritPerms: false });
+    await query(
+      `INSERT INTO access_control_entries (resource_type, resource_id, principal_type, principal_id, permission, source)
+       VALUES ('page', $1, 'group', $2::text, 'read', 'local')`,
+      [aceGroup, grp.rows[0]!.id],
+    );
+    ids.push(aceGroup);
+    // ACE granted to a group the user is NOT in → denied
+    const grp2 = await query<{ id: number }>(
+      `INSERT INTO groups (name, description, source) VALUES ('eq-other-group', 'x', 'local') RETURNING id`,
+    );
+    const aceOtherGroup = await insertPage({ spaceKey: 'EQ', title: 'ace-other-group', bodyText: 'x', vec: fakeVec(3.36), inheritPerms: false });
+    await query(
+      `INSERT INTO access_control_entries (resource_type, resource_id, principal_type, principal_id, permission, source)
+       VALUES ('page', $1, 'group', $2::text, 'read', 'local')`,
+      [aceOtherGroup, grp2.rows[0]!.id],
+    );
+    ids.push(aceOtherGroup);
+    // soft-deleted page → denied
+    const deleted = await insertPage({ spaceKey: 'EQ', title: 'gone', bodyText: 'x', vec: fakeVec(3.4) });
+    await query(`UPDATE pages SET deleted_at = NOW() WHERE id = $1`, [deleted]);
+    ids.push(deleted);
+    // missing id → denied
+    ids.push(99999999);
+
+    const { userCanAccessPage: perPage, filterAccessiblePages: batch } = await vi.importActual<
+      typeof import('../../../core/services/rbac-service.js')
+    >('../../../core/services/rbac-service.js');
+
+    const batchVerdicts = await batch(user, ids);
+    for (const id of ids) {
+      expect({ id, allowed: batchVerdicts.has(id) }).toEqual({ id, allowed: await perPage(user, id) });
+    }
+    // Admin bypass: everything the DB knows about is allowed.
+    const admin = '99999999-9999-9999-9999-999999999999';
+    await ensureUser(admin, 'admin');
+    const adminVerdicts = await batch(admin, ids);
+    for (const id of ids) {
+      expect(adminVerdicts.has(id)).toBe(await perPage(admin, id));
+    }
+  });
+
+  it('rerank stage end-to-end: real assignment resolves, pool reranks, analytics record hybrid_rerank (#1104)', async () => {
+    ragPermissionEnforcementEnabled = false;
+    const user = 'deaddead-dead-dead-dead-deaddeaddead';
+    await seedLimPages(user, 12);
+
+    // Real provider + assignment rows — resolveRerankUsecase reads these.
+    const prov = await query<{ id: string }>(
+      `INSERT INTO llm_providers (name, base_url, auth_type, verify_ssl, default_model)
+       VALUES ('rerank-box', 'http://rr/v1', 'none', TRUE, 'bge-reranker-v2-m3')
+       RETURNING id`,
+    );
+    await query(
+      `INSERT INTO llm_usecase_assignments (usecase, provider_id, model)
+       VALUES ('rerank', $1, NULL)`,
+      [prov.rows[0]!.id],
+    );
+
+    const results = await hybridSearch(user, 'ceil-check', 3, undefined, { rerank: true });
+    expect(mockRerankCall).toHaveBeenCalledTimes(1);
+    const [cfg, model, , docs] = mockRerankCall.mock.calls[0]! as [
+      { providerId: string; baseUrl: string },
+      string,
+      string,
+      string[],
+    ];
+    expect(cfg.baseUrl).toBe('http://rr/v1');
+    expect(model).toBe('bge-reranker-v2-m3'); // provider default_model fallback
+    // Pool = all 12 candidates (< default 30); the stub reverses the order.
+    expect(docs).toHaveLength(12);
+    expect(results).toHaveLength(3);
+    expect(results.every((r) => r.rerankScore != null)).toBe(true);
+
+    await flushSearchAnalytics();
+    const row = await query<{ search_type: string; rerank_score: number | null }>(
+      `SELECT search_type, rerank_score FROM search_analytics ORDER BY id DESC LIMIT 1`,
+    );
+    expect(row.rows[0]!.search_type).toBe('hybrid_rerank');
+    expect(row.rows[0]!.rerank_score).not.toBeNull();
+  });
+
+  it('rerank requested but unassigned: stage silently off, analytics stay hybrid (#1104)', async () => {
+    ragPermissionEnforcementEnabled = false;
+    const user = 'deaddead-dead-dead-dead-deaddeaddead';
+    await seedLimPages(user, 12);
+
+    const results = await hybridSearch(user, 'ceil-check', 3, undefined, { rerank: true });
+    expect(mockRerankCall).not.toHaveBeenCalled();
+    expect(results).toHaveLength(3);
+
+    await flushSearchAnalytics();
+    const row = await query<{ search_type: string; rerank_score: number | null }>(
+      `SELECT search_type, rerank_score FROM search_analytics ORDER BY id DESC LIMIT 1`,
+    );
+    expect(row.rows[0]!.search_type).toBe('hybrid');
+    expect(row.rows[0]!.rerank_score).toBeNull();
   });
 
   it('flag OFF — the post-filter never runs (no candidatesBeforeFilter log)', async () => {

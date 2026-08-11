@@ -67,6 +67,16 @@ function headers(cfg: ProviderConfig): Record<string, string> {
 }
 
 /**
+ * Provider-request infrastructure shared with `rerank-client.ts` (#1104).
+ * Per ADR-021's rerank amendment, the /v1/rerank shape is a DISTINCT client
+ * — not another method on the OpenAI-compatible contract — but it must ride
+ * the same auth headers and per-provider TLS dispatcher as every other
+ * outbound provider call. (The queue and breaker are already importable from
+ * their own modules.)
+ */
+export const providerRequestInfra = { headers, dispatcherFor, errorDetail } as const;
+
+/**
  * Hosts that reject unknown JSON fields on `/chat/completions` (HTTP 400).
  * Exact matches go in `STRICT_HOSTS`; suffix matches (for tenant-scoped
  * cloud deployments) go in `STRICT_HOST_SUFFIXES`.

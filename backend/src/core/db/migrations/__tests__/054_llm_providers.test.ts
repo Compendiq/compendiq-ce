@@ -14,7 +14,12 @@ describe.skipIf(!dbAvailable)('Migration 054 — multi LLM providers', () => {
     // breaks every later CASCADE assertion against this shared test DB.
     // Force 087 to re-run so the constraint is back before the pool closes.
     await query(`DROP TABLE IF EXISTS llm_model_capabilities CASCADE`);
-    await query(`DELETE FROM _migrations WHERE name = '087_llm_model_capabilities.sql'`);
+    // 090 altered llm_usecase_assignments' usecase CHECK; the pre-054 cases
+    // recreate the table from 054's original DDL, silently reverting it the
+    // same way (#1104 was the first victim). Same fix: force a re-run.
+    await query(
+      `DELETE FROM _migrations WHERE name IN ('087_llm_model_capabilities.sql', '090_rerank_usecase.sql')`,
+    );
     await runMigrations();
     await teardownTestDb();
   });
