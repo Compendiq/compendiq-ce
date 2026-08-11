@@ -1006,10 +1006,28 @@ const UNICODE_SPACES = [
   '\uFEFF', // zero-width no-break space (BOM)
 ].join('');
 const UNICODE_SPACES_AS_PLAIN = ' '.repeat(UNICODE_SPACES.length);
-const UNICODE_SPACE_RE = new RegExp(`[${UNICODE_SPACES}]`, 'g');
 
-const normalizeTitle = (value: string): string =>
-  value.replace(UNICODE_SPACE_RE, ' ').trim().replace(/\s+/g, ' ').toLowerCase();
+/**
+ * Both sides of the title equality are normalised by THIS expression and
+ * nothing else — there is deliberately no JavaScript counterpart.
+ *
+ * An earlier version normalised the query in JS and the column in SQL, and
+ * kept the two in step by hand. They were not in step, in three separate
+ * ways: JS `\s` matches U+00A0 and Postgres's does not; `lower()` and
+ * `toLowerCase()` disagree on U+0130 (Turkish dotted capital İ — Postgres
+ * yields `i`, JS yields `i` plus a combining dot) and on U+1C89; and JS
+ * lowercases a word-final Σ to `ς` while Postgres yields `σ`. Each one
+ * made a whole class of titles impossible to pin — Turkish, uppercase
+ * Greek, anything pasted from Word — silently and forever, because the
+ * unreachable value was the STORED one, so no phrasing of the query could
+ * reach it.
+ *
+ * Two normalisers that must agree is the defect. One is the fix: applying
+ * the same SQL to the column and the parameter cannot diverge, and it
+ * takes Postgres's `lower()` as the single lowercaser in the path.
+ */
+const NORMALIZED_TITLE = (expr: string, spacesParam: string, plainParam: string): string =>
+  `lower(btrim(regexp_replace(translate(${expr}, ${spacesParam}, ${plainParam}), '\\s+', ' ', 'g')))`;
 
 /**
  * #1107 — verify one detected identifier under the caller's space
@@ -1104,14 +1122,16 @@ async function lookupIdentifier(
     // keys are ASCII by construction, so an ASCII class is both correct
     // and narrower.
     //
-    // The trailing rule is a lookahead rather than a class because a
-    // hyphen is only a continuation when a DIGIT follows it: `INC-220-1`
-    // is a sub-task (refuse) while `INC-7777-postmortem` is the same
-    // ticket with a word suffix (admit). Blanket-excluding `-` lost the
-    // second, which is a common title form.
+    // The trailing rule is a lookahead rather than a class because `-` and
+    // `.` only continue an identifier when a DIGIT follows: `INC-220-1`
+    // and `PROJ-12.1` are sub-tasks (refuse), while `INC-7777-postmortem`
+    // is the same ticket with a word suffix and `Root cause of INC-2203.`
+    // simply ends a sentence (admit). Excluding either character outright
+    // lost those, and both are ordinary title forms.
     if (!/^[A-Za-z0-9-]+$/.test(ident.value)) return [];
-    const boundedKey = `(^|[^0-9A-Za-z._-])${ident.value}(?![0-9A-Za-z._]|-[0-9])`;
-    const startsWithKey = `^${ident.value}(?![0-9A-Za-z._]|-[0-9])`;
+    const boundary = '(?![0-9A-Za-z_]|[.-][0-9])';
+    const boundedKey = `(^|[^0-9A-Za-z._-])${ident.value}${boundary}`;
+    const startsWithKey = `^${ident.value}${boundary}`;
     const titled = await query<Row>(
       `${select} AND cp.title ~* $2
        ORDER BY (cp.title ~* $4) DESC, length(cp.title) ASC, cp.id ASC LIMIT $6`,
@@ -1120,28 +1140,18 @@ async function lookupIdentifier(
     rows = titled.rows;
   } else if (ident.kind === 'title') {
     // `%` narrows via the trigram index; normalised EQUALITY is what earns
-    // the pin (see normalizeTitle — no threshold separates a typo from a
+    // the pin (see NORMALIZED_TITLE — no threshold separates a typo from a
     // sibling page in a versioned title family). Ordering is by id because
     // every survivor is an exact match; the candidate list plus the ACL
     // filter pick which same-titled page the caller may actually read.
-    // translate() runs BEFORE the \s+ collapse and is fed the SAME list the
-    // JS normaliser uses, as parameters — Postgres's \s is ASCII-only, so
-    // without it a title carrying a non-breaking space could never equal
-    // anything the JS side produced.
+    // The SAME expression over the column and over the raw parameter, so
+    // the two cannot drift; translate() runs before the \s+ collapse
+    // because Postgres's \s is ASCII-only.
     const r = await query<Row>(
       `${select} AND cp.title % $2
-       AND lower(btrim(regexp_replace(translate(cp.title, $7, $8), '\\s+', ' ', 'g'))) = $6
+       AND ${NORMALIZED_TITLE('cp.title', '$6', '$7')} = ${NORMALIZED_TITLE('$2', '$6', '$7')}
        ORDER BY cp.id ASC LIMIT $4`,
-      [
-        spaces,
-        ident.value,
-        userId,
-        limit,
-        excerptChars,
-        normalizeTitle(ident.value),
-        UNICODE_SPACES,
-        UNICODE_SPACES_AS_PLAIN,
-      ],
+      [spaces, ident.value, userId, limit, excerptChars, UNICODE_SPACES, UNICODE_SPACES_AS_PLAIN],
     );
     rows = r.rows;
   } else {
@@ -1563,13 +1573,14 @@ async function hybridSearchInner(
         }
         // Each detection contributes AT MOST ONE pin, and never a
         // substitute. Sliding past an already-pinned page to the next
-        // candidate looks like de-duplication and is not: the candidate
-        // list is everything above pg_trgm's 0.3 threshold, so the second
-        // row is a near-title NEIGHBOUR, and one user gesture that
-        // produces two detections of the same page would pin an unrelated
-        // one beneath it — labelled a verified exact match, ahead of every
-        // fused result. Take the best accessible candidate; if it is
-        // already pinned, this detection has nothing left to say.
+        // candidate looks like de-duplication and is not: the second row
+        // is a different page that merely also matched — another page
+        // sharing the title, or another page whose title carries the key —
+        // so one user gesture producing two detections of the same page
+        // would pin an unrelated one beneath it, labelled a verified exact
+        // match, ahead of every fused result. Take the best accessible
+        // candidate; if it is already pinned, this detection has nothing
+        // left to say.
         const verified: SearchResult[] = [];
         for (const candidateRows of lookedUp) {
           const pick = candidateRows.find((c) => isAccessible(c.pageId));

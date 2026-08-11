@@ -1203,6 +1203,21 @@ describe.skipIf(!dbAvailable)('rag-service integration — #1107 identifier pin 
     expect(messy[0]!.pinned).toBe(true);
   });
 
+  it('normalisation applies to the STORED title too, not just the typed one', async () => {
+    // The messy-query case above exercises only one side. A title stored
+    // with doubled and trailing whitespace must equally normalise onto a
+    // cleanly typed query — that is the half a JS-only normaliser could
+    // never have covered.
+    await query(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+       VALUES (gen_random_uuid()::text, 'confluence', 'DEV', $1, 'body', '', '')`,
+      ['  Capacity   Planning  Notes '],
+    );
+    const out = await hybridSearch(USER, '"Capacity Planning Notes"', 5, undefined, { pinIdentifiers: true });
+    expect(out[0]!.pinned).toBe(true);
+    expect(out[0]!.pageTitle).toBe('  Capacity   Planning  Notes ');
+  });
+
   it('a title carrying a NON-BREAKING space still pins — JS and SQL must normalise alike', async () => {
     // JavaScript's \s matches U+00A0; Postgres's does not. Without
     // translate() the SQL side produced a string the JS side could never
@@ -1219,6 +1234,30 @@ describe.skipIf(!dbAvailable)('rag-service integration — #1107 identifier pin 
     const out = await hybridSearch(USER, '"Incident Review Board"', 5, undefined, { pinIdentifiers: true });
     expect(out[0]!.pinned).toBe(true);
     expect(out[0]!.pageTitle).toBe(nbspTitle);
+  });
+
+  it('a Turkish dotted capital and an uppercase Greek title pin — one normaliser, not two', async () => {
+    // Postgres lower() and JS toLowerCase() disagree on U+0130 (PG gives
+    // 'i', JS gives 'i' + U+0307) and on a word-final sigma (PG 'σ', JS
+    // 'ς'). While the query was normalised in JS and the column in SQL,
+    // these titles could not be pinned by ANY query — the unreachable
+    // value was the stored one. Both sides now run the same SQL.
+    const turkish = '\u0130stanbul Ofis Rehberi';
+    const greek = '\u039F\u0394\u0397\u0393\u039F\u03A3 \u0391\u039D\u0391\u03A0\u03A4\u03A5\u039E\u0397\u03A3';
+    for (const title of [turkish, greek]) {
+      await query(
+        `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+         VALUES (gen_random_uuid()::text, 'confluence', 'DEV', $1, 'body', '', '')`,
+        [title],
+      );
+    }
+    const tr = await hybridSearch(USER, `"${turkish}"`, 5, undefined, { pinIdentifiers: true });
+    expect(tr[0]!.pinned).toBe(true);
+    expect(tr[0]!.pageTitle).toBe(turkish);
+
+    const el = await hybridSearch(USER, `"${greek}"`, 5, undefined, { pinIdentifiers: true });
+    expect(el[0]!.pinned).toBe(true);
+    expect(el[0]!.pageTitle).toBe(greek);
   });
 
   it('a hyphenated WORD suffix is the same ticket; a hyphenated DIGIT is a sub-task', async () => {
@@ -1251,6 +1290,19 @@ describe.skipIf(!dbAvailable)('rag-service integration — #1107 identifier pin 
     const out = await hybridSearch(USER, 'what is JPN-4242 about', 5, undefined, { pinIdentifiers: true });
     expect(out[0]!.pinned).toBe(true);
     expect(out[0]!.pageTitle).toBe('JPN-4242対応手順');
+  });
+
+  it('a sentence period after a key is punctuation, not a sub-task dot', async () => {
+    // `.` and `-` continue an identifier only before a DIGIT. Treating `.`
+    // as an unconditional continuation refused an ordinary title that
+    // simply ends a sentence after naming the ticket.
+    await query(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+       VALUES (gen_random_uuid()::text, 'confluence', 'DEV', 'Root cause of RCA-5150.', 'body', '', '')`,
+    );
+    const out = await hybridSearch(USER, 'what is RCA-5150 about', 5, undefined, { pinIdentifiers: true });
+    expect(out[0]!.pinned).toBe(true);
+    expect(out[0]!.pageTitle).toBe('Root cause of RCA-5150.');
   });
 
   it('a dotted or underscored sub-task key is a different identifier too', async () => {

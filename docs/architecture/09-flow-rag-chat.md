@@ -274,13 +274,17 @@ then picks one confidently — and because the shorter key's own page often
 has the *longer* title, `length ASC` actively promoted the wrong ticket.
 Sequential ticket numbering makes every short key a prefix of a longer
 one, so this was ordinary, not exotic. The predicate is a boundary regex
-that excludes every character which CONTINUES an identifier — `-`, `.` and
-`_` as well as alphanumerics — since each was a wrong pin (`INC-220`
-matching sub-task `INC-220-1`, `PROJ-12` matching `PROJ-12.1` or
-`PROJ-12_old`). Delimiters that genuinely end an identifier (space, colon,
-bracket, comma, slash) still admit the match; `~*` remains index-usable for
-`gin_trgm_ops` (verified: Bitmap Index Scan on `idx_pages_title_trgm`), and
-the interpolation is safe because the detector only emits `[A-Z0-9-]`.
+whose trailing half is a **lookahead**, because `-` and `.` continue an
+identifier only when a DIGIT follows. `INC-220-1` and `PROJ-12.1` are
+sub-tasks and are refused; `INC-7777-postmortem` is the same ticket with a
+word suffix and `Root cause of INC-2203.` merely ends a sentence, so both
+are admitted. Excluding either character outright lost those ordinary
+title forms. The classes are spelled **ASCII**, not `[[:alnum:]]`: under
+`en_US.utf8` that POSIX class matches CJK and Hangul, so `JPN-4242対応手順`
+— a title in a script that offers no space to delimit with — was refused
+outright. `~*` remains index-usable for `gin_trgm_ops` (verified: Bitmap
+Index Scan on `idx_pages_title_trgm`), and the interpolation is safe
+because the detector only emits `[A-Z0-9-]`.
 (2) **`NULLS LAST` on the pageId ordering.** `(cp.confluence_id = $2) DESC`
 is NULL for a locally-created page and Postgres sorts DESC as NULLS FIRST,
 so a PK match on a local page outranked the page whose `confluence_id`
