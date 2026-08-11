@@ -104,7 +104,7 @@ vi.mock('../../../core/services/fts-language.js', () => ({
   getFtsLanguage: vi.fn(async () => 'simple'),
 }));
 
-import { buildRagContext, hybridSearch, RAG_EF_SEARCH, reciprocalRankFusion, fuseWithStableHead, rrfWorstCase, vectorSearch, keywordSearch, recordSearchAnalytics, resolveStageLimit, computeRetrievalConfidence, RAG_FETCH_WIDTH_DEFAULT, truncateAtDistinctPages, PAGE_FANOUT, VECTOR_RAW_LIMIT_CAP } from './rag-service.js';
+import { buildRagContext, hybridSearch, RAG_EF_SEARCH, reciprocalRankFusion, fuseWithStableHead, rrfWorstCase, vectorSearch, keywordSearch, recordSearchAnalytics, resolveStageLimit, computeRetrievalConfidence, RAG_FETCH_WIDTH_DEFAULT, truncateAtDistinctPages, PAGE_FANOUT, VECTOR_RAW_LIMIT_CAP, vectorRawLimit } from './rag-service.js';
 import type { SearchResult } from './rag-service.js';
 import { invalidateRagFetchWidthCache, invalidateRagRerankCandidatesCache } from '../../../core/services/admin-settings-service.js';
 import { CircuitBreakerOpenError } from '../../../core/services/circuit-breaker.js';
@@ -1365,8 +1365,11 @@ describe('RAG Service', () => {
           const raw: ReturnType<typeof row>[] = [];
           for (let c = 0; c < 8; c++) for (let p = 1; p <= 5; p++) raw.push(row(p, `p${p}c${c}`));
           for (let p = 6; p <= 20; p++) raw.push(row(p, `p${p}c0`));
+          // The SHARED helper, not an inline re-derivation — the whole point
+          // of vectorRawLimit is that the fetch and the reconstruction (and
+          // this model of them) cannot drift apart.
           const vectorLeg = (limit: number) =>
-            truncateAtDistinctPages(raw.slice(0, Math.max(limit, Math.min(PAGE_FANOUT * limit, VECTOR_RAW_LIMIT_CAP))), limit);
+            truncateAtDistinctPages(raw.slice(0, vectorRawLimit(limit)), limit);
           const kwAll = [6, 1, 2, 3, 4, 5, ...Array.from({ length: 14 }, (_, i) => i + 7)].map((p) => row(p, `k${p}`));
           const keywordLeg = (limit: number) => kwAll.slice(0, limit);
 
@@ -1391,7 +1394,7 @@ describe('RAG Service', () => {
           for (let c = 0; c < 5; c++) for (let p = 1; p <= 8; p++) raw.push(row(p, `p${p}c${c}`));
           for (let c = 0; c < 40; c++) raw.push(row(9, `p9c${c}`));
           const vectorLeg = (limit: number) =>
-            truncateAtDistinctPages(raw.slice(0, Math.max(limit, Math.min(PAGE_FANOUT * limit, VECTOR_RAW_LIMIT_CAP))), limit);
+            truncateAtDistinctPages(raw.slice(0, vectorRawLimit(limit)), limit);
           const kwAll = [row(9, 'k9'), row(2, 'k2')];
           const keywordLeg = (limit: number) => kwAll.slice(0, limit);
 

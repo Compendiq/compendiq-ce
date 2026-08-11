@@ -45,8 +45,16 @@ export async function analyticsRoutes(fastify: FastifyInstance) {
          -- reports were tuned against. Fusion rows persisted before the
          -- #1106 deploy carry the summed scale and are imprecise under any
          -- constant; the 09-flow caveat applies.
+         -- keyword_fallback is excluded from the SCORE half entirely: its
+         -- keyword leg never sums, so its fusion max is 1/61 ~0.0164 and any
+         -- score threshold classifies every result-bearing fallback row as a
+         -- gap — flooding this report during an embedding outage with rows
+         -- that signal the OUTAGE, not missing content (true in the summed
+         -- era too; #1269 review round 2). result_count = 0 still catches
+         -- fallback queries that found nothing.
          AND (result_count = 0 OR CASE
-           WHEN search_type IN ('hybrid', 'hybrid_rerank', 'keyword_fallback') THEN max_score < 0.03
+           WHEN search_type IN ('hybrid', 'hybrid_rerank') THEN max_score < 0.03
+           WHEN search_type = 'keyword_fallback' THEN FALSE
            ELSE max_score < 0.3
          END)
        GROUP BY LOWER(TRIM(query))

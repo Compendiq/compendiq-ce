@@ -1002,9 +1002,12 @@ describe.skipIf(!dbAvailable)('rag-service integration — #1106 raw fetch plans
          LIMIT $3`,
         [['DEV'], vec, 500, '00000000-0000-4000-8000-000000000001'],
       );
-      await client.query('ROLLBACK');
       text = r.rows.map((row) => row['QUERY PLAN']).join('\n');
     } finally {
+      // ROLLBACK in the finally, not the happy path: a throwing EXPLAIN
+      // must not release a client mid-transaction back to the pool, where
+      // the aborted state poisons the next borrower.
+      await client.query('ROLLBACK').catch(() => {});
       client.release();
     }
     expect(text).toContain('idx_page_embeddings_hnsw');
