@@ -1,4 +1,5 @@
 import { FastifyInstance } from 'fastify';
+import { KNOWLEDGE_GAP_PREDICATE_SQL, GAP_AVG_MAX_SCORE_SQL } from './_gap-predicate.js';
 import { z } from 'zod';
 import { query } from '../../core/db/postgres.js';
 
@@ -30,33 +31,12 @@ export async function analyticsRoutes(fastify: FastifyInstance) {
          LOWER(TRIM(query)) AS query_text,
          COUNT(*) AS occurrence_count,
          MAX(created_at) AS last_searched,
-         AVG(max_score) AS avg_max_score
+         ${GAP_AVG_MAX_SCORE_SQL}
        FROM search_analytics
        WHERE created_at >= NOW() - ($1 || ' days')::INTERVAL
-         -- max_score carries a DIFFERENT unit per search_type (the
-         -- pre-existing defect 09-flow's score table documents), so the
-         -- low-score half of the gap predicate must be per-unit (#1269
-         -- review m13 + follow-up): fusion rows are bounded at
-         -- rrfWorstCase(true) ~0.0328 since #1106's best-chunk-only rule —
-         -- 0.03 sits between "found by one leg" (~0.0164) and "found by
-         -- both" (~0.0328), so a gap is "best hit single-leg only". The old
-         -- 0.3 would classify EVERY fusion row as a gap. Semantic rows are
-         -- cosines and keyword rows raw ts_rank — both keep the 0.3 the
-         -- reports were tuned against. Fusion rows persisted before the
-         -- #1106 deploy carry the summed scale and are imprecise under any
-         -- constant; the 09-flow caveat applies.
-         -- keyword_fallback is excluded from the SCORE half entirely: its
-         -- keyword leg never sums, so its fusion max is 1/61 ~0.0164 and any
-         -- score threshold classifies every result-bearing fallback row as a
-         -- gap — flooding this report during an embedding outage with rows
-         -- that signal the OUTAGE, not missing content (true in the summed
-         -- era too; #1269 review round 2). result_count = 0 still catches
-         -- fallback queries that found nothing.
-         AND (result_count = 0 OR CASE
-           WHEN search_type IN ('hybrid', 'hybrid_rerank') THEN max_score < 0.03
-           WHEN search_type = 'keyword_fallback' THEN FALSE
-           ELSE max_score < 0.3
-         END)
+         -- Rationale + derivation live in _gap-predicate.ts — one shared
+         -- fragment for both routes and the pinning test.
+         AND ${KNOWLEDGE_GAP_PREDICATE_SQL}
        GROUP BY LOWER(TRIM(query))
        HAVING COUNT(*) >= $2
        ORDER BY COUNT(*) DESC, MAX(created_at) DESC
