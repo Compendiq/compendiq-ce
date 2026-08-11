@@ -54,6 +54,29 @@ describe('detectIdentifiers (#1107)', () => {
       const long = 'please give me a detailed summary of everything that happened around INC-2203 last week and who was involved';
       expect(detectIdentifiers(long)).toEqual([]);
     });
+
+    it('captures a multi-segment key WHOLE (#1273 fork F7)', () => {
+      // Truncating at the second hyphen turned CVE-2024-1234 into
+      // CVE-2024, a key that title-matches any page naming a different
+      // 2024 CVE — a confident pin on the wrong identifier.
+      expect(detectIdentifiers('CVE-2024-1234 remediation status')).toContainEqual({
+        kind: 'issueKey',
+        value: 'CVE-2024-1234',
+      });
+      expect(detectIdentifiers('CVE-2024-1234 remediation status')).not.toContainEqual({
+        kind: 'issueKey',
+        value: 'CVE-2024',
+      });
+    });
+
+    it('still DETECTS technical acronym compounds — the safety net is the title-only lookup, not the shape (#1273 fork F1)', () => {
+      // No structural test separates INC-2203 from SHA-256, and a prefix
+      // denylist would be exactly the probabilistic guard this design
+      // rejects. Detection stays cheap and permissive; verification is
+      // what refuses, by probing TITLES only.
+      expect(detectIdentifiers('SHA-256 vs MD5')).toContainEqual({ kind: 'issueKey', value: 'SHA-256' });
+      expect(detectIdentifiers('UTF-8 encoding issues')).toContainEqual({ kind: 'issueKey', value: 'UTF-8' });
+    });
   });
 
   describe('space key — the highest-ambiguity shape', () => {
@@ -64,10 +87,18 @@ describe('detectIdentifiers (#1107)', () => {
       expect(detectIdentifiers('ask HR about onboarding')).toEqual([]);
     });
 
-    it('fires only whole-query, quoted, or cue-adjacent', () => {
+    it('fires only whole-query or cue-adjacent', () => {
       expect(detectIdentifiers('OPS')).toContainEqual({ kind: 'spaceKey', value: 'OPS' });
       expect(detectIdentifiers('space OPS')).toContainEqual({ kind: 'spaceKey', value: 'OPS' });
-      expect(detectIdentifiers('"OPS"')).toContainEqual({ kind: 'spaceKey', value: 'OPS' });
+    });
+
+    it('a QUOTED all-caps string is a title, not a space key (#1273 fork F10)', () => {
+      // Pages genuinely titled 'FAQ' / 'SLA' / 'API' / 'OKR' exist, and
+      // reclassifying the quoted form as a space key made them unpinnable:
+      // space-key detections verify nothing, so the one gesture that names
+      // a short title exactly went nowhere.
+      expect(detectIdentifiers('"OPS"')).toEqual([{ kind: 'title', value: 'OPS' }]);
+      expect(detectIdentifiers('find "SLA"')).toContainEqual({ kind: 'title', value: 'SLA' });
     });
   });
 
@@ -84,6 +115,20 @@ describe('detectIdentifiers (#1107)', () => {
     it('ignores quotes in long queries — the cued token limit still applies', () => {
       const long = 'in our last retro someone mentioned a document "Deployment Runbook" that apparently explains the whole release process in detail';
       expect(detectIdentifiers(long)).toEqual([]);
+    });
+
+    it('accepts the typographic quotes macOS and iOS substitute by default (#1273 fork F14)', () => {
+      // An ASCII-only pattern left the primary gesture dead for anyone
+      // typing quotes on an Apple keyboard, and the miss was invisible.
+      expect(detectIdentifiers('find “Deployment Runbook”')).toContainEqual({ kind: 'title', value: 'Deployment Runbook' });
+      expect(detectIdentifiers('«Onboarding»')).toContainEqual({ kind: 'title', value: 'Onboarding' });
+    });
+
+    it('strips trailing punctuation from the called-cue capture (#1273 fork F13)', () => {
+      // Measured on Postgres: similarity('FAQ', 'FAQ?') = 0.286, under
+      // pg_trgm's 0.3 threshold — the question mark alone killed the pin.
+      expect(detectIdentifiers('the page called FAQ?')).toContainEqual({ kind: 'title', value: 'FAQ' });
+      expect(detectIdentifiers('page named Deployment Runbook.')).toContainEqual({ kind: 'title', value: 'Deployment Runbook' });
     });
   });
 

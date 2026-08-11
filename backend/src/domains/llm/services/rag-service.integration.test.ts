@@ -1100,13 +1100,48 @@ describe.skipIf(!dbAvailable)('rag-service integration — #1107 identifier pin 
     expect(out[0]!.pinned).toBe(true);
   });
 
-  it('a key living only in BODY text still verifies via the ranked tsv fallback', async () => {
+  it('a key living only in BODY text pins NOTHING — verification is title-only (#1273 fork F1)', async () => {
+    // The former ranked-tsv fallback verified a MENTION, and the issue-key
+    // shape admits SHA-256/UTF-8/ISO-8601 — so any short query carrying a
+    // hyphenated uppercase token pinned an arbitrary mentioning page at
+    // rank 1. The page stays reachable through ordinary retrieval; it just
+    // does not get promoted as a verified exact match.
     await query(
       `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
        VALUES (gen_random_uuid()::text, 'confluence', 'DEV', 'Outage timeline', 'incident SEC-0731 was contained', '', '')`,
     );
     const out = await hybridSearch(USER, 'what is SEC-0731 about', 5, undefined, { pinIdentifiers: true });
-    expect(out[0]!.pageTitle).toBe('Outage timeline');
+    expect(out.some((r) => r.pinned)).toBe(false);
+  });
+
+  it('a technical acronym compound pins nothing even when a page MENTIONS it (#1273 fork F1)', async () => {
+    await query(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+       VALUES (gen_random_uuid()::text, 'confluence', 'DEV', 'Password storage', 'we hash passwords with SHA-256 today', '', '')`,
+    );
+    const out = await hybridSearch(USER, 'SHA-256 vs MD5', 5, undefined, { pinIdentifiers: true });
+    expect(out.some((r) => r.pinned)).toBe(false);
+  });
+
+  it('a quoted ALL-CAPS title verifies through the real trgm path (#1273 fork F10)', async () => {
+    // Quoted used to reclassify as a space key, which verifies nothing, so
+    // a page genuinely titled 'SLA' could never be pinned by naming it.
+    await query(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+       VALUES (gen_random_uuid()::text, 'confluence', 'DEV', 'SLA', 'service level agreement targets', '', '')`,
+    );
+    const out = await hybridSearch(USER, 'find "SLA"', 5, undefined, { pinIdentifiers: true });
+    expect(out[0]!.pageTitle).toBe('SLA');
+    expect(out[0]!.pinned).toBe(true);
+  });
+
+  it('the called-cue survives trailing punctuation across the real 0.3 trigram threshold (#1273 fork F13)', async () => {
+    await query(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+       VALUES (gen_random_uuid()::text, 'confluence', 'DEV', 'FAQ', 'frequently asked questions', '', '')`,
+    );
+    const out = await hybridSearch(USER, 'the page called FAQ?', 5, undefined, { pinIdentifiers: true });
+    expect(out[0]!.pageTitle).toBe('FAQ');
     expect(out[0]!.pinned).toBe(true);
   });
 });

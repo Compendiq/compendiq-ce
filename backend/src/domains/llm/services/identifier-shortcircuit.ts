@@ -9,9 +9,12 @@
  * - Every shape is either the WHOLE query, QUOTED, or adjacent to a CUE
  *   word; bare tokens in natural language never fire (space keys like DEV/
  *   IT/OPS/HR appear constantly in ordinary questions).
- * - Detection only fires on SHORT queries: MAX_BARE_QUERY_TOKENS for
- *   uncued shapes, MAX_CUED_QUERY_TOKENS with a cue — long natural-language
- *   questions keep their normal retrieval untouched.
+ * - Detection only fires on SHORT queries: MAX_CUED_QUERY_TOKENS is the
+ *   outer gate for every shape, and MAX_BARE_QUERY_TOKENS additionally
+ *   bounds the one shape that is neither whole-query-anchored nor cued in
+ *   its own right (the bare space key). The other bare shapes are
+ *   whole-query by construction, so their token count is 1 — the "4 bare /
+ *   6 cued" phrasing describes the gate, not two independent regimes.
  * - Case is a signal: issue keys and space keys match case-sensitively.
  * - At most two identifiers are returned, strongest kind first
  *   (pageId > issueKey > title > spaceKey by ambiguity).
@@ -39,7 +42,12 @@ const KIND_STRENGTH: Record<IdentifierKind, number> = {
   spaceKey: 3,
 };
 
-const ISSUE_KEY = /\b[A-Z][A-Z0-9]{1,9}-\d{1,6}\b/g;
+// The trailing segment is OPTIONAL and part of the SAME token (#1273 fork
+// F7): without it `CVE-2024-1234` detected as `CVE-2024`, a far less
+// specific key that title-matches any page naming a different 2024 CVE.
+// Multi-segment keys (CVE-YYYY-NNNN, Jira sub-task ids, versioned keys)
+// must verify whole or not at all.
+const ISSUE_KEY = /\b[A-Z][A-Z0-9]{1,9}-\d{1,6}(?:-\d{1,6})?\b/g;
 const WHOLE_NUMERIC = /^\d{1,10}$/;
 // >=5 digits for the CUED shape (#1273 review B1): pages.id is a dense
 // SERIAL, so "page 2" / "see page 12 above" would verify against SOME row
@@ -50,15 +58,27 @@ const WHOLE_NUMERIC = /^\d{1,10}$/;
 // deliberate intent, and the verifier prefers the confluence_id namespace.
 const CUED_NUMERIC = /\b(?:page|id)\s*#?\s*(\d{5,10})\b/i;
 const WHOLE_SPACE_KEY = /^[A-Z]{2,10}$/;
-const QUOTED = /"([^"]{2,120})"/;
+// Straight AND typographic quotes (#1273 fork F14): macOS and iOS
+// substitute curly quotes by default, so an ASCII-only pattern left the
+// feature's primary gesture silently dead for those users — and a miss
+// here is invisible, since the query just falls through to normal
+// retrieval. The class is deliberately permissive about pairing.
+const SMART_QUOTES = '"“”„«»';
+const QUOTED = new RegExp(`[${SMART_QUOTES}]([^${SMART_QUOTES}]{2,120})[${SMART_QUOTES}]`);
 const CUED_SPACE_KEY = /\b(?:space|key|in)\s+([A-Z]{2,10})\b/;
 // Greedy to end-of-query by design; trailing qualifiers ("page called X
 // in DEV space") widen the captured title and typically miss the 0.3
 // trigram threshold — a silent miss, never a wrong pin (#1273 review M9).
-// The issueKey shape also admits RFC-2119/ISO-9001-style tokens; they cost
-// one indexed title probe and pin only when a page's TITLE carries them
-// (#1273 M12 — safe post-B2).
+// The issueKey shape also admits RFC-2119/ISO-9001/SHA-256-style tokens;
+// post-fork-F1 they verify against a page TITLE only, so an ordinary
+// "SHA-256 vs MD5" question costs one indexed probe and pins nothing.
 const CALLED_CUE = /\bpage\s+(?:called|named)\s+(.{2,120})$/i;
+// Trailing punctuation is never part of a title, and it costs real recall:
+// similarity('FAQ', 'FAQ?') falls under pg_trgm's 0.3 threshold, so
+// "the page called FAQ?" verified nothing (#1273 fork F13). Trailing
+// PROSE ("FAQ right now") is left alone — trimming words would guess at
+// where the title ends, and a silent miss beats a confident wrong pin.
+const TRAILING_PUNCT = /[\s"“”„«»'’?.!,;:]+$/;
 
 export function detectIdentifiers(query: string): DetectedIdentifier[] {
   const trimmed = query.trim();
@@ -90,13 +110,19 @@ export function detectIdentifiers(query: string): DetectedIdentifier[] {
   // Quoted title, or the "page called/named X" cue.
   const quoted = QUOTED.exec(trimmed);
   if (quoted) {
-    const inner = quoted[1]!.trim();
-    // A short all-caps quoted token reads as a space key, not a title.
-    if (WHOLE_SPACE_KEY.test(inner)) add('spaceKey', inner);
-    else add('title', inner);
+    // A quoted string is ALWAYS a title (#1273 fork F10). Reclassifying a
+    // short all-caps one as a space key made pages genuinely titled 'FAQ',
+    // 'SLA', 'API' or 'OKR' unpinnable through the quoted path, because
+    // space-key detections verify nothing — and deliberately quoting a
+    // short title is precisely the gesture the trgm title lookup exists
+    // for. The bare-token space key below is unaffected.
+    add('title', quoted[1]!.trim());
   }
   const called = CALLED_CUE.exec(trimmed);
-  if (called) add('title', called[1]!.trim());
+  if (called) {
+    const title = called[1]!.trim().replace(TRAILING_PUNCT, '');
+    if (title.length >= 2) add('title', title);
+  }
 
   // Space key: whole query or cue-adjacent — NEVER a bare token in prose.
   if (bareOk && WHOLE_SPACE_KEY.test(trimmed)) {

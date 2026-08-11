@@ -220,12 +220,25 @@ Literal identifiers — a numeric page id, an INC-2203-style key, a quoted or
 FTS. `detectIdentifiers` (`identifier-shortcircuit.ts`, pure and
 dependency-free) recognises those shapes under structural guards: whole-
 query, quoted, or cue-adjacent only; case-sensitive where case is signal;
-short queries only (4 bare / 6 cued tokens); at most two detections,
-strongest kind first. Space-key detections verify nothing by themselves — a
-space is not a page. Every detection is then VERIFIED by one indexed lookup
-(pages PK for ids, the pg_trgm title index — with a tsv phrase fallback —
-for keys and titles) under the same space-visibility predicate as
-retrieval, plus the EE ACL batch filter. Verified pins are PREPENDED to the
+short queries only (6 cued tokens is the outer gate; 4 additionally bounds
+the bare space key, the one shape that is neither whole-query-anchored nor
+cued); at most two detections, strongest kind first. A QUOTED string is
+always a title, never a space key (#1273 fork F10): pages titled 'FAQ',
+'SLA' or 'API' exist, space-key detections verify nothing, and quoting a
+short title is exactly the gesture the trgm lookup serves. Multi-segment
+keys (CVE-2024-1234) capture whole — truncating at the second hyphen left a
+far less specific key that title-matches a different CVE (F7) — and the
+called-cue capture drops trailing punctuation, since `similarity('FAQ',
+'FAQ?')` is 0.286, under pg_trgm's 0.3 threshold (F13). Space-key
+detections verify nothing by themselves — a space is not a page. Every
+detection is then VERIFIED by one indexed lookup (pages PK for ids, the
+pg_trgm title index for titles, the title index for keys) under the same
+space-visibility predicate as retrieval, plus the EE ACL batch filter.
+Each lookup returns a short ORDERED CANDIDATE LIST rather than one row,
+because page-level ACL filtering happens after the query: a single-row
+lookup that selected a restricted page suppressed the pin an accessible
+page would have received, so "Deployment Runbook" existing in both a
+restricted and a readable space pinned nothing at all (F5). Verified pins are PREPENDED to the
 final result set (a page already in the fused set MOVES to the head keeping
 its enriched row; the fused order below is never re-sorted), the tail
 re-slices to topK, and `rag.pinned` carries the count. The #1105 gate is
@@ -236,14 +249,36 @@ unpinned ranking would not have produced), so a verified exact match is
 never auto-refused, new pin or moved. Verification is deterministic and
 namespace-aware (#1273 B1/B2): the cued numeric shape requires ≥5 digits
 (pages.id is a dense SERIAL — small integers verify against SOME row on
-every instance), the confluence_id namespace outranks the internal PK, and
-the issue-key lookup is two-tiered — the page the key NAMES (title arm,
-starts-with beats contains, shorter beats longer) before pages that merely
-MENTION it (ts_rank-ordered tsv arm) — each tier on its own index. A new
-pin carries a 500-char head-of-body excerpt (no sibling assembly — a
-deliberate scope line); the operator kill switch is `rag_pin_identifiers`
-('0' disables). Detection misses and lookup errors both soft-fail to the
-fused order. The fixture's
+every instance) and the confluence_id namespace outranks the internal PK.
+
+**The issue-key lookup probes TITLES only, and that is a precision
+decision, not an oversight** (#1273 fork F1). It was briefly two-tiered,
+falling back to a ts_rank-ordered tsv arm for pages that merely MENTION the
+key. But the shape that admits INC-2203 equally admits SHA-256, UTF-8,
+ISO-8601 and AES-256, and no structural test separates them — a prefix
+denylist would be precisely the probabilistic guard this design rejects. A
+body-mention fallback therefore pinned an arbitrary mentioning page at rank
+1 for any short query carrying a hyphenated uppercase token, with the
+confidence gate suppressed on top. A title match means the page is NAMED by
+the key; a body match means somebody mentioned it, and only the first earns
+rank 1. A key living solely in body text now rides ordinary retrieval:
+recall this stage never promised, traded for the precision it did.
+
+A new pin carries a head-of-body excerpt sized to the same
+`rag_context_chars_per_page` budget assembled pages get, falling back to
+500 chars when the knob is off (F9). It still cannot be sibling-assembled —
+it is created after that stage and has no anchor chunk to grow a window
+around — so reading the same knob is what keeps the feature's headline
+query (the exact-match page the fused legs missed) from carrying the
+thinnest context in the pipeline. Pinning a page that fused just OUTSIDE
+topK recovers its enriched row from the pre-slice candidates, not merely
+from the sliced result set (F12) — that near-miss IS the diluted-exact-match
+case this stage exists for, and matching post-slice dropped its scored
+chunk and rerank score for a bare excerpt. The operator kill switch is
+`rag_pin_identifiers` ('0' disables). Detection misses soft-fail to the
+fused order, and lookup errors are isolated PER DETECTION (F8) — one
+failing probe must not discard a second, independently verified pin. The
+fixture's
 `identifier` / `identifier-negative` styles are the measurable form of the
 acceptance criteria: exact queries pin first, natural-language queries with
 identifier-shaped tokens are provably unmoved.

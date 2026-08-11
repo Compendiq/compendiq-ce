@@ -939,9 +939,25 @@ export async function hybridSearch(
 }
 
 /**
+ * #1107 — how many rows each identifier lookup returns. It is not 1
+ * (#1273 fork F5): EE page-level ACL filtering runs in the caller, AFTER
+ * the query, so a single-row lookup that happened to select a restricted
+ * page suppressed the pin an ACCESSIBLE page would have received —
+ * "Deployment Runbook" existing in both HR (restricted) and ENG (readable)
+ * pinned nothing at all. A short ordered candidate list lets the caller
+ * pick the first row the user may actually read, and every branch's
+ * ORDER BY already makes that list deterministic.
+ */
+export const IDENTIFIER_LOOKUP_CANDIDATES = 5;
+
+/** Excerpt length for a pinned row when `rag_context_chars_per_page` is off. */
+const PIN_EXCERPT_FALLBACK_CHARS = 500;
+
+/**
  * #1107 — verify one detected identifier under the caller's space
- * visibility. Returns a keyword-style SearchResult (body-text excerpt, no
- * measured scores, `pinned: true`) or null.
+ * visibility. Returns up to IDENTIFIER_LOOKUP_CANDIDATES keyword-style
+ * SearchResults (body-text excerpt, no measured scores, `pinned: true`) in
+ * confidence order, or an empty array.
  *
  * The #1273 review's root-cause rule governs every branch: a lookup that
  * returns A row must never be treated as a lookup that returned THE row.
@@ -949,13 +965,22 @@ export async function hybridSearch(
  *   is preferred over the internal SERIAL PK via ORDER BY, and the PK arm
  *   only participates when the value fits int4 (B1/M2 — a 10-digit id
  *   used to throw 22003 and soft-fail the whole lookup).
- * - issueKey: TWO TIERS, title first (the page the key NAMES) with a
- *   deterministic ORDER BY (title starting with the key beats containing
- *   it, shorter beats longer), and only on a title miss the tsv body arm
- *   (pages that MENTION the key), ranked by ts_rank — the old single OR
- *   query returned heap order, pinning the oldest page that mentioned the
- *   key ahead of its own postmortem (B2), and the disjunction defeated
- *   both indexes into a seq scan (M1); split, each arm uses its index.
+ * - issueKey: TITLE ONLY, with a deterministic ORDER BY (title starting
+ *   with the key beats containing it, shorter beats longer). The old
+ *   single OR query returned heap order, pinning the oldest page that
+ *   mentioned the key ahead of its own postmortem (B2), and the
+ *   disjunction defeated both indexes into a seq scan (M1). The ranked tsv
+ *   BODY tier that replaced it is gone too (#1273 fork F1): the issue-key
+ *   shape is indistinguishable from ubiquitous technical compounds —
+ *   SHA-256, UTF-8, ISO-8601, AES-256 — and a body-MENTION verification
+ *   pinned an arbitrary mentioning page at rank 1 for any short query
+ *   carrying one. No structural test separates INC-2203 from SHA-256, and
+ *   a prefix denylist would be exactly the probabilistic guard this
+ *   feature was designed to avoid. A title match means the page is NAMED
+ *   by the key; a body match means someone mentioned it. Only the first
+ *   earns rank 1, so a key living solely in body text now rides normal
+ *   retrieval — recall this stage never promised, traded for the
+ *   precision it did.
  * - title: the pg_trgm path, explicitly kind-gated — the old else-branch
  *   would have run a fuzzy TITLE match for a revived spaceKey (M4).
  */
@@ -963,12 +988,23 @@ async function lookupIdentifier(
   ident: DetectedIdentifier,
   spaces: string[],
   userId: string,
-): Promise<SearchResult | null> {
+): Promise<SearchResult[]> {
+  // The excerpt is sized to the SAME per-page budget assembled pages get
+  // (#1273 fork F9). A new pin is the one row sibling assembly cannot
+  // reach — it is created after that stage, and it has no anchor chunk to
+  // grow a window around — so a hardcoded 500 chars gave the feature's
+  // headline query ("find the page called X", the page missing from the
+  // fused set) the thinnest context in the pipeline. Reading the same knob
+  // keeps one operator dial over how much of a page reaches the model;
+  // 0/off falls back to the old fixed lede rather than to nothing.
+  const budget = await getRagContextCharsPerPage();
+  const excerptChars = budget > 0 ? budget : PIN_EXCERPT_FALLBACK_CHARS;
   const select = `SELECT cp.id AS page_id, cp.confluence_id, cp.title, cp.space_key,
-                         substring(cp.body_text, 1, 500) AS excerpt
+                         substring(cp.body_text, 1, $5) AS excerpt
                   FROM pages cp
                   WHERE ${visiblePagesPredicate(1, 3)} AND cp.deleted_at IS NULL`;
   type Row = { page_id: number; confluence_id: string | null; title: string; space_key: string | null; excerpt: string | null };
+  const limit = IDENTIFIER_LOOKUP_CANDIDATES;
   let rows: Row[] = [];
   if (ident.kind === 'pageId') {
     const n = Number.parseInt(ident.value, 10);
@@ -979,49 +1015,39 @@ async function lookupIdentifier(
     const r = fitsInt4
       ? await query<Row>(
           `${select} AND (cp.confluence_id = $2 OR cp.id = $4)
-           ORDER BY (cp.confluence_id = $2) DESC LIMIT 1`,
-          [spaces, ident.value, userId, n],
+           ORDER BY (cp.confluence_id = $2) DESC, cp.id ASC LIMIT $6`,
+          [spaces, ident.value, userId, n, excerptChars, limit],
         )
       : await query<Row>(
-          `${select} AND cp.confluence_id = $2 LIMIT 1`,
-          [spaces, ident.value, userId],
+          `${select} AND cp.confluence_id = $2 ORDER BY cp.id ASC LIMIT $4`,
+          [spaces, ident.value, userId, limit, excerptChars],
         );
     rows = r.rows;
   } else if (ident.kind === 'issueKey') {
     const titled = await query<Row>(
       `${select} AND cp.title ILIKE $2
-       ORDER BY (cp.title ILIKE $4) DESC, length(cp.title) ASC, cp.id ASC LIMIT 1`,
-      [spaces, `%${ident.value}%`, userId, `${ident.value}%`],
+       ORDER BY (cp.title ILIKE $4) DESC, length(cp.title) ASC, cp.id ASC LIMIT $6`,
+      [spaces, `%${ident.value}%`, userId, `${ident.value}%`, excerptChars, limit],
     );
     rows = titled.rows;
-    if (rows.length === 0) {
-      const body = await query<Row>(
-        `${select} AND cp.tsv @@ phraseto_tsquery($2::regconfig, $4)
-         ORDER BY ts_rank(cp.tsv, phraseto_tsquery($2::regconfig, $4)) DESC, cp.id ASC LIMIT 1`,
-        [spaces, await getFtsLanguage(), userId, ident.value],
-      );
-      rows = body.rows;
-    }
   } else if (ident.kind === 'title') {
     const r = await query<Row>(
-      `${select} AND cp.title % $2 ORDER BY similarity(cp.title, $2) DESC, cp.id ASC LIMIT 1`,
-      [spaces, ident.value, userId],
+      `${select} AND cp.title % $2 ORDER BY similarity(cp.title, $2) DESC, cp.id ASC LIMIT $4`,
+      [spaces, ident.value, userId, limit, excerptChars],
     );
     rows = r.rows;
   } else {
     // spaceKey (and any future kind) verifies nothing here by design — a
     // space is not a page; #1110 is the intended consumer.
-    return null;
+    return [];
   }
-  const row = rows[0];
-  if (!row) return null;
-  return {
+  return rows.map((row) => ({
     pageId: row.page_id,
     confluenceId: row.confluence_id,
-    // Head-of-body excerpt, 500 chars — deliberately NOT sibling-assembled
-    // (assembly ran before this stage; #1273 review M7 records the scope
-    // line): for "find page X" the lede is the honest context, and an
-    // empty body_text yields an empty excerpt under a real title.
+    // Head-of-body excerpt — deliberately NOT sibling-assembled (assembly
+    // ran before this stage; #1273 review M7 records the scope line): for
+    // "find page X" the lede is the honest context, and an empty
+    // body_text yields an empty excerpt under a real title.
     chunkText: row.excerpt ?? '',
     pageTitle: row.title,
     sectionTitle: row.title,
@@ -1031,8 +1057,8 @@ async function lookupIdentifier(
     score: 0,
     vectorScore: null,
     keywordRank: null,
-    pinned: true,
-  };
+    pinned: true as const,
+  }));
 }
 
 async function hybridSearchInner(
@@ -1395,20 +1421,47 @@ async function hybridSearchInner(
       const detected = detectIdentifiers(question).filter((d) => d.kind !== 'spaceKey');
       if (detected.length > 0) {
         const pinSpaces = await getUserAccessibleSpaces(userId);
-        const lookedUp: SearchResult[] = [];
+        // Per-lookup isolation (#1273 fork F8): the stage's contract is
+        // "any lookup error skips THAT pin, never the search", and a
+        // single try around the loop broke it — one failing detection
+        // discarded a second, independently verified one.
+        const lookedUp: SearchResult[][] = [];
         for (const ident of detected) {
-          const row = await lookupIdentifier(ident, pinSpaces, userId);
-          if (row && !lookedUp.some((r) => r.pageId === row.pageId)) lookedUp.push(row);
+          try {
+            lookedUp.push(await lookupIdentifier(ident, pinSpaces, userId));
+          } catch (err) {
+            logger.warn({ err, kind: ident.kind }, 'Identifier lookup failed — skipping this pin');
+          }
         }
-        let verified = lookedUp;
-        if (aclEnforced && verified.length > 0) {
-          const accessible = await filterAccessiblePages(userId, verified.map((r) => r.pageId));
-          verified = verified.filter((r) => accessible.has(r.pageId));
+        // ACL BEFORE the winner is chosen (#1273 fork F5), still one
+        // batched query for every candidate of every detection.
+        let isAccessible: (pageId: number) => boolean = () => true;
+        if (aclEnforced) {
+          const candidateIds = lookedUp.flat().map((r) => r.pageId);
+          if (candidateIds.length > 0) {
+            const accessible = await filterAccessiblePages(userId, candidateIds);
+            isAccessible = (pageId) => accessible.has(pageId);
+          }
+        }
+        const verified: SearchResult[] = [];
+        for (const candidateRows of lookedUp) {
+          const pick = candidateRows.find(
+            (c) => isAccessible(c.pageId) && !verified.some((v) => v.pageId === c.pageId),
+          );
+          if (pick) verified.push(pick);
         }
         if (verified.length > 0) {
           const pinnedIds = new Set(verified.map((r) => r.pageId));
           const head: SearchResult[] = verified.map((v) => {
-            const existing = topResults.find((r) => r.pageId === v.pageId);
+            // topResults FIRST (it carries assembled context), then the
+            // pre-slice candidates (#1273 fork F12): a verified page that
+            // fused just OUTSIDE topK — the diluted-exact-match case this
+            // feature exists for — used to lose its scored chunk,
+            // chunkIndex and rerankScore and re-enter as a bare excerpt,
+            // while the purpose-built row sat one array away.
+            const existing =
+              topResults.find((r) => r.pageId === v.pageId) ??
+              candidates.find((r) => r.pageId === v.pageId);
             return existing ? { ...existing, pinned: true as const } : v;
           });
           topResults = [...head, ...topResults.filter((r) => !pinnedIds.has(r.pageId))].slice(0, Math.max(0, topK));

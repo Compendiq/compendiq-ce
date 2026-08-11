@@ -24,6 +24,12 @@ const mocks = vi.hoisted(() => {
   const mockToSql = vi.fn().mockReturnValue('[0.1,0.2]');
   const mockResolveRerank = vi.fn(async () => null);
   const mockRerank = vi.fn(async () => []);
+  // Implementation form on purpose (see the rbac note below): these must
+  // survive the `vi.resetAllMocks()` several describes run.
+  const mockFilterAccessiblePages = vi.fn(async (_u: unknown, ids: number[]) => new Set(ids));
+  // Default false = community edition, which is what every test but the
+  // #1273 fork F5 ACL case wants.
+  const mockIsFeatureEnabled = vi.fn(() => false);
 
   return {
     mockClientQuery,
@@ -36,6 +42,8 @@ const mocks = vi.hoisted(() => {
     mockToSql,
     mockResolveRerank,
     mockRerank,
+    mockFilterAccessiblePages,
+    mockIsFeatureEnabled,
   };
 });
 
@@ -84,7 +92,15 @@ vi.mock('../../../core/services/rbac-service.js', () => ({
   // ran with userCanAccessPage returning undefined.
   userCanAccessPage: vi.fn(async () => true),
   // #1104: the batched ACL filter; default = everything accessible.
-  filterAccessiblePages: vi.fn(async (_u: unknown, ids: number[]) => new Set(ids)),
+  filterAccessiblePages: (...args: unknown[]) => mocks.mockFilterAccessiblePages(...(args as [unknown, number[]])),
+}));
+
+// Only `isFeatureEnabled` is overridden — importOriginal keeps every other
+// export real, so mocking the loader here cannot change what the rest of
+// the import graph sees.
+vi.mock('../../../core/enterprise/loader.js', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  isFeatureEnabled: (...args: unknown[]) => mocks.mockIsFeatureEnabled(...(args as [])),
 }));
 
 vi.mock('pgvector', () => ({
@@ -104,9 +120,9 @@ vi.mock('../../../core/services/fts-language.js', () => ({
   getFtsLanguage: vi.fn(async () => 'simple'),
 }));
 
-import { buildRagContext, hybridSearch, RAG_EF_SEARCH, reciprocalRankFusion, fuseWithStableHead, rrfWorstCase, vectorSearch, keywordSearch, recordSearchAnalytics, resolveStageLimit, computeRetrievalConfidence, RAG_FETCH_WIDTH_DEFAULT, truncateAtDistinctPages, PAGE_FANOUT, VECTOR_RAW_LIMIT_CAP, vectorRawLimit } from './rag-service.js';
+import { buildRagContext, hybridSearch, RAG_EF_SEARCH, reciprocalRankFusion, fuseWithStableHead, rrfWorstCase, vectorSearch, keywordSearch, recordSearchAnalytics, resolveStageLimit, computeRetrievalConfidence, RAG_FETCH_WIDTH_DEFAULT, truncateAtDistinctPages, PAGE_FANOUT, VECTOR_RAW_LIMIT_CAP, vectorRawLimit, IDENTIFIER_LOOKUP_CANDIDATES } from './rag-service.js';
 import type { SearchResult } from './rag-service.js';
-import { invalidateRagFetchWidthCache, invalidateRagRerankCandidatesCache, invalidateRagContextCharsCache, invalidateRagPinIdentifiersCache } from '../../../core/services/admin-settings-service.js';
+import { invalidateRagFetchWidthCache, invalidateRagRerankCandidatesCache, invalidateRagContextCharsCache, invalidateRagPinIdentifiersCache, RAG_CONTEXT_CHARS_DEFAULT } from '../../../core/services/admin-settings-service.js';
 import { CircuitBreakerOpenError } from '../../../core/services/circuit-breaker.js';
 
 describe('RAG Service', () => {
@@ -1959,7 +1975,7 @@ describe('exact-identifier pin stage (#1107)', () => {
 
   function routePinQueries(pinRow?: { page_id: number; confluence_id: string | null; title: string; space_key: string; excerpt: string } | 'throw') {
     mocks.mockQuery.mockImplementation(async (sql: string) => {
-      if (typeof sql === 'string' && sql.includes('substring(cp.body_text, 1, 500)')) {
+      if (typeof sql === 'string' && sql.includes('substring(cp.body_text, 1, $5)')) {
         if (pinRow === 'throw') throw new Error('lookup died');
         return { rows: pinRow ? [pinRow] : [] };
       }
@@ -1997,7 +2013,7 @@ describe('exact-identifier pin stage (#1107)', () => {
     routePinQueries({ page_id: 42, confluence_id: 'x', title: 'X', space_key: 'DEV', excerpt: 'x' });
     await hybridSearch('user-1', 'how does the deployment process work here exactly', 5, undefined, { pinIdentifiers: true });
     const lookups = mocks.mockQuery.mock.calls.filter(
-      (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('substring(cp.body_text, 1, 500)'),
+      (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('substring(cp.body_text, 1, $5)'),
     );
     expect(lookups).toHaveLength(0);
   });
@@ -2024,7 +2040,7 @@ describe('exact-identifier pin stage (#1107)', () => {
     const out = await hybridSearch('user-1', 'what is INC-2203 about', 5, undefined, { pinIdentifiers: true });
     expect(out[0]!.pinned).toBeUndefined();
     const lookups = mocks.mockQuery.mock.calls.filter(
-      (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('substring(cp.body_text, 1, 500)'),
+      (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('substring(cp.body_text, 1, $5)'),
     );
     expect(lookups).toHaveLength(0);
     invalidateRagPinIdentifiersCache();
@@ -2034,7 +2050,7 @@ describe('exact-identifier pin stage (#1107)', () => {
     routePinQueries({ page_id: 42, confluence_id: 'x', title: 'X', space_key: 'DEV', excerpt: 'x' });
     await hybridSearch('user-1', 'what does page 7 say', 5, undefined, { pinIdentifiers: true });
     const lookups = mocks.mockQuery.mock.calls.filter(
-      (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('substring(cp.body_text, 1, 500)'),
+      (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('substring(cp.body_text, 1, $5)'),
     );
     expect(lookups).toHaveLength(0);
   });
@@ -2049,5 +2065,98 @@ describe('exact-identifier pin stage (#1107)', () => {
     );
     expect(analytics).toBeDefined();
     expect((analytics![1] as unknown[])[3]).toBeNull();
+  });
+
+  it('an issue-key lookup probes TITLES only — a body MENTION never pins (#1273 fork F1)', async () => {
+    // The shape that admits INC-2203 also admits SHA-256/UTF-8/ISO-8601,
+    // so verifying against body text pinned an arbitrary mentioning page
+    // at rank 1 for any short query carrying a hyphenated uppercase token.
+    routePinQueries(undefined);
+    await hybridSearch('user-1', 'SHA-256 vs MD5', 5, undefined, { pinIdentifiers: true });
+    const lookupSql = mocks.mockQuery.mock.calls
+      .map((c: unknown[]) => c[0])
+      .filter((s: unknown): s is string => typeof s === 'string' && s.includes('substring(cp.body_text, 1, $5)'));
+    expect(lookupSql.length).toBeGreaterThan(0);
+    expect(lookupSql.every((s) => !s.includes('phraseto_tsquery'))).toBe(true);
+    expect(lookupSql.every((s) => !s.includes('cp.tsv'))).toBe(true);
+  });
+
+  it('the excerpt is sized to the per-page context budget, not a hardcoded lede (#1273 fork F9)', async () => {
+    routePinQueries({ page_id: 42, confluence_id: 'inc-page', title: 'INC-2203 postmortem', space_key: 'DEV', excerpt: 'x' });
+    await hybridSearch('user-1', 'what is INC-2203 about', 5, undefined, { pinIdentifiers: true });
+    const call = mocks.mockQuery.mock.calls.find(
+      (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('substring(cp.body_text, 1, $5)'),
+    );
+    expect(call).toBeDefined();
+    expect((call![1] as unknown[])[4]).toBe(RAG_CONTEXT_CHARS_DEFAULT);
+  });
+
+  it('a verified page that fused just OUTSIDE topK keeps its enriched row (#1273 fork F12)', async () => {
+    // Page 2 is in `candidates` but sliced off by topK 1. Pinning it must
+    // recover the scored chunk, not re-enter it as a bare excerpt — this
+    // IS the diluted-exact-match case the feature exists for.
+    routePinQueries({ page_id: 2, confluence_id: 'page-2', title: 'Page 2', space_key: 'DEV', excerpt: 'bare excerpt' });
+    const out = await hybridSearch('user-1', 'what is INC-2203 about', 1, undefined, { pinIdentifiers: true });
+    expect(out.map((r) => r.pageId)).toEqual([2]);
+    expect(out[0]!.pinned).toBe(true);
+    expect(out[0]!.vectorScore).not.toBeNull();
+    expect(out[0]!.chunkText).toBe('chunk of page 2');
+  });
+
+  it('one failing lookup skips only ITS pin — a second verified identifier still lands (#1273 fork F8)', async () => {
+    // 'page 43561 "Runbook"' detects pageId + title. The pageId probe dies;
+    // the independently verified title pin must survive.
+    mocks.mockQuery.mockImplementation(async (sql: string) => {
+      if (typeof sql === 'string' && sql.includes('substring(cp.body_text, 1, $5)')) {
+        // `cp.confluence_id = $2` is the pageId PREDICATE; the bare column
+        // name appears in every branch's SELECT list.
+        if (sql.includes('cp.confluence_id = $2')) throw new Error('lookup died');
+        if (sql.includes('cp.title %')) {
+          return { rows: [{ page_id: 77, confluence_id: 'rb', title: 'Runbook', space_key: 'DEV', excerpt: 'r' }] };
+        }
+        return { rows: [] };
+      }
+      if (typeof sql === 'string' && sql.includes('COUNT(*)')) return { rows: [{ embedded: 2, total: 2 }] };
+      return { rows: [] };
+    });
+    const out = await hybridSearch('user-1', 'page 43561 "Runbook"', 5, undefined, { pinIdentifiers: true });
+    expect(out[0]!.pageId).toBe(77);
+    expect(out[0]!.pinned).toBe(true);
+  });
+
+  it('ACL filtering picks the accessible candidate instead of suppressing the pin (#1273 fork F5)', async () => {
+    // Two same-titled pages, restricted one first. The single-row lookup
+    // let the restricted row win the slot and then dropped it, so the page
+    // the user CAN read pinned nothing.
+    mocks.mockIsFeatureEnabled.mockReturnValue(true);
+    // Everything the fused legs found stays readable; only the restricted
+    // same-titled page (99) is not.
+    mocks.mockFilterAccessiblePages.mockResolvedValue(new Set([1, 2, 88]));
+    mocks.mockQuery.mockImplementation(async (sql: string) => {
+      if (typeof sql === 'string' && sql.includes('substring(cp.body_text, 1, $5)')) {
+        return {
+          rows: [
+            { page_id: 99, confluence_id: 'hr', title: 'Deployment Runbook', space_key: 'HR', excerpt: 'restricted' },
+            { page_id: 88, confluence_id: 'eng', title: 'Deployment Runbook', space_key: 'DEV', excerpt: 'readable' },
+          ],
+        };
+      }
+      if (typeof sql === 'string' && sql.includes('COUNT(*)')) return { rows: [{ embedded: 2, total: 2 }] };
+      return { rows: [] };
+    });
+    const out = await hybridSearch('user-1', 'find "Deployment Runbook"', 5, undefined, { pinIdentifiers: true });
+    expect(out[0]!.pageId).toBe(88);
+    expect(out[0]!.pinned).toBe(true);
+    expect(out.some((r) => r.pageId === 99)).toBe(false);
+  });
+
+  it('the lookup asks for a CANDIDATE LIST, never a single row — ACL runs before the winner is chosen', async () => {
+    routePinQueries({ page_id: 42, confluence_id: 'inc-page', title: 'INC-2203 postmortem', space_key: 'DEV', excerpt: 'x' });
+    await hybridSearch('user-1', 'what is INC-2203 about', 5, undefined, { pinIdentifiers: true });
+    const call = mocks.mockQuery.mock.calls.find(
+      (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('substring(cp.body_text, 1, $5)'),
+    );
+    expect(call![0] as string).not.toMatch(/LIMIT 1\b/);
+    expect((call![1] as unknown[])).toContain(IDENTIFIER_LOOKUP_CANDIDATES);
   });
 });
