@@ -1350,12 +1350,33 @@ describe('RAG Service', () => {
           expect(truncateAtDistinctPages(kw, 10)).toEqual(kw.slice(0, 10));
         });
 
-        it('widening stays append-only with multi-chunk legs: same head, plus more', () => {
-          const vec: ReturnType<typeof row>[] = [];
-          for (let p = 1; p <= 14; p++) { vec.push(row(p, `p${p}c1`)); if (p % 2) vec.push(row(p, `p${p}c2`)); }
-          const narrow = fuseWithStableHead(truncateAtDistinctPages(vec, 10), [], 10);
-          const wide = fuseWithStableHead(vec, [], 10);
+        it('widening stays append-only under TWO INDEPENDENT FETCHES, narrow one shortfalling (#1269 B1)', () => {
+          // The previous version of this test derived the narrow leg from
+          // the wide array (`truncateAtDistinctPages(vec, 10)`) — by
+          // construction the exact page-prefix, so the divergence it exists
+          // to catch was unrepresentable. A faithful model runs the REAL
+          // per-request pipeline twice over one raw stream: each request
+          // takes its own raw window (vectorRawLimit) and truncates at its
+          // own page budget. The fixture makes the narrow request SHORTFALL
+          // (5 distinct pages in its 40-row window — the long-multi-chunk
+          // corpus #1106 exists for) while the wide request reaches full
+          // pages; the un-reconstructed page-prefix head provably reorders
+          // the top here (verified numerically in the review).
+          const raw: ReturnType<typeof row>[] = [];
+          for (let c = 0; c < 8; c++) for (let p = 1; p <= 5; p++) raw.push(row(p, `p${p}c${c}`));
+          for (let p = 6; p <= 20; p++) raw.push(row(p, `p${p}c0`));
+          const vectorLeg = (limit: number) =>
+            truncateAtDistinctPages(raw.slice(0, Math.max(limit, Math.min(PAGE_FANOUT * limit, VECTOR_RAW_LIMIT_CAP))), limit);
+          const kwAll = [6, 1, 2, 3, 4, 5, ...Array.from({ length: 14 }, (_, i) => i + 7)].map((p) => row(p, `k${p}`));
+          const keywordLeg = (limit: number) => kwAll.slice(0, limit);
+
+          // rankWidth 10 both sides (the configured width): narrow request =
+          // stage limit 10, wide request = stage limit 20 (a larger topK).
+          const narrow = fuseWithStableHead(vectorLeg(10), keywordLeg(10), 10);
+          const wide = fuseWithStableHead(vectorLeg(20), keywordLeg(20), 10);
           expect(wide.slice(0, narrow.length).map((r) => r.pageId)).toEqual(narrow.map((r) => r.pageId));
+          // And widening genuinely added something after the stable head.
+          expect(wide.length).toBeGreaterThan(narrow.length);
         });
       });
 
@@ -1434,8 +1455,8 @@ describe('RAG Service', () => {
     //
     // Fusion overwrote `score` with the RRF value and discarded the cosine the
     // vector leg had measured. With k=60 over two legs the RRF value maxes out
-    // near 1/61 + 1/61 ≈ 0.0328 for the common case — more when one page fills
-    // several vector slots — and ConfidenceBadge reads that field as a
+    // near 1/61 + 1/61 ≈ 0.0328 for the common case — an exact bound since
+    // #1106's best-chunk-only rule — and ConfidenceBadge reads that field as a
     // cosine similarity (>= 0.7 high / >= 0.4 medium) — so every hybrid answer
     // rendered "Low confidence". The fix carries the per-leg values alongside
     // the fusion score rather than replacing them.

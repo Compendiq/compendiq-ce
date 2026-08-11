@@ -125,12 +125,12 @@ to a user.
 | `keywordRank` | raw `ts_rank`, unbounded | the keyword leg; `null` when matched only by vector | No — corpus-dependent |
 
 RRF fusion previously *overwrote* `score` with the fusion value and discarded
-the cosine. That value is ~0.016 for a single rank in one leg and ~0.033 for the
-common two-leg case, and it is **not** bounded there: the vector leg is
-per-chunk, so one page occupying several top slots has its contributions summed.
-The worst case is a function of the per-stage limit — since #1103 that is
-`resolveStageLimit`: the fetch width (`rag_fetch_width` in `admin_settings`,
-default 10), floored at `topK` and at `ceil(topK×1.5)` under EE ACL. At the
+the cosine. That value is ~0.016 for a single rank in one leg and ~0.033 for
+the common two-leg case — and since #1106's best-chunk-only rule the two-leg
+figure is the **bound**: a page's vector contribution is its best chunk's
+reciprocal rank, never a per-chunk sum, so the ceiling no longer tracks the
+stage limit at all. (`resolveStageLimit` — the fetch width, floored at `topK`
+and at `ceil(topK×1.5)` under EE ACL — still sizes the candidate POOL.) At the
 defaults:
 
 | Path | topK | stage limit | worst-case fusion score |
@@ -156,7 +156,7 @@ sources, handed a flat `score: 1`, were the only ones that could raise the
 average. #1117 moved the badge onto the cosine (`similarity` on the wire); the
 fusion value stays ordering-only. `rrfWorstCase` in `rag-service.ts` computes
 these and a test pins them, because the prose version of this table has been
-wrong twice.
+wrong three times.
 
 Fusion now carries the per-leg values alongside the fused score instead of
 replacing them; ordering is unchanged.
@@ -177,12 +177,12 @@ of this.
 
 `search_analytics.max_score` deliberately still stores the **fusion** value for
 `hybrid` and `keyword_fallback` rows. Repointing it at `vectorScore` would make
-new rows silently incomparable with historical ones. Two #1104 caveats: on
+new rows silently incomparable with historical ones. One #1104 caveat: on
 `hybrid_rerank` rows the max runs over the rerank-SELECTED top-K (which can
-include deep-fused candidates the reranker promoted), and merely assigning a
-rerank provider widens the chat legs to the candidate pool, raising the
-fusion ceiling for `hybrid` (bypassed) rows as well — the `search_type` tag
-separates units, not scales. Since migration 088
+include deep-fused candidates the reranker promoted). A second — assigning a
+rerank provider raising the fusion ceiling on bypassed rows too — was retired
+by #1106's width-invariant bound; it applies to rows from that era only.
+Since migration 088
 (#1117 stage 2) `search_type` is the documented unit tag for `max_score` —
 one unit per value, pinned by the table below — and rerank scores get their
 own `rerank_score` column instead of ever overloading this one:
@@ -381,14 +381,15 @@ pre-#1103 EE ordering at `topK ≥ 7`, which fused over the full 1.5× pool:
 the same dilution, worst exactly where the pool was widest.
 
 `/api/search?mode=semantic` shares the decoupling: it fetches
-`resolveStageLimit(limit, width, false)` chunks and slices to `limit` after
-dedupe-by-page — fetching exactly `limit` chunks under-delivered whenever one
-page's chunks occupied several top slots. Widening there is order-preserving
-(cosine order is a stable prefix) while `ef_search` is constant — true at the
-default width; an admin-raised width past `RAG_EF_SEARCH/2` raises `ef` with
-it, which can surface genuinely nearer neighbours above previous results. The
-residual chunks-vs-pages gap (a stage limit of N can still dedupe to fewer
-than N pages on long-page corpora) is #1106's page-merge work, in both modes.
+`resolveStageLimit(limit, width, false)` distinct pages (page-denominated
+since #1106 — vectorSearch over-fetches raw chunk rows internally and
+truncates at the requested page count, so the old chunks-vs-pages
+under-delivery is resolved at the source). Widening is order-preserving
+(cosine order is a stable prefix) while `ef_search` is constant — since
+#1106 ef covers the RAW fetch, so the constant range is stage limits
+≤ `RAG_EF_SEARCH/8` = 12, still true at the default width 10; beyond it a
+raised `ef` explores more of the HNSW graph and can surface genuinely nearer
+neighbours above previous results.
 
 **The width's default (10) is deliberately the legacy per-leg limit.** On
 #1102's fixture, width 30 with plain RRF regressed Recall@5 0.8819 → 0.7153

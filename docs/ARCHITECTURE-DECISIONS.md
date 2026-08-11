@@ -843,8 +843,8 @@ services:
 
 ## ADR-012: RAG Pipeline with pgvector
 
-> **Amended (#1265, #1103, #1104 — epic #1100):** three parts of the pipeline
-> below have evolved. (1) The chunking input is **Markdown from
+> **Amended (#1265, #1103, #1104, #1106 — epic #1100):** four parts of the
+> pipeline below have evolved. (1) The chunking input is **Markdown from
 > `htmlToEmbeddingText(body_html)`**, not stripped plain text — the
 > plain-text step made the heading/paragraph strategy unreachable (#1265).
 > (2) Retrieval fetch width is decoupled from return width behind the
@@ -852,7 +852,13 @@ services:
 > longer "RRF order is the final order": when a provider is assigned to the
 > `rerank` use case (ADR-021's #1104 amendment), a **cross-encoder rerank
 > stage** re-scores the fused candidate pool on the chat path before the
-> final slice, with honest bypass on failure. The embedding model/dimensions
+> final slice, with honest bypass on failure. (4) The vector leg is
+> **page-denominated with best-chunk-only fusion** (#1106): a retrieval
+> limit counts distinct pages (vectorSearch over-fetches raw chunk rows and
+> truncates at the requested page count), and a page's RRF contribution is
+> its best chunk's reciprocal rank per leg — per-chunk summing was removed
+> on measured head-dilution evidence, making the fusion-score ceiling a
+> width-invariant constant. The embedding model/dimensions
 > named below are the original defaults; the live pair is DB-configured per
 > ADR-021.
 

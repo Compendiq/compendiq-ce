@@ -7,6 +7,7 @@ import {
 } from '../../../test-db-helper.js';
 import { query, getPool } from '../../../core/db/postgres.js';
 import pgvector from 'pgvector';
+import { visiblePagesPredicate } from '../../../core/services/page-visibility.js';
 
 // Deterministic 1024-dim vector for fixtures and queries
 function fakeVec(seed: number): number[] {
@@ -933,18 +934,41 @@ describe.skipIf(!dbAvailable)('rag-service integration — per-page ACL post-fil
 describe.skipIf(!dbAvailable)('rag-service integration — #1106 raw fetch plans onto the HNSW index', () => {
   beforeAll(async () => {
     await setupTestDb();
+    await truncateAllTables();
+    // Seed real rows: on an EMPTY table every plan costs ~0 and the GUC
+    // penalties below stop discriminating — the planner can pick anything
+    // and the probe becomes a coin flip (#1269 review follow-up on m11).
+    await query(
+      `INSERT INTO spaces (space_key, space_name) VALUES ('DEV', 'DEV') ON CONFLICT (space_key) DO NOTHING`,
+    );
+    for (let i = 0; i < 6; i++) {
+      const page = await query<{ id: number }>(
+        `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+         VALUES ($1, 'confluence', 'DEV', $2, 'probe fixture', '', '') RETURNING id`,
+        [`explain-probe-${i}`, `Probe ${i}`],
+      );
+      await query(
+        `INSERT INTO page_embeddings (page_id, chunk_index, chunk_text, embedding, metadata)
+         VALUES ($1, 0, 'probe chunk', $2, '{"page_title":"Probe","section_title":"S","space_key":"DEV"}')`,
+        [page.rows[0]!.id, pgvector.toSql(Array.from({ length: 1024 }, (_, d) => Math.sin((d + 1) * (i + 2)) * 0.01))],
+      );
+    }
   });
   afterAll(async () => {
     await teardownTestDb();
   });
 
-  it('the widened vector query shape is HNSW-index-compatible at the raw cap', async () => {
+  it('the REAL widened vector query shape is HNSW-index-compatible at the raw cap', async () => {
     // The risk an EXPLAIN guards against is a QUERY-SHAPE change defeating
-    // the index (an ORDER BY expression that stops matching the opclass) —
-    // at which point the leg silently degrades to a full scan on the chat
-    // path. Tiny fixture tables make the planner prefer a seq scan on cost
-    // alone, so disable it for the probe: what we assert is that the shape
-    // CAN use idx_page_embeddings_hnsw, not the cost-based choice on 3 rows.
+    // the index (an ORDER BY expression that stops matching the opclass, or
+    // a join/predicate combination the planner cannot serve from an index
+    // path) — at which point the leg silently degrades to a full scan on
+    // the chat path. The probe therefore mirrors vectorSearch's query
+    // BYTE-FOR-SHAPE: same JOIN, same visiblePagesPredicate, same
+    // deleted_at filter, same select list — a bare single-table probe
+    // certifies a layer that was never at risk (#1269 review m11). Tiny
+    // fixture tables make the planner prefer a seq scan on cost alone, so
+    // disable it: what we assert is that the shape CAN use the index.
     const vec = pgvector.toSql(Array.from({ length: 1024 }, (_, i) => Math.sin(i + 1) * 0.01));
     // One CLIENT, not the pool helper: SET LOCAL is transaction-scoped and
     // pooled query() calls can land on different connections, which would
@@ -954,12 +978,22 @@ describe.skipIf(!dbAvailable)('rag-service integration — #1106 raw fetch plans
     try {
       await client.query('BEGIN');
       await client.query('SET LOCAL enable_seqscan = off');
+      // Sorts too: on a tiny fixture the planner happily satisfies the
+      // ORDER BY with an explicit Sort of nine rows, index or no index.
+      // With both off, the ordered HNSW index path is the only non-penalized
+      // way to produce the ORDER BY — so its presence in the plan genuinely
+      // discriminates shape compatibility.
+      await client.query('SET LOCAL enable_sort = off');
       const r = await client.query<{ 'QUERY PLAN': string }>(
-        `EXPLAIN SELECT pe.page_id, pe.chunk_index, pe.embedding <=> $1 AS distance
+        `EXPLAIN SELECT cp.id AS page_id, cp.confluence_id, pe.chunk_text, pe.chunk_index, pe.metadata,
+                pe.embedding <=> $2 AS distance
          FROM page_embeddings pe
-         ORDER BY pe.embedding <=> $1
-         LIMIT 500`,
-        [vec],
+         JOIN pages cp ON pe.page_id = cp.id
+         WHERE ${visiblePagesPredicate(1, 4)}
+         AND cp.deleted_at IS NULL
+         ORDER BY pe.embedding <=> $2
+         LIMIT $3`,
+        [['DEV'], vec, 500, '00000000-0000-4000-8000-000000000001'],
       );
       await client.query('ROLLBACK');
       text = r.rows.map((row) => row['QUERY PLAN']).join('\n');
@@ -967,5 +1001,8 @@ describe.skipIf(!dbAvailable)('rag-service integration — #1106 raw fetch plans
       client.release();
     }
     expect(text).toContain('idx_page_embeddings_hnsw');
+    // The positive assertion can pass with the index appearing in a
+    // subordinate role; the negative one makes an accidental pass harder.
+    expect(text).not.toContain('Seq Scan on page_embeddings');
   });
 });

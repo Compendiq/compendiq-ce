@@ -31,11 +31,12 @@ export interface Source {
   sectionTitle?: string;
   /**
    * Retrieval ORDERING value, in whichever unit produced it — an RRF fusion
-   * score for a hybrid answer (typically ~0.033, up to ~0.17 on this path when
-   * one page fills the vector leg), or a flat `1` for web and external sources,
-   * which never went through retrieval. Kept because it orders the array. The
-   * ~0.17 figure is the chat path's; see `SearchResult.score` in
-   * `rag-service.ts` for why it is not a global bound.
+   * score for a hybrid answer (typically ~0.033, and since #1106's
+   * best-chunk-only fusion rule that is also the ceiling at every width; rows
+   * persisted before that deploy could reach ~0.17 on this path via per-chunk
+   * summing), or a flat `1` for web and external sources, which never went
+   * through retrieval. Kept because it orders the array. See
+   * `SearchResult.score` in `rag-service.ts` for the scale history.
    *
    * @deprecated Never render or threshold this. Use {@link Source.similarity}.
    */

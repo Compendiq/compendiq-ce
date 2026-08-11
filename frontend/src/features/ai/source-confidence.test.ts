@@ -5,8 +5,9 @@ import type { Source } from './SourceCitations';
 /**
  * The confidence badge reads a cosine similarity, but until #1117 it was handed
  * `score` — which after RRF fusion is the fusion value, capped near 1/61 + 1/61
- * ≈ 0.0328 for the common two-leg case (more when one page fills the vector
- * leg, but never near 1). ConfidenceBadge thresholds at >= 0.7 high and
+ * ≈ 0.0328 for the common two-leg case (an exact bound since #1106's
+ * best-chunk-only rule; pre-#1106 per-chunk summing could push it higher,
+ * but never near 1). ConfidenceBadge thresholds at >= 0.7 high and
  * >= 0.4 medium, so every hybrid knowledge-base answer rendered a red
  * "Low confidence", while web sources — handed a hardcoded `score: 1` — were the
  * only ones that could pull an average up.
