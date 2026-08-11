@@ -954,14 +954,26 @@ export const IDENTIFIER_LOOKUP_CANDIDATES = 5;
 const PIN_EXCERPT_FALLBACK_CHARS = 500;
 
 /**
- * #1107 — the similarity a fuzzy TITLE match must clear to be pinned.
- * Deliberately well above pg_trgm's 0.3 default: 0.3 is tuned for "worth
- * retrieving", while a pin asserts "this is the page you named" and
- * silences the refusal gate. An exactly-typed title scores 1.0, so this
- * leaves generous room for typos and word-order noise while refusing a
- * merely adjacent title.
+ * #1107 — a TITLE pin requires an EXACT match, normalised for case and
+ * whitespace. Not a similarity threshold, at any value.
+ *
+ * A threshold cannot work here, and that is measurable rather than a
+ * matter of taste. On Postgres 17 / pg_trgm 1.6:
+ *
+ *   similarity('Deployment Runbok',      'Deployment Runbook')      = 0.850
+ *   similarity('Deployment Runbook 2023','Deployment Runbook 2024') = 0.846
+ *
+ * A typo of the page the user meant and a DIFFERENT page in the same
+ * versioned family are indistinguishable — and the same holds for
+ * 'Q1 Roadmap'/'Q2 Roadmap' (0.692), 'EMEA…'/'APAC…' (0.630) and
+ * 'v1.2'/'v1.3' (0.810). Any floor that admits the typo admits the wrong
+ * year, quarter or region, which this stage would then lead the results
+ * with, label a verified exact match, and suppress the #1105 refusal gate
+ * for. Fuzzy tolerance was never in the issue's contract; it arrived with
+ * the trigram operator. The `%` operator stays as the index-driven
+ * candidate generator, and equality is the verification.
  */
-export const PIN_TITLE_MIN_SIMILARITY = 0.6;
+const normalizeTitle = (value: string): string => value.trim().replace(/\s+/g, ' ').toLowerCase();
 
 /**
  * #1107 — verify one detected identifier under the caller's space
@@ -1047,14 +1059,15 @@ async function lookupIdentifier(
     // only ever emits [A-Z0-9-]+ (asserted below): no regex metacharacter
     // can reach here, and `-` is literal outside a bracket expression.
     // `~*` is still an index-usable operator for gin_trgm_ops.
-    // The hyphen is excluded from the boundary on BOTH sides as well as
-    // the alphanumerics: `-` continues an identifier rather than ending
-    // one, so allowing it would let key INC-220 match the sub-task title
-    // INC-220-1 — a different identifier, which is the same wrong-pin
-    // class one rung down.
+    // The boundary excludes every character that CONTINUES an identifier,
+    // not just alphanumerics: `-`, `.` and `_`. Each one was a wrong pin —
+    // key INC-220 matching sub-task `INC-220-1`, key PROJ-12 matching
+    // `PROJ-12.1` (dotted sub-task) or `PROJ-12_old`. A delimiter that
+    // genuinely ends an identifier (space, colon, bracket, slash, comma)
+    // still admits the match.
     if (!/^[A-Za-z0-9-]+$/.test(ident.value)) return [];
-    const boundedKey = `(^|[^[:alnum:]-])${ident.value}([^[:alnum:]-]|$)`;
-    const startsWithKey = `^${ident.value}([^[:alnum:]-]|$)`;
+    const boundedKey = `(^|[^[:alnum:]._-])${ident.value}([^[:alnum:]._-]|$)`;
+    const startsWithKey = `^${ident.value}([^[:alnum:]._-]|$)`;
     const titled = await query<Row>(
       `${select} AND cp.title ~* $2
        ORDER BY (cp.title ~* $4) DESC, length(cp.title) ASC, cp.id ASC LIMIT $6`,
@@ -1062,16 +1075,16 @@ async function lookupIdentifier(
     );
     rows = titled.rows;
   } else if (ident.kind === 'title') {
-    // pg_trgm's default 0.3 threshold is a RETRIEVAL bar, and this stage
-    // makes a much stronger claim: it labels the row a verified exact
-    // match, leads the results with it, and suppresses the #1105 refusal
-    // gate on its behalf. At 0.3 a merely similar title clears that bar.
-    // The `%` operator stays so the trigram index still drives the scan;
-    // the explicit floor is the recheck that earns the claim.
+    // `%` narrows via the trigram index; normalised EQUALITY is what earns
+    // the pin (see normalizeTitle — no threshold separates a typo from a
+    // sibling page in a versioned title family). Ordering is by id because
+    // every survivor is an exact match; the candidate list plus the ACL
+    // filter pick which same-titled page the caller may actually read.
     const r = await query<Row>(
-      `${select} AND cp.title % $2 AND similarity(cp.title, $2) >= $6
-       ORDER BY similarity(cp.title, $2) DESC, cp.id ASC LIMIT $4`,
-      [spaces, ident.value, userId, limit, excerptChars, PIN_TITLE_MIN_SIMILARITY],
+      `${select} AND cp.title % $2
+       AND lower(btrim(regexp_replace(cp.title, '\\s+', ' ', 'g'))) = $6
+       ORDER BY cp.id ASC LIMIT $4`,
+      [spaces, ident.value, userId, limit, excerptChars, normalizeTitle(ident.value)],
     );
     rows = r.rows;
   } else {

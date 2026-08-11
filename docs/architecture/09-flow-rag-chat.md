@@ -273,19 +273,30 @@ then picks one confidently — and because the shorter key's own page often
 has the *longer* title, `length ASC` actively promoted the wrong ticket.
 Sequential ticket numbering makes every short key a prefix of a longer
 one, so this was ordinary, not exotic. The predicate is a boundary regex
-that excludes the hyphen on both sides as well as alphanumerics, since `-`
-continues an identifier (`INC-220` must not match the sub-task
-`INC-220-1`); `~*` remains index-usable for `gin_trgm_ops`, and the
-interpolation is safe because the detector only emits `[A-Z0-9-]`.
+that excludes every character which CONTINUES an identifier — `-`, `.` and
+`_` as well as alphanumerics — since each was a wrong pin (`INC-220`
+matching sub-task `INC-220-1`, `PROJ-12` matching `PROJ-12.1` or
+`PROJ-12_old`). Delimiters that genuinely end an identifier (space, colon,
+bracket, comma, slash) still admit the match; `~*` remains index-usable for
+`gin_trgm_ops` (verified: Bitmap Index Scan on `idx_pages_title_trgm`), and
+the interpolation is safe because the detector only emits `[A-Z0-9-]`.
 (2) **`NULLS LAST` on the pageId ordering.** `(cp.confluence_id = $2) DESC`
 is NULL for a locally-created page and Postgres sorts DESC as NULLS FIRST,
 so a PK match on a local page outranked the page whose `confluence_id`
 actually equalled the queried value — the precise inverse of the namespace
-preference the clause exists to state. (3) **A fuzzy title match must clear
-`PIN_TITLE_MIN_SIMILARITY` (0.6), not pg_trgm's 0.3 default.** 0.3 is a
-"worth retrieving" bar; a pin leads the results and silences the refusal
-gate, so it must clear a higher one. An exactly-typed title scores 1.0, so
-the floor leaves room for typos while refusing a merely adjacent title.
+preference the clause exists to state. (3) **A title pin requires an EXACT
+match, normalised for case and whitespace — not a similarity threshold, at
+any value.** This is measured, not stylistic: `similarity('Deployment
+Runbok', 'Deployment Runbook')` is 0.850 and `similarity('Deployment
+Runbook 2023', 'Deployment Runbook 2024')` is 0.846, so a *typo of the
+right page* and a *different page in a versioned family* are
+indistinguishable by threshold. The same holds for `Q1`/`Q2 Roadmap`
+(0.692), `EMEA`/`APAC` (0.630) and `v1.2`/`v1.3` (0.810). Any floor that
+admits the typo admits the wrong year, quarter or region — which this
+stage would then lead the results with, label a verified exact match, and
+suppress the refusal gate for. Fuzzy tolerance was never in the issue's
+contract; it arrived with the trigram operator. `%` stays as the
+index-driven candidate generator and equality is the verification.
 
 **The issue-key lookup probes TITLES only, and that is a precision
 decision, not an oversight** (#1273 fork F1). It was briefly two-tiered,

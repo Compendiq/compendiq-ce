@@ -1171,19 +1171,44 @@ describe.skipIf(!dbAvailable)('rag-service integration — #1107 identifier pin 
     expect(out.some((r) => r.pinned)).toBe(false);
   });
 
-  it('a merely SIMILAR title is not a verified exact match — the pin clears a similarity floor', async () => {
-    // pg_trgm's 0.3 default is a retrieval bar; a pin leads the results
-    // and suppresses the #1105 refusal gate, so it has to earn more.
+  it('a title pin requires EXACT match — a sibling in a versioned family is never pinned', async () => {
+    // Measured on this Postgres: a TYPO of the right page scores 0.850
+    // ('Deployment Runbok' vs 'Deployment Runbook') and a DIFFERENT page
+    // in a versioned family scores 0.846 ('… 2023' vs '… 2024'). No
+    // threshold separates them, so a pin — which leads the results and
+    // suppresses the #1105 gate — requires equality, not similarity.
     await query(
       `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
-       VALUES (gen_random_uuid()::text, 'confluence', 'DEV', 'Deployment Runbook', 'the real one', '', '')`,
+       VALUES (gen_random_uuid()::text, 'confluence', 'DEV', 'Quarterly Runbook 2024', 'the 2024 one', '', '')`,
     );
-    const near = await hybridSearch(USER, '"Deployment Rundown Archive 2019"', 5, undefined, { pinIdentifiers: true });
-    expect(near.some((r) => r.pinned)).toBe(false);
-    // The exact title still pins — the floor is not a ban on fuzziness.
-    const exact = await hybridSearch(USER, '"Deployment Runbook"', 5, undefined, { pinIdentifiers: true });
-    expect(exact[0]!.pageTitle).toBe('Deployment Runbook');
+    const wrongYear = await hybridSearch(USER, '"Quarterly Runbook 2023"', 5, undefined, { pinIdentifiers: true });
+    expect(wrongYear.some((r) => r.pinned)).toBe(false);
+
+    const typo = await hybridSearch(USER, '"Quarterly Runbok 2024"', 5, undefined, { pinIdentifiers: true });
+    expect(typo.some((r) => r.pinned)).toBe(false);
+
+    // Exact still pins, and normalisation covers case and inner spacing.
+    const exact = await hybridSearch(USER, '"Quarterly Runbook 2024"', 5, undefined, { pinIdentifiers: true });
+    expect(exact[0]!.pageTitle).toBe('Quarterly Runbook 2024');
     expect(exact[0]!.pinned).toBe(true);
+
+    const messy = await hybridSearch(USER, '"quarterly   runbook 2024"', 5, undefined, { pinIdentifiers: true });
+    expect(messy[0]!.pageTitle).toBe('Quarterly Runbook 2024');
+    expect(messy[0]!.pinned).toBe(true);
+  });
+
+  it('a dotted or underscored sub-task key is a different identifier too', async () => {
+    for (const title of ['PRD-77.1 sub-task notes', 'PRD-78_old archive']) {
+      await query(
+        `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+         VALUES (gen_random_uuid()::text, 'confluence', 'DEV', $1, 'body', '', '')`,
+        [title],
+      );
+    }
+    const dotted = await hybridSearch(USER, 'what is PRD-77 about', 5, undefined, { pinIdentifiers: true });
+    expect(dotted.some((r) => r.pinned)).toBe(false);
+    const underscored = await hybridSearch(USER, 'what is PRD-78 about', 5, undefined, { pinIdentifiers: true });
+    expect(underscored.some((r) => r.pinned)).toBe(false);
   });
 
   it('a key living only in BODY text pins NOTHING — verification is title-only (#1273 fork F1)', async () => {
