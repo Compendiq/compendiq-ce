@@ -79,6 +79,10 @@ const CALLED_CUE = /\bpage\s+(?:called|named)\s+(.{2,120})$/i;
 // PROSE ("FAQ right now") is left alone — trimming words would guess at
 // where the title ends, and a silent miss beats a confident wrong pin.
 const TRAILING_PUNCT = /[\s"“”„«»'’?.!,;:]+$/;
+// And the LEADING half. `page called "X"` reaches here rather than through
+// QUOTED, whose inner class needs two characters — so without this the
+// capture kept its opening quote and the trigram probe searched for `"X`.
+const LEADING_PUNCT = /^[\s"“”„«»'’]+/;
 
 export function detectIdentifiers(query: string): DetectedIdentifier[] {
   const trimmed = query.trim();
@@ -120,7 +124,7 @@ export function detectIdentifiers(query: string): DetectedIdentifier[] {
   }
   const called = CALLED_CUE.exec(trimmed);
   if (called) {
-    const title = called[1]!.trim().replace(TRAILING_PUNCT, '');
+    const title = called[1]!.trim().replace(LEADING_PUNCT, '').replace(TRAILING_PUNCT, '');
     if (title.length >= 2) add('title', title);
   }
 

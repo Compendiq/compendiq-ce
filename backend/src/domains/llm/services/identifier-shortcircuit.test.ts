@@ -130,6 +130,19 @@ describe('detectIdentifiers (#1107)', () => {
       expect(detectIdentifiers('the page called FAQ?')).toContainEqual({ kind: 'title', value: 'FAQ' });
       expect(detectIdentifiers('page named Deployment Runbook.')).toContainEqual({ kind: 'title', value: 'Deployment Runbook' });
     });
+
+    it('strips quotes the QUOTED path does not own, rather than searching for them', () => {
+      // Single quotes are not in the QUOTED class, so the called-cue is the
+      // only path that sees them and the capture used to keep both.
+      expect(detectIdentifiers("the page called 'Deployment Runbook'")).toContainEqual({
+        kind: 'title',
+        value: 'Deployment Runbook',
+      });
+      // And the degenerate case: `"X"` is below the module's 2-character
+      // floor, so once its quotes are stripped it detects NOTHING. That is
+      // the point — it used to survive as the corrupt title `"X`.
+      expect(detectIdentifiers('the page called "X"')).toEqual([]);
+    });
   });
 
   describe('guards', () => {
