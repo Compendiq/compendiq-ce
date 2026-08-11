@@ -30,9 +30,20 @@ describe('resolvePageState', () => {
     ).toBeNull();
   });
 
-  it('surfaces a failure from either pipeline', () => {
-    expect(resolvePageState({ summaryStatus: 'failed' })?.label).toBe('Failed');
-    expect(resolvePageState({ qualityStatus: 'failed' })?.label).toBe('Failed');
+  // Named per pipeline (not a bare "Failed") so a reader can tell this badge
+  // apart from QualityScoreBadge's own "Analysis Failed" state when both
+  // render on the same row (a page scored once, then failing re-analysis,
+  // keeps its last score — see the severity-ladder tests below for the case
+  // where both pipelines fail at once).
+  it('surfaces a failure from either pipeline, naming which one', () => {
+    expect(resolvePageState({ summaryStatus: 'failed' })?.label).toBe('Summary failed');
+    expect(resolvePageState({ qualityStatus: 'failed' })?.label).toBe('Quality failed');
+  });
+
+  it('names both pipelines when summary and quality fail together', () => {
+    const state = resolvePageState({ summaryStatus: 'failed', qualityStatus: 'failed' });
+    expect(state?.label).toBe('Summary & quality failed');
+    expect(state?.tone).toBe('failed');
   });
 
   it('reports an unindexed page', () => {
@@ -50,7 +61,7 @@ describe('resolvePageState', () => {
     it('failure outranks an unindexed page', () => {
       expect(
         resolvePageState({ embeddingDirty: true, summaryStatus: 'failed' })?.label,
-      ).toBe('Failed');
+      ).toBe('Summary failed');
     });
 
     // `not indexed` beats `processing` because it is the only state that
@@ -70,7 +81,7 @@ describe('resolvePageState', () => {
           summaryStatus: 'summarizing',
           qualityStatus: 'failed',
         })?.label,
-      ).toBe('Failed');
+      ).toBe('Quality failed');
     });
   });
 

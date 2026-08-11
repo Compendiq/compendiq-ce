@@ -13,10 +13,13 @@ import { PageStateBadge } from './PageStateBadge';
  * while the row was being pointed at, while Local/Shared beside it (already on
  * the tint recipe) stayed crisp.
  *
- * `failed` keeps its destructive fill and border — failure is a state and
- * earns its hue — but the LABEL takes the secondary ink: text-destructive
- * measured 3.94:1 on its own /10 tint over a hovered Paper row, under AA at
- * 11px. The secondary ink measures 8.33–10.28:1 on the same fills.
+ * `failed` is amber (border-warning/bg-warning/text-warning), matching
+ * QualityScoreBadge's own "Analysis Failed" state for the same underlying
+ * event (ADR-010: "failure keeps amber"). It used to be destructive red,
+ * which meant the identical quality/summary failure wore two different hues
+ * depending on which of the two badges rendered it on a given row.
+ * text-warning needs no ink swap — QualityScoreBadge ships this exact trio
+ * already, so it is proven to clear AA at 11px.
  *
  * `working` stays on the status-ai tint: measured 4.94–6.00:1 on both row
  * grounds in both themes.
@@ -33,14 +36,19 @@ describe('PageStateBadge tone recipes', () => {
     expect(badge.className).not.toContain('text-muted-foreground');
   });
 
-  it('failed keeps the destructive fill and border but carries its label in the secondary ink', () => {
+  it('failed wears the amber warning recipe, not destructive red, and names the pipeline', () => {
     render(<PageStateBadge summaryStatus="failed" />);
     const badge = screen.getByTestId('page-state-badge');
-    expect(badge).toHaveTextContent('Failed');
-    expect(badge.className).toContain('bg-destructive/10');
-    expect(badge.className).toContain('border-destructive/40');
-    expect(badge.className).toContain('text-secondary-foreground');
-    expect(badge.className).not.toContain('text-destructive');
+    expect(badge).toHaveTextContent('Summary failed');
+    expect(badge.className).toContain('bg-warning/10');
+    expect(badge.className).toContain('border-warning/40');
+    expect(badge.className).toContain('text-warning');
+    expect(badge.className).not.toContain('destructive');
+  });
+
+  it('names quality failure separately from summary failure', () => {
+    render(<PageStateBadge qualityStatus="failed" />);
+    expect(screen.getByTestId('page-state-badge')).toHaveTextContent('Quality failed');
   });
 
   it('working keeps the status-ai tint — a running job is a pipeline state', () => {
