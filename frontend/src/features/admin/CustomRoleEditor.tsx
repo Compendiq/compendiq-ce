@@ -266,7 +266,7 @@ export function CustomRoleEditor({ open, onOpenChange, editRole }: CustomRoleEdi
             </Dialog.Title>
             <Dialog.Close asChild>
               <button
-                className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+                className="nm-icon-button"
                 aria-label="Close"
                 data-testid="close-editor-btn"
               >
@@ -484,7 +484,7 @@ export function CustomRoleEditor({ open, onOpenChange, editRole }: CustomRoleEdi
             </div>
             <div className="flex items-center gap-2">
               <Dialog.Close asChild>
-                <button className="rounded-md bg-foreground/5 px-4 py-2 text-sm hover:bg-foreground/10">
+                <button className="nm-button-ghost">
                   Cancel
                 </button>
               </Dialog.Close>

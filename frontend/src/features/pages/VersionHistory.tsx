@@ -208,7 +208,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
             </div>
             <Dialog.Close asChild>
               <button
-                className="rounded p-1 text-muted-foreground hover:bg-foreground/5"
+                className="nm-icon-button"
                 aria-label="Close"
               >
                 <X size={16} />

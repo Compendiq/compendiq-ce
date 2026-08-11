@@ -115,7 +115,7 @@ export function AutoTagger({ pageId, currentLabels, model, className }: AutoTagg
                 </div>
                 <Dialog.Close
                   aria-label="Close"
-                  className="rounded p-1 text-muted-foreground hover:bg-foreground/5"
+                  className="nm-icon-button"
                 >
                   <X size={16} />
                 </Dialog.Close>

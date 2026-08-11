@@ -580,7 +580,7 @@ function TemplateGallery({ onSelect, onClose }: { onSelect: (html: string) => vo
             <Dialog.Title className="text-lg font-semibold">Choose a Template</Dialog.Title>
             <Dialog.Close
               aria-label="Close template gallery"
-              className="text-muted-foreground hover:text-foreground"
+              className="nm-icon-button"
             >
               <X size={18} />
             </Dialog.Close>

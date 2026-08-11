@@ -82,7 +82,7 @@ export function SyncConflictResolveDialog({ conflict, onClose, onResolved }: Pro
               </Dialog.Description>
             </div>
             <Dialog.Close
-              className="rounded-md p-1.5 text-muted-foreground hover:bg-foreground/5 disabled:opacity-50"
+              className="nm-icon-button"
               disabled={isPending}
               data-testid="sync-conflict-resolve-close-btn"
               aria-label="Close"
