@@ -44,6 +44,8 @@ export interface EvalRunResult {
   runs: QueryRun[];
   /** Queries where at least one returned page carried a vector-leg score. */
   vectorParticipatingQueries: number;
+  /** #1104: queries in which at least one returned result carried a rerankScore. */
+  rerankParticipatingQueries: number;
   totalQueries: number;
 }
 
@@ -65,11 +67,13 @@ export async function runEval(fixture: Fixture, opts: EvalRunOptions): Promise<E
 
   const runs: QueryRun[] = [];
   let vectorParticipatingQueries = 0;
+  let rerankParticipatingQueries = 0;
 
   for (const label of fixture.labels) {
     const results = await hybridSearch(opts.userId, label.query, opts.topK, undefined, { rerank: opts.rerank === true });
 
     if (results.some((r) => r.vectorScore !== null)) vectorParticipatingQueries++;
+    if (results.some((r) => r.rerankScore != null)) rerankParticipatingQueries++;
 
     const expected = label.expectedFiles.map((file) => {
       const pageId = opts.pageIdByFile.get(file);
@@ -95,5 +99,15 @@ export async function runEval(fixture: Fixture, opts: EvalRunOptions): Promise<E
     );
   }
 
-  return { runs, vectorParticipatingQueries, totalQueries: fixture.labels.length };
+  // A --rerank run in which the stage never executed once (unassigned,
+  // erroring, always past the budget) is a plain run wearing the wrong
+  // label — the same class of silent lie the vector-participation guard
+  // exists for (#1267 verification, 5).
+  if (opts.rerank === true && rerankParticipatingQueries === 0 && fixture.labels.length > 0) {
+    throw new VectorLegSilentError(
+      'A rerank run was requested but the rerank stage participated in 0 queries — '
+      + 'check the rerank use-case assignment and the provider endpoint before trusting this measurement.',
+    );
+  }
+  return { runs, vectorParticipatingQueries, rerankParticipatingQueries, totalQueries: fixture.labels.length };
 }

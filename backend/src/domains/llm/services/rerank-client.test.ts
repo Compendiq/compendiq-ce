@@ -57,7 +57,7 @@ function respondWith(results: Array<{ index: number; relevance_score: number }>)
 }
 
 describe('rerank-client (#1104)', () => {
-  it('POSTs the Cohere/Jina/TEI shape and maps results ordered by relevance', async () => {
+  it('POSTs the Cohere/Jina shape and maps results ordered by relevance', async () => {
     respondWith([
       { index: 0, relevance_score: 0.2 },
       { index: 2, relevance_score: 0.9 },
@@ -86,6 +86,55 @@ describe('rerank-client (#1104)', () => {
     ]);
     const out = await rerank(cfg(), 'm', 'q', ['a', 'b']);
     expect(out).toEqual([{ index: 0, relevanceScore: 0.4 }]);
+  });
+
+  it('dedupes a provider-echoed duplicate index, first occurrence wins', async () => {
+    respondWith([
+      { index: 0, relevance_score: 0.4 },
+      { index: 0, relevance_score: 0.9 }, // duplicate — dropped
+      { index: 1, relevance_score: 0.6 },
+    ]);
+    const out = await rerank(cfg(), 'm', 'q', ['a', 'b']);
+    // Without the dedup the same chunk would land in the LLM context and the
+    // citation list twice. First occurrence wins by policy (document order is
+    // the provider's own emphasis); the duplicate's higher score is ignored.
+    expect(out).toEqual([
+      { index: 1, relevanceScore: 0.6 },
+      { index: 0, relevanceScore: 0.4 },
+    ]);
+  });
+
+  it('aborts at the timeoutMs budget and rejects — the queue slot is not held to the 300s queue timeout', async () => {
+    responder = (res) => {
+      // Never answer within the budget; the abort must cut the request.
+      setTimeout(() => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ results: [] }));
+      }, 5_000).unref();
+    };
+    const started = Date.now();
+    await expect(
+      rerank(cfg(), 'm', 'q', ['a'], { timeoutMs: 150 }),
+    ).rejects.toThrow();
+    // Well under the responder's 5s — the deadline did the cutting.
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  it('deterministic 404/405 (chat-only provider misconfig) bypasses the shared breaker', async () => {
+    responder = (res) => {
+      res.writeHead(404);
+      res.end('no such route');
+    };
+    const c = cfg();
+    // Three failures is the breaker threshold; deterministic statuses must
+    // not count, or a wrong rerank assignment 503s chat on the same provider.
+    for (let i = 0; i < 4; i++) {
+      await expect(rerank(c, 'm', 'q', ['a'])).rejects.toMatchObject({ status: 404 });
+    }
+    // A 5th call still reaches the SERVER (breaker closed) — reaching it and
+    // getting the provider's own 404 is the proof; an open breaker would
+    // reject with CircuitBreakerOpenError instead.
+    await expect(rerank(c, 'm', 'q', ['a'])).rejects.toMatchObject({ status: 404 });
   });
 
   it('throws a typed LlmHttpError on a missing results array', async () => {

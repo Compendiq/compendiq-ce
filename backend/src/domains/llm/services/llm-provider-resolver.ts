@@ -149,6 +149,16 @@ export async function resolveRerankUsecase(): Promise<Resolved | null> {
 }
 
 export async function resolveUsecase(usecase: LlmUsecase): Promise<Resolved> {
+  // The one enforcement point for #1104's resolution invariant: rerank NEVER
+  // inherits the default provider (it speaks /v1/rerank, the default speaks
+  // /chat/completions). Every current caller routes rerank through
+  // resolveRerankUsecase already; this throw is what keeps the next dynamic
+  // caller from silently re-enabling the fallback.
+  if (usecase === 'rerank') {
+    throw new Error(
+      "resolveUsecase must not resolve 'rerank' — use resolveRerankUsecase (unassigned = stage disabled)",
+    );
+  }
   // Enterprise override: when org LLM policy is enabled, EE returns the
   // policy's (providerId, model). CE noop always returns null.
   const override = await getEnterprisePlugin().resolveUsecaseOverride?.(usecase);

@@ -226,7 +226,7 @@ erDiagram
     }
 
     llm_usecase_assignments {
-        text usecase PK "chat|summary|quality|auto_tag|embedding"
+        text usecase PK "chat|summary|quality|auto_tag|embedding|rerank"
         uuid provider_id FK
         text model "nullable; null = inherit provider default"
         timestamptz updated_at
@@ -368,7 +368,7 @@ together, which matters most for #1114's query-side prefix.
 - **LLM providers are rows, not env vars.** The `llm_providers` table
   stores one row per configured upstream endpoint (ADR-021). Exactly one
   row has `is_default = TRUE`. The `llm_usecase_assignments` table maps
-  each of `chat | summary | quality | auto_tag | embedding` to a
+  each of `chat | summary | quality | auto_tag | embedding | rerank` (#1104; rerank disabled when unassigned, never defaulted) to a
   `(provider_id, model)` pair. `model` may be `NULL` to inherit the
   provider's `default_model`; the whole row may be absent to inherit the
   default provider + its default model. The resolver caches this lookup

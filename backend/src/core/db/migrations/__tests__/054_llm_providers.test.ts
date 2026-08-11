@@ -14,7 +14,12 @@ describe.skipIf(!dbAvailable)('Migration 054 — multi LLM providers', () => {
     // breaks every later CASCADE assertion against this shared test DB.
     // Force 087 to re-run so the constraint is back before the pool closes.
     await query(`DROP TABLE IF EXISTS llm_model_capabilities CASCADE`);
-    await query(`DELETE FROM _migrations WHERE name = '087_llm_model_capabilities.sql'`);
+    // 090 altered llm_usecase_assignments' usecase CHECK; the pre-054 cases
+    // recreate the table from 054's original DDL, silently reverting it the
+    // same way (#1104 was the first victim). Same fix: force a re-run.
+    await query(
+      `DELETE FROM _migrations WHERE name IN ('087_llm_model_capabilities.sql', '090_rerank_usecase.sql')`,
+    );
     await runMigrations();
     await teardownTestDb();
   });
@@ -62,22 +67,6 @@ describe.skipIf(!dbAvailable)('Migration 054 — multi LLM providers', () => {
     await expect(
       query(`DELETE FROM llm_providers WHERE id=$1`, [id]),
     ).rejects.toThrow(/violates foreign key constraint/i);
-  });
-
-  afterAll(async () => {
-    // The pre-054 cases above DROP llm_usecase_assignments and re-run 054's
-    // SQL — which recreates the table with 054's ORIGINAL five-value CHECK,
-    // silently erasing every later migration's DDL on it from the shared,
-    // persistent test DB while `_migrations` still records them as applied
-    // (#1104 was the first victim: its 090 constraint vanished for every
-    // suite that ran after this file). Re-apply the later table-touching
-    // migrations so this file leaves the schema the way the migration chain
-    // produces it. Extend this list when a future migration alters the
-    // table again.
-    const restore = await (await import('node:fs')).promises.readFile(
-      new URL('../090_rerank_usecase.sql', import.meta.url), 'utf8',
-    );
-    await query(restore);
   });
 
   it('seeds OpenAI provider from legacy admin_settings (true pre-054 path)', async () => {

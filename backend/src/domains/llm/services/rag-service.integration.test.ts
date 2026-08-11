@@ -770,6 +770,34 @@ describe.skipIf(!dbAvailable)('rag-service integration — per-page ACL post-fil
     ids.push(await mk('shared', stranger));
     ids.push(await mk('private', user));
     ids.push(await mk('private', stranger));
+    // ACE granted via GROUP membership → allowed (the batch SQL's group arm
+    // is a hand-written re-implementation of the per-page group join — this
+    // fixture is what keeps the two from drifting, #1267 verification 7)
+    const grp = await query<{ id: number }>(
+      `INSERT INTO groups (name, description, source) VALUES ('eq-group', 'x', 'local') RETURNING id`,
+    );
+    await query(
+      `INSERT INTO group_memberships (group_id, user_id) VALUES ($1, $2::uuid)`,
+      [grp.rows[0]!.id, user],
+    );
+    const aceGroup = await insertPage({ spaceKey: 'EQ', title: 'ace-group', bodyText: 'x', vec: fakeVec(3.35), inheritPerms: false });
+    await query(
+      `INSERT INTO access_control_entries (resource_type, resource_id, principal_type, principal_id, permission, source)
+       VALUES ('page', $1, 'group', $2::text, 'read', 'local')`,
+      [aceGroup, grp.rows[0]!.id],
+    );
+    ids.push(aceGroup);
+    // ACE granted to a group the user is NOT in → denied
+    const grp2 = await query<{ id: number }>(
+      `INSERT INTO groups (name, description, source) VALUES ('eq-other-group', 'x', 'local') RETURNING id`,
+    );
+    const aceOtherGroup = await insertPage({ spaceKey: 'EQ', title: 'ace-other-group', bodyText: 'x', vec: fakeVec(3.36), inheritPerms: false });
+    await query(
+      `INSERT INTO access_control_entries (resource_type, resource_id, principal_type, principal_id, permission, source)
+       VALUES ('page', $1, 'group', $2::text, 'read', 'local')`,
+      [aceOtherGroup, grp2.rows[0]!.id],
+    );
+    ids.push(aceOtherGroup);
     // soft-deleted page → denied
     const deleted = await insertPage({ spaceKey: 'EQ', title: 'gone', bodyText: 'x', vec: fakeVec(3.4) });
     await query(`UPDATE pages SET deleted_at = NOW() WHERE id = $1`, [deleted]);

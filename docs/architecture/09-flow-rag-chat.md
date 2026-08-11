@@ -132,6 +132,7 @@ defaults:
 | Path | topK | stage limit | worst-case fusion score |
 |---|---|---|---|
 | `/llm/ask` (chat) | 5 | 10 (the width) | ~0.169 |
+| `/llm/ask` with a rerank provider assigned (#1104) | 5 | 30 (the rerank pool) | ~0.419 — assignment alone shifts the scale, on bypassed rows too |
 | `/api/search` at `limit=20` | 20 | 20 (topK floor) | ~0.302 |
 | `/api/search` under EE ACL | 20 | `ceil(20×1.5)` = 30 | ~0.419 |
 | admin-raised width `w` | ≤ `w` | `w` (knob capped at 200; a larger topK still floors it) | `rrfWorstCase(w, true)` — passes 1.0 at the cap |
@@ -164,7 +165,12 @@ of this.
 
 `search_analytics.max_score` deliberately still stores the **fusion** value for
 `hybrid` and `keyword_fallback` rows. Repointing it at `vectorScore` would make
-new rows silently incomparable with historical ones. Since migration 088
+new rows silently incomparable with historical ones. Two #1104 caveats: on
+`hybrid_rerank` rows the max runs over the rerank-SELECTED top-K (which can
+include deep-fused candidates the reranker promoted), and merely assigning a
+rerank provider widens the chat legs to the candidate pool, raising the
+fusion ceiling for `hybrid` (bypassed) rows as well — the `search_type` tag
+separates units, not scales. Since migration 088
 (#1117 stage 2) `search_type` is the documented unit tag for `max_score` —
 one unit per value, pinned by the table below — and rerank scores get their
 own `rerank_score` column instead of ever overloading this one:

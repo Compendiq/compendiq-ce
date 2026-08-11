@@ -111,10 +111,17 @@ export async function rerank(
             signal: deadline ? AbortSignal.any([signal, deadline]) : signal,
           });
           if (!res.ok) {
-            // As with embeddings (#867): a deterministic 400 proves the
-            // provider is reachable — it must not open the breaker.
+            // As with embeddings (#867): a deterministic client-side status
+            // proves the provider is reachable — it must not open the
+            // breaker. For rerank that set includes 404/405: they are what a
+            // chat-only provider answers for POST /v1/rerank, i.e. the
+            // MISCONFIGURATION case. The breaker is shared per PROVIDER, so
+            // counting those as failures would open it for chat/embeddings
+            // too and turn a wrong rerank assignment into user-facing 503s
+            // (#1267 verification, 2). Timeouts and 5xx still count.
+            const deterministic = res.status === 400 || res.status === 404 || res.status === 405;
             throw new LlmHttpError(
-              'rerank', res.status, await providerRequestInfra.errorDetail(res), res.status === 400,
+              'rerank', res.status, await providerRequestInfra.errorDetail(res), deterministic,
             );
           }
           const body = (await res.json()) as {

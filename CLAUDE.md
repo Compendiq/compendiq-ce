@@ -51,7 +51,7 @@ Fastify 5 · pgvector (HNSW, `bge-m3`, 1024-dim) · BullMQ (toggleable via `USE_
 
 ## LLM Provider Model (ADR-021)
 
-N named `openai-compatible` providers in `llm_providers` table, configured via Settings → AI Models. Each use case (chat / summary / quality / auto_tag / embedding) inherits a default or pins an explicit `provider+model`. Ollama uses its `/v1` shim — not a separate protocol. Queue + per-provider circuit breakers wrap every outbound call in `openai-compatible-client.ts`.
+N named `openai-compatible` providers in `llm_providers` table, configured via Settings → AI Models. Each use case (chat / summary / quality / auto_tag / embedding) inherits a default or pins an explicit `provider+model` — **except `rerank` (#1104), which never inherits: unassigned means the rerank stage is disabled** (it targets a Cohere/Jina-style `/v1/rerank` endpoint the default provider cannot serve; `resolveRerankUsecase`, not `resolveUsecase`, and a dedicated `rerank-client.ts` sharing the queue/breaker infra). Ollama uses its `/v1` shim — not a separate protocol. Queue + per-provider circuit breakers wrap every outbound call in `openai-compatible-client.ts`.
 
 **Legacy env vars** (`OLLAMA_BASE_URL`, `OPENAI_*`, `LLM_BEARER_TOKEN`, `DEFAULT_LLM_MODEL`, `SUMMARY_MODEL`, `QUALITY_MODEL`, `LLM_MAX_CONCURRENT_STREAMS_PER_USER`, `COMPENDIQ_LICENSE_KEY`) are **deprecated bootstrap fallbacks** — consulted only on fresh install when the DB row / `admin_settings` value is absent. Don't add new env-driven LLM config; extend the providers table or `admin_settings` instead.
 

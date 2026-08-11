@@ -49,7 +49,18 @@ export function UsecaseAssignmentsSection({ assignments, providers, onChange }: 
       <h3 className="text-sm font-semibold">Use case assignments</h3>
       {USECASES_ORDERED.map((u) => {
         const row = assignments[u];
+        // A frontend bundle newer than the backend (rolling deploy, cached
+        // SPA) can receive a document without a newly added use case; an
+        // unguarded row.providerId would throw during render and take the
+        // whole route's error boundary with it (#1267 verification, 9).
+        if (!row) return null;
         const effectiveProviderId = row.providerId ?? row.resolved.providerId;
+        // #1104: assigned-but-unresolvable — a provider is chosen but the
+        // server could not resolve a model for the stage (rerank with no
+        // model anywhere). Without this, the row looks configured while the
+        // stage is silently disabled.
+        const assignedButUnresolvable =
+          u === 'rerank' && row.providerId !== null && row.resolved.providerId === NIL_UUID;
         return (
           <div key={u} data-testid={`usecase-row-${u}`} className="space-y-1.5">
             <div className="grid grid-cols-[140px_180px_1fr_auto] items-center gap-2">
@@ -91,9 +102,17 @@ export function UsecaseAssignmentsSection({ assignments, providers, onChange }: 
                 inheritLabel="Inherit provider's model"
               />
               <span className="flex items-center gap-2 text-muted-foreground text-xs">
-                → {row.resolved.providerName} / {row.resolved.model || '(none)'}
+                {assignedButUnresolvable
+                  ? '→ not resolvable'
+                  : `→ ${row.resolved.providerName} / ${row.resolved.model || '(none)'}`}
               </span>
             </div>
+            {assignedButUnresolvable && (
+              <p className="text-status-syncing text-xs" data-testid="usecase-rerank-unresolvable">
+                Assigned, but no model resolves — the rerank stage is disabled. Pick a model, or
+                set a default model on the provider.
+              </p>
+            )}
             {/*
               #1184: the capability affordances sit on their own line under the
               chat row. The badge alone fitted in the resolved column; the badge

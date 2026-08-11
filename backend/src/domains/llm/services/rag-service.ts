@@ -103,7 +103,10 @@ interface SearchResult {
    * - chat path (`/llm/ask`, topK 5 → stage limit 10): at most ~0.17, which
    *   sat under ConfidenceBadge's old 0.4 cosine threshold — why reading this
    *   field as a cosine produced "Low confidence" every time (#1117 moved the
-   *   badge onto `vectorScore`).
+   *   badge onto `vectorScore`). **With a rerank provider ASSIGNED (#1104)
+   *   the chat stage limit becomes the candidate pool (default 30), so the
+   *   ceiling rises to ~0.42 — merely assigning rerank shifts this value's
+   *   scale on analytics rows, reranked AND bypassed alike.**
    * - `/api/search` with `limit=20` → stage limit 20 (30 under EE ACL): up to
    *   ~0.30 / ~0.42. Do not restate the chat-path bound as a global one.
    * - an admin-raised `rag_fetch_width` raises the bound with it —
@@ -279,7 +282,7 @@ export async function keywordSearch(userId: string, questionText: string, limit 
         rank: number;
       }>(
         `SELECT cp.id AS page_id, cp.confluence_id, cp.title, cp.space_key,
-                substring(cp.body_text, 1, 500) as body_text,
+                substring(coalesce(cp.body_text, ''), 1, 500) as body_text,
                 ts_rank(cp.tsv, plainto_tsquery('${ftsLang}', $2)) AS rank
          FROM pages cp
          WHERE cp.tsv @@ plainto_tsquery('${ftsLang}', $2)
@@ -490,9 +493,10 @@ export type DegradedReason = 'no_embeddings' | 'partial_embeddings' | 'embedding
 /** Observability fields added by migration 088 (#1117 stage 2). */
 export interface SearchAnalyticsExtras {
   /**
-   * Max rerank score of the returned set, [0,1]. Reserved for the #1104
-   * reranker — nothing writes it yet; the column exists now so rerank scores
-   * get their own unit instead of overloading `max_score`.
+   * Max rerank score of the returned set, [0,1]. Written on `hybrid_rerank`
+   * rows since #1104 (hybridSearch is the writer); NULL on bypassed and
+   * non-reranked rows. Its own column so rerank scores keep their own unit
+   * instead of overloading `max_score`.
    */
   rerankScore?: number | null;
   degradedReason?: DegradedReason | null;
@@ -832,22 +836,11 @@ async function hybridSearchInner(
   // no longer read (Confluence restriction added between sync and query,
   // ACE synced for a page whose space the user lost access to, etc.). The
   // filter preserves RRF rank order.
-  //
-  // Cost shape (#1103): the merged set is up to 2x the stage limit — at the
-  // defaults that is unchanged from before, but an admin-raised width
-  // multiplies it (up to 2x200 at the cap), and each `userCanAccessPage` is
-  // 1-3 sequential queries. Two bounds apply: checks run in fixed-size
-  // parallel batches (order-preserving — verdicts are awaited per batch and
-  // appended in merged order), and the walk stops once topK candidates have
-  // PASSED. A caller denied on most candidates still examines the whole
-  // merged set — batching caps the latency, not the query count; a batched
-  // rbac API is #1104's problem when the width actually rises.
-  // The rerank stage rescores this many head candidates when active; without
-  // it the pipeline needs only topK.
+  // Since #1104 it is ONE set-based query (filterAccessiblePages) over the
+  // whole merged set — no early stop, no per-candidate round-trips; do not
+  // re-add a topK stop here, it would starve the rerank pool the stage
+  // below slices from.
   const rerankCfg = await rerankCfgPromise;
-  const poolTarget = rerankCfg
-    ? Math.max(await rerankCandidatesPromise, Math.max(0, topK))
-    : Math.max(0, topK);
 
   let candidates: SearchResult[];
   if (aclEnforced) {
@@ -885,6 +878,7 @@ async function hybridSearchInner(
   let rerankMax: number | null = null;
   let topResults: SearchResult[];
   if (rerankCfg && searchType === 'hybrid' && candidates.length > 1) {
+    const poolTarget = Math.max(await rerankCandidatesPromise, Math.max(0, topK));
     const pool = candidates.slice(0, poolTarget);
     const rerankStarted = performance.now();
     try {
@@ -904,6 +898,15 @@ async function hybridSearchInner(
       const scored = await rerankDocuments(rerankCfg.config, rerankCfg.model, queryText, docs, {
         timeoutMs: RERANK_TIMEOUT_MS,
       });
+      // An empty scored set means the provider answered 200 with nothing this
+      // client could use (unrecognised keys, out-of-range indices, an empty
+      // results array). That is a NON-FUNCTIONING stage, not a successful
+      // rescore — falling through would label the untouched fused order
+      // 'hybrid_rerank' and make a dead provider indistinguishable from a
+      // working one in every signal (#1267 verification, 1).
+      if (scored.length === 0) {
+        throw new Error('rerank returned no scoreable results — provider answered but nothing mapped');
+      }
       // Rebuild the pool in relevance order; anything the provider did not
       // score keeps its fused position after the scored entries.
       const byIndex = new Map(scored.map((s) => [s.index, s.relevanceScore]));
