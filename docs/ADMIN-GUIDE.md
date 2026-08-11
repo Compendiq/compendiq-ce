@@ -384,21 +384,6 @@ Read through a 60-second in-process cache, so a change takes effect within a
 minute (immediately in the process that wrote it, once the settings panel
 lands in #1118; until then the only write path is SQL).
 
-### Retrieval-confidence refuse gate (`rag_confidence_threshold`)
-
-When set above its default **0**, the AI assistant refuses to answer a
-knowledge-base question whose retrieval confidence (max rerank relevance
-when the rerank stage is active, else max cosine similarity) falls below the
-threshold — an honest "not enough grounded context" with the closest sources
-attached, instead of a low-grounded answer (#1105). `admin_settings` key
-`rag_confidence_threshold`, float in [0, 1); 0 (or an absent row) disables
-the gate and leaves the confidence diagnostic-only in logs/traces. Questions
-with other grounding (sub-page tree, attached URLs, web search) and
-keyword-only degraded results are never auto-refused. **The right value is
-deployment-specific** — the embedding model moves the cosine scale and the
-rerank normalisation moves the relevance scale — so start from your logged
-confidence values, not from a number someone else used.
-
 > **Do not raise this without a reranker.** More candidates is NOT more
 > recall under plain RRF fusion: measured on the retrieval eval fixture,
 > width 30 dropped Recall@5 from 0.88 to 0.72 while Recall@10 improved —
@@ -409,6 +394,46 @@ confidence values, not from a number someone else used.
 > deliberately. On EE deployments with `rag_permission_enforcement`, a
 > raised width also multiplies the per-candidate ACL checks a single search
 > can perform.
+
+### Retrieval-confidence refuse gate (two thresholds, one per basis)
+
+When raised above the default **0**, the AI assistant refuses to answer a
+knowledge-base question whose retrieval confidence falls below the
+threshold — an honest "not enough grounded context" with the closest
+sources attached, instead of a low-grounded answer (#1105). Two
+`admin_settings` keys, because the two confidence bases are unrelated
+scales and the basis can flip per request (a rerank outage falls back to
+cosine):
+
+- **`rag_confidence_threshold`** — gates the *similarity* basis (max cosine
+  over the returned set; used whenever the rerank stage did not score the
+  full set). The embedding model moves this scale.
+- **`rag_confidence_threshold_rerank`** — gates the *rerank* basis (max
+  cross-encoder relevance, used only when the #1104 stage scored **every**
+  returned row). The provider and its normalisation move this scale — and
+  for a raw-logit reranker (e.g. llama.cpp) the per-request sigmoid
+  normalisation makes scores only loosely comparable across requests, so
+  tune this knob conservatively or leave it at 0 and gate on similarity.
+
+Each is a plain decimal in [0, 1) — `0.35`, not `1`, `0,35` or `35%`
+(rejected loudly in the logs, gate stays off); 0 or an absent row disables
+that basis and leaves its confidence diagnostic-only in logs/traces. Until
+the Retrieval settings panel lands (#1118) the only write path is SQL:
+`INSERT INTO admin_settings (setting_key, setting_value) VALUES
+('rag_confidence_threshold', '0.35') ON CONFLICT (setting_key) DO UPDATE
+SET setting_value = EXCLUDED.setting_value;` (60-second read cache — takes
+effect within a minute).
+
+Never auto-refused, whatever the thresholds: questions with other grounding
+in play (sub-page tree, attached URLs, web search, **a continued
+conversation** — the model may be resolving a follow-up against earlier
+turns), keyword-only results (no measurable signal), and empty results
+during *degraded* retrieval (embedding provider down, corpus unembedded —
+an outage is not "the knowledge base has nothing on this"). Only an empty
+set from **healthy** retrieval, or a measured-weak set, refuses. **The
+right values are deployment-specific** — start from your logged confidence
+values (`RAG retrieval confidence` info lines), not from a number someone
+else used.
 
 ### Sync conflict resolution (Enterprise, v0.4+)
 

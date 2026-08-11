@@ -55,11 +55,15 @@ vi.mock('../../domains/llm/services/rag-service.js', async (importOriginal) => (
   buildRagContext: (...args: unknown[]) => mockBuildRagContext(...args),
 }));
 
-// --- Mock: the #1105 confidence threshold (admin_settings-backed) ---
+// --- Mock: the #1105 per-basis confidence thresholds (admin_settings-backed) ---
+// Two knobs because cosine and rerank relevance are incommensurable scales;
+// the route must pick by confidence.basis (#1268 review B2).
 const mockConfidenceThreshold = vi.fn(async () => 0);
+const mockConfidenceThresholdRerank = vi.fn(async () => 0);
 vi.mock('../../core/services/admin-settings-service.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../core/services/admin-settings-service.js')>()),
   getRagConfidenceThreshold: () => mockConfidenceThreshold(),
+  getRagConfidenceThresholdRerank: () => mockConfidenceThresholdRerank(),
 }));
 
 // --- Mock: content-converter (htmlToMarkdown used in other routes in same file) ---
@@ -204,6 +208,7 @@ describe('POST /api/llm/ask', () => {
     // #1105 gate default: OFF — individual tests raise it and this reset
     // keeps a raised threshold from leaking into later tests.
     mockConfidenceThreshold.mockResolvedValue(0);
+    mockConfidenceThresholdRerank.mockResolvedValue(0);
     // Default query mock: returns row with id for saveConversation INSERT
     mockQuery.mockResolvedValue({ rows: [{ id: 'test-conv-id' }] });
     mockBuildRagContext.mockReturnValue('Relevant context from the knowledge base.');
@@ -322,8 +327,13 @@ describe('POST /api/llm/ask', () => {
       expect((final.sources as unknown[]).length).toBe(1);
     });
 
-    it('gate ON + rerank basis above threshold: answers (rerank evidence wins over weak cosine)', async () => {
-      mockConfidenceThreshold.mockResolvedValue(0.3);
+    it('gate ON + rerank basis: gates on the RERANK knob, not the similarity one (#1268 B2)', async () => {
+      // Similarity threshold 0.99 would refuse this cosine-0.12 result — but
+      // the set is fully reranked, so the rerank knob (0.3) is the one
+      // consulted and 0.85 clears it. Wrong-knob selection fails this test
+      // in both directions.
+      mockConfidenceThreshold.mockResolvedValue(0.99);
+      mockConfidenceThresholdRerank.mockResolvedValue(0.3);
       mockHybridSearch.mockResolvedValue([{ ...lowSimResult, rerankScore: 0.85 }]);
       mockBuildRagContext.mockReturnValue('[Source 1: strong by rerank]');
       mockStreamChatClient.mockReturnValue(singleChunkGenerator('Grounded answer.'));
@@ -334,6 +344,98 @@ describe('POST /api/llm/ask', () => {
       });
       expect(response.statusCode).toBe(200);
       expect(mockStreamChatClient).toHaveBeenCalled();
+    });
+
+    it('gate ON + weak rerank score below the rerank knob: refuses with basis rerank', async () => {
+      mockConfidenceThreshold.mockResolvedValue(0);
+      mockConfidenceThresholdRerank.mockResolvedValue(0.5);
+      mockHybridSearch.mockResolvedValue([{ ...lowSimResult, rerankScore: 0.2 }]);
+      mockBuildRagContext.mockReturnValue('[Source 1: weak by rerank]');
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'weakly reranked question' },
+      });
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+      const events = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      const final = events.find((f) => f.final === true)!;
+      expect(final.refused).toBe(true);
+      expect(final.confidenceBasis).toBe('rerank');
+      expect(final.confidence).toBe(0.2);
+    });
+
+    it('gate ON + degraded empty set: answers — an outage is not "the KB has nothing" (#1268 B1)', async () => {
+      mockConfidenceThreshold.mockResolvedValue(0.3);
+      // Embedding provider down → keyword fallback found nothing. The route
+      // learns this only through the onRetrievalMeta callback.
+      mockHybridSearch.mockImplementation(
+        async (_u: unknown, _q: unknown, _k: unknown, _s: unknown, opts?: {
+          onRetrievalMeta?: (m: { degradedReason: string | null; searchType: string }) => void;
+        }) => {
+          opts?.onRetrievalMeta?.({ degradedReason: 'embedding_failed', searchType: 'keyword_fallback' });
+          return [];
+        },
+      );
+      mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('Best-effort answer.'));
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'question during outage' },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(mockStreamChatClient).toHaveBeenCalled();
+      const finals = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      expect(finals.some((f) => f.refused === true)).toBe(false);
+    });
+
+    it('gate ON + prior conversation turns: answers — history is grounding the gate cannot see (#1268 B3)', async () => {
+      mockConfidenceThreshold.mockResolvedValue(0.3);
+      // "Who is second on that list?" retrieves nothing by itself; the answer
+      // lives in the previous turns.
+      const history = [
+        { role: 'user', content: 'List the on-call engineers.' },
+        { role: 'assistant', content: '1. Kim, 2. Ada.' },
+      ];
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (typeof sql === 'string' && sql.includes('SELECT messages FROM llm_conversations')) {
+          return { rows: [{ messages: history }] };
+        }
+        return { rows: [{ id: 'test-conv-id' }] };
+      });
+      mockHybridSearch.mockResolvedValue([]);
+      mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('Ada.'));
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'Who is second on that list?', conversationId: '5f0e8f9a-1b2c-4d3e-8f4a-5b6c7d8e9f0a' },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(mockStreamChatClient).toHaveBeenCalled();
+      const finals = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      expect(finals.some((f) => f.refused === true)).toBe(false);
+    });
+
+    it('refusal is persisted as a real assistant turn, without a source-list promise (#1268 M1)', async () => {
+      mockConfidenceThreshold.mockResolvedValue(0.3);
+      mockHybridSearch.mockResolvedValue([]);
+      mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
+
+      await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'unanswerable question' },
+      });
+      const insert = mockQuery.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('INSERT INTO llm_conversations'),
+      );
+      expect(insert).toBeDefined();
+      const messages = JSON.parse((insert![1] as unknown[])[3] as string) as Array<{ role: string; content: string }>;
+      const assistantTurn = messages.find((m) => m.role === 'assistant')!;
+      expect(assistantTurn.content).toContain('not answering rather than guessing');
+      // The persisted row has no sources column — the text must not promise
+      // a list that will not exist on reload.
+      expect(assistantTurn.content.toLowerCase()).not.toContain('listed below');
     });
 
     it('gate ON + keyword-only results: answers — the gate never refuses what it cannot measure', async () => {
@@ -618,12 +720,13 @@ describe('POST /api/llm/ask', () => {
 
     // The chat path requests the #1104 rerank stage explicitly; whether it
     // runs is decided by the rerank use-case assignment inside hybridSearch.
+    // It also registers the #1105 retrieval-health callback the gate reads.
     expect(mockHybridSearch).toHaveBeenCalledWith(
       'test-user-123',
       'How do I reset my password?',
       5,
       undefined,
-      { rerank: true },
+      { rerank: true, onRetrievalMeta: expect.any(Function) },
     );
   });
 

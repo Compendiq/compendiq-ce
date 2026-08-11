@@ -74,8 +74,10 @@ export function AskModeInput() {
 
   // The composer is deliberately NOT gated on embedding status, unlike the
   // example chips below (#1257 post-review, decided on backend evidence):
-  // POST /llm/ask never refuses over zero embeddings, and it is not reduced
-  // to ungrounded chat either — hybridSearch always runs its keyword FTS leg
+  // POST /llm/ask never refuses over zero embeddings — including under the
+  // #1105 confidence gate, which exempts degraded retrieval (an unembedded
+  // corpus scores null, and null never refuses) — and it is not reduced
+  // to ungrounded chat either: hybridSearch always runs its keyword FTS leg
   // (rag-service.ts `keywordSearch`, over synced page text, no embeddings
   // required), so a typed question can still come back grounded and cited;
   // the route also injects page-tree context (`includeSubPages` + pageId)

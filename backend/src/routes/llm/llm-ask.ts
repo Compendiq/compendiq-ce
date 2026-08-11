@@ -3,8 +3,8 @@ import { query } from '../../core/db/postgres.js';
 import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
 import { streamChat, type ChatMessage } from '../../domains/llm/services/openai-compatible-client.js';
 import { contentToText } from '../../domains/llm/services/prompts.js';
-import { hybridSearch, buildRagContext, computeRetrievalConfidence } from '../../domains/llm/services/rag-service.js';
-import { getRagConfidenceThreshold } from '../../core/services/admin-settings-service.js';
+import { hybridSearch, buildRagContext, computeRetrievalConfidence, type DegradedReason } from '../../domains/llm/services/rag-service.js';
+import { getRagConfidenceThreshold, getRagConfidenceThresholdRerank } from '../../core/services/admin-settings-service.js';
 import { LlmCache, buildRagCacheKey } from '../../domains/llm/services/llm-cache.js';
 import { CircuitBreakerOpenError } from '../../core/services/circuit-breaker.js';
 import { isEnabled as isMcpDocsEnabled, fetchDocumentation } from '../../core/services/mcp-docs-client.js';
@@ -89,13 +89,22 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
 
     // Perform hybrid RAG search — falls back to keyword-only if embedding fails
     let searchResults;
+    let retrievalDegradedReason: DegradedReason | null = null;
     try {
       // The chat path REQUESTS the #1104 rerank stage; it actually runs only
       // when an admin has assigned a provider+model to the `rerank` use case
       // (unassigned → no-op). `/api/search` deliberately does not request it
       // — its results paginate, and reranking one page independently of the
       // next breaks the ordering the pages share.
-      searchResults = await hybridSearch(userId, question, 5, undefined, { rerank: true });
+      searchResults = await hybridSearch(userId, question, 5, undefined, {
+        rerank: true,
+        // #1105: the confidence gate needs the retrieval-health verdict —
+        // an empty set during a vector-leg outage must not read as "the KB
+        // has nothing on this".
+        onRetrievalMeta: (meta) => {
+          retrievalDegradedReason = meta.degradedReason;
+        },
+      });
     } catch (err) {
       if (err instanceof CircuitBreakerOpenError) {
         reply.code(503);
@@ -315,24 +324,38 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     };
 
     // ── Retrieval-confidence refuse gate (#1105) ─────────────────────────
-    // Retrieval signals ONLY, never LLM self-report. Diagnostic always (log +
-    // trace); refusal only when the operator has raised
-    // `rag_confidence_threshold` above its 0 default, AND the question has no
-    // OTHER grounding in play — a sub-page tree, attached URLs or web search
-    // each add context this gate cannot see, so refusing on KB evidence
-    // alone would be wrong there. Keyword-only results (basis 'none' with a
-    // null score) are never auto-refused: the gate must not refuse what it
-    // cannot measure, and degraded keyword mode must keep answering. Placed
-    // BEFORE the cache read so a low-confidence question cannot serve a
-    // stale cached answer either.
-    const confidence = computeRetrievalConfidence(searchResults);
-    logger.debug(
-      { userId, confidence: confidence.score, basis: confidence.basis },
+    // Retrieval signals ONLY, never LLM self-report. Diagnostic always (an
+    // info log — default LOG_LEVEL shows it, which is what "ship diagnostic
+    // first" requires); refusal only when the operator raised the threshold
+    // FOR THIS REQUEST'S BASIS above its 0 default. Cosine and rerank
+    // relevance are incommensurable scales and the basis flips per request
+    // (a rerank bypass measures on cosine), so each basis gates on its own
+    // knob — see readConfidenceThreshold in admin-settings-service.
+    //
+    // Grounding the gate cannot see fails OPEN: a sub-page tree, attached
+    // URLs, web search — and PRIOR CONVERSATION TURNS, which the model
+    // resolves follow-ups against ("who's second on that list?" retrieves
+    // nothing by itself). These are request FLAGS, not realised grounding
+    // (the URLs may all fail to fetch) — deliberately so, since every miss
+    // answers rather than refuses. Keyword-only results and outage-shaped
+    // empties (degradedReason set) carry a null score and are never refused:
+    // the gate does not refuse what it cannot measure. Placed BEFORE the
+    // response-cache read so a low-confidence question cannot serve a stale
+    // cached answer either.
+    const confidence = computeRetrievalConfidence(searchResults, retrievalDegradedReason);
+    logger.info(
+      { userId, confidence: confidence.score, basis: confidence.basis, degradedReason: retrievalDegradedReason },
       'RAG retrieval confidence',
     );
-    const confidenceThreshold = await getRagConfidenceThreshold();
+    const confidenceThreshold =
+      confidence.basis === 'rerank'
+        ? await getRagConfidenceThresholdRerank()
+        : await getRagConfidenceThreshold();
     const otherGrounding = Boolean(
-      (includeSubPages && body.pageId) || (externalUrls && externalUrls.length > 0) || body.searchWeb,
+      (includeSubPages && body.pageId)
+      || (externalUrls && externalUrls.length > 0)
+      || body.searchWeb
+      || conversationHistory.length > 0,
     );
     if (
       confidenceThreshold > 0
@@ -340,13 +363,19 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       && confidence.score !== null
       && confidence.score < confidenceThreshold
     ) {
+      // No "listed below" promise: saveConversation persists {role, content}
+      // only, so on reload there is no source list to point at. The live
+      // final frame still carries the weak sources for the panel.
       const refusalText =
         searchResults.length === 0
           ? 'I could not find any knowledge-base content related to this question, so I am not answering rather than guessing. Try rephrasing, or ask about something the knowledge base covers.'
-          : 'The knowledge-base passages I found are not a strong enough match to this question to ground an answer, so I am not answering rather than guessing. The closest sources are listed below — one of them may still help directly.';
+          : 'The knowledge-base passages I found are not a strong enough match to this question to ground an answer, so I am not answering rather than guessing.';
       // The refusal is a real assistant turn: persist it so the thread reads
       // coherently on reload, but never cache it (the threshold is runtime
-      // config) and never bill an LLM call that did not happen.
+      // config) and no chat completion runs (the query embedding — and a
+      // rerank call, when that stage is live — already did; those are the
+      // cost of measuring). No llm_audit_log row is written, matching the
+      // cache-hit path: that log attests model calls, and none happened.
       await saveConversation(refusalText);
       reply.hijack();
       reply.raw.writeHead(200, {
@@ -355,9 +384,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         'Connection': 'keep-alive',
         'X-Accel-Buffering': 'no',
       });
-      reply.raw.write(`data: ${JSON.stringify({ content: refusalText, done: true })}
-
-`);
+      reply.raw.write(`data: ${JSON.stringify({ content: refusalText, done: true })}\n\n`);
       reply.raw.write(
         `data: ${JSON.stringify({
           done: true,
@@ -369,9 +396,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
           confidenceBasis: confidence.basis,
           conversationId: convId,
           sources,
-        })}
-
-`,
+        })}\n\n`,
       );
       reply.raw.end();
       return;

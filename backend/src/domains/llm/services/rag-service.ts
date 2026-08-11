@@ -664,6 +664,15 @@ export async function flushSearchAnalytics(): Promise<void> {
  */
 export interface HybridSearchOptions {
   rerank?: boolean;
+  /**
+   * Invoked once per search with the retrieval health verdict (#1105 B1).
+   * The confidence gate must distinguish "healthy retrieval genuinely found
+   * nothing" (refusable) from "the vector leg is down / the corpus is not
+   * embedded" (unmeasurable — refusing there would claim coverage facts
+   * during an outage, at outage scale). The callback keeps the return type
+   * unchanged for every existing caller.
+   */
+  onRetrievalMeta?: (meta: { degradedReason: DegradedReason | null; searchType: SearchAnalyticsType }) => void;
 }
 
 export async function hybridSearch(
@@ -803,6 +812,8 @@ async function hybridSearchInner(
   // so the two ACL branches below can never disagree.
   const searchType: SearchAnalyticsType =
     vectorResults.length === 0 && keywordResults.length > 0 ? 'keyword_fallback' : 'hybrid';
+
+  opts?.onRetrievalMeta?.({ degradedReason, searchType });
 
   span?.setAttribute('rag.vector_hits', vectorResults.length);
   span?.setAttribute('rag.keyword_hits', keywordResults.length);
@@ -964,37 +975,62 @@ async function hybridSearchInner(
  * signals only, never from LLM self-report (the guide's "confident liar"
  * rule). Two bases, never blended (their scales are unrelated):
  *
- * - `rerank`: the #1104 stage ran — max rerank relevance is the best
- *   evidence available. Deployment-specific scale (see
- *   SearchResult.rerankScore's comparability caveat).
+ * - `rerank`: the #1104 stage ran AND scored every returned row — max
+ *   rerank relevance is the best evidence available. Deployment-specific
+ *   scale (see SearchResult.rerankScore's comparability caveat). Partial
+ *   coverage (a truncating or malformed provider) downgrades to
+ *   `similarity`: one measured score must not speak for rows the
+ *   cross-encoder never saw.
  * - `similarity`: no rerank — max cosine over the returned set.
  *   Embedding-model-specific scale.
  * - `none`: keyword-only results carry NO measurable signal — score is
  *   null, and the gate must not refuse what it cannot measure (refusing
  *   every keyword-fallback would turn the degraded mode into an outage).
  *
- * An empty result set scores 0 with basis 'none' — the one unmeasured case
- * that DOES refuse when the gate is on, because "no grounding at all" is
- * exactly what the gate exists to say honestly.
+ * An empty result set from HEALTHY retrieval scores 0 with basis 'none' —
+ * the one case that DOES refuse when the gate is on, because "no grounding
+ * at all" is exactly what the gate exists to say honestly. An empty set
+ * under a degraded reason (vector leg down, corpus unembedded) is an outage
+ * symptom, scores null, and never refuses.
  */
 export interface RetrievalConfidence {
   score: number | null;
   basis: 'rerank' | 'similarity' | 'none';
 }
 
-export function computeRetrievalConfidence(results: SearchResult[]): RetrievalConfidence {
-  if (results.length === 0) return { score: 0, basis: 'none' };
+export function computeRetrievalConfidence(
+  results: SearchResult[],
+  degradedReason: DegradedReason | null = null,
+): RetrievalConfidence {
+  if (results.length === 0) {
+    // Empty is a MEASUREMENT ("the KB has nothing for this") only when
+    // retrieval was healthy. With the vector leg down or the corpus
+    // unembedded, empty is an OUTAGE symptom — unmeasurable, never refusable
+    // (#1268 review B1: keyword-only was already exempt as unmeasurable;
+    // total retrieval failure is strictly worse and must be too).
+    return degradedReason === null ? { score: 0, basis: 'none' } : { score: null, basis: 'none' };
+  }
   let maxRerank: number | null = null;
   let maxSim: number | null = null;
+  let allReranked = true;
   for (const r of results) {
-    if (r.rerankScore != null && (maxRerank === null || r.rerankScore > maxRerank)) {
-      maxRerank = r.rerankScore;
+    if (r.rerankScore != null) {
+      if (maxRerank === null || r.rerankScore > maxRerank) maxRerank = r.rerankScore;
+    } else {
+      allReranked = false;
     }
     if (r.vectorScore !== null && (maxSim === null || r.vectorScore > maxSim)) {
       maxSim = r.vectorScore;
     }
   }
-  if (maxRerank !== null) return { score: maxRerank, basis: 'rerank' };
+  // The rerank basis requires FULL coverage. A provider that returns fewer
+  // valid entries than topK (truncation, malformed rows) leaves unscored
+  // rows appended after the scored ones, and the one measured score would
+  // then speak for evidence the cross-encoder never looked at — a lone 0.12
+  // must not refuse over an unscored row carrying cosine 0.88 in the same
+  // set. Partial coverage falls through to the similarity basis, which
+  // covers every vector-leg row.
+  if (maxRerank !== null && allReranked) return { score: maxRerank, basis: 'rerank' };
   // Clamp: cosine can run negative (see vectorScore's JSDoc); a threshold in
   // [0,1) must still catch it, so floor at 0.
   if (maxSim !== null) return { score: Math.max(0, maxSim), basis: 'similarity' };

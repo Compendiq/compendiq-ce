@@ -480,6 +480,25 @@ describe('RAG Service', () => {
       expect(analyticsParams[6]).toBe('embedding_failed');
     });
 
+    it('hands degradedReason and searchType to onRetrievalMeta — the #1105 gate reads health from here, not analytics', async () => {
+      mocks.mockGenerateEmbedding.mockRejectedValue(new Error('Ollama unreachable'));
+      mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
+      // Keyword leg ALSO empty: the callback is the only way the route can
+      // tell this outage-shaped empty from a healthy "KB has nothing".
+      mocks.mockQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes('COUNT(*)')) return { rows: [{ embedded: 1, total: 1 }] };
+        return { rows: [] };
+      });
+
+      const seen: Array<{ degradedReason: string | null; searchType: string }> = [];
+      const results = await hybridSearch('user-1', 'test query', 5, undefined, {
+        onRetrievalMeta: (meta) => seen.push(meta),
+      });
+
+      expect(results).toEqual([]);
+      expect(seen).toEqual([{ degradedReason: 'embedding_failed', searchType: 'hybrid' }]);
+    });
+
     it('should record hybrid search type when both vector and keyword succeed', async () => {
       const fakeEmbedding = new Array(1024).fill(0.1);
       mocks.mockGenerateEmbedding.mockResolvedValue([[...fakeEmbedding]]);
@@ -736,16 +755,50 @@ describe('RAG Service', () => {
       sectionTitle: 'S', spaceKey: 'DEV', score: 0.03,
     };
 
-    it('empty result set scores 0 with basis none — the one unmeasured case that refuses', () => {
+    it('empty result set from HEALTHY retrieval scores 0 with basis none — the one unmeasured case that refuses', () => {
       expect(computeRetrievalConfidence([])).toEqual({ score: 0, basis: 'none' });
+      expect(computeRetrievalConfidence([], null)).toEqual({ score: 0, basis: 'none' });
     });
 
-    it('rerank evidence wins over similarity when both exist', () => {
+    it('empty result set under a degraded reason is an outage symptom: null, never refusable (#1268 B1)', () => {
+      // "The KB has nothing on this" is only a measurement when retrieval
+      // actually ran. Vector leg down or corpus unembedded → unmeasurable.
+      expect(computeRetrievalConfidence([], 'embedding_failed')).toEqual({ score: null, basis: 'none' });
+      expect(computeRetrievalConfidence([], 'no_embeddings')).toEqual({ score: null, basis: 'none' });
+    });
+
+    it('a degraded reason with NON-empty results still measures normally', () => {
+      // Degradation exempts only the empty set: results that did come back
+      // carry whatever signal they carry.
+      const results = [{ ...base, vectorScore: 0.44, keywordRank: null }];
+      expect(computeRetrievalConfidence(results, 'embedding_failed')).toEqual({ score: 0.44, basis: 'similarity' });
+    });
+
+    it('rerank evidence wins over similarity when every row was scored', () => {
       const results = [
         { ...base, vectorScore: 0.9, keywordRank: null, rerankScore: 0.4 },
         { ...base, pageId: 2, vectorScore: 0.2, keywordRank: null, rerankScore: 0.7 },
       ];
       expect(computeRetrievalConfidence(results)).toEqual({ score: 0.7, basis: 'rerank' });
+    });
+
+    it('PARTIAL rerank coverage downgrades to similarity — one measured score must not speak for unscored rows', () => {
+      // A truncating/malformed provider leaves unscored rows appended after
+      // the scored ones (#1104's mixed-set path). The lone 0.12 below must
+      // not gate a set whose unscored row carries cosine 0.88.
+      const results = [
+        { ...base, vectorScore: 0.3, keywordRank: null, rerankScore: 0.12 },
+        { ...base, pageId: 2, vectorScore: 0.88, keywordRank: null },
+      ];
+      expect(computeRetrievalConfidence(results)).toEqual({ score: 0.88, basis: 'similarity' });
+    });
+
+    it('partial rerank coverage with no vector signal anywhere is unmeasurable, not rerank-gated', () => {
+      const results = [
+        { ...base, vectorScore: null, keywordRank: 0.4, rerankScore: 0.12 },
+        { ...base, pageId: 2, vectorScore: null, keywordRank: 0.3 },
+      ];
+      expect(computeRetrievalConfidence(results)).toEqual({ score: null, basis: 'none' });
     });
 
     it('falls back to max cosine when nothing was reranked', () => {

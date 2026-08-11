@@ -173,31 +173,61 @@ export function invalidateRagRerankCandidatesCache(): void {
 export const RAG_CONFIDENCE_THRESHOLD_DEFAULT = 0;
 
 const RAG_CONFIDENCE_TTL_MS = 60_000;
-let ragConfidenceCache: { value: number; expiresAt: number } | null = null;
+const ragConfidenceCaches = new Map<string, { value: number; expiresAt: number }>();
 
-/** `rag_confidence_threshold` row, TTL-cached like its sibling knobs. */
-export async function getRagConfidenceThreshold(): Promise<number> {
-  if (ragConfidenceCache && Date.now() < ragConfidenceCache.expiresAt) {
-    return ragConfidenceCache.value;
-  }
+/**
+ * **One threshold per BASIS, never one for both (#1268 review B2):** cosine
+ * similarity and rerank relevance are incommensurable scales, and the basis
+ * flips PER REQUEST (a rerank bypass measures that request on the cosine
+ * scale). A single knob tuned on cosines (~0.35) would refuse everything the
+ * day an admin assigns a local reranker whose sigmoided logits score a
+ * strong match ~0.14 — two unrelated admin actions colliding invisibly.
+ * Each basis gates only when ITS OWN knob is raised; both default 0 (off).
+ */
+async function readConfidenceThreshold(settingKey: string): Promise<number> {
+  const cached = ragConfidenceCaches.get(settingKey);
+  if (cached && Date.now() < cached.expiresAt) return cached.value;
   let resolved = RAG_CONFIDENCE_THRESHOLD_DEFAULT;
   try {
     const r = await query<{ setting_value: string }>(
-      `SELECT setting_value FROM admin_settings WHERE setting_key = 'rag_confidence_threshold'`,
+      `SELECT setting_value FROM admin_settings WHERE setting_key = $1`,
+      [settingKey],
     );
-    const n = Number.parseFloat(r.rows[0]?.setting_value ?? '');
-    // [0, 1): 1 would refuse everything (scores are <= 1), which can only be
-    // a typo — fall back to off rather than silencing the assistant.
-    if (Number.isFinite(n) && n >= 0 && n < 1) resolved = n;
+    const raw = r.rows[0]?.setting_value;
+    if (raw !== undefined) {
+      // Strict shape, not bare parseFloat: '0,35' parseFloats to 0 — an
+      // in-range value that silently disables the gate while looking
+      // accepted, and '1' (an operator asking for maximal strictness) must
+      // not silently mean none. Reject loudly, keep the default (#1268 M4).
+      const n = /^\d*\.?\d+$/.test(raw.trim()) ? Number.parseFloat(raw.trim()) : Number.NaN;
+      if (Number.isFinite(n) && n >= 0 && n < 1) {
+        resolved = n;
+      } else {
+        logger.warn(
+          { settingKey, raw },
+          'Rejected confidence-threshold value (must be a plain decimal in [0, 1)) — gate stays off',
+        );
+      }
+    }
   } catch (err) {
-    logger.warn({ err }, 'Failed to resolve rag_confidence_threshold — gate off');
+    logger.warn({ err, settingKey }, 'Failed to resolve confidence threshold — gate off');
   }
-  ragConfidenceCache = { value: resolved, expiresAt: Date.now() + RAG_CONFIDENCE_TTL_MS };
+  ragConfidenceCaches.set(settingKey, { value: resolved, expiresAt: Date.now() + RAG_CONFIDENCE_TTL_MS });
   return resolved;
 }
 
+/** Threshold for the `similarity` (cosine) basis: `rag_confidence_threshold`. */
+export async function getRagConfidenceThreshold(): Promise<number> {
+  return readConfidenceThreshold('rag_confidence_threshold');
+}
+
+/** Threshold for the `rerank` basis: `rag_confidence_threshold_rerank`. */
+export async function getRagConfidenceThresholdRerank(): Promise<number> {
+  return readConfidenceThreshold('rag_confidence_threshold_rerank');
+}
+
 export function invalidateRagConfidenceThresholdCache(): void {
-  ragConfidenceCache = null;
+  ragConfidenceCaches.clear();
 }
 
 /**
