@@ -1048,6 +1048,44 @@ describe('PagesPage', () => {
     expect(document.activeElement).toBe(input);
   });
 
+  // --- P0 keyboard fix: search must not steal focus on landing (#1270-ish) ---
+  //
+  // Unconditionally focusing the search input on mount killed every
+  // single-key shortcut on the app's own landing route, since
+  // useKeyboardShortcuts correctly suppresses them inside an editable
+  // target. "/" (matching LoginPage's own convention) replaces it as an
+  // explicit, discoverable path to the same field.
+  describe('search input does not steal focus on landing', () => {
+    it('does not focus the search input on mount', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      const input = screen.getByPlaceholderText('Search pages...');
+      expect(document.activeElement).not.toBe(input);
+    });
+
+    it('focuses the search input on "/"', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      const input = screen.getByPlaceholderText('Search pages...');
+      expect(document.activeElement).not.toBe(input);
+
+      fireEvent.keyDown(document, { key: '/' });
+
+      expect(document.activeElement).toBe(input);
+    });
+
+    it('does not hijack "/" while already typing in an editable field', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      const input = screen.getByPlaceholderText('Search pages...') as HTMLInputElement;
+      input.focus();
+      fireEvent.change(input, { target: { value: 'a/b' } });
+
+      fireEvent.keyDown(input, { key: '/' });
+
+      // The event is suppressed inside an editable target, so the character
+      // reaches the field normally rather than being intercepted as a shortcut.
+      expect(input.value).toBe('a/b');
+    });
+  });
+
   // --- Performance: memoized page list items (#521) ---
 
   // --- Mobile responsive header buttons (#499) ---

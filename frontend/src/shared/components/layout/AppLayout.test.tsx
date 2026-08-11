@@ -359,6 +359,37 @@ describe('AppLayout', () => {
     expect(screen.getByTestId('article-right-pane')).toBeInTheDocument();
   });
 
+  // WCAG 2.4.1 Bypass Blocks (Level A): a keyboard user with no route-level
+  // tree (e.g. /ai, /graph, /settings) had no way past the header at all.
+  it('renders a skip link as the first focusable element, targeting the main content region', () => {
+    render(
+      <AppLayout>
+        <div>page body</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/') },
+    );
+    const skipLink = screen.getByText('Skip to content');
+    expect(skipLink.tagName).toBe('A');
+    expect(skipLink.getAttribute('href')).toBe('#main-content');
+
+    const main = document.getElementById('main-content');
+    expect(main).not.toBeNull();
+    expect(main!.tagName).toBe('MAIN');
+    expect(main!.getAttribute('tabindex')).toBe('-1');
+  });
+
+  it('gives the skip link\'s target real DOM focusability so activating it actually moves focus', () => {
+    render(
+      <AppLayout>
+        <div>page body</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/') },
+    );
+    const main = document.getElementById('main-content')!;
+    main.focus();
+    expect(document.activeElement).toBe(main);
+  });
+
   it('shows article layout presets only while reading a page', () => {
     const { unmount } = render(
       <AppLayout>

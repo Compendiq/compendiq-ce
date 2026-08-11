@@ -24,6 +24,7 @@ import { useUiStore } from '../../../stores/ui-store';
 import { cn } from '../../lib/cn';
 import type { PageTreeItem } from '../../hooks/use-pages';
 import type { TreeNode } from './sidebar-types';
+import { useTreeRovingFocus } from './sidebar-tree-keyboard';
 
 export type { TreeNode };
 
@@ -111,6 +112,12 @@ export interface SidebarTreeNodeProps {
   // every memoized row to every location/searchParams change, defeating the memo
   // comparator and re-rendering the whole tree on each navigation.
   isAiRoute: boolean;
+  // Roving-tabindex (#880 follow-up, epic #856): exactly one row is ever
+  // tab-stoppable — the one whose id matches `rovingId`. onRowFocus keeps it
+  // in sync with clicks/Tab; onRowKeyDown drives Up/Down/Left/Right/Home/End.
+  rovingId: string | undefined;
+  onRowFocus: (id: string) => void;
+  onRowKeyDown: (event: React.KeyboardEvent, id: string) => void;
 }
 
 export const SidebarTreeNode = memo(function SidebarTreeNode({
@@ -120,6 +127,9 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
   toggleExpand,
   activePageId,
   isAiRoute,
+  rovingId,
+  onRowFocus,
+  onRowKeyDown,
 }: SidebarTreeNodeProps) {
   const navigate = useNavigate();
   const isExpanded = expandedSet.has(node.page.id);
@@ -150,11 +160,13 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
         // scroll it into view on reload (its ancestors are auto-expanded first).
         data-active={isActive ? 'true' : undefined}
         data-page-id={node.page.id}
-        // #880: make the row a real keyboard-operable widget. role="treeitem"
+        // #880/#856: make the row a real keyboard-operable widget. role="treeitem"
         // (not "button") because the chevron is a nested <button> — a button
         // role here would nest interactive controls. Enter/Space navigate.
+        // tabIndex follows roving-tabindex: only the current row is a tab
+        // stop, so reaching a page no longer costs one Tab press per row.
         role="treeitem"
-        tabIndex={0}
+        tabIndex={rovingId === node.page.id ? 0 : -1}
         aria-expanded={hasChildren ? isExpanded : undefined}
         className={cn(
           // 28px rows at 13px. The tree is the tallest thing on screen, so its
@@ -167,6 +179,7 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
         )}
         style={{ paddingLeft: `${level * 16 + 10}px` }}
         onClick={handleNavigate}
+        onFocus={() => onRowFocus(node.page.id)}
         onKeyDown={(e) => {
           // Ignore keydown bubbling up from the nested chevron button so the
           // row doesn't double-activate when the chevron is focused.
@@ -174,7 +187,9 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault(); // Space would otherwise scroll the page
             handleNavigate();
+            return;
           }
+          onRowKeyDown(e, node.page.id);
         }}
       >
         {hasChildren ? (
@@ -219,6 +234,9 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
               toggleExpand={toggleExpand}
               activePageId={activePageId}
               isAiRoute={isAiRoute}
+              rovingId={rovingId}
+              onRowFocus={onRowFocus}
+              onRowKeyDown={onRowKeyDown}
             />
           ))}
         </div>
@@ -231,7 +249,10 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
     prev.level === next.level &&
     prev.activePageId === next.activePageId &&
     prev.expandedSet === next.expandedSet &&
-    prev.isAiRoute === next.isAiRoute
+    prev.isAiRoute === next.isAiRoute &&
+    prev.rovingId === next.rovingId &&
+    prev.onRowFocus === next.onRowFocus &&
+    prev.onRowKeyDown === next.onRowKeyDown
   );
 });
 
@@ -507,6 +528,17 @@ export function SidebarTreeView({
       return next;
     });
   }, []);
+
+  // Shared by both tree implementations below (plain + drag-reorder) — they
+  // render into the same `treeScrollRef` container and are mutually
+  // exclusive, so one hook instance covers whichever is mounted.
+  const { rovingId, handleRowFocus, handleRowKeyDown } = useTreeRovingFocus({
+    tree,
+    expandedSet: expandedIds,
+    activePageId,
+    toggleExpand,
+    containerRef: treeScrollRef,
+  });
 
   // Collapsed rail -- nav icons + expand toggle
   const collapsed = treeSidebarCollapsed || forceCollapsed;
@@ -903,13 +935,16 @@ export function SidebarTreeView({
               activePageId={activePageId}
               isAiRoute={isAiRoute}
               reorderPage={reorderPage}
+              rovingId={rovingId}
+              onRowFocus={handleRowFocus}
+              onRowKeyDown={handleRowKeyDown}
             />
           </Suspense>
         ) : (
           // #880: role="tree" + label give the role="treeitem" rows a valid
           // required-parent context and expose real tree semantics to screen
-          // readers. Keyboard reorder + full roving-tabindex/arrow-key nav
-          // remain a tracked follow-up (epic #856).
+          // readers. Roving-tabindex + arrow-key nav below closes out the
+          // epic #856 follow-up this comment used to defer.
           <div className="space-y-0.5" role="tree" aria-label="Pages">
             {tree.map((node) => (
               <SidebarTreeNode
@@ -919,6 +954,9 @@ export function SidebarTreeView({
                 toggleExpand={toggleExpand}
                 activePageId={activePageId}
                 isAiRoute={isAiRoute}
+                rovingId={rovingId}
+                onRowFocus={handleRowFocus}
+                onRowKeyDown={handleRowKeyDown}
               />
             ))}
           </div>

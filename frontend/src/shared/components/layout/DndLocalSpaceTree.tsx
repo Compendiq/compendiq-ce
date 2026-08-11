@@ -19,6 +19,12 @@ export interface DndLocalSpaceTreeProps {
   // #960: passed down from the parent so rows don't subscribe to location.
   isAiRoute: boolean;
   reorderPage: { mutate: (args: { id: string; sortOrder: number }) => void };
+  // Roving-tabindex, computed once by SidebarTreeView (#880 follow-up, epic
+  // #856) and threaded through here since the two trees share one focus
+  // target and are mutually exclusive in the same rail.
+  rovingId: string | undefined;
+  onRowFocus: (id: string) => void;
+  onRowKeyDown: (event: React.KeyboardEvent, id: string) => void;
 }
 
 interface DndSortableTreeNodeProps {
@@ -29,6 +35,9 @@ interface DndSortableTreeNodeProps {
   activePageId: string | undefined;
   isAiRoute: boolean;
   sortableIndex: number;
+  rovingId: string | undefined;
+  onRowFocus: (id: string) => void;
+  onRowKeyDown: (event: React.KeyboardEvent, id: string) => void;
 }
 
 const DndSortableTreeNode = memo(function DndSortableTreeNode({
@@ -39,6 +48,9 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
   activePageId,
   isAiRoute,
   sortableIndex,
+  rovingId,
+  onRowFocus,
+  onRowKeyDown,
 }: DndSortableTreeNodeProps) {
   const navigate = useNavigate();
   const isExpanded = expandedSet.has(node.page.id);
@@ -79,7 +91,7 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
         // (not "button") because the chevron is a nested <button> — a button
         // role here would nest interactive controls. Enter/Space navigate.
         role="treeitem"
-        tabIndex={0}
+        tabIndex={rovingId === node.page.id ? 0 : -1}
         aria-expanded={hasChildren ? isExpanded : undefined}
         className={cn(
           // Must stay in step with SidebarTreeView's row: the two trees render
@@ -92,6 +104,7 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
         )}
         style={{ paddingLeft: `${level * 16 + 10}px` }}
         onClick={handleNavigate}
+        onFocus={() => onRowFocus(node.page.id)}
         onKeyDown={(e) => {
           // Ignore keydown bubbling up from the nested chevron button so the
           // row doesn't double-activate when the chevron is focused.
@@ -99,7 +112,9 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault(); // Space would otherwise scroll the page
             handleNavigate();
+            return;
           }
+          onRowKeyDown(e, node.page.id);
         }}
       >
         <span className="shrink-0 opacity-0 group-hover:opacity-50 cursor-grab active:cursor-grabbing transition-opacity" aria-label="Drag to reorder">
@@ -148,6 +163,9 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
               activePageId={activePageId}
               isAiRoute={isAiRoute}
               sortableIndex={idx}
+              rovingId={rovingId}
+              onRowFocus={onRowFocus}
+              onRowKeyDown={onRowKeyDown}
             />
           ))}
         </div>
@@ -161,7 +179,10 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
     prev.activePageId === next.activePageId &&
     prev.expandedSet === next.expandedSet &&
     prev.isAiRoute === next.isAiRoute &&
-    prev.sortableIndex === next.sortableIndex
+    prev.sortableIndex === next.sortableIndex &&
+    prev.rovingId === next.rovingId &&
+    prev.onRowFocus === next.onRowFocus &&
+    prev.onRowKeyDown === next.onRowKeyDown
   );
 });
 
@@ -172,6 +193,9 @@ export default function DndLocalSpaceTree({
   activePageId,
   isAiRoute,
   reorderPage,
+  rovingId,
+  onRowFocus,
+  onRowKeyDown,
 }: DndLocalSpaceTreeProps) {
   const handleDragEnd = useCallback(
     (event: Parameters<DragEndEvent>[0]) => {
@@ -193,8 +217,11 @@ export default function DndLocalSpaceTree({
     <DragDropProvider onDragEnd={handleDragEnd}>
       {/* #880: role="tree" + label give the role="treeitem" rows a valid
           required-parent context and expose real tree semantics to screen
-          readers. Keyboard reorder + full roving-tabindex/arrow-key nav remain
-          a tracked follow-up (epic #856). */}
+          readers. Roving-tabindex + arrow-key nav (rovingId/onRowFocus/
+          onRowKeyDown, computed once by SidebarTreeView) closes out the
+          epic #856 follow-up this comment used to defer. Keyboard *reorder*
+          (moving a page via the keyboard, not just navigating to it) is
+          still open. */}
       <div className="space-y-0.5" role="tree" aria-label="Pages">
         {tree.map((node, idx) => (
           <DndSortableTreeNode
@@ -205,6 +232,9 @@ export default function DndLocalSpaceTree({
             activePageId={activePageId}
             isAiRoute={isAiRoute}
             sortableIndex={idx}
+            rovingId={rovingId}
+            onRowFocus={onRowFocus}
+            onRowKeyDown={onRowKeyDown}
           />
         ))}
       </div>
