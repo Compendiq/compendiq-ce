@@ -42,6 +42,8 @@ interface Report {
   /** #1106 PR 2: whether sibling assembly ran (default true; --no-assemble). */
   assembleContext: boolean;
   assemblyParticipatingQueries: number;
+  /** #1107: whether identifier pinning ran (default true; --no-pin). */
+  pinIdentifiers: boolean;
   /** #1107: queries led by a verified identifier pin. */
   pinParticipatingQueries: number;
   recallAtK: Record<string, number>;
@@ -171,6 +173,7 @@ async function main(): Promise<void> {
     // (#1270 review F10). Provably metric-invisible either way — the
     // runner scores pageIds only — and participation-guarded in runEval.
     assembleContext: !process.argv.includes('--no-assemble'),
+    pinIdentifiers: !process.argv.includes('--no-pin'),
   });
 
   const rerankRequested = process.argv.includes('--rerank');
@@ -180,6 +183,7 @@ async function main(): Promise<void> {
     corpusPages: corpus.length,
     assembleContext: !process.argv.includes('--no-assemble'),
     assemblyParticipatingQueries,
+    pinIdentifiers: !process.argv.includes('--no-pin'),
     pinParticipatingQueries,
     queries: runs.length,
     vectorParticipatingQueries,

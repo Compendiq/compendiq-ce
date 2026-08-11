@@ -22,6 +22,8 @@ vi.mock('../utils/logger.js', () => ({
 
 import {
   getAdminAccessDeniedRetentionDays,
+  getRagPinIdentifiersEnabled,
+  invalidateRagPinIdentifiersCache,
   getLlmConcurrency,
   getLlmMaxQueueDepth,
   getRagConfidenceThreshold,
@@ -378,6 +380,29 @@ describe('rag_context_chars_per_page getter (#1106 PR 2)', () => {
       expect(await getRagContextCharsPerPage()).toBe(9000);
     } finally {
       vi.useRealTimers();
+    }
+  });
+});
+
+describe('rag_pin_identifiers kill switch (#1107 / #1273 M11)', () => {
+  beforeEach(() => {
+    mockQuery.mockReset();
+    invalidateRagPinIdentifiersCache();
+  });
+
+  it('defaults ON when absent, and on DB failure', async () => {
+    mockQuery.mockResolvedValue({ rows: [] });
+    expect(await getRagPinIdentifiersEnabled()).toBe(true);
+    invalidateRagPinIdentifiersCache();
+    mockQuery.mockRejectedValue(new Error('down'));
+    expect(await getRagPinIdentifiersEnabled()).toBe(true);
+  });
+
+  it("the literal '0'/'false'/'off' disables; anything else stays on", async () => {
+    for (const [raw, expected] of [['0', false], ['false', false], ['off', false], ['1', true], ['yes', true]] as Array<[string, boolean]>) {
+      invalidateRagPinIdentifiersCache();
+      mockQuery.mockResolvedValue({ rows: [{ setting_value: raw }] });
+      expect(await getRagPinIdentifiersEnabled()).toBe(expected);
     }
   });
 });

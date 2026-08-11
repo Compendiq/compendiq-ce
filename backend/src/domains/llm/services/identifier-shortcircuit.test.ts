@@ -16,9 +16,21 @@ describe('detectIdentifiers (#1107)', () => {
       expect(detectIdentifiers('182')).toContainEqual({ kind: 'pageId', value: '182' });
     });
 
-    it('detects a cued numeric id inside a short query', () => {
-      expect(detectIdentifiers('page 182')).toContainEqual({ kind: 'pageId', value: '182' });
-      expect(detectIdentifiers('id #4711')).toContainEqual({ kind: 'pageId', value: '4711' });
+    it('detects a cued numeric id of five or more digits', () => {
+      expect(detectIdentifiers('page 43561')).toContainEqual({ kind: 'pageId', value: '43561' });
+      expect(detectIdentifiers('id #4285005824')).toContainEqual({ kind: 'pageId', value: '4285005824' });
+    });
+
+    it('NEVER fires the cued shape on small integers — dense-SERIAL prose traps (#1273 B1)', () => {
+      // pages.id is a dense SERIAL: "page 2" would verify against SOME row
+      // on every instance, so verification cannot save this shape.
+      for (const q of ['see page 12 above', 'page 2 of the deployment guide', 'what does page 7 say', 'id 500 error meaning', 'page2 formatting issue']) {
+        expect(detectIdentifiers(q).filter((d) => d.kind === 'pageId')).toEqual([]);
+      }
+    });
+
+    it('a whole-query bare number of any length stays deliberate intent', () => {
+      expect(detectIdentifiers('182')).toContainEqual({ kind: 'pageId', value: '182' });
     });
 
     it('ignores bare numbers embedded in natural language', () => {
@@ -82,7 +94,7 @@ describe('detectIdentifiers (#1107)', () => {
     });
 
     it('returns at most two identifiers, strongest kind first', () => {
-      const out = detectIdentifiers('page 182 "Runbook"');
+      const out = detectIdentifiers('page 43561 "Runbook"');
       expect(out.length).toBeLessThanOrEqual(2);
       expect(out[0]!.kind).toBe('pageId');
     });

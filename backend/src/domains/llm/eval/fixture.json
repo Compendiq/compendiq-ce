@@ -1351,6 +1351,24 @@
       ],
       "style": "identifier-negative",
       "rationale": "#1107 negative: uppercase CORS mid-question; normal retrieval must answer it untouched."
+    },
+    {
+      "id": "q-1107b00004",
+      "query": "HTTP2 TLS requirement fastify",
+      "expectedFiles": [
+        "fastify__Reference__HTTP2.md"
+      ],
+      "style": "identifier-negative",
+      "rationale": "#1273 M3: a WITHIN-token-limit query (4 tokens) of bare uppercase tokens — exercises the cue/case guards themselves, not the token counter; must rank normally with zero pin participation."
+    },
+    {
+      "id": "q-1107b00005",
+      "query": "logging in DEV fastify",
+      "expectedFiles": [
+        "fastify__Reference__Logging.md"
+      ],
+      "style": "identifier-negative",
+      "rationale": "#1273 M3: 4 tokens with a LIVE 'in' cue adjacent to a space-key-shaped token — the detector fires spaceKey, which pins nothing by design; ranking must be unchanged."
     }
   ]
 }

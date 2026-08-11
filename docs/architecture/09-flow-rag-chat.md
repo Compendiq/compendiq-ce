@@ -56,13 +56,13 @@ sequenceDiagram
         note right of BE: pool = rag_rerank_candidates (default 30)<br/>docs sanitized + truncated to 2,000 chars<br/>timeout/failure = honest bypass to fused order
     end
     note right of BE: slice to topK after ranking —<br/>fetch width is ranking headroom the rerank stage spends
-    opt pinIdentifiers (#35;1107 — chat path + eval)
-        note right of BE: detectIdentifiers(question) — pure, cue/token-guarded#59;<br/>each detection VERIFIED by an indexed lookup under the<br/>same visibility + EE ACL#59; ≤ 2 verified pins PREPENDED,<br/>fused order below never re-sorted#59; rag.pinned count#59;<br/>a pinned head keeps the confidence gate unmeasurable —<br/>a verified exact match is never auto-refused#59; soft-fail
-    end
     opt assembleContext (#35;1106 PR 2 — chat path + eval)
         BE->>PG: sibling chunks for surviving pages<br/>(main pool, ORDER BY page_id, chunk_index)
         PG-->>BE: rows
         note right of BE: per page: best-chunk-anchored window under<br/>rag_context_chars_per_page (0 = off)#59; seam-trimmed,<br/>holes marked#59; contextText read ONLY by buildRagContext —<br/>chunkText stays the best chunk#59; soft-fail to chunk-level#59;<br/>rag.page_merge: assembled | none | bypassed | off (+ pages count)
+    end
+    opt pinIdentifiers (#35;1107 — chat path + eval)
+        note right of BE: detectIdentifiers(question) — pure, cue/token-guarded#59;<br/>each detection VERIFIED by an indexed lookup under the<br/>same visibility + EE ACL#59; ≤ 2 verified pins PREPENDED,<br/>fused order below never re-sorted#59; rag.pinned count#59;<br/>a pinned head keeps the confidence gate unmeasurable —<br/>a verified exact match is never auto-refused#59; soft-fail
     end
     opt includeSubPages
         BE->>RBAC: userCanAccessPage(userId, parentPageId)
@@ -228,10 +228,22 @@ for keys and titles) under the same space-visibility predicate as
 retrieval, plus the EE ACL batch filter. Verified pins are PREPENDED to the
 final result set (a page already in the fused set MOVES to the head keeping
 its enriched row; the fused order below is never re-sorted), the tail
-re-slices to topK, and `rag.pinned` carries the count. A pinned head row
-has `vectorScore` null, which deliberately leaves the #1105 confidence gate
-unmeasurable — a verified exact match is never auto-refused. Detection
-misses and lookup errors both soft-fail to the fused order. The fixture's
+re-slices to topK, and `rag.pinned` carries the count. The #1105 gate is
+guarded IN the confidence formula: `computeRetrievalConfidence` returns
+unmeasurable for any pinned head (#1273 review B3 — a MOVED pin keeps its
+measured scores, and without the guard pinning could CAUSE a refusal the
+unpinned ranking would not have produced), so a verified exact match is
+never auto-refused, new pin or moved. Verification is deterministic and
+namespace-aware (#1273 B1/B2): the cued numeric shape requires ≥5 digits
+(pages.id is a dense SERIAL — small integers verify against SOME row on
+every instance), the confluence_id namespace outranks the internal PK, and
+the issue-key lookup is two-tiered — the page the key NAMES (title arm,
+starts-with beats contains, shorter beats longer) before pages that merely
+MENTION it (ts_rank-ordered tsv arm) — each tier on its own index. A new
+pin carries a 500-char head-of-body excerpt (no sibling assembly — a
+deliberate scope line); the operator kill switch is `rag_pin_identifiers`
+('0' disables). Detection misses and lookup errors both soft-fail to the
+fused order. The fixture's
 `identifier` / `identifier-negative` styles are the measurable form of the
 acceptance criteria: exact queries pin first, natural-language queries with
 identifier-shaped tokens are provably unmoved.

@@ -83,6 +83,10 @@ export function buildRagCacheKey(
     /** #1270 review F9: the realized outcome — a soft-failed (chunk-level)
      * answer must not occupy the fully-assembled key for the TTL. */
     assembledPages?: number;
+    /** #1273 review M5: pins change the prompt's head; a soft-failed pin
+     * must not serve (or be served) the pinned answer for the TTL — and
+     * sorted docIds alone cannot see a MOVED pin. */
+    pinnedCount?: number;
   },
 ): string {
   const sortedIds = [...docIds].sort().join(',');
@@ -100,7 +104,8 @@ export function buildRagCacheKey(
   const thinkingSuffix = options?.thinking ? 'think:1' : '';
   const contextSuffix = options?.contextChars !== undefined ? `ctx:${options.contextChars}` : '';
   const assembledSuffix = options?.assembledPages !== undefined ? `asm:${options.assembledPages}` : '';
-  return KEY_PREFIX + hashLlmInputs(model, question, sortedIds, subPageSuffix, externalSuffix, webSuffix, providerSuffix, thinkingSuffix, contextSuffix, assembledSuffix);
+  const pinnedSuffix = options?.pinnedCount !== undefined ? `pin:${options.pinnedCount}` : '';
+  return KEY_PREFIX + hashLlmInputs(model, question, sortedIds, subPageSuffix, externalSuffix, webSuffix, providerSuffix, thinkingSuffix, contextSuffix, assembledSuffix, pinnedSuffix);
 }
 
 export class LlmCache {

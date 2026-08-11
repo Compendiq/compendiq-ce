@@ -106,7 +106,7 @@ vi.mock('../../../core/services/fts-language.js', () => ({
 
 import { buildRagContext, hybridSearch, RAG_EF_SEARCH, reciprocalRankFusion, fuseWithStableHead, rrfWorstCase, vectorSearch, keywordSearch, recordSearchAnalytics, resolveStageLimit, computeRetrievalConfidence, RAG_FETCH_WIDTH_DEFAULT, truncateAtDistinctPages, PAGE_FANOUT, VECTOR_RAW_LIMIT_CAP, vectorRawLimit } from './rag-service.js';
 import type { SearchResult } from './rag-service.js';
-import { invalidateRagFetchWidthCache, invalidateRagRerankCandidatesCache, invalidateRagContextCharsCache } from '../../../core/services/admin-settings-service.js';
+import { invalidateRagFetchWidthCache, invalidateRagRerankCandidatesCache, invalidateRagContextCharsCache, invalidateRagPinIdentifiersCache } from '../../../core/services/admin-settings-service.js';
 import { CircuitBreakerOpenError } from '../../../core/services/circuit-breaker.js';
 
 describe('RAG Service', () => {
@@ -812,6 +812,24 @@ describe('RAG Service', () => {
       pageId: 1, confluenceId: 'p', chunkText: 't', pageTitle: 'T',
       sectionTitle: 'S', spaceKey: 'DEV', score: 0.03,
     };
+
+    it('a PINNED head is never measurable — a verified exact match must never be auto-refused (#1273 B3)', () => {
+      // The MOVED-pin case is the one that used to break the claim: the
+      // row keeps its measured cosine, and position 0 is exactly what the
+      // vector-led rule reads — pinning could CAUSE a refusal the unpinned
+      // ranking would not have produced.
+      const moved = [
+        { ...base, vectorScore: 0.24, keywordRank: null, pinned: true as const },
+        { ...base, pageId: 2, vectorScore: 0.9, keywordRank: null },
+      ];
+      expect(computeRetrievalConfidence(moved)).toEqual({ score: null, basis: 'none' });
+      // Same guard covers the rerank basis (a moved pin keeps rerankScore).
+      const movedReranked = [
+        { ...base, vectorScore: 0.24, keywordRank: null, rerankScore: 0.05, pinned: true as const },
+        { ...base, pageId: 2, vectorScore: 0.9, keywordRank: null, rerankScore: 0.9 },
+      ];
+      expect(computeRetrievalConfidence(movedReranked)).toEqual({ score: null, basis: 'none' });
+    });
 
     it('empty result set from HEALTHY retrieval scores 0 with basis none — the one unmeasured case that refuses', () => {
       expect(computeRetrievalConfidence([])).toEqual({ score: 0, basis: 'none' });
@@ -1994,5 +2012,42 @@ describe('exact-identifier pin stage (#1107)', () => {
     routePinQueries({ page_id: 42, confluence_id: 'x', title: 'X', space_key: 'DEV', excerpt: 'x' });
     const out = await hybridSearch('user-1', 'what is INC-2203 about', 5);
     expect(out[0]!.pinned).toBeUndefined();
+  });
+
+  it('the operator kill switch disables the stage — no detection, no lookup (#1273 M11)', async () => {
+    invalidateRagPinIdentifiersCache();
+    mocks.mockQuery.mockImplementation(async (sql: string) => {
+      if (typeof sql === 'string' && sql.includes('rag_pin_identifiers')) return { rows: [{ setting_value: '0' }] };
+      if (typeof sql === 'string' && sql.includes('COUNT(*)')) return { rows: [{ embedded: 2, total: 2 }] };
+      return { rows: [] };
+    });
+    const out = await hybridSearch('user-1', 'what is INC-2203 about', 5, undefined, { pinIdentifiers: true });
+    expect(out[0]!.pinned).toBeUndefined();
+    const lookups = mocks.mockQuery.mock.calls.filter(
+      (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('substring(cp.body_text, 1, 500)'),
+    );
+    expect(lookups).toHaveLength(0);
+    invalidateRagPinIdentifiersCache();
+  });
+
+  it('a LIVE-CUE short query with a prose-trap number issues no lookup — the guard is in the detector, not luck (#1273 M3)', async () => {
+    routePinQueries({ page_id: 42, confluence_id: 'x', title: 'X', space_key: 'DEV', excerpt: 'x' });
+    await hybridSearch('user-1', 'what does page 7 say', 5, undefined, { pinIdentifiers: true });
+    const lookups = mocks.mockQuery.mock.calls.filter(
+      (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('substring(cp.body_text, 1, 500)'),
+    );
+    expect(lookups).toHaveLength(0);
+  });
+
+  it('a pinned-only head writes max_score NULL, never 0 — analytics unit contract (#1273 M8)', async () => {
+    // topK 1 with a NEW pin displacing everything: the analytics row must
+    // not claim a fused score of 0.
+    routePinQueries({ page_id: 42, confluence_id: 'inc-page', title: 'INC-2203 postmortem', space_key: 'DEV', excerpt: 'x' });
+    await hybridSearch('user-1', 'what is INC-2203 about', 1, undefined, { pinIdentifiers: true });
+    const analytics = mocks.mockQuery.mock.calls.find(
+      (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('search_analytics'),
+    );
+    expect(analytics).toBeDefined();
+    expect((analytics![1] as unknown[])[3]).toBeNull();
   });
 });

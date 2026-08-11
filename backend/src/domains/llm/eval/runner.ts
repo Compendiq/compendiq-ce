@@ -39,6 +39,9 @@ export interface EvalRunOptions {
    * the measured configuration silently was not the shipped one.
    */
   assembleContext?: boolean;
+  /** #1107: request identifier pinning (default true — the shipped chat
+   * config); exposed so the stage is A/B-able within one tree (#1273 M10). */
+  pinIdentifiers?: boolean;
   /**
    * Fraction of queries that must show at least one vector-leg hit.
    *
@@ -101,7 +104,7 @@ export async function runEval(fixture: Fixture, opts: EvalRunOptions): Promise<E
       // #1107 mirrors the shipped chat configuration; the fixture's
       // negative cases (NL queries carrying identifier-shaped tokens) are
       // what make "natural-language queries unaffected" measurable.
-      pinIdentifiers: true,
+      pinIdentifiers: opts.pinIdentifiers !== false,
     });
 
     if (results.some((r) => r.vectorScore !== null)) vectorParticipatingQueries++;

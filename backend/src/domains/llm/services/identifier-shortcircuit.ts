@@ -41,10 +41,23 @@ const KIND_STRENGTH: Record<IdentifierKind, number> = {
 
 const ISSUE_KEY = /\b[A-Z][A-Z0-9]{1,9}-\d{1,6}\b/g;
 const WHOLE_NUMERIC = /^\d{1,10}$/;
-const CUED_NUMERIC = /\b(?:page|id)\s*#?(\d{1,10})\b/i;
+// >=5 digits for the CUED shape (#1273 review B1): pages.id is a dense
+// SERIAL, so "page 2" / "see page 12 above" would verify against SOME row
+// on every instance — the verification step is a structural no-op for
+// small integers. Five digits keeps deliberate id references (Confluence
+// ids are large; deep internal ids too) while prose page references never
+// fire. The WHOLE-QUERY shape stays any length: pasting a bare number is
+// deliberate intent, and the verifier prefers the confluence_id namespace.
+const CUED_NUMERIC = /\b(?:page|id)\s*#?\s*(\d{5,10})\b/i;
 const WHOLE_SPACE_KEY = /^[A-Z]{2,10}$/;
 const QUOTED = /"([^"]{2,120})"/;
 const CUED_SPACE_KEY = /\b(?:space|key|in)\s+([A-Z]{2,10})\b/;
+// Greedy to end-of-query by design; trailing qualifiers ("page called X
+// in DEV space") widen the captured title and typically miss the 0.3
+// trigram threshold — a silent miss, never a wrong pin (#1273 review M9).
+// The issueKey shape also admits RFC-2119/ISO-9001-style tokens; they cost
+// one indexed title probe and pin only when a page's TITLE carries them
+// (#1273 M12 — safe post-B2).
 const CALLED_CUE = /\bpage\s+(?:called|named)\s+(.{2,120})$/i;
 
 export function detectIdentifiers(query: string): DetectedIdentifier[] {

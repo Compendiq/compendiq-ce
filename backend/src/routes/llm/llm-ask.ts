@@ -307,6 +307,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       // transient recovers).
       contextChars: await getRagContextCharsPerPage(),
       assembledPages: searchResults.filter((r) => r.contextText !== undefined).length,
+      pinnedCount: searchResults.filter((r) => r.pinned === true).length,
     });
 
     // `score` is the retrieval ORDERING value — an RRF fusion score from

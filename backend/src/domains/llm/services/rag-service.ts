@@ -19,6 +19,7 @@ import { logger } from '../../../core/utils/logger.js';
 import {
   getRagContextCharsPerPage,
   getRagFetchWidth,
+  getRagPinIdentifiersEnabled,
   getRagRerankCandidates,
   RAG_FETCH_WIDTH_DEFAULT,
   RAG_FETCH_WIDTH_MAX,
@@ -938,12 +939,25 @@ export async function hybridSearch(
 }
 
 /**
- * #1107 — verify one detected identifier with a cheap indexed lookup under
- * the caller's space visibility. Returns a keyword-style SearchResult
- * (body-text excerpt, no measured scores, `pinned: true`) or null. Every
- * path is a single indexed query: pages PK / confluence_id for numeric
- * ids, the trgm title index for issue keys and titles (with a tsv phrase
- * fallback for keys living in body text).
+ * #1107 — verify one detected identifier under the caller's space
+ * visibility. Returns a keyword-style SearchResult (body-text excerpt, no
+ * measured scores, `pinned: true`) or null.
+ *
+ * The #1273 review's root-cause rule governs every branch: a lookup that
+ * returns A row must never be treated as a lookup that returned THE row.
+ * - pageId: the confluence_id namespace (what a user means by "page id")
+ *   is preferred over the internal SERIAL PK via ORDER BY, and the PK arm
+ *   only participates when the value fits int4 (B1/M2 — a 10-digit id
+ *   used to throw 22003 and soft-fail the whole lookup).
+ * - issueKey: TWO TIERS, title first (the page the key NAMES) with a
+ *   deterministic ORDER BY (title starting with the key beats containing
+ *   it, shorter beats longer), and only on a title miss the tsv body arm
+ *   (pages that MENTION the key), ranked by ts_rank — the old single OR
+ *   query returned heap order, pinning the oldest page that mentioned the
+ *   key ahead of its own postmortem (B2), and the disjunction defeated
+ *   both indexes into a seq scan (M1); split, each arm uses its index.
+ * - title: the pg_trgm path, explicitly kind-gated — the old else-branch
+ *   would have run a fuzzy TITLE match for a revived spaceKey (M4).
  */
 async function lookupIdentifier(
   ident: DetectedIdentifier,
@@ -954,35 +968,60 @@ async function lookupIdentifier(
                          substring(cp.body_text, 1, 500) AS excerpt
                   FROM pages cp
                   WHERE ${visiblePagesPredicate(1, 3)} AND cp.deleted_at IS NULL`;
-  let rows: Array<{ page_id: number; confluence_id: string | null; title: string; space_key: string | null; excerpt: string | null }>;
+  type Row = { page_id: number; confluence_id: string | null; title: string; space_key: string | null; excerpt: string | null };
+  let rows: Row[] = [];
   if (ident.kind === 'pageId') {
     const n = Number.parseInt(ident.value, 10);
-    if (!Number.isFinite(n)) return null;
-    const r = await query<(typeof rows)[number]>(
-      `${select} AND (cp.id = $2 OR cp.confluence_id = $4) LIMIT 1`,
-      [spaces, n, userId, ident.value],
-    );
+    const fitsInt4 = Number.isFinite(n) && n <= 2_147_483_647;
+    // Placeholders are renumbered per-branch: an UNREFERENCED parameter
+    // cannot type-infer ("could not determine data type of parameter") and
+    // kills the statement — the visibility fragment holds $1/$3.
+    const r = fitsInt4
+      ? await query<Row>(
+          `${select} AND (cp.confluence_id = $2 OR cp.id = $4)
+           ORDER BY (cp.confluence_id = $2) DESC LIMIT 1`,
+          [spaces, ident.value, userId, n],
+        )
+      : await query<Row>(
+          `${select} AND cp.confluence_id = $2 LIMIT 1`,
+          [spaces, ident.value, userId],
+        );
     rows = r.rows;
   } else if (ident.kind === 'issueKey') {
-    const r = await query<(typeof rows)[number]>(
-      `${select} AND (cp.title ILIKE $2 OR cp.tsv @@ phraseto_tsquery($4, $5)) LIMIT 1`,
-      [spaces, `%${ident.value}%`, userId, await getFtsLanguage(), ident.value],
+    const titled = await query<Row>(
+      `${select} AND cp.title ILIKE $2
+       ORDER BY (cp.title ILIKE $4) DESC, length(cp.title) ASC, cp.id ASC LIMIT 1`,
+      [spaces, `%${ident.value}%`, userId, `${ident.value}%`],
     );
-    rows = r.rows;
-  } else {
-    // title — the existing pg_trgm path (idx_pages_title_trgm, default
-    // 0.3 threshold via the % operator).
-    const r = await query<(typeof rows)[number]>(
-      `${select} AND cp.title % $2 ORDER BY similarity(cp.title, $2) DESC LIMIT 1`,
+    rows = titled.rows;
+    if (rows.length === 0) {
+      const body = await query<Row>(
+        `${select} AND cp.tsv @@ phraseto_tsquery($2::regconfig, $4)
+         ORDER BY ts_rank(cp.tsv, phraseto_tsquery($2::regconfig, $4)) DESC, cp.id ASC LIMIT 1`,
+        [spaces, await getFtsLanguage(), userId, ident.value],
+      );
+      rows = body.rows;
+    }
+  } else if (ident.kind === 'title') {
+    const r = await query<Row>(
+      `${select} AND cp.title % $2 ORDER BY similarity(cp.title, $2) DESC, cp.id ASC LIMIT 1`,
       [spaces, ident.value, userId],
     );
     rows = r.rows;
+  } else {
+    // spaceKey (and any future kind) verifies nothing here by design — a
+    // space is not a page; #1110 is the intended consumer.
+    return null;
   }
   const row = rows[0];
   if (!row) return null;
   return {
     pageId: row.page_id,
     confluenceId: row.confluence_id,
+    // Head-of-body excerpt, 500 chars — deliberately NOT sibling-assembled
+    // (assembly ran before this stage; #1273 review M7 records the scope
+    // line): for "find page X" the lede is the honest context, and an
+    // empty body_text yields an empty excerpt under a real title.
     chunkText: row.excerpt ?? '',
     pageTitle: row.title,
     sectionTitle: row.title,
@@ -1351,7 +1390,7 @@ async function hybridSearchInner(
   // At most two pins; the tail shrinks via the same topK slice; the fused
   // order below the pins is never re-sorted. Space-key detections verify
   // nothing here by design — a space is not a page (design of record).
-  if (opts?.pinIdentifiers) {
+  if (opts?.pinIdentifiers && (await getRagPinIdentifiersEnabled())) {
     try {
       const detected = detectIdentifiers(question).filter((d) => d.kind !== 'spaceKey');
       if (detected.length > 0) {
@@ -1392,7 +1431,12 @@ async function hybridSearchInner(
   // (rrfWorstCase rises with the fetch width), so rows straddling a
   // `rag_fetch_width` change are only loosely comparable — the same caveat
   // RAG_EF_SEARCH always carried.
-  const maxScore = topResults.length > 0 ? Math.max(...topResults.map((r) => r.score)) : null;
+  // Pinned NEW rows carry score 0 (never a fused value); excluding them
+  // keeps max_score's unit contract and stops a pinned-only head writing
+  // 0 into the knowledge-gap predicate's range (#1273 review M8). Moved
+  // pins keep their fused score and stay in the sample.
+  const scoreRows = topResults.filter((r) => r.pinned === undefined || r.vectorScore !== null || r.keywordRank !== null);
+  const maxScore = scoreRows.length > 0 ? Math.max(...scoreRows.map((r) => r.score)) : null;
   trackSearchAnalytics(userId, question, topResults.length, maxScore, searchTypeFinal, {
     ...analyticsExtras,
     rerankScore: rerankMax,

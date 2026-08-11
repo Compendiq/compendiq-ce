@@ -298,6 +298,37 @@ export function invalidateRagContextCharsCache(): void {
 }
 
 /**
+ * #1107's operator kill switch (#1273 review M11): every neighbouring
+ * retrieval stage is disableable (rerank via assignment, assembly via its
+ * budget, the gate via its thresholds); the pin stage must be too.
+ * `admin_settings` key `rag_pin_identifiers`, default ON; the literal '0'
+ * (or 'false'/'off') disables. TTL-cached like its siblings; #1118 is the
+ * write surface.
+ */
+const RAG_PIN_TTL_MS = 60_000;
+let ragPinCache: { value: boolean; expiresAt: number } | null = null;
+
+export async function getRagPinIdentifiersEnabled(): Promise<boolean> {
+  if (ragPinCache && Date.now() < ragPinCache.expiresAt) return ragPinCache.value;
+  let resolved = true;
+  try {
+    const r = await query<{ setting_value: string }>(
+      `SELECT setting_value FROM admin_settings WHERE setting_key = 'rag_pin_identifiers'`,
+    );
+    const raw = (r.rows[0]?.setting_value ?? '').trim().toLowerCase();
+    if (raw === '0' || raw === 'false' || raw === 'off') resolved = false;
+  } catch (err) {
+    logger.warn({ err }, 'Failed to resolve rag_pin_identifiers — pin stage stays enabled');
+  }
+  ragPinCache = { value: resolved, expiresAt: Date.now() + RAG_PIN_TTL_MS };
+  return resolved;
+}
+
+export function invalidateRagPinIdentifiersCache(): void {
+  ragPinCache = null;
+}
+
+/**
  * Issue #257 — returns the configured re-embed-all job history retention
  * (how many completed/failed BullMQ job records are kept in Redis before
  * the oldest get swept). Default 150, clamped to [10, 10000].

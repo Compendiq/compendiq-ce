@@ -52,6 +52,15 @@ export function computeRetrievalConfidence(
   results: SearchResult[],
   healthCaveat: RetrievalHealthCaveat | null = null,
 ): RetrievalConfidence {
+  // #1107 (via #1273 review B3): a pinned head is a VERIFIED exact-
+  // identifier match — the gate must never refuse it. Without this guard
+  // the claim held only for NEW pins (vectorScore null): a MOVED pin keeps
+  // its measured cosine/rerank score, and pinning could then CAUSE a
+  // refusal that the unpinned ranking would not have produced — refusing
+  // "the KB has nothing" about a page just verified to exist.
+  if (results[0]?.pinned === true) {
+    return { score: null, basis: 'none' };
+  }
   if (results.length === 0) {
     // Empty is a MEASUREMENT ("the KB has nothing for this") only when
     // retrieval was verifiably healthy. With the vector leg down, the

@@ -1071,4 +1071,42 @@ describe.skipIf(!dbAvailable)('rag-service integration — #1107 identifier pin 
     const out = await hybridSearch(USER, 'how does DEV handle deployment approvals', 5, undefined, { pinIdentifiers: true });
     expect(out.every((r) => r.pinned === undefined)).toBe(true);
   });
+
+  it("'page N' prose never pins an arbitrary page — the dense-SERIAL trap, end-to-end (#1273 B1)", async () => {
+    // The reviewer proved 'page 43561 of the deployment guide' pinned
+    // 'Quarterly planning notes'. Post-fix the cued shape needs >=5 digits
+    // AND small prose numbers never reach a lookup at all.
+    const out = await hybridSearch(USER, 'what does page 2 say', 5, undefined, { pinIdentifiers: true });
+    expect(out.every((r) => r.pinned === undefined)).toBe(true);
+  });
+
+  it('the page the key NAMES beats pages that merely MENTION it, regardless of heap order (#1273 B2)', async () => {
+    // Older pages mentioning the key in body text; the titled page LAST in
+    // insertion order — the old OR query returned heap order and pinned
+    // the oldest mention.
+    for (const [title, body] of [
+      ['Weekly report week 12', 'we discussed INC-9001 briefly'],
+      ['Runbook for restarts', 'see INC-9001 for the outage'],
+      ['INC-9001 postmortem', 'full analysis of the incident'],
+    ] as Array<[string, string]>) {
+      await query(
+        `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+         VALUES (gen_random_uuid()::text, 'confluence', 'DEV', $1, $2, '', '')`,
+        [title, body],
+      );
+    }
+    const out = await hybridSearch(USER, 'what is INC-9001 about', 5, undefined, { pinIdentifiers: true });
+    expect(out[0]!.pageTitle).toBe('INC-9001 postmortem');
+    expect(out[0]!.pinned).toBe(true);
+  });
+
+  it('a key living only in BODY text still verifies via the ranked tsv fallback', async () => {
+    await query(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+       VALUES (gen_random_uuid()::text, 'confluence', 'DEV', 'Outage timeline', 'incident SEC-0731 was contained', '', '')`,
+    );
+    const out = await hybridSearch(USER, 'what is SEC-0731 about', 5, undefined, { pinIdentifiers: true });
+    expect(out[0]!.pageTitle).toBe('Outage timeline');
+    expect(out[0]!.pinned).toBe(true);
+  });
 });
