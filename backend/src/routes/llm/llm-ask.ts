@@ -134,6 +134,8 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       throw err;
     }
     let ragContext = buildRagContext(searchResults);
+    // KB context is sanitized BELOW, after the sub-page prepend, in one
+    // pass — see the block after the includeSubPages branch.
 
     // If includeSubPages is enabled and a pageId is provided, augment the RAG context
     // with the sub-page tree content
@@ -168,6 +170,26 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         multiPageSuffix = getMultiPagePromptSuffix(assembled.pageCount);
         subPageContextAssembled = true;
       }
+    }
+
+    // ── KB-context sanitization (#1270 review m12 + re-verification N4/N5,
+    // CLAUDE.md security rule 3) ────────────────────────────────────────
+    // One pass over the FULL knowledge-base half of the prompt — the RAG
+    // context (chunk or assembled sibling windows) plus the sub-page tree,
+    // which is the larger surface — BEFORE the already-sanitized external
+    // docs and web results are appended, so nothing is double-filtered.
+    // Detections flow into the same attestation accumulators and audit
+    // trail as every other sanitization site in this route: a KB-borne
+    // injection that is detected and neutralized must not leave the
+    // request attesting promptInjectionDetected: false.
+    {
+      const { sanitized: cleanKbContext, warnings: kbWarnings } = sanitizeLlmInput(ragContext);
+      if (kbWarnings.length > 0) {
+        promptInjectionDetected = true;
+        await logAuditEvent(request.userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings: kbWarnings, route: '/llm/ask', source: 'kb_context' }, request);
+      }
+      if (cleanKbContext !== ragContext) wasSanitized = true;
+      ragContext = cleanKbContext;
     }
 
     // Fetch external documentation URLs via MCP sidecar (if provided and enabled)

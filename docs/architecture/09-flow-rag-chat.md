@@ -59,7 +59,7 @@ sequenceDiagram
     opt assembleContext (#35;1106 PR 2 — chat path + eval)
         BE->>PG: sibling chunks for surviving pages<br/>(main pool, ORDER BY page_id, chunk_index)
         PG-->>BE: rows
-        note right of BE: per page: best-chunk-anchored window under<br/>rag_context_chars_per_page (0 = off)#59; seam-trimmed,<br/>holes marked#59; contextText read ONLY by buildRagContext —<br/>chunkText stays the best chunk#59; soft-fail to chunk-level
+        note right of BE: per page: best-chunk-anchored window under<br/>rag_context_chars_per_page (0 = off)#59; seam-trimmed,<br/>holes marked#59; contextText read ONLY by buildRagContext —<br/>chunkText stays the best chunk#59; soft-fail to chunk-level#59;<br/>rag.page_merge: assembled | bypassed | off
     end
     opt includeSubPages
         BE->>RBAC: userCanAccessPage(userId, parentPageId)
@@ -233,7 +233,7 @@ not assembled: an unanchored window is a page prefix with no anchoring
 signal (#1270 review). Soft-fail is the house
 pattern: any error (or an empty sibling set — the re-embed TRUNCATE window,
 a concurrent atomic replace) degrades to chunk-level, never the search;
-`rag.page_merge: assembled|bypassed` and the `page_merge` stage histogram
+`rag.page_merge: assembled|bypassed|off` (config, failure and not-requested are distinguishable in a trace) and the `page_merge` stage histogram
 carry the observability. Assembly touches no ranking or score field, so it
 is provably invisible to the eval's pageId scoring — the zero-discordant
 A/B in PR 2's body is the recorded evidence.

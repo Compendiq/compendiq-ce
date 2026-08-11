@@ -415,6 +415,14 @@ Negative values clamp to 0 (off). Read through the same 60-second cache as
 the other retrieval knobs; #1118's panel is the write surface, SQL until
 then.
 
+One operator note: the assembled knowledge-base context passes through
+the prompt-injection sanitizer before reaching the model, so runbook-
+shaped page content (a line starting "System:", phrases like "act as
+a ...") can surface as [FILTERED] in an answer. That is the sanitizer
+working on content that pattern-matches an injection, not data
+corruption — the page itself is untouched, and the detection lands in
+the audit log.
+
 ### Retrieval-confidence refuse gate (two thresholds, one per basis)
 
 When raised above the default **0**, the AI assistant refuses to answer a

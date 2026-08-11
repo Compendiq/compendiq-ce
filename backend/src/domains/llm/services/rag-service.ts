@@ -1285,16 +1285,13 @@ export function buildRagContext(results: SearchResult[]): string {
       // graft). Markdown headings inside the merged text carry the internal
       // structure since #1265.
       //
-      // Sanitized HERE, the single prompt-assembly point (#1270 review m12
-      // + CLAUDE.md security rule 3): KB content reached the chat prompt
-      // unsanitized while the rerank stage sanitized the very same text for
-      // its own egress — a pre-existing gap this PR's larger windows
-      // amplified. Detections are logged; threading them into the route's
-      // injection attestation flags is follow-up plumbing.
-      const { sanitized: body, warnings: bodyWarnings } = sanitizeLlmInput(r.contextText ?? r.chunkText);
-      if (bodyWarnings.length > 0) {
-        logger.warn({ pageId: r.pageId, warnings: bodyWarnings }, 'KB context sanitized at prompt assembly');
-      }
+      // NOT sanitized here (#1270 re-verification N4+N5): the route
+      // sanitizes the FULL assembled KB context — this output plus the
+      // sub-page tree — in one pass, so detections reach the injection
+      // attestation flags and the audit log instead of dying in a
+      // domain-level logger.warn. Keeping this function pure is what makes
+      // that single route-level pass complete.
+      const body = r.contextText ?? r.chunkText;
       const multiSection = (r.mergedChunkCount ?? 1) > 1;
       const header = multiSection
         ? `[Source ${i + 1}: "${r.pageTitle}" (Space: ${r.spaceKey || 'Local'})]`

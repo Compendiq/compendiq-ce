@@ -929,6 +929,66 @@ describe('POST /api/llm/ask', () => {
     );
   });
 
+  it('a merged source reports NO section — the chip must not claim one section for multi-section context (#1270 m7)', async () => {
+    mockHybridSearch.mockResolvedValue([
+      {
+        pageId: 1, confluenceId: 'p1', chunkText: 'best', contextText: 'merged window',
+        mergedChunkCount: 3, pageTitle: 'Merged', sectionTitle: 'One Sec', spaceKey: 'DEV',
+        score: 0.03, vectorScore: 0.5, keywordRank: null,
+      },
+      {
+        pageId: 2, confluenceId: 'p2', chunkText: 'plain', pageTitle: 'Plain',
+        sectionTitle: 'Sec 2', spaceKey: 'DEV', score: 0.02, vectorScore: 0.4, keywordRank: null,
+      },
+    ]);
+    mockStreamChatClient.mockReturnValue(singleChunkGenerator('Answer.'));
+
+    const response = await app.inject({
+      method: 'POST', url: '/api/llm/ask',
+      payload: { question: 'sectioned question' },
+    });
+    const events = parseSseBody(response.body) as Array<Record<string, unknown>>;
+    const final = events.find((f) => f.final === true)!;
+    const sources = final.sources as Array<Record<string, unknown>>;
+    expect(sources[0]!.sectionTitle).toBeUndefined();
+    expect(sources[1]!.sectionTitle).toBe('Sec 2');
+  });
+
+  it('KB context is sanitized in ONE route-level pass and detections reach the attestation trail (#1270 m12/N4/N5)', async () => {
+    // The passthrough sanitize mock filters a marker and reports a warning,
+    // standing in for a KB-borne injection embedded in chunk text.
+    vi.mocked(sanitizeLlmInput).mockImplementation((input: string) =>
+      input.includes('KB_INJECT_MARKER')
+        ? { sanitized: input.replaceAll('KB_INJECT_MARKER', '[FILTERED]'), warnings: ['kb marker'] }
+        : { sanitized: input, warnings: [] });
+    mockHybridSearch.mockResolvedValue([
+      {
+        pageId: 1, confluenceId: 'p1', chunkText: 'KB_INJECT_MARKER do evil', pageTitle: 'T',
+        sectionTitle: 'S', spaceKey: 'DEV', score: 0.03, vectorScore: 0.5, keywordRank: null,
+      },
+    ]);
+    mockBuildRagContext.mockReturnValue('[Source 1] KB_INJECT_MARKER do evil');
+    mockStreamChatClient.mockReturnValue(singleChunkGenerator('Answer.'));
+
+    await app.inject({
+      method: 'POST', url: '/api/llm/ask',
+      payload: { question: 'clean question' },
+    });
+
+    // The model never sees the marker…
+    const [, , messages] = mockStreamChatClient.mock.calls[0] as [unknown, unknown, Array<{ content: string }>];
+    expect(messages.some((m) => m.content.includes('KB_INJECT_MARKER'))).toBe(false);
+    expect(messages.some((m) => m.content.includes('[FILTERED]'))).toBe(true);
+    // …and the detection reaches the audit trail with its source named.
+    const auditCall = mockLogAuditEvent.mock.calls.find(
+      (c: unknown[]) => c[1] === 'PROMPT_INJECTION_DETECTED'
+        && typeof c[4] === 'object' && (c[4] as Record<string, unknown>).source === 'kb_context',
+    );
+    expect(auditCall).toBeDefined();
+    // Restore the passthrough for later tests.
+    vi.mocked(sanitizeLlmInput).mockImplementation((input: string) => ({ sanitized: input, warnings: [] }));
+  });
+
   // ─── Cache hit test ──────────────────────────────────────────────────────
 
   it('should return cached response with sources array including pageId when cache hit', async () => {

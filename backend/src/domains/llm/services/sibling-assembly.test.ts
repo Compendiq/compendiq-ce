@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { assembleSiblingWindow, SEAM_TRIM_WINDOW, SEAM_TRIM_MIN_MATCH } from './sibling-assembly.js';
+import { chunkText } from './embedding-service.js';
 
 // The pure half of #1106 PR 2: given a page's sibling chunks (sorted by
 // chunk_index), an anchor, and a char budget, produce the merged context
@@ -118,5 +119,27 @@ describe('assembleSiblingWindow (#1106 PR 2)', () => {
 
   it('a non-positive budget returns null — 0 is the operator kill switch', () => {
     expect(assembleSiblingWindow([chunk(0, 'a')], 0, 0)).toBeNull();
+  });
+});
+
+describe('chunker seam contract (#1270 re-verification N2)', () => {
+  it("the REAL chunker's oversized-section overlap trims — binding the tail + '\\n\\n' + para shape this module's discriminator rests on", () => {
+    // An oversized single section forces the splitter path that carries the
+    // raw-tail overlap. If the chunker's joiner ever stops being a literal
+    // paragraph break, this test fails HERE instead of the trim silently
+    // never firing again (safe direction, but silent — the exact class B1
+    // hid in).
+    const para = (i: number) => `Paragraph of the oversized section, long enough to matter for the splitter and carrying real prose content across boundary marker number ${i} here.`;
+    const section = '# One Big Section\n\n' + Array.from({ length: 60 }, (_, i) => para(i)).join('\n\n');
+    const chunks = chunkText(section, 'Big Page', 'DEV', 'p1', 500, 50).map((c, i) => ({ chunkIndex: i, chunkText: c.text }));
+    expect(chunks.length).toBeGreaterThan(1);
+
+    const merged = assembleSiblingWindow(chunks.slice(0, 2), 0, 100_000)!;
+    const naive = chunks[0]!.chunkText + '\n\n' + chunks[1]!.chunkText;
+    // The trim removed the duplicated overlap: merged is strictly shorter
+    // than the naive join, and no 60-char run appears twice.
+    expect(merged.text.length).toBeLessThan(naive.length);
+    const probe = chunks[0]!.chunkText.slice(-60);
+    expect(merged.text.split(probe).length).toBe(2);
   });
 });
