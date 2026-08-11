@@ -570,7 +570,7 @@ describe('POST /api/llm/ask', () => {
       mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
       mockUserCanAccessPage.mockResolvedValue(true);
       mockAssembleSubPageContext.mockResolvedValue({
-      injectionWarnings: [],
+        injectionWarnings: [],
         markdown: '--- Page: "Leaf" (Main Page) ---\n\nLeaf page content.',
         pageCount: 1,
       });
@@ -1200,7 +1200,7 @@ describe('POST /api/llm/ask', () => {
     it('injects sub-page context when the user CAN access the page', async () => {
       mockUserCanAccessPage.mockResolvedValue(true);
       mockAssembleSubPageContext.mockResolvedValue({
-      injectionWarnings: [],
+        injectionWarnings: [],
         markdown: 'ASSEMBLED-TREE',
         pageCount: 2,
         wasTruncated: false,

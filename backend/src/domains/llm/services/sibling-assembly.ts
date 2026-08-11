@@ -43,7 +43,11 @@ export interface AssembledWindow {
   mergedChunkCount: number;
   /** True when the window's chunks carry more than one distinct
    * section_title — the honest trigger for dropping the single-section
-   * header claim downstream. Missing titles never count as a section. */
+   * header claim downstream. Missing/empty titles never count as a
+   * section, so a window of one titled + one untitled chunk still claims
+   * the titled section — a deliberate judgment call (#1270 round 4): no
+   * better datum exists, and the untitled chunk usually IS the same
+   * section's continuation. */
   spansSections: boolean;
 }
 

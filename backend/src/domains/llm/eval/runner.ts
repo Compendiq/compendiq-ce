@@ -36,7 +36,7 @@ export interface EvalRunOptions {
    * (#1270 review F10), and guarded like the neighbouring stages: assembly
    * is soft-fail at every layer, so without a participation check a broken
    * sibling SELECT or a stray budget-0 row publishes green numbers while
-   // the measured configuration silently was not the shipped one.
+   * the measured configuration silently was not the shipped one.
    */
   assembleContext?: boolean;
   /**

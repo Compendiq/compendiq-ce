@@ -179,8 +179,19 @@ export async function assembleSubPageContext(
     return sanitized;
   };
 
+  // Titles are sanitized too (#1270 round-4 residual): they are
+  // attacker-controlled metadata interpolated into the prompt's marker
+  // lines — the one channel the per-body layering re-opened (the
+  // whole-string pass used to cover them). Same precedent as the route's
+  // external-doc title sanitization (#820).
+  const sanitizeTitle = (title: string): string => {
+    const { sanitized, warnings } = sanitizeLlmInput(title);
+    injectionWarnings.push(...warnings);
+    return sanitized;
+  };
+
   // Start with the parent page
-  let combined = `--- Page: "${parentTitle}" (Main Page) ---\n\n${sanitizeBody(parentMarkdown)}`;
+  let combined = `--- Page: "${sanitizeTitle(parentTitle)}" (Main Page) ---\n\n${sanitizeBody(parentMarkdown)}`;
 
   // Fetch sub-pages
   const subPages = await fetchSubPages(userId, parentPageId);
@@ -202,7 +213,7 @@ export async function assembleSubPageContext(
 
   for (const subPage of subPages) {
     const subMarkdown = sanitizeBody(htmlToMarkdown(subPage.bodyHtml));
-    const separator = `\n\n--- Page: "${subPage.title}" (Sub-page, depth ${subPage.depth}) ---\n\n`;
+    const separator = `\n\n--- Page: "${sanitizeTitle(subPage.title)}" (Sub-page, depth ${subPage.depth}) ---\n\n`;
     const section = separator + subMarkdown;
 
     // Check if adding this page would exceed the limit
