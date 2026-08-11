@@ -647,6 +647,56 @@ describe('SidebarTreeView keyboard navigation (#880)', () => {
   });
 });
 
+// #856: closes out the roving-tabindex/arrow-key-nav follow-up #880 left
+// open — reaching a page used to cost one Tab press per visible row. The
+// underlying flatten/keyboard logic (sidebar-tree-keyboard.ts) has its own
+// unit tests; these confirm SidebarTreeView actually wires the hook up.
+describe('SidebarTreeView roving tabindex (#856)', () => {
+  beforeEach(() => {
+    mockNavigate.mockClear();
+    mockTreeData = { ...defaultTreeData };
+    useUiStore.setState({
+      treeSidebarCollapsed: false,
+      treeSidebarSpaceKey: undefined,
+    });
+  });
+
+  it('defaults the tab stop to the open page, not just the first row', () => {
+    // child-1 "Installation", not "Getting Started": root-1 is DEV's
+    // configured homepage (see mockSpaces above), so opening any DEV page
+    // auto-selects the space and the #352 homepage-hiding rule promotes
+    // root-1's children to the top level instead of rendering root-1 itself.
+    render(<SidebarTreeView />, { wrapper: createWrapper('/pages/child-1') });
+    const active = screen.getByText('Installation').closest('[role="treeitem"]')!;
+    const other = screen.getByText('API Reference').closest('[role="treeitem"]')!;
+    expect(active.getAttribute('tabindex')).toBe('0');
+    expect(other.getAttribute('tabindex')).toBe('-1');
+  });
+
+  it('moves the tab stop with ArrowDown/ArrowUp and gives the row real DOM focus', () => {
+    // No :id in the path -> activePageId stays undefined -> the DEV space
+    // is never auto-selected -> root-1 "Getting Started" renders normally
+    // alongside root-2 "API Reference" (see the homepage note above).
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    // root-2 "API Reference" sorts before root-1 "Getting Started", so it is
+    // the initial roving target here.
+    const first = screen.getByText('API Reference').closest('[role="treeitem"]')!;
+    fireEvent.keyDown(first, { key: 'ArrowDown' });
+
+    const second = screen.getByText('Getting Started').closest('[role="treeitem"]')!;
+    expect(second.getAttribute('tabindex')).toBe('0');
+    expect(first.getAttribute('tabindex')).toBe('-1');
+    expect(document.activeElement).toBe(second);
+  });
+
+  it('does not move focus off a leaf row on ArrowRight (no children to expand into)', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper('/pages/root-2') });
+    const leaf = screen.getByText('API Reference').closest('[role="treeitem"]')!;
+    fireEvent.keyDown(leaf, { key: 'ArrowRight' });
+    expect(leaf.getAttribute('tabindex')).toBe('0');
+  });
+});
+
 // #880 (code-review follow-up): the rows carry role="treeitem" but had no
 // ancestor role="tree" and nested-children wrappers had no role="group", so
 // every treeitem was orphaned — an axe-critical aria-required-parent violation

@@ -417,6 +417,18 @@ export function AppLayout({ children }: { children: ReactNode }) {
         --color-background. It must not be swapped back to a `bg-*` utility:
         those set background-color, which cannot express the gradient. */}
     <div className="app-backdrop flex h-screen flex-col overflow-hidden">
+      {/* WCAG 2.4.1 Bypass Blocks (Level A): the first focusable element in the
+          whole app, invisible until it earns focus. Without it a keyboard user
+          who lands on an article route has to tab past the header controls and
+          the full sidebar tree before reaching the document — the roving
+          tabindex on the tree (sidebar-tree-keyboard.ts) fixes the tree itself,
+          but this is the only way past the header on routes with no tree at all. */}
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-[60] focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+      >
+        Skip to content
+      </a>
       <CommandPalette />
       <KeyboardShortcutsModal />
 
@@ -560,8 +572,12 @@ export function AppLayout({ children }: { children: ReactNode }) {
               chassis stops showing through around a floating card. Every other
               route keeps its cards on the chassis. */}
           <main
+            id="main-content"
+            // Not natively focusable — the skip link above targets this id and
+            // needs an explicit tabIndex to accept programmatic focus at all.
+            tabIndex={-1}
             className={cn(
-              'flex flex-1 flex-col overflow-hidden',
+              'flex flex-1 flex-col overflow-hidden focus:outline-none',
               (isArticleRoute || isSettingsRoute) && 'bg-card',
             )}
           >

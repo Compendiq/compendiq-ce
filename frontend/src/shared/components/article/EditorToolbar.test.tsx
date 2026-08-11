@@ -54,11 +54,13 @@ describe('EditorToolbar', () => {
   it('presents twelve controls, not the thirty-one of the flat row', () => {
     // The whole point of the restructure. If this climbs back toward the
     // thirties, the long tail has leaked out of the menus again.
-    render(<EditorToolbar editor={createMockEditor()} onToggleVim={vi.fn()} />);
+    render(<EditorToolbar editor={createMockEditor()} onToggleHeaderNumbering={vi.fn()} />);
     const toolbar = screen.getByRole('toolbar', { name: 'Page editor toolbar' });
-    // 12 = block type + 5 marks + 3 lists + 2 colours + Insert. Then the three
-    // session controls at the far end, which act on the document rather than
-    // on the selection.
+    // 12 = block type + 5 marks + 3 lists + 2 colours + Insert. Then header
+    // numbering, undo and redo at the far end, which act on the document
+    // rather than on the selection. (Vim mode used to be a fourth here —
+    // moved to Settings -> Appearance as a personal preference, not a
+    // permanent toolbar slot; see ui-store.ts's vimModeEnabled.)
     expect(toolbar.querySelectorAll('button').length).toBe(15);
   });
 
@@ -83,7 +85,7 @@ describe('EditorToolbar', () => {
   it('gives every icon-only control a real aria-label, not just a tooltip', () => {
     // `title` is only the last fallback in the accessible-name computation and
     // is not surfaced by every screen reader or on touch at all.
-    render(<EditorToolbar editor={createMockEditor()} onToggleVim={vi.fn()} />);
+    render(<EditorToolbar editor={createMockEditor()} onToggleHeaderNumbering={vi.fn()} />);
     const toolbar = screen.getByRole('toolbar', { name: 'Page editor toolbar' });
     for (const btn of Array.from(toolbar.querySelectorAll('button'))) {
       expect(btn.getAttribute('aria-label')?.trim()).toBeTruthy();
@@ -91,7 +93,7 @@ describe('EditorToolbar', () => {
   });
 
   it('makes the toolbar a single tab stop', () => {
-    render(<EditorToolbar editor={createMockEditor()} onToggleVim={vi.fn()} />);
+    render(<EditorToolbar editor={createMockEditor()} onToggleHeaderNumbering={vi.fn()} />);
     const toolbar = screen.getByRole('toolbar', { name: 'Page editor toolbar' });
     const stops = Array.from(toolbar.querySelectorAll<HTMLElement>('button')).filter(
       (b) => b.tabIndex === 0,
@@ -278,10 +280,10 @@ describe('EditorToolbar', () => {
     // The pressed look is `nm-icon-button[aria-pressed='true']` in index.css,
     // so the attribute is not decoration — remove it and the state disappears
     // while the button still looks and behaves normal.
-    render(<EditorToolbar editor={createMockEditor()} onToggleVim={vi.fn()} vimEnabled />);
-    const vim = screen.getByRole('button', { name: 'Toggle Vim Mode' });
-    expect(vim.className).toContain('nm-icon-button');
-    expect(vim).toHaveAttribute('aria-pressed', 'true');
+    render(<EditorToolbar editor={createMockEditor()} onToggleHeaderNumbering={vi.fn()} headerNumbering />);
+    const headerNumberingBtn = screen.getByRole('button', { name: 'Toggle Header Numbering' });
+    expect(headerNumberingBtn.className).toContain('nm-icon-button');
+    expect(headerNumberingBtn).toHaveAttribute('aria-pressed', 'true');
   });
 
   // ---------- colours ----------

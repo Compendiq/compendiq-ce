@@ -200,18 +200,6 @@ export function PageViewPage() {
   // Relocate between a local space and Confluence (#1123).
   const [relocateOpen, setRelocateOpen] = useState(false);
 
-  // Vim mode state — lifted here so we can pass it to the external toolbar
-  const [vimEnabled, setVimEnabled] = useState(() =>
-    localStorage.getItem('compendiq-vim-mode') === 'true'
-  );
-  const toggleVim = useCallback(() => {
-    setVimEnabled(prev => {
-      const next = !prev;
-      localStorage.setItem('compendiq-vim-mode', String(next));
-      return next;
-    });
-  }, []);
-
   // Sync editing state to the shared store (consumed by ArticleRightPane)
   useEffect(() => {
     setStoreEditing(editing);
@@ -705,7 +693,7 @@ export function PageViewPage() {
                   on, which is the tell that a toolbar was bolted above a
                   document rather than belonging to it. */}
               <div className="mx-auto max-w-[1248px] px-9 sm:px-16">
-                <EditorToolbar editor={editorInstance} vimEnabled={vimEnabled} onToggleVim={toggleVim} />
+                <EditorToolbar editor={editorInstance} />
                 <TableContextToolbar editor={editorInstance} />
                 <LayoutContextToolbar editor={editorInstance} />
                 <ColumnContextToolbar editor={editorInstance} />
@@ -992,7 +980,7 @@ export function PageViewPage() {
                 experience matches the reader's line length exactly. */}
             <div className="mx-auto max-w-[1200px]">
               <FeatureErrorBoundary featureName="Editor">
-                <Editor content={editHtml} onChange={() => setIsDirty(true)} draftKey={draftKey} naked onEditorReady={setEditorInstance} hideToolbar pageId={id} onSave={handleSave} vimEnabled={vimEnabled} />
+                <Editor content={editHtml} onChange={() => setIsDirty(true)} draftKey={draftKey} naked onEditorReady={setEditorInstance} hideToolbar pageId={id} onSave={handleSave} />
               </FeatureErrorBoundary>
             </div>
           </>

@@ -15,6 +15,10 @@ interface UiState {
   articleSidebarWidth: number;
   /** When false, single-key shortcuts (no Ctrl/Alt) are suppressed (WCAG 2.1.4). */
   singleKeyShortcutsEnabled: boolean;
+  /** A personal editing preference, not a per-document action — belongs in
+   *  Settings, not on a permanent slot in the editor toolbar (see
+   *  ThemeTab.tsx's "Editor" section). */
+  vimModeEnabled: boolean;
   toggleSidebar: () => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   toggleTreeSidebar: () => void;
@@ -25,6 +29,7 @@ interface UiState {
   setArticleSidebarCollapsed: (collapsed: boolean) => void;
   setArticleSidebarWidth: (width: number) => void;
   setSingleKeyShortcutsEnabled: (enabled: boolean) => void;
+  setVimModeEnabled: (enabled: boolean) => void;
 }
 
 export const useUiStore = create<UiState>()(
@@ -35,8 +40,22 @@ export const useUiStore = create<UiState>()(
       treeSidebarSpaceKey: undefined,
       treeSidebarWidth: 256,
       articleSidebarCollapsed: false,
-      articleSidebarWidth: 280,
+      // 360, not 280: at the old default the Assistant tab's prose column
+      // measured ~233px after the pane's own chrome — a third of the app's
+      // enforced 640px/~80-char article reading measure, for the one surface
+      // meant to answer questions about that same article. 360 leaves >900px
+      // of article at a 1440px viewport (still comfortably above the 640px
+      // measure) while giving generated prose room to read as prose.
+      articleSidebarWidth: 360,
       singleKeyShortcutsEnabled: true,
+      // Carries over anyone's existing preference from the old standalone
+      // localStorage key the toolbar toggle used to write directly. Safe as a
+      // one-time plain read (not a full migrateStorageKey, which expects a
+      // JSON-shaped store, not a raw 'true'/'false' string): zustand persist
+      // merges this initial value under any already-persisted `compendiq-ui`
+      // blob, and blobs written before this field existed simply don't have
+      // `vimModeEnabled` yet, so the merge falls through to this default.
+      vimModeEnabled: typeof window !== 'undefined' && localStorage.getItem('compendiq-vim-mode') === 'true',
       toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
       setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
       toggleTreeSidebar: () => set((s) => ({ treeSidebarCollapsed: !s.treeSidebarCollapsed })),
@@ -46,9 +65,8 @@ export const useUiStore = create<UiState>()(
       toggleArticleSidebar: () => set((s) => ({ articleSidebarCollapsed: !s.articleSidebarCollapsed })),
       setArticleSidebarCollapsed: (collapsed) => set({ articleSidebarCollapsed: collapsed }),
       setArticleSidebarWidth: (width) => set({ articleSidebarWidth: Math.max(200, Math.min(500, width)) }),
-      // Floor of 340 keeps the diff card's Apply/Skip footer on one line; ceiling
-      // of 640 keeps the article's reading measure viable beside it.
       setSingleKeyShortcutsEnabled: (enabled) => set({ singleKeyShortcutsEnabled: enabled }),
+      setVimModeEnabled: (enabled) => set({ vimModeEnabled: enabled }),
     }),
     { name: 'compendiq-ui' },
   ),

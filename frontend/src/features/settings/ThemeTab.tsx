@@ -1,4 +1,6 @@
+import * as Switch from '@radix-ui/react-switch';
 import { useThemeStore, THEMES, THEME_CATEGORIES, type ThemeId } from '../../stores/theme-store';
+import { useUiStore } from '../../stores/ui-store';
 import { Check } from 'lucide-react';
 import { PanelHeader } from './PanelHeader';
 import { cn } from '../../shared/lib/cn';
@@ -19,6 +21,8 @@ interface ThemeTabProps {
 export function ThemeTab({ onSave }: ThemeTabProps) {
   const currentTheme = useThemeStore((s) => s.theme);
   const setTheme = useThemeStore((s) => s.setTheme);
+  const vimModeEnabled = useUiStore((s) => s.vimModeEnabled);
+  const setVimModeEnabled = useUiStore((s) => s.setVimModeEnabled);
 
   function handleSelect(id: ThemeId) {
     setTheme(id);
@@ -143,6 +147,36 @@ export function ThemeTab({ onSave }: ThemeTabProps) {
           </section>
         );
       })}
+
+      {/* A personal editing preference, not a per-document action — it used
+          to hold a permanent slot in the editor toolbar at the same visual
+          weight as Bold, on every document, for every author, whether or not
+          they use it. One home for it, reached once. */}
+      <section>
+        <h3 className="mb-3 text-[12px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
+          Editor
+        </h3>
+        <div className="flex items-center justify-between gap-3 rounded-xl border border-border px-4 py-3">
+          <div className="min-w-0">
+            <label htmlFor="vim-mode-toggle" className="cursor-pointer text-sm font-medium text-foreground">
+              Vim mode
+            </label>
+            <p className="text-xs text-muted-foreground">
+              Navigate and edit pages using Vim keybindings.
+            </p>
+          </div>
+          <Switch.Root
+            id="vim-mode-toggle"
+            checked={vimModeEnabled}
+            onCheckedChange={setVimModeEnabled}
+            aria-label="Vim mode"
+            data-testid="vim-mode-toggle"
+            className="relative h-5 w-9 shrink-0 rounded-full bg-foreground/10 transition-colors data-[state=checked]:bg-action outline-none"
+          >
+            <Switch.Thumb className="block h-4 w-4 translate-x-0.5 rounded-full bg-white transition-transform data-[state=checked]:translate-x-4" />
+          </Switch.Root>
+        </div>
+      </section>
     </div>
   );
 }

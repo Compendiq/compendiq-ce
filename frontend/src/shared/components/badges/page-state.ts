@@ -58,10 +58,30 @@ export function resolvePageState({
   summaryStatus,
   qualityStatus,
 }: PageStateInput): PageState | null {
-  if (summaryStatus === 'failed' || qualityStatus === 'failed') {
+  // Named per pipeline, not a bare "Failed": a page that was scored once and
+  // then fails re-analysis keeps its last score, so QualityScoreBadge renders
+  // its OWN "Analysis Failed" state right beside this one. Two badges both
+  // saying "Failed" left a reader unable to tell whether one thing failed
+  // twice or two different things failed — and neither of them is the state
+  // that actually blocks retrieval (that's `not indexed`, below).
+  if (summaryStatus === 'failed' && qualityStatus === 'failed') {
     return {
-      label: 'Failed',
-      title: 'A background job failed for this page — summary or quality scoring',
+      label: 'Summary & quality failed',
+      title: 'Both summary generation and quality scoring failed for this page',
+      tone: 'failed',
+    };
+  }
+  if (qualityStatus === 'failed') {
+    return {
+      label: 'Quality failed',
+      title: 'Quality scoring failed for this page',
+      tone: 'failed',
+    };
+  }
+  if (summaryStatus === 'failed') {
+    return {
+      label: 'Summary failed',
+      title: 'Summary generation failed for this page',
       tone: 'failed',
     };
   }

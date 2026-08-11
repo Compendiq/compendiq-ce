@@ -60,7 +60,7 @@ export function KeyboardShortcutsModal() {
             </Dialog.Title>
             <Dialog.Close asChild>
               <button
-                className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+                className="nm-icon-button"
                 aria-label="Close shortcuts"
               >
                 <X size={16} />

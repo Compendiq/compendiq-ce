@@ -729,7 +729,7 @@ describe('ArticleRightPane', () => {
     expect(useUiStore.getState().articleSidebarWidth).toBe(320);
 
     fireEvent.doubleClick(handle);
-    expect(useUiStore.getState().articleSidebarWidth).toBe(280);
+    expect(useUiStore.getState().articleSidebarWidth).toBe(360);
   });
 
   it('renders QualityScoreBadge in properties when quality score is present', () => {

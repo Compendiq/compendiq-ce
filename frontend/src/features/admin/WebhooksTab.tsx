@@ -511,7 +511,7 @@ function DialogShell({
             <Dialog.Close asChild>
               <button
                 type="button"
-                className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+                className="nm-icon-button"
                 aria-label="Close"
                 data-testid={`${testid}-close`}
               >

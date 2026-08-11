@@ -54,6 +54,12 @@ function renderTree(overrides: Partial<DndLocalSpaceTreeProps> = {}) {
     toggleExpand: vi.fn(),
     activePageId: undefined,
     reorderPage: { mutate: vi.fn() },
+    // Roving-tabindex is computed by the parent SidebarTreeView in real usage
+    // (sidebar-tree-keyboard.ts has its own test coverage); here it's just a
+    // prop this component threads down to each row.
+    rovingId: 'p1',
+    onRowFocus: vi.fn(),
+    onRowKeyDown: vi.fn(),
   };
 
   const props = { ...defaultProps, ...overrides };
@@ -200,6 +206,42 @@ describe('DndLocalSpaceTree', () => {
       expect(expandable.getAttribute('aria-expanded')).toBe('false');
       const leaf = screen.getByText('Page One').closest('[role="treeitem"]')!;
       expect(leaf.getAttribute('aria-expanded')).toBeNull();
+    });
+  });
+
+  // #856: only the row matching `rovingId` is a tab stop; every other row is
+  // tabIndex -1 so Tab no longer costs one stop per page in the tree.
+  describe('roving tabindex (#856)', () => {
+    it('gives only the rovingId row tabIndex 0, the rest -1', () => {
+      renderTree({ rovingId: 'p2' });
+      const rowOne = screen.getByText('Page One').closest('[role="treeitem"]')!;
+      const rowTwo = screen.getByText('Page Two').closest('[role="treeitem"]')!;
+      expect(rowOne.getAttribute('tabindex')).toBe('-1');
+      expect(rowTwo.getAttribute('tabindex')).toBe('0');
+    });
+
+    it('calls onRowFocus with the row id when a row is focused', () => {
+      const onRowFocus = vi.fn();
+      renderTree({ onRowFocus });
+      const rowTwo = screen.getByText('Page Two').closest('[role="treeitem"]')!;
+      fireEvent.focus(rowTwo);
+      expect(onRowFocus).toHaveBeenCalledWith('p2');
+    });
+
+    it('routes ArrowDown/ArrowUp on a row to onRowKeyDown with the row id', () => {
+      const onRowKeyDown = vi.fn();
+      renderTree({ onRowKeyDown });
+      const rowOne = screen.getByText('Page One').closest('[role="treeitem"]')!;
+      fireEvent.keyDown(rowOne, { key: 'ArrowDown' });
+      expect(onRowKeyDown).toHaveBeenCalledWith(expect.anything(), 'p1');
+    });
+
+    it('does not call onRowKeyDown for Enter/Space (handled locally as navigation)', () => {
+      const onRowKeyDown = vi.fn();
+      renderTree({ onRowKeyDown });
+      const rowOne = screen.getByText('Page One').closest('[role="treeitem"]')!;
+      fireEvent.keyDown(rowOne, { key: 'Enter' });
+      expect(onRowKeyDown).not.toHaveBeenCalled();
     });
   });
 

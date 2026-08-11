@@ -30,6 +30,7 @@ import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 import { ShortcutHint } from '../../shared/components/ShortcutHint';
 import { SanitizedHtml } from '../../shared/components/SanitizedHtml';
 import { SETTINGS_PANELS } from '../settings/settings-nav';
+import { useKeyboardShortcuts, type ShortcutDefinition } from '../../shared/hooks/use-keyboard-shortcuts';
 
 // User-facing labels for the wire values of PageSourceEnum. Shared between the
 // source-filter <option>s and the active-filter pill so they never diverge.
@@ -487,10 +488,25 @@ export function PagesPage() {
     if (el) setScrollElement(el);
   }, []);
 
-  // Focus search input on mount
-  useEffect(() => {
+  // Focusing the search input unconditionally on mount used to kill every
+  // single-key shortcut on the app's own landing route — `useKeyboardShortcuts`
+  // correctly suppresses them inside an editable target, so arriving here
+  // dropped focus straight into one. `/` (LoginPage's own convention for
+  // focusing its primary field) is the explicit path instead: discoverable,
+  // and it never fires while already typing in an editable element.
+  const focusSearchInput = useCallback(() => {
     searchInputRef.current?.focus();
   }, []);
+
+  useKeyboardShortcuts(useMemo<ShortcutDefinition[]>(() => [
+    {
+      key: '/',
+      keys: ['/'],
+      description: 'Focus page search',
+      category: 'navigation',
+      action: focusSearchInput,
+    },
+  ], [focusSearchInput]));
 
   useEffect(() => {
     if (embeddingStatusData?.isProcessing) {
@@ -622,7 +638,14 @@ export function PagesPage() {
   });
 
   return (
-    <div className="space-y-3">
+    // max-w-[1100px], matching the app's 1200px document-column convention:
+    // uncapped, a short title's flex-1 block stretched to fill whatever the
+    // viewport left over (up to AppLayout's own 1280px route cap), leaving
+    // ~700px of dead air between a row's title and its right-pinned badges
+    // at wide viewports — the eye had nothing to bind them across. No
+    // `mx-auto`: this is a workspace pane beside a sidebar, not a centered
+    // page, so the cap should keep content flush-left, not float it.
+    <div className="max-w-[1100px] space-y-3">
       {/* Header. 18px semibold, not 24px bold: this is a route label, and the
           sidebar already says where you are. The old scale plus a subtitle plus
           `space-y-6` spent ~110px of the first viewport restating the nav. */}

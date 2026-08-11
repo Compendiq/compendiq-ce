@@ -113,3 +113,60 @@ describe('focus indicators clear WCAG 1.4.11', () => {
     ).toBe(true);
   });
 });
+
+/**
+ * A `Dialog.Close` is the one control every keyboard user hits to leave a
+ * modal. Seven of the eight in this app carried no focus-visible ring at all
+ * — the browser's default outline instead of `--color-ring` — which the
+ * fractional-opacity check above cannot see: a class that is simply ABSENT
+ * matches no regex looking for a wrong value. Fixed by moving them onto the
+ * shared `nm-icon-button` utility (already correct in RelocateDialog, whose
+ * own focus-visible outline is defined once in index.css rather than per
+ * callsite). This guard is what stops the next one from being hand-rolled
+ * back into ringlessness — it inspects the actual JSX near every
+ * `Dialog.Close` in the tree, not a fixed list of files, so a new dialog
+ * added later is covered automatically.
+ */
+describe('Dialog.Close controls carry a real focus ring', () => {
+  it('every Dialog.Close (or its asChild button) uses a ring-bearing class', () => {
+    const offenders: string[] = [];
+    for (const file of sources(SRC)) {
+      const text = readFileSync(file, 'utf8');
+      for (const m of text.matchAll(/<Dialog\.Close\b/g)) {
+        // Look at the JSX immediately following the tag — either
+        // `<Dialog.Close className="...">` directly, or
+        // `<Dialog.Close asChild><button className="...">`. A fixed
+        // character window is a pragmatic stand-in for a real JSX parse,
+        // matching this file's own style of scanning source text rather
+        // than an AST; 400 chars comfortably spans both patterns as
+        // written throughout this codebase without reaching the next,
+        // unrelated element.
+        const window = text.slice(m.index, m.index + 400);
+        const classNameMatch = /className=(?:"([^"]*)"|\{`([^`]*)`\})/.exec(window);
+        const className = classNameMatch?.[1] ?? classNameMatch?.[2] ?? '';
+        // Any of the shared `nm-*` control recipes carry their own
+        // `:focus-visible { outline-color: var(--color-ring) }` in
+        // index.css — an icon-only close (nm-icon-button) or a labelled one
+        // (Cancel-style, nm-button-*) are both legitimate shapes here.
+        const hasRing =
+          /\bnm-(icon-button|button-primary|button-ghost|button-destructive|action-destructive)\b/.test(className) ||
+          /focus-visible:ring-/.test(className);
+        if (!hasRing) {
+          const line = text.slice(0, m.index).split('\n').length;
+          offenders.push(`${relative(SRC, file)}:${line} (className: ${JSON.stringify(className)})`);
+        }
+      }
+    }
+    expect(
+      offenders,
+      'a Dialog.Close (or its asChild control) rendered no ring-bearing class — ' +
+        'use nm-icon-button/nm-button-*, or an explicit focus-visible:ring- class',
+    ).toEqual([]);
+  });
+
+  it('the sweep is looking at real Dialog.Close usages', () => {
+    const files = sources(SRC);
+    const found = files.some((f) => /<Dialog\.Close\b/.test(readFileSync(f, 'utf8')));
+    expect(found, 'no Dialog.Close usage found anywhere — this guard is stale').toBe(true);
+  });
+});
