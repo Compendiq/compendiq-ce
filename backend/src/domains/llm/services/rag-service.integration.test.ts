@@ -1204,10 +1204,14 @@ describe.skipIf(!dbAvailable)('rag-service integration — #1107 identifier pin 
   });
 
   it('normalisation applies to the STORED title too, not just the typed one', async () => {
-    // The messy-query case above exercises only one side. A title stored
-    // with doubled and trailing whitespace must equally normalise onto a
-    // cleanly typed query — that is the half a JS-only normaliser could
-    // never have covered.
+    // The messy-query case above exercises only the typed side. This one
+    // pins the COLUMN side: a title stored with doubled and trailing
+    // whitespace must normalise onto a cleanly typed query.
+    //
+    // It is NOT a regression test for the JS/SQL divergence — the column
+    // was already normalised before that fix, so this case passed then
+    // too. Its non-vacuity was established by deleting the column-side
+    // normalisation and watching it fail, not by reverting a commit.
     await query(
       `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
        VALUES (gen_random_uuid()::text, 'confluence', 'DEV', $1, 'body', '', '')`,
