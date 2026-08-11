@@ -981,7 +981,35 @@ const PIN_EXCERPT_FALLBACK_CHARS = 500;
  * inseparable boundary. The `%` operator stays as the index-driven
  * candidate generator, and equality is the verification.
  */
-const normalizeTitle = (value: string): string => value.trim().replace(/\s+/g, ' ').toLowerCase();
+/**
+ * The Unicode spaces BOTH halves of the comparison must collapse, listed
+ * once and used to build both halves — because the two drifting apart is
+ * the failure mode, not any particular character.
+ *
+ * JavaScript's `\s` matches all of these; Postgres's `\s` matches only the
+ * ASCII set. So a title carrying a non-breaking space — which Confluence
+ * and Word paste routinely — normalised to something the JS side could
+ * never produce, and the equality silently never matched: the page became
+ * permanently unpinnable, with no signal anywhere. `translate()` maps them
+ * to plain spaces in SQL before the collapse, so both sides agree.
+ */
+// Escapes, never literals: these characters are invisible in an editor, so
+// a literal list cannot be reviewed and a stray copy-paste cannot be seen.
+const UNICODE_SPACES = [
+  '\u00A0', // no-break space — the one Confluence and Word actually emit
+  '\u1680', // ogham space mark
+  '\u2000', '\u2001', '\u2002', '\u2003', '\u2004', '\u2005',
+  '\u2006', '\u2007', '\u2008', '\u2009', '\u200A', // en/em/thin/hair spaces
+  '\u202F', // narrow no-break space
+  '\u205F', // medium mathematical space
+  '\u3000', // ideographic space
+  '\uFEFF', // zero-width no-break space (BOM)
+].join('');
+const UNICODE_SPACES_AS_PLAIN = ' '.repeat(UNICODE_SPACES.length);
+const UNICODE_SPACE_RE = new RegExp(`[${UNICODE_SPACES}]`, 'g');
+
+const normalizeTitle = (value: string): string =>
+  value.replace(UNICODE_SPACE_RE, ' ').trim().replace(/\s+/g, ' ').toLowerCase();
 
 /**
  * #1107 — verify one detected identifier under the caller's space
@@ -1096,11 +1124,24 @@ async function lookupIdentifier(
     // sibling page in a versioned title family). Ordering is by id because
     // every survivor is an exact match; the candidate list plus the ACL
     // filter pick which same-titled page the caller may actually read.
+    // translate() runs BEFORE the \s+ collapse and is fed the SAME list the
+    // JS normaliser uses, as parameters — Postgres's \s is ASCII-only, so
+    // without it a title carrying a non-breaking space could never equal
+    // anything the JS side produced.
     const r = await query<Row>(
       `${select} AND cp.title % $2
-       AND lower(btrim(regexp_replace(cp.title, '\\s+', ' ', 'g'))) = $6
+       AND lower(btrim(regexp_replace(translate(cp.title, $7, $8), '\\s+', ' ', 'g'))) = $6
        ORDER BY cp.id ASC LIMIT $4`,
-      [spaces, ident.value, userId, limit, excerptChars, normalizeTitle(ident.value)],
+      [
+        spaces,
+        ident.value,
+        userId,
+        limit,
+        excerptChars,
+        normalizeTitle(ident.value),
+        UNICODE_SPACES,
+        UNICODE_SPACES_AS_PLAIN,
+      ],
     );
     rows = r.rows;
   } else {

@@ -1203,6 +1203,24 @@ describe.skipIf(!dbAvailable)('rag-service integration — #1107 identifier pin 
     expect(messy[0]!.pinned).toBe(true);
   });
 
+  it('a title carrying a NON-BREAKING space still pins — JS and SQL must normalise alike', async () => {
+    // JavaScript's \s matches U+00A0; Postgres's does not. Without
+    // translate() the SQL side produced a string the JS side could never
+    // match, so a page whose title carries the NBSP that Confluence and
+    // Word paste routinely became permanently unpinnable, silently.
+    const nbspTitle = 'Incident\u00A0Review\u00A0Board';
+    expect(nbspTitle).not.toBe('Incident Review Board');
+    await query(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+       VALUES (gen_random_uuid()::text, 'confluence', 'DEV', $1, 'body', '', '')`,
+      [nbspTitle],
+    );
+    // The user types ordinary spaces, as they always would.
+    const out = await hybridSearch(USER, '"Incident Review Board"', 5, undefined, { pinIdentifiers: true });
+    expect(out[0]!.pinned).toBe(true);
+    expect(out[0]!.pageTitle).toBe(nbspTitle);
+  });
+
   it('a hyphenated WORD suffix is the same ticket; a hyphenated DIGIT is a sub-task', async () => {
     // The boundary must reject what continues an identifier and admit what
     // merely follows it. Excluding every hyphen got the second half wrong:
