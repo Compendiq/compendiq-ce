@@ -11,8 +11,9 @@ describe('ui-store', () => {
       treeSidebarSpaceKey: undefined,
       treeSidebarWidth: 256,
       articleSidebarCollapsed: false,
-      articleSidebarWidth: 280,
+      articleSidebarWidth: 360,
       singleKeyShortcutsEnabled: true,
+      vimModeEnabled: false,
     });
   });
 
@@ -29,5 +30,16 @@ describe('ui-store', () => {
     useUiStore.getState().setSingleKeyShortcutsEnabled(false);
     useUiStore.getState().setSingleKeyShortcutsEnabled(true);
     expect(useUiStore.getState().singleKeyShortcutsEnabled).toBe(true);
+  });
+
+  // Vim mode moved here from a permanent editor-toolbar slot: a personal
+  // preference belongs in one persisted place, read by every open editor,
+  // not a per-instance toggle each Editor mount used to own independently.
+  it('sets vimModeEnabled on and off', () => {
+    expect(useUiStore.getState().vimModeEnabled).toBe(false);
+    useUiStore.getState().setVimModeEnabled(true);
+    expect(useUiStore.getState().vimModeEnabled).toBe(true);
+    useUiStore.getState().setVimModeEnabled(false);
+    expect(useUiStore.getState().vimModeEnabled).toBe(false);
   });
 });

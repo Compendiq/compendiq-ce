@@ -498,7 +498,7 @@ export function ArticleRightPane({
         setWidth(width - 16);
       } else if (e.key === 'Home') {
         e.preventDefault();
-        setWidth(280);
+        setWidth(360);
       }
     },
     [width, setWidth],
@@ -1395,7 +1395,7 @@ export function ArticleRightPane({
         aria-valuenow={width}
         tabIndex={0}
         onMouseDown={handleResizeStart}
-        onDoubleClick={() => setWidth(280)}
+        onDoubleClick={() => setWidth(360)}
         onKeyDown={handleResizeKeyDown}
         className={cn(
           'group absolute bottom-0 left-0 top-0 z-10 flex w-2 cursor-col-resize items-center justify-start outline-none',
