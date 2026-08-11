@@ -355,4 +355,29 @@ describe('rag_context_chars_per_page getter (#1106 PR 2)', () => {
     mockQuery.mockRejectedValue(new Error('postgres unreachable'));
     expect(await getRagContextCharsPerPage()).toBe(RAG_CONTEXT_CHARS_DEFAULT);
   });
+
+  it("rejects parseInt truncation shapes — '1e4' and '8,000' must not become live tiny budgets (#1270 F5)", async () => {
+    respondWith('1e4');
+    expect(await getRagContextCharsPerPage()).toBe(RAG_CONTEXT_CHARS_DEFAULT);
+    invalidateRagContextCharsCache();
+    respondWith('8,000');
+    expect(await getRagContextCharsPerPage()).toBe(RAG_CONTEXT_CHARS_DEFAULT);
+  });
+
+  it("a transient DB failure fails toward the operator's LAST KNOWN value, never re-enabling a disabled feature (#1270 F8)", async () => {
+    vi.useFakeTimers();
+    try {
+      respondWith('0');
+      expect(await getRagContextCharsPerPage()).toBe(0);
+      // TTL expires; the settings SELECT blips. The stored 0 must survive.
+      vi.advanceTimersByTime(61_000);
+      mockQuery.mockRejectedValue(new Error('pool hiccup'));
+      expect(await getRagContextCharsPerPage()).toBe(0);
+      // And the error path did not refresh the TTL: recovery is immediate.
+      respondWith('9000');
+      expect(await getRagContextCharsPerPage()).toBe(9000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

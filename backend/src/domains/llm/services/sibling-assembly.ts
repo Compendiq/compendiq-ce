@@ -32,11 +32,19 @@ const PLAIN_JOINER = '\n\n';
 export interface SiblingChunk {
   chunkIndex: number;
   chunkText: string;
+  /** The chunk's section_title metadata — the REAL datum for "does the
+   * window span sections" (#1270 review F4: window size was a false proxy,
+   * since every chunk of one oversized section shares a title). */
+  sectionTitle?: string | null;
 }
 
 export interface AssembledWindow {
   text: string;
   mergedChunkCount: number;
+  /** True when the window's chunks carry more than one distinct
+   * section_title — the honest trigger for dropping the single-section
+   * header claim downstream. Missing titles never count as a section. */
+  spansSections: boolean;
 }
 
 /**
@@ -138,5 +146,9 @@ export function assembleSiblingWindow(
     }
   }
 
-  return { text, mergedChunkCount: window.length };
+  const titles = new Set<string>();
+  for (const c of window) {
+    if (c.sectionTitle != null && c.sectionTitle !== '') titles.add(c.sectionTitle);
+  }
+  return { text, mergedChunkCount: window.length, spansSections: titles.size > 1 };
 }

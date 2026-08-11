@@ -208,6 +208,45 @@ describe.skipIf(!dbAvailable)('#1117 retrieval spans + stage histogram', () => {
     }
   });
 
+  it("runs the REAL sibling SQL, records the 'page_merge' stage and an honest span verdict (#1270 F11/F6)", async () => {
+    // Two more chunks beside the seeded anchor (chunk 0) — the sibling
+    // fetch below is the production unnest-JOIN + BETWEEN query against
+    // real Postgres, the coverage soft-fail was hiding (#1270 F11: a
+    // broken SELECT logs a warn and every mocked suite stays green).
+    const pageId = (await query<{ id: number }>(`SELECT id FROM pages LIMIT 1`)).rows[0]!.id;
+    for (const [idx, text] of [[1, 'second section body'], [2, 'third section body']] as Array<[number, string]>) {
+      await query(
+        `INSERT INTO page_embeddings (page_id, chunk_index, chunk_text, embedding, metadata)
+         VALUES ($1, $2, $3, $4, $5::jsonb)`,
+        [pageId, idx, text, pgvector.toSql(fakeVec(idx + 20)), JSON.stringify({ page_title: 'Runbook', section_title: `Sec ${idx}`, space_key: SPACE })],
+      );
+    }
+
+    const results = await hybridSearch(USER, 'restart the queue', 5, undefined, { assembleContext: true });
+
+    expect(results[0]!.contextText).toContain('restart the queue');
+    expect(results[0]!.contextText).toContain('second section body');
+    expect(results[0]!.contextSpansSections).toBe(true);
+    expect(stagesRecorded()).toContain('page_merge');
+    const hybrid = spanByName('rag.hybrid_search');
+    expect(hybrid!.attributes['rag.page_merge']).toBe('assembled');
+    expect(hybrid!.attributes['rag.page_merge_pages']).toBe(1);
+  });
+
+  it("records 'none' on a keyword_fallback — no anchors, no fetch, and 'assembled' must not mean 'the query did not throw' (#1270 F6+F2)", async () => {
+    // No embeddings at all: the vector leg is empty, the keyword leg finds
+    // the page, every row is anchor-less — the stage runs, fetches nothing
+    // (the F2 rule: an outage must not pay maximum sibling I/O to assemble
+    // zero), and the span says so honestly.
+    await query(`DELETE FROM page_embeddings`);
+    const results = await hybridSearch(USER, 'restart the queue', 5, undefined, { assembleContext: true });
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0]!.contextText).toBeUndefined();
+    const hybrid = spanByName('rag.hybrid_search');
+    expect(hybrid!.attributes['rag.page_merge']).toBe('none');
+    expect(hybrid!.attributes['rag.page_merge_pages']).toBe(0);
+  });
+
   it("records the 'total' stage even when retrieval throws (review r1)", async () => {
     // The documented invariant: per-leg stages record successes only, but
     // 'total' records failures too — an error's latency is still latency the

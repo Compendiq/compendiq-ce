@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi, beforeEach } from 'vitest';
 import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 
@@ -201,6 +201,13 @@ describe('POST /api/llm/ask', () => {
 
   afterAll(async () => {
     await app.close();
+  });
+
+  afterEach(() => {
+    // The sanitize mock is passthrough by default; any test that swaps the
+    // implementation gets it restored here rather than trusting inline
+    // cleanup (#1270 review below-cap note).
+    vi.mocked(sanitizeLlmInput).mockImplementation((input: string) => ({ sanitized: input, warnings: [] }));
   });
 
   beforeEach(() => {
@@ -563,6 +570,7 @@ describe('POST /api/llm/ask', () => {
       mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
       mockUserCanAccessPage.mockResolvedValue(true);
       mockAssembleSubPageContext.mockResolvedValue({
+      injectionWarnings: [],
         markdown: '--- Page: "Leaf" (Main Page) ---\n\nLeaf page content.',
         pageCount: 1,
       });
@@ -933,7 +941,8 @@ describe('POST /api/llm/ask', () => {
     mockHybridSearch.mockResolvedValue([
       {
         pageId: 1, confluenceId: 'p1', chunkText: 'best', contextText: 'merged window',
-        mergedChunkCount: 3, pageTitle: 'Merged', sectionTitle: 'One Sec', spaceKey: 'DEV',
+        mergedChunkCount: 3, contextSpansSections: true,
+        pageTitle: 'Merged', sectionTitle: 'One Sec', spaceKey: 'DEV',
         score: 0.03, vectorScore: 0.5, keywordRank: null,
       },
       {
@@ -985,8 +994,6 @@ describe('POST /api/llm/ask', () => {
         && typeof c[4] === 'object' && (c[4] as Record<string, unknown>).source === 'kb_context',
     );
     expect(auditCall).toBeDefined();
-    // Restore the passthrough for later tests.
-    vi.mocked(sanitizeLlmInput).mockImplementation((input: string) => ({ sanitized: input, warnings: [] }));
   });
 
   // ─── Cache hit test ──────────────────────────────────────────────────────
@@ -1193,6 +1200,7 @@ describe('POST /api/llm/ask', () => {
     it('injects sub-page context when the user CAN access the page', async () => {
       mockUserCanAccessPage.mockResolvedValue(true);
       mockAssembleSubPageContext.mockResolvedValue({
+      injectionWarnings: [],
         markdown: 'ASSEMBLED-TREE',
         pageCount: 2,
         wasTruncated: false,

@@ -28,7 +28,7 @@ import pgvector from 'pgvector';
 
 const CHUNK_SIZE = 500;          // ~500 tokens target
 const CHUNK_OVERLAP = 50;        // ~50 token overlap
-const CHARS_PER_TOKEN = 3;       // conservative estimate (code/tables can be 1–3 chars/token)
+export const CHARS_PER_TOKEN = 3; // conservative estimate (code/tables can be 1–3 chars/token)
 export const CHUNK_HARD_LIMIT = 6_000;  // absolute character ceiling (~1,500–2,000 tokens safety cap)
 
 /** Delay between embedding pages to reduce LLM server pressure (ms). */
@@ -465,7 +465,13 @@ export async function getAdminChunkSettings(): Promise<{ chunkSize: number; chun
   // would let a NaN through). Overlap may legitimately be 0, so allow min 0.
   return {
     chunkSize: safeIntOr(settings['embedding_chunk_size'], CHUNK_SIZE),
-    chunkOverlap: safeIntOr(settings['embedding_chunk_overlap'], CHUNK_OVERLAP, 0),
+    // Clamped at the contracts-schema max (512 tokens) where the value is
+    // READ, not only where the panel writes it (#1270 review F14): a
+    // direct-SQL overlap above the cap would put the real seam overlap
+    // beyond sibling-assembly's SEAM_TRIM_WINDOW, silently reviving the
+    // full-duplication defect m8 closed — the derived guard test in
+    // sibling-assembly.test.ts holds only while this clamp does.
+    chunkOverlap: Math.min(safeIntOr(settings['embedding_chunk_overlap'], CHUNK_OVERLAP, 0), 512),
   };
 }
 

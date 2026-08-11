@@ -30,6 +30,16 @@ export interface EvalRunOptions {
    */
   rerank?: boolean;
   /**
+   * Request #1106 PR 2's sibling assembly per query (default TRUE — the
+   * rig measures the shipped chat configuration). Exposed as an option so
+   * the zero-discordant identity A/B is re-runnable from committed code
+   * (#1270 review F10), and guarded like the neighbouring stages: assembly
+   * is soft-fail at every layer, so without a participation check a broken
+   * sibling SELECT or a stray budget-0 row publishes green numbers while
+   // the measured configuration silently was not the shipped one.
+   */
+  assembleContext?: boolean;
+  /**
    * Fraction of queries that must show at least one vector-leg hit.
    *
    * Deliberately not "> 0": on a fully embedded corpus a healthy vector leg
@@ -46,6 +56,9 @@ export interface EvalRunResult {
   vectorParticipatingQueries: number;
   /** #1104: queries in which at least one returned result carried a rerankScore. */
   rerankParticipatingQueries: number;
+  /** #1106 PR 2: queries in which at least one returned result carried an
+   * assembled contextText. */
+  assemblyParticipatingQueries: number;
   totalQueries: number;
 }
 
@@ -68,6 +81,7 @@ export async function runEval(fixture: Fixture, opts: EvalRunOptions): Promise<E
   const runs: QueryRun[] = [];
   let vectorParticipatingQueries = 0;
   let rerankParticipatingQueries = 0;
+  let assemblyParticipatingQueries = 0;
 
   for (const label of fixture.labels) {
     // assembleContext mirrors the shipped chat configuration (#1106 PR 2).
@@ -77,11 +91,12 @@ export async function runEval(fixture: Fixture, opts: EvalRunOptions): Promise<E
     // evidence for that claim (PR body).
     const results = await hybridSearch(opts.userId, label.query, opts.topK, undefined, {
       rerank: opts.rerank === true,
-      assembleContext: true,
+      assembleContext: opts.assembleContext !== false,
     });
 
     if (results.some((r) => r.vectorScore !== null)) vectorParticipatingQueries++;
     if (results.some((r) => r.rerankScore != null)) rerankParticipatingQueries++;
+    if (results.some((r) => r.contextText !== undefined)) assemblyParticipatingQueries++;
 
     const expected = label.expectedFiles.map((file) => {
       const pageId = opts.pageIdByFile.get(file);
@@ -117,5 +132,15 @@ export async function runEval(fixture: Fixture, opts: EvalRunOptions): Promise<E
       + 'check the rerank use-case assignment and the provider endpoint before trusting this measurement.',
     );
   }
-  return { runs, vectorParticipatingQueries, rerankParticipatingQueries, totalQueries: fixture.labels.length };
+  // Same silent-lie class as the rerank guard: an assembly-on run in which
+  // the stage never assembled once (broken SELECT, budget-0 row in the rig
+  // DB, truncated budget) is a chunk-level run wearing the wrong label
+  // (#1270 review F10).
+  if (opts.assembleContext !== false && assemblyParticipatingQueries === 0 && fixture.labels.length > 0) {
+    throw new VectorLegSilentError(
+      'An assembly-on run was requested but the sibling-assembly stage participated in 0 queries — '
+      + 'check rag_context_chars_per_page and the page_embeddings sibling fetch before trusting this measurement.',
+    );
+  }
+  return { runs, vectorParticipatingQueries, rerankParticipatingQueries, assemblyParticipatingQueries, totalQueries: fixture.labels.length };
 }

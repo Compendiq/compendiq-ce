@@ -80,6 +80,9 @@ export function buildRagCacheKey(
      * are budget-specific — killing assembly must not replay 30 KB-context
      * answers for the cache TTL. */
     contextChars?: number;
+    /** #1270 review F9: the realized outcome — a soft-failed (chunk-level)
+     * answer must not occupy the fully-assembled key for the TTL. */
+    assembledPages?: number;
   },
 ): string {
   const sortedIds = [...docIds].sort().join(',');
@@ -96,7 +99,8 @@ export function buildRagCacheKey(
   // replayed when the user toggles Think on (and vice versa).
   const thinkingSuffix = options?.thinking ? 'think:1' : '';
   const contextSuffix = options?.contextChars !== undefined ? `ctx:${options.contextChars}` : '';
-  return KEY_PREFIX + hashLlmInputs(model, question, sortedIds, subPageSuffix, externalSuffix, webSuffix, providerSuffix, thinkingSuffix, contextSuffix);
+  const assembledSuffix = options?.assembledPages !== undefined ? `asm:${options.assembledPages}` : '';
+  return KEY_PREFIX + hashLlmInputs(model, question, sortedIds, subPageSuffix, externalSuffix, webSuffix, providerSuffix, thinkingSuffix, contextSuffix, assembledSuffix);
 }
 
 export class LlmCache {

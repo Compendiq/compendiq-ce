@@ -134,8 +134,29 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       throw err;
     }
     let ragContext = buildRagContext(searchResults);
-    // KB context is sanitized BELOW, after the sub-page prepend, in one
-    // pass — see the block after the includeSubPages branch.
+    // ── KB-context sanitization, part 1 of 2 (#1270 review m12 + F1,
+    // CLAUDE.md security rule 3) ─────────────────────────────────────────
+    // The RAG half is sanitized HERE, BEFORE the sub-page prepend: its own
+    // framing ('[Source N: …]' headers, '---' separators followed by a
+    // bracket) cannot trigger the delimiter-injection pattern, while the
+    // sub-page tree's '--- Page: … ---' attribution markers CAN when a page
+    // body starts with "System …" — sanitizing the concatenated string ate
+    // the very markers the prompt suffix tells the model to cite. The tree
+    // is therefore sanitized per-page-BODY inside assembleSubPageContext,
+    // before markers wrap the text, and its detections arrive as
+    // `injectionWarnings` (the fetchWebSources precedent), folded into the
+    // attestation below. Detections here carry contentOrigin so the audit
+    // trail distinguishes first-party KB content — which the ASKING user
+    // did not author — from the requester's own input (#1270 review F7).
+    {
+      const { sanitized: cleanRag, warnings: ragWarnings } = sanitizeLlmInput(ragContext);
+      if (ragWarnings.length > 0) {
+        promptInjectionDetected = true;
+        await logAuditEvent(request.userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings: ragWarnings, route: '/llm/ask', source: 'kb_context', contentOrigin: 'first_party_kb' }, request);
+      }
+      if (cleanRag !== ragContext) wasSanitized = true;
+      ragContext = cleanRag;
+    }
 
     // If includeSubPages is enabled and a pageId is provided, augment the RAG context
     // with the sub-page tree content
@@ -169,28 +190,17 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         ragContext = `Page tree context:\n\n${assembled.markdown}\n\n---\n\nAdditional knowledge base context:\n\n${ragContext}`;
         multiPageSuffix = getMultiPagePromptSuffix(assembled.pageCount);
         subPageContextAssembled = true;
+        // Part 2 of 2: the tree was sanitized per-page-body inside
+        // assembleSubPageContext (markers intact); its detections join the
+        // same attestation trail.
+        if (assembled.injectionWarnings.length > 0) {
+          promptInjectionDetected = true;
+          wasSanitized = true;
+          await logAuditEvent(request.userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings: assembled.injectionWarnings, route: '/llm/ask', source: 'subpage_tree', contentOrigin: 'first_party_kb' }, request);
+        }
       }
     }
 
-    // ── KB-context sanitization (#1270 review m12 + re-verification N4/N5,
-    // CLAUDE.md security rule 3) ────────────────────────────────────────
-    // One pass over the FULL knowledge-base half of the prompt — the RAG
-    // context (chunk or assembled sibling windows) plus the sub-page tree,
-    // which is the larger surface — BEFORE the already-sanitized external
-    // docs and web results are appended, so nothing is double-filtered.
-    // Detections flow into the same attestation accumulators and audit
-    // trail as every other sanitization site in this route: a KB-borne
-    // injection that is detected and neutralized must not leave the
-    // request attesting promptInjectionDetected: false.
-    {
-      const { sanitized: cleanKbContext, warnings: kbWarnings } = sanitizeLlmInput(ragContext);
-      if (kbWarnings.length > 0) {
-        promptInjectionDetected = true;
-        await logAuditEvent(request.userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings: kbWarnings, route: '/llm/ask', source: 'kb_context' }, request);
-      }
-      if (cleanKbContext !== ragContext) wasSanitized = true;
-      ragContext = cleanKbContext;
-    }
 
     // Fetch external documentation URLs via MCP sidecar (if provided and enabled)
     const externalDocs: Array<{ url: string; title: string; markdown: string }> = [];
@@ -286,11 +296,14 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       searchWeb: body.searchWeb,
       provider: chatConfig.providerId,
       thinking: body.thinking,
-      // #1270 review m6: the assembly budget shapes the PROMPT, so cached
-      // answers are budget-specific — an operator killing assembly (0) for
-      // a choking local model must not keep receiving answers generated
-      // from 30 KB contexts for the cache TTL. TTL-cached read, ~free.
+      // #1270 reviews m6 + F9: cached answers are specific to the assembly
+      // CONFIG (the budget — killing assembly must not replay large-context
+      // answers for the TTL) AND to the realized OUTCOME (how many sources
+      // actually assembled — a soft-failed request's chunk-level answer
+      // must not be served under the healthy key for an hour after the
+      // transient recovers).
       contextChars: await getRagContextCharsPerPage(),
+      assembledPages: searchResults.filter((r) => r.contextText !== undefined).length,
     });
 
     // `score` is the retrieval ORDERING value — an RRF fusion score from
@@ -313,10 +326,11 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         pageTitle: r.pageTitle,
         spaceKey: r.spaceKey,
         confluenceId: r.confluenceId,
-        // #1270 review m7: the prompt header already refuses to label
-        // multi-section context with one section; the UI chip must agree —
-        // a merged source reports no section rather than a false one.
-        sectionTitle: (r.mergedChunkCount ?? 1) > 1 ? undefined : r.sectionTitle,
+        // #1270 reviews m7 + F4: the prompt header refuses to label
+        // multi-SECTION context with one section, and the UI chip agrees —
+        // keyed on the real spans-sections datum, not window size (every
+        // chunk of one oversized section shares its title).
+        sectionTitle: r.contextSpansSections === true ? undefined : r.sectionTitle,
         score: r.score,
         similarity: r.vectorScore,
         // #1104: present only on reranked results; #1105's confidence formula

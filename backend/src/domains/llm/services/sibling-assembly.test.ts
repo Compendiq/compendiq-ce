@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { assembleSiblingWindow, SEAM_TRIM_WINDOW, SEAM_TRIM_MIN_MATCH } from './sibling-assembly.js';
-import { chunkText } from './embedding-service.js';
+import { chunkText, CHARS_PER_TOKEN } from './embedding-service.js';
 
 // The pure half of #1106 PR 2: given a page's sibling chunks (sorted by
 // chunk_index), an anchor, and a char budget, produce the merged context
@@ -68,9 +68,12 @@ describe('assembleSiblingWindow (#1106 PR 2)', () => {
     // even though the paragraph-break discriminator would accept it.
     expect(out.text).toBe(a + '\n\n' + b);
     expect(SEAM_TRIM_MIN_MATCH).toBeGreaterThanOrEqual(20);
-    // The window must COVER the max configurable chunker overlap
-    // (512 tokens x 3 chars) — see #1270 m8.
-    expect(SEAM_TRIM_WINDOW).toBeGreaterThanOrEqual(1536);
+    // The window must COVER the max chunker overlap, DERIVED from the
+    // exported chars-per-token and the contracts-schema cap (512) that
+    // getAdminChunkSettings clamps at read time — not restated as a bare
+    // literal that drifts when either moves (#1270 review F14; #1114's
+    // embedding-model upgrade is the expected mover).
+    expect(SEAM_TRIM_WINDOW).toBeGreaterThanOrEqual(512 * CHARS_PER_TOKEN);
   });
 
   it('a coincidental match NOT followed by a paragraph break is never trimmed — repeated table headers survive (#1270 B1)', () => {

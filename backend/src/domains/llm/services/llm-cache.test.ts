@@ -75,6 +75,13 @@ describe('buildRagCacheKey', () => {
     expect(at(undefined)).not.toBe(at(6000));
   });
 
+  it('keys on the REALIZED outcome — a soft-failed chunk-level answer never occupies the assembled key (#1270 F9)', () => {
+    const at = (assembledPages: number) =>
+      buildRagCacheKey('m', 'q', ['d1'], { provider: 'p1', contextChars: 6000, assembledPages });
+    expect(at(5)).not.toBe(at(0));
+    expect(at(5)).toBe(at(5));
+  });
+
   it('should prefix with kb:llm:', () => {
     const key = buildRagCacheKey('qwen3.5', 'What is X?', ['doc1', 'doc2']);
     expect(key).toMatch(/^kb:llm:[a-f0-9]{64}$/);

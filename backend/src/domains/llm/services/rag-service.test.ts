@@ -133,6 +133,7 @@ describe('RAG Service', () => {
         {
           pageId: 1, confluenceId: 'p1', chunkText: 'best chunk only',
           contextText: 'merged sibling window', mergedChunkCount: 3,
+          contextSpansSections: true,
           pageTitle: 'Merged', sectionTitle: 'One Section', spaceKey: 'DEV',
           score: 0.03, vectorScore: 0.5, keywordRank: null,
         },
@@ -1789,13 +1790,13 @@ describe('sibling-chunk context assembly stage (#1106 PR 2)', () => {
 
   function routeMainQueries(opts: {
     budget?: string;
-    siblings?: Array<{ page_id: number; chunk_index: number; chunk_text: string }> | 'throw';
+    siblings?: Array<{ page_id: number; chunk_index: number; chunk_text: string; section_title?: string | null }> | 'throw';
   }) {
     mocks.mockQuery.mockImplementation(async (sql: string) => {
       if (typeof sql === 'string' && sql.includes('rag_context_chars_per_page')) {
         return opts.budget === undefined ? { rows: [] } : { rows: [{ setting_value: opts.budget }] };
       }
-      if (typeof sql === 'string' && sql.includes('ORDER BY page_id, chunk_index')) {
+      if (typeof sql === 'string' && sql.includes('unnest(')) {
         if (opts.siblings === 'throw') throw new Error('sibling fetch died');
         return { rows: opts.siblings ?? [] };
       }
@@ -1808,25 +1809,28 @@ describe('sibling-chunk context assembly stage (#1106 PR 2)', () => {
 
   function siblingFetchCalls(): number {
     return mocks.mockQuery.mock.calls.filter(
-      (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('ORDER BY page_id, chunk_index'),
+      (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('unnest('),
     ).length;
   }
 
   it('assembles contextText anchored at the representative chunk; chunkText stays the best chunk', async () => {
     routeMainQueries({
       siblings: [
-        { page_id: 1, chunk_index: 1, chunk_text: 'before' },
-        { page_id: 1, chunk_index: 2, chunk_text: 'best chunk of page 1' },
-        { page_id: 1, chunk_index: 3, chunk_text: 'after' },
-        { page_id: 2, chunk_index: 0, chunk_text: 'best chunk of page 2' },
+        { page_id: 1, chunk_index: 1, chunk_text: 'before', section_title: 'Alpha' },
+        { page_id: 1, chunk_index: 2, chunk_text: 'best chunk of page 1', section_title: 'Beta' },
+        { page_id: 1, chunk_index: 3, chunk_text: 'after', section_title: 'Beta' },
+        { page_id: 2, chunk_index: 0, chunk_text: 'best chunk of page 2', section_title: 'Solo' },
       ],
     });
     const out = await hybridSearch('user-1', 'q', 5, undefined, { assembleContext: true });
     expect(out[0]!.contextText).toBe('before\n\nbest chunk of page 1\n\nafter');
     expect(out[0]!.mergedChunkCount).toBe(3);
     expect(out[0]!.chunkText).toBe('best chunk of page 1');
+    // Two distinct section titles in the window → spans (#1270 F4).
+    expect(out[0]!.contextSpansSections).toBe(true);
     expect(out[1]!.contextText).toBe('best chunk of page 2');
     expect(out[1]!.mergedChunkCount).toBe(1);
+    expect(out[1]!.contextSpansSections).toBe(false);
   });
 
   it('soft-fails to chunk-level rows when the sibling fetch throws — same shape, no contextText', async () => {
@@ -1839,7 +1843,19 @@ describe('sibling-chunk context assembly stage (#1106 PR 2)', () => {
 
   it('a page with no fetchable siblings degrades alone — the other page still assembles', async () => {
     routeMainQueries({
-      siblings: [{ page_id: 2, chunk_index: 0, chunk_text: 'best chunk of page 2' }],
+      siblings: [{ page_id: 2, chunk_index: 0, chunk_text: 'best chunk of page 2', section_title: 'S' }],
+    });
+    const out = await hybridSearch('user-1', 'q', 5, undefined, { assembleContext: true });
+    expect(out[0]!.contextText).toBeUndefined();
+    expect(out[1]!.contextText).toBe('best chunk of page 2');
+  });
+
+  it('a re-embedded anchor (position resolves, TEXT differs) does not assemble — unmeasured content never ships (#1270 F3)', async () => {
+    routeMainQueries({
+      siblings: [
+        { page_id: 1, chunk_index: 2, chunk_text: 'DIFFERENT text after re-embed', section_title: 'S' },
+        { page_id: 2, chunk_index: 0, chunk_text: 'best chunk of page 2', section_title: 'S' },
+      ],
     });
     const out = await hybridSearch('user-1', 'q', 5, undefined, { assembleContext: true });
     expect(out[0]!.contextText).toBeUndefined();
@@ -1874,8 +1890,8 @@ describe('sibling-chunk context assembly stage (#1106 PR 2)', () => {
     ]);
     routeMainQueries({
       siblings: [
-        { page_id: 1, chunk_index: 2, chunk_text: 'best chunk of page 1' },
-        { page_id: 2, chunk_index: 0, chunk_text: 'best chunk of page 2' },
+        { page_id: 1, chunk_index: 2, chunk_text: 'best chunk of page 1', section_title: 'S' },
+        { page_id: 2, chunk_index: 0, chunk_text: 'best chunk of page 2', section_title: 'S' },
       ],
     });
     const out = await hybridSearch('user-1', 'q', 5, undefined, { rerank: true, assembleContext: true });
