@@ -134,6 +134,13 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     // If includeSubPages is enabled and a pageId is provided, augment the RAG context
     // with the sub-page tree content
     let multiPageSuffix = '';
+    // The realised-grounding signal for the #1105 gate. NOT multiPageSuffix:
+    // that is a prompt-FORMATTING string which getMultiPagePromptSuffix
+    // returns as '' for pageCount <= 1 — a leaf page assembles successfully
+    // (its full content enters ragContext above) with an empty suffix, and
+    // using the suffix as the proxy made the gate refuse over grounding that
+    // was in the prompt while claiming the tree "could not be included".
+    let subPageContextAssembled = false;
     if (includeSubPages && body.pageId) {
       // #814: enforce the same access control as GET /pages/:id before pulling
       // the parent page (and its whole sub-tree) into the LLM prompt. Without
@@ -155,6 +162,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         // Prepend the page tree context before the RAG context
         ragContext = `Page tree context:\n\n${assembled.markdown}\n\n---\n\nAdditional knowledge base context:\n\n${ragContext}`;
         multiPageSuffix = getMultiPagePromptSuffix(assembled.pageCount);
+        subPageContextAssembled = true;
       }
     }
 
@@ -404,7 +412,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       (m) => m.role === 'assistant' && !m.refused,
     );
     const otherGrounding = Boolean(
-      multiPageSuffix
+      subPageContextAssembled
       || externalDocs.length > 0
       || askWebSources.length > 0
       || hasSubstantiveHistory,
@@ -429,7 +437,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       if (externalUrls && externalUrls.length > 0 && externalDocs.length === 0) {
         groundingFailures.push('none of the attached URLs could be retrieved');
       }
-      if (includeSubPages && body.pageId && !multiPageSuffix) {
+      if (includeSubPages && body.pageId && !subPageContextAssembled) {
         groundingFailures.push('the requested page tree could not be included');
       }
       if (body.searchWeb && askWebSources.length === 0) {
@@ -474,7 +482,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       return;
     }
 
-        let ragLockAcquired = false;
+    let ragLockAcquired = false;
     if (conversationHistory.length === 0) {
       const { cached, lockAcquired } = await checkCacheWithLock(llmCache, ragCacheKey);
       ragLockAcquired = lockAcquired;

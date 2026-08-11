@@ -553,6 +553,32 @@ describe('POST /api/llm/ask', () => {
       expect(persisted.find((m) => m.role === 'assistant')!.content).toContain('none of the attached URLs could be retrieved');
     });
 
+    it('gate ON + includeSubPages on a LEAF page: answers — assembly succeeded even though the suffix is empty', async () => {
+      // getMultiPagePromptSuffix returns '' for pageCount <= 1, but a leaf
+      // page's full content DID enter the prompt. The gate must key on the
+      // assembly flag, not the formatting string — a multi-page fixture
+      // would pass against the regression, so this test pins pageCount: 1.
+      mockConfidenceThreshold.mockResolvedValue(0.3);
+      mockHybridSearch.mockResolvedValue([]);
+      mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
+      mockUserCanAccessPage.mockResolvedValue(true);
+      mockAssembleSubPageContext.mockResolvedValue({
+        markdown: '--- Page: "Leaf" (Main Page) ---\n\nLeaf page content.',
+        pageCount: 1,
+      });
+      mockGetMultiPagePromptSuffix.mockReturnValue('');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('Grounded in the open page.'));
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'what does this page say?', includeSubPages: true, pageId: '12345' },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(mockStreamChatClient).toHaveBeenCalled();
+      const finals = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      expect(finals.some((f) => f.refused === true)).toBe(false);
+    });
+
     it('empty set refuses when ONLY the rerank knob is raised — the headline case belongs to no basis (#1268 review)', async () => {
       // A rerank deployment tunes rag_confidence_threshold_rerank; an empty
       // healthy set (basis none, score 0) must refuse under EITHER knob, or
