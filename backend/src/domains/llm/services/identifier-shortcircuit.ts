@@ -9,12 +9,14 @@
  * - Every shape is either the WHOLE query, QUOTED, or adjacent to a CUE
  *   word; bare tokens in natural language never fire (space keys like DEV/
  *   IT/OPS/HR appear constantly in ordinary questions).
- * - Detection only fires on SHORT queries: MAX_CUED_QUERY_TOKENS is the
- *   outer gate for every shape, and MAX_BARE_QUERY_TOKENS additionally
- *   bounds the one shape that is neither whole-query-anchored nor cued in
- *   its own right (the bare space key). The other bare shapes are
- *   whole-query by construction, so their token count is 1 — the "4 bare /
- *   6 cued" phrasing describes the gate, not two independent regimes.
+ * - Detection only fires on SHORT queries: MAX_CUED_QUERY_TOKENS gates
+ *   every shape. There is deliberately no second, tighter bound. One
+ *   existed (MAX_BARE_QUERY_TOKENS = 4) and gated nothing reachable: every
+ *   uncued shape is anchored to the WHOLE query, so its token count is 1
+ *   and a 4-token ceiling can never bind. A future uncued shape that is
+ *   not whole-query-anchored would need its own bound — reintroduce one
+ *   then, live, rather than carrying an inert constant the docs describe
+ *   as a guard.
  * - Case is a signal: issue keys and space keys match case-sensitively.
  * - At most two identifiers are returned, strongest kind first
  *   (pageId > issueKey > title > spaceKey by ambiguity).
@@ -25,7 +27,6 @@
  * wrong answer. This module is dependency-free and pure.
  */
 
-export const MAX_BARE_QUERY_TOKENS = 4;
 export const MAX_CUED_QUERY_TOKENS = 6;
 
 export type IdentifierKind = 'pageId' | 'issueKey' | 'spaceKey' | 'title';
@@ -42,17 +43,16 @@ const KIND_STRENGTH: Record<IdentifierKind, number> = {
   spaceKey: 3,
 };
 
-// The trailing segment is OPTIONAL and part of the SAME token (#1273 fork
-// F7): without it `CVE-2024-1234` detected as `CVE-2024`, a far less
-// specific key that title-matches any page naming a different 2024 CVE.
 // Multi-segment keys (CVE-YYYY-NNNN, Jira sub-task ids, versioned keys)
-// must verify whole or not at all.
-// The trailing (?!-?\d) is what makes "whole or not at all" true. A bare
-// \b lets the engine DROP the optional group and stop at the hyphen when
-// the last run is too long, so CVE-2024-1234567 silently became CVE-2024 —
-// a key that title-matches a different CVE, which is the exact failure the
-// optional group was added to prevent. Refusing beats truncating: an
-// over-long token is not a key shape, and a miss costs one probe.
+// must verify WHOLE or not at all, and that takes both halves. The
+// optional segment stops `CVE-2024-1234` detecting as `CVE-2024` (#1273
+// fork F7). The trailing (?!-?\d) is what makes the rule true rather than
+// aspirational: with a bare \b the engine simply DROPS the optional group
+// and stops at the hyphen when the last run is too long, so
+// `CVE-2024-1234567` still became `CVE-2024` — a key that title-matches a
+// different CVE, which is the failure the optional group was added to
+// prevent. Refusing beats truncating: an over-long token is not a key
+// shape, and a miss costs one indexed probe.
 const ISSUE_KEY = /\b[A-Z][A-Z0-9]{1,9}-\d{1,6}(?:-\d{1,6})?(?!-?\d)/g;
 const WHOLE_NUMERIC = /^\d{1,10}$/;
 // >=5 digits for the CUED shape (#1273 review B1): pages.id is a dense
@@ -73,8 +73,8 @@ const SMART_QUOTES = '"“”„«»';
 const QUOTED = new RegExp(`[${SMART_QUOTES}]([^${SMART_QUOTES}]{2,120})[${SMART_QUOTES}]`);
 const CUED_SPACE_KEY = /\b(?:space|key|in)\s+([A-Z]{2,10})\b/;
 // Greedy to end-of-query by design; trailing qualifiers ("page called X
-// in DEV space") widen the captured title and typically miss the 0.3
-// trigram threshold — a silent miss, never a wrong pin (#1273 review M9).
+// in DEV space") widen the captured title and fall under the pin's
+// similarity floor — a silent miss, never a wrong pin (#1273 review M9).
 // The issueKey shape also admits RFC-2119/ISO-9001/SHA-256-style tokens;
 // post-fork-F1 they verify against a page TITLE only, so an ordinary
 // "SHA-256 vs MD5" question costs one indexed probe and pins nothing.
@@ -103,7 +103,6 @@ export function detectIdentifiers(query: string): DetectedIdentifier[] {
   const trimmed = query.trim();
   if (trimmed.length === 0) return [];
   const tokens = trimmed.split(/\s+/);
-  const bareOk = tokens.length <= MAX_BARE_QUERY_TOKENS;
   const cuedOk = tokens.length <= MAX_CUED_QUERY_TOKENS;
   if (!cuedOk) return [];
 
@@ -152,7 +151,7 @@ export function detectIdentifiers(query: string): DetectedIdentifier[] {
   }
 
   // Space key: whole query or cue-adjacent — NEVER a bare token in prose.
-  if (bareOk && WHOLE_SPACE_KEY.test(trimmed)) {
+  if (WHOLE_SPACE_KEY.test(trimmed)) {
     add('spaceKey', trimmed);
   } else {
     const cued = CUED_SPACE_KEY.exec(trimmed);

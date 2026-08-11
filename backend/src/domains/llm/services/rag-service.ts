@@ -954,6 +954,16 @@ export const IDENTIFIER_LOOKUP_CANDIDATES = 5;
 const PIN_EXCERPT_FALLBACK_CHARS = 500;
 
 /**
+ * #1107 — the similarity a fuzzy TITLE match must clear to be pinned.
+ * Deliberately well above pg_trgm's 0.3 default: 0.3 is tuned for "worth
+ * retrieving", while a pin asserts "this is the page you named" and
+ * silences the refusal gate. An exactly-typed title scores 1.0, so this
+ * leaves generous room for typos and word-order noise while refusing a
+ * merely adjacent title.
+ */
+export const PIN_TITLE_MIN_SIMILARITY = 0.6;
+
+/**
  * #1107 — verify one detected identifier under the caller's space
  * visibility. Returns up to IDENTIFIER_LOOKUP_CANDIDATES keyword-style
  * SearchResults (body-text excerpt, no measured scores, `pinned: true`) in
@@ -1012,10 +1022,15 @@ async function lookupIdentifier(
     // Placeholders are renumbered per-branch: an UNREFERENCED parameter
     // cannot type-infer ("could not determine data type of parameter") and
     // kills the statement — the visibility fragment holds $1/$3.
+    // NULLS LAST is load-bearing, not decoration. `cp.confluence_id = $2`
+    // is NULL for a locally-created page, and Postgres sorts DESC as NULLS
+    // FIRST — so the null (a PK match on a local page) outranked the TRUE
+    // (the real confluence_id match), inverting the exact namespace
+    // preference this ORDER BY exists to state.
     const r = fitsInt4
       ? await query<Row>(
           `${select} AND (cp.confluence_id = $2 OR cp.id = $4)
-           ORDER BY (cp.confluence_id = $2) DESC, cp.id ASC LIMIT $6`,
+           ORDER BY (cp.confluence_id = $2) DESC NULLS LAST, cp.id ASC LIMIT $6`,
           [spaces, ident.value, userId, n, excerptChars, limit],
         )
       : await query<Row>(
@@ -1024,16 +1039,39 @@ async function lookupIdentifier(
         );
     rows = r.rows;
   } else if (ident.kind === 'issueKey') {
+    // The key must match as a TOKEN, not a substring. `ILIKE '%INC-220%'`
+    // matches every INC-2203 / INC-22030 page, and the starts-with
+    // tiebreak then confidently picks one of them — a pin on a DIFFERENT
+    // identifier, which is the failure this whole stage is meant to
+    // prevent. The alternation is safe to interpolate because the detector
+    // only ever emits [A-Z0-9-]+ (asserted below): no regex metacharacter
+    // can reach here, and `-` is literal outside a bracket expression.
+    // `~*` is still an index-usable operator for gin_trgm_ops.
+    // The hyphen is excluded from the boundary on BOTH sides as well as
+    // the alphanumerics: `-` continues an identifier rather than ending
+    // one, so allowing it would let key INC-220 match the sub-task title
+    // INC-220-1 — a different identifier, which is the same wrong-pin
+    // class one rung down.
+    if (!/^[A-Za-z0-9-]+$/.test(ident.value)) return [];
+    const boundedKey = `(^|[^[:alnum:]-])${ident.value}([^[:alnum:]-]|$)`;
+    const startsWithKey = `^${ident.value}([^[:alnum:]-]|$)`;
     const titled = await query<Row>(
-      `${select} AND cp.title ILIKE $2
-       ORDER BY (cp.title ILIKE $4) DESC, length(cp.title) ASC, cp.id ASC LIMIT $6`,
-      [spaces, `%${ident.value}%`, userId, `${ident.value}%`, excerptChars, limit],
+      `${select} AND cp.title ~* $2
+       ORDER BY (cp.title ~* $4) DESC, length(cp.title) ASC, cp.id ASC LIMIT $6`,
+      [spaces, boundedKey, userId, startsWithKey, excerptChars, limit],
     );
     rows = titled.rows;
   } else if (ident.kind === 'title') {
+    // pg_trgm's default 0.3 threshold is a RETRIEVAL bar, and this stage
+    // makes a much stronger claim: it labels the row a verified exact
+    // match, leads the results with it, and suppresses the #1105 refusal
+    // gate on its behalf. At 0.3 a merely similar title clears that bar.
+    // The `%` operator stays so the trigram index still drives the scan;
+    // the explicit floor is the recheck that earns the claim.
     const r = await query<Row>(
-      `${select} AND cp.title % $2 ORDER BY similarity(cp.title, $2) DESC, cp.id ASC LIMIT $4`,
-      [spaces, ident.value, userId, limit, excerptChars],
+      `${select} AND cp.title % $2 AND similarity(cp.title, $2) >= $6
+       ORDER BY similarity(cp.title, $2) DESC, cp.id ASC LIMIT $4`,
+      [spaces, ident.value, userId, limit, excerptChars, PIN_TITLE_MIN_SIMILARITY],
     );
     rows = r.rows;
   } else {
@@ -1249,6 +1287,14 @@ async function hybridSearchInner(
   let searchTypeFinal: SearchAnalyticsType = searchType;
   let rerankMax: number | null = null;
   let topResults: SearchResult[];
+  // The best row available for each page BEFORE the topK slice, used only
+  // by the pin stage's enriched-row recovery. It starts as the fused
+  // candidates and is upgraded to the reranked pool when that stage runs —
+  // otherwise recovering a page from `candidates` silently hands back the
+  // pre-rerank object, and the recovery's own comment would be claiming a
+  // rerankScore it dropped (the scored entries are new objects; the
+  // rerank stage never mutates `candidates`).
+  let enrichedPool: SearchResult[] = candidates;
   if (rerankCfg && searchType === 'hybrid' && candidates.length > 1) {
     const poolTarget = Math.max(await rerankCandidatesPromise, Math.max(0, topK));
     const pool = candidates.slice(0, poolTarget);
@@ -1284,7 +1330,9 @@ async function hybridSearchInner(
       const byIndex = new Map(scored.map((s) => [s.index, s.relevanceScore]));
       const scoredEntries = scored.map((s) => ({ ...pool[s.index]!, rerankScore: s.relevanceScore }));
       const unscored = pool.filter((_, i) => !byIndex.has(i));
-      topResults = [...scoredEntries, ...unscored].slice(0, Math.max(0, topK));
+      const reranked = [...scoredEntries, ...unscored];
+      enrichedPool = reranked;
+      topResults = reranked.slice(0, Math.max(0, topK));
       rerankMax = topResults.reduce<number | null>(
         (max, r) => (r.rerankScore != null && (max === null || r.rerankScore > max) ? r.rerankScore : max),
         null,
@@ -1460,14 +1508,18 @@ async function hybridSearchInner(
         if (verified.length > 0) {
           const pinnedIds = new Set(verified.map((r) => r.pageId));
           const head: SearchResult[] = verified.map((v) => {
-            // topResults FIRST (it carries assembled context), then the
-            // pre-slice candidates (#1273 fork F12): a verified page that
+            // topResults FIRST (it alone carries assembled context), then
+            // the pre-slice pool (#1273 fork F12): a verified page that
             // fused just OUTSIDE topK — the diluted-exact-match case this
             // feature exists for — used to lose its scored chunk,
             // chunkIndex and rerankScore and re-enter as a bare excerpt,
-            // while the purpose-built row sat one array away.
+            // while the purpose-built row sat one array away. `enrichedPool`
+            // is the RERANKED pool where that stage ran, so the recovered
+            // row keeps its relevance score; `candidates` is the last
+            // resort for a page beyond the rerank pool entirely.
             const existing =
               topResults.find((r) => r.pageId === v.pageId) ??
+              enrichedPool.find((r) => r.pageId === v.pageId) ??
               candidates.find((r) => r.pageId === v.pageId);
             return existing ? { ...existing, pinned: true as const } : v;
           });

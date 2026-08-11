@@ -266,6 +266,27 @@ namespace-aware (#1273 B1/B2): the cued numeric shape requires ≥5 digits
 (pages.id is a dense SERIAL — small integers verify against SOME row on
 every instance) and the confluence_id namespace outranks the internal PK.
 
+Three lookup rules are load-bearing and each was a wrong pin before it
+existed. (1) **The key must match as a TOKEN, not a substring.** `ILIKE
+'%INC-220%'` matches every `INC-2203` page, and the starts-with tiebreak
+then picks one confidently — and because the shorter key's own page often
+has the *longer* title, `length ASC` actively promoted the wrong ticket.
+Sequential ticket numbering makes every short key a prefix of a longer
+one, so this was ordinary, not exotic. The predicate is a boundary regex
+that excludes the hyphen on both sides as well as alphanumerics, since `-`
+continues an identifier (`INC-220` must not match the sub-task
+`INC-220-1`); `~*` remains index-usable for `gin_trgm_ops`, and the
+interpolation is safe because the detector only emits `[A-Z0-9-]`.
+(2) **`NULLS LAST` on the pageId ordering.** `(cp.confluence_id = $2) DESC`
+is NULL for a locally-created page and Postgres sorts DESC as NULLS FIRST,
+so a PK match on a local page outranked the page whose `confluence_id`
+actually equalled the queried value — the precise inverse of the namespace
+preference the clause exists to state. (3) **A fuzzy title match must clear
+`PIN_TITLE_MIN_SIMILARITY` (0.6), not pg_trgm's 0.3 default.** 0.3 is a
+"worth retrieving" bar; a pin leads the results and silences the refusal
+gate, so it must clear a higher one. An exactly-typed title scores 1.0, so
+the floor leaves room for typos while refusing a merely adjacent title.
+
 **The issue-key lookup probes TITLES only, and that is a precision
 decision, not an oversight** (#1273 fork F1). It was briefly two-tiered,
 falling back to a ts_rank-ordered tsv arm for pages that merely MENTION the

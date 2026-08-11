@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
   detectIdentifiers,
-  MAX_BARE_QUERY_TOKENS,
   MAX_CUED_QUERY_TOKENS,
 } from './identifier-shortcircuit.js';
 
@@ -174,8 +173,7 @@ describe('detectIdentifiers (#1107)', () => {
   });
 
   describe('guards', () => {
-    it('exports the token limits the design pins', () => {
-      expect(MAX_BARE_QUERY_TOKENS).toBe(4);
+    it('exports the one token limit that actually gates', () => {
       expect(MAX_CUED_QUERY_TOKENS).toBe(6);
     });
 
