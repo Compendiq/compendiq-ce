@@ -63,9 +63,21 @@ vi.mock('../../domains/llm/services/openai-compatible-client.js', () => ({
   invalidateDispatcher: vi.fn(),
 }));
 
+// Closed stub (#1268 review): the ask route reads the #1105 confidence
+// formula from the retrieval-confidence leaf module (real, dependency-free),
+// so rag-service's heavy module graph stays out of this suite.
 vi.mock('../../domains/llm/services/rag-service.js', () => ({
   hybridSearch: vi.fn().mockResolvedValue([]),
   buildRagContext: vi.fn().mockReturnValue('ctx'),
+}));
+
+// Explicit getter stubs (#1268 review): the real getters carry a
+// module-level 60s cache that pins whatever the first request resolved for
+// the life of the file — a later test exercising the gate against a DB row
+// would pass vacuously.
+vi.mock('../../core/services/admin-settings-service.js', () => ({
+  getRagConfidenceThreshold: vi.fn(async () => 0),
+  getRagConfidenceThresholdRerank: vi.fn(async () => 0),
 }));
 
 vi.mock('../../core/db/postgres.js', () => ({

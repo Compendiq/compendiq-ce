@@ -24,7 +24,10 @@ import {
   getAdminAccessDeniedRetentionDays,
   getLlmConcurrency,
   getLlmMaxQueueDepth,
+  getRagConfidenceThreshold,
+  getRagConfidenceThresholdRerank,
   initLlmQueueSettings,
+  invalidateRagConfidenceThresholdCache,
   _resetLlmQueueSettingsForTests,
 } from './admin-settings-service.js';
 
@@ -209,5 +212,97 @@ describe('LLM queue cluster-wide cached getters (Phase B-3)', () => {
     });
     await initLlmQueueSettings();
     expect(getLlmConcurrency()).toBe(20);
+  });
+});
+
+describe('confidence-threshold getters (#1105, per-basis since #1268 review)', () => {
+  function respondWith(values: Record<string, string>) {
+    mockQuery.mockImplementation(async (_sql: string, params?: unknown[]) => {
+      const key = Array.isArray(params) ? (params[0] as string) : '';
+      const v = values[key];
+      return v === undefined ? { rows: [] } : { rows: [{ setting_value: v }] };
+    });
+  }
+
+  beforeEach(() => {
+    mockQuery.mockReset();
+    invalidateRagConfidenceThresholdCache();
+  });
+
+  it('returns the persisted value for a plain decimal in [0, 1)', async () => {
+    respondWith({ rag_confidence_threshold: '0.35' });
+    expect(await getRagConfidenceThreshold()).toBe(0.35);
+  });
+
+  it('defaults to 0 (gate off) when the row is absent', async () => {
+    respondWith({});
+    expect(await getRagConfidenceThreshold()).toBe(0);
+    expect(await getRagConfidenceThresholdRerank()).toBe(0);
+  });
+
+  it('the two bases read their own keys and never cross (#1268 B2)', async () => {
+    respondWith({
+      rag_confidence_threshold: '0.4',
+      rag_confidence_threshold_rerank: '0.1',
+    });
+    expect(await getRagConfidenceThreshold()).toBe(0.4);
+    expect(await getRagConfidenceThresholdRerank()).toBe(0.1);
+  });
+
+  it("rejects '1' — maximal strictness must not silently mean off (#1268 M4)", async () => {
+    respondWith({ rag_confidence_threshold: '1' });
+    expect(await getRagConfidenceThreshold()).toBe(0);
+  });
+
+  it("rejects locale/percent shapes ('0,35', '35%') instead of parseFloat-ing them to nonsense", async () => {
+    // parseFloat('0,35') === 0: an in-range value that silently disables the
+    // gate while looking accepted. Strict shape rejects it loudly.
+    respondWith({ rag_confidence_threshold: '0,35' });
+    expect(await getRagConfidenceThreshold()).toBe(0);
+    invalidateRagConfidenceThresholdCache();
+    respondWith({ rag_confidence_threshold: '35%' });
+    expect(await getRagConfidenceThreshold()).toBe(0);
+  });
+
+  it('accepts the boundary 0 and the shape .5', async () => {
+    respondWith({ rag_confidence_threshold: '0', rag_confidence_threshold_rerank: '.5' });
+    expect(await getRagConfidenceThreshold()).toBe(0);
+    expect(await getRagConfidenceThresholdRerank()).toBe(0.5);
+  });
+
+  it("treats an empty/whitespace row as UNSET — default 0, no warning (#1268 review)", async () => {
+    // A panel's "clear" writing '' must not become a once-a-minute WARN for
+    // the life of the process.
+    const { logger } = await import('../utils/logger.js');
+    vi.mocked(logger.warn).mockClear();
+    respondWith({ rag_confidence_threshold: '' });
+    expect(await getRagConfidenceThreshold()).toBe(0);
+    invalidateRagConfidenceThresholdCache();
+    respondWith({ rag_confidence_threshold: '   ' });
+    expect(await getRagConfidenceThreshold()).toBe(0);
+    expect(logger.warn).not.toHaveBeenCalled();
+    // A genuinely malformed value still warns loudly.
+    invalidateRagConfidenceThresholdCache();
+    respondWith({ rag_confidence_threshold: 'banana' });
+    expect(await getRagConfidenceThreshold()).toBe(0);
+    expect(logger.warn).toHaveBeenCalled();
+  });
+
+  it('never throws when the DB query rejects — gate off', async () => {
+    mockQuery.mockRejectedValue(new Error('postgres unreachable'));
+    expect(await getRagConfidenceThreshold()).toBe(0);
+  });
+
+  it('caches per key within the TTL and re-reads after invalidation', async () => {
+    respondWith({ rag_confidence_threshold: '0.35' });
+    await getRagConfidenceThreshold();
+    await getRagConfidenceThreshold();
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+
+    respondWith({ rag_confidence_threshold: '0.6' });
+    // Still cached — the new DB value is not visible yet.
+    expect(await getRagConfidenceThreshold()).toBe(0.35);
+    invalidateRagConfidenceThresholdCache();
+    expect(await getRagConfidenceThreshold()).toBe(0.6);
   });
 });

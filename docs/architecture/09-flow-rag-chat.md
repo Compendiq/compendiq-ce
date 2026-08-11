@@ -31,54 +31,58 @@ sequenceDiagram
         BE->>PG: INSERT audit_log (PROMPT_INJECTION_DETECTED)
         note right of BE: promptInjectionDetected / sanitized attestation<br/>flags set on the llm_audit_log row —<br/>request continues with the sanitized question
     end
+    BE->>EMB: POST /v1/embeddings (question)
+    EMB-->>BE: q_vector[N]
+    BE->>RBAC: getUserAccessibleSpacesMemoized(userId)
+    RBAC-->>BE: readableSpaceKeys[] (request-scoped)
+    note right of BE: per-leg stage limit = fetch width (#35;1103)<br/>admin_settings 'rag_fetch_width' (default 10),<br/>floored at topK (+ 1.5x topK under EE ACL)
+    par vector + keyword
+        BE->>RAG: vectorSearch(userId, q_vector, stageLimit)
+        RAG->>PG: WHERE cp.space_key = ANY(readableSpaceKeys) ...
+        PG-->>RAG: top fetch-width chunks
+    and
+        BE->>RAG: keywordSearch(userId, question, stageLimit)
+        RAG->>PG: tsvector search WHERE same space filter
+        PG-->>RAG: matches
+    end
+    RAG-->>BE: merged + deduped + ranked (fetch-width wide)
+    opt RAG_PERMISSION_ENFORCEMENT (EE)
+        BE->>RBAC: filterAccessiblePages(userId, pageIds)<br/>one set-based query (#35;1104)
+        RBAC-->>BE: filter decision (per-page read ACE honoured)
+    end
+    opt rerank use case assigned (#35;1104)
+        BE->>PROV2: POST /v1/rerank with query + candidate docs<br/>(dedicated rerank client — queue + breaker)
+        PROV2-->>BE: relevance scores [0,1]
+        note right of BE: pool = rag_rerank_candidates (default 30)<br/>docs sanitized + truncated to 2,000 chars<br/>timeout/failure = honest bypass to fused order
+    end
+    note right of BE: slice to topK after ranking —<br/>fetch width is ranking headroom the rerank stage spends
+    opt includeSubPages
+        BE->>RBAC: userCanAccessPage(userId, parentPageId)
+        RBAC-->>BE: allow / deny (#35;814 — skip tree on deny)
+        BE->>SP: assembleSubPageContext(rootPageId)
+        SP->>RBAC: getUserAccessibleSpacesMemoized(userId)
+        SP->>CF: fetch child tree WHERE deleted_at IS NULL<br/>AND visible to user (space RBAC)
+        CF-->>SP: pages
+        SP-->>BE: tree context
+    end
+    opt externalUrls provided
+        BE->>MCP: fetch urls
+        MCP-->>BE: content (sanitized#59; detections audited — same flags)
+    end
+    opt searchWeb
+        BE->>MCP: search(question)
+        MCP-->>BE: top results (sanitized#59; detections audited — #35;835)
+    end
+    opt per-basis confidence threshold above 0 (#35;1105)
+        note right of BE: computeRetrievalConfidence(results, healthCaveat) —<br/>max rerank relevance (full coverage), else max cosine (vector-led)#59;<br/>empty set gates on EITHER knob, measured bases on their own#59;<br/>stands down only for grounding that MATERIALISED<br/>(assembled tree / fetched docs / web results / substantive turn)#59;<br/>refusal: honest SSE turn + weak sources, no chat completion,<br/>cache never read or written#59; health-caveat empties exempt
+    end
+    note right of BE: response cache is consulted only PAST the gate<br/>(and only for history-free requests) — a low-confidence<br/>question cannot serve a stale cached answer
     BE->>CACHE: getCachedResponse(key)
     alt cache hit
         CACHE-->>BE: answer
         BE-->>FE: SSE { content, done:true, fromCache:true }
     else miss (stampede lock)
         CACHE-->>BE: lock acquired
-        BE->>EMB: POST /v1/embeddings (question)
-        EMB-->>BE: q_vector[N]
-        BE->>RBAC: getUserAccessibleSpacesMemoized(userId)
-        RBAC-->>BE: readableSpaceKeys[] (request-scoped)
-        note right of BE: per-leg stage limit = fetch width (#35;1103)<br/>admin_settings 'rag_fetch_width' (default 10),<br/>floored at topK (+ 1.5x topK under EE ACL)
-        par vector + keyword
-            BE->>RAG: vectorSearch(userId, q_vector, stageLimit)
-            RAG->>PG: WHERE cp.space_key = ANY(readableSpaceKeys) ...
-            PG-->>RAG: top fetch-width chunks
-        and
-            BE->>RAG: keywordSearch(userId, question, stageLimit)
-            RAG->>PG: tsvector search WHERE same space filter
-            PG-->>RAG: matches
-        end
-        RAG-->>BE: merged + deduped + ranked (fetch-width wide)
-        opt RAG_PERMISSION_ENFORCEMENT (EE)
-            BE->>RBAC: filterAccessiblePages(userId, pageIds)<br/>one set-based query (#35;1104)
-            RBAC-->>BE: filter decision (per-page read ACE honoured)
-        end
-        opt rerank use case assigned (#35;1104)
-            BE->>PROV2: POST /v1/rerank with query + candidate docs<br/>(dedicated rerank client — queue + breaker)
-            PROV2-->>BE: relevance scores [0,1]
-            note right of BE: pool = rag_rerank_candidates (default 30)<br/>docs sanitized + truncated to 2,000 chars<br/>timeout/failure = honest bypass to fused order
-        end
-        note right of BE: slice to topK after ranking —<br/>fetch width is ranking headroom the rerank stage spends
-        opt includeSubPages
-            BE->>RBAC: userCanAccessPage(userId, parentPageId)
-            RBAC-->>BE: allow / deny (#35;814 — skip tree on deny)
-            BE->>SP: assembleSubPageContext(rootPageId)
-            SP->>RBAC: getUserAccessibleSpacesMemoized(userId)
-            SP->>CF: fetch child tree WHERE deleted_at IS NULL<br/>AND visible to user (space RBAC)
-            CF-->>SP: pages
-            SP-->>BE: tree context
-        end
-        opt externalUrls provided
-            BE->>MCP: fetch urls
-            MCP-->>BE: content (sanitized#59; detections audited — same flags)
-        end
-        opt searchWeb
-            BE->>MCP: search(question)
-            MCP-->>BE: top results (sanitized#59; detections audited — #35;835)
-        end
         BE->>BE: build system prompt + context<br/>(resolveSystemPrompt, guardrails)
         BE->>BE: resolveUsecase('chat')<br/>→ { config, model }
         BE->>PROV: streamChat(config, resolvedModel, messages)
@@ -192,6 +196,69 @@ never what was attempted. Note the admin analytics
 routes (`knowledge-gaps`, `content-gaps`) still apply one `max_score < 0.3`
 threshold across all rows regardless of unit — a pre-existing defect this
 table documents but #1117 did not change.
+
+## Retrieval-confidence refuse gate (#1105)
+
+`computeRetrievalConfidence(results, healthCaveat)` (the dependency-free
+`retrieval-confidence.ts` leaf module, re-exported from rag-service so
+route suites can keep it real under a closed rag-service stub) reduces the
+returned set to one auditable number from RETRIEVAL signals only — never
+LLM self-report: max **rerank relevance** when the #1104 stage scored
+**every** returned row (basis `rerank`; partial provider coverage
+downgrades to similarity so one measured score never speaks for rows the
+cross-encoder skipped), else max **cosine** when the fused set is
+**vector-led** (basis `similarity`, clamped at 0 — a keyword-led set whose
+tail carries one stray vector chunk is grounded by rows the vector leg
+never measured, and gating it on that stray cosine would refuse a set whose
+zero-vector twin answers), else `null` (basis `none`). An empty set scores
+0 only when retrieval health was **positively verified**; under a health
+caveat — a degraded reason (embedding provider down, corpus unembedded) or
+`coverage_unknown` (the probe itself failed) — empty is an outage symptom
+and scores `null`. The route learns the verdict through
+`HybridSearchOptions.onRetrievalMeta`, fired once at the END of the
+pipeline (after the ACL post-filter and the rerank stage, guarded so a
+throwing observer cannot fail the search) with `{ degradedReason,
+healthCaveat, searchType, embeddingCoverage, aclEmptied }`; the same
+verdict rides the trace as `rag.confidence` / `rag.confidence_basis`.
+
+`/llm/ask` logs it on every question (`RAG retrieval confidence`, info,
+with the full meta — `aclEmptied` marks a healthy set the EE ACL filter
+emptied, a visibility fact the refusal wording deliberately does not
+distinguish), and refuses only when ALL of: the operator raised **the
+threshold for this request's basis** above its **0 default** —
+`rag_confidence_threshold` (similarity) or
+`rag_confidence_threshold_rerank` (rerank), two `admin_settings` knobs
+because the scales are incommensurable and the basis flips per request on a
+rerank bypass, while an **empty set (basis `none`) gates on the max of
+both** — "no grounding at all" belongs to no scale and must not be
+orphaned by the knob split; both [0,1), strict-parsed ('' = unset),
+TTL-cached — the score is measurable (non-null) and below that threshold,
+and no other grounding **materialised**: an assembled sub-page tree,
+fetched external docs, web results that actually came back, or a prior
+**substantive** assistant turn. Request flags alone never stand the gate
+down — the sharp case is `includeSubPages`, session-sticky state sent on
+every ask, which as a flag was a one-click session-wide gate bypass even
+when RBAC denied the tree; requested grounding that failed to materialise
+is instead NAMED in the refusal text (a refusal whose only remedy is
+"rephrase" misdirects when the real failure is a dead sidecar) — and a
+persisted refusal turn grounds nothing: refusals are
+stored with a `refused` marker, excluded from the history exemption (so
+re-asking the weak question refuses again instead of answering with the
+refusal as context) and stripped from the messages sent to the model. A
+refusal is an honest SSE turn via the shared terminal-turn helper
+(`sendCachedSSE` with `cached: false`): the message + the weak sources +
+`refused: true` on the final frame (the #1119 chat surface keys on it; the
+live text names the attached sources, the persisted text — which has no
+source list on reload — does not), persisted to the conversation, never
+cached, no chat completion billed (the query embedding and any rerank call
+already ran — they are the cost of measuring), no `llm_audit_log` row (that
+log attests model calls, matching the cache-hit path). Both scales are
+deployment-specific (the embedding model moves the cosine distribution;
+rerank normalisation moves the relevance one — and a raw-logit reranker's
+per-set sigmoid makes its scale only loosely comparable across requests,
+logged when it engages), which is why the thresholds are operator knobs
+with no universal constant and why `tieredMinScoreForCorpus`'s hardcoded
+tiers were deliberately not ported.
 
 ## Retrieval observability (#1117 stage 2)
 

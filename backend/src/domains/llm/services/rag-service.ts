@@ -490,6 +490,8 @@ export type SearchAnalyticsType =
  */
 export type DegradedReason = 'no_embeddings' | 'partial_embeddings' | 'embedding_failed';
 
+import { computeRetrievalConfidence, type RetrievalHealthCaveat } from './retrieval-confidence.js';
+
 /** Observability fields added by migration 088 (#1117 stage 2). */
 export interface SearchAnalyticsExtras {
   /**
@@ -662,8 +664,42 @@ export async function flushSearchAnalytics(): Promise<void> {
  * results paginate, and reranking page 2 independently of page 1 breaks the
  * global ordering the pages share.
  */
+/**
+ * Retrieval-health verdict handed to `HybridSearchOptions.onRetrievalMeta`
+ * at the END of the pipeline (#1268 review — it used to fire mid-pipeline,
+ * before the ACL post-filter and the rerank stage, so it could neither
+ * report 'hybrid_rerank' nor see an ACL-emptied set). The #1105 gate reads
+ * health from here, not from analytics.
+ */
+export interface RetrievalMeta {
+  degradedReason: DegradedReason | null;
+  /** `degradedReason`, or 'coverage_unknown' when the probe itself failed. */
+  healthCaveat: RetrievalHealthCaveat | null;
+  /**
+   * The FINAL label, 'hybrid_rerank' included. Caveat: 'hybrid' also covers
+   * "both legs empty" — it means "not a keyword fallback", not "both legs
+   * produced rows".
+   */
+  searchType: SearchAnalyticsType;
+  embeddingCoverage: number | null;
+  /** A non-empty fused set the EE ACL post-filter emptied — the one
+   * zero-result shape that is a visibility fact, not a corpus fact.
+   * Logged by the route so threshold tuning can exclude these; the refusal
+   * wording deliberately does NOT distinguish them (no existence leak). */
+  aclEmptied: boolean;
+}
+
 export interface HybridSearchOptions {
   rerank?: boolean;
+  /**
+   * Invoked once per search with the retrieval health verdict (#1105 B1).
+   * The confidence gate must distinguish "healthy retrieval genuinely found
+   * nothing" (refusable) from "the vector leg is down / the corpus is not
+   * embedded" (unmeasurable — refusing there would claim coverage facts
+   * during an outage, at outage scale). The callback keeps the return type
+   * unchanged for every existing caller.
+   */
+  onRetrievalMeta?: (meta: RetrievalMeta) => void;
 }
 
 export async function hybridSearch(
@@ -843,6 +879,7 @@ async function hybridSearchInner(
   const rerankCfg = await rerankCfgPromise;
 
   let candidates: SearchResult[];
+  let aclEmptied = false;
   if (aclEnforced) {
     // Per-page ACL post-filter, batched into ONE set-based query (#1104 —
     // the "required work for the PR that actually raises the width" from
@@ -856,6 +893,7 @@ async function hybridSearchInner(
       merged.map((r) => r.pageId),
     );
     candidates = merged.filter((r) => accessible.has(r.pageId));
+    aclEmptied = merged.length > 0 && candidates.length === 0;
     logger.debug(
       {
         userId,
@@ -956,8 +994,45 @@ async function hybridSearchInner(
     rerankScore: rerankMax,
   });
 
+  // Retrieval confidence on the trace (#1268 review: the docs promised
+  // "logs/traces" and only the log existed). Computed here with the same
+  // health caveat the route's gate uses, so the two can never disagree.
+  // `coverage === null` covers both a failed self-probe and a failed probe
+  // handed over by /api/search (its `null` means "mine already failed").
+  const healthCaveat: RetrievalHealthCaveat | null =
+    degradedReason ?? (coverage === null ? 'coverage_unknown' : null);
+  const confidence = computeRetrievalConfidence(topResults, healthCaveat);
+  if (confidence.score !== null) {
+    span?.setAttribute('rag.confidence', confidence.score);
+  }
+  span?.setAttribute('rag.confidence_basis', confidence.basis);
+
+  // Guarded: the callback is a caller-supplied observer running mid-request;
+  // a throwing consumer must not turn a completed retrieval into a 500 with
+  // no analytics row.
+  try {
+    opts?.onRetrievalMeta?.({
+      degradedReason,
+      healthCaveat,
+      searchType: searchTypeFinal,
+      embeddingCoverage: coverage?.coverage ?? null,
+      aclEmptied,
+    });
+  } catch (err) {
+    logger.warn({ err }, 'onRetrievalMeta observer threw — ignored');
+  }
+
   return topResults;
 }
+
+// Moved to its own dependency-free leaf module so route suites can keep it
+// REAL under a closed-list rag-service stub (#1268 review). Re-exported here
+// so service-side callers and existing tests keep their import path.
+export {
+  computeRetrievalConfidence,
+  type RetrievalConfidence,
+  type RetrievalHealthCaveat,
+} from './retrieval-confidence.js';
 
 /**
  * Build a RAG context prompt from search results.

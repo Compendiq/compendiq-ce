@@ -156,6 +156,84 @@ export function invalidateRagRerankCandidatesCache(): void {
 }
 
 /**
+ * Retrieval-confidence refuse threshold (#1105), in [0, 1). **Default 0 =
+ * the gate is OFF and the confidence is diagnostic-only** — the issue's
+ * "ship diagnostic first, then enable" staging is the default state, and an
+ * absent row answers exactly like a fresh install. The value is compared
+ * against `computeRetrievalConfidence` (rag-service): max rerank relevance
+ * when the #1104 stage ran, else max cosine similarity. Both scales are
+ * deployment-specific (the embedding model moves the cosine distribution;
+ * rerank normalisation moves the relevance one — see
+ * SearchResult.rerankScore), which is precisely why this is an operator
+ * knob with no meaningful universal constant, and why the corpus-size
+ * tiering idea from `tieredMinScoreForCorpus` was deliberately NOT ported:
+ * one tunable per deployment beats three hardcoded numbers calibrated to a
+ * different distribution.
+ */
+export const RAG_CONFIDENCE_THRESHOLD_DEFAULT = 0;
+
+const RAG_CONFIDENCE_TTL_MS = 60_000;
+const ragConfidenceCaches = new Map<string, { value: number; expiresAt: number }>();
+
+/**
+ * **One threshold per BASIS, never one for both (#1268 review B2):** cosine
+ * similarity and rerank relevance are incommensurable scales, and the basis
+ * flips PER REQUEST (a rerank bypass measures that request on the cosine
+ * scale). A single knob tuned on cosines (~0.35) would refuse everything the
+ * day an admin assigns a local reranker whose sigmoided logits score a
+ * strong match ~0.14 — two unrelated admin actions colliding invisibly.
+ * Each basis gates only when ITS OWN knob is raised; both default 0 (off).
+ */
+async function readConfidenceThreshold(settingKey: string): Promise<number> {
+  const cached = ragConfidenceCaches.get(settingKey);
+  if (cached && Date.now() < cached.expiresAt) return cached.value;
+  let resolved = RAG_CONFIDENCE_THRESHOLD_DEFAULT;
+  try {
+    const r = await query<{ setting_value: string }>(
+      `SELECT setting_value FROM admin_settings WHERE setting_key = $1`,
+      [settingKey],
+    );
+    const raw = r.rows[0]?.setting_value;
+    // An empty/whitespace row means UNSET, same as an absent row — a panel's
+    // "clear" writing '' must not become a once-a-minute WARN for the life
+    // of the process (#1268 review).
+    if (raw !== undefined && raw.trim() !== '') {
+      // Strict shape, not bare parseFloat: '0,35' parseFloats to 0 — an
+      // in-range value that silently disables the gate while looking
+      // accepted, and '1' (an operator asking for maximal strictness) must
+      // not silently mean none. Reject loudly, keep the default (#1268 M4).
+      const n = /^\d*\.?\d+$/.test(raw.trim()) ? Number.parseFloat(raw.trim()) : Number.NaN;
+      if (Number.isFinite(n) && n >= 0 && n < 1) {
+        resolved = n;
+      } else {
+        logger.warn(
+          { settingKey, raw },
+          'Rejected confidence-threshold value (must be a plain decimal in [0, 1)) — gate stays off',
+        );
+      }
+    }
+  } catch (err) {
+    logger.warn({ err, settingKey }, 'Failed to resolve confidence threshold — gate off');
+  }
+  ragConfidenceCaches.set(settingKey, { value: resolved, expiresAt: Date.now() + RAG_CONFIDENCE_TTL_MS });
+  return resolved;
+}
+
+/** Threshold for the `similarity` (cosine) basis: `rag_confidence_threshold`. */
+export async function getRagConfidenceThreshold(): Promise<number> {
+  return readConfidenceThreshold('rag_confidence_threshold');
+}
+
+/** Threshold for the `rerank` basis: `rag_confidence_threshold_rerank`. */
+export async function getRagConfidenceThresholdRerank(): Promise<number> {
+  return readConfidenceThreshold('rag_confidence_threshold_rerank');
+}
+
+export function invalidateRagConfidenceThresholdCache(): void {
+  ragConfidenceCaches.clear();
+}
+
+/**
  * Issue #257 — returns the configured re-embed-all job history retention
  * (how many completed/failed BullMQ job records are kept in Redis before
  * the oldest get swept). Default 150, clamped to [10, 10000].

@@ -395,6 +395,71 @@ lands in #1118; until then the only write path is SQL).
 > raised width also multiplies the per-candidate ACL checks a single search
 > can perform.
 
+### Retrieval-confidence refuse gate (two thresholds, one per basis)
+
+When raised above the default **0**, the AI assistant refuses to answer a
+knowledge-base question whose retrieval confidence falls below the
+threshold — an honest "not enough grounded context" with the closest
+sources attached, instead of a low-grounded answer (#1105). Two
+`admin_settings` keys, because the two confidence bases are unrelated
+scales and the basis can flip per request (a rerank outage falls back to
+cosine):
+
+- **`rag_confidence_threshold`** — gates the *similarity* basis (max cosine
+  over a **vector-led** returned set; also used when the rerank stage did
+  not score the full set). The embedding model moves this scale.
+- **`rag_confidence_threshold_rerank`** — gates the *rerank* basis (max
+  cross-encoder relevance, used only when the #1104 stage scored **every**
+  returned row). The provider and its normalisation move this scale — and
+  for a raw-logit reranker (e.g. llama.cpp) the per-request sigmoid
+  normalisation makes scores only loosely comparable across requests (the
+  backend logs `Rerank scores were raw logits` whenever that regime
+  applied). Prefer a calibrated reranker if you intend to gate on this
+  basis; tune conservatively from your own logs either way.
+
+**An empty result set belongs to no basis and refuses when EITHER knob is
+raised** — "no grounding at all" is below any positive bar. On a rerank
+deployment, note the corollary: with only the similarity knob raised,
+steady-state (fully reranked) requests are gated by the rerank knob, which
+is still 0 — raise **both** knobs for full coverage.
+
+Each is a plain decimal in [0, 1) — `0.35`, not `1`, `0,35` or `35%`
+(rejected loudly in the logs, gate stays off); 0, an absent row, or an
+empty value disables that basis and leaves its confidence diagnostic-only
+in logs and traces (`rag.confidence` / `rag.confidence_basis` span
+attributes). Until the Retrieval settings panel lands (#1118) the only
+write path is SQL: `INSERT INTO admin_settings (setting_key, setting_value)
+VALUES ('rag_confidence_threshold', '0.35') ON CONFLICT (setting_key) DO
+UPDATE SET setting_value = EXCLUDED.setting_value;` (60-second read cache —
+takes effect within a minute).
+
+Never auto-refused, whatever the thresholds: questions with other grounding
+that actually **materialised** (an assembled sub-page tree, successfully
+fetched URLs, web results that came back, a prior substantive assistant
+turn — request flags alone do not count: the "include sub-pages" toggle is
+session-sticky, so as a flag it disabled refusals for a whole session even
+when access to the tree was denied; when requested grounding fails to
+materialise the refusal says so and names the remedy), keyword-only or
+keyword-led results (no measurable signal), and empty results whenever
+retrieval health could not be positively verified (embedding provider down,
+corpus unembedded, or the coverage probe itself failed — an outage is not
+"the knowledge base has nothing on this"). Only an empty set from
+verifiably **healthy** retrieval, or a measured-weak set, refuses.
+
+Note the coverage bar carefully: "healthy" means **≥95% of the user's
+accessible pages are embedded**, measured per user over their accessible
+spaces. Below that — a large space mid-import, but also the quiet steady
+state of a handful of pages that persistently fail to embed — the
+zero-result refusal stands down for exactly the users who can see the
+under-embedded content, while weak *non-empty* sets still refuse normally.
+If you set the knob at 93% coverage and test with a nonsense question, you
+will get an answer, not a refusal, and the feature is not broken: the `RAG
+retrieval confidence` log line carries `healthCaveat`
+(`partial_embeddings`) and `embeddingCoverage` so you can see the gate
+standing down and why. **The right values are deployment-specific** —
+start from your logged confidence values, not from a number someone else
+used.
+
 ### Sync conflict resolution (Enterprise, v0.4+)
 
 Confluence is the system of record for synced pages, but Compendiq supports local edits — the in-app editor, AI improve / generate / apply-improvement write-backs, and draft publishing all stamp `pages.local_modified_at` to mark the row as having unpublished local changes (CE #305). The next inbound sync pulls a Confluence-side change for that same page, and the question becomes: which side wins? The sync conflict policy answers that question per-page.

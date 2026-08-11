@@ -47,9 +47,26 @@ vi.mock('../../core/db/postgres.js', () => ({
 const mockHybridSearch = vi.fn();
 const mockBuildRagContext = vi.fn().mockReturnValue('Relevant context from the knowledge base.');
 
+// Closed two-export stub (#1268 review): the route reads the pure #1105
+// confidence formula REAL from the retrieval-confidence leaf module (not
+// mocked here — stubbing it would let route and formula drift), so this
+// stub no longer needs an importOriginal spread pulling rag-service's whole
+// module graph into a unit suite. A future route call to an un-stubbed
+// rag-service export fails loudly instead of running real retrieval code.
 vi.mock('../../domains/llm/services/rag-service.js', () => ({
   hybridSearch: (...args: unknown[]) => mockHybridSearch(...args),
   buildRagContext: (...args: unknown[]) => mockBuildRagContext(...args),
+}));
+
+// --- Mock: the #1105 per-basis confidence thresholds (admin_settings-backed) ---
+// Two knobs because cosine and rerank relevance are incommensurable scales;
+// the route must pick by confidence.basis (#1268 review B2).
+const mockConfidenceThreshold = vi.fn(async () => 0);
+const mockConfidenceThresholdRerank = vi.fn(async () => 0);
+vi.mock('../../core/services/admin-settings-service.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../core/services/admin-settings-service.js')>()),
+  getRagConfidenceThreshold: () => mockConfidenceThreshold(),
+  getRagConfidenceThresholdRerank: () => mockConfidenceThresholdRerank(),
 }));
 
 // --- Mock: content-converter (htmlToMarkdown used in other routes in same file) ---
@@ -191,6 +208,10 @@ describe('POST /api/llm/ask', () => {
     // Reset to defaults after clearAllMocks
     mockGetCachedResponse.mockResolvedValue(null);
     mockSetCachedResponse.mockResolvedValue(undefined);
+    // #1105 gate default: OFF — individual tests raise it and this reset
+    // keeps a raised threshold from leaking into later tests.
+    mockConfidenceThreshold.mockResolvedValue(0);
+    mockConfidenceThresholdRerank.mockResolvedValue(0);
     // Default query mock: returns row with id for saveConversation INSERT
     mockQuery.mockResolvedValue({ rows: [{ id: 'test-conv-id' }] });
     mockBuildRagContext.mockReturnValue('Relevant context from the knowledge base.');
@@ -242,6 +263,407 @@ describe('POST /api/llm/ask', () => {
     // The server-resolved model ('m'), not the absent body value, is used.
     const [, model] = mockStreamChatClient.mock.calls[0] as [unknown, string];
     expect(model).toBe('m');
+  });
+
+  describe('retrieval-confidence refuse gate (#1105)', () => {
+    const lowSimResult = {
+      pageId: 1, confluenceId: 'p1', chunkText: 'weak match text',
+      pageTitle: 'Weak', sectionTitle: 'Weak', spaceKey: 'DEV',
+      score: 0.03, vectorScore: 0.12, keywordRank: null,
+    };
+    const keywordOnlyResult = {
+      pageId: 2, confluenceId: 'p2', chunkText: 'kw text',
+      pageTitle: 'KW', sectionTitle: 'KW', spaceKey: 'DEV',
+      score: 0.016, vectorScore: null, keywordRank: 0.4,
+    };
+
+    it('gate OFF (default 0): answers even with zero results — the pre-#1105 behaviour is the default', async () => {
+      mockConfidenceThreshold.mockResolvedValue(0);
+      mockHybridSearch.mockResolvedValue([]);
+      mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('Answering anyway.'));
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'unanswerable question' },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(mockStreamChatClient).toHaveBeenCalled();
+      const finals = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      expect(finals.some((f) => f.refused === true)).toBe(false);
+    });
+
+    it('gate ON + zero results: refuses honestly — no LLM call, no cache write, refused flag', async () => {
+      mockConfidenceThreshold.mockResolvedValue(0.3);
+      mockHybridSearch.mockResolvedValue([]);
+      mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'unanswerable question' },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+      const events = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      const final = events.find((f) => f.final === true)!;
+      expect(final.refused).toBe(true);
+      expect(final.confidence).toBe(0);
+      expect(final.confidenceBasis).toBe('none');
+      expect(mockSetCachedResponse).not.toHaveBeenCalled();
+    });
+
+    it('gate ON + weak similarity below threshold: refuses with the weak sources attached', async () => {
+      mockConfidenceThreshold.mockResolvedValue(0.3);
+      mockHybridSearch.mockResolvedValue([lowSimResult]);
+      mockBuildRagContext.mockReturnValue('[Source 1: weak]');
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'weakly grounded question' },
+      });
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+      const events = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      const final = events.find((f) => f.final === true)!;
+      expect(final.refused).toBe(true);
+      expect(final.confidenceBasis).toBe('similarity');
+      // The closest sources still travel — "one of them may still help".
+      expect((final.sources as unknown[]).length).toBe(1);
+      // Live text explains the attached chips; persisted text (no sources on
+      // reload) does not — each surface's copy matches what it shows.
+      const contentFrame = events.find((f) => typeof f.content === 'string')!;
+      expect(contentFrame.content).toContain('attached as sources');
+      const upsert = mockQuery.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('INSERT INTO llm_conversations'),
+      )!;
+      const persisted = JSON.parse((upsert[1] as unknown[])[3] as string) as Array<Record<string, unknown>>;
+      const persistedTurn = persisted.find((m) => m.role === 'assistant')!;
+      expect(persistedTurn.content).not.toContain('attached as sources');
+      expect(persistedTurn.refused).toBe(true);
+    });
+
+    it('gate ON + rerank basis: gates on the RERANK knob, not the similarity one (#1268 B2)', async () => {
+      // Similarity threshold 0.99 would refuse this cosine-0.12 result — but
+      // the set is fully reranked, so the rerank knob (0.3) is the one
+      // consulted and 0.85 clears it. Wrong-knob selection fails this test
+      // in both directions.
+      mockConfidenceThreshold.mockResolvedValue(0.99);
+      mockConfidenceThresholdRerank.mockResolvedValue(0.3);
+      mockHybridSearch.mockResolvedValue([{ ...lowSimResult, rerankScore: 0.85 }]);
+      mockBuildRagContext.mockReturnValue('[Source 1: strong by rerank]');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('Grounded answer.'));
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'reranked question' },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(mockStreamChatClient).toHaveBeenCalled();
+    });
+
+    it('gate ON + weak rerank score below the rerank knob: refuses with basis rerank', async () => {
+      mockConfidenceThreshold.mockResolvedValue(0);
+      mockConfidenceThresholdRerank.mockResolvedValue(0.5);
+      mockHybridSearch.mockResolvedValue([{ ...lowSimResult, rerankScore: 0.2 }]);
+      mockBuildRagContext.mockReturnValue('[Source 1: weak by rerank]');
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'weakly reranked question' },
+      });
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+      const events = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      const final = events.find((f) => f.final === true)!;
+      expect(final.refused).toBe(true);
+      expect(final.confidenceBasis).toBe('rerank');
+      expect(final.confidence).toBe(0.2);
+    });
+
+    it('gate ON + degraded empty set: answers — an outage is not "the KB has nothing" (#1268 B1)', async () => {
+      mockConfidenceThreshold.mockResolvedValue(0.3);
+      // Embedding provider down → keyword fallback found nothing. The route
+      // learns this only through the onRetrievalMeta callback.
+      mockHybridSearch.mockImplementation(
+        async (_u: unknown, _q: unknown, _k: unknown, _s: unknown, opts?: {
+          onRetrievalMeta?: (m: Record<string, unknown>) => void;
+        }) => {
+          opts?.onRetrievalMeta?.({
+            degradedReason: 'embedding_failed',
+            healthCaveat: 'embedding_failed',
+            searchType: 'keyword_fallback',
+            embeddingCoverage: 0.5,
+            aclEmptied: false,
+          });
+          return [];
+        },
+      );
+      mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('Best-effort answer.'));
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'question during outage' },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(mockStreamChatClient).toHaveBeenCalled();
+      const finals = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      expect(finals.some((f) => f.refused === true)).toBe(false);
+    });
+
+    it('gate ON + prior conversation turns: answers — history is grounding the gate cannot see (#1268 B3)', async () => {
+      mockConfidenceThreshold.mockResolvedValue(0.3);
+      // "Who is second on that list?" retrieves nothing by itself; the answer
+      // lives in the previous turns.
+      const history = [
+        { role: 'user', content: 'List the on-call engineers.' },
+        { role: 'assistant', content: '1. Kim, 2. Ada.' },
+      ];
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (typeof sql === 'string' && sql.includes('SELECT messages FROM llm_conversations')) {
+          return { rows: [{ messages: history }] };
+        }
+        return { rows: [{ id: 'test-conv-id' }] };
+      });
+      mockHybridSearch.mockResolvedValue([]);
+      mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('Ada.'));
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'Who is second on that list?', conversationId: '5f0e8f9a-1b2c-4d3e-8f4a-5b6c7d8e9f0a' },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(mockStreamChatClient).toHaveBeenCalled();
+      const finals = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      expect(finals.some((f) => f.refused === true)).toBe(false);
+    });
+
+    it('refusal is persisted as a real assistant turn, without a source-list promise (#1268 M1)', async () => {
+      mockConfidenceThreshold.mockResolvedValue(0.3);
+      mockHybridSearch.mockResolvedValue([]);
+      mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
+
+      await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'unanswerable question' },
+      });
+      const insert = mockQuery.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('INSERT INTO llm_conversations'),
+      );
+      expect(insert).toBeDefined();
+      const messages = JSON.parse((insert![1] as unknown[])[3] as string) as Array<{ role: string; content: string }>;
+      const assistantTurn = messages.find((m) => m.role === 'assistant')! as { role: string; content: string; refused?: boolean };
+      expect(assistantTurn.content).toContain('not answering rather than guessing');
+      // The persisted row has no sources column — the text must not promise
+      // a list that will not exist on reload.
+      expect(assistantTurn.content.toLowerCase()).not.toContain('listed below');
+      // The marker is what keeps this turn out of the model context and out
+      // of the gate's history exemption on the next turn.
+      expect(assistantTurn.refused).toBe(true);
+    });
+
+    it('gate ON + keyword-only results: answers — the gate never refuses what it cannot measure', async () => {
+      mockConfidenceThreshold.mockResolvedValue(0.3);
+      mockHybridSearch.mockResolvedValue([keywordOnlyResult]);
+      mockBuildRagContext.mockReturnValue('[Source 1: kw]');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('Keyword-grounded answer.'));
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'keyword question' },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(mockStreamChatClient).toHaveBeenCalled();
+    });
+
+    it('gate ON + web search that RETURNED results: answers — grounding materialised', async () => {
+      mockConfidenceThreshold.mockResolvedValue(0.3);
+      mockHybridSearch.mockResolvedValue([]);
+      mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
+      mockFetchWebSources.mockResolvedValue({
+        sources: [{ url: 'https://example.com/a', title: 'A', markdown: 'web content' }],
+        injectionWarnings: [],
+      });
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('Web-grounded answer.'));
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'web question', searchWeb: true },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(mockStreamChatClient).toHaveBeenCalled();
+    });
+
+    it('gate ON + searchWeb flag whose fetch returned NOTHING: refuses — a flag is not grounding (#1268 review)', async () => {
+      // Only grounding that materialised counts. (searchWeb is API-only on
+      // this route in the current UI — the session-sticky amplifier is
+      // includeSubPages, tested below — but the rule is uniform: a flag
+      // whose fetch returned nothing added zero grounding.)
+      mockConfidenceThreshold.mockResolvedValue(0.3);
+      mockHybridSearch.mockResolvedValue([]);
+      mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
+      mockFetchWebSources.mockResolvedValue({ sources: [], injectionWarnings: [] });
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'web question', searchWeb: true },
+      });
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+      const events = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      expect(events.find((f) => f.final === true)!.refused).toBe(true);
+    });
+
+    it('gate ON + includeSubPages on an RBAC-denied page: refuses — no tree was assembled', async () => {
+      mockConfidenceThreshold.mockResolvedValue(0.3);
+      mockHybridSearch.mockResolvedValue([]);
+      mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
+      mockUserCanAccessPage.mockResolvedValue(false);
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'tree question', includeSubPages: true, pageId: '12345' },
+      });
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+      const events = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      expect(events.find((f) => f.final === true)!.refused).toBe(true);
+    });
+
+    it('refusal NAMES requested grounding that failed to materialise — the remedy must point at the real failure', async () => {
+      // Three URLs attached, sidecar down, KB empty: the URLs are the only
+      // thing that failed, and "try rephrasing" alone would misdirect.
+      mockConfidenceThreshold.mockResolvedValue(0.3);
+      mockHybridSearch.mockResolvedValue([]);
+      mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
+      mockMcpIsEnabled.mockResolvedValue(true);
+      mockMcpFetchDocumentation.mockRejectedValue(new Error('sidecar down'));
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'documented question', externalUrls: ['https://example.com/doc'] },
+      });
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+      const events = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      const contentFrame = events.find((f) => typeof f.content === 'string')!;
+      expect(contentFrame.content).toContain('none of the attached URLs could be retrieved');
+      // The note persists too — the reload should explain the refusal the
+      // same way.
+      const insert = mockQuery.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('INSERT INTO llm_conversations'),
+      )!;
+      const persisted = JSON.parse((insert[1] as unknown[])[3] as string) as Array<{ role: string; content: string }>;
+      expect(persisted.find((m) => m.role === 'assistant')!.content).toContain('none of the attached URLs could be retrieved');
+    });
+
+    it('gate ON + includeSubPages on a LEAF page: answers — assembly succeeded even though the suffix is empty', async () => {
+      // getMultiPagePromptSuffix returns '' for pageCount <= 1, but a leaf
+      // page's full content DID enter the prompt. The gate must key on the
+      // assembly flag, not the formatting string — a multi-page fixture
+      // would pass against the regression, so this test pins pageCount: 1.
+      mockConfidenceThreshold.mockResolvedValue(0.3);
+      mockHybridSearch.mockResolvedValue([]);
+      mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
+      mockUserCanAccessPage.mockResolvedValue(true);
+      mockAssembleSubPageContext.mockResolvedValue({
+        markdown: '--- Page: "Leaf" (Main Page) ---\n\nLeaf page content.',
+        pageCount: 1,
+      });
+      mockGetMultiPagePromptSuffix.mockReturnValue('');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('Grounded in the open page.'));
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'what does this page say?', includeSubPages: true, pageId: '12345' },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(mockStreamChatClient).toHaveBeenCalled();
+      const finals = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      expect(finals.some((f) => f.refused === true)).toBe(false);
+    });
+
+    it('empty set refuses when ONLY the rerank knob is raised — the headline case belongs to no basis (#1268 review)', async () => {
+      // A rerank deployment tunes rag_confidence_threshold_rerank; an empty
+      // healthy set (basis none, score 0) must refuse under EITHER knob, or
+      // "ask something unanswerable" stays open on exactly those deployments.
+      mockConfidenceThreshold.mockResolvedValue(0);
+      mockConfidenceThresholdRerank.mockResolvedValue(0.4);
+      mockHybridSearch.mockResolvedValue([]);
+      mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'unanswerable question' },
+      });
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+      const events = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      const final = events.find((f) => f.final === true)!;
+      expect(final.refused).toBe(true);
+      expect(final.confidenceBasis).toBe('none');
+    });
+
+    it('a refused-only thread does NOT exempt the next turn — re-asking the weak question refuses again (#1268 review)', async () => {
+      mockConfidenceThreshold.mockResolvedValue(0.3);
+      // Turn 1 was a refusal (persisted with the `refused` marker); turn 2
+      // re-asks. History exists but grounds nothing — without the marker
+      // check, one Enter after any refusal replayed the refusal text as
+      // model context and answered ungated.
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (typeof sql === 'string' && sql.includes('SELECT messages FROM llm_conversations')) {
+          return {
+            rows: [{
+              messages: [
+                { role: 'user', content: 'what is our 2027 revenue target' },
+                { role: 'assistant', content: 'I could not find any knowledge-base content…', refused: true },
+              ],
+            }],
+          };
+        }
+        return { rows: [{ id: 'test-conv-id' }] };
+      });
+      mockHybridSearch.mockResolvedValue([]);
+      mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'what is our 2027 revenue target', conversationId: '5f0e8f9a-1b2c-4d3e-8f4a-5b6c7d8e9f0a' },
+      });
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+      const events = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      expect(events.find((f) => f.final === true)!.refused).toBe(true);
+    });
+
+    it('refused turns are stripped from the messages sent to the model', async () => {
+      // A refusal is persistence/UI metadata, not model context — replaying
+      // "I am not answering" invites imitation, and the `refused` field must
+      // not reach the provider wire.
+      mockConfidenceThreshold.mockResolvedValue(0);
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (typeof sql === 'string' && sql.includes('SELECT messages FROM llm_conversations')) {
+          return {
+            rows: [{
+              messages: [
+                { role: 'user', content: 'weak question' },
+                { role: 'assistant', content: 'refusal text here', refused: true },
+                { role: 'user', content: 'what is the deployment process?' },
+                { role: 'assistant', content: 'It uses CI/CD.' },
+              ],
+            }],
+          };
+        }
+        return { rows: [{ id: 'test-conv-id' }] };
+      });
+      mockHybridSearch.mockResolvedValue([]);
+      mockBuildRagContext.mockReturnValue('ctx');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('Follow-up answer.'));
+
+      await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'and staging?', conversationId: '5f0e8f9a-1b2c-4d3e-8f4a-5b6c7d8e9f0a' },
+      });
+      expect(mockStreamChatClient).toHaveBeenCalled();
+      const [, , messages] = mockStreamChatClient.mock.calls[0] as [unknown, unknown, Array<Record<string, unknown>>];
+      expect(messages.some((m) => m.content === 'refusal text here')).toBe(false);
+      expect(messages.some((m) => 'refused' in m)).toBe(false);
+      expect(messages.some((m) => m.content === 'It uses CI/CD.')).toBe(true);
+    });
   });
 
   it('should return 400 when question exceeds maximum length', async () => {
@@ -497,12 +919,13 @@ describe('POST /api/llm/ask', () => {
 
     // The chat path requests the #1104 rerank stage explicitly; whether it
     // runs is decided by the rerank use-case assignment inside hybridSearch.
+    // It also registers the #1105 retrieval-health callback the gate reads.
     expect(mockHybridSearch).toHaveBeenCalledWith(
       'test-user-123',
       'How do I reset my password?',
       5,
       undefined,
-      { rerank: true },
+      { rerank: true, onRetrievalMeta: expect.any(Function) },
     );
   });
 
