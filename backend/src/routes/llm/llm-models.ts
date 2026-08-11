@@ -36,7 +36,7 @@ export async function llmModelRoutes(fastify: FastifyInstance) {
   // GET /api/ollama/models - list models from the default provider
   // (or a specific use-case's provider when ?usecase=… is supplied).
   fastify.get('/ollama/models', async (request) => {
-    const { usecase } = z.object({ usecase: z.enum(['chat', 'summary', 'quality', 'auto_tag', 'embedding']).optional() }).parse(request.query);
+    const { usecase } = z.object({ usecase: z.enum(['chat', 'summary', 'quality', 'auto_tag', 'embedding'])  /* 'rerank' deliberately absent: these endpoints resolve with default-provider fallback (resolveUsecase), which is wrong for rerank — an unassigned rerank means disabled (#1104); the settings UI lists models per-provider instead */.optional() }).parse(request.query);
 
     let cfg: ProviderConfig | null;
     try {
@@ -62,7 +62,7 @@ export async function llmModelRoutes(fastify: FastifyInstance) {
 
   // GET /api/ollama/status - health of the default (or use-case-specific) provider.
   fastify.get('/ollama/status', async (request) => {
-    const { usecase } = z.object({ usecase: z.enum(['chat', 'summary', 'quality', 'auto_tag', 'embedding']).optional() }).parse(request.query);
+    const { usecase } = z.object({ usecase: z.enum(['chat', 'summary', 'quality', 'auto_tag', 'embedding'])  /* 'rerank' deliberately absent: these endpoints resolve with default-provider fallback (resolveUsecase), which is wrong for rerank — an unassigned rerank means disabled (#1104); the settings UI lists models per-provider instead */.optional() }).parse(request.query);
 
     let cfg: ProviderConfig | null;
     let providerName = '';

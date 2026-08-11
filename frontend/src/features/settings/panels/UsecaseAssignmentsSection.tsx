@@ -9,8 +9,9 @@ const USECASE_LABELS: Record<LlmUsecase, string> = {
   quality: 'Quality worker',
   auto_tag: 'Auto-tag',
   embedding: 'Embedding',
+  rerank: 'Rerank',
 };
-const USECASES_ORDERED: LlmUsecase[] = ['chat', 'summary', 'quality', 'auto_tag', 'embedding'];
+const USECASES_ORDERED: LlmUsecase[] = ['chat', 'summary', 'quality', 'auto_tag', 'embedding', 'rerank'];
 
 const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 
@@ -58,6 +59,15 @@ export function UsecaseAssignmentsSection({ assignments, providers, onChange }: 
                     ⚠
                   </span>
                 )}
+                {u === 'rerank' && (
+                  <span
+                    title="Needs a /v1/rerank-capable endpoint (Cohere / Jina / TEI shape). Leaving it unassigned disables the rerank stage — it never falls back to the default provider."
+                    aria-label="rerank-info"
+                    className="text-muted-foreground"
+                  >
+                    ⓘ
+                  </span>
+                )}
               </span>
               <select
                 className="nm-select-md"
@@ -65,7 +75,7 @@ export function UsecaseAssignmentsSection({ assignments, providers, onChange }: 
                 onChange={(e) => update(u, { providerId: e.target.value || null })}
                 data-testid={`usecase-${u}-provider`}
               >
-                <option value="">Inherit default</option>
+                <option value="">{u === 'rerank' ? 'Disabled (no reranking)' : 'Inherit default'}</option>
                 {providers.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.name}

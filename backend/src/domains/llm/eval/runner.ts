@@ -24,6 +24,12 @@ export interface EvalRunOptions {
   pageIdByFile: Map<string, number>;
   topK: number;
   /**
+   * Request the #1104 rerank stage per query. It still only runs when the
+   * eval database carries a `rerank` use-case assignment — the harness
+   * measures whatever pipeline the DB configures, same as production.
+   */
+  rerank?: boolean;
+  /**
    * Fraction of queries that must show at least one vector-leg hit.
    *
    * Deliberately not "> 0": on a fully embedded corpus a healthy vector leg
@@ -61,7 +67,7 @@ export async function runEval(fixture: Fixture, opts: EvalRunOptions): Promise<E
   let vectorParticipatingQueries = 0;
 
   for (const label of fixture.labels) {
-    const results = await hybridSearch(opts.userId, label.query, opts.topK);
+    const results = await hybridSearch(opts.userId, label.query, opts.topK, undefined, { rerank: opts.rerank === true });
 
     if (results.some((r) => r.vectorScore !== null)) vectorParticipatingQueries++;
 

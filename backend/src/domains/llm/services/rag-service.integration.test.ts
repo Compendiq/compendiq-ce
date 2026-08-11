@@ -23,7 +23,10 @@ vi.mock('./openai-compatible-client.js', async () => {
     generateEmbedding: vi.fn(async () => [fakeVec(7)]),
   };
 });
-vi.mock('./llm-provider-resolver.js', () => ({
+vi.mock('./llm-provider-resolver.js', async (importOriginal) => ({
+  // Real module for everything else — the #1104 tests exercise the REAL
+  // resolveRerankUsecase against real provider/assignment rows.
+  ...(await importOriginal<typeof import('./llm-provider-resolver.js')>()),
   resolveUsecase: vi.fn(async () => ({
     config: {
       providerId: 'stub',
@@ -37,6 +40,16 @@ vi.mock('./llm-provider-resolver.js', () => ({
     },
     model: 'stub',
   })),
+}));
+
+// #1104: the rerank HTTP boundary is stubbed; resolution runs REAL code
+// against the real llm_providers / llm_usecase_assignments tables.
+const mockRerankCall = vi.fn(async (_cfg: unknown, _model: string, _q: string, docs: string[]) =>
+  docs.map((_, i) => ({ index: docs.length - 1 - i, relevanceScore: 1 - i * 0.1 })),
+);
+vi.mock('./rerank-client.js', () => ({
+  rerank: (...args: unknown[]) => mockRerankCall(...(args as [unknown, string, string, string[]])),
+  RERANK_DOC_MAX_CHARS: 2000,
 }));
 
 // Mutable feature-flag state for the Phase D post-filter tests below.
@@ -717,6 +730,63 @@ describe.skipIf(!dbAvailable)('rag-service integration — per-page ACL post-fil
     await seedLimPages(user, 14);
     const results = await hybridSearch(user, 'ceil-check', 12);
     expect(results).toHaveLength(12);
+  });
+
+  it('rerank stage end-to-end: real assignment resolves, pool reranks, analytics record hybrid_rerank (#1104)', async () => {
+    ragPermissionEnforcementEnabled = false;
+    const user = 'deaddead-dead-dead-dead-deaddeaddead';
+    await seedLimPages(user, 12);
+
+    // Real provider + assignment rows — resolveRerankUsecase reads these.
+    const prov = await query<{ id: string }>(
+      `INSERT INTO llm_providers (name, base_url, auth_type, verify_ssl, default_model)
+       VALUES ('rerank-box', 'http://rr/v1', 'none', TRUE, 'bge-reranker-v2-m3')
+       RETURNING id`,
+    );
+    await query(
+      `INSERT INTO llm_usecase_assignments (usecase, provider_id, model)
+       VALUES ('rerank', $1, NULL)`,
+      [prov.rows[0]!.id],
+    );
+
+    const results = await hybridSearch(user, 'ceil-check', 3, undefined, { rerank: true });
+    expect(mockRerankCall).toHaveBeenCalledTimes(1);
+    const [cfg, model, , docs] = mockRerankCall.mock.calls[0]! as [
+      { providerId: string; baseUrl: string },
+      string,
+      string,
+      string[],
+    ];
+    expect(cfg.baseUrl).toBe('http://rr/v1');
+    expect(model).toBe('bge-reranker-v2-m3'); // provider default_model fallback
+    // Pool = all 12 candidates (< default 30); the stub reverses the order.
+    expect(docs).toHaveLength(12);
+    expect(results).toHaveLength(3);
+    expect(results.every((r) => r.rerankScore != null)).toBe(true);
+
+    await flushSearchAnalytics();
+    const row = await query<{ search_type: string; rerank_score: number | null }>(
+      `SELECT search_type, rerank_score FROM search_analytics ORDER BY id DESC LIMIT 1`,
+    );
+    expect(row.rows[0]!.search_type).toBe('hybrid_rerank');
+    expect(row.rows[0]!.rerank_score).not.toBeNull();
+  });
+
+  it('rerank requested but unassigned: stage silently off, analytics stay hybrid (#1104)', async () => {
+    ragPermissionEnforcementEnabled = false;
+    const user = 'deaddead-dead-dead-dead-deaddeaddead';
+    await seedLimPages(user, 12);
+
+    const results = await hybridSearch(user, 'ceil-check', 3, undefined, { rerank: true });
+    expect(mockRerankCall).not.toHaveBeenCalled();
+    expect(results).toHaveLength(3);
+
+    await flushSearchAnalytics();
+    const row = await query<{ search_type: string; rerank_score: number | null }>(
+      `SELECT search_type, rerank_score FROM search_analytics ORDER BY id DESC LIMIT 1`,
+    );
+    expect(row.rows[0]!.search_type).toBe('hybrid');
+    expect(row.rows[0]!.rerank_score).toBeNull();
   });
 
   it('flag OFF — the post-filter never runs (no candidatesBeforeFilter log)', async () => {

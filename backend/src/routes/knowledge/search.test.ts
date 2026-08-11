@@ -76,6 +76,13 @@ vi.mock('../../domains/llm/services/openai-compatible-client.js', () => ({
   listModels: vi.fn(),
   checkHealth: vi.fn(),
   invalidateDispatcher: vi.fn(),
+  // rerank-client (#1104) destructures this at module load; the semantic
+  // route never reranks, so inert stubs suffice.
+  providerRequestInfra: {
+    headers: () => ({}),
+    dispatcherFor: () => undefined,
+    errorDetail: async () => '',
+  },
 }));
 
 // Shared SearchResult shape from rag-service. The mocks below are bare

@@ -8,7 +8,7 @@ import {
   type LlmUsecase,
 } from '@compendiq/contracts';
 import { query, getPool } from '../../core/db/postgres.js';
-import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
+import { resolveUsecase, resolveRerankUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
 import { bumpProviderCacheVersion } from '../../domains/llm/services/cache-bus.js';
 import { emitLlmAudit } from '../../domains/llm/services/llm-audit-hook.js';
 import { getRateLimits } from '../../core/services/rate-limit-service.js';
@@ -24,7 +24,7 @@ const ADMIN_LIMIT = {
   config: { rateLimit: { max: async () => (await getRateLimits()).admin.max, timeWindow: '1 minute' } },
 };
 
-const USECASES: readonly LlmUsecase[] = ['chat', 'summary', 'quality', 'auto_tag', 'embedding'] as const;
+const USECASES: readonly LlmUsecase[] = ['chat', 'summary', 'quality', 'auto_tag', 'embedding', 'rerank'] as const;
 
 /** #1184 — shared by the capability read and the manual re-probe. */
 const NO_CHAT_PROVIDER =
@@ -51,8 +51,14 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
     const { usecase } = z.object({ usecase: LlmUsecaseSchema }).parse(req.query);
     let resolved;
     try {
-      resolved = await resolveUsecase(usecase);
+      // Rerank never inherits the default provider — unassigned means the
+      // stage is disabled (#1104), which this route reports as 404 rather
+      // than pretending the default provider serves /v1/rerank.
+      resolved = usecase === 'rerank' ? await resolveRerankUsecase() : await resolveUsecase(usecase);
     } catch {
+      resolved = null;
+    }
+    if (!resolved) {
       return reply.code(404).send({
         error: `No provider resolved for use case "${usecase}". Configure one in Settings → AI Models.`,
       });
@@ -89,7 +95,13 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
       const raw = new Map(rawRows.rows.map(r => [r.usecase, r]));
       const out: Record<string, unknown> = {};
       for (const u of USECASES) {
-        const resolved = await resolveUsecase(u).catch(() => null);
+        // Rerank never falls back to the default provider — unassigned means
+        // the stage is DISABLED (#1104), and showing the default here would
+        // imply it serves rerank traffic. The empty sentinel renders as
+        // "unset" in the settings grid.
+        const resolved = u === 'rerank'
+          ? await resolveRerankUsecase().catch(() => null)
+          : await resolveUsecase(u).catch(() => null);
         out[u] = {
           providerId: raw.get(u)?.provider_id ?? null,
           model: raw.get(u)?.model ?? null,

@@ -153,6 +153,11 @@ async function main(): Promise<void> {
     userId: EVAL_USER,
     pageIdByFile: seeded.pageIdByFile,
     topK: Math.max(...TOP_K),
+    // --rerank requests the #1104 stage; it runs only when this eval DB
+    // carries a rerank use-case assignment (a provider serving /v1/rerank —
+    // e.g. a local llama-server --rerank). Never enabled in CI: the CI DB
+    // has no assignment, so the gate stays a plain-retrieval comparison.
+    rerank: process.argv.includes('--rerank'),
   });
 
   const report: Report = {

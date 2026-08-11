@@ -89,7 +89,12 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     // Perform hybrid RAG search — falls back to keyword-only if embedding fails
     let searchResults;
     try {
-      searchResults = await hybridSearch(userId, question);
+      // The chat path REQUESTS the #1104 rerank stage; it actually runs only
+      // when an admin has assigned a provider+model to the `rerank` use case
+      // (unassigned → no-op). `/api/search` deliberately does not request it
+      // — its results paginate, and reranking one page independently of the
+      // next breaks the ordering the pages share.
+      searchResults = await hybridSearch(userId, question, 5, undefined, { rerank: true });
     } catch (err) {
       if (err instanceof CircuitBreakerOpenError) {
         reply.code(503);

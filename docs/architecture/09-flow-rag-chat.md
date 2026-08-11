@@ -21,6 +21,7 @@ sequenceDiagram
     participant MCP as mcp-docs / searxng
     participant CACHE as llm-cache (Redis)
     participant PROV as chat provider<br/>(resolveUsecase('chat'))
+    participant PROV2 as rerank provider<br/>(resolveRerankUsecase — null = stage off)
     participant CONV as llm_conversations
 
     FE->>BE: POST /api/llm/ask<br/>{ question, model, conversationId,<br/>  includeSubPages, externalUrls, searchWeb }
@@ -55,7 +56,12 @@ sequenceDiagram
             BE->>RBAC: userCanAccessPage(userId, pageId) per candidate,<br/>stopping once topK have passed
             RBAC-->>BE: filter decision (per-page read ACE honoured)
         end
-        note right of BE: slice to topK after ranking —<br/>fetch width is ranking headroom (#35;1104's rerank input)
+        opt rerank use case assigned (#35;1104)
+            BE->>PROV2: POST /v1/rerank with query + candidate docs<br/>(dedicated rerank client — queue + breaker)
+            PROV2-->>BE: relevance scores [0,1]
+            note right of BE: pool = rag_rerank_candidates (default 30)<br/>docs sanitized + truncated to 2,000 chars<br/>timeout/failure = honest bypass to fused order
+        end
+        note right of BE: slice to topK after ranking —<br/>fetch width is ranking headroom the rerank stage spends
         opt includeSubPages
             BE->>RBAC: userCanAccessPage(userId, parentPageId)
             RBAC-->>BE: allow / deny (#35;814 — skip tree on deny)
@@ -166,14 +172,17 @@ own `rerank_score` column instead of ever overloading this one:
 | `search_type` | `max_score` unit | writer |
 |---|---|---|
 | `hybrid` | RRF fusion value | `hybridSearch` (rag-service) |
+| `hybrid_rerank` | RRF fusion value (`rerank_score` carries the rerank scale) | `hybridSearch` with a live #1104 rerank stage |
 | `keyword_fallback` | RRF fusion value (keyword-only leg) | `hybridSearch` (rag-service) |
 | `semantic` | cosine similarity | `/api/search` semantic mode |
 | `keyword` | raw `ts_rank` | `/api/search` keyword mode |
 | `faceted` | NULL | `POST /api/search/log` |
 
 Values are enforced by the `SearchAnalyticsType` union in `rag-service.ts`,
-not a CHECK constraint; future stages (#1104 rerank, #1109 MMR, #1112
-expansion) add members **with** their writers. Note the admin analytics
+not a CHECK constraint; future stages (#1109 MMR, #1112 expansion) add
+members **with** their writers — #1104 added `hybrid_rerank` exactly this
+way. A BYPASSED rerank records plain `hybrid`: the type says what happened,
+never what was attempted. Note the admin analytics
 routes (`knowledge-gaps`, `content-gaps`) still apply one `max_score < 0.3`
 threshold across all rows regardless of unit — a pre-existing defect this
 table documents but #1117 did not change.
@@ -183,8 +192,9 @@ table documents but #1117 did not change.
 Migration 088 added three nullable columns to `search_analytics`, none
 backfilled (on pre-088 rows NULL means "not recorded", not "healthy"):
 
-- **`rerank_score`** — reserved for #1104; max rerank score of the returned
-  set in [0,1], so rerank never changes `max_score`'s meaning.
+- **`rerank_score`** — written since #1104 on `hybrid_rerank` rows: max
+  rerank relevance of the returned set in [0,1], so rerank never changes
+  `max_score`'s meaning. NULL on bypassed/non-reranked rows.
 - **`degraded_reason`** — why the vector leg under-delivered:
   `embedding_failed` (provider call threw; beats the coverage-derived reasons
   because the leg is missing entirely), `no_embeddings` (embeddable pages
@@ -244,11 +254,12 @@ reader, mirroring the trace fallback. `shutdownTelemetry` also disables the
 write-once api globals so a start→shutdown→start cycle hands out live
 instruments, not meters bound to a dead provider. One instrument:
 `compendiq.retrieval.stage.duration` (ms), attribute `stage` ∈
-`vector_search` | `keyword_search` | `total` — `rerank` joins when #1104
-lands, which is what makes rerank latency measurable before that stage ships.
-Per-leg stages record successful runs only; `total` records failures too. The
-`rerank_bypassed` counter from the issue was deliberately dropped: nothing to
-instrument until #1104 exists.
+`vector_search` | `keyword_search` | `rerank` (#1104; successful rescores
+only) | `total`. Per-leg stages record successful runs only; `total` records
+failures too. Bypass observability is the `rag.rerank` span attribute
+(`scored` | `bypassed`) on `rag.hybrid_search` plus a warn log — a bypassed
+stage records no rerank latency sample and its analytics row stays
+`hybrid`.
 
 Per ADR-023 (EE — `RAG_PERMISSION_ENFORCEMENT`), a second post-filter runs
 after the RRF merge when the feature is active. It calls

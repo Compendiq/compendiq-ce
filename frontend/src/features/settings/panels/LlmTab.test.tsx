@@ -76,6 +76,13 @@ const assignments = {
     model: null,
     resolved: { providerId: providerA.id, providerName: 'Ollama', model: 'bge-m3' },
   },
+  // #1104: unassigned rerank renders the empty sentinel — the stage is
+  // disabled, never inherited from the default provider.
+  rerank: {
+    providerId: null,
+    model: null,
+    resolved: { providerId: '00000000-0000-0000-0000-000000000000', providerName: '', model: '' },
+  },
 };
 
 function mockRoutes(options?: {

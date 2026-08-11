@@ -64,6 +64,22 @@ describe.skipIf(!dbAvailable)('Migration 054 — multi LLM providers', () => {
     ).rejects.toThrow(/violates foreign key constraint/i);
   });
 
+  afterAll(async () => {
+    // The pre-054 cases above DROP llm_usecase_assignments and re-run 054's
+    // SQL — which recreates the table with 054's ORIGINAL five-value CHECK,
+    // silently erasing every later migration's DDL on it from the shared,
+    // persistent test DB while `_migrations` still records them as applied
+    // (#1104 was the first victim: its 090 constraint vanished for every
+    // suite that ran after this file). Re-apply the later table-touching
+    // migrations so this file leaves the schema the way the migration chain
+    // produces it. Extend this list when a future migration alters the
+    // table again.
+    const restore = await (await import('node:fs')).promises.readFile(
+      new URL('../090_rerank_usecase.sql', import.meta.url), 'utf8',
+    );
+    await query(restore);
+  });
+
   it('seeds OpenAI provider from legacy admin_settings (true pre-054 path)', async () => {
     // Re-create a true pre-054 state: the CREATE TABLE statements in 054 are
     // IF NOT EXISTS, so the tables still exist after truncate. Drop them so the

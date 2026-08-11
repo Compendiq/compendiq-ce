@@ -1,7 +1,9 @@
 import { z } from 'zod';
 
-// ─── Use-cases (NOW includes 'embedding') ────────────────────────────────
-export const LlmUsecaseSchema = z.enum(['chat', 'summary', 'quality', 'auto_tag', 'embedding']);
+// ─── Use-cases (#1104 adds 'rerank' — see ADR-021 amendment: it targets a
+// /v1/rerank endpoint via a dedicated client, and UNASSIGNED means the
+// rerank stage is disabled, never inherit-the-default-provider) ──────────
+export const LlmUsecaseSchema = z.enum(['chat', 'summary', 'quality', 'auto_tag', 'embedding', 'rerank']);
 export type LlmUsecase = z.infer<typeof LlmUsecaseSchema>;
 
 // ─── Provider ────────────────────────────────────────────────────────────
@@ -54,6 +56,9 @@ export const UsecaseAssignmentsSchema = z.object({
   quality: UsecaseAssignmentSchema,
   auto_tag: UsecaseAssignmentSchema,
   embedding: UsecaseAssignmentSchema,
+  // `resolved` reports what WOULD serve if assigned; the rerank stage itself
+  // only runs on an explicit assignment (resolveRerankUsecase).
+  rerank: UsecaseAssignmentSchema,
 });
 export type UsecaseAssignments = z.infer<typeof UsecaseAssignmentsSchema>;
 
@@ -67,6 +72,7 @@ export const UpdateUsecaseAssignmentsInputSchema = z.object({
   quality: UpdateUsecaseAssignmentInputSchema.optional(),
   auto_tag: UpdateUsecaseAssignmentInputSchema.optional(),
   embedding: UpdateUsecaseAssignmentInputSchema.optional(),
+  rerank: UpdateUsecaseAssignmentInputSchema.optional(),
 });
 export type UpdateUsecaseAssignmentsInput = z.infer<typeof UpdateUsecaseAssignmentsInputSchema>;
 

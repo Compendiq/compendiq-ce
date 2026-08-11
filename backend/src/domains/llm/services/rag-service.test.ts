@@ -22,6 +22,8 @@ const mocks = vi.hoisted(() => {
   });
   const mockGetUserAccessibleSpaces = vi.fn();
   const mockToSql = vi.fn().mockReturnValue('[0.1,0.2]');
+  const mockResolveRerank = vi.fn(async () => null);
+  const mockRerank = vi.fn(async () => []);
 
   return {
     mockClientQuery,
@@ -32,6 +34,8 @@ const mocks = vi.hoisted(() => {
     mockResolveUsecase,
     mockGetUserAccessibleSpaces,
     mockToSql,
+    mockResolveRerank,
+    mockRerank,
   };
 });
 
@@ -43,6 +47,16 @@ vi.mock('../../../core/db/postgres.js', () => ({
 
 vi.mock('./llm-provider-resolver.js', () => ({
   resolveUsecase: (...args: unknown[]) => mocks.mockResolveUsecase(...args),
+  // #1104: unassigned by default — the rerank stage stays off unless a test
+  // configures it.
+  resolveRerankUsecase: (...args: unknown[]) => mocks.mockResolveRerank(...args),
+}));
+
+// The rerank boundary is stubbed whole so rerank-client's own imports (the
+// provider-request infra) never load in this unit environment.
+vi.mock('./rerank-client.js', () => ({
+  rerank: (...args: unknown[]) => mocks.mockRerank(...args),
+  RERANK_DOC_MAX_CHARS: 2000,
 }));
 
 vi.mock('./openai-compatible-client.js', () => ({
@@ -90,7 +104,7 @@ vi.mock('../../../core/services/fts-language.js', () => ({
 
 import { buildRagContext, hybridSearch, RAG_EF_SEARCH, reciprocalRankFusion, fuseWithStableHead, rrfWorstCase, vectorSearch, keywordSearch, recordSearchAnalytics, resolveStageLimit, RAG_FETCH_WIDTH_DEFAULT, RAG_FETCH_WIDTH_MAX } from './rag-service.js';
 import type { SearchResult } from './rag-service.js';
-import { invalidateRagFetchWidthCache } from '../../../core/services/admin-settings-service.js';
+import { invalidateRagFetchWidthCache, invalidateRagRerankCandidatesCache } from '../../../core/services/admin-settings-service.js';
 import { CircuitBreakerOpenError } from '../../../core/services/circuit-breaker.js';
 
 describe('RAG Service', () => {
@@ -711,6 +725,144 @@ describe('RAG Service', () => {
         expect(kwCall).toBeDefined();
         expect(kwCall![0]).toContain("plainto_tsquery('simple'");
       });
+    });
+  });
+
+  describe('rerank stage (#1104)', () => {
+    const RERANK_CFG = {
+      config: {
+        providerId: 'rr-1', id: 'rr-1', name: 'Reranker',
+        baseUrl: 'http://rr/v1', apiKey: null,
+        authType: 'none', verifySsl: true, defaultModel: 'bge-reranker-v2-m3',
+      },
+      model: 'bge-reranker-v2-m3',
+    };
+
+    beforeEach(() => {
+      vi.resetAllMocks();
+      invalidateRagFetchWidthCache();
+      invalidateRagRerankCandidatesCache();
+      mocks.mockPool.connect.mockResolvedValue(mocks.mockClient);
+      mocks.mockClient.release.mockResolvedValue(undefined);
+      mocks.mockToSql.mockReturnValue('[0.1,0.2]');
+      mocks.mockResolveUsecase.mockResolvedValue({
+        config: {
+          providerId: 'p1', id: 'p1', name: 'X',
+          baseUrl: 'http://x/v1', apiKey: null,
+          authType: 'none', verifySsl: true, defaultModel: 'bge-m3',
+        },
+        model: 'bge-m3',
+      });
+      mocks.mockGenerateEmbedding.mockResolvedValue([[0.1, 0.2]]);
+      mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
+      mocks.mockResolveRerank.mockResolvedValue(null);
+      mocks.mockRerank.mockResolvedValue([]);
+      mocks.mockQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes('COUNT(*)')) return { rows: [{ embedded: 3, total: 3 }] };
+        return { rows: [] };
+      });
+      // Vector leg: three distinct pages, fused order p1 > p2 > p3.
+      mocks.mockClientQuery.mockImplementation(async (sql: string) => {
+        if (typeof sql === 'string' && sql.includes('page_embeddings')) {
+          return {
+            rows: [1, 2, 3].map((n) => ({
+              page_id: n,
+              confluence_id: `page-${n}`,
+              chunk_text: `chunk text for page ${n}`,
+              metadata: { page_title: `Page ${n}`, section_title: `Sec ${n}`, space_key: 'DEV' },
+              distance: 0.1 * n,
+            })),
+          };
+        }
+        return undefined;
+      });
+    });
+
+    function analyticsParams(): unknown[] {
+      const call = mocks.mockQuery.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('search_analytics'),
+      );
+      expect(call).toBeDefined();
+      return call![1] as unknown[];
+    }
+
+    function vectorLimit(): number {
+      const call = mocks.mockClientQuery.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('page_embeddings'),
+      );
+      return (call![1] as unknown[])[2] as number;
+    }
+
+    it('never even resolves the stage when the caller did not request it', async () => {
+      await hybridSearch('user-1', 'question');
+      expect(mocks.mockResolveRerank).not.toHaveBeenCalled();
+      expect(mocks.mockRerank).not.toHaveBeenCalled();
+    });
+
+    it('is a no-op when requested but unassigned — legs stay at the width, analytics stay hybrid', async () => {
+      await hybridSearch('user-1', 'question', 5, undefined, { rerank: true });
+      expect(mocks.mockResolveRerank).toHaveBeenCalled();
+      expect(mocks.mockRerank).not.toHaveBeenCalled();
+      expect(vectorLimit()).toBe(RAG_FETCH_WIDTH_DEFAULT);
+      expect(analyticsParams()[4]).toBe('hybrid');
+      expect(analyticsParams()[5]).toBeNull();
+    });
+
+    it('widens the legs to the rerank candidate pool when the stage is live', async () => {
+      mocks.mockResolveRerank.mockResolvedValue(RERANK_CFG);
+      await hybridSearch('user-1', 'question', 5, undefined, { rerank: true });
+      // Default pool 30 > width 10 — this is #1103's headroom finally spent.
+      expect(vectorLimit()).toBe(30);
+    });
+
+    it('returns relevance order, stamps rerankScore, and records hybrid_rerank + rerank_score', async () => {
+      mocks.mockResolveRerank.mockResolvedValue(RERANK_CFG);
+      // Reverse the fused order: page 3 most relevant.
+      mocks.mockRerank.mockResolvedValue([
+        { index: 2, relevanceScore: 0.92 },
+        { index: 1, relevanceScore: 0.4 },
+        { index: 0, relevanceScore: 0.1 },
+      ]);
+      const results = await hybridSearch('user-1', 'question', 3, undefined, { rerank: true });
+      expect(results.map((r) => r.pageId)).toEqual([3, 2, 1]);
+      expect(results.map((r) => r.rerankScore)).toEqual([0.92, 0.4, 0.1]);
+      // The fused `score` field survives untouched — max_score keeps its unit.
+      expect(analyticsParams()[4]).toBe('hybrid_rerank');
+      expect(analyticsParams()[5]).toBe(0.92);
+      // The reranker got one document per pool candidate.
+      const [, , , docs] = mocks.mockRerank.mock.calls[0]!;
+      expect(docs).toHaveLength(3);
+      expect(docs[0]).toContain('chunk text for page 1');
+    });
+
+    it('bypasses honestly on failure — fused order, hybrid analytics, no faked score', async () => {
+      mocks.mockResolveRerank.mockResolvedValue(RERANK_CFG);
+      mocks.mockRerank.mockRejectedValue(new Error('rerank endpoint down'));
+      const results = await hybridSearch('user-1', 'question', 3, undefined, { rerank: true });
+      expect(results.map((r) => r.pageId)).toEqual([1, 2, 3]);
+      expect(results.every((r) => r.rerankScore == null)).toBe(true);
+      expect(analyticsParams()[4]).toBe('hybrid');
+      expect(analyticsParams()[5]).toBeNull();
+    });
+
+    it('never reranks a keyword-fallback result set', async () => {
+      mocks.mockResolveRerank.mockResolvedValue(RERANK_CFG);
+      mocks.mockGenerateEmbedding.mockRejectedValue(new Error('embedder down'));
+      mocks.mockQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes('ts_rank')) {
+          return {
+            rows: [{
+              page_id: 7, confluence_id: 'p7', title: 'KW', space_key: 'DEV',
+              body_text: 'keyword only row', rank: 0.5,
+            }],
+          };
+        }
+        if (sql.includes('COUNT(*)')) return { rows: [{ embedded: 3, total: 3 }] };
+        return { rows: [] };
+      });
+      await hybridSearch('user-1', 'question', 3, undefined, { rerank: true });
+      expect(mocks.mockRerank).not.toHaveBeenCalled();
+      expect(analyticsParams()[4]).toBe('keyword_fallback');
     });
   });
 

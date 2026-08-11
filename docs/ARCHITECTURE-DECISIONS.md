@@ -843,6 +843,19 @@ services:
 
 ## ADR-012: RAG Pipeline with pgvector
 
+> **Amended (#1265, #1103, #1104 — epic #1100):** three parts of the pipeline
+> below have evolved. (1) The chunking input is **Markdown from
+> `htmlToEmbeddingText(body_html)`**, not stripped plain text — the
+> plain-text step made the heading/paragraph strategy unreachable (#1265).
+> (2) Retrieval fetch width is decoupled from return width behind the
+> `rag_fetch_width` knob with stable-head fusion (#1103). (3) Retrieval is no
+> longer "RRF order is the final order": when a provider is assigned to the
+> `rerank` use case (ADR-021's #1104 amendment), a **cross-encoder rerank
+> stage** re-scores the fused candidate pool on the chat path before the
+> final slice, with honest bypass on failure. The embedding model/dimensions
+> named below are the original defaults; the live pair is DB-configured per
+> ADR-021.
+
 ### Context
 For the "Q&A over knowledge base" feature, we need to provide relevant article context to the LLM. Full articles don't fit in small model context windows. Semantic search outperforms keyword search for natural language questions.
 
@@ -1349,6 +1362,43 @@ Three decisions inside that are not obvious. **It fails open, so the bound is co
 **Prompt injection rendered as pixels is unmitigated, and accepted.** `core/utils/sanitize-llm-input.ts` operates on text; instructions drawn into an image reach the model untouched, and there is no mitigation short of an OCR pass — which this design rejects outright as the fallback path. This is a stated limitation, not an oversight: the residual risk is accepted in exchange for not degrading screenshots and diagrams (the feature's core use case) to OCR fragments.
 
 ---
+
+### #1104 — the `rerank` use case
+
+ADR-021 is amended to add a sixth use case, `rerank`, to the provider model.
+Reranking is an outbound, provider-routed LLM call that inherits the same
+queue, per-provider circuit breaker, and per-use-case provider/model
+assignment as the existing five. Unlike the others it targets a `/v1/rerank`
+endpoint (Cohere/Jina/TEI shape), which is **not** OpenAI-compatible; it is
+therefore implemented as a distinct client (`rerank-client.ts`, sharing the
+request infrastructure via `providerRequestInfra`) rather than through
+`openai-compatible-client`'s chat/embeddings paths. This **narrows, not
+reverses,** Alternative 2's "every provider is OpenAI-compatible" premise —
+it holds for chat/embeddings, not for rerank.
+
+**Resolution semantics differ deliberately:** an unassigned `rerank` use case
+means the rerank stage is **disabled** (`resolveRerankUsecase` → null) —
+never "inherit the default provider". The default provider speaks
+`/chat/completions`; handing it `/v1/rerank` traffic would break retrieval
+the moment an admin configured a default. Enterprise org-policy overrides do
+not apply either, for the same shape reason. The settings grid renders the
+unassigned state as "Disabled (no reranking)".
+
+**Egress decision (the PII question #1104 raised):** an active rerank stage
+ships up to `rag_rerank_candidates` (≤ 100) truncated candidate chunks per
+query to the assigned provider. Candidates pass through `sanitize-llm-input`
+first (same prompt-injection guard as chat context). Rerank joins **neither**
+PII-policy list: not the scan call sites (like `embedding`, it is a
+corpus-infrastructure path — bulk KB egress is governed by provider choice,
+i.e. assign a local/trusted endpoint where that matters) and not the
+judge-billing dropdown (judge calls are chat-shaped; a rerank endpoint cannot
+serve them).
+
+**Failure is honest:** on any rerank error or on the `RERANK_TIMEOUT_MS`
+budget expiring, the stage is bypassed — the fused order is served, analytics
+record plain `hybrid` (never `hybrid_rerank`), and no score is faked or
+renormalised. `search_analytics.rerank_score` (migration 088) gets its first
+writer; `max_score` keeps the fusion unit.
 
 ## ADR-022: RAG retrieval honours per-user space permissions
 

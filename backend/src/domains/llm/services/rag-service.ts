@@ -1,6 +1,8 @@
 import { query, getVectorPool } from '../../../core/db/postgres.js';
-import { resolveUsecase } from './llm-provider-resolver.js';
+import { resolveUsecase, resolveRerankUsecase } from './llm-provider-resolver.js';
 import { generateEmbedding } from './openai-compatible-client.js';
+import { rerank as rerankDocuments } from './rerank-client.js';
+import { sanitizeLlmInput } from '../../../core/utils/sanitize-llm-input.js';
 // Use the request-scoped memoised wrapper so a single hybrid request resolves
 // the readable-space set once across vectorSearch + keywordSearch. See ADR-022.
 import {
@@ -16,6 +18,7 @@ import pgvector from 'pgvector';
 import { logger } from '../../../core/utils/logger.js';
 import {
   getRagFetchWidth,
+  getRagRerankCandidates,
   RAG_FETCH_WIDTH_DEFAULT,
   RAG_FETCH_WIDTH_MAX,
 } from '../../../core/services/admin-settings-service.js';
@@ -135,7 +138,24 @@ interface SearchResult {
    * is a maintenance cost, not an asset.
    */
   keywordRank: number | null;
+  /**
+   * Cross-encoder relevance in [0, 1] (#1104), or null when this result was
+   * never reranked — the stage is off, the pool bypassed, or this row came
+   * from a non-reranked path. The confidence formula (#1105) is the intended
+   * primary reader; analytics stores the returned set's max in
+   * `search_analytics.rerank_score`.
+   */
+  rerankScore?: number | null;
 }
+
+/**
+ * The rerank stage's latency budget. Reranking sits on the user-visible chat
+ * path, so a slow provider must degrade to the un-reranked order rather than
+ * stall the answer; on expiry the stage is BYPASSED honestly (no faked
+ * score). The underlying queued request is left to settle — cancelling
+ * through the queue is not worth the coupling for a bounded straggler.
+ */
+export const RERANK_TIMEOUT_MS = 5_000;
 
 /**
  * Vector search: cosine similarity on page_embeddings.
@@ -436,8 +456,21 @@ export function fuseWithStableHead(
  * (reranked paths in #1104, MMR in #1109, multi-query expansion in #1112) —
  * never pass a value this union does not carry, and never repoint an existing
  * value at a different unit: rows are only comparable within one value.
+ *
+ * `hybrid_rerank` (#1104): a hybrid search whose candidate pool the
+ * cross-encoder actually re-scored. `max_score` still stores the RRF fusion
+ * value (the returned rows keep their fusion `score`); the rerank scale
+ * lives in migration 088's `rerank_score` column, which this writer is the
+ * first to fill. A bypassed rerank records plain `hybrid` — the type says
+ * what HAPPENED, never what was merely attempted.
  */
-export type SearchAnalyticsType = 'hybrid' | 'keyword_fallback' | 'semantic' | 'keyword' | 'faceted';
+export type SearchAnalyticsType =
+  | 'hybrid'
+  | 'hybrid_rerank'
+  | 'keyword_fallback'
+  | 'semantic'
+  | 'keyword'
+  | 'faceted';
 
 /**
  * Why the vector leg under-delivered on this search. NULL on a healthy row —
@@ -609,18 +642,31 @@ export async function flushSearchAnalytics(): Promise<void> {
  * Returns top results with source metadata for citations.
  * Scoped to: Confluence pages in user's selected spaces + accessible standalone articles.
  */
+/**
+ * Per-call options. `rerank: true` REQUESTS the #1104 rerank stage — it runs
+ * only when an admin has assigned a provider+model to the `rerank` use case
+ * (resolveRerankUsecase returns null otherwise, and the request is a no-op).
+ * The chat path requests it; `/api/search` deliberately does not — its
+ * results paginate, and reranking page 2 independently of page 1 breaks the
+ * global ordering the pages share.
+ */
+export interface HybridSearchOptions {
+  rerank?: boolean;
+}
+
 export async function hybridSearch(
   userId: string,
   question: string,
   topK = 5,
   precomputedCoverage?: EmbeddingCoverage | null,
+  opts?: HybridSearchOptions,
 ): Promise<SearchResult[]> {
   return withSpan(
     'rag.hybrid_search',
     async (span) => {
       const started = performance.now();
       try {
-        return await hybridSearchInner(userId, question, topK, span, precomputedCoverage);
+        return await hybridSearchInner(userId, question, topK, span, precomputedCoverage, opts);
       } finally {
         // 'total' records failed retrievals too — an error's latency is still
         // latency the caller waited out. The per-leg stages record successful
@@ -643,6 +689,7 @@ async function hybridSearchInner(
   topK: number,
   span?: import('@opentelemetry/api').Span,
   precomputedCoverage?: EmbeddingCoverage | null,
+  opts?: HybridSearchOptions,
 ): Promise<SearchResult[]> {
   logger.info({ userId, question: question.slice(0, 100) }, 'Running hybrid RAG search');
 
@@ -667,8 +714,26 @@ async function hybridSearchInner(
   // cache-miss case overlaps the embedding call and the coverage probe below
   // instead of serialising in front of them.
   const fetchWidthPromise = getRagFetchWidth();
-  const stageLimitPromise = fetchWidthPromise.then((fetchWidth) =>
-    resolveStageLimit(topK, fetchWidth, aclEnforced),
+  // Rerank stage inputs (#1104), resolved in parallel with everything else.
+  // The stage only exists when the caller REQUESTED it and an admin has
+  // ASSIGNED a rerank provider — either absence resolves to null and the
+  // pipeline below is byte-identical to the non-reranked path.
+  const rerankCfgPromise = opts?.rerank
+    ? resolveRerankUsecase().catch((err) => {
+        logger.warn({ err }, 'rerank use-case resolution failed — stage disabled for this request');
+        return null;
+      })
+    : Promise.resolve(null);
+  const rerankCandidatesPromise = opts?.rerank ? getRagRerankCandidates() : Promise.resolve(0);
+  // With an active rerank stage the legs widen to the candidate pool — this
+  // is the deliberate spend of #1103's over-fetch headroom, paired with the
+  // stage that consumes it (plain-RRF wide fetch measured as a regression).
+  const stageLimitPromise = Promise.all([
+    fetchWidthPromise,
+    rerankCfgPromise,
+    rerankCandidatesPromise,
+  ]).then(([fetchWidth, rerankCfg, rerankCandidates]) =>
+    resolveStageLimit(topK, rerankCfg ? Math.max(fetchWidth, rerankCandidates) : fetchWidth, aclEnforced),
   );
 
   let vectorResults: SearchResult[] = [];
@@ -769,15 +834,28 @@ async function hybridSearchInner(
   // PASSED. A caller denied on most candidates still examines the whole
   // merged set — batching caps the latency, not the query count; a batched
   // rbac API is #1104's problem when the width actually rises.
+  // The rerank stage rescores this many head candidates when active; without
+  // it the pipeline needs only topK. The EE ACL filter below must pass
+  // enough candidates to FEED the stage — stopping at topK would hand the
+  // reranker a pool it already can't improve (#1103's hand-off note).
+  const rerankCfg = await rerankCfgPromise;
+  const poolTarget = rerankCfg
+    ? Math.max(await rerankCandidatesPromise, Math.max(0, topK))
+    : Math.max(0, topK);
+
+  let candidates: SearchResult[];
   if (aclEnforced) {
-    // Half the default main pool (PG_POOL_MAX = 20, core/db/postgres.ts):
-    // each check is 1-3 queries, so one batch peaks at ~10 checkouts and two
-    // concurrent EE searches queue instead of exhausting the pool. Revisit
-    // together with the batched rbac API when #1104 raises the width.
+    // Per-page ACL post-filter. Half the default main pool (PG_POOL_MAX =
+    // 20, core/db/postgres.ts): each check is 1-3 queries, so one batch
+    // peaks at ~10 checkouts and two concurrent EE searches queue instead
+    // of exhausting the pool. With rerank active the stop bound is the
+    // rerank pool (<= 100 by the knob's clamp → <= 2x that in checks worst
+    // case) — a batched rbac `filterAccessiblePages` remains the right next
+    // step if these bounds ever rise again.
     const ACL_CHECK_BATCH = 10;
     const filtered: SearchResult[] = [];
     let examined = 0;
-    for (let i = 0; i < merged.length && filtered.length < topK; i += ACL_CHECK_BATCH) {
+    for (let i = 0; i < merged.length && filtered.length < poolTarget; i += ACL_CHECK_BATCH) {
       const batch = merged.slice(i, i + ACL_CHECK_BATCH);
       const verdicts = await Promise.all(
         batch.map((r) => userCanAccessPage(userId, r.pageId)),
@@ -787,9 +865,9 @@ async function hybridSearchInner(
         if (verdicts[j]) filtered.push(batch[j]!);
       }
     }
-    // `candidatesKept` saturates at ~topK because of the early stop — it is
-    // NOT an ACL rejection rate. `candidatesExamined` is the denominator for
-    // that: examined - kept = denials seen before the walk stopped.
+    // `candidatesKept` saturates at ~the stop bound — it is NOT an ACL
+    // rejection rate. `candidatesExamined` is the denominator for that:
+    // examined - kept = denials seen before the walk stopped.
     logger.debug(
       {
         userId,
@@ -799,36 +877,81 @@ async function hybridSearchInner(
       },
       'RAG per-page ACL post-filter applied',
     );
-    // The batch step can overshoot topK by up to ACL_CHECK_BATCH-1 passers;
-    // this slice is the response-size contract, not dead code.
-    const topResults = filtered.slice(0, topK);
-
-    // Record search analytics (non-blocking)
-    // Deliberately still the RRF fusion value, NOT `vectorScore`. Repointing
-    // this column would silently make new rows incomparable with every
-    // historical one — migration 088 added `rerank_score` for the #1104 stage
-    // precisely so this value never changes meaning. See the score-semantics
-    // note in docs/architecture/09-flow-rag-chat.md. One caveat since #1103:
-    // the value's SCALE tracks the stage limit (rrfWorstCase rises with the
-    // fetch width), so rows straddling a `rag_fetch_width` change are only
-    // loosely comparable — the same caveat RAG_EF_SEARCH always carried.
-    // Keep this branch and the non-ACL one below in step.
-    const maxScore = topResults.length > 0 ? Math.max(...topResults.map((r) => r.score)) : null;
-    trackSearchAnalytics(userId, question, topResults.length, maxScore, searchType, analyticsExtras);
-
-    return topResults;
+    candidates = filtered;
+  } else {
+    candidates = merged;
   }
 
-  // Math.max guards a non-positive topK (unreachable from HTTP — Zod floors
-  // limit at 1 — but slice(0, -1) would silently return all-but-last where
-  // the ACL branch above returns []; keep the branches agreeing).
-  const topResults = merged.slice(0, Math.max(0, topK));
+  // ── Rerank stage (#1104) ───────────────────────────────────────────────
+  // Runs only for a true hybrid result (a keyword-fallback set is already a
+  // degraded state whose analytics value IS the degradation — rescoring it
+  // would relabel the row and hide that). Bypass is HONEST: any failure or
+  // timeout keeps the fused order and records plain 'hybrid' — no faked
+  // scores, no renormalisation of partial results.
+  let searchTypeFinal: SearchAnalyticsType = searchType;
+  let rerankMax: number | null = null;
+  let topResults: SearchResult[];
+  if (rerankCfg && searchType === 'hybrid' && candidates.length > 1) {
+    const pool = candidates.slice(0, poolTarget);
+    const rerankStarted = performance.now();
+    try {
+      // KB chunk text goes to the assigned rerank provider — same
+      // prompt-injection guard the chat context gets (issue #1104's PII
+      // note; the ADR-021 amendment records the egress decision).
+      const docs = pool.map((r) => sanitizeLlmInput(r.chunkText).sanitized);
+      const queryText = sanitizeLlmInput(question).sanitized;
+      const scored = await Promise.race([
+        rerankDocuments(rerankCfg.config, rerankCfg.model, queryText, docs),
+        new Promise<never>((_, rej) =>
+          setTimeout(() => rej(new Error(`rerank timed out after ${RERANK_TIMEOUT_MS}ms`)), RERANK_TIMEOUT_MS).unref?.(),
+        ),
+      ]);
+      // Rebuild the pool in relevance order; anything the provider did not
+      // score keeps its fused position after the scored entries.
+      const byIndex = new Map(scored.map((s) => [s.index, s.relevanceScore]));
+      const scoredEntries = scored.map((s) => ({ ...pool[s.index]!, rerankScore: s.relevanceScore }));
+      const unscored = pool.filter((_, i) => !byIndex.has(i));
+      topResults = [...scoredEntries, ...unscored].slice(0, Math.max(0, topK));
+      rerankMax = topResults.reduce<number | null>(
+        (max, r) => (r.rerankScore != null && (max === null || r.rerankScore > max) ? r.rerankScore : max),
+        null,
+      );
+      searchTypeFinal = 'hybrid_rerank';
+      span?.setAttribute('rag.rerank', 'scored');
+      span?.setAttribute('rag.rerank_pool', pool.length);
+      recordHistogram(
+        RETRIEVAL_STAGE_DURATION_METRIC,
+        performance.now() - rerankStarted,
+        { stage: 'rerank' },
+        STAGE_DURATION_OPTS,
+      );
+    } catch (err) {
+      logger.warn({ err }, 'Rerank stage bypassed — serving the fused order');
+      span?.setAttribute('rag.rerank', 'bypassed');
+      topResults = candidates.slice(0, Math.max(0, topK));
+    }
+  } else {
+    // Math.max guards a non-positive topK (unreachable from HTTP — Zod
+    // floors limit at 1 — but slice(0, -1) would return all-but-last).
+    topResults = candidates.slice(0, Math.max(0, topK));
+  }
 
   // Record search analytics (non-blocking)
-  // Deliberately still the RRF fusion value, NOT `vectorScore` — see the ACL
-  // branch above for why, and keep the two in step.
+  // `maxScore` is deliberately still the RRF fusion value, NOT `vectorScore`
+  // and NOT the rerank relevance. Repointing it would silently make new rows
+  // incomparable with every historical one — migration 088 added
+  // `rerank_score` for the #1104 stage precisely so each scale keeps its own
+  // column; `rerankScore` below is that column's first writer. See the
+  // score-semantics note in docs/architecture/09-flow-rag-chat.md. One
+  // caveat since #1103: the fusion value's SCALE tracks the stage limit
+  // (rrfWorstCase rises with the fetch width), so rows straddling a
+  // `rag_fetch_width` change are only loosely comparable — the same caveat
+  // RAG_EF_SEARCH always carried.
   const maxScore = topResults.length > 0 ? Math.max(...topResults.map((r) => r.score)) : null;
-  trackSearchAnalytics(userId, question, topResults.length, maxScore, searchType, analyticsExtras);
+  trackSearchAnalytics(userId, question, topResults.length, maxScore, searchTypeFinal, {
+    ...analyticsExtras,
+    rerankScore: rerankMax,
+  });
 
   return topResults;
 }

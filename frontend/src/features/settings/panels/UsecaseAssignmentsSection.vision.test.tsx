@@ -43,6 +43,11 @@ function makeAssignments(): UsecaseAssignments {
       model: null,
       resolved: { providerId: providerA.id, providerName: providerA.name, model: 'bge-m3' },
     },
+    rerank: {
+      providerId: null,
+      model: null,
+      resolved: { providerId: '00000000-0000-0000-0000-000000000000', providerName: '', model: '' },
+    },
   };
 }
 
