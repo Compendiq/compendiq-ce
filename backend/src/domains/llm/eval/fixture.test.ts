@@ -115,11 +115,12 @@ describe('the shipped fixture (#1102)', () => {
     expect([...styles.keys()].sort()).toEqual([
       'diversity', 'diversity-negative', 'error-text', 'how-to',
       'identifier', 'identifier-negative', 'keywords', 'question',
+      'ranking-prior', 'ranking-prior-negative',
     ]);
     for (const [style, count] of styles.entries()) {
       // Small deliberate probes (#1107 identifier, #1109 diversity) get a
       // floor of 3; the core styles carry the statistical weight and keep 10.
-      const isProbe = style.startsWith('identifier') || style.startsWith('diversity');
+      const isProbe = style.startsWith('identifier') || style.startsWith('diversity') || style.startsWith('ranking-prior');
       expect(count).toBeGreaterThanOrEqual(isProbe ? 3 : 10);
       expect(count / parsed.labels.length).toBeLessThan(0.6);
     }
