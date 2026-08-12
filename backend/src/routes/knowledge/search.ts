@@ -7,7 +7,7 @@ import { query } from '../../core/db/postgres.js';
 // ADR-022.
 import { getUserAccessibleSpacesMemoized as getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 import { getFtsLanguage } from '../../core/services/fts-language.js';
-import { sanitizeLexicalQuery } from '../../core/utils/lexical-query.js';
+import { chooseLexicalParser } from '../../core/utils/lexical-query.js';
 import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
 import {
   vectorSearch,
@@ -335,12 +335,14 @@ export async function searchRoutes(fastify: FastifyInstance) {
     // carries the sanitised form; the pg_trgm title query below keeps the RAW
     // q, because a leading hyphen is meaningless to trigram similarity and
     // stripping it there would only make the two paths disagree.
-    const values: unknown[] = [sanitizeLexicalQuery(q), searchSpaces, userId];
+    // Closed union of two literals — safe to interpolate below.
+    const parser = chooseLexicalParser(q);
+    const values: unknown[] = [q, searchSpaces, userId];
     let paramIndex = 4;
 
     // Base full-text search condition
     conditions.push(
-      `cp.tsv @@ websearch_to_tsquery('${ftsLang}', $1)`,
+      `cp.tsv @@ ${parser}('${ftsLang}', $1)`,
     );
 
     // Access control: RBAC-based space access for confluence pages; standalone pages
@@ -422,8 +424,8 @@ export async function searchRoutes(fastify: FastifyInstance) {
     }>(
       `SELECT cp.id, cp.confluence_id, cp.title, cp.space_key, cp.author,
               cp.last_modified_at, cp.labels,
-              ts_rank(cp.tsv, websearch_to_tsquery('${ftsLang}', $1)) AS rank,
-              ts_headline('${ftsLang}', COALESCE(cp.body_text, ''), websearch_to_tsquery('${ftsLang}', $1),
+              ts_rank(cp.tsv, ${parser}('${ftsLang}', $1)) AS rank,
+              ts_headline('${ftsLang}', COALESCE(cp.body_text, ''), ${parser}('${ftsLang}', $1),
                           'MaxWords=30, MinWords=15, StartSel=<mark>, StopSel=</mark>') AS snippet,
               COUNT(*) OVER() AS total_count
        FROM pages cp
@@ -468,7 +470,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
       ? query<{ facet: string; value: string; count: string }>(
           `SELECT 'space' AS facet, cp.space_key AS value, COUNT(*)::TEXT AS count
            FROM pages cp
-           WHERE cp.tsv @@ websearch_to_tsquery('${ftsLang}', $1)
+           WHERE cp.tsv @@ ${parser}('${ftsLang}', $1)
              AND ${visiblePagesPredicate(2, 3)}
              AND cp.deleted_at IS NULL
              AND cp.space_key IS NOT NULL
@@ -476,7 +478,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
            UNION ALL
            SELECT 'author' AS facet, cp.author AS value, COUNT(*)::TEXT AS count
            FROM pages cp
-           WHERE cp.tsv @@ websearch_to_tsquery('${ftsLang}', $1)
+           WHERE cp.tsv @@ ${parser}('${ftsLang}', $1)
              AND ${visiblePagesPredicate(2, 3)}
              AND cp.deleted_at IS NULL
              AND cp.author IS NOT NULL
@@ -485,11 +487,11 @@ export async function searchRoutes(fastify: FastifyInstance) {
            SELECT 'tag' AS facet, tag AS value, COUNT(*)::TEXT AS count
            FROM pages cp
            CROSS JOIN unnest(cp.labels) AS tag
-           WHERE cp.tsv @@ websearch_to_tsquery('${ftsLang}', $1)
+           WHERE cp.tsv @@ ${parser}('${ftsLang}', $1)
              AND ${visiblePagesPredicate(2, 3)}
              AND cp.deleted_at IS NULL
            GROUP BY tag`,
-          [sanitizeLexicalQuery(q), searchSpaces, userId],
+          [q, searchSpaces, userId],
         )
       : Promise.resolve({ rows: [] as Array<{ facet: string; value: string; count: string }> });
 

@@ -1431,6 +1431,36 @@ describe.skipIf(!dbAvailable)('rag-service integration — #1110 websearch_to_ts
     expect(tripled.every((h) => h.pageTitle !== 'Logging configuration')).toBe(true);
   });
 
+  it('a huge punctuation-joined paste never errors — the crash was never about hyphens', async () => {
+    // websearch_to_tsquery RIGHT-NESTS punctuation-joined tokens
+    // (`1,2,3` -> `'1' <-> '2' <-> '3'`) where plainto flattens them, so
+    // ~14,600 comma-separated terms raise 54001 `stack depth limit
+    // exceeded` with ZERO hyphens present. A hyphen guard cannot bound
+    // that, which is why the query falls back to the other PARSER instead.
+    const csv = Array.from({ length: 15000 }, (_, i) => i).join(',');
+    await expect(keywordSearch(USER, csv)).resolves.toBeInstanceOf(Array);
+  });
+
+  it('a fallback query keeps its identifiers — plainto preserves what a rewrite destroyed', async () => {
+    // The previous guard replaced every hyphen with a space above its cap.
+    // Measured: to_tsvector holds `CVE-2024-1234` as the lexemes '-2024'
+    // and '-1234', so a query rewritten to `2024 1234` can never match it.
+    // Switching parser instead keeps the hyphens, so the identifier still
+    // matches even on the fallback path.
+    await query(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+       VALUES (gen_random_uuid()::text, 'confluence', 'DEV', 'Advisory register',
+               'advisory CVE-2024-1234 and CVE-2024-5678 and CVE-2023-9999 remediation between 2024-01-15 and 2024-02-01', '', '')`,
+    );
+    // Twelve hyphens: over the cap, so this takes the fallback path. The
+    // page carries every identifier, so the all-AND fallback parse can only
+    // fail if the identifiers themselves were destroyed — which is the
+    // thing under test.
+    const q = 'CVE-2024-1234, CVE-2024-5678, CVE-2023-9999 between 2024-01-15 and 2024-02-01';
+    const hits = await keywordSearch(USER, q);
+    expect(hits.some((h) => h.pageTitle === 'Advisory register')).toBe(true);
+  });
+
   it('punctuation art never errors — every shape that reached XX000 in review', async () => {
     // Pending NOTs accumulate on the parser stack ACROSS runs, not only
     // within one, so no per-run rule can bound this: 33 single spaced

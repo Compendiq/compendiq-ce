@@ -11,7 +11,7 @@ import {
 } from '../../../core/services/rbac-service.js';
 import { CircuitBreakerOpenError } from '../../../core/services/circuit-breaker.js';
 import { getFtsLanguage } from '../../../core/services/fts-language.js';
-import { sanitizeLexicalQuery } from '../../../core/utils/lexical-query.js';
+import { chooseLexicalParser } from '../../../core/utils/lexical-query.js';
 import { visiblePagesPredicate } from '../../../core/services/page-visibility.js';
 import { isFeatureEnabled } from '../../../core/enterprise/loader.js';
 import { ENTERPRISE_FEATURES } from '../../../core/enterprise/features.js';
@@ -420,6 +420,11 @@ export async function keywordSearch(userId: string, questionText: string, limit 
     'rag.keyword_search',
     async (span) => {
       const started = performance.now();
+      // A closed union of two literals from lexical-query.ts, never user
+      // input, so interpolating it is safe. A pathological query falls back
+      // to the parser this product used before #1110 rather than being
+      // rewritten — plainto keeps hyphens, so identifiers survive.
+      const parser = chooseLexicalParser(trimmed);
       const ftsLang = await getFtsLanguage();
 
       const kwSpaces = await getUserAccessibleSpaces(userId);
@@ -433,14 +438,14 @@ export async function keywordSearch(userId: string, questionText: string, limit 
       }>(
         `SELECT cp.id AS page_id, cp.confluence_id, cp.title, cp.space_key,
                 substring(coalesce(cp.body_text, ''), 1, 500) as body_text,
-                ts_rank(cp.tsv, websearch_to_tsquery('${ftsLang}', $2)) AS rank
+                ts_rank(cp.tsv, ${parser}('${ftsLang}', $2)) AS rank
          FROM pages cp
-         WHERE cp.tsv @@ websearch_to_tsquery('${ftsLang}', $2)
+         WHERE cp.tsv @@ ${parser}('${ftsLang}', $2)
            AND ${visiblePagesPredicate(1, 4)}
            AND cp.deleted_at IS NULL
          ORDER BY rank DESC
          LIMIT $3`,
-        [kwSpaces, sanitizeLexicalQuery(trimmed), limit, userId],
+        [kwSpaces, trimmed, limit, userId],
       );
 
       const mapped = result.rows.map((row) => ({

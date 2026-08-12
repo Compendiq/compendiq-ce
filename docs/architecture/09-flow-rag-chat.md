@@ -654,26 +654,30 @@ states the condition where an operator will meet it.
   `plainto_tsquery` parsed a leading `-` as an ordinary term and so
   *required* the word the user asked to exclude.
 
-  The sanitiser exists because the parser alone is unsafe: every `-` in
-  operand position compiles to a NOT, pending NOTs accumulate on the parser
-  stack, and past ~32 Postgres raises `XX000 tsquery stack too small` — an
-  ERROR, not an empty result, so it 500s the request. `plainto_tsquery`
-  returned empty for the same input, making it a regression rather than a
-  pre-existing wart.
+  The parser is CHOSEN per query (`core/utils/lexical-query.ts`), because
+  `websearch_to_tsquery` is structurally more fragile than the one it
+  replaces and both failures are errors rather than empty results — so they
+  500 the request. It nests NOTs (~32 hyphens raise `XX000 tsquery stack too
+  small`) and it RIGHT-NESTS punctuation-joined tokens, so `1,2,3,…` at
+  ~14,600 terms raises `54001 stack depth limit exceeded` with no hyphens
+  involved at all; `plainto_tsquery` flattens the same input and survives
+  roughly three times longer.
 
-  It is a **total-hyphen count cap**, and deliberately not something cleverer.
-  Two earlier attempts modelled Postgres's grammar and both were disproved by
-  execution: "strip runs that start a token" missed the operand positions
-  Postgres also honours, so a pasted Markdown table border still crashed; and
-  "reduce each run to its parity" bounded one run's depth but not the number
-  of runs, so 33 single spaced hyphens still crashed with every run already at
-  depth 1. The set of operand-state positions is a version-dependent detail of
-  that parser, and guessing it cost two wrong fixes. Since each `-` can
-  contribute at most one NOT, capping the total count caps the depth outright,
-  with no grammar model to be wrong about. Below the cap nothing is touched,
-  so real queries keep exact semantics; above it every hyphen is dropped and
-  the query degrades to plain terms — which is what `plainto_tsquery` did for
-  the same input, so the worst case is today's behaviour rather than an error.
+  A query over 4,000 characters or carrying more than 8 hyphens is parsed
+  with `plainto_tsquery` instead. That bound is provable rather than
+  guessed — a tsquery cannot hold more nodes than the input has characters —
+  which matters because three earlier guards tried to rewrite the string and
+  each was disproved by execution: whitespace-anchored stripping missed the
+  operand positions Postgres also honours; per-run parity bounded one run but
+  not the count; and a hyphen cap bounded neither the phrase nesting nor its
+  own escape hatch. That last one was the instructive failure — replacing
+  hyphens with spaces destroys the identifiers this product is full of, since
+  `to_tsvector` holds `CVE-2024-1234` as the lexemes `'-2024'` and `'-1234'`
+  and a query rewritten to `2024 1234` can never match them. Switching parser
+  keeps the hyphens, so the fallback genuinely is the pre-#1110 behaviour
+  rather than something worse wearing its name. The cost is that one
+  pathological query loses phrases and exclusions, which is the right trade
+  against a 500.
 
   **Accepted cost, decided on #1110 (option "yes, everywhere"):** because
   `-term` is now a real exclusion, shell commands inside questions misfire.
