@@ -150,8 +150,71 @@ is what enforces that. Labels come from agents that have not seen the
 retrieval implementation — the fixture must never be written by whoever is
 tuning the thing it scores.
 
-Fixture floor is **N ≥ 100**, enforced in `assertFixturePower`. Today: 144
-queries over 141 distinct pages, spread across natural questions, bare
+Fixture floor is **N ≥ 100**, enforced in `assertFixturePower`. Today: 197
+queries over 162 distinct pages, spread across natural questions, bare
 keywords, error text and how-to phrasings, because a fixture made of one
 phrasing measures half the system — keyword queries flatter FTS, natural
 questions flatter the vector leg.
+
+## The `vocabulary-gap` slice (#1112)
+
+Every style above was written by an agent **reading the page**, and that
+leaves a blind spot the styles cannot see past: the queries reuse the page's
+own words. Measured over the shipped fixture, a non-gap label shares **0.58**
+of its content words with the target's title and opening ~1500 characters. A
+retrieval change whose entire job is to bridge the gap between what a user
+types and what a page says therefore has almost nothing to bridge here, and
+would score a clean, meaningless wash — the same way a fixture of one phrasing
+measures half the system.
+
+The 33 `vocabulary-gap` labels ask for a real corpus page **in words the page
+never uses**: terse, abbreviated, synonym-heavy, the way a hurried engineer
+types. `eol` for "long term support", `a11y` for "accessibility", "fake dom"
+for jsdom, "caller hung up" for "client aborts". Their measured overlap is
+**0.13**. Each label's `rationale` names the wording that was deliberately
+avoided, which is the audit trail for whether a given label is honest.
+
+Two things follow for anyone editing this slice:
+
+- **It is not a probe.** `identifier` and `diversity` ship 3 labels each and
+  get a floor of 3; `vocabulary-gap` takes the core floor of 10 and ships 33,
+  because expansion is expected to move a handful of queries and Recall@K over
+  three of them moves in thirds — indistinguishable from noise.
+- **The low overlap is enforced, not asserted in prose.** A label written from
+  the page's sentences would still validate, still score, and quietly make the
+  slice look easy. `fixture.test.ts` recomputes the overlap and fails when the
+  slice's mean rises above 0.3, when it stops being less than half the rest of
+  the fixture, or when any single label passes 0.45 — naming the label and its
+  measured number.
+
+**22 of the 33 target a page that already carries an ordinary label**; the
+other 11 open pages the fixture had never reached. That pairing is deliberate:
+the same page asked for twice, once in its own words and once not, is the only
+way to separate "this query is hard" from "this page is hard". A slice built
+entirely on previously unlabelled pages would have confounded the two, and any
+recall gap it showed could have been the pages rather than the wording.
+
+### Measured headroom
+
+Against today's pipeline (`--rerank`, `nomic-embed-text-v1.5`), measured on the
+fixture as it stood when the slice landed — 191 queries, before #1111's six
+`ranking-prior` probes merged alongside it:
+
+| slice | n | R@1 | R@5 | R@10 | MRR |
+|---|---|---|---|---|---|
+| `vocabulary-gap` | 33 | 0.182 | 0.545 | 0.636 | 0.335 |
+| every other label | 158 | 0.722 | 0.918 | 0.943 | 0.812 |
+
+The pairing is what makes that readable. Restricted to the 22 pages that carry
+labels of both kinds, the ordinary labels score **R@1 0.808 / R@10 0.923** and
+the gap labels **R@1 0.182 / R@10 0.682** — the target page is held fixed and
+only the wording moves, so the drop is not "these are obscure pages". Nor are
+they short ones: the median target behind a gap MISS is 5.1 KB against a corpus
+median of 4.4 KB. The 11 gap labels on newly-covered pages score the same R@1
+(0.182) as the 22 paired ones, so the slice is not riding on corpus backwaters
+either.
+
+Twelve gap queries never surface their page in ten results, and the results
+they get instead are not near-misses: "vite paint the markup on the server
+first so crawlers see content" returns six **Vitest** pages. That is the
+headroom #1112 has to claim, and it did not exist in the fixture before.

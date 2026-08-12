@@ -1,6 +1,6 @@
 {
   "corpusManifestSha": "c9fdbace64400cc9974a157af4b5bf2984eed4c8bee2bcef459c47e964f4db87",
-  "labeledBy": "claude-sonnet via #1102 labeling workflow — 12 independent agents over disjoint corpus slices, blind to the retrieval implementation",
+  "labeledBy": "claude-sonnet via #1102 labeling workflow — 12 independent agents over disjoint corpus slices, blind to the retrieval implementation; the 33 vocabulary-gap labels (#1112) were written against the same corpus and blind to the retrieval implementation, deriving each query from what the page MEANS and deliberately avoiding the words it uses",
   "labels": [
     {
       "id": "q-2e832160a7",
@@ -1477,6 +1477,303 @@
       ],
       "style": "ranking-prior-negative",
       "rationale": "The oldest edition, asked for by name. Recency decay must not outrank an explicit year."
+    },
+    {
+      "id": "q-11129c537b",
+      "query": "fastify warmup window before the box takes real traffic",
+      "expectedFiles": [
+        "fastify__Guides__Delay-Accepting-Requests.md"
+      ],
+      "style": "vocabulary-gap",
+      "rationale": "The page is about holding requests off until an out-of-band handshake finishes. Avoids its whole vocabulary — 'delay', 'accepting', 'requests', 'onReady', 'OAuth', 'authenticate' — and asks in ops terms ('warmup window', 'takes traffic') instead."
+    },
+    {
+      "id": "q-11120cd517",
+      "query": "caller hung up mid-flight, stop burning cpu on the reply",
+      "expectedFiles": [
+        "fastify__Guides__Detecting-When-Clients-Abort.md"
+      ],
+      "style": "vocabulary-gap",
+      "rationale": "Avoids 'detect', 'client', 'abort', 'disconnection' and 'close' — every content word in the title and opening. 'caller hung up' is the phone metaphor an engineer types; the page never uses it."
+    },
+    {
+      "id": "q-1112152ba5",
+      "query": "fastify why can't a neighbouring branch see what I registered",
+      "expectedFiles": [
+        "fastify__Reference__Encapsulation.md"
+      ],
+      "style": "vocabulary-gap",
+      "rationale": "Avoids 'encapsulation', 'context', 'scope', 'decorator' and 'plugin'. The page's own framing is the noun 'encapsulation context'; this asks about the symptom instead, in tree words ('neighbouring branch') the page does not use."
+    },
+    {
+      "id": "q-11123cf4b6",
+      "query": "fastify eol window for old majors, node matrix",
+      "expectedFiles": [
+        "fastify__Reference__LTS.md"
+      ],
+      "style": "vocabulary-gap",
+      "rationale": "Avoids 'long term support', 'LTS', 'supported', 'security updates' and 'semantic versioning'. 'eol' is the abbreviation the page never spells and never uses; 'matrix' replaces the page's prose about testing against Node.js versions."
+    },
+    {
+      "id": "q-1112a9c188",
+      "query": "fastify silent out of the box, switch on structured output",
+      "expectedFiles": [
+        "fastify__Reference__Logging.md"
+      ],
+      "style": "vocabulary-gap",
+      "rationale": "Avoids 'logging', 'logger', 'enable', 'disabled', 'pino' and 'level'. 'silent out of the box' paraphrases 'Logging is disabled by default' with no shared content word."
+    },
+    {
+      "id": "q-11121fbc61",
+      "query": "fastify exercise routes without binding a port",
+      "expectedFiles": [
+        "fastify__Guides__Testing.md"
+      ],
+      "style": "vocabulary-gap",
+      "rationale": "Avoids 'testing', 'test', 'inject' and 'server'. The page's answer is `app.inject()`; naming it would make this a lexical lookup, so the query describes what injection buys you instead."
+    },
+    {
+      "id": "q-1112e1a5e9",
+      "query": "untrusted json smuggling a magic key that pollutes every object",
+      "expectedFiles": [
+        "fastify__Guides__Prototype-Poisoning.md"
+      ],
+      "style": "vocabulary-gap",
+      "rationale": "Avoids '__proto__', 'prototype', 'poisoning' and 'security bug'. 'magic key that pollutes every object' is the mechanism restated; the industry's other name for this ('prototype pollution') is deliberately not used either, since it shares 'prototype'."
+    },
+    {
+      "id": "q-1112f63392",
+      "query": "fastify take protobuf payloads with my own reader",
+      "expectedFiles": [
+        "fastify__Reference__ContentTypeParser.md"
+      ],
+      "style": "vocabulary-gap",
+      "rationale": "Avoids 'Content-Type', 'parser', 'addContentTypeParser', 'application/json' and 'media type'. Protobuf is a plausible unsupported body format and appears nowhere in the corpus, so nothing lexical connects the query to the page."
+    },
+    {
+      "id": "q-11120aebc0",
+      "query": "fastify keep internal fields out of what goes back to the caller",
+      "expectedFiles": [
+        "fastify__Reference__Validation-and-Serialization.md"
+      ],
+      "style": "vocabulary-gap",
+      "rationale": "Avoids 'validation', 'serialization', 'schema', 'JSON Schema' and 'response'. Response-schema filtering is the page's job; the query names the outcome an engineer wants rather than the feature."
+    },
+    {
+      "id": "q-11125c74b7",
+      "query": "hammer fastify for req/sec across two git branches",
+      "expectedFiles": [
+        "fastify__Guides__Benchmarking.md"
+      ],
+      "style": "vocabulary-gap",
+      "rationale": "Avoids 'benchmark', 'autocannon', 'performance', 'measure' and 'compare'. 'hammer' and 'req/sec' are the shorthand; the page says 'benchmarking tool' and 'requests per second' nowhere near those tokens."
+    },
+    {
+      "id": "q-1112abe004",
+      "query": "house rules for how the fastify manual should be worded",
+      "expectedFiles": [
+        "fastify__Guides__Style-Guide.md"
+      ],
+      "style": "vocabulary-gap",
+      "rationale": "Avoids 'style guide', 'documentation', 'writing', 'contribute' and 'technical'. 'house rules' and 'manual' are synonyms for 'conventional writing style' and 'developer documentation'."
+    },
+    {
+      "id": "q-111204f519",
+      "query": "why does the first vite dev boot chew through node_modules",
+      "expectedFiles": [
+        "vite__guide__dep-pre-bundling.md"
+      ],
+      "style": "vocabulary-gap",
+      "rationale": "Avoids 'pre-bundling', 'prebundles', 'dependency', 'esbuild', 'CommonJS' and 'ESM'. The page's title is the answer's name; this asks about the observed cost of it instead."
+    },
+    {
+      "id": "q-11129aff52",
+      "query": "vite produce a staging flavour of the build without a second config",
+      "expectedFiles": [
+        "vite__guide__env-and-mode.md"
+      ],
+      "style": "vocabulary-gap",
+      "rationale": "Avoids 'env', 'mode', 'import.meta.env', 'VITE_' and 'define'. 'flavour' stands in for the page's central noun 'mode', which is exactly the substitution a retriever has to bridge."
+    },
+    {
+      "id": "q-1112e7043c",
+      "query": "vite keep a bit of state alive across a hot swap",
+      "expectedFiles": [
+        "vite__guide__api-hmr.md"
+      ],
+      "style": "vocabulary-gap",
+      "rationale": "Avoids 'HMR', 'import.meta.hot', 'accept', 'dispose', 'invalidate' and 'module'. `import.meta.hot.data` is the answer; 'hot swap' is the colloquial name the page never uses."
+    },
+    {
+      "id": "q-1112950e1f",
+      "query": "vite paint the markup on the server first so crawlers see content",
+      "expectedFiles": [
+        "vite__guide__ssr.md"
+      ],
+      "style": "vocabulary-gap",
+      "rationale": "Avoids 'SSR', 'server-side rendering', 'pre-render' and 'hydrate' — the page's tip paragraph contains all four, so any of them would be a near-verbatim match. 'crawlers see content' names the motivation instead."
+    },
+    {
+      "id": "q-1112de9a98",
+      "query": "why is vite core kept skinny instead of batteries included",
+      "expectedFiles": [
+        "vite__guide__philosophy.md"
+      ],
+      "style": "vocabulary-gap",
+      "rationale": "Avoids 'lean', 'extendable', 'philosophy', 'primitives' and 'plugin system'. 'skinny' and 'batteries included' are the idioms; the page's heading is literally 'Lean Extendable Core'."
+    },
+    {
+      "id": "q-1112165a36",
+      "query": "vite dev feels sluggish, where do I start looking",
+      "expectedFiles": [
+        "vite__guide__performance.md"
+      ],
+      "style": "vocabulary-gap",
+      "rationale": "Avoids 'performance', 'slow', 'speed', 'startup' and 'reload' — the existing label for this same page ('how to speed up vite dev server startup and reload times') uses four of the five, which is the contrast this slice exists to expose."
+    },
+    {
+      "id": "q-1112c4f685",
+      "query": "vite pull a file in as a plain string at build time",
+      "expectedFiles": [
+        "vite__guide__assets.md"
+      ],
+      "style": "vocabulary-gap",
+      "rationale": "Avoids 'asset', 'static', 'import', 'url' and the `?raw` suffix that is the literal answer. Nothing in the query lexically distinguishes this page from any other page mentioning files."
+    },
+    {
+      "id": "q-111220d5c4",
+      "query": "vite switch an extension off for the production run only",
+      "expectedFiles": [
+        "vite__guide__using-plugins.md"
+      ],
+      "style": "vocabulary-gap",
+      "rationale": "Avoids 'plugin', 'apply', 'enforce' and 'conditional' — the section is called 'Conditional Application' and the option is `apply: 'build'`. 'extension' is the substitution being probed."
+    },
+    {
+      "id": "q-1112047b34",
+      "query": "spin up a fresh vite skeleton from scratch",
+      "expectedFiles": [
+        "vite__guide__index.md"
+      ],
+      "style": "vocabulary-gap",
+      "rationale": "Avoids 'getting started', 'scaffolding', 'create-vite', 'npm create' and 'template'. 'skeleton' is the informal word for what the page's scaffolding section produces."
+    },
+    {
+      "id": "q-1112ecd85c",
+      "query": "author my own vite step that rewrites source before the browser gets it",
+      "expectedFiles": [
+        "vite__guide__api-plugin.md"
+      ],
+      "style": "vocabulary-gap",
+      "rationale": "Avoids 'plugin', 'hook', 'transform', 'Rollup' and 'Rolldown'. The page is the plugin-authoring reference; 'step that rewrites source' describes the transform hook without naming it."
+    },
+    {
+      "id": "q-11127c7174",
+      "query": "keep the checks beside the implementation, dropped from the shipped bundle",
+      "expectedFiles": [
+        "vitest__guide__in-source.md"
+      ],
+      "style": "vocabulary-gap",
+      "rationale": "Avoids 'in-source', 'test', 'import.meta.vitest' and 'production build'. 'checks' stands in for 'tests' throughout, which removes the single most common word the corpus uses."
+    },
+    {
+      "id": "q-1112cd58d7",
+      "query": "which editors have first-party vitest support",
+      "expectedFiles": [
+        "vitest__guide__ide.md"
+      ],
+      "style": "vocabulary-gap",
+      "rationale": "Avoids 'IDE', 'integration', 'extension', 'VS Code' and 'JetBrains'. 'editors' is the everyday word for what the page calls IDEs, and the page never spells it."
+    },
+    {
+      "id": "q-11124cdabd",
+      "query": "attach a note and a file to a case so the report shows it",
+      "expectedFiles": [
+        "vitest__guide__test-annotations.md"
+      ],
+      "style": "vocabulary-gap",
+      "rationale": "Avoids 'annotate', 'annotation', 'context' and 'reporter'. 'note' and 'case' replace the page's 'annotation' and 'test'."
+    },
+    {
+      "id": "q-1112a1267e",
+      "query": "fake that answers differently depending on which id it gets",
+      "expectedFiles": [
+        "vitest__guide__recipes__conditional-mocking.md"
+      ],
+      "style": "vocabulary-gap",
+      "rationale": "Avoids 'vi.when', 'mockImplementation', 'mock', 'conditional' and 'switch'. 'fake' replaces 'mock', which is the page's title word and the corpus's densest term."
+    },
+    {
+      "id": "q-1112595370",
+      "query": "supply a browser api the fake dom is missing",
+      "expectedFiles": [
+        "vitest__guide__mocking__globals.md"
+      ],
+      "style": "vocabulary-gap",
+      "rationale": "Avoids 'stubGlobal', 'global', 'mock', 'jsdom' and 'IntersectionObserver'. 'fake dom' is the paraphrase for jsdom/happy-dom that the docs never use."
+    },
+    {
+      "id": "q-11126e0bee",
+      "query": "getting an llm to draft decent specs, what to feed it",
+      "expectedFiles": [
+        "vitest__guide__learn__writing-tests-with-ai.md"
+      ],
+      "style": "vocabulary-gap",
+      "rationale": "Avoids 'AI', 'coding assistant', 'prompt', 'context' and 'writing tests'. 'llm' and 'specs' are the abbreviations an engineer types for the page's 'AI' and 'tests'."
+    },
+    {
+      "id": "q-11123a072b",
+      "query": "hand a static value from the runner config down into a case",
+      "expectedFiles": [
+        "vitest__config__provide.md"
+      ],
+      "style": "vocabulary-gap",
+      "rationale": "Avoids 'provide', 'inject', 'ProvidedContext' and 'test' — the page is two API names and a code block, so avoiding both names removes nearly all of its lexical surface."
+    },
+    {
+      "id": "q-1112853824",
+      "query": "pretend today is new year's eve inside a case",
+      "expectedFiles": [
+        "vitest__guide__mocking__dates.md"
+      ],
+      "style": "vocabulary-gap",
+      "rationale": "Avoids 'fake timers', 'setSystemTime', 'clock', 'date' and 'freeze'. A concrete calendar date stands in for the page's abstract vocabulary, and 'new year' appears nowhere in the corpus."
+    },
+    {
+      "id": "q-111213520b",
+      "query": "alert me when the ui looks off versus the last known-good build",
+      "expectedFiles": [
+        "vitest__guide__browser__visual-regression-testing.md"
+      ],
+      "style": "vocabulary-gap",
+      "rationale": "Avoids 'visual', 'regression', 'screenshot', 'reference image', 'compare', 'catch' and 'unintended' — the page's first two sentences carry all of them. An earlier draft ('catch unintended pixel drift…') was rewritten because it re-used 'catch' and 'unintended' verbatim."
+    },
+    {
+      "id": "q-1112f3f04b",
+      "query": "pin the a11y tree so a redesign can't silently break it",
+      "expectedFiles": [
+        "vitest__guide__browser__aria-snapshots.md"
+      ],
+      "style": "vocabulary-gap",
+      "rationale": "Avoids 'ARIA', 'accessibility', 'snapshot' and 'assistive technologies'. 'a11y' is the numeronym the docs never use, which is precisely the abbreviation-to-word bridge an expansion step would have to make."
+    },
+    {
+      "id": "q-111287e75a",
+      "query": "only exercise what my working-copy diff touches",
+      "expectedFiles": [
+        "vitest__config__changed.md"
+      ],
+      "style": "vocabulary-gap",
+      "rationale": "Avoids 'changed', 'git', 'commit', 'uncommitted' and 'run tests'. 'working-copy diff' is the version-control phrasing the page expresses as 'uncommitted changes'."
+    },
+    {
+      "id": "q-1112b9db05",
+      "query": "how much of the source did the suite actually exercise",
+      "expectedFiles": [
+        "vitest__guide__coverage.md"
+      ],
+      "style": "vocabulary-gap",
+      "rationale": "Avoids 'coverage', 'provider', 'v8', 'istanbul' and 'instrumented'. The page's title is one word and the query never uses it; `config/coverage.md` is the near neighbour, so this also probes whether the guide or the option page wins on meaning alone."
     }
   ]
 }
