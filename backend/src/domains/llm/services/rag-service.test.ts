@@ -122,7 +122,7 @@ vi.mock('../../../core/services/fts-language.js', () => ({
 
 import { buildRagContext, hybridSearch, RAG_EF_SEARCH, reciprocalRankFusion, fuseWithStableHead, rrfWorstCase, vectorSearch, keywordSearch, recordSearchAnalytics, resolveStageLimit, computeRetrievalConfidence, RAG_FETCH_WIDTH_DEFAULT, truncateAtDistinctPages, PAGE_FANOUT, VECTOR_RAW_LIMIT_CAP, vectorRawLimit, IDENTIFIER_LOOKUP_CANDIDATES } from './rag-service.js';
 import type { SearchResult } from './rag-service.js';
-import { invalidateRagFetchWidthCache, invalidateRagRerankCandidatesCache, invalidateRagContextCharsCache, invalidateRagPinIdentifiersCache, invalidateRagMmrCache, RAG_CONTEXT_CHARS_DEFAULT } from '../../../core/services/admin-settings-service.js';
+import { invalidateRagFetchWidthCache, invalidateRagRerankCandidatesCache, invalidateRagContextCharsCache, invalidateRagPinIdentifiersCache, invalidateRagMmrCache, invalidateRagRankingPriorCache, RAG_CONTEXT_CHARS_DEFAULT } from '../../../core/services/admin-settings-service.js';
 import { CircuitBreakerOpenError } from '../../../core/services/circuit-breaker.js';
 
 describe('RAG Service', () => {
@@ -2013,6 +2013,180 @@ describe('MMR diversity narrow (#1109)', () => {
     // Falls back to the 0.5 default, which still keeps the head.
     const out = await hybridSearch('user-1', 'how do we deploy', 3);
     expect(out[0]!.pageId).toBe(1);
+  });
+});
+
+describe('quality/recency ranking prior (#1111)', () => {
+  /**
+   * The unit tests in `ranking-prior.test.ts` cover the formula. These cover
+   * the WIRING, which is where a ranking stage actually goes wrong: whether
+   * the signals are fetched at all, whether the weight knob reaches the
+   * stage, and whether a failure demotes anything.
+   *
+   * **The stage ships DISABLED**, so an absent `rag_ranking_prior_weight` row
+   * is now the NO-OP case — `settingAbsent` in the helper below, with its own
+   * test. Every other test here is exercising the opt-in path, so the helper
+   * writes an explicit `ENABLED_WEIGHT` row for them.
+   */
+  const daysAgo = (d: number) => new Date(Date.now() - d * 86_400_000);
+
+  /** What an operator sets to turn the stage on — `RANKING_PRIOR_WEIGHT_TUNED`. */
+  const ENABLED_WEIGHT = '0.003';
+
+  /**
+   * Signal rows keyed by page id, answered to the prior's batched SELECT.
+   * `opts.settingAbsent` leaves `admin_settings` with no row, which is the
+   * shipped deployment and resolves to weight 0.
+   */
+  function routePriorQueries(
+    signals: Record<number, { quality_score: number | null; last_modified_at: Date | null }>,
+    opts: { weight?: string; settingAbsent?: boolean; throwOnSignals?: boolean } = {},
+  ) {
+    mocks.mockQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
+      if (typeof sql === 'string' && sql.includes('rag_ranking_prior_weight')) {
+        return { rows: opts.settingAbsent ? [] : [{ setting_value: opts.weight ?? ENABLED_WEIGHT }] };
+      }
+      if (typeof sql === 'string' && sql.includes('quality_score') && sql.includes('ANY')) {
+        if (opts.throwOnSignals) throw new Error('signal lookup died');
+        const ids = (params?.[0] ?? []) as number[];
+        return {
+          rows: ids
+            .filter((id) => signals[id] !== undefined)
+            .map((id) => ({ id, ...signals[id]! })),
+        };
+      }
+      if (typeof sql === 'string' && sql.includes('COUNT(*)')) return { rows: [{ embedded: 4, total: 4 }] };
+      return { rows: [] };
+    });
+  }
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    invalidateRagRankingPriorCache();
+    invalidateRagFetchWidthCache();
+    invalidateRagRerankCandidatesCache();
+    invalidateRagContextCharsCache();
+    invalidateRagMmrCache();
+    mocks.mockPool.connect.mockResolvedValue(mocks.mockClient);
+    mocks.mockClient.release.mockResolvedValue(undefined);
+    mocks.mockToSql.mockReturnValue('[0.1,0.2]');
+    mocks.mockResolveUsecase.mockResolvedValue({
+      config: { providerId: 'p1', id: 'p1', name: 'X', baseUrl: 'http://x/v1', apiKey: null, authType: 'none', verifySsl: true, defaultModel: 'bge-m3' },
+      model: 'bge-m3',
+    });
+    mocks.mockGenerateEmbedding.mockResolvedValue([[0.1, 0.2]]);
+    mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
+    mocks.mockResolveRerank.mockResolvedValue(null);
+    mocks.mockRerank.mockResolvedValue([]);
+    // One leg only, so every candidate sits in the SAME RRF tier — which is
+    // exactly where the prior is designed to be able to reorder.
+    mocks.mockClientQuery.mockImplementation(async (sql: string) => {
+      if (typeof sql === 'string' && sql.includes('page_embeddings')) {
+        return {
+          rows: [1, 2, 3, 4].map((n) => ({
+            page_id: n, confluence_id: `p${n}`, chunk_text: `deployment runbook ${n}`, chunk_index: 0,
+            metadata: { page_title: `Runbook ${n}`, section_title: 's', space_key: 'DEV' }, distance: 0.1 * n,
+          })),
+        };
+      }
+      return undefined;
+    });
+  });
+  afterEach(() => { invalidateRagRankingPriorCache(); });
+
+  it('promotes the well-scored, fresh page over stale low-scoring ones in the same tier', async () => {
+    routePriorQueries({
+      1: { quality_score: 32, last_modified_at: daysAgo(1100) },
+      2: { quality_score: 45, last_modified_at: daysAgo(700) },
+      3: { quality_score: 88, last_modified_at: daysAgo(30) },
+      4: { quality_score: 61, last_modified_at: daysAgo(400) },
+    });
+    const out = await hybridSearch('user-1', 'how do we deploy', 4);
+    expect(out[0]!.pageId).toBe(3);
+  });
+
+  it('never drops a page — demote is not exclude', async () => {
+    routePriorQueries({
+      1: { quality_score: 0, last_modified_at: daysAgo(4000) },
+      3: { quality_score: 100, last_modified_at: daysAgo(0) },
+    });
+    const out = await hybridSearch('user-1', 'how do we deploy', 4);
+    expect(new Set(out.map((r) => r.pageId))).toEqual(new Set([1, 2, 3, 4]));
+  });
+
+  it('leaves an UNSCORED page ranked on retrieval merit alone', async () => {
+    // Pages 2 and 4 carry no row at all — the freshly-synced case. The
+    // scored pages may pass them on merit, but nothing is SUBTRACTED for
+    // lacking a score: page 2 keeps its lead over page 4.
+    routePriorQueries({
+      1: { quality_score: 10, last_modified_at: daysAgo(2000) },
+      3: { quality_score: 20, last_modified_at: daysAgo(2000) },
+    });
+    const out = await hybridSearch('user-1', 'how do we deploy', 4);
+    const order = out.map((r) => r.pageId);
+    expect(order.indexOf(2)).toBeLessThan(order.indexOf(4));
+  });
+
+  it('SHIPS INERT — no admin_settings row means no reorder and no signal query', async () => {
+    // The default this PR ships. Signals that WOULD reorder the set (page 4
+    // is last on the vector leg but perfectly scored and freshly edited) are
+    // never even read: the stage short-circuits on weight 0, so a deployment
+    // that has not opted in pays nothing for it either.
+    routePriorQueries(
+      { 4: { quality_score: 100, last_modified_at: daysAgo(0) } },
+      { settingAbsent: true },
+    );
+    const out = await hybridSearch('user-1', 'how do we deploy', 4);
+    expect(out.map((r) => r.pageId)).toEqual([1, 2, 3, 4]);
+    const sqls = mocks.mockQuery.mock.calls.map((c) => String(c[0]));
+    expect(sqls.some((s) => s.includes('quality_score') && s.includes('ANY'))).toBe(false);
+  });
+
+  it('weight 0 in admin_settings turns the stage off entirely', async () => {
+    routePriorQueries(
+      { 4: { quality_score: 100, last_modified_at: daysAgo(0) } },
+      { weight: '0' },
+    );
+    const out = await hybridSearch('user-1', 'how do we deploy', 4);
+    // Untouched fused order, and the signal SELECT is never even issued.
+    expect(out.map((r) => r.pageId)).toEqual([1, 2, 3, 4]);
+    const sqls = mocks.mockQuery.mock.calls.map((c) => String(c[0]));
+    expect(sqls.some((s) => s.includes('quality_score') && s.includes('ANY'))).toBe(false);
+  });
+
+  it('a failed signal lookup serves the fused order rather than failing the search', async () => {
+    routePriorQueries({}, { throwOnSignals: true });
+    const out = await hybridSearch('user-1', 'how do we deploy', 4);
+    expect(out.map((r) => r.pageId)).toEqual([1, 2, 3, 4]);
+  });
+
+  it('cannot lift a single-leg page over one BOTH legs found', async () => {
+    // The guarantee the weight is sized for. Page 4 arrives on the KEYWORD
+    // leg as well, so it outscores every vector-only page by ~0.0164 — five
+    // times the maximum prior — despite being the worst-scored and stalest.
+    // It sits LAST on the vector leg so only leg agreement can explain a win.
+    const signals = {
+      4: { quality_score: 0, last_modified_at: daysAgo(5000) },
+      1: { quality_score: 100, last_modified_at: daysAgo(0) },
+      2: { quality_score: 100, last_modified_at: daysAgo(0) },
+      3: { quality_score: 100, last_modified_at: daysAgo(0) },
+    };
+    mocks.mockQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
+      if (typeof sql === 'string' && sql.includes('ts_rank')) {
+        return { rows: [{ page_id: 4, confluence_id: 'p4', title: 'Runbook 4', space_key: 'DEV', body_text: 'deployment runbook 4', rank: 0.9 }] };
+      }
+      if (typeof sql === 'string' && sql.includes('rag_ranking_prior_weight')) {
+        return { rows: [{ setting_value: ENABLED_WEIGHT }] };
+      }
+      if (typeof sql === 'string' && sql.includes('quality_score') && sql.includes('ANY')) {
+        const ids = (params?.[0] ?? []) as number[];
+        return { rows: ids.filter((id) => id in signals).map((id) => ({ id, ...signals[id as keyof typeof signals] })) };
+      }
+      if (typeof sql === 'string' && sql.includes('COUNT(*)')) return { rows: [{ embedded: 4, total: 4 }] };
+      return { rows: [] };
+    });
+    const out = await hybridSearch('user-1', 'how do we deploy', 4);
+    expect(out[0]!.pageId).toBe(4);
   });
 });
 

@@ -134,7 +134,7 @@ describe('the shipped fixture (#1102)', () => {
     expect([...styles.keys()].sort()).toEqual([
       'diversity', 'diversity-negative', 'error-text', 'how-to',
       'identifier', 'identifier-negative', 'keywords', 'question',
-      'vocabulary-gap',
+      'ranking-prior', 'ranking-prior-negative', 'vocabulary-gap',
     ]);
     for (const [style, count] of styles.entries()) {
       // Small deliberate probes (#1107 identifier, #1109 diversity) get a
@@ -145,7 +145,7 @@ describe('the shipped fixture (#1102)', () => {
       // it exists for: multi-query expansion is expected to move a handful of
       // queries, and Recall@K over three of them moves in thirds, so any
       // result would be indistinguishable from noise.
-      const isProbe = style.startsWith('identifier') || style.startsWith('diversity');
+      const isProbe = style.startsWith('identifier') || style.startsWith('diversity') || style.startsWith('ranking-prior');
       expect(count).toBeGreaterThanOrEqual(isProbe ? 3 : 10);
       expect(count / parsed.labels.length).toBeLessThan(0.6);
     }

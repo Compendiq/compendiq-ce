@@ -150,8 +150,8 @@ is what enforces that. Labels come from agents that have not seen the
 retrieval implementation — the fixture must never be written by whoever is
 tuning the thing it scores.
 
-Fixture floor is **N ≥ 100**, enforced in `assertFixturePower`. Today: 191
-queries over 159 distinct pages, spread across natural questions, bare
+Fixture floor is **N ≥ 100**, enforced in `assertFixturePower`. Today: 197
+queries over 162 distinct pages, spread across natural questions, bare
 keywords, error text and how-to phrasings, because a fixture made of one
 phrasing measures half the system — keyword queries flatter FTS, natural
 questions flatter the vector leg.
@@ -196,12 +196,14 @@ recall gap it showed could have been the pages rather than the wording.
 
 ### Measured headroom
 
-Against today's pipeline (`--rerank`, `nomic-embed-text-v1.5`, 191 queries):
+Against today's pipeline (`--rerank`, `nomic-embed-text-v1.5`), measured on the
+fixture as it stood when the slice landed — 191 queries, before #1111's six
+`ranking-prior` probes merged alongside it:
 
 | slice | n | R@1 | R@5 | R@10 | MRR |
 |---|---|---|---|---|---|
 | `vocabulary-gap` | 33 | 0.182 | 0.545 | 0.636 | 0.335 |
-| the other 158 labels | 158 | 0.722 | 0.918 | 0.943 | 0.812 |
+| every other label | 158 | 0.722 | 0.918 | 0.943 | 0.812 |
 
 The pairing is what makes that readable. Restricted to the 22 pages that carry
 labels of both kinds, the ordinary labels score **R@1 0.808 / R@10 0.923** and

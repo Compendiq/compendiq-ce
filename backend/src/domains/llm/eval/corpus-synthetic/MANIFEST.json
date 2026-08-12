@@ -7,91 +7,117 @@
       "title": "Payments Service Deployment Runbook",
       "source": "synthetic-duplicative",
       "family": "deployment-runbook",
-      "note": "Near-duplicate of the other deployment runbooks; differs only in team, service and rota."
+      "note": "Near-duplicate of the other deployment runbooks; differs only in team, service and rota.",
+      "ageDays": 30,
+      "qualityScore": 88
     },
     {
       "file": "synthetic__runbook__identity.md",
       "title": "Identity Service Deployment Runbook",
       "source": "synthetic-duplicative",
       "family": "deployment-runbook",
-      "note": "Near-duplicate of the other deployment runbooks; differs only in team, service and rota."
+      "note": "Near-duplicate of the other deployment runbooks; differs only in team, service and rota.",
+      "ageDays": 120,
+      "qualityScore": 74
     },
     {
       "file": "synthetic__runbook__search.md",
       "title": "Search Service Deployment Runbook",
       "source": "synthetic-duplicative",
       "family": "deployment-runbook",
-      "note": "Near-duplicate of the other deployment runbooks; differs only in team, service and rota."
+      "note": "Near-duplicate of the other deployment runbooks; differs only in team, service and rota.",
+      "ageDays": 400,
+      "qualityScore": 61
     },
     {
       "file": "synthetic__runbook__billing.md",
       "title": "Billing Service Deployment Runbook",
       "source": "synthetic-duplicative",
       "family": "deployment-runbook",
-      "note": "Near-duplicate of the other deployment runbooks; differs only in team, service and rota."
+      "note": "Near-duplicate of the other deployment runbooks; differs only in team, service and rota.",
+      "ageDays": 700,
+      "qualityScore": 45
     },
     {
       "file": "synthetic__runbook__notify.md",
       "title": "Notifications Service Deployment Runbook",
       "source": "synthetic-duplicative",
       "family": "deployment-runbook",
-      "note": "Near-duplicate of the other deployment runbooks; differs only in team, service and rota."
+      "note": "Near-duplicate of the other deployment runbooks; differs only in team, service and rota.",
+      "ageDays": 1100,
+      "qualityScore": 32
     },
     {
       "file": "synthetic__runbook__catalog.md",
       "title": "Catalog Service Deployment Runbook",
       "source": "synthetic-duplicative",
       "family": "deployment-runbook",
-      "note": "Near-duplicate of the other deployment runbooks; differs only in team, service and rota."
+      "note": "Near-duplicate of the other deployment runbooks; differs only in team, service and rota.",
+      "ageDays": 45
     },
     {
       "file": "synthetic__distinct__rollback-procedure.md",
       "title": "Platform Rollback Procedure for Failed Deployments",
       "source": "synthetic-distinct",
       "family": "deployment-topic",
-      "note": "Distinct page on a deployment sub-topic the near-duplicate runbooks mention only in passing."
+      "note": "Distinct page on a deployment sub-topic the near-duplicate runbooks mention only in passing.",
+      "ageDays": 90,
+      "qualityScore": 85
     },
     {
       "file": "synthetic__distinct__deploy-freeze-calendar.md",
       "title": "Deployment Freeze Calendar and Exceptions",
       "source": "synthetic-distinct",
       "family": "deployment-topic",
-      "note": "Distinct page on a deployment sub-topic the near-duplicate runbooks mention only in passing."
+      "note": "Distinct page on a deployment sub-topic the near-duplicate runbooks mention only in passing.",
+      "ageDays": 90,
+      "qualityScore": 85
     },
     {
       "file": "synthetic__distinct__canary-analysis.md",
       "title": "How Canary Analysis Decides to Promote or Halt",
       "source": "synthetic-distinct",
       "family": "deployment-topic",
-      "note": "Distinct page on a deployment sub-topic the near-duplicate runbooks mention only in passing."
+      "note": "Distinct page on a deployment sub-topic the near-duplicate runbooks mention only in passing.",
+      "ageDays": 90,
+      "qualityScore": 85
     },
     {
       "file": "synthetic__annual__security-review-2022.md",
       "title": "2022 Annual Security Review \u2014 Findings and Remediation",
       "source": "synthetic-duplicative",
       "family": "annual-security-review",
-      "note": "Annual re-issue: near-identical to the other years, differing in figures and status."
+      "note": "Annual re-issue: near-identical to the other years, differing in figures and status.",
+      "ageDays": 1300,
+      "qualityScore": 78
     },
     {
       "file": "synthetic__annual__security-review-2023.md",
       "title": "2023 Annual Security Review \u2014 Findings and Remediation",
       "source": "synthetic-duplicative",
       "family": "annual-security-review",
-      "note": "Annual re-issue: near-identical to the other years, differing in figures and status."
+      "note": "Annual re-issue: near-identical to the other years, differing in figures and status.",
+      "ageDays": 940,
+      "qualityScore": 78
     },
     {
       "file": "synthetic__annual__security-review-2024.md",
       "title": "2024 Annual Security Review \u2014 Findings and Remediation",
       "source": "synthetic-duplicative",
       "family": "annual-security-review",
-      "note": "Annual re-issue: near-identical to the other years, differing in figures and status."
+      "note": "Annual re-issue: near-identical to the other years, differing in figures and status.",
+      "ageDays": 575,
+      "qualityScore": 78
     },
     {
       "file": "synthetic__annual__security-review-2025.md",
       "title": "2025 Annual Security Review \u2014 Findings and Remediation",
       "source": "synthetic-duplicative",
       "family": "annual-security-review",
-      "note": "Annual re-issue: near-identical to the other years, differing in figures and status."
+      "note": "Annual re-issue: near-identical to the other years, differing in figures and status.",
+      "ageDays": 210,
+      "qualityScore": 78
     }
-  ]
+  ],
+  "signalNote": "#1111: quality_score / ageDays drive the ranking prior. 'catalog' is deliberately unscored \u2014 the neutral-NULL case, which correlates with recently synced rather than low quality."
 }
