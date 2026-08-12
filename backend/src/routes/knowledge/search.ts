@@ -331,11 +331,10 @@ export async function searchRoutes(fastify: FastifyInstance) {
     const offset = (page - 1) * limit;
     const conditions: string[] = [];
     // $1 = search query, $2 = accessible space keys, $3 = userId for standalone access
-    // $1 feeds websearch_to_tsquery (match, ts_rank and ts_headline), so it
-    // carries the sanitised form; the pg_trgm title query below keeps the RAW
-    // q, because a leading hyphen is meaningless to trigram similarity and
-    // stripping it there would only make the two paths disagree.
-    // Closed union of two literals — safe to interpolate below.
+    // $1 carries the RAW q for every path — the tsquery match, ts_rank,
+    // ts_headline and the pg_trgm title query alike. #1110 does not rewrite
+    // the query; it chooses which parser reads it, so there is no
+    // sanitised-vs-raw asymmetry left to keep in step.
     const parser = chooseLexicalParser(q);
     const values: unknown[] = [q, searchSpaces, userId];
     let paramIndex = 4;

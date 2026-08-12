@@ -389,22 +389,18 @@ export async function vectorSearch(userId: string, questionEmbedding: number[], 
  * the user can access (shared, or private and owned by the user).
  */
 export async function keywordSearch(userId: string, questionText: string, limit = RAG_FETCH_WIDTH_DEFAULT): Promise<SearchResult[]> {
-  // websearch_to_tsquery (#1110), over a query normalised by
-  // sanitizeLexicalQuery. Users get "quoted phrases" as real phrase matches
-  // and `-term` as a genuine exclusion — the latter was previously INVERTED,
-  // since plainto parsed a leading `-` as an ordinary term and so REQUIRED
-  // the word the user asked to exclude.
+  // The lexical parser is CHOSEN per query (#1110, see lexical-query.ts).
+  // Normally websearch_to_tsquery, so users get "quoted phrases" as real
+  // phrase matches and `-term` as a genuine exclusion — the latter was
+  // previously INVERTED, since plainto parsed a leading `-` as an ordinary
+  // term and so REQUIRED the word the user asked to exclude.
   //
-  // The sanitiser is load-bearing: the parser alone raises XX000
-  // `tsquery stack too small` at ~32 hyphens (an ERROR, not an empty
-  // result), so an ASCII rule pasted into a question would 500 the request.
-  // It reduces each hyphen run to its PARITY, which changes no query's
-  // meaning — see lexical-query.ts for the measurements.
-  //
-  // Accepted cost (owner decision on #1110): a real exclusion operator means
-  // shell commands misfire — 'docker run -it …' compiles to `& !'it'`, and
-  // `it` is not a stop word under the default `simple` config. Mitigated by
-  // user-facing docs, pinned by a test, revisit on support traffic.
+  // A pathological query falls back to plainto_tsquery instead of being
+  // rewritten. websearch nests NOTs and right-nests punctuation-joined
+  // tokens, so it errors where plainto merely flattens; rewriting the string
+  // to dodge that destroyed hyphenated identifiers, which is why the guard
+  // switches parser rather than editing the query. The measurements and the
+  // three rejected alternatives are recorded in lexical-query.ts.
   //
   // KNOWN SEMANTIC CHANGE, measured and accepted: a bare `or` is the OR
   // operator, so a question splits into a disjunction rather than an all-AND

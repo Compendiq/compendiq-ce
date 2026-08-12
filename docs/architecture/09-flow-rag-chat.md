@@ -647,8 +647,8 @@ states the condition where an operator will meet it.
   a recall/latency trade-off.
 - **Keyword search** uses the PostgreSQL text-search configuration from
   `FTS_LANGUAGE` (default `simple`; set `german`, `english`, etc. for
-  language-aware stemming), parsed with **`websearch_to_tsquery`** (#1110).
-  fed through `sanitizeLexicalQuery` (`core/utils/lexical-query.ts`). Users
+  language-aware stemming). The parser is **chosen per query** (#1110,
+  `core/utils/lexical-query.ts`) — normally `websearch_to_tsquery`, so users
   get `"quoted phrases"` as real phrase matches and `-term` as a genuine
   exclusion — the latter was previously **inverted**, because
   `plainto_tsquery` parsed a leading `-` as an ordinary term and so
