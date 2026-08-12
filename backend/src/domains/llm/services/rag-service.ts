@@ -11,6 +11,7 @@ import {
 } from '../../../core/services/rbac-service.js';
 import { CircuitBreakerOpenError } from '../../../core/services/circuit-breaker.js';
 import { getFtsLanguage } from '../../../core/services/fts-language.js';
+import { chooseLexicalParser } from '../../../core/utils/lexical-query.js';
 import { visiblePagesPredicate } from '../../../core/services/page-visibility.js';
 import { isFeatureEnabled } from '../../../core/enterprise/loader.js';
 import { ENTERPRISE_FEATURES } from '../../../core/enterprise/features.js';
@@ -390,8 +391,24 @@ export async function vectorSearch(userId: string, questionEmbedding: number[], 
  * the user can access (shared, or private and owned by the user).
  */
 export async function keywordSearch(userId: string, questionText: string, limit = RAG_FETCH_WIDTH_DEFAULT): Promise<SearchResult[]> {
-  // Use plainto_tsquery which safely handles arbitrary user input
-  // (no need to manually sanitize or construct tsquery syntax)
+  // The lexical parser is CHOSEN per query (#1110, see lexical-query.ts).
+  // Normally websearch_to_tsquery, so users get "quoted phrases" as real
+  // phrase matches and `-term` as a genuine exclusion — the latter was
+  // previously INVERTED, since plainto parsed a leading `-` as an ordinary
+  // term and so REQUIRED the word the user asked to exclude.
+  //
+  // A pathological query falls back to plainto_tsquery instead of being
+  // rewritten. websearch nests NOTs and right-nests punctuation-joined
+  // tokens, so it errors where plainto merely flattens; rewriting the string
+  // to dodge that destroyed hyphenated identifiers, which is why the guard
+  // switches parser rather than editing the query. The measurements and the
+  // three rejected alternatives are recorded in lexical-query.ts.
+  //
+  // KNOWN SEMANTIC CHANGE, measured and accepted: a bare `or` is the OR
+  // operator, so a question splits into a disjunction rather than an all-AND
+  // conjunction. 7 of the 152 eval-fixture queries carry one; across both
+  // axes one improved (rank 8 -> 7) and none regressed. `and` matches the
+  // previous implicit conjunction, so it is a no-op.
   const trimmed = questionText.trim();
   // Before the span on purpose: an empty query is not a retrieval, and a
   // 0ms sample for it would only pollute the stage histogram.
@@ -401,6 +418,11 @@ export async function keywordSearch(userId: string, questionText: string, limit 
     'rag.keyword_search',
     async (span) => {
       const started = performance.now();
+      // A closed union of two literals from lexical-query.ts, never user
+      // input, so interpolating it is safe. A pathological query falls back
+      // to the parser this product used before #1110 rather than being
+      // rewritten — plainto keeps hyphens, so identifiers survive.
+      const parser = chooseLexicalParser(trimmed);
       const ftsLang = await getFtsLanguage();
 
       const kwSpaces = await getUserAccessibleSpaces(userId);
@@ -414,9 +436,9 @@ export async function keywordSearch(userId: string, questionText: string, limit 
       }>(
         `SELECT cp.id AS page_id, cp.confluence_id, cp.title, cp.space_key,
                 substring(coalesce(cp.body_text, ''), 1, 500) as body_text,
-                ts_rank(cp.tsv, plainto_tsquery('${ftsLang}', $2)) AS rank
+                ts_rank(cp.tsv, ${parser}('${ftsLang}', $2)) AS rank
          FROM pages cp
-         WHERE cp.tsv @@ plainto_tsquery('${ftsLang}', $2)
+         WHERE cp.tsv @@ ${parser}('${ftsLang}', $2)
            AND ${visiblePagesPredicate(1, 4)}
            AND cp.deleted_at IS NULL
          ORDER BY rank DESC

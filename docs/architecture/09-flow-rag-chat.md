@@ -42,7 +42,7 @@ sequenceDiagram
         PG-->>RAG: top fetch-width chunks
     and
         BE->>RAG: keywordSearch(userId, question, stageLimit)
-        RAG->>PG: tsvector search WHERE same space filter
+        RAG->>PG: tsvector search (websearch_to_tsquery) WHERE same space filter
         PG-->>RAG: matches
     end
     RAG-->>BE: merged + deduped + ranked (fetch-width wide)
@@ -647,7 +647,63 @@ states the condition where an operator will meet it.
   a recall/latency trade-off.
 - **Keyword search** uses the PostgreSQL text-search configuration from
   `FTS_LANGUAGE` (default `simple`; set `german`, `english`, etc. for
-  language-aware stemming).
+  language-aware stemming). The parser is **chosen per query** (#1110,
+  `core/utils/lexical-query.ts`) — normally `websearch_to_tsquery`, so users
+  get `"quoted phrases"` as real phrase matches and `-term` as a genuine
+  exclusion — the latter was previously **inverted**, because
+  `plainto_tsquery` parsed a leading `-` as an ordinary term and so
+  *required* the word the user asked to exclude.
+
+  The parser is CHOSEN per query (`core/utils/lexical-query.ts`), because
+  `websearch_to_tsquery` is structurally more fragile than the one it
+  replaces and both failures are errors rather than empty results — so they
+  500 the request. It nests NOTs (~32 hyphens raise `XX000 tsquery stack too
+  small`) and it RIGHT-NESTS punctuation-joined tokens, so `1,2,3,…` at
+  ~14,600 terms raises `54001 stack depth limit exceeded` with no hyphens
+  involved at all; `plainto_tsquery` flattens the same input and survives
+  roughly three times longer.
+
+  A query over 4,000 characters or carrying more than 8 hyphens is parsed
+  with `plainto_tsquery` instead. That bound is provable rather than
+  guessed — a tsquery cannot hold more nodes than the input has characters —
+  which matters because three earlier guards tried to rewrite the string and
+  each was disproved by execution: whitespace-anchored stripping missed the
+  operand positions Postgres also honours; per-run parity bounded one run but
+  not the count; and a hyphen cap bounded neither the phrase nesting nor its
+  own escape hatch. That last one was the instructive failure — replacing
+  hyphens with spaces destroys the identifiers this product is full of, since
+  `to_tsvector` holds `CVE-2024-1234` as the lexemes `'-2024'` and `'-1234'`
+  and a query rewritten to `2024 1234` can never match them. Switching parser
+  keeps the hyphens, so the fallback genuinely is the pre-#1110 behaviour
+  rather than something worse wearing its name. The cost is that one
+  pathological query loses phrases and exclusions, which is the right trade
+  against a 500.
+
+  **Accepted cost, decided on #1110 (option "yes, everywhere"):** because
+  `-term` is now a real exclusion, shell commands inside questions misfire.
+  `docker run -it ubuntu bash` compiles to `& !'it'`, and under the default
+  `simple` configuration `it` is not a stop word, so the query demands pages
+  *without* the word "it". The same applies to `curl -X POST`, `grep -r` and
+  prose ranges (`errors between 500 - 599` → `& !'599'`). This was measured
+  and accepted rather than discovered; the mitigation is user-facing
+  documentation, not code, and a test pins the behaviour so any future change
+  is deliberate.
+
+  **Accepted semantic change:** the same parser reads a bare `or` as the OR
+  operator, so a natural-language question splits into a disjunction rather
+  than the all-AND conjunction `plainto_tsquery` produced — looser, and this
+  leg receives chat questions rather than search-box syntax. Measured, not
+  assumed: 7 of the 152 eval-fixture queries carry a bare `or`; across both
+  axes one improved (rank 8 → 7) and none regressed. `and` is also an
+  operator but matches the previous implicit conjunction, so it is a no-op.
+  Revisit if a corpus shows the disjunction pulling in loose matches.
+
+  The same parser is used by `/api/search` (all modes). `GET /api/pages`'s
+  filter box deliberately still uses `plainto_tsquery`: its zero-result ILIKE
+  fallback re-searches the **raw** string, so an exclusion that legitimately
+  matches nothing would silently become a substring search for `-term` and
+  report `fuzzyMatch: true`. Switching it needs that interaction handled, not
+  just the call site swapped.
 - **Hybrid merge** deduplicates by `page_id`, keeps the best chunk per
   page, and re-ranks using a weighted blend.
 - **Scope** — results are filtered to pages the requesting user can see

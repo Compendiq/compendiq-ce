@@ -1368,3 +1368,156 @@ describe.skipIf(!dbAvailable)('rag-service integration — #1107 identifier pin 
     expect(out[0]!.pinned).toBe(true);
   });
 });
+
+// ─── #1110 (split): websearch_to_tsquery on the lexical leg ──────────────────
+//
+// The Corrections split this off from the P3 title leg as an immediately
+// shippable win. It is not only additive: with `plainto_tsquery`, a leading
+// `-` is parsed as an ordinary term, so `-logging` REQUIRES the word the user
+// asked to exclude — the exact opposite of the intent. Quoted phrases are
+// likewise flattened to loose ANDs.
+describe.skipIf(!dbAvailable)('rag-service integration — #1110 websearch_to_tsquery', () => {
+  const USER = 'aaaaaaaa-1110-4000-8000-000000001110';
+  beforeAll(async () => {
+    await setupTestDb();
+    await truncateAllTables();
+    await query(
+      `INSERT INTO users (id, username, email, role, password_hash)
+       VALUES ($1::uuid, $1::text, $1::text || '@t', 'user', 'x') ON CONFLICT (id) DO NOTHING`,
+      [USER],
+    );
+    await query(`INSERT INTO spaces (space_key, space_name) VALUES ('DEV', 'DEV') ON CONFLICT (space_key) DO NOTHING`);
+    await query(
+      `INSERT INTO roles (name, display_name, is_system, permissions)
+       VALUES ('viewer', 'Viewer', TRUE, ARRAY['read']) ON CONFLICT (name) DO NOTHING`,
+    );
+    const role = await query<{ id: number }>(`SELECT id FROM roles WHERE name = 'viewer'`);
+    await query(
+      `INSERT INTO space_role_assignments (space_key, principal_type, principal_id, role_id)
+       VALUES ('DEV', 'user', $1, $2) ON CONFLICT DO NOTHING`,
+      [USER, role.rows[0]!.id],
+    );
+    for (const [title, body] of [
+      ['Graceful shutdown guide', 'delay accepting requests during a graceful shutdown'],
+      ['Logging configuration', 'delay accepting requests is unrelated here; this page is about logging'],
+      ['Accepting payments', 'we delay payouts and describe accepting cards, not requests'],
+    ] as Array<[string, string]>) {
+      await query(
+        `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+         VALUES (gen_random_uuid()::text, 'confluence', 'DEV', $1, $2, '', '')`,
+        [title, body],
+      );
+    }
+  });
+  afterAll(async () => { await truncateAllTables(); });
+
+  it('honours a MINUS exclusion instead of requiring the excluded term', async () => {
+    // With plainto_tsquery this returned the logging page, because `-logging`
+    // parsed as `& 'logging'` — the exclusion read as a requirement.
+    const hits = await keywordSearch(USER, 'delay accepting -logging');
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits.every((h) => h.pageTitle !== 'Logging configuration')).toBe(true);
+  });
+
+  it('reduces a hyphen RUN to its parity, so meaning is preserved exactly', async () => {
+    // N hyphens compile to N nested NOTs, so an EVEN run is identity and an
+    // ODD run is a single exclusion. The sanitiser collapses N to N%2, which
+    // is what Postgres would have computed anyway — it bounds the nesting
+    // depth without changing a single query's meaning.
+    const doubled = await keywordSearch(USER, 'delay accepting --logging');
+    expect(doubled.some((h) => h.pageTitle === 'Logging configuration')).toBe(true);
+
+    const tripled = await keywordSearch(USER, 'delay accepting ---logging');
+    expect(tripled.every((h) => h.pageTitle !== 'Logging configuration')).toBe(true);
+  });
+
+  it('a huge punctuation-joined paste never errors — the crash was never about hyphens', async () => {
+    // websearch_to_tsquery RIGHT-NESTS punctuation-joined tokens
+    // (`1,2,3` -> `'1' <-> '2' <-> '3'`) where plainto flattens them, so
+    // ~14,600 comma-separated terms raise 54001 `stack depth limit
+    // exceeded` with ZERO hyphens present. A hyphen guard cannot bound
+    // that, which is why the query falls back to the other PARSER instead.
+    const csv = Array.from({ length: 15000 }, (_, i) => i).join(',');
+    await expect(keywordSearch(USER, csv)).resolves.toBeInstanceOf(Array);
+  });
+
+  it('a fallback query keeps its identifiers — plainto preserves what a rewrite destroyed', async () => {
+    // The previous guard replaced every hyphen with a space above its cap.
+    // Measured: to_tsvector holds `CVE-2024-1234` as the lexemes '-2024'
+    // and '-1234', so a query rewritten to `2024 1234` can never match it.
+    // Switching parser instead keeps the hyphens, so the identifier still
+    // matches even on the fallback path.
+    await query(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+       VALUES (gen_random_uuid()::text, 'confluence', 'DEV', 'Advisory register',
+               'advisory CVE-2024-1234 and CVE-2024-5678 and CVE-2023-9999 remediation between 2024-01-15 and 2024-02-01', '', '')`,
+    );
+    // Twelve hyphens: over the cap, so this takes the fallback path. The
+    // page carries every identifier, so the all-AND fallback parse can only
+    // fail if the identifiers themselves were destroyed — which is the
+    // thing under test.
+    const q = 'CVE-2024-1234, CVE-2024-5678, CVE-2023-9999 between 2024-01-15 and 2024-02-01';
+    const hits = await keywordSearch(USER, q);
+    expect(hits.some((h) => h.pageTitle === 'Advisory register')).toBe(true);
+  });
+
+  it('punctuation art never errors — every shape that reached XX000 in review', async () => {
+    // Pending NOTs accumulate on the parser stack ACROSS runs, not only
+    // within one, so no per-run rule can bound this: 33 single spaced
+    // hyphens crash exactly like one run of 33, and a table separator row
+    // crashes with every individual run already at depth 1. Two earlier
+    // fixes modelled Postgres's operand-state grammar and both were
+    // disproved by these inputs, which is why the guard is now a total
+    // hyphen COUNT cap — it needs no grammar model to be sound.
+    const cases = [
+      `| col |${'-'.repeat(35)}|`,                        // markdown table border
+      `${'| - '.repeat(33)}|`,                             // separator row, runs already depth 1
+      `a ${'- '.repeat(33)}b`,                             // spaced single hyphens
+      `A <${'-'.repeat(40)} B`,                            // ascii arrow
+      `why does sync fail ${'-'.repeat(60)} here is the log`,
+      '-'.repeat(60),
+      `a ${'-'.repeat(35)}`,
+    ];
+    for (const q of cases) {
+      await expect(keywordSearch(USER, q)).resolves.toBeInstanceOf(Array);
+    }
+  });
+
+  it('a CLI flag DOES exclude — the accepted cost of exclusion support (#1110 owner decision)', async () => {
+    // Pinned as known behaviour, not as a protection. `-requests` is a shell
+    // flag to the user and an exclusion to Postgres, so a question carrying
+    // one drops pages containing that word. The owner chose exclusion
+    // support everywhere with user-facing documentation as the mitigation;
+    // this test exists so any future change to that is deliberate.
+    const hits = await keywordSearch(USER, 'graceful shutdown -requests');
+    expect(hits.every((h) => h.pageTitle !== 'Graceful shutdown guide')).toBe(true);
+  });
+
+  it('honours a QUOTED phrase as a phrase, not a bag of words', async () => {
+    // 'Accepting payments' contains both words far apart; only the shutdown
+    // page contains the actual phrase.
+    const hits = await keywordSearch(USER, '"delay accepting"');
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits.every((h) => h.pageTitle !== 'Accepting payments')).toBe(true);
+  });
+
+  it('reads a bare `or` as a DISJUNCTION — the accepted semantic change', async () => {
+    // Pinned deliberately, not incidentally: this leg receives chat
+    // questions, and a bare `or` now splits them into an OR rather than
+    // the all-AND conjunction plainto produced. Measured on the fixture
+    // (7 of 152 queries carry a bare `or`): one improved, none regressed.
+    // A future corpus that shows the disjunction pulling in loose matches
+    // should revisit this — so the behaviour must be visible, not implicit.
+    const hits = await keywordSearch(USER, 'graceful shutdown or payments');
+    const titles = hits.map((h) => h.pageTitle);
+    // The payments page has no 'graceful shutdown'; under an all-AND parse
+    // it could not match at all. Under a disjunction it legitimately does.
+    expect(titles).toContain('Accepting payments');
+  });
+
+  it('still never throws on operator soup — the safety plainto_tsquery gave us', async () => {
+    for (const q of ['a & | ! ( )', '"unclosed', '-', '- -', '&&&', '']) {
+      await expect(keywordSearch(USER, q)).resolves.toBeInstanceOf(Array);
+    }
+  });
+});

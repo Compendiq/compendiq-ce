@@ -7,6 +7,7 @@ import { query } from '../../core/db/postgres.js';
 // ADR-022.
 import { getUserAccessibleSpacesMemoized as getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 import { getFtsLanguage } from '../../core/services/fts-language.js';
+import { chooseLexicalParser } from '../../core/utils/lexical-query.js';
 import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
 import {
   vectorSearch,
@@ -330,12 +331,17 @@ export async function searchRoutes(fastify: FastifyInstance) {
     const offset = (page - 1) * limit;
     const conditions: string[] = [];
     // $1 = search query, $2 = accessible space keys, $3 = userId for standalone access
+    // $1 carries the RAW q for every path — the tsquery match, ts_rank,
+    // ts_headline and the pg_trgm title query alike. #1110 does not rewrite
+    // the query; it chooses which parser reads it, so there is no
+    // sanitised-vs-raw asymmetry left to keep in step.
+    const parser = chooseLexicalParser(q);
     const values: unknown[] = [q, searchSpaces, userId];
     let paramIndex = 4;
 
     // Base full-text search condition
     conditions.push(
-      `cp.tsv @@ plainto_tsquery('${ftsLang}', $1)`,
+      `cp.tsv @@ ${parser}('${ftsLang}', $1)`,
     );
 
     // Access control: RBAC-based space access for confluence pages; standalone pages
@@ -417,8 +423,8 @@ export async function searchRoutes(fastify: FastifyInstance) {
     }>(
       `SELECT cp.id, cp.confluence_id, cp.title, cp.space_key, cp.author,
               cp.last_modified_at, cp.labels,
-              ts_rank(cp.tsv, plainto_tsquery('${ftsLang}', $1)) AS rank,
-              ts_headline('${ftsLang}', COALESCE(cp.body_text, ''), plainto_tsquery('${ftsLang}', $1),
+              ts_rank(cp.tsv, ${parser}('${ftsLang}', $1)) AS rank,
+              ts_headline('${ftsLang}', COALESCE(cp.body_text, ''), ${parser}('${ftsLang}', $1),
                           'MaxWords=30, MinWords=15, StartSel=<mark>, StopSel=</mark>') AS snippet,
               COUNT(*) OVER() AS total_count
        FROM pages cp
@@ -463,7 +469,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
       ? query<{ facet: string; value: string; count: string }>(
           `SELECT 'space' AS facet, cp.space_key AS value, COUNT(*)::TEXT AS count
            FROM pages cp
-           WHERE cp.tsv @@ plainto_tsquery('${ftsLang}', $1)
+           WHERE cp.tsv @@ ${parser}('${ftsLang}', $1)
              AND ${visiblePagesPredicate(2, 3)}
              AND cp.deleted_at IS NULL
              AND cp.space_key IS NOT NULL
@@ -471,7 +477,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
            UNION ALL
            SELECT 'author' AS facet, cp.author AS value, COUNT(*)::TEXT AS count
            FROM pages cp
-           WHERE cp.tsv @@ plainto_tsquery('${ftsLang}', $1)
+           WHERE cp.tsv @@ ${parser}('${ftsLang}', $1)
              AND ${visiblePagesPredicate(2, 3)}
              AND cp.deleted_at IS NULL
              AND cp.author IS NOT NULL
@@ -480,7 +486,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
            SELECT 'tag' AS facet, tag AS value, COUNT(*)::TEXT AS count
            FROM pages cp
            CROSS JOIN unnest(cp.labels) AS tag
-           WHERE cp.tsv @@ plainto_tsquery('${ftsLang}', $1)
+           WHERE cp.tsv @@ ${parser}('${ftsLang}', $1)
              AND ${visiblePagesPredicate(2, 3)}
              AND cp.deleted_at IS NULL
            GROUP BY tag`,
