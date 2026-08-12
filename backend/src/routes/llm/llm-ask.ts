@@ -13,6 +13,10 @@ import { streamChat, type ChatMessage } from '../../domains/llm/services/openai-
 type StoredChatMessage = ChatMessage & { refused?: boolean };
 import { contentToText } from '../../domains/llm/services/prompts.js';
 import { hybridSearch, buildRagContext, type RetrievalMeta } from '../../domains/llm/services/rag-service.js';
+// #1112: deep search's wrapper around hybridSearch. Its own module, not a
+// rag-service export, because expansion is a REQUEST-level stage: /api/search
+// paginates and must never reach it.
+import { multiQuerySearch } from '../../domains/llm/services/multi-query-search.js';
 // From the leaf module, NOT via rag-service: the route suite stubs
 // rag-service with a closed export list, and the formula must stay REAL
 // there (stubbing it would let route and formula drift — #1268 review).
@@ -108,12 +112,20 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     // reads are un-narrowed after the intervening await.
     const retrieval: { meta: RetrievalMeta | null } = { meta: null };
     try {
+      // #1112: deep search is the SAME retrieval, run for the user's question
+      // plus two model-written paraphrases and fused. It is a per-request
+      // opt-in (`deepSearch`, default off) and `multiQuerySearch` is a
+      // drop-in for `hybridSearch` — same arguments, same options, and when
+      // expansion is skipped or soft-fails it calls exactly the line below.
+      // Expansion lives in that wrapper rather than inside `hybridSearch`
+      // because `/api/search` paginates and must never expand.
+      const search = body.deepSearch ? multiQuerySearch : hybridSearch;
       // The chat path REQUESTS the #1104 rerank stage; it actually runs only
       // when an admin has assigned a provider+model to the `rerank` use case
       // (unassigned → no-op). `/api/search` deliberately does not request it
       // — its results paginate, and reranking one page independently of the
       // next breaks the ordering the pages share.
-      searchResults = await hybridSearch(userId, question, 5, undefined, {
+      searchResults = await search(userId, question, 5, undefined, {
         rerank: true,
         // #1106 PR 2: assemble each source page's sibling chunks into the
         // context window buildRagContext reads. Chat-path only — see
@@ -308,6 +320,10 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       contextChars: await getRagContextCharsPerPage(),
       assembledPages: searchResults.filter((r) => r.contextText !== undefined).length,
       pinnedCount: searchResults.filter((r) => r.pinned === true).length,
+      // #1112: the two modes must not serve each other's answers — the doc-id
+      // component cannot see a re-ORDERED set, and sees nothing at all when
+      // expansion soft-fails to the single-query path and later recovers.
+      deepSearch: body.deepSearch,
     });
 
     // `score` is the retrieval ORDERING value — an RRF fusion score from

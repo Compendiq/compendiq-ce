@@ -183,6 +183,20 @@ export interface StreamChatOptions {
    * if a streaming caller ever needs it; today it would silently no-op there.
    */
   maxTokens?: number;
+  /**
+   * Hard latency budget covering QUEUE WAIT plus the request, `chat()` only
+   * — the exact mechanism {@link RerankOptions.timeoutMs} documents, for the
+   * same reason (#1267 review B3). A caller that instead races this promise
+   * against its own timer abandons it holding a global LLM_CONCURRENCY slot
+   * for up to the queue's own 300s timeout, and the breaker learns nothing
+   * from the repeated slowness. Aborting counts as a breaker failure, which
+   * is what eventually turns a persistently slow provider off.
+   *
+   * #1112 is the first caller: query reformulation sits IN FRONT of retrieval
+   * on the user-visible ask path, so it must degrade to no expansion rather
+   * than delay the answer.
+   */
+  timeoutMs?: number;
 }
 
 export async function listModels(cfg: ProviderConfig): Promise<LlmModel[]> {
@@ -322,6 +336,10 @@ async function boundedErrorDetail(res: { body?: ReadableStream | null }): Promis
 export async function chat(
   cfg: ProviderConfig, model: string, messages: ChatMessage[], opts?: StreamChatOptions,
 ): Promise<string> {
+  // Created BEFORE enqueue so the budget covers queue wait too (see
+  // StreamChatOptions.timeoutMs) — a backlogged queue must spend the budget
+  // waiting and abort on admission, not run a request the caller gave up on.
+  const deadline = opts?.timeoutMs != null ? AbortSignal.timeout(opts.timeoutMs) : undefined;
   // The span wraps the queue wait + breaker + HTTP round-trip. With OTel's
   // undici auto-instrumentation enabled the HTTP call appears as a child
   // span, so queue wait is derivable as the difference. No-op when OTel is
@@ -339,7 +357,7 @@ export async function chat(
             ...thinkingExtras(cfg.baseUrl, model, opts?.thinking),
           }),
           dispatcher: dispatcherFor(cfg),
-          signal,
+          signal: deadline ? AbortSignal.any([signal, deadline]) : signal,
         });
         if (!res.ok) throw new LlmHttpError('chat', res.status, await errorDetail(res));
         const body = await res.json() as { choices: Array<{ message: { content: string } }> };

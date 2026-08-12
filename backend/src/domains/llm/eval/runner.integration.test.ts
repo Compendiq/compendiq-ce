@@ -32,6 +32,10 @@ vi.mock('../services/openai-compatible-client.js', async () => {
       if (embeddingState.fail) throw new Error('embedding provider is down');
       return [topicVec(embeddingState.topicForQuery)];
     }),
+    // #1112: the reformulation completion. Default is a provider that answers
+    // with nothing usable, so every pre-existing test keeps measuring the
+    // single-query pipeline.
+    chat: vi.fn(async () => ''),
   };
 });
 vi.mock('../services/llm-provider-resolver.js', () => ({
@@ -152,6 +156,66 @@ describe.skipIf(!dbAvailable)('eval runner (#1102)', () => {
     });
 
     await expect(promise).rejects.toThrow(/only .* embedded/i);
+  });
+
+  it('#1112: a --deep-search run measures the fused three-leg pipeline', async () => {
+    const alpha = await seedPage('Alpha topic', 'alpha content about hooks and plugins', 5);
+    await seedPage('Beta topic', 'beta content about bundling and rollup', 400);
+    embeddingState.topicForQuery = 5;
+    const client = await import('../services/openai-compatible-client.js');
+    vi.mocked(client.chat).mockResolvedValue('how are hooks registered\nplugin hook lifecycle');
+
+    const result = await runEval(fixtureOf([{ id: 'q1', query: 'how do hooks work', expectedFiles: ['alpha.md'] }]), {
+      userId: USER,
+      pageIdByFile: new Map([['alpha.md', alpha]]),
+      topK: 5,
+      deepSearch: true,
+    });
+
+    expect(result.expansionParticipatingQueries).toBe(1);
+    expect(result.runs[0]!.retrieved[0]).toBe(alpha);
+  });
+
+  it('#1112: FAILS a --deep-search run in which expansion never fired, instead of labelling plain retrieval "deep"', async () => {
+    // Expansion is soft-fail by design, so an eval DB with no `chat`
+    // assignment produces perfectly ordinary numbers under a deep label —
+    // the same silent lie the vector-participation guard exists for.
+    const alpha = await seedPage('Alpha topic', 'alpha content about hooks and plugins', 5);
+    embeddingState.topicForQuery = 5;
+    const client = await import('../services/openai-compatible-client.js');
+    vi.mocked(client.chat).mockRejectedValue(new Error('no chat provider'));
+
+    const promise = runEval(fixtureOf([{ id: 'q1', query: 'how do hooks work', expectedFiles: ['alpha.md'] }]), {
+      userId: USER,
+      pageIdByFile: new Map([['alpha.md', alpha]]),
+      topK: 5,
+      deepSearch: true,
+    });
+
+    await expect(promise).rejects.toBeInstanceOf(VectorLegSilentError);
+    await expect(promise).rejects.toThrow(/expansion participated in 0 queries/i);
+  });
+
+  it('#1112: does NOT fail when every query legitimately skipped expansion', async () => {
+    // Identifier and error-text queries are excluded by design. A fixture
+    // made only of those expands nothing and is still a valid measurement —
+    // "skipped by design" and "the provider is down" are different facts.
+    const alpha = await seedPage('FST_ERR_DEC_UNDECLARED', 'decorator error content for hooks', 5);
+    embeddingState.topicForQuery = 5;
+    const client = await import('../services/openai-compatible-client.js');
+    // The stub is module-level, so earlier tests' calls are still recorded on
+    // it — clear before asserting this test's own call count.
+    vi.mocked(client.chat).mockClear();
+    vi.mocked(client.chat).mockRejectedValue(new Error('never called'));
+
+    const result = await runEval(
+      fixtureOf([{ id: 'q1', query: 'FST_ERR_DEC_UNDECLARED', expectedFiles: ['alpha.md'] }]),
+      { userId: USER, pageIdByFile: new Map([['alpha.md', alpha]]), topK: 5, deepSearch: true },
+    );
+
+    expect(result.expansionParticipatingQueries).toBe(0);
+    expect(result.expansionSkippedQueries).toBe(1);
+    expect(client.chat).not.toHaveBeenCalled();
   });
 
   it('fails when the vector leg works for only a token minority of queries', async () => {

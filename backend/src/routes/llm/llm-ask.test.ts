@@ -23,9 +23,14 @@ vi.mock('../../domains/llm/services/llm-provider-resolver.js', () => ({
 // --- Mock: openai-compatible-client (streamChat — queue + breakers wrapped inside) ---
 const mockStreamChatClient = vi.fn();
 
+// #1112: `chat` is no longer decorative here — deep search's query
+// reformulation is the one non-streaming completion this route can issue, and
+// "deepSearch off issues no extra model call" is an assertion about it.
+const mockChatClient = vi.fn();
+
 vi.mock('../../domains/llm/services/openai-compatible-client.js', () => ({
   streamChat: (...args: unknown[]) => mockStreamChatClient(...args),
-  chat: vi.fn(),
+  chat: (...args: unknown[]) => mockChatClient(...args),
   generateEmbedding: vi.fn(),
   listModels: vi.fn(),
   checkHealth: vi.fn(),
@@ -53,9 +58,15 @@ const mockBuildRagContext = vi.fn().mockReturnValue('Relevant context from the k
 // stub no longer needs an importOriginal spread pulling rag-service's whole
 // module graph into a unit suite. A future route call to an un-stubbed
 // rag-service export fails loudly instead of running real retrieval code.
+// #1112 adds a third: multiQuerySearch (deep search's wrapper, its own
+// module) calls hybridSearch per leg and files ONE analytics row for the
+// merged set. The stub stays closed — this is the wrapper's real dependency
+// list, not a spread.
+const mockTrackSearchAnalytics = vi.fn();
 vi.mock('../../domains/llm/services/rag-service.js', () => ({
   hybridSearch: (...args: unknown[]) => mockHybridSearch(...args),
   buildRagContext: (...args: unknown[]) => mockBuildRagContext(...args),
+  trackSearchAnalytics: (...args: unknown[]) => mockTrackSearchAnalytics(...args),
 }));
 
 // --- Mock: the #1105 per-basis confidence thresholds (admin_settings-backed) ---
@@ -935,6 +946,102 @@ describe('POST /api/llm/ask', () => {
       undefined,
       { rerank: true, assembleContext: true, pinIdentifiers: true, onRetrievalMeta: expect.any(Function) },
     );
+  });
+
+  // ─── Deep search / multi-query expansion (#1112) ─────────────────────────
+
+  it('deepSearch off is today\'s path exactly: one retrieval, and NO extra model call', async () => {
+    mockHybridSearch.mockResolvedValue([]);
+    mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
+    mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
+    const { buildRagCacheKey } = await import('../../domains/llm/services/llm-cache.js');
+
+    await app.inject({
+      method: 'POST',
+      url: '/api/llm/ask',
+      payload: { question: 'how do I restart the ingest worker' },
+    });
+
+    expect(mockHybridSearch).toHaveBeenCalledTimes(1);
+    expect(mockHybridSearch).toHaveBeenCalledWith(
+      'test-user-123',
+      'how do I restart the ingest worker',
+      5,
+      undefined,
+      { rerank: true, assembleContext: true, pinIdentifiers: true, onRetrievalMeta: expect.any(Function) },
+    );
+    // The reformulation completion is the ONLY extra model call deep search
+    // adds, so its absence is the whole "byte-identical" claim.
+    expect(mockChatClient).not.toHaveBeenCalled();
+    // …and the cache key stays in the normal namespace.
+    expect(buildRagCacheKey).toHaveBeenCalledWith(
+      'm', 'how do I restart the ingest worker', [], expect.objectContaining({ deepSearch: undefined }),
+    );
+  });
+
+  it('deepSearch on retrieves three legs from ONE reformulation call, under its own cache key', async () => {
+    mockChatClient.mockResolvedValue('restarting the ingest worker\ningest worker restart procedure');
+    mockHybridSearch.mockResolvedValue([
+      { pageId: 7, confluenceId: 'c7', chunkText: 'x', pageTitle: 'P7', sectionTitle: 'S', spaceKey: 'DEV', score: 0.03, vectorScore: 0.5, keywordRank: null },
+    ]);
+    mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
+    const { buildRagCacheKey } = await import('../../domains/llm/services/llm-cache.js');
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/llm/ask',
+      payload: { question: 'how do I restart the ingest worker', deepSearch: true },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockChatClient).toHaveBeenCalledTimes(1);
+    expect(mockHybridSearch).toHaveBeenCalledTimes(3);
+    expect(mockHybridSearch.mock.calls.map((c) => c[1])).toEqual([
+      'how do I restart the ingest worker',
+      'restarting the ingest worker',
+      'ingest worker restart procedure',
+    ]);
+    // One user gesture, one analytics row — filed by the wrapper for the
+    // merged set, never three rows carrying a model's invented phrasings.
+    expect(mockTrackSearchAnalytics).toHaveBeenCalledTimes(1);
+    expect(mockTrackSearchAnalytics.mock.calls[0]![4]).toBe('hybrid_multi_query');
+    expect(buildRagCacheKey).toHaveBeenCalledWith(
+      'm', 'how do I restart the ingest worker', ['c7'], expect.objectContaining({ deepSearch: true }),
+    );
+  });
+
+  it('answers normally when reformulation fails — deep search degrades, the ask never does', async () => {
+    mockChatClient.mockRejectedValue(new Error('circuit breaker open'));
+    mockHybridSearch.mockResolvedValue([
+      { pageId: 7, confluenceId: 'c7', chunkText: 'x', pageTitle: 'P7', sectionTitle: 'S', spaceKey: 'DEV', score: 0.03, vectorScore: 0.5, keywordRank: null },
+    ]);
+    mockStreamChatClient.mockReturnValue(singleChunkGenerator('an answer anyway'));
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/llm/ask',
+      payload: { question: 'how do I restart the ingest worker', deepSearch: true },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const events = parseSseBody(response.body) as Array<Record<string, unknown>>;
+    expect(events.some((e) => e.content === 'an answer anyway')).toBe(true);
+    expect(mockHybridSearch).toHaveBeenCalledTimes(1);
+  });
+
+  it('deepSearch on an exact-identifier query never reformulates — #1107 pins it instead', async () => {
+    mockHybridSearch.mockResolvedValue([]);
+    mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
+    mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
+
+    await app.inject({
+      method: 'POST',
+      url: '/api/llm/ask',
+      payload: { question: 'INC-2203', deepSearch: true },
+    });
+
+    expect(mockChatClient).not.toHaveBeenCalled();
+    expect(mockHybridSearch).toHaveBeenCalledTimes(1);
   });
 
   it('a merged source reports NO section — the chip must not claim one section for multi-section context (#1270 m7)', async () => {

@@ -13,6 +13,11 @@
  * does not detect it; asserting the vector leg participated does.
  */
 import { hybridSearch, getEmbeddingCoverage } from '../services/rag-service.js';
+import {
+  multiQuerySearch,
+  type ExpansionOutcome,
+  type MultiQuerySearchOptions,
+} from '../services/multi-query-search.js';
 import { trigrams, jaccard } from '../services/mmr.js';
 
 /**
@@ -53,6 +58,14 @@ export interface EvalRunOptions {
   /** #1109: force the MMR narrow for this run (the DB default is off). */
   mmr?: { enabled: boolean; lambda?: number };
   /**
+   * #1112: run every query through multi-query expansion (the `deepSearch`
+   * request flag). Needs a `chat` use-case assignment in the eval DB — the
+   * reformulation call is real, like the embedder. Without one, expansion
+   * soft-fails per query and the run would measure plain retrieval under a
+   * deep label, which the participation guard below refuses to do quietly.
+   */
+  deepSearch?: boolean;
+  /**
    * Fraction of queries that must show at least one vector-leg hit.
    *
    * Deliberately not "> 0": on a fully embedded corpus a healthy vector leg
@@ -77,6 +90,18 @@ export interface EvalRunResult {
    * identifier-style queries — but the COUNT is recorded so a silently
    * dead pin path is visible in the report (the F10 lesson applied). */
   pinParticipatingQueries: number;
+  /**
+   * #1112: queries whose deep search actually retrieved paraphrase legs.
+   * Skips are legitimate and expected (identifier and error-text queries are
+   * excluded by design), so this is reported rather than floored — but zero
+   * across a whole `--deep-search` run is guarded below.
+   */
+  expansionParticipatingQueries: number;
+  /** #1112: queries where expansion stood down BY DESIGN (identifier,
+   * error-text, over-long) rather than failing. Reported so a run that
+   * expanded nothing can be read as "the fixture is all identifiers" or as
+   * "the provider is down" without re-running it. */
+  expansionSkippedQueries: number;
   /**
    * #1109's acceptance metric, and the reason it is computed HERE rather
    * than by post-hoc SQL: the corpus is re-seeded per run, so page ids are
@@ -123,6 +148,8 @@ export async function runEval(fixture: Fixture, opts: EvalRunOptions): Promise<E
   let rerankParticipatingQueries = 0;
   let assemblyParticipatingQueries = 0;
   let pinParticipatingQueries = 0;
+  let expansionParticipatingQueries = 0;
+  let expansionSkippedQueries = 0;
 
   for (const label of fixture.labels) {
     // assembleContext mirrors the shipped chat configuration (#1106 PR 2).
@@ -130,7 +157,13 @@ export async function runEval(fixture: Fixture, opts: EvalRunOptions): Promise<E
     // slice and touches no ranking field, and the runner scores pageIds
     // only — the one-time zero-discordant A/B on the rig is the recorded
     // evidence for that claim (PR body).
-    const results = await hybridSearch(opts.userId, label.query, opts.topK, undefined, {
+    // #1112: the deep-search axis swaps the wrapper in, exactly as the ask
+    // route does for a `deepSearch` request — same options, same widths.
+    const search = opts.deepSearch === true ? multiQuerySearch : hybridSearch;
+    // Declared as the wider type rather than passed inline: `onExpansion` is
+    // meaningless to `hybridSearch`, and a fresh object literal carrying it
+    // would not type-check against that half of the union.
+    const searchOpts: MultiQuerySearchOptions = {
       rerank: opts.rerank === true,
       assembleContext: opts.assembleContext !== false,
       // #1107 mirrors the shipped chat configuration; the fixture's
@@ -138,7 +171,12 @@ export async function runEval(fixture: Fixture, opts: EvalRunOptions): Promise<E
       // what make "natural-language queries unaffected" measurable.
       pinIdentifiers: opts.pinIdentifiers !== false,
       ...(opts.mmr ? { mmr: opts.mmr } : {}),
-    });
+      onExpansion: (outcome: ExpansionOutcome) => {
+        if (outcome.expanded) expansionParticipatingQueries++;
+        else if (outcome.reason !== 'unavailable') expansionSkippedQueries++;
+      },
+    };
+    const results = await search(opts.userId, label.query, opts.topK, undefined, searchOpts);
 
     if (results.some((r) => r.vectorScore !== null)) vectorParticipatingQueries++;
     if (results.some((r) => r.rerankScore != null)) rerankParticipatingQueries++;
@@ -202,12 +240,30 @@ export async function runEval(fixture: Fixture, opts: EvalRunOptions): Promise<E
       + 'check rag_context_chars_per_page and the page_embeddings sibling fetch before trusting this measurement.',
     );
   }
+  // #1112, same silent-lie class as the two guards above: expansion is
+  // soft-fail by design, so a `--deep-search` run against a DB with no `chat`
+  // assignment (or an unreachable one) returns perfectly ordinary numbers
+  // labelled "deep". Every query skipping BY DESIGN is a different fact and
+  // is allowed — that is what the skipped count separates.
+  if (
+    opts.deepSearch === true
+    && expansionParticipatingQueries === 0
+    && expansionSkippedQueries < fixture.labels.length
+  ) {
+    throw new VectorLegSilentError(
+      'A deep-search run was requested but query expansion participated in 0 queries '
+      + `(${expansionSkippedQueries}/${fixture.labels.length} skipped by design) — `
+      + 'check the chat use-case assignment and the provider endpoint before trusting this measurement.',
+    );
+  }
   return {
     runs,
     vectorParticipatingQueries,
     rerankParticipatingQueries,
     assemblyParticipatingQueries,
     pinParticipatingQueries,
+    expansionParticipatingQueries,
+    expansionSkippedQueries,
     redundantSlots,
     returnedSlots,
     meanPairwiseSimilarity: pairCount === 0 ? 0 : pairSimTotal / pairCount,

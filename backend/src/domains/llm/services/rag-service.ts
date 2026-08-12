@@ -25,6 +25,7 @@ import {
   getRagRankingPriorWeight,
   RAG_MMR_LAMBDA_DEFAULT,
   getRagRerankCandidates,
+  RAG_RERANK_CANDIDATES_MAX,
   RAG_FETCH_WIDTH_DEFAULT,
   RAG_FETCH_WIDTH_MAX,
 } from '../../../core/services/admin-settings-service.js';
@@ -683,10 +684,23 @@ export function fuseWithStableHead(
  * lives in migration 088's `rerank_score` column, which this writer is the
  * first to fill. A bypassed rerank records plain `hybrid` — the type says
  * what HAPPENED, never what was merely attempted.
+ *
+ * `hybrid_multi_query` (#1112): a deep search whose expansion actually
+ * produced at least one paraphrase leg — written by `multiQuerySearch`, not
+ * by this module, and it is the ONLY row that search recorded (the legs run
+ * with `recordAnalytics: false`, so the paraphrases a model invented never
+ * enter the table as if a user had typed them). Its `max_score` unit is its
+ * own again: the WEIGHTED SUM of per-leg RRF contributions, bounded by
+ * (1 + 0.6 + 0.6)/(k+1) ≈ 0.036 at k=60 — close enough to the single-query
+ * fusion ceiling to be mistaken for it, which is exactly why it needs its own
+ * value here. A deep search whose expansion was skipped or soft-failed ran
+ * one ordinary leg and records what that leg records: the type says what
+ * HAPPENED, never what was requested.
  */
 export type SearchAnalyticsType =
   | 'hybrid'
   | 'hybrid_rerank'
+  | 'hybrid_multi_query'
   | 'keyword_fallback'
   | 'semantic'
   | 'keyword'
@@ -937,6 +951,27 @@ export interface HybridSearchOptions {
   /** #1109: force the diversity narrow on/off for an A/B, bypassing
    * admin_settings so the stage is measurable within one tree. */
   mmr?: { enabled: boolean; lambda?: number };
+  /**
+   * #1112 — a FLOOR under the rerank candidate pool for this request, never
+   * a replacement for the operator's `rag_rerank_candidates`: the effective
+   * pool is `min(max(configured, floor), RAG_RERANK_CANDIDATES_MAX)`. Deep
+   * search asks for a wider funnel because its merge is fed by three legs,
+   * and the rerank stage DROPS everything past the pool (`reranked` is built
+   * from `pool` alone) — at the default 30 the extra candidates the wider
+   * legs surfaced would be truncated away before the merge ever saw them.
+   * Ignored unless `rerank` is also requested; a floor below the configured
+   * value is a no-op by construction.
+   */
+  rerankCandidatesFloor?: number;
+  /**
+   * Write a `search_analytics` row for this search (default TRUE — every
+   * pre-#1112 caller). Deep search's PARAPHRASE legs pass false: their query
+   * text was invented by a model, and recorded as ordinary rows they would
+   * show up in "top searches" and in the knowledge-gap predicate as questions
+   * a user never asked. The wrapper records ONE `hybrid_multi_query` row for
+   * the merged set instead.
+   */
+  recordAnalytics?: boolean;
 }
 
 export async function hybridSearch(
@@ -1250,7 +1285,17 @@ async function hybridSearchInner(
         return null;
       })
     : Promise.resolve(null);
-  const rerankCandidatesPromise = opts?.rerank ? getRagRerankCandidates() : Promise.resolve(0);
+  // #1112: a caller-supplied FLOOR only raises the pool, and stays inside the
+  // knob's own ceiling — a per-request option must not be able to ship more
+  // documents to the rerank provider (and, under EE ACL, more access checks)
+  // than the operator's clamp allows.
+  const rerankCandidatesPromise = opts?.rerank
+    ? getRagRerankCandidates().then((configured) =>
+        opts.rerankCandidatesFloor === undefined
+          ? configured
+          : Math.min(Math.max(configured, opts.rerankCandidatesFloor), RAG_RERANK_CANDIDATES_MAX),
+      )
+    : Promise.resolve(0);
   // With an active rerank stage the legs widen to the candidate pool — this
   // is the deliberate spend of #1103's over-fetch headroom, paired with the
   // stage that consumes it (plain-RRF wide fetch measured as a regression).
@@ -1752,10 +1797,16 @@ async function hybridSearchInner(
   // pins keep their fused score and stay in the sample.
   const scoreRows = topResults.filter((r) => r.pinned === undefined || r.vectorScore !== null || r.keywordRank !== null);
   const maxScore = scoreRows.length > 0 ? Math.max(...scoreRows.map((r) => r.score)) : null;
-  trackSearchAnalytics(userId, question, topResults.length, maxScore, searchTypeFinal, {
-    ...analyticsExtras,
-    rerankScore: rerankMax,
-  });
+  // #1112: a deep-search leg suppresses this row — see
+  // HybridSearchOptions.recordAnalytics. The wrapper records one row for the
+  // merged set, so one user gesture stays one row and no model-invented
+  // paraphrase is ever filed as a user query.
+  if (opts?.recordAnalytics !== false) {
+    trackSearchAnalytics(userId, question, topResults.length, maxScore, searchTypeFinal, {
+      ...analyticsExtras,
+      rerankScore: rerankMax,
+    });
+  }
 
   // Retrieval confidence on the trace (#1268 review: the docs promised
   // "logs/traces" and only the log existed). Computed here with the same

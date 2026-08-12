@@ -49,6 +49,12 @@ interface Report {
   pinIdentifiers: boolean;
   /** #1107: queries led by a verified identifier pin. */
   pinParticipatingQueries: number;
+  /** #1112: whether this run measured multi-query expansion (--deep-search). */
+  deepSearch: boolean;
+  /** #1112: queries whose expansion actually produced paraphrase legs. */
+  expansionParticipatingQueries: number;
+  /** #1112: queries where expansion stood down by design (identifier, error-text). */
+  expansionSkippedQueries: number;
   recallAtK: Record<string, number>;
   mrr: number;
   runs: QueryRun[];
@@ -162,7 +168,7 @@ async function main(): Promise<void> {
   }
 
   console.log(`running ${fixture.labels.length} queries…`);
-  const { runs, vectorParticipatingQueries, rerankParticipatingQueries, assemblyParticipatingQueries, pinParticipatingQueries, redundantSlots, returnedSlots, meanPairwiseSimilarity } = await runEval(fixture, {
+  const { runs, vectorParticipatingQueries, rerankParticipatingQueries, assemblyParticipatingQueries, pinParticipatingQueries, expansionParticipatingQueries, expansionSkippedQueries, redundantSlots, returnedSlots, meanPairwiseSimilarity } = await runEval(fixture, {
     userId: EVAL_USER,
     pageIdByFile: seeded.pageIdByFile,
     topK: Math.max(...TOP_K),
@@ -177,12 +183,18 @@ async function main(): Promise<void> {
     // runner scores pageIds only — and participation-guarded in runEval.
     assembleContext: !process.argv.includes('--no-assemble'),
     pinIdentifiers: !process.argv.includes('--no-pin'),
+    // #1112: --deep-search runs every query through multi-query expansion.
+    // The reformulation call is REAL, like the embedder — this eval DB needs
+    // a `chat` use-case assignment, and runEval refuses the run rather than
+    // reporting plain retrieval under a deep label if it never fires.
+    deepSearch: process.argv.includes('--deep-search'),
     ...(process.argv.includes('--mmr')
       ? { mmr: { enabled: true, lambda: Number(arg('mmr-lambda') ?? '0.5') } }
       : {}),
   });
 
   const rerankRequested = process.argv.includes('--rerank');
+  const deepRequested = process.argv.includes('--deep-search');
   const report: Report = {
     model,
     corpusManifestSha: fixture.corpusManifestSha,
@@ -194,6 +206,9 @@ async function main(): Promise<void> {
     assemblyParticipatingQueries,
     pinIdentifiers: !process.argv.includes('--no-pin'),
     pinParticipatingQueries,
+    deepSearch: deepRequested,
+    expansionParticipatingQueries,
+    expansionSkippedQueries,
     queries: runs.length,
     vectorParticipatingQueries,
     rerank: rerankRequested,
@@ -216,6 +231,12 @@ async function main(): Promise<void> {
   if (rerankRequested) {
     console.log(`rerank stage participated in ${rerankParticipatingQueries}/${runs.length} queries`);
   }
+  if (deepRequested) {
+    console.log(
+      `query expansion participated in ${expansionParticipatingQueries}/${runs.length} queries` +
+      ` (${expansionSkippedQueries} skipped by design)`,
+    );
+  }
 
   const baselinePath = arg('baseline');
   if (baselinePath) {
@@ -234,6 +255,16 @@ async function main(): Promise<void> {
       throw new Error(
         `Baseline rerank=${baseline.rerank ?? false} but this run rerank=${report.rerank} — `
         + 'measure both sides with the same --rerank setting.',
+      );
+    }
+    // #1112: deep search is the whole point of ITS comparison, so the two
+    // sides differing on it is the one case where a mismatch is intended —
+    // and exactly why it must be stated rather than inferred from a flag
+    // someone forgot. Reported, never thrown on.
+    if ((baseline.deepSearch ?? false) !== report.deepSearch) {
+      console.log(
+        `\nNOTE: baseline deepSearch=${baseline.deepSearch ?? false}, this run deepSearch=${report.deepSearch}` +
+        ' — this comparison measures the FEATURE, not the checkout.',
       );
     }
 

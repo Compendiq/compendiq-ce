@@ -24,12 +24,18 @@ sequenceDiagram
     participant PROV2 as rerank provider<br/>(resolveRerankUsecase — null = stage off)
     participant CONV as llm_conversations
 
-    FE->>BE: POST /api/llm/ask<br/>{ question, model, conversationId,<br/>  includeSubPages, externalUrls, searchWeb }
+    FE->>BE: POST /api/llm/ask<br/>{ question, model, conversationId,<br/>  includeSubPages, externalUrls, searchWeb, deepSearch }
     BE->>SAN: sanitize(question)
     SAN-->>BE: sanitized question (+ warnings)
     opt prompt-injection detected
         BE->>PG: INSERT audit_log (PROMPT_INJECTION_DETECTED)
         note right of BE: promptInjectionDetected / sanitized attestation<br/>flags set on the llm_audit_log row —<br/>request continues with the sanitized question
+    end
+    opt deepSearch (#35;1112 — multi-query expansion, per-request, DEFAULT OFF)
+        note right of BE: SKIPPED (never failed) for an exact-identifier query —<br/>#35;1107 pins those — for pasted error text, and for a paste<br/>over 1,000 chars#59; rag.expansion_skip_reason records which
+        BE->>PROV: chat(resolveUsecase('chat')) — ONE call, 5s budget<br/>"rewrite this query 2 ways, same meaning"
+        PROV-->>BE: 2 paraphrases (unusable reply = no expansion)
+        note right of BE: NOT a new ADR-021 use case#59; timeout / open breaker /<br/>unassigned provider / unparseable output all soft-fail to<br/>the ORIGINAL query alone — the ask never fails.<br/>Everything below then runs 3x (original + 2 paraphrases),<br/>each leg 20 wide with the rerank pool floored at 60,<br/>merged by SUMMED weighted RRF (original 1.0, each<br/>paraphrase 0.6) — see "Multi-query expansion" below
     end
     BE->>EMB: POST /v1/embeddings (question)
     EMB-->>BE: q_vector[N]
@@ -89,6 +95,7 @@ sequenceDiagram
     opt per-basis confidence threshold above 0 (#35;1105)
         note right of BE: computeRetrievalConfidence(results, healthCaveat) —<br/>max rerank relevance (full coverage), else max cosine (vector-led)#59;<br/>empty set gates on EITHER knob, measured bases on their own#59;<br/>stands down only for grounding that MATERIALISED<br/>(assembled tree / fetched docs / web results / substantive turn)#59;<br/>refusal: honest SSE turn + weak sources, no chat completion,<br/>cache never read or written#59; health-caveat empties exempt
     end
+    note right of BE: rag cache key folds in the deepSearch flag (#35;1112) —<br/>the doc-id list cannot see a RE-ORDERED set, so without it<br/>the two modes would serve each other's answers for the TTL
     note right of BE: response cache is consulted only PAST the gate<br/>(and only for history-free requests) — a low-confidence<br/>question cannot serve a stale cached answer
     BE->>CACHE: getCachedResponse(key)
     alt cache hit
@@ -204,6 +211,7 @@ own `rerank_score` column instead of ever overloading this one:
 |---|---|---|
 | `hybrid` | RRF fusion value | `hybridSearch` (rag-service) |
 | `hybrid_rerank` | RRF fusion value (`rerank_score` carries the rerank scale) | `hybridSearch` with a live #1104 rerank stage |
+| `hybrid_multi_query` | **summed weighted** multi-leg RRF value (≈ up to 0.036) — near the single-query ceiling and NOT comparable with it | `multiQuerySearch` (#1112), one row per gesture; the legs record none |
 | `keyword_fallback` | RRF fusion value (keyword-only leg) | `hybridSearch` (rag-service) |
 | `semantic` | cosine similarity | `/api/search` semantic mode |
 | `keyword` | raw `ts_rank` | `/api/search` keyword mode |
@@ -217,6 +225,88 @@ never what was attempted. Note the admin analytics
 routes (`knowledge-gaps`, `content-gaps`) still apply one `max_score < 0.3`
 threshold across all rows regardless of unit — a pre-existing defect this
 table documents but #1117 did not change.
+
+## Multi-query expansion — "deep search" (#1112)
+
+A page that says "graceful shutdown" answers "how do I stop the server
+without dropping requests", and neither leg bridges that reliably: the
+embedding blurs the intent and FTS shares no tokens. Deep search asks the
+`chat` model to rewrite the question two ways, retrieves all three phrasings,
+and fuses the three rankings. It is a **per-request flag, default off**
+(`deepSearch` on `AskRequestSchema`, the `searchWeb` / `thinking` precedent) —
+it costs one extra completion and two extra retrievals, so it is the caller's
+decision per ask, never a mode the server infers.
+
+**The stage lives in `multi-query-search.ts`, in front of retrieval — never
+inside `hybridSearch`.** `/api/search` paginates, and a paginated surface must
+not silently change what "page 2" means. `multiQuerySearch` copies
+`hybridSearch`'s parameter list so the ask route swaps one for the other, and
+so that "when expansion does not happen this IS `hybridSearch`" stays checkable
+at the call site.
+
+**The original query is always a leg**, which is what makes the feature
+unable to lose on a lexically perfect query: the worst case is paraphrases
+that contribute nothing while the original's evidence carries the merge.
+
+**The merge SUMS each page's weighted reciprocal rank across the legs** —
+original 1.0, each paraphrase 0.6. Concatenating and de-duplicating by
+`pageId` would discard the entire signal: every leg has already deduplicated
+per page, so "ranked mid-pack by all three phrasings" and "ranked first by one
+and unseen by the other two" are indistinguishable to a de-duplicating merge
+(and to a max-of-contributions merge), and agreement across phrasings is the
+only new evidence expansion produces. The weights encode one property
+deliberately: a SINGLE rewrite never outvotes the original at equal rank, two
+AGREEING rewrites do. Rank, not the incoming fusion `score`, because rerank,
+the ranking prior and MMR all reorder rows whose `score` no longer describes
+their position. Ties break toward the original leg, so two identical deep
+searches cannot return different heads. Each leg still goes through
+`fuseWithStableHead` untouched, so the head-window contract holds within a
+leg; the merged ORDER across legs is a new ranking by construction — that is
+the feature.
+
+**Skipped, never failed, where a paraphrase cannot help.** An exact-identifier
+query is what #1107 pins, and paraphrasing `INC-2203` only dilutes the row the
+pin exists to lead with; pasted error text is a literal FTS matches character
+for character. Detection (not the pin itself) is what is available before
+retrieval, and it is the conservative direction — detection is the pin's
+necessary condition. The error-text patterns are deliberately conservative
+structural markers: a miss costs a paraphrase leg beside an original leg that
+still carries the literal, while a false positive would silently disable the
+feature for ordinary questions. `multi-query-search.test.ts` runs the detector
+over the whole #1102 fixture and asserts zero hits on the question, how-to,
+keywords and vocabulary-gap styles.
+
+**Everything soft-fails to the original query alone** — a timeout (5s,
+covering queue wait, so a backlogged queue cannot strand a slot), an open
+breaker, no `chat` assignment, or a reply with no usable line. Reformulation
+deliberately reuses the `chat` use case rather than adding a sixth ADR-021
+assignment: it is a one-sentence rewrite, and a new knob would be one more
+thing to configure before the feature works at all.
+
+**Legs run 20 wide with the rerank pool floored at 60**
+(`rerankCandidatesFloor`, which only ever RAISES the operator's
+`rag_rerank_candidates` and stays inside its [10, 100] clamp). Both are
+constants, not knobs — #1118 owns the knobs. The floor is not decoration: the
+rerank stage rebuilds its result from the pool alone, so at the default 30 the
+extra candidates the wider legs surfaced would be dropped before the merge saw
+them.
+
+**One gesture, one analytics row.** The legs run with `recordAnalytics: false`
+and the wrapper files a single `hybrid_multi_query` row under the USER's
+query — recorded as ordinary rows, the paraphrases would appear in top-searches
+and in the knowledge-gap predicate as questions nobody asked.
+
+**The RAG cache key folds in the flag** (`deep:1`). The doc-id component
+cannot see a RE-ORDERED set, and sees nothing at all when expansion soft-fails
+and later recovers, so without the flag the two modes serve each other's
+answers for the whole TTL.
+
+The eval rig measures the axis with `--deep-search` (`run-retrieval-eval.ts`).
+The reformulation call is real there, like the embedder, and `runEval` refuses
+a deep run in which expansion never once fired rather than publish plain
+retrieval under a deep label — the silent-lie class the vector-participation
+and rerank guards exist for. Queries that skipped BY DESIGN are counted
+separately, so an all-identifier fixture is still a valid measurement.
 
 ## Quality / recency ranking prior (#1111)
 
@@ -877,6 +967,7 @@ All of these go through the same provider resolver and sanitization layer:
 
 - `backend/src/routes/llm/llm-ask.ts`
 - `backend/src/domains/llm/services/rag-service.ts`
+- `backend/src/domains/llm/services/multi-query-search.ts` (#1112 deep search — expansion, the three-leg merge, and the skip rules)
 - `backend/src/domains/llm/services/embedding-service.ts`
 - `backend/src/domains/llm/services/llm-provider-resolver.ts` (per-use-case provider + model resolver)
 - `backend/src/domains/llm/services/openai-compatible-client.ts` (unified client — `chat` / `streamChat` / `generateEmbedding` with queue + per-provider circuit breakers)
