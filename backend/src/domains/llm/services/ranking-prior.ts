@@ -1,6 +1,20 @@
 /**
  * #1111 — a small quality/recency prior over the fused ordering.
  *
+ * **This stage ships DISABLED (`RANKING_PRIOR_WEIGHT_DEFAULT = 0`).** The
+ * mechanism is here for a future placement decision and for deployments with
+ * no reranker; it is not a behaviour we claim improves retrieval today.
+ * Measurement on the local rig (275 pages, 164 queries) is why:
+ *
+ * - **With a rerank provider assigned it is provably ZERO** — byte-identical
+ *   results. The rerank pool (30) is wider than the fused candidate set
+ *   (10), so the cross-encoder rescores every candidate and the prior's
+ *   ordering is discarded wholesale. That is arithmetic, and it is what the
+ *   pre-rerank ruling below costs.
+ * - **Without rerank it moved two queries: one intended gain and one
+ *   REGRESSION**, where a scored page passed the correct unscored one purely
+ *   for carrying signals at all. See "what neutral does not promise" below.
+ *
  * The issue as filed was explicitly "too thin to be actionable"; these are
  * the decisions that made it implementable, all owner rulings:
  *
@@ -15,11 +29,22 @@
  *   one rather than a bad one. Treating NULL as low would systematically
  *   demote the freshest content in a space — the opposite of the intent.
  *   So the prior applies only where a signal exists.
+ *
+ *   **What neutral does NOT promise**, and the measured regression above is
+ *   this in the act: nothing is *subtracted* for lacking a score, but a
+ *   scored page in a near-tie still *gains*, so where scoring coverage is
+ *   partial the unscored page is demoted RELATIVELY. That is inherent to an
+ *   additive prior over a partly-scored corpus, not a bug in the blend, and
+ *   it is the strongest argument for shipping the weight at 0.
  * - **Pre-rerank.** The prior adjusts the fused order the cross-encoder
  *   then judges, so #1104 can overrule it on relevance grounds. Applying it
  *   after rerank would override the epic's biggest measured win.
  *
- * ## What "weak" actually buys, measured against RRF's own scale
+ * ## What "weak" actually buys ONCE ENABLED, measured against RRF's own scale
+ *
+ * Everything below is about `RANKING_PRIOR_WEIGHT_TUNED` (0.003), the value
+ * an operator sets to turn the stage on. At the shipped default of 0 none of
+ * it happens.
  *
  * The scores reaching this stage are RRF fusion values (#1117): ordering
  * only, ~0.0164 for a single-leg hit and ~0.0328 for both. Those two numbers
@@ -44,7 +69,12 @@
  * It is also why the stage runs PRE-rerank. The cross-encoder re-scores the
  * whole pool afterwards, so wherever rerank is live the prior only chooses
  * which candidates that pool contains — it never survives into the final
- * order on its own.
+ * order on its own. And at the shipped widths it does not even choose that:
+ * the pool (30) is wider than the candidate set (10), so it contains all of
+ * them however they were ordered. Moving the stage after rerank, or
+ * narrowing the pool below the fetch width, would both contradict the
+ * pre-rerank ruling and need a fresh decision — they are the open follow-up
+ * on #1111, not something to change here.
  */
 
 /** Quality is stored 0-100. */
@@ -59,14 +89,28 @@ const QUALITY_MAX = 100;
 export const RECENCY_HALF_LIFE_DAYS = 365;
 
 /**
- * Maximum total prior added to a fused score. Sized against RRF's own scale
- * rather than picked: the gap between "found by both legs" (~0.0328) and
- * "found by one" (~0.0164) is ~0.0164, and this is under a fifth of it, so
- * the prior can never carry a page across leg agreement. See the module
- * header for what it CAN do — reorder freely inside a tier, which is where
- * RRF's ordering is least evidenced.
+ * The SHIPPED weight: 0, i.e. the stage is off. Kept as the default for
+ * `applyRankingPrior` so a caller that forgets to pass one gets the identity
+ * ordering rather than a silently-live ranking stage. It matches
+ * `RAG_RANKING_PRIOR_WEIGHT_DEFAULT` in `admin-settings-service.ts`, which
+ * is what a deployment with no `rag_ranking_prior_weight` row resolves to;
+ * the two must not drift.
  */
-export const RANKING_PRIOR_WEIGHT_DEFAULT = 0.003;
+export const RANKING_PRIOR_WEIGHT_DEFAULT = 0;
+
+/**
+ * The tuned-but-unshipped weight — what an operator sets
+ * `rag_ranking_prior_weight` to when turning the stage on, and the value the
+ * measurements in the module header were taken at.
+ *
+ * Sized against RRF's own scale rather than picked: the gap between "found
+ * by both legs" (~0.0328) and "found by one" (~0.0164) is ~0.0164, and this
+ * is under a fifth of it, so the prior can never carry a page across leg
+ * agreement. See the module header for what it CAN do — reorder freely
+ * inside a tier (roughly fourteen adjacent positions), which is where RRF's
+ * ordering is least evidenced.
+ */
+export const RANKING_PRIOR_WEIGHT_TUNED = 0.003;
 
 export interface PriorSignals {
   /** 0-100, or null/undefined when the page was never analysed. */

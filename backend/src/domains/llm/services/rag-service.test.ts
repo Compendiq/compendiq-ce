@@ -2022,17 +2022,29 @@ describe('quality/recency ranking prior (#1111)', () => {
    * the WIRING, which is where a ranking stage actually goes wrong: whether
    * the signals are fetched at all, whether the weight knob reaches the
    * stage, and whether a failure demotes anything.
+   *
+   * **The stage ships DISABLED**, so an absent `rag_ranking_prior_weight` row
+   * is now the NO-OP case — `settingAbsent` in the helper below, with its own
+   * test. Every other test here is exercising the opt-in path, so the helper
+   * writes an explicit `ENABLED_WEIGHT` row for them.
    */
   const daysAgo = (d: number) => new Date(Date.now() - d * 86_400_000);
 
-  /** Signal rows keyed by page id, answered to the prior's batched SELECT. */
+  /** What an operator sets to turn the stage on — `RANKING_PRIOR_WEIGHT_TUNED`. */
+  const ENABLED_WEIGHT = '0.003';
+
+  /**
+   * Signal rows keyed by page id, answered to the prior's batched SELECT.
+   * `opts.settingAbsent` leaves `admin_settings` with no row, which is the
+   * shipped deployment and resolves to weight 0.
+   */
   function routePriorQueries(
     signals: Record<number, { quality_score: number | null; last_modified_at: Date | null }>,
-    opts: { weight?: string; throwOnSignals?: boolean } = {},
+    opts: { weight?: string; settingAbsent?: boolean; throwOnSignals?: boolean } = {},
   ) {
     mocks.mockQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
       if (typeof sql === 'string' && sql.includes('rag_ranking_prior_weight')) {
-        return { rows: opts.weight === undefined ? [] : [{ setting_value: opts.weight }] };
+        return { rows: opts.settingAbsent ? [] : [{ setting_value: opts.weight ?? ENABLED_WEIGHT }] };
       }
       if (typeof sql === 'string' && sql.includes('quality_score') && sql.includes('ANY')) {
         if (opts.throwOnSignals) throw new Error('signal lookup died');
@@ -2115,6 +2127,21 @@ describe('quality/recency ranking prior (#1111)', () => {
     expect(order.indexOf(2)).toBeLessThan(order.indexOf(4));
   });
 
+  it('SHIPS INERT — no admin_settings row means no reorder and no signal query', async () => {
+    // The default this PR ships. Signals that WOULD reorder the set (page 4
+    // is last on the vector leg but perfectly scored and freshly edited) are
+    // never even read: the stage short-circuits on weight 0, so a deployment
+    // that has not opted in pays nothing for it either.
+    routePriorQueries(
+      { 4: { quality_score: 100, last_modified_at: daysAgo(0) } },
+      { settingAbsent: true },
+    );
+    const out = await hybridSearch('user-1', 'how do we deploy', 4);
+    expect(out.map((r) => r.pageId)).toEqual([1, 2, 3, 4]);
+    const sqls = mocks.mockQuery.mock.calls.map((c) => String(c[0]));
+    expect(sqls.some((s) => s.includes('quality_score') && s.includes('ANY'))).toBe(false);
+  });
+
   it('weight 0 in admin_settings turns the stage off entirely', async () => {
     routePriorQueries(
       { 4: { quality_score: 100, last_modified_at: daysAgo(0) } },
@@ -2148,7 +2175,9 @@ describe('quality/recency ranking prior (#1111)', () => {
       if (typeof sql === 'string' && sql.includes('ts_rank')) {
         return { rows: [{ page_id: 4, confluence_id: 'p4', title: 'Runbook 4', space_key: 'DEV', body_text: 'deployment runbook 4', rank: 0.9 }] };
       }
-      if (typeof sql === 'string' && sql.includes('rag_ranking_prior_weight')) return { rows: [] };
+      if (typeof sql === 'string' && sql.includes('rag_ranking_prior_weight')) {
+        return { rows: [{ setting_value: ENABLED_WEIGHT }] };
+      }
       if (typeof sql === 'string' && sql.includes('quality_score') && sql.includes('ANY')) {
         const ids = (params?.[0] ?? []) as number[];
         return { rows: ids.filter((id) => id in signals).map((id) => ({ id, ...signals[id as keyof typeof signals] })) };

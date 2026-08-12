@@ -4,10 +4,19 @@ import {
   applyRankingPrior,
   RECENCY_HALF_LIFE_DAYS,
   RANKING_PRIOR_WEIGHT_DEFAULT,
+  RANKING_PRIOR_WEIGHT_TUNED,
 } from './ranking-prior.js';
 
 const NOW = Date.parse('2026-08-12T00:00:00Z');
 const daysAgo = (d: number) => new Date(NOW - d * 86_400_000);
+
+/**
+ * The stage SHIPS DISABLED, so every behavioural test below has to state the
+ * weight it is exercising. `RANKING_PRIOR_WEIGHT_TUNED` is what an operator
+ * sets `rag_ranking_prior_weight` to when turning it on, and it is the value
+ * the PR's measurements were taken at.
+ */
+const ON = { weight: RANKING_PRIOR_WEIGHT_TUNED, now: NOW };
 
 describe('computePrior (#1111)', () => {
   it('returns NULL when no signal exists — absence of a claim, not a bad score', () => {
@@ -52,7 +61,7 @@ describe('applyRankingPrior (#1111)', () => {
       [page(1, 0.0300, { qualityScore: 32, lastModifiedAt: daysAgo(1100) }),
        page(2, 0.0299, { qualityScore: 88, lastModifiedAt: daysAgo(30) })],
       (r) => r as never,
-      { now: NOW },
+      ON,
     );
     expect(out.map((r) => r.id)).toEqual([2, 1]);
   });
@@ -64,7 +73,7 @@ describe('applyRankingPrior (#1111)', () => {
       [page(1, 0.0328, { qualityScore: 10, lastModifiedAt: daysAgo(2000) }),
        page(2, 0.0164, { qualityScore: 100, lastModifiedAt: daysAgo(0) })],
       (r) => r as never,
-      { now: NOW },
+      ON,
     );
     expect(out.map((r) => r.id)).toEqual([1, 2]);
   });
@@ -77,7 +86,7 @@ describe('applyRankingPrior (#1111)', () => {
     const unscoredLeadsComfortably = applyRankingPrior(
       [page(2, 0.0340), page(1, 0.0300, { qualityScore: 100, lastModifiedAt: daysAgo(0) })],
       (r) => r as never,
-      { now: NOW },
+      ON,
     );
     expect(unscoredLeadsComfortably.map((r) => r.id)).toEqual([2, 1]);
 
@@ -87,14 +96,14 @@ describe('applyRankingPrior (#1111)', () => {
     const nearTie = applyRankingPrior(
       [page(1, 0.0305, { qualityScore: 100, lastModifiedAt: daysAgo(0) }), page(2, 0.0300)],
       (r) => r as never,
-      { now: NOW },
+      ON,
     );
     expect(nearTie.map((r) => r.id)).toEqual([1, 2]);
   });
 
   it('is stable on ties, so repeat runs do not churn the order', () => {
     const rows = [page(1, 0.02), page(2, 0.02), page(3, 0.02)];
-    expect(applyRankingPrior(rows, (r) => r as never, { now: NOW }).map((r) => r.id)).toEqual([1, 2, 3]);
+    expect(applyRankingPrior(rows, (r) => r as never, ON).map((r) => r.id)).toEqual([1, 2, 3]);
   });
 
   it('weight 0 is exactly the identity ordering — the knob really turns off', () => {
@@ -104,12 +113,24 @@ describe('applyRankingPrior (#1111)', () => {
 
   it('never drops or duplicates a result — demote, never exclude', () => {
     const rows = [page(1, 0.03, { qualityScore: 0, lastModifiedAt: daysAgo(5000) }), page(2, 0.02), page(3, 0.01, { qualityScore: 100 })];
-    const out = applyRankingPrior(rows, (r) => r as never, { now: NOW });
+    const out = applyRankingPrior(rows, (r) => r as never, ON);
     expect(out).toHaveLength(3);
     expect(new Set(out.map((r) => r.id))).toEqual(new Set([1, 2, 3]));
   });
 
-  it('uses the documented default weight', () => {
-    expect(RANKING_PRIOR_WEIGHT_DEFAULT).toBe(0.003);
+  it('SHIPS DISABLED — the default weight is 0 and the tuned value is opt-in', () => {
+    // The stage ships inert. With a rerank provider assigned its effect is
+    // provably zero (the rerank pool is wider than the candidate set, so the
+    // cross-encoder rescores everything and discards the prior); without one
+    // it showed partial-coverage bias, promoting a scored page over the
+    // correct unscored one. 0.003 stays as the value an operator sets.
+    expect(RANKING_PRIOR_WEIGHT_DEFAULT).toBe(0);
+    expect(RANKING_PRIOR_WEIGHT_TUNED).toBe(0.003);
+  });
+
+  it('is the identity ordering when no weight is passed, because the default is 0', () => {
+    const rows = [page(1, 0.01, { qualityScore: 1, lastModifiedAt: daysAgo(5000) }),
+                  page(2, 0.009, { qualityScore: 100, lastModifiedAt: daysAgo(0) })];
+    expect(applyRankingPrior(rows, (r) => r as never, { now: NOW }).map((r) => r.id)).toEqual([1, 2]);
   });
 });
