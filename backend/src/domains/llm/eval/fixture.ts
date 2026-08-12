@@ -26,7 +26,7 @@ export const FixtureLabelSchema = z.object({
   query: z.string().min(3),
   /** Corpus filenames, best first. */
   expectedFiles: z.array(z.string().min(1)).min(1),
-  style: z.enum(['question', 'keywords', 'error-text', 'how-to', 'identifier', 'identifier-negative', 'diversity', 'diversity-negative']),
+  style: z.enum(['question', 'keywords', 'error-text', 'how-to', 'identifier', 'identifier-negative', 'diversity', 'diversity-negative', 'ranking-prior', 'ranking-prior-negative']),
   rationale: z.string().default(''),
 });
 
@@ -49,12 +49,29 @@ export interface CorpusPage {
   title: string;
   markdown: string;
   source: string;
+  qualityScore?: number;
+  ageDays?: number;
 }
 
 interface ManifestEntry {
   file: string;
   title: string;
   source: string;
+  /**
+   * #1111 — optional ranking-signal fixtures. The vendored corpus carries
+   * neither: every page seeded with NULL quality_score and NULL
+   * last_modified_at, so a quality/recency prior was a measurable no-op and
+   * the fixture could not have told a working blend from a dead one.
+   *
+   * `qualityScore` is deliberately absent on some pages rather than zero:
+   * unscored is its own case, and the owner's ruling is that it must be
+   * NEUTRAL (an unscored page ranks as it does today). Unscored correlates
+   * with recently-synced, not with bad, so a naive blend would demote the
+   * freshest content in the space.
+   */
+  qualityScore?: number;
+  /** Days before the seed run; drives last_modified_at. */
+  ageDays?: number;
 }
 
 /**
@@ -76,6 +93,8 @@ function loadCorpusDir(dir: string): CorpusPage[] {
     title: entry.title,
     source: entry.source,
     markdown: readFileSync(join(dir, entry.file), 'utf8'),
+    ...(entry.qualityScore === undefined ? {} : { qualityScore: entry.qualityScore }),
+    ...(entry.ageDays === undefined ? {} : { ageDays: entry.ageDays }),
   }));
 }
 

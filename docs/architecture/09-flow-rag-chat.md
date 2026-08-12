@@ -50,6 +50,11 @@ sequenceDiagram
         BE->>RBAC: filterAccessiblePages(userId, pageIds)<br/>one set-based query (#35;1104)
         RBAC-->>BE: filter decision (per-page read ACE honoured)
     end
+    opt rag_ranking_prior_weight > 0 (#35;1111 — default 0.003)
+        BE->>PG: SELECT id, quality_score, last_modified_at<br/>WHERE id = ANY(candidate ids)
+        PG-->>BE: signal rows (Postgres is the source of truth,<br/>never the vector payload — that goes stale)
+        note right of BE: prior = mean of present terms, in [0,1]#59;<br/>quality/100 and 2^(-ageDays/365), future dates clamped#59;<br/>NO signal = NO adjustment (unscored is NEUTRAL, never<br/>penalised — it correlates with recently synced)#59;<br/>score += weight x prior, stable sort — demote, never exclude#59;<br/>rag.ranking_prior: reordered | no_change | off | bypassed#59; soft-fail
+    end
     opt rerank use case assigned (#35;1104)
         BE->>PROV2: POST /v1/rerank with query + candidate docs<br/>(dedicated rerank client — queue + breaker)
         PROV2-->>BE: relevance scores [0,1]
@@ -212,6 +217,57 @@ never what was attempted. Note the admin analytics
 routes (`knowledge-gaps`, `content-gaps`) still apply one `max_score < 0.3`
 threshold across all rows regardless of unit — a pre-existing defect this
 table documents but #1117 did not change.
+
+## Quality / recency ranking prior (#1111)
+
+A quality worker already computes `pages.quality_score`, and every page
+carries `last_modified_at`; neither reached ranking. `ranking-prior.ts`
+folds them into the fused ordering as a small additive prior, and four
+rulings define it.
+
+**Demote, never exclude.** A low score or a stale timestamp pushes a page
+down; it never removes one. Exclusion would be an ACL-adjacent correctness
+change — a page silently unreachable with no user-facing explanation — and a
+wrong LLM-computed score must not be able to do that.
+
+**Unscored is NEUTRAL.** A page with no signal gets *no adjustment*, not a
+zero. `quality_score` has unknown corpus coverage and an unscored page is
+overwhelmingly a recently synced one, so scoring it 0 would systematically
+demote the freshest content in a space. `computePrior` returns `null` for
+"no claim" and the caller adds nothing. Note what this does and does not
+promise: nothing is subtracted for lacking a score, but a scored page that
+gains the prior can still pass an unscored page it was near — that is the
+feature working, not a penalty. Where scoring coverage is partial, the
+population-level effect is still a relative tilt toward scored pages.
+
+**Pre-rerank.** The prior nudges the order the cross-encoder then judges, so
+#1104 can overrule it on relevance grounds. Applying it after rerank would
+override the epic's biggest measured win. The practical consequence is that
+wherever a rerank provider is assigned, the prior only decides which
+candidates enter the rerank pool (`rag_rerank_candidates`, default 30) —
+and since that pool is wider than the default fetch width, it usually
+decides nothing at all. The stage is felt on deployments with **no** rerank
+provider, which is the CE default.
+
+**Weight 0.003, sized against RRF.** The gap between "both legs found it"
+(~0.0328) and "one leg did" (~0.0164) is ~0.0164, so the maximum prior is
+under a fifth of it and cannot carry a page across leg agreement. Inside a
+tier, adjacent RRF ranks differ by only ~0.00026, so the prior reorders
+freely there — roughly fourteen positions at full strength. That asymmetry
+is the intent: RRF discards the legs' own confidence, so within a tier it
+asserts an ordering it has little evidence for, and that is exactly where a
+secondary signal should be allowed to decide.
+
+Signals are read from Postgres in one batched `id = ANY(...)` query after
+fusion rather than joined into the hot retrieval SQL — the issue's ruling
+that the tier source-of-truth stays in Postgres, since the vector payload
+goes stale. The stage soft-fails like its neighbours: any error serves the
+fused order and records `rag.ranking_prior = bypassed`.
+
+Config is `rag_ranking_prior_weight` in `admin_settings` (#1118), clamped to
+`[0, 0.05]`; `0` disables the stage and skips the signal query entirely.
+There is no UI — it matches `rag_fetch_width`, `rag_mmr_lambda` and
+`rag_rerank_candidates`, which are all DB-only knobs.
 
 ## Exact-identifier pin stage (#1107)
 

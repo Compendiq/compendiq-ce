@@ -188,10 +188,17 @@ export async function seedCorpus(
     // embedded the converted text. Half of hybrid search, measured wrong.
     const text = htmlToText(html);
     const inserted = await query<{ id: number }>(
-      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html, page_type, visibility, embedding_dirty, embedding_status)
-       VALUES (gen_random_uuid()::text, 'standalone', $1, $2, $3, '', $4, 'page', 'shared', TRUE, 'not_embedded')
+      // #1111: quality_score and last_modified_at come from the manifest so
+      // the ranking prior is measurable at all. A page with no qualityScore
+      // is seeded NULL on purpose — "unscored" is a distinct case the prior
+      // must treat as neutral, and it is the common one for freshly synced
+      // content.
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html, page_type, visibility, embedding_dirty, embedding_status, quality_score, quality_status, last_modified_at)
+       VALUES (gen_random_uuid()::text, 'standalone', $1, $2, $3, '', $4, 'page', 'shared', TRUE, 'not_embedded', $5,
+               CASE WHEN $5::int IS NULL THEN 'pending' ELSE 'analyzed' END,
+               CASE WHEN $6::int IS NULL THEN NULL ELSE now() - ($6::int || ' days')::interval END)
        RETURNING id`,
-      [EVAL_SPACE_KEY, page.title, text, html],
+      [EVAL_SPACE_KEY, page.title, text, html, page.qualityScore ?? null, page.ageDays ?? null],
     );
     const pageId = inserted.rows[0]!.id;
     pageIdByFile.set(page.file, pageId);

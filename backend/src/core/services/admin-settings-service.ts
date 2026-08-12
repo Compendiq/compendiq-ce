@@ -404,6 +404,44 @@ export function invalidateRagMmrCache(): void {
 }
 
 /**
+ * #1111's quality/recency prior weight, `rag_ranking_prior_weight`.
+ *
+ * Default 0.003, sized against RRF's own scale rather than picked: a
+ * both-legs hit scores ~0.0328 and a single-leg hit ~0.0164, so the maximum
+ * prior is under a fifth of that gap and cannot carry a page across leg
+ * agreement. Inside a tier it reorders freely — see `ranking-prior.ts` for
+ * why that is the intent rather than a flaw. 0 disables the stage.
+ * Clamped to [0, 0.05]: at 0.05 the prior exceeds the leg-agreement gap and
+ * would start outranking retrieval itself.
+ */
+const RAG_PRIOR_TTL_MS = 60_000;
+export const RAG_RANKING_PRIOR_WEIGHT_DEFAULT = 0.003;
+let ragPriorCache: { value: number; expiresAt: number } | null = null;
+
+export async function getRagRankingPriorWeight(): Promise<number> {
+  if (ragPriorCache && Date.now() < ragPriorCache.expiresAt) return ragPriorCache.value;
+  let resolved = RAG_RANKING_PRIOR_WEIGHT_DEFAULT;
+  try {
+    const r = await query<{ setting_value: string }>(
+      `SELECT setting_value FROM admin_settings WHERE setting_key = 'rag_ranking_prior_weight'`,
+    );
+    const raw = (r.rows[0]?.setting_value ?? '').trim();
+    if (raw !== '' && /^\d+(\.\d+)?$/.test(raw)) {
+      const n = Number(raw);
+      if (n >= 0 && n <= 0.05) resolved = n;
+    }
+  } catch (err) {
+    logger.warn({ err }, 'Failed to resolve rag_ranking_prior_weight — using the default');
+  }
+  ragPriorCache = { value: resolved, expiresAt: Date.now() + RAG_PRIOR_TTL_MS };
+  return resolved;
+}
+
+export function invalidateRagRankingPriorCache(): void {
+  ragPriorCache = null;
+}
+
+/**
  * Issue #257 — returns the configured re-embed-all job history retention
  * (how many completed/failed BullMQ job records are kept in Redis before
  * the oldest get swept). Default 150, clamped to [10, 10000].

@@ -22,6 +22,7 @@ import {
   getRagFetchWidth,
   getRagPinIdentifiersEnabled,
   getRagMmrConfig,
+  getRagRankingPriorWeight,
   RAG_MMR_LAMBDA_DEFAULT,
   getRagRerankCandidates,
   RAG_FETCH_WIDTH_DEFAULT,
@@ -702,6 +703,7 @@ import { computeRetrievalConfidence, type RetrievalHealthCaveat } from './retrie
 import { assembleSiblingWindow } from './sibling-assembly.js';
 import { detectIdentifiers, type DetectedIdentifier } from './identifier-shortcircuit.js';
 import { selectDiverse } from './mmr.js';
+import { applyRankingPrior } from './ranking-prior.js';
 
 /** Observability fields added by migration 088 (#1117 stage 2). */
 export interface SearchAnalyticsExtras {
@@ -1384,6 +1386,48 @@ async function hybridSearchInner(
     );
   } else {
     candidates = merged;
+  }
+
+  // ── Quality / recency prior (#1111) ────────────────────────────────────
+  // BEFORE rerank on purpose: this nudges the order the cross-encoder then
+  // judges, so #1104 can overrule it on relevance grounds. Applying it after
+  // rerank would override the epic's biggest measured win.
+  //
+  // Signals are fetched here in ONE batched query rather than joined into
+  // the hot retrieval SQL, which keeps Postgres the source of truth (the
+  // issue's note that a vector payload goes stale) and leaves both legs
+  // untouched. Demote-only, and an UNSCORED page is neutral — never
+  // penalised — because unscored correlates with recently synced rather
+  // than with bad.
+  if (candidates.length > 1) {
+    try {
+      const priorWeight = await getRagRankingPriorWeight();
+      if (priorWeight > 0) {
+        const signalRows = await query<{ id: number; quality_score: number | null; last_modified_at: Date | null }>(
+          `SELECT id, quality_score, last_modified_at FROM pages WHERE id = ANY($1::int[])`,
+          [candidates.map((c) => c.pageId)],
+        );
+        const byId = new Map(signalRows.rows.map((r) => [r.id, r]));
+        const before = candidates.map((c) => c.pageId);
+        candidates = applyRankingPrior(
+          candidates,
+          (r) => {
+            const row = byId.get(r.pageId);
+            return { qualityScore: row?.quality_score ?? null, lastModifiedAt: row?.last_modified_at ?? null };
+          },
+          { weight: priorWeight },
+        );
+        const moved = candidates.some((c, i) => c.pageId !== before[i]);
+        span?.setAttribute('rag.ranking_prior', moved ? 'reordered' : 'no_change');
+      } else {
+        span?.setAttribute('rag.ranking_prior', 'off');
+      }
+    } catch (err) {
+      // Soft-fail like every neighbouring stage: a ranking preference is
+      // never worth failing a retrieval over.
+      logger.warn({ err }, 'Ranking prior bypassed — serving the fused order');
+      span?.setAttribute('rag.ranking_prior', 'bypassed');
+    }
   }
 
   // ── Rerank stage (#1104) ───────────────────────────────────────────────

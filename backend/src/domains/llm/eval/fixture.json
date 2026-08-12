@@ -1,5 +1,5 @@
 {
-  "corpusManifestSha": "5c7ea798b50f025cda26ee2361b73b13e49f12d3a5e6583800d24d7a86ec6c4b",
+  "corpusManifestSha": "c9fdbace64400cc9974a157af4b5bf2984eed4c8bee2bcef459c47e964f4db87",
   "labeledBy": "claude-sonnet via #1102 labeling workflow — 12 independent agents over disjoint corpus slices, blind to the retrieval implementation",
   "labels": [
     {
@@ -1423,6 +1423,60 @@
       ],
       "style": "diversity-negative",
       "rationale": "Annual re-issues differ only in figures; retrieval must return the year asked for, and diversity must not swap in a different edition."
+    },
+    {
+      "id": "q-1111a00001",
+      "query": "annual security review access grant findings and remediation",
+      "expectedFiles": [
+        "synthetic__annual__security-review-2025.md"
+      ],
+      "style": "ranking-prior",
+      "rationale": "Four editions are near-identical and carry EQUAL quality, so recency is the only differentiator. Without a prior the winner is arbitrary; with one it should be the current edition."
+    },
+    {
+      "id": "q-1111a00002",
+      "query": "service deployment runbook tag the release and promote to the fleet",
+      "expectedFiles": [
+        "synthetic__runbook__payments.md"
+      ],
+      "style": "ranking-prior",
+      "rationale": "Six copies match near-identically. The payments copy is both the best scored (88) and the freshest of the scored ones, so a quality+recency prior should surface it over the stale low-scoring copies."
+    },
+    {
+      "id": "q-1111a00003",
+      "query": "which runbook covers promoting a canary to the full fleet",
+      "expectedFiles": [
+        "synthetic__runbook__payments.md"
+      ],
+      "style": "ranking-prior",
+      "rationale": "Second phrasing of the same tie-break, so the measurement is not one sentence measured once."
+    },
+    {
+      "id": "q-1111b00001",
+      "query": "catalog service deployment runbook on-call rota",
+      "expectedFiles": [
+        "synthetic__runbook__catalog.md"
+      ],
+      "style": "ranking-prior-negative",
+      "rationale": "The catalog runbook is UNSCORED, which is what a freshly synced page looks like. The owner's ruling is that unscored must be neutral, so this page must stay reachable — a prior that treats NULL as bad fails here."
+    },
+    {
+      "id": "q-1111b00002",
+      "query": "notifications team deployment runbook notify-gateway",
+      "expectedFiles": [
+        "synthetic__runbook__notify.md"
+      ],
+      "style": "ranking-prior-negative",
+      "rationale": "The notify copy is the WORST scored (32) and stalest (1100 days). Demotion must not become exclusion: when the user names it, it must still be findable."
+    },
+    {
+      "id": "q-1111b00003",
+      "query": "2022 annual security review secret rotation lag",
+      "expectedFiles": [
+        "synthetic__annual__security-review-2022.md"
+      ],
+      "style": "ranking-prior-negative",
+      "rationale": "The oldest edition, asked for by name. Recency decay must not outrank an explicit year."
     }
   ]
 }
