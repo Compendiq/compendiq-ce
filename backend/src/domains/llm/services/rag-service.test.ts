@@ -122,7 +122,7 @@ vi.mock('../../../core/services/fts-language.js', () => ({
 
 import { buildRagContext, hybridSearch, RAG_EF_SEARCH, reciprocalRankFusion, fuseWithStableHead, rrfWorstCase, vectorSearch, keywordSearch, recordSearchAnalytics, resolveStageLimit, computeRetrievalConfidence, RAG_FETCH_WIDTH_DEFAULT, truncateAtDistinctPages, PAGE_FANOUT, VECTOR_RAW_LIMIT_CAP, vectorRawLimit, IDENTIFIER_LOOKUP_CANDIDATES } from './rag-service.js';
 import type { SearchResult } from './rag-service.js';
-import { invalidateRagFetchWidthCache, invalidateRagRerankCandidatesCache, invalidateRagContextCharsCache, invalidateRagPinIdentifiersCache, RAG_CONTEXT_CHARS_DEFAULT } from '../../../core/services/admin-settings-service.js';
+import { invalidateRagFetchWidthCache, invalidateRagRerankCandidatesCache, invalidateRagContextCharsCache, invalidateRagPinIdentifiersCache, invalidateRagMmrCache, RAG_CONTEXT_CHARS_DEFAULT } from '../../../core/services/admin-settings-service.js';
 import { CircuitBreakerOpenError } from '../../../core/services/circuit-breaker.js';
 
 describe('RAG Service', () => {
@@ -1931,6 +1931,83 @@ describe('sibling-chunk context assembly stage (#1106 PR 2)', () => {
     const out = await hybridSearch('user-1', 'q', 5, undefined, { rerank: true, assembleContext: true });
     expect(out[0]!.rerankScore).toBe(0.9);
     expect(out[0]!.contextText).toBe('best chunk of page 1');
+  });
+});
+
+describe('MMR diversity narrow (#1109)', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    invalidateRagMmrCache();
+    invalidateRagFetchWidthCache();
+    invalidateRagRerankCandidatesCache();
+    invalidateRagContextCharsCache();
+    mocks.mockPool.connect.mockResolvedValue(mocks.mockClient);
+    mocks.mockClient.release.mockResolvedValue(undefined);
+    mocks.mockToSql.mockReturnValue('[0.1,0.2]');
+    mocks.mockResolveUsecase.mockResolvedValue({
+      config: { providerId: 'p1', id: 'p1', name: 'X', baseUrl: 'http://x/v1', apiKey: null, authType: 'none', verifySsl: true, defaultModel: 'bge-m3' },
+      model: 'bge-m3',
+    });
+    mocks.mockGenerateEmbedding.mockResolvedValue([[0.1, 0.2]]);
+    mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
+    mocks.mockResolveRerank.mockResolvedValue(null);
+    mocks.mockRerank.mockResolvedValue([]);
+    // Four near-identical runbooks then one distinct page.
+    const RUNBOOK = (t: string) => `${t} deployment runbook. Check the freeze calendar. Tag the release. Watch the canary ten minutes. Promote the fleet.`;
+    mocks.mockClientQuery.mockImplementation(async (sql: string) => {
+      if (typeof sql === 'string' && sql.includes('page_embeddings')) {
+        const rows = [1, 2, 3, 4].map((n) => ({
+          page_id: n, confluence_id: `p${n}`, chunk_text: RUNBOOK(`Team${n}`), chunk_index: 0,
+          metadata: { page_title: `Team${n} Runbook`, section_title: 's', space_key: 'DEV' }, distance: 0.1 * n,
+        }));
+        rows.push({
+          page_id: 9, confluence_id: 'p9',
+          chunk_text: 'Halt the promotion, select the previous known-good image digest, run the rollback action.',
+          chunk_index: 0,
+          metadata: { page_title: 'Rollback Procedure', section_title: 's', space_key: 'DEV' }, distance: 0.9,
+        });
+        return { rows };
+      }
+      return undefined;
+    });
+    mocks.mockQuery.mockImplementation(async (sql: string) => {
+      if (typeof sql === 'string' && sql.includes('COUNT(*)')) return { rows: [{ embedded: 5, total: 5 }] };
+      return { rows: [] };
+    });
+  });
+  afterEach(() => { invalidateRagMmrCache(); });
+
+  it('is OFF by default — a context optimisation must be asked for', async () => {
+    const out = await hybridSearch('user-1', 'how do we deploy', 3);
+    // Pure rank order: the three near-identical runbooks.
+    expect(out.map((r) => r.pageId)).toEqual([1, 2, 3]);
+  });
+
+  it('when enabled, swaps a redundant copy for the distinct page and keeps the head', async () => {
+    mocks.mockQuery.mockImplementation(async (sql: string) => {
+      if (typeof sql === 'string' && sql.includes('rag_mmr')) {
+        return { rows: [{ setting_key: 'rag_mmr_enabled', setting_value: '1' }, { setting_key: 'rag_mmr_lambda', setting_value: '0.3' }] };
+      }
+      if (typeof sql === 'string' && sql.includes('COUNT(*)')) return { rows: [{ embedded: 5, total: 5 }] };
+      return { rows: [] };
+    });
+    const out = await hybridSearch('user-1', 'how do we deploy', 3);
+    expect(out[0]!.pageId).toBe(1);           // head never moves
+    expect(out.map((r) => r.pageId)).toContain(9); // distinct page recovered
+    expect(out).toHaveLength(3);
+  });
+
+  it('a malformed lambda leaves the stage off rather than zeroing relevance', async () => {
+    mocks.mockQuery.mockImplementation(async (sql: string) => {
+      if (typeof sql === 'string' && sql.includes('rag_mmr')) {
+        return { rows: [{ setting_key: 'rag_mmr_enabled', setting_value: '1' }, { setting_key: 'rag_mmr_lambda', setting_value: 'aggressive' }] };
+      }
+      if (typeof sql === 'string' && sql.includes('COUNT(*)')) return { rows: [{ embedded: 5, total: 5 }] };
+      return { rows: [] };
+    });
+    // Falls back to the 0.5 default, which still keeps the head.
+    const out = await hybridSearch('user-1', 'how do we deploy', 3);
+    expect(out[0]!.pageId).toBe(1);
   });
 });
 

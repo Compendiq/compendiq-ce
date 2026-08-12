@@ -20,6 +20,8 @@ import {
   getRagContextCharsPerPage,
   getRagFetchWidth,
   getRagPinIdentifiersEnabled,
+  getRagMmrConfig,
+  RAG_MMR_LAMBDA_DEFAULT,
   getRagRerankCandidates,
   RAG_FETCH_WIDTH_DEFAULT,
   RAG_FETCH_WIDTH_MAX,
@@ -677,6 +679,7 @@ export type DegradedReason = 'no_embeddings' | 'partial_embeddings' | 'embedding
 import { computeRetrievalConfidence, type RetrievalHealthCaveat } from './retrieval-confidence.js';
 import { assembleSiblingWindow } from './sibling-assembly.js';
 import { detectIdentifiers, type DetectedIdentifier } from './identifier-shortcircuit.js';
+import { selectDiverse } from './mmr.js';
 
 /** Observability fields added by migration 088 (#1117 stage 2). */
 export interface SearchAnalyticsExtras {
@@ -907,6 +910,9 @@ export interface HybridSearchOptions {
    * any lookup error skips the pin, never the search.
    */
   pinIdentifiers?: boolean;
+  /** #1109: force the diversity narrow on/off for an A/B, bypassing
+   * admin_settings so the stage is measurable within one tree. */
+  mmr?: { enabled: boolean; lambda?: number };
 }
 
 export async function hybridSearch(
@@ -1437,6 +1443,56 @@ async function hybridSearchInner(
     // Math.max guards a non-positive topK (unreachable from HTTP — Zod
     // floors limit at 1 — but slice(0, -1) would return all-but-last).
     topResults = candidates.slice(0, Math.max(0, topK));
+  }
+
+  // ── MMR diversity narrow (#1109) ───────────────────────────────────────
+  // AFTER the ranking stages and BEFORE assembly, so a page this drops never
+  // costs a sibling-window fetch. It re-orders results that are already
+  // relevant; it never adds one, and it never moves the head.
+  //
+  // Default OFF, and honestly so: this is a CONTEXT-BUDGET optimisation, not
+  // a recall one. Measured on a corpus authored to crowd results with
+  // near-duplicates, retrieval still ranks the expected page first every
+  // time, so MMR cannot convert a miss into a hit. What it removes is the
+  // model being handed the same runbook five times — 53% of the returned
+  // slots on those queries were near-duplicates of a higher-ranked result.
+  //
+  // The narrow runs over the PRE-SLICE pool so it has something to choose
+  // from: narrowing an already-sliced topK could only reorder it.
+  if (topResults.length > 0) {
+    try {
+      const mmr = opts?.mmr
+        ? { enabled: opts.mmr.enabled, lambda: opts.mmr.lambda ?? RAG_MMR_LAMBDA_DEFAULT }
+        : await getRagMmrConfig();
+      if (mmr.enabled && mmr.lambda < 1) {
+        // Oversample to 2xK and narrow to K — the width the issue specifies,
+        // and it is load-bearing rather than arbitrary. An earlier version
+        // narrowed over the WHOLE reranked pool (up to rag_rerank_candidates,
+        // default 30). Measured live, that lost 3 queries at lambda 0.5:
+        // a 30-wide pool hands MMR far-away candidates whose only virtue is
+        // being different, and promoting one of those can push the correct
+        // answer out of topK. At 2xK every candidate is still a plausible
+        // answer, so diversity chooses among near-peers instead of reaching
+        // for strangers. The simulation that tuned lambda used a 10-wide pool
+        // and therefore measured the SPECIFIED design while the code did
+        // something else — the gap between them is what exposed this.
+        const pool = (enrichedPool.length > topResults.length ? enrichedPool : topResults)
+          .slice(0, Math.max(topK * 2, topResults.length));
+        const narrowed = selectDiverse(pool, { lambda: mmr.lambda, k: Math.min(topK, topResults.length) });
+        if (narrowed.length > 0) {
+          topResults = narrowed;
+          span?.setAttribute('rag.mmr', 'applied');
+          span?.setAttribute('rag.mmr_lambda', mmr.lambda);
+        }
+      } else {
+        span?.setAttribute('rag.mmr', mmr.enabled ? 'lambda_off' : 'off');
+      }
+    } catch (err) {
+      // Soft-fail like every neighbouring stage: a diversity preference is
+      // never worth failing a retrieval over.
+      logger.warn({ err }, 'MMR narrow bypassed — serving the ranked order');
+      span?.setAttribute('rag.mmr', 'bypassed');
+    }
   }
 
   // ── Sibling-chunk context assembly (#1106 PR 2) ────────────────────────

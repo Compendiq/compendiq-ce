@@ -14,6 +14,7 @@
  *    resolving late is what lets the fixture survive it.
  */
 import { readFileSync, readdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { z } from 'zod';
 
@@ -25,7 +26,7 @@ export const FixtureLabelSchema = z.object({
   query: z.string().min(3),
   /** Corpus filenames, best first. */
   expectedFiles: z.array(z.string().min(1)).min(1),
-  style: z.enum(['question', 'keywords', 'error-text', 'how-to', 'identifier', 'identifier-negative']),
+  style: z.enum(['question', 'keywords', 'error-text', 'how-to', 'identifier', 'identifier-negative', 'diversity', 'diversity-negative']),
   rationale: z.string().default(''),
 });
 
@@ -56,7 +57,19 @@ interface ManifestEntry {
   source: string;
 }
 
-export function loadCorpus(dir: string = CORPUS_DIR): CorpusPage[] {
+/**
+ * The hand-authored duplicative corpus (#1109). It is a SEPARATE directory
+ * with its own manifest because `scripts/vendor-eval-corpus.ts` rebuilds
+ * `corpus/MANIFEST.json` from scratch on every `--update` — anything added
+ * there by hand would be deleted without a word. See its README for what the
+ * pages are for and, more importantly, what they do not prove.
+ */
+export const SYNTHETIC_CORPUS_DIR = join(import.meta.dirname, 'corpus-synthetic');
+
+/** Both corpus directories, in the order pages are seeded. */
+export const CORPUS_DIRS = [CORPUS_DIR, SYNTHETIC_CORPUS_DIR] as const;
+
+function loadCorpusDir(dir: string): CorpusPage[] {
   const manifest = JSON.parse(readFileSync(join(dir, 'MANIFEST.json'), 'utf8')) as { pages: ManifestEntry[] };
   return manifest.pages.map((entry) => ({
     file: entry.file,
@@ -66,13 +79,39 @@ export function loadCorpus(dir: string = CORPUS_DIR): CorpusPage[] {
   }));
 }
 
+export function loadCorpus(dirs: readonly string[] = CORPUS_DIRS): CorpusPage[] {
+  return dirs.flatMap(loadCorpusDir);
+}
+
+/**
+ * The hash the fixture is bound to, computed HERE and nowhere else.
+ *
+ * It covers EVERY manifest, not just the vendored one. When the synthetic
+ * corpus was added, a sha over `corpus/MANIFEST.json` alone would have stayed
+ * unchanged while the corpus underneath the labels doubled — so a stale
+ * baseline would have compared two different corpora and reported the
+ * difference as a retrieval regression. That is the precise failure this hash
+ * exists to make loud, and it would have been silent.
+ *
+ * One implementation, used by the fixture test and by any tooling that needs
+ * it: two hash computations that must agree is its own defect class.
+ */
+export function computeCorpusManifestSha(dirs: readonly string[] = CORPUS_DIRS): string {
+  const hash = createHash('sha256');
+  for (const dir of dirs) hash.update(readFileSync(join(dir, 'MANIFEST.json')));
+  return hash.digest('hex');
+}
+
 /**
  * Every markdown file present on disk, from the directory listing rather than
  * the manifest — so a page added without regenerating the manifest is caught
  * rather than silently excluded from the corpus the labels were written for.
  */
-export function corpusFilesOnDisk(dir: string = CORPUS_DIR): Set<string> {
-  return new Set(readdirSync(dir).filter((f) => f.endsWith('.md') && f !== 'LICENSE-ATTRIBUTION.md'));
+export function corpusFilesOnDisk(dirs: readonly string[] = CORPUS_DIRS): Set<string> {
+  const NON_CORPUS = new Set(['LICENSE-ATTRIBUTION.md', 'README.md']);
+  return new Set(
+    dirs.flatMap((dir) => readdirSync(dir).filter((f) => f.endsWith('.md') && !NON_CORPUS.has(f))),
+  );
 }
 
 export class FixtureValidationError extends Error {}

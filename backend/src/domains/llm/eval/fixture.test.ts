@@ -83,8 +83,7 @@ describe('the shipped fixture (#1102)', () => {
   it('validates against the corpus, clears the power floor, and matches the manifest it was labelled from', async () => {
     const { readFileSync } = await import('node:fs');
     const { join } = await import('node:path');
-    const { createHash } = await import('node:crypto');
-    const { CORPUS_DIR } = await import('./fixture.js');
+    const { computeCorpusManifestSha } = await import('./fixture.js');
 
     const raw = JSON.parse(readFileSync(join(import.meta.dirname, 'fixture.json'), 'utf8'));
     const parsed = loadFixture(raw, loadCorpus());
@@ -93,10 +92,11 @@ describe('the shipped fixture (#1102)', () => {
     // Re-vendoring the corpus without re-labelling would leave the fixture
     // pointing at text that no longer says what the labeller read. The hash
     // is what makes that loud instead of silent.
-    const manifestSha = createHash('sha256')
-      .update(readFileSync(join(CORPUS_DIR, 'MANIFEST.json')))
-      .digest('hex');
-    expect(parsed.corpusManifestSha).toBe(manifestSha);
+    // computeCorpusManifestSha is the ONE implementation, and it covers every
+    // corpus directory. Recomputing it here with a second hand-rolled hash is
+    // exactly how the vendored-only version survived the synthetic corpus
+    // being added: the sha would not have moved while the corpus doubled.
+    expect(parsed.corpusManifestSha).toBe(computeCorpusManifestSha());
   });
 
   it('spreads across query styles, so the score is not one phrasing measured 144 times', async () => {
@@ -112,9 +112,15 @@ describe('the shipped fixture (#1102)', () => {
     // one of them measures half the system. The #1107 identifier styles are
     // deliberately SMALL probes (3 positives, 3 negatives), so they get a
     // presence floor of their own rather than the core styles' 10.
-    expect([...styles.keys()].sort()).toEqual(['error-text', 'how-to', 'identifier', 'identifier-negative', 'keywords', 'question']);
+    expect([...styles.keys()].sort()).toEqual([
+      'diversity', 'diversity-negative', 'error-text', 'how-to',
+      'identifier', 'identifier-negative', 'keywords', 'question',
+    ]);
     for (const [style, count] of styles.entries()) {
-      expect(count).toBeGreaterThanOrEqual(style.startsWith('identifier') ? 3 : 10);
+      // Small deliberate probes (#1107 identifier, #1109 diversity) get a
+      // floor of 3; the core styles carry the statistical weight and keep 10.
+      const isProbe = style.startsWith('identifier') || style.startsWith('diversity');
+      expect(count).toBeGreaterThanOrEqual(isProbe ? 3 : 10);
       expect(count / parsed.labels.length).toBeLessThan(0.6);
     }
   });
