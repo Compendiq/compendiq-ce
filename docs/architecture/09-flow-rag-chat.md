@@ -648,14 +648,25 @@ states the condition where an operator will meet it.
 - **Keyword search** uses the PostgreSQL text-search configuration from
   `FTS_LANGUAGE` (default `simple`; set `german`, `english`, etc. for
   language-aware stemming), parsed with **`websearch_to_tsquery`** (#1110).
-  It keeps `plainto_tsquery`'s never-throws guarantee on arbitrary input —
-  operator soup degrades to plain terms, so nothing upstream has to sanitise
-  or build tsquery syntax — while honouring the syntax a search box implies:
-  `"quoted phrases"` become phrase matches and `-term` becomes an exclusion.
-  That second one fixed a wrong answer rather than adding a feature:
-  `plainto_tsquery` parses a leading `-` as an ordinary term, so
-  `delay accepting -logging` compiled to `'delay' & 'accepting' & 'logging'`
-  and **required** the word the user asked to exclude.
+  fed through `sanitizeLexicalQuery` (`core/utils/lexical-query.ts`). Both
+  halves are load-bearing, because the parser **alone is not safe here**:
+  each `-` nests another NOT, so roughly 32 of them raise
+  `XX000 tsquery stack too small` — an ERROR, not an empty result, so an
+  ASCII rule pasted into a question would 500 the request. It also reads a
+  leading `-` as an exclusion, which inverts the shell commands this corpus
+  is full of: `docker run -it ubuntu bash` becomes `… & !'it'`, and under the
+  default `simple` configuration `it` is not a stop word, so the query demands
+  pages *without* the word "it". The sanitiser strips hyphen runs **only where
+  they start a token**, so hyphenated compounds and identifiers
+  (`fastify-plugin`, `INC-2203`, `CVE-2024-1234`) are untouched and match
+  exactly as before.
+
+  Net of that, the swap buys one thing: `"quoted phrases"` become real phrase
+  matches instead of loose ANDs. **`-term` is not an exclusion** — it is the
+  term, precisely as `plainto_tsquery` treated it, so nothing regresses.
+  Whether this product wants exclusion syntax at all, given how much of the
+  corpus is shell commands, is an open question recorded on #1110.
+
   **Accepted semantic change:** the same parser reads a bare `or` as the OR
   operator, so a natural-language question splits into a disjunction rather
   than the all-AND conjunction `plainto_tsquery` produced — looser, and this

@@ -1411,13 +1411,31 @@ describe.skipIf(!dbAvailable)('rag-service integration — #1110 websearch_to_ts
   });
   afterAll(async () => { await truncateAllTables(); });
 
-  it('honours a MINUS exclusion instead of requiring the excluded term', async () => {
-    // With plainto_tsquery this returns the logging page FIRST, because
-    // `-logging` parses as `& 'logging'` — the user's exclusion is read as a
-    // requirement. That is a wrong answer, not a missing feature.
-    const hits = await keywordSearch(USER, 'delay accepting -logging');
+  it('a CLI flag is NOT an exclusion — the inversion websearch would otherwise introduce', async () => {
+    // Measured: websearch_to_tsquery('simple','docker run -it ubuntu bash')
+    // yields `& !'it'`, and under the default `simple` config `it` is not a
+    // stop word — so the query demands pages WITHOUT the word "it", i.e.
+    // almost nothing. This corpus is engineering documentation, so shell
+    // commands in questions are the ordinary case, not an edge case.
+    // `-requests` is chosen because the target page CONTAINS "requests":
+    // under raw websearch semantics the flag would exclude the very page the
+    // user is looking for, so inclusion vs exclusion is decisive here rather
+    // than incidental. Stripping leaves it a required term — exactly what
+    // plainto_tsquery already did, so nothing regresses relative to today.
+    const hits = await keywordSearch(USER, 'graceful shutdown -requests');
     expect(hits.length).toBeGreaterThan(0);
-    expect(hits.every((h) => h.pageTitle !== 'Logging configuration')).toBe(true);
+    expect(hits.some((h) => h.pageTitle === 'Graceful shutdown guide')).toBe(true);
+  });
+
+  it('a long hyphen RUN does not error — websearch alone raises XX000 here', async () => {
+    // Each `-` nests another NOT, so ~32 of them exhaust the tsquery parser
+    // stack and Postgres raises `tsquery stack too small`. That is an ERROR,
+    // not an empty result: unguarded it 500s the whole RAG request. An ASCII
+    // rule pasted into a question is ordinary input.
+    const rule = '-'.repeat(60);
+    await expect(keywordSearch(USER, `why does sync fail\n${rule}\nhere is the log`)).resolves.toBeInstanceOf(Array);
+    await expect(keywordSearch(USER, rule)).resolves.toBeInstanceOf(Array);
+    await expect(keywordSearch(USER, `a ${'-'.repeat(35)}`)).resolves.toBeInstanceOf(Array);
   });
 
   it('honours a QUOTED phrase as a phrase, not a bag of words', async () => {

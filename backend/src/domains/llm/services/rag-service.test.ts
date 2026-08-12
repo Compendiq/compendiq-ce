@@ -1631,7 +1631,8 @@ describe('RAG Service', () => {
       const [sql, params] = mocks.mockQuery.mock.calls[0] as [string, unknown[]];
       // websearch_to_tsquery, not plainto: the leading `-` in a query like
       // "delay accepting -logging" parses as an exclusion rather than as a
-      // required term. Both never throw on arbitrary input.
+      // required term. The parser is fed a sanitised query — on its own it
+      // raises XX000 on a long hyphen run (see lexical-query.ts).
       expect(sql).toContain('websearch_to_tsquery');
       expect(sql).not.toContain('plainto_tsquery');
       expect(sql).toContain('pages cp');

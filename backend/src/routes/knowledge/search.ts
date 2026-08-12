@@ -7,6 +7,7 @@ import { query } from '../../core/db/postgres.js';
 // ADR-022.
 import { getUserAccessibleSpacesMemoized as getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 import { getFtsLanguage } from '../../core/services/fts-language.js';
+import { sanitizeLexicalQuery } from '../../core/utils/lexical-query.js';
 import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
 import {
   vectorSearch,
@@ -330,7 +331,11 @@ export async function searchRoutes(fastify: FastifyInstance) {
     const offset = (page - 1) * limit;
     const conditions: string[] = [];
     // $1 = search query, $2 = accessible space keys, $3 = userId for standalone access
-    const values: unknown[] = [q, searchSpaces, userId];
+    // $1 feeds websearch_to_tsquery (match, ts_rank and ts_headline), so it
+    // carries the sanitised form; the pg_trgm title query below keeps the RAW
+    // q, because a leading hyphen is meaningless to trigram similarity and
+    // stripping it there would only make the two paths disagree.
+    const values: unknown[] = [sanitizeLexicalQuery(q), searchSpaces, userId];
     let paramIndex = 4;
 
     // Base full-text search condition
@@ -484,7 +489,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
              AND ${visiblePagesPredicate(2, 3)}
              AND cp.deleted_at IS NULL
            GROUP BY tag`,
-          [q, searchSpaces, userId],
+          [sanitizeLexicalQuery(q), searchSpaces, userId],
         )
       : Promise.resolve({ rows: [] as Array<{ facet: string; value: string; count: string }> });
 

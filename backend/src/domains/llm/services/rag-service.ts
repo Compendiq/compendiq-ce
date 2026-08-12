@@ -11,6 +11,7 @@ import {
 } from '../../../core/services/rbac-service.js';
 import { CircuitBreakerOpenError } from '../../../core/services/circuit-breaker.js';
 import { getFtsLanguage } from '../../../core/services/fts-language.js';
+import { sanitizeLexicalQuery } from '../../../core/utils/lexical-query.js';
 import { visiblePagesPredicate } from '../../../core/services/page-visibility.js';
 import { isFeatureEnabled } from '../../../core/enterprise/loader.js';
 import { ENTERPRISE_FEATURES } from '../../../core/enterprise/features.js';
@@ -388,27 +389,29 @@ export async function vectorSearch(userId: string, questionEmbedding: number[], 
  * the user can access (shared, or private and owned by the user).
  */
 export async function keywordSearch(userId: string, questionText: string, limit = RAG_FETCH_WIDTH_DEFAULT): Promise<SearchResult[]> {
-  // websearch_to_tsquery (#1110): same never-throws guarantee on arbitrary
-  // input as plainto_tsquery — operator soup still degrades to plain terms,
-  // so no manual sanitising or tsquery construction — but it honours the
-  // syntax users already expect from a search box. The swap fixes a wrong
-  // answer, not just a missing feature: plainto parses a leading `-` as an
-  // ordinary term, so `delay accepting -logging` became
-  // `'delay' & 'accepting' & 'logging'` and REQUIRED the word the user asked
-  // to exclude. It also flattened "quoted phrases" into loose ANDs.
+  // websearch_to_tsquery (#1110), over a query normalised by
+  // sanitizeLexicalQuery. Both halves are load-bearing and the parser alone
+  // is NOT safe here — an earlier version of this comment claimed it kept
+  // plainto_tsquery's never-throws guarantee, and that was false: each `-`
+  // nests another NOT, so ~32 of them raise XX000 `tsquery stack too small`,
+  // which is an ERROR, not an empty result. An ASCII rule pasted into a
+  // question would have 500-ed the whole request. The parser also read a
+  // leading `-` as an exclusion, which inverts CLI-flag queries
+  // ('docker run -it …' -> `& !'it'`) — see lexical-query.ts for the
+  // measurements. The sanitiser strips hyphen runs at token starts only, so
+  // compounds and identifiers (fastify-plugin, INC-2203) are untouched.
   //
-  // KNOWN SEMANTIC CHANGE, measured and accepted: this parser also reads a
-  // bare `or` as the OR operator, so a natural-language question splits into
-  // a disjunction —
-  //   "... belonged to the client build or the ssr build"
-  //   becomes  ... & 'client' & 'build' | 'the' & 'ssr' & 'build'
-  // which is looser than the all-AND conjunction plainto produced. That
-  // matters here because this leg receives chat questions, not search-box
-  // syntax. It was measured rather than assumed: 7 of the 152 eval-fixture
-  // queries contain a bare `or`, and across both axes one improved (rank
-  // 8 -> 7) and none regressed. `and` is also an operator but matches
-  // plainto's implicit conjunction, so it is a no-op. Revisit if a future
-  // corpus shows the disjunction pulling in loose matches.
+  // What the swap buys, net of that: "quoted phrases" become real phrase
+  // matches instead of loose ANDs. `-term` is NOT an exclusion — it is the
+  // term, exactly as plainto_tsquery treated it, so nothing regresses.
+  // Whether this product wants exclusion syntax at all, given a corpus full
+  // of shell commands, is recorded as an open question on #1110.
+  //
+  // KNOWN SEMANTIC CHANGE, measured and accepted: a bare `or` is the OR
+  // operator, so a question splits into a disjunction rather than an all-AND
+  // conjunction. 7 of the 152 eval-fixture queries carry one; across both
+  // axes one improved (rank 8 -> 7) and none regressed. `and` matches the
+  // previous implicit conjunction, so it is a no-op.
   const trimmed = questionText.trim();
   // Before the span on purpose: an empty query is not a retrieval, and a
   // 0ms sample for it would only pollute the stage histogram.
@@ -438,7 +441,7 @@ export async function keywordSearch(userId: string, questionText: string, limit 
            AND cp.deleted_at IS NULL
          ORDER BY rank DESC
          LIMIT $3`,
-        [kwSpaces, trimmed, limit, userId],
+        [kwSpaces, sanitizeLexicalQuery(trimmed), limit, userId],
       );
 
       const mapped = result.rows.map((row) => ({
