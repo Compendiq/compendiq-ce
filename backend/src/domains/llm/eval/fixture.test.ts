@@ -183,7 +183,7 @@ describe('the shipped fixture (#1102)', () => {
     const gapMean = mean(gap.map((l) => l.overlap));
     const restMean = mean(rest.map((l) => l.overlap));
 
-    // Measured when the slice landed: 0.13 against 0.57. The thresholds sit
+    // Measured when the slice landed: 0.13 against 0.58. The thresholds sit
     // well clear of both so an ordinary re-labelling does not trip them, and
     // well below the level a page-worded query lands at.
     expect(gapMean).toBeLessThan(0.3);

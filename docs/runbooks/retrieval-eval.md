@@ -160,7 +160,7 @@ questions flatter the vector leg.
 
 Every style above was written by an agent **reading the page**, and that
 leaves a blind spot the styles cannot see past: the queries reuse the page's
-own words. Measured over the shipped fixture, a non-gap label shares **0.57**
+own words. Measured over the shipped fixture, a non-gap label shares **0.58**
 of its content words with the target's title and opening ~1500 characters. A
 retrieval change whose entire job is to bridge the gap between what a user
 types and what a page says therefore has almost nothing to bridge here, and
