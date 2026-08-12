@@ -26,7 +26,15 @@ export const FixtureLabelSchema = z.object({
   query: z.string().min(3),
   /** Corpus filenames, best first. */
   expectedFiles: z.array(z.string().min(1)).min(1),
-  style: z.enum(['question', 'keywords', 'error-text', 'how-to', 'identifier', 'identifier-negative', 'diversity', 'diversity-negative']),
+  /**
+   * `vocabulary-gap` (#1112) is the odd one out and deliberately so. Every
+   * other style was written by an agent reading the page, so the query reuses
+   * the page's own words — measured over the shipped fixture, a non-gap label
+   * shares about half its content words with the target's title and opening.
+   * A gap label asks for the same page in words the page never uses, which is
+   * the only way a query-expansion step has anything to bridge.
+   */
+  style: z.enum(['question', 'keywords', 'error-text', 'how-to', 'identifier', 'identifier-negative', 'diversity', 'diversity-negative', 'vocabulary-gap']),
   rationale: z.string().default(''),
 });
 

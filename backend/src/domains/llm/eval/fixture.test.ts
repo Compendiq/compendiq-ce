@@ -14,6 +14,25 @@ import {
 // inflates N without adding evidence, and an undersized fixture makes the gate
 // look functional while being unable to represent the deltas it must detect.
 
+/**
+ * Words carrying no discriminative signal for "did this query reuse the page's
+ * wording": ordinary English function words, plus the three product names,
+ * which appear in nearly every page of the corpus and so cannot distinguish
+ * one target from another.
+ */
+const NON_CONTENT = new Set(
+  `a an the and or but if of for to in on at by with from as is are was were be been being do does did
+   done can could should would will shall may might must have has had how what why when where which who
+   whom this that these those it its i my we our you your they them their he she his her not no into over
+   under about after before between during without within out up down off again then than there here more
+   most other some such only own same so too very just now also get got make makes made use uses used
+   using need needs me us via per vs versus want wants fastify vite vitest docs guide reference md`.split(/\s+/),
+);
+
+function contentWords(text: string): string[] {
+  return (text.toLowerCase().match(/[a-z0-9]+/g) ?? []).filter((w) => w.length > 2 && !NON_CONTENT.has(w));
+}
+
 const corpus: CorpusPage[] = [
   { file: 'a.md', title: 'A', markdown: '# A', source: 'x' },
   { file: 'b.md', title: 'B', markdown: '# B', source: 'x' },
@@ -115,14 +134,66 @@ describe('the shipped fixture (#1102)', () => {
     expect([...styles.keys()].sort()).toEqual([
       'diversity', 'diversity-negative', 'error-text', 'how-to',
       'identifier', 'identifier-negative', 'keywords', 'question',
+      'vocabulary-gap',
     ]);
     for (const [style, count] of styles.entries()) {
       // Small deliberate probes (#1107 identifier, #1109 diversity) get a
       // floor of 3; the core styles carry the statistical weight and keep 10.
+      //
+      // `vocabulary-gap` (#1112) is NOT a probe and takes the core floor of
+      // 10 — it ships at 33. A three-label probe cannot answer the question
+      // it exists for: multi-query expansion is expected to move a handful of
+      // queries, and Recall@K over three of them moves in thirds, so any
+      // result would be indistinguishable from noise.
       const isProbe = style.startsWith('identifier') || style.startsWith('diversity');
       expect(count).toBeGreaterThanOrEqual(isProbe ? 3 : 10);
       expect(count / parsed.labels.length).toBeLessThan(0.6);
     }
+  });
+
+  it('keeps the vocabulary-gap slice lexically clear of its targets (#1112)', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const parsed = loadFixture(JSON.parse(readFileSync(join(import.meta.dirname, 'fixture.json'), 'utf8')), loadCorpus());
+    const pages = new Map(loadCorpus().map((p) => [p.file, p]));
+
+    // The whole point of the slice, made checkable. A `vocabulary-gap` label
+    // whose query is written from the page's own sentences measures nothing
+    // that the existing 158 do not already measure — and the failure is
+    // SILENT, because such a label validates, scores well and quietly makes
+    // the slice look easy. Nothing but this assertion stops a future label
+    // from being labelled `vocabulary-gap` while reusing the page's wording.
+    //
+    // Overlap is against the title plus the opening ~1500 characters: that is
+    // the text a title-boosted lexical match and the first chunk's embedding
+    // both see, so it is where reused wording actually pays off.
+    const overlap = (query: string, file: string): number => {
+      const page = pages.get(file)!;
+      const q = new Set(contentWords(query));
+      if (q.size === 0) return 0;
+      const target = new Set(contentWords(`${page.title} ${page.markdown.slice(0, 1500)}`));
+      return [...q].filter((w) => target.has(w)).length / q.size;
+    };
+
+    const scored = parsed.labels.map((l) => ({ ...l, overlap: overlap(l.query, l.expectedFiles[0]!) }));
+    const gap = scored.filter((l) => l.style === 'vocabulary-gap');
+    const rest = scored.filter((l) => l.style !== 'vocabulary-gap');
+    const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
+
+    const gapMean = mean(gap.map((l) => l.overlap));
+    const restMean = mean(rest.map((l) => l.overlap));
+
+    // Measured when the slice landed: 0.13 against 0.57. The thresholds sit
+    // well clear of both so an ordinary re-labelling does not trip them, and
+    // well below the level a page-worded query lands at.
+    expect(gapMean).toBeLessThan(0.3);
+    expect(gapMean).toBeLessThan(restMean / 2);
+
+    // Named individually: a mean can absorb one label that gives the game
+    // away, and a single trivially-matching label is a label that measures
+    // nothing at all.
+    const leaky = gap.filter((l) => l.overlap > 0.45).map((l) => `${l.id} (${l.overlap.toFixed(2)}): ${l.query}`);
+    expect(leaky).toEqual([]);
   });
 
   it('does not concentrate on a handful of pages', async () => {
