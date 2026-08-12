@@ -1411,20 +1411,24 @@ describe.skipIf(!dbAvailable)('rag-service integration — #1110 websearch_to_ts
   });
   afterAll(async () => { await truncateAllTables(); });
 
-  it('a CLI flag is NOT an exclusion — the inversion websearch would otherwise introduce', async () => {
-    // Measured: websearch_to_tsquery('simple','docker run -it ubuntu bash')
-    // yields `& !'it'`, and under the default `simple` config `it` is not a
-    // stop word — so the query demands pages WITHOUT the word "it", i.e.
-    // almost nothing. This corpus is engineering documentation, so shell
-    // commands in questions are the ordinary case, not an edge case.
-    // `-requests` is chosen because the target page CONTAINS "requests":
-    // under raw websearch semantics the flag would exclude the very page the
-    // user is looking for, so inclusion vs exclusion is decisive here rather
-    // than incidental. Stripping leaves it a required term — exactly what
-    // plainto_tsquery already did, so nothing regresses relative to today.
-    const hits = await keywordSearch(USER, 'graceful shutdown -requests');
+  it('honours a MINUS exclusion instead of requiring the excluded term', async () => {
+    // With plainto_tsquery this returned the logging page, because `-logging`
+    // parsed as `& 'logging'` — the exclusion read as a requirement.
+    const hits = await keywordSearch(USER, 'delay accepting -logging');
     expect(hits.length).toBeGreaterThan(0);
-    expect(hits.some((h) => h.pageTitle === 'Graceful shutdown guide')).toBe(true);
+    expect(hits.every((h) => h.pageTitle !== 'Logging configuration')).toBe(true);
+  });
+
+  it('reduces a hyphen RUN to its parity, so meaning is preserved exactly', async () => {
+    // N hyphens compile to N nested NOTs, so an EVEN run is identity and an
+    // ODD run is a single exclusion. The sanitiser collapses N to N%2, which
+    // is what Postgres would have computed anyway — it bounds the nesting
+    // depth without changing a single query's meaning.
+    const doubled = await keywordSearch(USER, 'delay accepting --logging');
+    expect(doubled.some((h) => h.pageTitle === 'Logging configuration')).toBe(true);
+
+    const tripled = await keywordSearch(USER, 'delay accepting ---logging');
+    expect(tripled.every((h) => h.pageTitle !== 'Logging configuration')).toBe(true);
   });
 
   it('a long hyphen RUN does not error — websearch alone raises XX000 here', async () => {
@@ -1436,6 +1440,16 @@ describe.skipIf(!dbAvailable)('rag-service integration — #1110 websearch_to_ts
     await expect(keywordSearch(USER, `why does sync fail\n${rule}\nhere is the log`)).resolves.toBeInstanceOf(Array);
     await expect(keywordSearch(USER, rule)).resolves.toBeInstanceOf(Array);
     await expect(keywordSearch(USER, `a ${'-'.repeat(35)}`)).resolves.toBeInstanceOf(Array);
+  });
+
+  it('a CLI flag DOES exclude — the accepted cost of exclusion support (#1110 owner decision)', async () => {
+    // Pinned as known behaviour, not as a protection. `-requests` is a shell
+    // flag to the user and an exclusion to Postgres, so a question carrying
+    // one drops pages containing that word. The owner chose exclusion
+    // support everywhere with user-facing documentation as the mitigation;
+    // this test exists so any future change to that is deliberate.
+    const hits = await keywordSearch(USER, 'graceful shutdown -requests');
+    expect(hits.every((h) => h.pageTitle !== 'Graceful shutdown guide')).toBe(true);
   });
 
   it('honours a QUOTED phrase as a phrase, not a bag of words', async () => {

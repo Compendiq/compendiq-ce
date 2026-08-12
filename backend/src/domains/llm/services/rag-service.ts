@@ -390,22 +390,21 @@ export async function vectorSearch(userId: string, questionEmbedding: number[], 
  */
 export async function keywordSearch(userId: string, questionText: string, limit = RAG_FETCH_WIDTH_DEFAULT): Promise<SearchResult[]> {
   // websearch_to_tsquery (#1110), over a query normalised by
-  // sanitizeLexicalQuery. Both halves are load-bearing and the parser alone
-  // is NOT safe here — an earlier version of this comment claimed it kept
-  // plainto_tsquery's never-throws guarantee, and that was false: each `-`
-  // nests another NOT, so ~32 of them raise XX000 `tsquery stack too small`,
-  // which is an ERROR, not an empty result. An ASCII rule pasted into a
-  // question would have 500-ed the whole request. The parser also read a
-  // leading `-` as an exclusion, which inverts CLI-flag queries
-  // ('docker run -it …' -> `& !'it'`) — see lexical-query.ts for the
-  // measurements. The sanitiser strips hyphen runs at token starts only, so
-  // compounds and identifiers (fastify-plugin, INC-2203) are untouched.
+  // sanitizeLexicalQuery. Users get "quoted phrases" as real phrase matches
+  // and `-term` as a genuine exclusion — the latter was previously INVERTED,
+  // since plainto parsed a leading `-` as an ordinary term and so REQUIRED
+  // the word the user asked to exclude.
   //
-  // What the swap buys, net of that: "quoted phrases" become real phrase
-  // matches instead of loose ANDs. `-term` is NOT an exclusion — it is the
-  // term, exactly as plainto_tsquery treated it, so nothing regresses.
-  // Whether this product wants exclusion syntax at all, given a corpus full
-  // of shell commands, is recorded as an open question on #1110.
+  // The sanitiser is load-bearing: the parser alone raises XX000
+  // `tsquery stack too small` at ~32 hyphens (an ERROR, not an empty
+  // result), so an ASCII rule pasted into a question would 500 the request.
+  // It reduces each hyphen run to its PARITY, which changes no query's
+  // meaning — see lexical-query.ts for the measurements.
+  //
+  // Accepted cost (owner decision on #1110): a real exclusion operator means
+  // shell commands misfire — 'docker run -it …' compiles to `& !'it'`, and
+  // `it` is not a stop word under the default `simple` config. Mitigated by
+  // user-facing docs, pinned by a test, revisit on support traffic.
   //
   // KNOWN SEMANTIC CHANGE, measured and accepted: a bare `or` is the OR
   // operator, so a question splits into a disjunction rather than an all-AND

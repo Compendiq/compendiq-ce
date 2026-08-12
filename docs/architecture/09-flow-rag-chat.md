@@ -648,24 +648,32 @@ states the condition where an operator will meet it.
 - **Keyword search** uses the PostgreSQL text-search configuration from
   `FTS_LANGUAGE` (default `simple`; set `german`, `english`, etc. for
   language-aware stemming), parsed with **`websearch_to_tsquery`** (#1110).
-  fed through `sanitizeLexicalQuery` (`core/utils/lexical-query.ts`). Both
-  halves are load-bearing, because the parser **alone is not safe here**:
-  each `-` nests another NOT, so roughly 32 of them raise
-  `XX000 tsquery stack too small` — an ERROR, not an empty result, so an
-  ASCII rule pasted into a question would 500 the request. It also reads a
-  leading `-` as an exclusion, which inverts the shell commands this corpus
-  is full of: `docker run -it ubuntu bash` becomes `… & !'it'`, and under the
-  default `simple` configuration `it` is not a stop word, so the query demands
-  pages *without* the word "it". The sanitiser strips hyphen runs **only where
-  they start a token**, so hyphenated compounds and identifiers
-  (`fastify-plugin`, `INC-2203`, `CVE-2024-1234`) are untouched and match
-  exactly as before.
+  fed through `sanitizeLexicalQuery` (`core/utils/lexical-query.ts`). Users
+  get `"quoted phrases"` as real phrase matches and `-term` as a genuine
+  exclusion — the latter was previously **inverted**, because
+  `plainto_tsquery` parsed a leading `-` as an ordinary term and so
+  *required* the word the user asked to exclude.
 
-  Net of that, the swap buys one thing: `"quoted phrases"` become real phrase
-  matches instead of loose ANDs. **`-term` is not an exclusion** — it is the
-  term, precisely as `plainto_tsquery` treated it, so nothing regresses.
-  Whether this product wants exclusion syntax at all, given how much of the
-  corpus is shell commands, is an open question recorded on #1110.
+  The sanitiser exists because the parser alone is unsafe: every `-` compiles
+  to a nested NOT, and ~32 of them raise `XX000 tsquery stack too small` — an
+  ERROR, not an empty result, so an ASCII rule pasted into a question would
+  500 the request. It reduces each hyphen run **to its parity**, which is
+  exact rather than approximate: an even run is identity (`--beta` matches a
+  document exactly as `beta` does) and an odd run is a single exclusion, so
+  `N → N % 2` is precisely what Postgres would have computed while bounding
+  nesting at one. Only runs starting a token are touched, so hyphenated
+  compounds and identifiers (`fastify-plugin`, `INC-2203`, `CVE-2024-1234`)
+  pass through untouched.
+
+  **Accepted cost, decided on #1110 (option "yes, everywhere"):** because
+  `-term` is now a real exclusion, shell commands inside questions misfire.
+  `docker run -it ubuntu bash` compiles to `& !'it'`, and under the default
+  `simple` configuration `it` is not a stop word, so the query demands pages
+  *without* the word "it". The same applies to `curl -X POST`, `grep -r` and
+  prose ranges (`errors between 500 - 599` → `& !'599'`). This was measured
+  and accepted rather than discovered; the mitigation is user-facing
+  documentation, not code, and a test pins the behaviour so any future change
+  is deliberate.
 
   **Accepted semantic change:** the same parser reads a bare `or` as the OR
   operator, so a natural-language question splits into a disjunction rather
