@@ -1,47 +1,64 @@
 /**
- * #1110 — make a user query safe for `websearch_to_tsquery` WITHOUT changing
- * what it means.
+ * #1110 — make a user query safe for `websearch_to_tsquery` without changing
+ * what an ordinary query means.
  *
  * `websearch_to_tsquery` is worth having because it honours `"quoted
  * phrases"` and `-exclusions`, which `plainto_tsquery` flattens into loose
- * ANDs. But it compiles every leading `-` into a nested NOT, and a long run
- * of them exhausts the parser stack: measured on Postgres 17, ~32 hyphens
- * raise `XX000 tsquery stack too small`. That is an ERROR, not an empty
- * result, so an ASCII rule pasted into a question —
- * `------------------------------`, ordinary in logs and copied docs —
- * would 500 the whole request. `plainto_tsquery` returned empty for the
- * same input, so this is a hazard the swap introduces.
+ * ANDs — the latter previously *inverted* the user's intent, since a leading
+ * `-` parsed as an ordinary term and so REQUIRED the excluded word.
  *
- * The fix reduces each hyphen run to its PARITY, which is exact rather than
- * approximate. Measured:
+ * ## The hazard
  *
- *   'alpha -beta'    ->  'alpha' & !'beta'        (odd  = excluded)
- *   'alpha --beta'   ->  'alpha' & !!'beta'       (even = identity)
+ * Every `-` that lands in operand position compiles to a NOT, and pending
+ * NOTs accumulate on the parser's stack until an operand arrives. Past ~32
+ * Postgres raises `XX000 tsquery stack too small` — an ERROR, not an empty
+ * result, so it 500s the request. `plainto_tsquery` returns empty for all of
+ * these, which makes it a regression rather than a pre-existing wart.
  *
- * and `--beta` matches a document containing "beta" exactly as `beta` does,
- * because double negation is identity. So collapsing N hyphens to `N % 2`
- * leaves every query meaning precisely what Postgres would have computed,
- * while bounding nesting depth at one. Exclusions keep working; the crash
- * becomes unreachable.
+ * ## Why this is a COUNT cap and not something cleverer
  *
- * Only runs that START a token are touched. A mid-token hyphen is part of a
- * compound, never an operator, so `fastify-plugin`, `INC-2203` and
- * `CVE-2024-1234` pass through untouched and match as they always did.
+ * Two earlier attempts modelled the grammar and both were wrong, each
+ * disproved by execution:
  *
- * KNOWN, ACCEPTED CONSEQUENCE (owner decision on #1110, option "yes,
- * everywhere"): because `-term` really is an exclusion now, shell commands
- * inside questions misfire. `docker run -it ubuntu bash` compiles to
- * `& !'it'`, and under the default `simple` configuration `it` is not a
- * stop word, so the query demands pages WITHOUT the word "it". The same
- * applies to `curl -X POST`, `grep -r pattern` and prose ranges like
- * `errors between 500 - 599` (-> `& !'599'`). This was measured and
- * accepted rather than discovered: the mitigation is user-facing
- * documentation, not code. Revisit if support traffic says otherwise.
+ * 1. "Strip runs that start a token" (`(^|\s)-+`) missed the operator
+ *    positions Postgres also honours — a pasted Markdown table border,
+ *    `| col |---------------------------------|`, sailed straight through.
+ * 2. "Reduce each run to its parity" bounded one run's depth but not the
+ *    number of runs. NOTs nest ACROSS runs, so 33 single spaced hyphens
+ *    (`a - - - … b`, or a table separator row) still crashed with every
+ *    individual run already at depth 1.
+ *
+ * The lesson is that the exact set of operand-state positions is a
+ * version-dependent implementation detail of Postgres's parser, and guessing
+ * it has now cost two wrong fixes. So this does not guess. Each `-` can
+ * contribute AT MOST one NOT, therefore capping the total number of hyphens
+ * caps the stack depth outright — no grammar model required, and it stays
+ * true whatever the parser does with punctuation in future versions.
+ *
+ * Below the cap nothing is touched at all, so real queries keep exact
+ * `websearch_to_tsquery` semantics: `-logging` still excludes, and
+ * `fastify-plugin`, `INC-2203` and `CVE-2024-1234` still match as compounds.
+ * Above it, every hyphen is dropped and the query degrades to plain terms —
+ * which is precisely what `plainto_tsquery` did for the same input, so the
+ * worst case is today's behaviour rather than an error.
  */
+
+/**
+ * Maximum hyphens allowed through untouched. Chosen well under the observed
+ * ~32-deep parser limit so the guard holds even if that limit is lower on
+ * another build, and well above real usage: a couple of exclusions plus a
+ * hyphenated identifier or two. Anything beyond this is punctuation — a
+ * table border, an ASCII rule, an arrow — not intent.
+ */
+export const MAX_QUERY_HYPHENS = 8;
+
 export function sanitizeLexicalQuery(query: string): string {
-  // `(^|\s)(-+)` — a hyphen run at a token start only. Mid-token hyphens
-  // (the compound case) never match, which is the point.
-  return query.replace(/(^|\s)(-+)/g, (_m, lead: string, dashes: string) =>
-    `${lead}${dashes.length % 2 === 1 ? '-' : ''}`,
-  );
+  let hyphens = 0;
+  for (let i = 0; i < query.length; i += 1) {
+    if (query[i] === '-') {
+      hyphens += 1;
+      if (hyphens > MAX_QUERY_HYPHENS) return query.replace(/-/g, ' ');
+    }
+  }
+  return query;
 }

@@ -654,16 +654,26 @@ states the condition where an operator will meet it.
   `plainto_tsquery` parsed a leading `-` as an ordinary term and so
   *required* the word the user asked to exclude.
 
-  The sanitiser exists because the parser alone is unsafe: every `-` compiles
-  to a nested NOT, and ~32 of them raise `XX000 tsquery stack too small` — an
-  ERROR, not an empty result, so an ASCII rule pasted into a question would
-  500 the request. It reduces each hyphen run **to its parity**, which is
-  exact rather than approximate: an even run is identity (`--beta` matches a
-  document exactly as `beta` does) and an odd run is a single exclusion, so
-  `N → N % 2` is precisely what Postgres would have computed while bounding
-  nesting at one. Only runs starting a token are touched, so hyphenated
-  compounds and identifiers (`fastify-plugin`, `INC-2203`, `CVE-2024-1234`)
-  pass through untouched.
+  The sanitiser exists because the parser alone is unsafe: every `-` in
+  operand position compiles to a NOT, pending NOTs accumulate on the parser
+  stack, and past ~32 Postgres raises `XX000 tsquery stack too small` — an
+  ERROR, not an empty result, so it 500s the request. `plainto_tsquery`
+  returned empty for the same input, making it a regression rather than a
+  pre-existing wart.
+
+  It is a **total-hyphen count cap**, and deliberately not something cleverer.
+  Two earlier attempts modelled Postgres's grammar and both were disproved by
+  execution: "strip runs that start a token" missed the operand positions
+  Postgres also honours, so a pasted Markdown table border still crashed; and
+  "reduce each run to its parity" bounded one run's depth but not the number
+  of runs, so 33 single spaced hyphens still crashed with every run already at
+  depth 1. The set of operand-state positions is a version-dependent detail of
+  that parser, and guessing it cost two wrong fixes. Since each `-` can
+  contribute at most one NOT, capping the total count caps the depth outright,
+  with no grammar model to be wrong about. Below the cap nothing is touched,
+  so real queries keep exact semantics; above it every hyphen is dropped and
+  the query degrades to plain terms — which is what `plainto_tsquery` did for
+  the same input, so the worst case is today's behaviour rather than an error.
 
   **Accepted cost, decided on #1110 (option "yes, everywhere"):** because
   `-term` is now a real exclusion, shell commands inside questions misfire.

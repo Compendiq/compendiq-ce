@@ -1431,15 +1431,26 @@ describe.skipIf(!dbAvailable)('rag-service integration — #1110 websearch_to_ts
     expect(tripled.every((h) => h.pageTitle !== 'Logging configuration')).toBe(true);
   });
 
-  it('a long hyphen RUN does not error — websearch alone raises XX000 here', async () => {
-    // Each `-` nests another NOT, so ~32 of them exhaust the tsquery parser
-    // stack and Postgres raises `tsquery stack too small`. That is an ERROR,
-    // not an empty result: unguarded it 500s the whole RAG request. An ASCII
-    // rule pasted into a question is ordinary input.
-    const rule = '-'.repeat(60);
-    await expect(keywordSearch(USER, `why does sync fail\n${rule}\nhere is the log`)).resolves.toBeInstanceOf(Array);
-    await expect(keywordSearch(USER, rule)).resolves.toBeInstanceOf(Array);
-    await expect(keywordSearch(USER, `a ${'-'.repeat(35)}`)).resolves.toBeInstanceOf(Array);
+  it('punctuation art never errors — every shape that reached XX000 in review', async () => {
+    // Pending NOTs accumulate on the parser stack ACROSS runs, not only
+    // within one, so no per-run rule can bound this: 33 single spaced
+    // hyphens crash exactly like one run of 33, and a table separator row
+    // crashes with every individual run already at depth 1. Two earlier
+    // fixes modelled Postgres's operand-state grammar and both were
+    // disproved by these inputs, which is why the guard is now a total
+    // hyphen COUNT cap — it needs no grammar model to be sound.
+    const cases = [
+      `| col |${'-'.repeat(35)}|`,                        // markdown table border
+      `${'| - '.repeat(33)}|`,                             // separator row, runs already depth 1
+      `a ${'- '.repeat(33)}b`,                             // spaced single hyphens
+      `A <${'-'.repeat(40)} B`,                            // ascii arrow
+      `why does sync fail ${'-'.repeat(60)} here is the log`,
+      '-'.repeat(60),
+      `a ${'-'.repeat(35)}`,
+    ];
+    for (const q of cases) {
+      await expect(keywordSearch(USER, q)).resolves.toBeInstanceOf(Array);
+    }
   });
 
   it('a CLI flag DOES exclude — the accepted cost of exclusion support (#1110 owner decision)', async () => {
