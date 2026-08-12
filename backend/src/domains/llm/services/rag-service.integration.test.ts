@@ -1368,3 +1368,83 @@ describe.skipIf(!dbAvailable)('rag-service integration — #1107 identifier pin 
     expect(out[0]!.pinned).toBe(true);
   });
 });
+
+// ─── #1110 (split): websearch_to_tsquery on the lexical leg ──────────────────
+//
+// The Corrections split this off from the P3 title leg as an immediately
+// shippable win. It is not only additive: with `plainto_tsquery`, a leading
+// `-` is parsed as an ordinary term, so `-logging` REQUIRES the word the user
+// asked to exclude — the exact opposite of the intent. Quoted phrases are
+// likewise flattened to loose ANDs.
+describe.skipIf(!dbAvailable)('rag-service integration — #1110 websearch_to_tsquery', () => {
+  const USER = 'aaaaaaaa-1110-4000-8000-000000001110';
+  beforeAll(async () => {
+    await setupTestDb();
+    await truncateAllTables();
+    await query(
+      `INSERT INTO users (id, username, email, role, password_hash)
+       VALUES ($1::uuid, $1::text, $1::text || '@t', 'user', 'x') ON CONFLICT (id) DO NOTHING`,
+      [USER],
+    );
+    await query(`INSERT INTO spaces (space_key, space_name) VALUES ('DEV', 'DEV') ON CONFLICT (space_key) DO NOTHING`);
+    await query(
+      `INSERT INTO roles (name, display_name, is_system, permissions)
+       VALUES ('viewer', 'Viewer', TRUE, ARRAY['read']) ON CONFLICT (name) DO NOTHING`,
+    );
+    const role = await query<{ id: number }>(`SELECT id FROM roles WHERE name = 'viewer'`);
+    await query(
+      `INSERT INTO space_role_assignments (space_key, principal_type, principal_id, role_id)
+       VALUES ('DEV', 'user', $1, $2) ON CONFLICT DO NOTHING`,
+      [USER, role.rows[0]!.id],
+    );
+    for (const [title, body] of [
+      ['Graceful shutdown guide', 'delay accepting requests during a graceful shutdown'],
+      ['Logging configuration', 'delay accepting requests is unrelated here; this page is about logging'],
+      ['Accepting payments', 'we delay payouts and describe accepting cards, not requests'],
+    ] as Array<[string, string]>) {
+      await query(
+        `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+         VALUES (gen_random_uuid()::text, 'confluence', 'DEV', $1, $2, '', '')`,
+        [title, body],
+      );
+    }
+  });
+  afterAll(async () => { await truncateAllTables(); });
+
+  it('honours a MINUS exclusion instead of requiring the excluded term', async () => {
+    // With plainto_tsquery this returns the logging page FIRST, because
+    // `-logging` parses as `& 'logging'` — the user's exclusion is read as a
+    // requirement. That is a wrong answer, not a missing feature.
+    const hits = await keywordSearch(USER, 'delay accepting -logging');
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits.every((h) => h.pageTitle !== 'Logging configuration')).toBe(true);
+  });
+
+  it('honours a QUOTED phrase as a phrase, not a bag of words', async () => {
+    // 'Accepting payments' contains both words far apart; only the shutdown
+    // page contains the actual phrase.
+    const hits = await keywordSearch(USER, '"delay accepting"');
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits.every((h) => h.pageTitle !== 'Accepting payments')).toBe(true);
+  });
+
+  it('reads a bare `or` as a DISJUNCTION — the accepted semantic change', async () => {
+    // Pinned deliberately, not incidentally: this leg receives chat
+    // questions, and a bare `or` now splits them into an OR rather than
+    // the all-AND conjunction plainto produced. Measured on the fixture
+    // (7 of 152 queries carry a bare `or`): one improved, none regressed.
+    // A future corpus that shows the disjunction pulling in loose matches
+    // should revisit this — so the behaviour must be visible, not implicit.
+    const hits = await keywordSearch(USER, 'graceful shutdown or payments');
+    const titles = hits.map((h) => h.pageTitle);
+    // The payments page has no 'graceful shutdown'; under an all-AND parse
+    // it could not match at all. Under a disjunction it legitimately does.
+    expect(titles).toContain('Accepting payments');
+  });
+
+  it('still never throws on operator soup — the safety plainto_tsquery gave us', async () => {
+    for (const q of ['a & | ! ( )', '"unclosed', '-', '- -', '&&&', '']) {
+      await expect(keywordSearch(USER, q)).resolves.toBeInstanceOf(Array);
+    }
+  });
+});

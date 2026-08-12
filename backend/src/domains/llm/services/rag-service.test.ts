@@ -114,7 +114,7 @@ vi.mock('../../../core/utils/logger.js', () => ({
 vi.mock('../../../core/services/fts-language.js', () => ({
   // Implementation form so `vi.resetAllMocks()` cannot wipe it — with the
   // queued `.mockResolvedValue('simple')` form, every describe that resets
-  // mocks built its keyword SQL with `plainto_tsquery('undefined', …)`, and
+  // mocks built its keyword SQL with `websearch_to_tsquery('undefined', …)`, and
   // assertions against that SQL were exercising a string no deployment
   // produces. A test below pins the language survives into the SQL.
   getFtsLanguage: vi.fn(async () => 'simple'),
@@ -811,14 +811,14 @@ describe('RAG Service', () => {
         // Guards the vi.resetAllMocks() footgun: with a queued
         // `.mockResolvedValue('simple')` the reset left getFtsLanguage
         // returning undefined and every SQL assertion in this describe ran
-        // against `plainto_tsquery('undefined', …)`.
+        // against `websearch_to_tsquery('undefined', …)`.
         routeQueries([]);
         await hybridSearch('user-1', 'test query');
         const kwCall = mocks.mockQuery.mock.calls.find(
           (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('ts_rank'),
         );
         expect(kwCall).toBeDefined();
-        expect(kwCall![0]).toContain("plainto_tsquery('simple'");
+        expect(kwCall![0]).toContain("websearch_to_tsquery('simple'");
       });
     });
   });
@@ -1621,7 +1621,7 @@ describe('RAG Service', () => {
       expect(mocks.mockQuery).not.toHaveBeenCalled();
     });
 
-    it('calls query() with plainto_tsquery parameterized SQL', async () => {
+    it('calls query() with websearch_to_tsquery parameterized SQL (#1110)', async () => {
       mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
       mocks.mockQuery.mockResolvedValueOnce({ rows: [] });
 
@@ -1629,7 +1629,11 @@ describe('RAG Service', () => {
 
       expect(mocks.mockQuery).toHaveBeenCalledTimes(1);
       const [sql, params] = mocks.mockQuery.mock.calls[0] as [string, unknown[]];
-      expect(sql).toContain('plainto_tsquery');
+      // websearch_to_tsquery, not plainto: the leading `-` in a query like
+      // "delay accepting -logging" parses as an exclusion rather than as a
+      // required term. Both never throw on arbitrary input.
+      expect(sql).toContain('websearch_to_tsquery');
+      expect(sql).not.toContain('plainto_tsquery');
       expect(sql).toContain('pages cp');
       expect(params).toContain('redis caching');
       expect(params).toContain(5);

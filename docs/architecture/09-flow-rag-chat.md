@@ -42,7 +42,7 @@ sequenceDiagram
         PG-->>RAG: top fetch-width chunks
     and
         BE->>RAG: keywordSearch(userId, question, stageLimit)
-        RAG->>PG: tsvector search WHERE same space filter
+        RAG->>PG: tsvector search (websearch_to_tsquery) WHERE same space filter
         PG-->>RAG: matches
     end
     RAG-->>BE: merged + deduped + ranked (fetch-width wide)
@@ -647,7 +647,30 @@ states the condition where an operator will meet it.
   a recall/latency trade-off.
 - **Keyword search** uses the PostgreSQL text-search configuration from
   `FTS_LANGUAGE` (default `simple`; set `german`, `english`, etc. for
-  language-aware stemming).
+  language-aware stemming), parsed with **`websearch_to_tsquery`** (#1110).
+  It keeps `plainto_tsquery`'s never-throws guarantee on arbitrary input —
+  operator soup degrades to plain terms, so nothing upstream has to sanitise
+  or build tsquery syntax — while honouring the syntax a search box implies:
+  `"quoted phrases"` become phrase matches and `-term` becomes an exclusion.
+  That second one fixed a wrong answer rather than adding a feature:
+  `plainto_tsquery` parses a leading `-` as an ordinary term, so
+  `delay accepting -logging` compiled to `'delay' & 'accepting' & 'logging'`
+  and **required** the word the user asked to exclude.
+  **Accepted semantic change:** the same parser reads a bare `or` as the OR
+  operator, so a natural-language question splits into a disjunction rather
+  than the all-AND conjunction `plainto_tsquery` produced — looser, and this
+  leg receives chat questions rather than search-box syntax. Measured, not
+  assumed: 7 of the 152 eval-fixture queries carry a bare `or`; across both
+  axes one improved (rank 8 → 7) and none regressed. `and` is also an
+  operator but matches the previous implicit conjunction, so it is a no-op.
+  Revisit if a corpus shows the disjunction pulling in loose matches.
+
+  The same parser is used by `/api/search` (all modes). `GET /api/pages`'s
+  filter box deliberately still uses `plainto_tsquery`: its zero-result ILIKE
+  fallback re-searches the **raw** string, so an exclusion that legitimately
+  matches nothing would silently become a substring search for `-term` and
+  report `fuzzyMatch: true`. Switching it needs that interaction handled, not
+  just the call site swapped.
 - **Hybrid merge** deduplicates by `page_id`, keeps the best chunk per
   page, and re-ranks using a weighted blend.
 - **Scope** — results are filtered to pages the requesting user can see
