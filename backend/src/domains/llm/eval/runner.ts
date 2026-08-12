@@ -13,6 +13,14 @@
  * does not detect it; asserting the vector leg participated does.
  */
 import { hybridSearch, getEmbeddingCoverage } from '../services/rag-service.js';
+import { trigrams, jaccard } from '../services/mmr.js';
+
+/**
+ * Similarity at which a result counts as a near-duplicate of a higher-ranked
+ * one. Same measure and threshold the MMR stage uses, so the metric and the
+ * mechanism cannot drift apart.
+ */
+const REDUNDANT_SIMILARITY = 0.7;
 import type { QueryRun } from './metrics.js';
 import type { Fixture } from './fixture.js';
 
@@ -42,6 +50,8 @@ export interface EvalRunOptions {
   /** #1107: request identifier pinning (default true — the shipped chat
    * config); exposed so the stage is A/B-able within one tree (#1273 M10). */
   pinIdentifiers?: boolean;
+  /** #1109: force the MMR narrow for this run (the DB default is off). */
+  mmr?: { enabled: boolean; lambda?: number };
   /**
    * Fraction of queries that must show at least one vector-leg hit.
    *
@@ -67,6 +77,21 @@ export interface EvalRunResult {
    * identifier-style queries — but the COUNT is recorded so a silently
    * dead pin path is visible in the report (the F10 lesson applied). */
   pinParticipatingQueries: number;
+  /**
+   * #1109's acceptance metric, and the reason it is computed HERE rather
+   * than by post-hoc SQL: the corpus is re-seeded per run, so page ids are
+   * not comparable between reports and any cross-run join silently matches
+   * nothing. Redundancy is a property of a run and has to be measured
+   * inside it.
+   *
+   * `redundantSlots` counts returned results that are near-duplicates
+   * (trigram Jaccard > 0.7, the same measure the stage itself uses) of a
+   * HIGHER-ranked result in the same query. `meanPairwiseSimilarity` is the
+   * figure the issue's Corrections name.
+   */
+  redundantSlots: number;
+  returnedSlots: number;
+  meanPairwiseSimilarity: number;
   totalQueries: number;
 }
 
@@ -87,6 +112,13 @@ export async function runEval(fixture: Fixture, opts: EvalRunOptions): Promise<E
   }
 
   const runs: QueryRun[] = [];
+  // #1109 acceptance metric, accumulated per query. Computed inside the run
+  // because the corpus is re-seeded each time: page ids are not comparable
+  // between reports, so any cross-run join silently matches nothing.
+  let redundantSlots = 0;
+  let returnedSlots = 0;
+  let pairSimTotal = 0;
+  let pairCount = 0;
   let vectorParticipatingQueries = 0;
   let rerankParticipatingQueries = 0;
   let assemblyParticipatingQueries = 0;
@@ -105,6 +137,7 @@ export async function runEval(fixture: Fixture, opts: EvalRunOptions): Promise<E
       // negative cases (NL queries carrying identifier-shaped tokens) are
       // what make "natural-language queries unaffected" measurable.
       pinIdentifiers: opts.pinIdentifiers !== false,
+      ...(opts.mmr ? { mmr: opts.mmr } : {}),
     });
 
     if (results.some((r) => r.vectorScore !== null)) vectorParticipatingQueries++;
@@ -121,6 +154,19 @@ export async function runEval(fixture: Fixture, opts: EvalRunOptions): Promise<E
       }
       return pageId;
     });
+
+    const texts = results.map((r) => trigrams(`${r.pageTitle ?? ''} ${r.contextText ?? r.chunkText ?? ''}`));
+    for (let a = 0; a < texts.length; a += 1) {
+      let redundant = false;
+      for (let b = 0; b < a; b += 1) {
+        const sim = jaccard(texts[a]!, texts[b]!);
+        pairSimTotal += sim;
+        pairCount += 1;
+        if (sim > REDUNDANT_SIMILARITY) redundant = true;
+      }
+      if (redundant) redundantSlots += 1;
+    }
+    returnedSlots += texts.length;
 
     runs.push({ queryId: label.id, retrieved: results.map((r) => r.pageId), expected });
   }
@@ -156,5 +202,15 @@ export async function runEval(fixture: Fixture, opts: EvalRunOptions): Promise<E
       + 'check rag_context_chars_per_page and the page_embeddings sibling fetch before trusting this measurement.',
     );
   }
-  return { runs, vectorParticipatingQueries, rerankParticipatingQueries, assemblyParticipatingQueries, pinParticipatingQueries, totalQueries: fixture.labels.length };
+  return {
+    runs,
+    vectorParticipatingQueries,
+    rerankParticipatingQueries,
+    assemblyParticipatingQueries,
+    pinParticipatingQueries,
+    redundantSlots,
+    returnedSlots,
+    meanPairwiseSimilarity: pairCount === 0 ? 0 : pairSimTotal / pairCount,
+    totalQueries: fixture.labels.length,
+  };
 }

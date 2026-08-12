@@ -329,6 +329,81 @@ export function invalidateRagPinIdentifiersCache(): void {
 }
 
 /**
+ * #1109's MMR diversity narrow. Two knobs, both TTL-cached like their
+ * siblings, both written by #1118.
+ *
+ * `rag_mmr_enabled` — default OFF. This stage is a CONTEXT-BUDGET
+ * optimisation, not a recall one: measured on a corpus authored to crowd
+ * results with near-duplicates, retrieval still ranks the right page first
+ * every time, so MMR cannot convert a miss into a hit. What it removes is
+ * redundant context. Shipping it off by default means the measured benefit
+ * has to be wanted before it is taken.
+ *
+ * `rag_mmr_lambda` — default 0.7. An earlier default of 0.5 came from a
+ * SIMULATION over recorded result pools, and that simulation was wrong: it
+ * narrowed a 10-wide pool while the code narrowed the whole 30-wide reranked
+ * pool, so it measured a design the pipeline did not implement. Measured
+ * LIVE on the duplicative corpus, rerank axis, 158 queries:
+ *
+ *   config     Recall@5              MRR      redundant slots
+ *   off        0.9177                0.8123   37/1580 (2.34%)
+ *   0.7        0.9177  (0w/0l)       0.8087   23/1580 (1.46%)
+ *   0.5        0.9177  (0w/1l)       0.8002    4/1580 (0.25%)
+ *
+ * Read that table before changing the default. The stage is NOT free: MRR
+ * degrades monotonically with diversity even where Recall@5 holds, because
+ * the narrow reorders within the returned set. 0.7 is the strongest setting
+ * that costs no recall at all, and it still removes a third of the redundant
+ * slots. 0.5 nearly eliminates redundancy but loses a query and more MRR.
+ *
+ * The benefit CONCENTRATES where duplication exists: corpus-wide redundancy
+ * is 2.34%, but on the fixture's `diversity` queries — the copied-runbook
+ * topics — 53% of returned slots were near-duplicates. A real Confluence
+ * space full of per-team copies should see more of this than a corpus that
+ * is mostly public documentation, which is the argument for shipping the
+ * knob at all rather than the stage on by default.
+ */
+const RAG_MMR_TTL_MS = 60_000;
+export const RAG_MMR_LAMBDA_DEFAULT = 0.7;
+let ragMmrCache: { enabled: boolean; lambda: number; expiresAt: number } | null = null;
+
+export async function getRagMmrConfig(): Promise<{ enabled: boolean; lambda: number }> {
+  if (ragMmrCache && Date.now() < ragMmrCache.expiresAt) {
+    return { enabled: ragMmrCache.enabled, lambda: ragMmrCache.lambda };
+  }
+  let enabled = false;
+  let lambda = RAG_MMR_LAMBDA_DEFAULT;
+  try {
+    const r = await query<{ setting_key: string; setting_value: string }>(
+      `SELECT setting_key, setting_value FROM admin_settings
+       WHERE setting_key IN ('rag_mmr_enabled', 'rag_mmr_lambda')`,
+    );
+    for (const row of r.rows) {
+      if (row.setting_key === 'rag_mmr_enabled') {
+        const raw = (row.setting_value ?? '').trim().toLowerCase();
+        enabled = raw === '1' || raw === 'true' || raw === 'on';
+      } else {
+        // Strict shape, like rag_context_chars_per_page: a malformed value
+        // must not silently become NaN and disable relevance entirely.
+        const raw = (row.setting_value ?? '').trim();
+        if (/^-?\d+(\.\d+)?$/.test(raw)) {
+          const n = Number(raw);
+          if (n >= 0 && n <= 1) lambda = n;
+        }
+      }
+    }
+  } catch (err) {
+    logger.warn({ err }, 'Failed to resolve MMR settings — diversity narrow stays off');
+  }
+  ragMmrCache = { enabled, lambda, expiresAt: Date.now() + RAG_MMR_TTL_MS };
+  return { enabled, lambda };
+}
+
+export function invalidateRagMmrCache(): void {
+  ragMmrCache = null;
+}
+
+/**
  * Issue #257 — returns the configured re-embed-all job history retention
  * (how many completed/failed BullMQ job records are kept in Redis before
  * the oldest get swept). Default 150, clamped to [10, 10000].

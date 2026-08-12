@@ -33,6 +33,9 @@ const EVAL_USER = 'aaaaaaaa-1102-4000-8000-000000001102';
 interface Report {
   model: string;
   corpusManifestSha: string;
+  redundantSlots?: number;
+  returnedSlots?: number;
+  meanPairwiseSimilarity?: number;
   corpusPages: number;
   queries: number;
   vectorParticipatingQueries: number;
@@ -159,7 +162,7 @@ async function main(): Promise<void> {
   }
 
   console.log(`running ${fixture.labels.length} queries…`);
-  const { runs, vectorParticipatingQueries, rerankParticipatingQueries, assemblyParticipatingQueries, pinParticipatingQueries } = await runEval(fixture, {
+  const { runs, vectorParticipatingQueries, rerankParticipatingQueries, assemblyParticipatingQueries, pinParticipatingQueries, redundantSlots, returnedSlots, meanPairwiseSimilarity } = await runEval(fixture, {
     userId: EVAL_USER,
     pageIdByFile: seeded.pageIdByFile,
     topK: Math.max(...TOP_K),
@@ -174,12 +177,18 @@ async function main(): Promise<void> {
     // runner scores pageIds only — and participation-guarded in runEval.
     assembleContext: !process.argv.includes('--no-assemble'),
     pinIdentifiers: !process.argv.includes('--no-pin'),
+    ...(process.argv.includes('--mmr')
+      ? { mmr: { enabled: true, lambda: Number(arg('mmr-lambda') ?? '0.5') } }
+      : {}),
   });
 
   const rerankRequested = process.argv.includes('--rerank');
   const report: Report = {
     model,
     corpusManifestSha: fixture.corpusManifestSha,
+    redundantSlots,
+    returnedSlots,
+    meanPairwiseSimilarity,
     corpusPages: corpus.length,
     assembleContext: !process.argv.includes('--no-assemble'),
     assemblyParticipatingQueries,
@@ -198,6 +207,11 @@ async function main(): Promise<void> {
   console.log('\n--- retrieval eval ---');
   for (const k of TOP_K) console.log(`Recall@${k}: ${report.recallAtK[`@${k}`]!.toFixed(4)}`);
   console.log(`MRR:       ${report.mrr.toFixed(4)}`);
+  console.log(
+    `redundant slots: ${report.redundantSlots}/${report.returnedSlots}` +
+    ` (${((100 * (report.redundantSlots ?? 0)) / Math.max(1, report.returnedSlots ?? 1)).toFixed(2)}%)` +
+    ` | mean pairwise similarity ${(report.meanPairwiseSimilarity ?? 0).toFixed(4)}`,
+  );
   console.log(`vector leg participated in ${vectorParticipatingQueries}/${runs.length} queries`);
   if (rerankRequested) {
     console.log(`rerank stage participated in ${rerankParticipatingQueries}/${runs.length} queries`);
