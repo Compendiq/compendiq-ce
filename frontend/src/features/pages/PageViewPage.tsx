@@ -421,7 +421,7 @@ export function PageViewPage() {
         toast.error(message);
       }
     }
-  }, [draftKey, draftLabels, editHtml, editTitle, editing, editorInstance, id, labelsMutation, page, queryClient, updateMutation]);
+  }, [draftKey, draftLabels, editTitle, editing, editorInstance, id, labelsMutation, page, queryClient, updateMutation]);
 
   // Draw.io inline editing handlers
   const handleEditDiagram = useCallback(async (diagramName: string) => {
@@ -933,7 +933,7 @@ export function PageViewPage() {
                       )}
                     </button>
                   )}
-                  <VerifyButton pageId={id} lastVerifiedAt={(page as any).lastVerifiedAt ?? null} />
+                  <VerifyButton pageId={id} lastVerifiedAt={(page as unknown as Record<string, unknown>).lastVerifiedAt as string | null ?? null} />
                   <DropdownMenu.Root>
                     <DropdownMenu.Trigger asChild>
                       <button
