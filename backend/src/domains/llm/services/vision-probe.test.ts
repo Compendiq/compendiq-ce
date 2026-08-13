@@ -69,10 +69,10 @@ describe('probeVision', () => {
    * The matcher accepts filler, so the cap must leave room for a full sentence
    * naming all three bands — 16 tokens truncates before the last one.
    */
-  it('allows enough tokens for a full-sentence answer', async () => {
+  it('allows enough tokens for a full-sentence answer and thinking blocks', async () => {
     mockChat.mockResolvedValue('yellow purple green');
     await probeVision(CFG, 'm');
-    expect(mockChat.mock.calls[0]![3]).toEqual({ maxTokens: 64 });
+    expect(mockChat.mock.calls[0]![3]).toEqual({ maxTokens: 512 });
   });
 
   it('returns vision:true when the reply names all three bands in order', async () => {
