@@ -71,6 +71,22 @@ describe('usePrepareImage', () => {
     expect(Object.keys(init.headers as object)).not.toContain('Content-Type');
   });
 
+  it('matches filename extension to blob MIME type when canvas falls back to image/png', async () => {
+    const { downscaleImage } = await import('../lib/downscale-image');
+    vi.mocked(downscaleImage).mockResolvedValueOnce({
+      blob: new Blob(['png-bytes'], { type: 'image/png' }),
+      width: 800,
+      height: 600,
+    });
+    const { result } = renderHook(() => usePrepareImage());
+    await act(async () => { await result.current.prepareImage(new File(['x'], 'photo.jpg', { type: 'image/jpeg' })); });
+
+    const [, init] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    const body = (init as RequestInit).body as FormData;
+    const file = body.get('file') as File;
+    expect(file.name).toBe('attachment.png');
+  });
+
   it('returns the staged handle plus a preview URL', async () => {
     const { result } = renderHook(() => usePrepareImage());
     let prepared!: Awaited<ReturnType<typeof result.current.prepareImage>>;

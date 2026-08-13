@@ -130,9 +130,14 @@ export async function downscaleImage(
   ctx.drawImage(bitmap, 0, 0, width, height);
   bitmap.close?.();
 
-  const blob = await new Promise<Blob | null>((resolve) =>
+  let blob = await new Promise<Blob | null>((resolve) =>
     canvas.toBlob(resolve, 'image/webp', WEBP_QUALITY),
   );
+  if (!blob) {
+    blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, 'image/png'),
+    );
+  }
   if (!blob) throw new ImageDecodeError('decodeFailed', 'Could not encode the image for upload.');
 
   return { blob, width, height };
