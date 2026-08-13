@@ -1,9 +1,8 @@
 import { describe, it, expect, vi, afterEach, type MockInstance } from 'vitest';
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { PinnedArticlesSection } from './PinnedArticlesSection';
-import { COLLAPSED_PIN_COUNT } from './pinned-articles-layout';
 
 function createWrapper() {
   const queryClient = new QueryClient({
