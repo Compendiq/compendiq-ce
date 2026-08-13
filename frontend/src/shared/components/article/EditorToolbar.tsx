@@ -5,7 +5,7 @@ import { useEditorState } from '@tiptap/react';
 import type { Editor as EditorType } from '@tiptap/react';
 import { TextSelection } from '@tiptap/pm/state';
 import {
-  Bold, Italic, Underline, Strikethrough, Code, Type, Heading1, Heading2, Heading3,
+  Bold, Italic, Underline, Strikethrough, Code,
   List, ListOrdered, CheckSquare, Quote, Minus, Undo2, Redo2, ChevronDown, Plus,
   Table as TableIcon, Image as ImageIcon, CodeSquare, Columns2, Workflow, Badge,
   ChevronsUpDown, Hash, Paperclip, ListTree, ImagePlus, Table2,
@@ -16,8 +16,6 @@ import {
 import { LAYOUT_PRESETS } from './article-extensions';
 import { ToolbarButton, ToolbarSeparator, ToolbarGroup, LayoutPreview } from './editor-toolbar-primitives';
 import { TOOLBAR_ITEM_ATTR, useToolbarRovingFocus } from './use-toolbar-roving-focus';
-import { formatKeysForPlatform } from '../../lib/shortcut-registry';
-import { isMac } from '../../lib/platform';
 import { cn } from '../../lib/cn';
 
 /**
@@ -74,19 +72,6 @@ const menuTriggerClass = (open: boolean) =>
       ? 'border-border-interactive bg-background text-foreground'
       : 'border-transparent text-muted-foreground hover:bg-accent hover:text-foreground',
   );
-
-/**
- * Keyboard hint inside a menu row. Not `ShortcutHint`: these are TipTap's own
- * bindings, not entries in the app's shortcut registry, and inventing registry
- * ids for them would imply the app owns keys it does not.
- */
-function MenuShortcut({ keys }: { keys: string }) {
-  return (
-    <span className="ml-auto pl-4 font-mono text-[11px] text-muted-foreground/60">
-      {formatKeysForPlatform(keys, isMac())}
-    </span>
-  );
-}
 
 /* ------------------------------------------------------------- insertions -- */
 
