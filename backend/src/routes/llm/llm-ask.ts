@@ -1,7 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
 import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
-import { streamChat, type ChatMessage } from '../../domains/llm/services/openai-compatible-client.js';
+import { streamChat, type ChatMessage, type ChatContentPart } from '../../domains/llm/services/openai-compatible-client.js';
 
 /**
  * A persisted conversation turn. `refused` marks a #1105 confidence refusal:
@@ -38,6 +38,7 @@ import {
   sendCachedSSE,
   sanitizeLlmInput,
   resolvePageRef,
+  resolveImagePart,
   LLM_STREAM_RATE_LIMIT,
   MAX_INPUT_LENGTH,
 } from './_helpers.js';
@@ -118,7 +119,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     try {
     const auditStart = Date.now();
     const body = AskRequestSchema.parse(request.body);
-    const { question, model, conversationId, includeSubPages, externalUrls } = body;
+    const { question, model, conversationId, includeSubPages, externalUrls, imageHandle } = body;
     const userId = request.userId;
 
     if (question.length > MAX_INPUT_LENGTH) {
@@ -357,6 +358,18 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       'Resolved chat usecase assignment',
     );
 
+    // #1154: gate and load before the cache lookup, so the key can include
+    // the image and a refusal never costs a provider round-trip.
+    let imagePart: ChatContentPart | undefined;
+    let imageHash: string | undefined;
+    if (imageHandle) {
+      const resolved = await resolveImagePart(
+        fastify, userId, imageHandle, chatConfig.providerId, resolvedModel,
+      );
+      imagePart = resolved.part;
+      imageHash = resolved.hash;
+    }
+
     // Check RAG cache with stampede protection (only for new conversations without history)
     // Locally-created pages have confluence_id NULL, and a set of nulls collapses
     // to a run of empty strings in the joined cache key — two different sets of
@@ -383,6 +396,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       // component cannot see a re-ORDERED set, and sees nothing at all when
       // expansion soft-fails to the single-query path and later recovers.
       deepSearch: body.deepSearch,
+      imageHash,
     });
 
     // `score` is the retrieval ORDERING value — an RRF fusion score from
@@ -561,7 +575,8 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       subPageContextAssembled
       || externalDocs.length > 0
       || askWebSources.length > 0
-      || hasSubstantiveHistory,
+      || hasSubstantiveHistory
+      || imagePart,
     );
     // Precedence is deliberate: the outage reason outranks the empty-set one
     // because during an embedding outage "I found nothing" is a CONSEQUENCE,
@@ -673,6 +688,11 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     try {
       // Build messages (use resolveSystemPrompt so guardrails are appended)
       const askPrompt = await resolveSystemPrompt(userId, 'ask');
+      const userTextContent = `Context from knowledge base:\n\n${ragContext}\n\n---\n\nQuestion: ${sanitizedQuestion}`;
+      const userContent: string | ChatContentPart[] = imagePart
+        ? [{ type: 'text', text: userTextContent }, imagePart]
+        : userTextContent;
+
       const messages: ChatMessage[] = [
         { role: 'system', content: askPrompt + multiPageSuffix },
         // Refusal turns are persistence/UI records, not model context —
@@ -682,7 +702,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         ),
         {
           role: 'user',
-          content: `Context from knowledge base:\n\n${ragContext}\n\n---\n\nQuestion: ${sanitizedQuestion}`,
+          content: userContent,
         },
       ];
 

@@ -76,6 +76,10 @@ describe('streaming request schemas treat model as optional (#929)', () => {
     const parsed = AskRequestSchema.parse({ question: 'hi', model: 'llama3' });
     expect(parsed.model).toBe('llama3');
   });
+  it('AskRequestSchema accepts imageHandle', () => {
+    const parsed = AskRequestSchema.parse({ question: 'hi', imageHandle: 'a'.repeat(64) });
+    expect(parsed.imageHandle).toBe('a'.repeat(64));
+  });
 });
 
 describe('UsecaseAssignmentsSchema', () => {
