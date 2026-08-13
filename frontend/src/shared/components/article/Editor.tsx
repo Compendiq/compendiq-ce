@@ -989,7 +989,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       )}
       {editable && editor && <SearchAndReplace editor={editor} />}
       {editable && editor && <EditorBubbleMenu editor={editor} />}
-      {/* #49 drag handle, #1179 its right-click block menu. The handle and its
+      {/* #49 drag handle, #1179 its block context menu. The handle and its
           menu live together in EditorBlockMenu: they share the hovered-node
           tracking, the handle lock and the target marker. */}
       {editable && editor && <EditorBlockHandle editor={editor} />}

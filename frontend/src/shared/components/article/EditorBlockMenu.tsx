@@ -19,9 +19,9 @@ import { blockMenuTargetKey, blockMenuTargetRange } from './block-menu-decoratio
 import { absorbBlockMenuEscape, useBlockMenuTarget } from './use-block-menu-target';
 
 /**
- * #1179 — right-click menu on the editor's block drag handle.
+ * #1179 — menu on the editor's block drag handle.
  *
- * The handle (#49) was drag-only. Right-clicking it now opens a block-scoped
+ * The handle (#49) was drag-only. Left-clicking (on release) it now opens a block-scoped
  * command surface: the bubble menu's inline formatting and its "Improve with
  * AI" section, plus a Delete that removes the whole block — the only way in the
  * editor to delete a macro, diagram or image block without hand-selecting it.
@@ -401,8 +401,8 @@ export function EditorBlockHandle({ editor }: { editor: EditorType }) {
             className="flex h-full w-full items-center justify-center"
             data-block-menu-open={open ? 'true' : undefined}
             data-testid="drag-handle-trigger"
-            title="Drag to move · Right-click for block actions"
-            onContextMenu={openMenu}
+            title="Drag to move · Click for block actions"
+            onClick={openMenu}
           >
             <GripVertical size={16} />
           </span>

@@ -120,7 +120,7 @@ function Harness({
 
   useEffect(() => {
     if (!editor) return;
-    // Mirrors what `EditorBlockHandle` does on right-click: register the marker
+    // Mirrors what `EditorBlockHandle` does on click: register the marker
     // plugin, then mark the block the pointer was over.
     editor.registerPlugin(createBlockMenuTargetPlugin());
     const pos = topLevelPos(editor, blockIndex);
