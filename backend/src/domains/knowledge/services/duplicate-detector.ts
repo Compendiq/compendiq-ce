@@ -1,8 +1,11 @@
 import { query, getPool } from '../../../core/db/postgres.js';
 import { getUserAccessibleSpacesMemoized as getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { visiblePagesPredicate } from '../../../core/services/page-visibility.js';
-
-const RAG_EF_SEARCH = parseInt(process.env.RAG_EF_SEARCH ?? '100', 10);
+// The third copy of this constant, now retired. The local `parseInt` had no
+// bounds check, so RAG_EF_SEARCH=garbage produced `SET LOCAL hnsw.ef_search =
+// NaN` and a SQL error here while retrieval quietly fell back to 100. Identical
+// value at the default; one definition, three call sites.
+import { RAG_EF_SEARCH } from '../../llm/services/hnsw-ef-search.js';
 
 interface DuplicateCandidate {
   // Stable page PK — always present, used as the dedup key and as a non-null

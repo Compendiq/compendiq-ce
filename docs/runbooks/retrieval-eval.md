@@ -16,9 +16,15 @@ rather than measured.
   — a local run and a CI run of identical code differed by one query at K=3.
   So **measure both sides in the same environment**; pairing a CI artifact
   against a laptop run mixes that noise into the deltas the test reads.
-- **Does not** judge an embedding-model upgrade. The CI model is small and
-  fast on purpose; comparing candidate models needs the real ones, on #1113's
-  rig. `--baseline` refuses a cross-model comparison for that reason.
+- **Does not** judge an embedding-model upgrade. The CI model is small and fast
+  on purpose, and `--baseline` refuses a cross-model comparison for that reason.
+  There is no separate model-comparison harness and none is planned (#1113 was
+  closed without one). Compare models either **here, locally** — run this script
+  twice with `EVAL_EMBEDDING_MODEL` set to each real candidate and read the two
+  reports side by side, never through `--baseline` — or, for the question that
+  actually decides a swap, on **your own corpus** via #1260. This corpus is
+  vendored OSS docs; a model that wins on it has not been shown to win on your
+  pages.
 - **Does not** claim your knowledge base scores this well. The corpus is
   vendored MIT documentation (Fastify, Vitest, Vite), not your pages.
 

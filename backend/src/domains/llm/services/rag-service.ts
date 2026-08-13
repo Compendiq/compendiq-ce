@@ -32,6 +32,7 @@ import {
 } from '../../../core/services/admin-settings-service.js';
 import { withSpan, recordHistogram } from '../../../telemetry.js';
 import { MIN_EMBEDDABLE_TEXT_CHARS } from './embedding-service.js';
+import { RAG_EF_SEARCH, efSearchFor } from './hnsw-ef-search.js';
 
 /**
  * Latency histogram for retrieval pipeline stages (#1117). `stage` is the one
@@ -47,10 +48,11 @@ const STAGE_DURATION_OPTS = {
   description: 'Latency of retrieval pipeline stages (vector/keyword legs, rerank, page_merge, total)',
 };
 
-// Configurable ef_search: higher = better recall, slower query.
-// Default 100 provides good recall/latency tradeoff for ~10K embeddings.
-const parsed = parseInt(process.env.RAG_EF_SEARCH ?? '100', 10);
-const RAG_EF_SEARCH = Number.isFinite(parsed) && parsed > 0 && parsed <= 10000 ? parsed : 100;
+// The ef_search knob, its bounds and the 2x-headroom arithmetic live in
+// hnsw-ef-search.ts, so the page_avg_embedding kNN in embedding-service.ts can
+// share ONE definition with retrieval instead of running at PostgreSQL's
+// default 40 (#1113's folded-in scope item). See that module for why it is not
+// declared here. Re-exported below, so this stays the import path for it.
 
 // The fetch-width knob itself (constants, clamp, 60s TTL cache, invalidation)
 // lives in core/services/admin-settings-service.ts so the admin surface
@@ -319,9 +321,7 @@ export async function vectorSearch(userId: string, questionEmbedding: number[], 
         // recall setting — the graph walk needs headroom beyond the return
         // size. Clamped to pgvector's [1, 1000] bound; the raw cap keeps
         // 2 x rawLimit <= 1000 at every reachable width.
-        await client.query(
-          `SET LOCAL hnsw.ef_search = ${Math.min(1000, Math.max(Number(RAG_EF_SEARCH), 2 * rawLimit))}`,
-        );
+        await client.query(`SET LOCAL hnsw.ef_search = ${efSearchFor(rawLimit)}`);
 
         const result = await client.query<{
           page_id: number;

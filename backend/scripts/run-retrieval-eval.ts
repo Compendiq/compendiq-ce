@@ -245,7 +245,7 @@ async function main(): Promise<void> {
       throw new Error('Baseline was measured against a different corpus — the comparison would be meaningless');
     }
     if (baseline.model !== report.model) {
-      throw new Error(`Baseline used model ${baseline.model}, this run used ${report.model} — this gate compares retrieval logic, not models (see #1113 for model comparisons)`);
+      throw new Error(`Baseline used model ${baseline.model}, this run used ${report.model} — this gate compares retrieval logic, not models (to compare models, run BOTH sides here yourself with the real candidates, or score them on your own corpus via #1260)`);
     }
     // #1104: a reranked and a plain run measure different pipelines — a
     // forgotten --rerank on one side would print a confident verdict about a

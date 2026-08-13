@@ -24,6 +24,7 @@ import {
 } from './shadow-migration-service.js';
 import { listRelationshipProducers } from './embedding-relationship-hooks.js';
 import { toUserFacingEmbeddingError } from './embedding-error-message.js';
+import { efSearchFor } from './hnsw-ef-search.js';
 import pgvector from 'pgvector';
 
 const CHUNK_SIZE = 500;          // ~500 tokens target
@@ -1243,6 +1244,19 @@ export async function computePageRelationships(changedPageIds?: number[]): Promi
   try {
     await client.query('BEGIN');
     await client.query('SET LOCAL statement_timeout = 120000'); // 2 min max for relationship computation
+    // The LATERAL kNN below is served by idx_pages_page_avg_embedding_hnsw, so
+    // it is governed by hnsw.ef_search exactly as the RAG vector leg is. Without
+    // this it ran at PostgreSQL's default 40 while retrieval ran at >= 100 — one
+    // corpus, two recall settings, and the lower one on the path that filters
+    // AFTER the index scan (`deleted_at IS NULL`, `p2.id != s.page_id`,
+    // `page_avg_embedding IS NOT NULL`), where every discarded row comes off the
+    // returned budget. A shortfall here is silent: a neighbour the walk never
+    // visits is an edge that never reaches page_relationships, so the graph and
+    // the related-page suggestions are just thinner than they should be. This is
+    // the SAME arithmetic vectorSearch uses (#1113 folded this path into its
+    // tuning scope); TOP_K sits far below the floor, so it resolves to
+    // RAG_EF_SEARCH today and keeps its 2x headroom if TOP_K is ever raised.
+    await client.query(`SET LOCAL hnsw.ef_search = ${efSearchFor(TOP_K)}`);
 
     // Delete only affected relationships when changedPageIds provided, otherwise full recompute
     if (changedPageIds && changedPageIds.length > 0) {
