@@ -57,6 +57,8 @@ N named `openai-compatible` providers in `llm_providers` table, configured via S
 
 **Deep search reuses `chat` — do not give it a use case (#1112).** Multi-query expansion asks the `chat` model for two paraphrases of the question, retrieves all three phrasings and fuses them (`multi-query-search.ts`, in front of `hybridSearch` — `/api/search` paginates and must never expand). It is one extra completion for a one-sentence rewrite, so a sixth ADR-021 assignment would be a knob every operator has to set before the feature works at all. It is per-request and **default off** (`deepSearch`, the `searchWeb` precedent), it never expands an exact-identifier or pasted-error query (#1107 pins the first, and the second IS the literal FTS matches), and every failure — timeout, open breaker, no assignment, unparseable reply — soft-fails to the original query alone. Design of record: `docs/architecture/09-flow-rag-chat.md`.
 
+**The toggle that sets it must never be sticky (#1119).** Measured on the #1102 fixture with the rerank stage live, expansion is a large win on the query class it targets (vocabulary-gap R@1 .182 → .424, n=33) and a *loss* on ordinary queries (R@5 .921 → .866 over the other 164, 2W/11L, **McNemar exact p = 0.0225**), at 1.40 → 3.76 s/query. It is net-positive only when a person picks it for the question that needs it, so the chat-surface control is **per-question and resets after every ask** — never a persisted preference, never a remembered mode. A sticky toggle silently applies the measured regression to every ordinary question that follows it.
+
 **Removed (do not revive):** `LLM_PROVIDER` was the legacy two-slot toggle and is gone — replaced wholesale by the `llm_providers` table + per-use-case assignments.
 
 ## Security (Mandatory)

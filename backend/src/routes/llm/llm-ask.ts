@@ -119,6 +119,18 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       // expansion is skipped or soft-fails it calls exactly the line below.
       // Expansion lives in that wrapper rather than inside `hybridSearch`
       // because `/api/search` paginates and must never expand.
+      //
+      // THE FLAG MUST STAY PER-QUESTION, AND THE UI TOGGLE THAT SETS IT MUST
+      // RESET AFTER EVERY ASK (#1119) — never a persisted preference, never a
+      // remembered mode. Measured on the #1102 fixture with the rerank stage
+      // live: on the vocabulary-gap slice expansion is a large win
+      // (R@1 .182 -> .424, n=33), and on the other 164 queries it is a
+      // REGRESSION (R@5 .921 -> .866, 2 wins / 11 losses, McNemar exact
+      // p = 0.0225). It also costs 1.40 -> 3.76 s/query. So the feature is
+      // net-positive only while the person asking chooses it for the question
+      // that needs it; a sticky toggle silently applies the regression to
+      // every subsequent ordinary question, which is precisely the arm that
+      // measured worse. Default off, one question at a time.
       const search = body.deepSearch ? multiQuerySearch : hybridSearch;
       // The chat path REQUESTS the #1104 rerank stage; it actually runs only
       // when an admin has assigned a provider+model to the `rerank` use case

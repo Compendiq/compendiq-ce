@@ -339,6 +339,35 @@ retrieval under a deep label — the silent-lie class the vector-participation
 and rerank guards exist for. Queries that skipped BY DESIGN are counted
 separately, so an all-identifier fixture is still a valid measurement.
 
+### What it measured, and why the toggle must not be sticky
+
+197 fixture queries, paired against the same corpus, with the #1104 rerank
+stage live in both arms (197/197 participation; expansion fired for 177 and
+skipped 20 by design):
+
+| slice | n | R@1 | R@5 | MRR | R@5 W/L | McNemar |
+|---|---|---|---|---|---|---|
+| ALL | 197 | .629 → .645 | .858 → .827 | .731 → .720 | 7 / 13 | p = .2632 |
+| vocabulary-gap | 33 | .182 → **.424** | .545 → .636 | .335 → .503 | 5 / 2 | p = .4531 |
+| everything else | 164 | .720 → .689 | .921 → **.866** | .810 → .763 | 2 / 11 | **p = .0225** |
+
+Latency: 1.40 → 3.76 s/query. Without the reranker the same shape holds —
+vocabulary-gap R@5 .424 → .545 (4W/0L), the other 164 .896 → .854 (1W/8L,
+p = .0391), 0.02 → 0.96 s/query.
+
+Expansion is therefore a **large win for the query class it targets and a
+credible loss on ordinary queries**. That is survivable only because
+`deepSearch` is opt-in per request: the regression materialises only when the
+flag is set for a question that would already have worked. The eval necessarily
+measures the pathological case — expansion applied to all 197 queries,
+including the ones nobody would turn it on for — which is why the "ALL" row
+looks worse than the targeted row.
+
+**So the chat-surface control (#1119) must be per-question and reset after
+every ask.** Not a persisted preference, not a remembered mode, not a
+conversation-level setting. A sticky toggle turns a per-question opt-in into
+exactly the arm the "everything else" row measures.
+
 ## Quality / recency ranking prior (#1111)
 
 A quality worker already computes `pages.quality_score`, and every page
