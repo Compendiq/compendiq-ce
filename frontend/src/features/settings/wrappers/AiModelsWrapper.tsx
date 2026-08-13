@@ -6,11 +6,17 @@ import { SkeletonFormFields } from '../../../shared/components/feedback/Skeleton
 const LlmTab = lazy(() => import('../panels/LlmTab').then((m) => ({ default: m.LlmTab })));
 const EmbeddingTab = lazy(() => import('../panels/EmbeddingTab').then((m) => ({ default: m.EmbeddingTab })));
 const WorkersTab = lazy(() => import('../WorkersTab').then((m) => ({ default: m.WorkersTab })));
+const RetrievalTab = lazy(() => import('../panels/RetrievalTab').then((m) => ({ default: m.RetrievalTab })));
 
 /**
  * "AI Models" wrapper — folds LLM provider config, embedding-model config,
- * and the workers/queue dashboard into one nav entry. All three sub-panels
- * are CE-visible to admins.
+ * the retrieval knobs and the workers/queue dashboard into one nav entry. All
+ * four sub-panels are CE-visible to admins.
+ *
+ * Retrieval sits after Embeddings and before Workers: it configures the stage
+ * between "what the embedding model indexed" and "what the chat model is
+ * handed", and its rerank pool points back at the LLM providers tab for the
+ * assignment that switches that stage on (#1118).
  */
 export function AiModelsWrapper() {
   const tabs: SubTabDef[] = [
@@ -33,6 +39,15 @@ export function AiModelsWrapper() {
       ),
     },
     {
+      id: 'retrieval',
+      label: 'Retrieval',
+      render: () => (
+        <Suspense fallback={<SkeletonFormFields />}>
+          <RetrievalTab />
+        </Suspense>
+      ),
+    },
+    {
       id: 'workers',
       label: 'Workers',
       render: () => (
@@ -47,7 +62,7 @@ export function AiModelsWrapper() {
     <>
       <PanelHeader
         title="AI Models"
-        subtitle="Configure LLM providers, embedding model, and worker concurrency."
+        subtitle="Configure LLM providers, embedding model, retrieval tuning, and worker concurrency."
       />
       <SubTabs ariaLabel="AI Models sub-sections" tabs={tabs} testIdRoot="ai-models" />
     </>

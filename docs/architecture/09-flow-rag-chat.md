@@ -448,11 +448,18 @@ that the tier source-of-truth stays in Postgres, since the vector payload
 goes stale. The stage soft-fails like its neighbours: any error serves the
 fused order and records `rag.ranking_prior = bypassed`.
 
-Config is `rag_ranking_prior_weight` in `admin_settings` (#1118), **default 0**
-and clamped to `[0, 0.05]`; `0` disables the stage and skips the signal query
-entirely, so a deployment that has not opted in pays nothing for it. There is
-no UI — it matches `rag_fetch_width`, `rag_mmr_lambda` and
-`rag_rerank_candidates`, which are all DB-only knobs.
+Config is `rag_ranking_prior_weight` in `admin_settings`, **default 0** and
+clamped to `[0, 0.05]`; `0` disables the stage and skips the signal query
+entirely, so a deployment that has not opted in pays nothing for it. Edited
+from **Settings → AI Models → Retrieval** (#1118) alongside `rag_fetch_width`,
+`rag_mmr_lambda`, `rag_rerank_candidates` and the rest of the epic's knobs.
+
+The panel presents this stage and MMR as **optional stages that are off by
+default**, each captioned with the measurement that decided it — and it says
+inline when a rerank provider is assigned, because the cross-encoder then
+rescores the whole pool and discards the prior's ordering wholesale. A knob
+that is provably a no-op on the reader's own deployment has to say so where it
+is set, not only here.
 
 ## Exact-identifier pin stage (#1107)
 
@@ -573,7 +580,8 @@ beyond the rerank pool entirely: the rerank stage builds new row objects
 rather than mutating the candidate array, so recovering from `candidates`
 would have quietly dropped the very relevance score the recovery exists to
 preserve. The operator kill switch is
-`rag_pin_identifiers` ('0' disables). Detection misses soft-fail to the
+`rag_pin_identifiers` ('0' disables), a checkbox on the Retrieval settings
+panel (#1118). Detection misses soft-fail to the
 fused order, and lookup errors are isolated PER DETECTION (F8) — one
 failing probe must not discard a second, independently verified pin. The
 fixture's

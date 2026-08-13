@@ -12,7 +12,23 @@ import {
   getAdminAccessDeniedRetentionDays,
   getLlmConcurrency,
   getLlmMaxQueueDepth,
+  getRagFetchWidth,
+  getRagRerankCandidates,
+  getRagConfidenceThreshold,
+  getRagConfidenceThresholdRerank,
+  getRagContextCharsPerPage,
+  getRagPinIdentifiersEnabled,
+  getRagMmrConfig,
+  getRagRankingPriorWeight,
+  invalidateRagFetchWidthCache,
+  invalidateRagRerankCandidatesCache,
+  invalidateRagConfidenceThresholdCache,
+  invalidateRagContextCharsCache,
+  invalidateRagPinIdentifiersCache,
+  invalidateRagMmrCache,
+  invalidateRagRankingPriorCache,
 } from '../../core/services/admin-settings-service.js';
+import { toFixedDecimalString } from '../../core/utils/fixed-decimal.js';
 import { getRegistrationMode } from '../../core/services/registration-policy-service.js';
 import {
   setLlmConcurrencyClusterWide,
@@ -301,6 +317,14 @@ export async function adminRoutes(fastify: FastifyInstance) {
       llmMaxConcurrentStreamsPerUser,
       adminAccessDeniedRetentionDays,
       registrationMode,
+      ragFetchWidth,
+      ragRerankCandidates,
+      ragConfidenceThreshold,
+      ragConfidenceThresholdRerank,
+      ragContextCharsPerPage,
+      ragPinIdentifiers,
+      ragMmr,
+      ragRankingPriorWeight,
     ] = await Promise.all([
       getEmbeddingDimensions(),
       getAiGuardrails(),
@@ -309,6 +333,21 @@ export async function adminRoutes(fastify: FastifyInstance) {
       getStreamCap(),
       getAdminAccessDeniedRetentionDays(),
       getRegistrationMode(),
+      // #1118 — read the retrieval knobs through their own getters rather
+      // than adding nine keys to the SELECT below. Each getter owns a
+      // 60-second cache and a soft-fail path (the assembly budget's is a
+      // last-good fallback, not a default), so a hand-rolled read here would
+      // report a value the pipeline is not using the moment one of them
+      // degraded. They are cached, so the cost is one SELECT per key per
+      // minute, not per settings page view.
+      getRagFetchWidth(),
+      getRagRerankCandidates(),
+      getRagConfidenceThreshold(),
+      getRagConfidenceThresholdRerank(),
+      getRagContextCharsPerPage(),
+      getRagPinIdentifiersEnabled(),
+      getRagMmrConfig(),
+      getRagRankingPriorWeight(),
     ]);
     const result = await query<{ setting_key: string; setting_value: string }>(
       `SELECT setting_key, setting_value FROM admin_settings
@@ -355,6 +394,19 @@ export async function adminRoutes(fastify: FastifyInstance) {
       llmMaxQueueDepth: getLlmMaxQueueDepth(),
       // Issue #1051 — deployment-level self-registration policy.
       registrationMode,
+      // #1118 — epic #1100's retrieval knobs, written by the Retrieval sub-tab
+      // of Settings → AI Models. Values are what the pipeline resolves right
+      // now, so an absent row answers with the reader's own default and the
+      // panel never has to restate one.
+      ragFetchWidth,
+      ragRerankCandidates,
+      ragConfidenceThreshold,
+      ragConfidenceThresholdRerank,
+      ragContextCharsPerPage,
+      ragPinIdentifiers,
+      ragMmrEnabled: ragMmr.enabled,
+      ragMmrLambda: ragMmr.lambda,
+      ragRankingPriorWeight,
     };
   });
 
@@ -476,6 +528,78 @@ export async function adminRoutes(fastify: FastifyInstance) {
       updates.push({ key: 'registration_mode', value: body.registrationMode });
     }
 
+    // ─── #1118 — epic #1100's retrieval knobs ─────────────────────────────
+    //
+    // Zod already mirrored every reader's range, so the values are in-range
+    // here. What is NOT free is the SERIALISATION, and two shapes are traps:
+    //
+    //  - **Exponent notation.** `String(5e-7)` is `'5e-7'`, and every strict
+    //    regex guarding a decimal knob rejects it — the write succeeds and the
+    //    reader keeps the default. `toFixedDecimalString` is the whole fix.
+    //  - **Booleans.** `'true'` / `'false'` is the one pair that satisfies
+    //    both parsers: `rag_mmr_enabled` is an ON-list (`1|true|on`) and
+    //    `rag_pin_identifiers` an OFF-list (`0|false|off`), so anything else
+    //    (`'yes'`, `''`) reads as "leave the default" on one of them.
+    const retrievalKnobs: Array<[key: string, invalidate: () => void, value: string | undefined]> = [
+      [
+        'rag_fetch_width',
+        invalidateRagFetchWidthCache,
+        body.ragFetchWidth !== undefined ? String(body.ragFetchWidth) : undefined,
+      ],
+      [
+        'rag_rerank_candidates',
+        invalidateRagRerankCandidatesCache,
+        body.ragRerankCandidates !== undefined ? String(body.ragRerankCandidates) : undefined,
+      ],
+      [
+        'rag_confidence_threshold',
+        invalidateRagConfidenceThresholdCache,
+        body.ragConfidenceThreshold !== undefined
+          ? toFixedDecimalString(body.ragConfidenceThreshold)
+          : undefined,
+      ],
+      [
+        'rag_confidence_threshold_rerank',
+        invalidateRagConfidenceThresholdCache,
+        body.ragConfidenceThresholdRerank !== undefined
+          ? toFixedDecimalString(body.ragConfidenceThresholdRerank)
+          : undefined,
+      ],
+      [
+        'rag_context_chars_per_page',
+        invalidateRagContextCharsCache,
+        body.ragContextCharsPerPage !== undefined ? String(body.ragContextCharsPerPage) : undefined,
+      ],
+      [
+        'rag_pin_identifiers',
+        invalidateRagPinIdentifiersCache,
+        body.ragPinIdentifiers !== undefined ? String(body.ragPinIdentifiers) : undefined,
+      ],
+      [
+        'rag_mmr_enabled',
+        invalidateRagMmrCache,
+        body.ragMmrEnabled !== undefined ? String(body.ragMmrEnabled) : undefined,
+      ],
+      [
+        'rag_mmr_lambda',
+        invalidateRagMmrCache,
+        body.ragMmrLambda !== undefined ? toFixedDecimalString(body.ragMmrLambda) : undefined,
+      ],
+      [
+        'rag_ranking_prior_weight',
+        invalidateRagRankingPriorCache,
+        body.ragRankingPriorWeight !== undefined
+          ? toFixedDecimalString(body.ragRankingPriorWeight)
+          : undefined,
+      ],
+    ];
+    const invalidateFor = new Map<string, () => void>();
+    for (const [key, invalidate, value] of retrievalKnobs) {
+      if (value === undefined) continue;
+      updates.push({ key, value });
+      invalidateFor.set(key, invalidate);
+    }
+
     for (const { key, value } of updates) {
       await query(
         `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
@@ -483,6 +607,18 @@ export async function adminRoutes(fastify: FastifyInstance) {
          ON CONFLICT (setting_key) DO UPDATE SET setting_value = $2, updated_at = NOW()`,
         [key, value],
       );
+      // #1118 — drop the knob's in-process cache as soon as ITS row lands,
+      // not in a sweep at the end of the handler. Every `invalidate*` function
+      // in `admin-settings-service.ts` shipped EXPORTED WITH NO PRODUCTION
+      // CALLSITE — each knob's JSDoc named this handler as the caller that did
+      // not exist yet — so a saved value took the full 60-second TTL even on
+      // the pod that wrote it, and the settings page refetching straight after
+      // the PUT rendered the OLD value back at the admin who had just changed
+      // it. Invalidating here rather than after the loop means a write that
+      // throws halfway leaves exactly the caches whose rows landed cleared,
+      // and no others. Other pods still converge on the TTL, as with the
+      // stream cap.
+      invalidateFor.get(key)?.();
     }
 
     // ─── #113 Phase B-3 — cluster-wide LLM queue settings ─────────────────

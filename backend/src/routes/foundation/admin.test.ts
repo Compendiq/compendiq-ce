@@ -67,6 +67,26 @@ vi.mock('../../core/services/admin-settings-service.js', () => ({
   // hardcoded defaults in `admin-settings-service.ts`.
   getLlmConcurrency: vi.fn().mockReturnValue(4),
   getLlmMaxQueueDepth: vi.fn().mockReturnValue(50),
+  // #1118 — retrieval knobs. Stubbed at their reader defaults here because
+  // this file's subject is the surrounding settings surface. The knobs' own
+  // read/write/invalidate behaviour is exercised against the REAL service in
+  // `admin-retrieval-settings.test.ts`, which is what makes the cache
+  // invalidation assertion there mean something.
+  getRagFetchWidth: vi.fn().mockResolvedValue(10),
+  getRagRerankCandidates: vi.fn().mockResolvedValue(30),
+  getRagConfidenceThreshold: vi.fn().mockResolvedValue(0),
+  getRagConfidenceThresholdRerank: vi.fn().mockResolvedValue(0),
+  getRagContextCharsPerPage: vi.fn().mockResolvedValue(6000),
+  getRagPinIdentifiersEnabled: vi.fn().mockResolvedValue(true),
+  getRagMmrConfig: vi.fn().mockResolvedValue({ enabled: false, lambda: 0.7 }),
+  getRagRankingPriorWeight: vi.fn().mockResolvedValue(0),
+  invalidateRagFetchWidthCache: vi.fn(),
+  invalidateRagRerankCandidatesCache: vi.fn(),
+  invalidateRagConfidenceThresholdCache: vi.fn(),
+  invalidateRagContextCharsCache: vi.fn(),
+  invalidateRagPinIdentifiersCache: vi.fn(),
+  invalidateRagMmrCache: vi.fn(),
+  invalidateRagRankingPriorCache: vi.fn(),
 }));
 
 // #113 Phase B-3 — `setLlmConcurrencyClusterWide` / `setLlmMaxQueueDepthClusterWide`
