@@ -51,11 +51,11 @@ describe('EditorToolbar', () => {
     expect(screen.getByRole('toolbar', { name: 'Page editor toolbar' })).toBeInTheDocument();
   });
 
-  it('presents nineteen main controls plus utilities', () => {
+  it('presents eighteen main controls plus utilities', () => {
     render(<EditorToolbar editor={createMockEditor()} onToggleHeaderNumbering={vi.fn()} />);
     const toolbar = screen.getByRole('toolbar', { name: 'Page editor toolbar' });
-    // 19 = (block type + quote + code block + divider) + 5 marks + 1 align dropdown + 3 lists + 2 colours + Insert + header numbering + undo + redo
-    expect(toolbar.querySelectorAll('button').length).toBe(19);
+    // 18 = (block type + quote + code block + divider) + 5 marks + 1 align dropdown + 3 lists + 2 colours + Insert + undo + redo
+    expect(toolbar.querySelectorAll('button').length).toBe(18);
   });
 
   it('renders the groups in the restructured order', () => {
@@ -64,13 +64,14 @@ describe('EditorToolbar', () => {
       document.querySelectorAll<HTMLElement>('[data-testid^="toolbar-group-"]'),
     ).map((el) => el.dataset.testid);
 
-    // What the block IS, then how the words look, then alignment, then lists,
-    // then colour, then what else can go here.
+    // First choose the block, then shape text and lists. Alignment belongs with
+    // lists; block-level actions follow it as their own compact section.
     expect(groups).toEqual([
       'toolbar-group-history',
-      'toolbar-group-block',
+      'toolbar-group-block-type',
       'toolbar-group-inline',
       'toolbar-group-lists',
+      'toolbar-group-block-actions',
       'toolbar-group-colors',
       'toolbar-group-insert',
     ]);
@@ -130,7 +131,7 @@ describe('EditorToolbar', () => {
 
     openBlockMenu();
     // Check dropdown options
-    for (const label of ['Text', 'Heading 1', 'Heading 2', 'Heading 3']) {
+    for (const label of ['Text', 'Heading 1', 'Heading 2', 'Heading 3', 'Heading 4']) {
       expect(screen.getByRole('menuitem', { name: new RegExp(`^${label}`) })).toBeInTheDocument();
     }
     // Ensure Quote, Code block, and Divider are no longer in the dropdown
@@ -189,18 +190,22 @@ describe('EditorToolbar', () => {
     expect(run).toHaveBeenCalled();
   });
 
-  it('runs the heading block command on select from dropdown', () => {
+  it('sets Heading 4 from the text-style dropdown', () => {
     const run = vi.fn();
+    const setHeading = vi.fn();
     const chain: Record<string, unknown> = new Proxy({} as Record<string, unknown>, {
       get(_t, prop: string) {
         if (prop === 'run') return run;
+        if (prop === 'setHeading') return setHeading;
         return () => chain;
       },
     });
+    setHeading.mockReturnValue(chain);
     const editor = createMockEditor({ chain: () => chain });
     render(<EditorToolbar editor={editor} />);
     openBlockMenu();
-    fireEvent.click(screen.getByRole('menuitem', { name: /^Heading 1/ }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /^Heading 4/ }));
+    expect(setHeading).toHaveBeenCalledWith({ level: 4 });
     expect(run).toHaveBeenCalled();
   });
 
@@ -330,14 +335,10 @@ describe('EditorToolbar', () => {
     expect(screen.getByRole('button', { name: 'Italic (Ctrl+I)' })).toHaveAttribute('aria-pressed', 'false');
   });
 
-  it('carries the pressed state on aria-pressed, which is what styles it', () => {
-    // The pressed look is `nm-icon-button[aria-pressed='true']` in index.css,
-    // so the attribute is not decoration — remove it and the state disappears
-    // while the button still looks and behaves normal.
+  it('carries heading-numbering state into the text-style menu', () => {
     render(<EditorToolbar editor={createMockEditor()} onToggleHeaderNumbering={vi.fn()} headerNumbering />);
-    const headerNumberingBtn = screen.getByRole('button', { name: /Header Numbering/i });
-    expect(headerNumberingBtn.className).toContain('nm-icon-button');
-    expect(headerNumberingBtn).toHaveAttribute('aria-pressed', 'true');
+    openBlockMenu();
+    expect(screen.getByRole('menuitemcheckbox', { name: 'Number headings' })).toHaveAttribute('aria-checked', 'true');
   });
 
   // ---------- colours ----------
@@ -356,6 +357,7 @@ describe('EditorToolbar', () => {
     const triggers = screen.getAllByTestId('color-picker-trigger');
     expect(triggers[0]).toHaveAttribute('aria-label', 'Text Color');
     expect(triggers[1]).toHaveAttribute('aria-label', 'Highlight (Ctrl+Shift+H)');
+    expect(triggers[0]?.querySelector('svg')).toHaveClass('lucide-baseline');
 
     fireEvent.click(triggers[0]!);
     const swatches = screen.getAllByTestId('color-picker-swatch');
@@ -365,19 +367,20 @@ describe('EditorToolbar', () => {
 
   // ---------- utilities ----------
 
-  it('renders the header-numbering toggle only when it is wired up', () => {
-    const toggle = vi.fn();
+  it('renders the header-numbering toggle in the text-style menu only when it is wired up', () => {
+    const onToggle = vi.fn();
     const { rerender } = render(<EditorToolbar editor={createMockEditor()} />);
-    expect(screen.queryByRole('button', { name: /Header Numbering/i })).not.toBeInTheDocument();
+    openBlockMenu();
+    expect(screen.queryByRole('menuitemcheckbox', { name: 'Number headings' })).not.toBeInTheDocument();
 
     rerender(
-      <EditorToolbar editor={createMockEditor()} headerNumbering onToggleHeaderNumbering={toggle} />,
+      <EditorToolbar editor={createMockEditor()} headerNumbering onToggleHeaderNumbering={onToggle} />,
     );
-    const btn = screen.getByRole('button', { name: /Header Numbering/i });
-    expect(btn).toHaveAttribute('aria-pressed', 'true');
+    const toggleItem = screen.getByRole('menuitemcheckbox', { name: 'Number headings' });
+    expect(toggleItem).toHaveAttribute('aria-checked', 'true');
 
-    fireEvent.click(btn);
-    expect(toggle).toHaveBeenCalledTimes(1);
+    fireEvent.click(toggleItem);
+    expect(onToggle).toHaveBeenCalledTimes(1);
   });
 
   it('disables undo and redo when the history is empty', () => {

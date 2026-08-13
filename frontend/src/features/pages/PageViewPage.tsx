@@ -916,7 +916,7 @@ export function PageViewPage() {
                     secondaries wrap among themselves and Edit stays pinned. */}
                 <button
                   onClick={handleStartEditing}
-                  className="nm-button-ghost shrink-0 max-sm:min-h-11"
+                  className="nm-button-ghost shrink-0 px-2.5 py-1 text-xs max-sm:min-h-11"
                   data-testid="edit-page-btn"
                 >
                   Edit

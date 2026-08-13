@@ -35,6 +35,11 @@ describe('the Edit affordance', () => {
     expect(editButton()).toMatch(/shrink-0/);
   });
 
+  it('uses compact desktop metrics so the article strip stays on the shared 48px panel line', () => {
+    expect(editButton()).toMatch(/px-2\.5 py-1 text-xs/);
+    expect(source).toContain('min-h-[calc(3rem-1px)]');
+  });
+
   // 2.5.5: the row is reachable one-handed on a phone, where this used to be a
   // ~24px target in the hardest reach zone.
   it('clears a 44px touch target below the sm breakpoint', () => {

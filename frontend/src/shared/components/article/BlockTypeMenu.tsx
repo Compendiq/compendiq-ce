@@ -2,7 +2,7 @@ import { useState } from 'react';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { useEditorState } from '@tiptap/react';
 import type { Editor as EditorType } from '@tiptap/react';
-import { Heading1, Heading2, Heading3, Type, ChevronDown } from 'lucide-react';
+import { Heading1, Heading2, Heading3, Heading4, Type, ChevronDown, Hash } from 'lucide-react';
 import { TOOLBAR_ITEM_ATTR } from './use-toolbar-roving-focus';
 import { formatKeysForPlatform } from '../../lib/shortcut-registry';
 import { isMac } from '../../lib/platform';
@@ -44,6 +44,7 @@ const BLOCK_TYPE_OPTIONS: readonly BlockTypeOption[] = [
   { key: 'h1', label: 'Heading 1', Icon: Heading1, keys: 'ctrl+alt+1' },
   { key: 'h2', label: 'Heading 2', Icon: Heading2, keys: 'ctrl+alt+2' },
   { key: 'h3', label: 'Heading 3', Icon: Heading3, keys: 'ctrl+alt+3' },
+  { key: 'h4', label: 'Heading 4', Icon: Heading4, keys: 'ctrl+alt+4' },
   { key: 'paragraph', label: 'Text', Icon: Type },
 ];
 
@@ -66,6 +67,7 @@ function resolveActiveKey(
   if (editor.isActive('heading', { level: 1 })) return 'h1';
   if (editor.isActive('heading', { level: 2 })) return 'h2';
   if (editor.isActive('heading', { level: 3 })) return 'h3';
+  if (editor.isActive('heading', { level: 4 })) return 'h4';
   if (editor.isActive('paragraph')) return 'paragraph';
   return null;
 }
@@ -85,6 +87,7 @@ function runBlockType(
   if (key === 'h1') chain.setHeading({ level: 1 }).run();
   else if (key === 'h2') chain.setHeading({ level: 2 }).run();
   else if (key === 'h3') chain.setHeading({ level: 3 }).run();
+  else if (key === 'h4') chain.setHeading({ level: 4 }).run();
   else if (key === 'paragraph') chain.setParagraph().run();
 }
 
@@ -92,10 +95,15 @@ export function BlockTypeMenu({
   editor,
   getRange,
   className,
+  headerNumbering,
+  onToggleHeaderNumbering,
 }: {
   editor: EditorType;
   getRange?: () => { from: number; to: number } | null;
   className?: string;
+  /** The toolbar's document-level heading-numbering preference. */
+  headerNumbering?: boolean;
+  onToggleHeaderNumbering?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const { activeKey } = useEditorState({
@@ -141,6 +149,22 @@ export function BlockTypeMenu({
               </DropdownMenu.Item>
             );
           })}
+          {onToggleHeaderNumbering && (
+            <>
+              <DropdownMenu.Separator className="my-1 h-px bg-border" />
+              <DropdownMenu.CheckboxItem
+                checked={headerNumbering}
+                onCheckedChange={onToggleHeaderNumbering}
+                className={MENU_ITEM}
+              >
+                <Hash size={15} className="shrink-0" />
+                Number headings
+                <DropdownMenu.ItemIndicator className="ml-auto text-foreground">
+                  <span aria-hidden="true">✓</span>
+                </DropdownMenu.ItemIndicator>
+              </DropdownMenu.CheckboxItem>
+            </>
+          )}
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>

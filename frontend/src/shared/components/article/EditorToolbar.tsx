@@ -8,9 +8,9 @@ import {
   Bold, Italic, Underline, Strikethrough, Code,
   List, ListOrdered, CheckSquare, Quote, Minus, Undo2, Redo2, ChevronDown, Plus,
   Table as TableIcon, Image as ImageIcon, CodeSquare, Columns2, Workflow, Badge,
-  ChevronsUpDown, Hash, Paperclip, ListTree, ImagePlus, Table2,
+  ChevronsUpDown, Paperclip, ListTree, ImagePlus, Table2,
   Images, Captions, Info, TriangleAlert, StickyNote, Lightbulb,
-  Palette, Highlighter,
+  Baseline, Highlighter,
   AlignLeft, AlignCenter, AlignRight, AlignJustify,
 } from 'lucide-react';
 import { LAYOUT_PRESETS } from './article-extensions';
@@ -791,28 +791,12 @@ export function EditorToolbar({
 
         <ToolbarSeparator />
 
-        <ToolbarGroup name="block">
-          <BlockTypeMenu editor={editor} />
-          <ToolbarButton
-            onClick={() => editor.chain().focus().toggleBlockquote().run()}
-            active={activeState.blockquote}
-            title="Quote"
-          >
-            <Quote size={15} />
-          </ToolbarButton>
-          <ToolbarButton
-            onClick={() => editor.chain().focus().toggleCodeBlock().run()}
-            active={activeState.codeBlock}
-            title="Code Block"
-          >
-            <CodeSquare size={15} />
-          </ToolbarButton>
-          <ToolbarButton
-            onClick={() => editor.chain().focus().setHorizontalRule().run()}
-            title="Divider"
-          >
-            <Minus size={15} />
-          </ToolbarButton>
+        <ToolbarGroup name="block-type">
+          <BlockTypeMenu
+            editor={editor}
+            headerNumbering={headerNumbering}
+            onToggleHeaderNumbering={onToggleHeaderNumbering}
+          />
         </ToolbarGroup>
 
         <ToolbarSeparator />
@@ -852,9 +836,34 @@ export function EditorToolbar({
 
         <ToolbarSeparator />
 
+        <ToolbarGroup name="block-actions">
+          <ToolbarButton
+            onClick={() => editor.chain().focus().toggleBlockquote().run()}
+            active={activeState.blockquote}
+            title="Quote"
+          >
+            <Quote size={15} />
+          </ToolbarButton>
+          <ToolbarButton
+            onClick={() => editor.chain().focus().toggleCodeBlock().run()}
+            active={activeState.codeBlock}
+            title="Code Block"
+          >
+            <CodeSquare size={15} />
+          </ToolbarButton>
+          <ToolbarButton
+            onClick={() => editor.chain().focus().setHorizontalRule().run()}
+            title="Divider"
+          >
+            <Minus size={15} />
+          </ToolbarButton>
+        </ToolbarGroup>
+
+        <ToolbarSeparator />
+
         <ToolbarGroup name="colors">
           <ColorPickerDropdown
-            icon={<Palette size={15} />}
+            icon={<Baseline size={15} />}
             title="Text Color"
             activeColor={activeState.textColor}
             onSelect={(color) => editor.chain().focus().setColor(color).run()}
@@ -873,16 +882,6 @@ export function EditorToolbar({
 
         <ToolbarGroup name="insert">
           <InsertMenu editor={editor} />
-          {onToggleHeaderNumbering && (
-            <ToolbarButton
-              onClick={onToggleHeaderNumbering}
-              active={headerNumbering}
-              title={headerNumbering ? 'Header Numbering (On)' : 'Header Numbering (Off)'}
-              label={headerNumbering ? 'Header Numbering (On)' : 'Header Numbering (Off)'}
-            >
-              <Hash size={15} />
-            </ToolbarButton>
-          )}
         </ToolbarGroup>
       </div>
 
