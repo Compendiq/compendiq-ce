@@ -3,7 +3,7 @@ import { test, expect } from '@playwright/test';
 /**
  * E2E: Authentication flow
  *
- * Tests register -> login -> access protected route -> logout.
+ * Tests register -> login -> access protected route -> logout -> session retention on refresh.
  * Uses a unique username per run to avoid conflicts.
  */
 
@@ -19,20 +19,21 @@ test.describe('Authentication flow', () => {
 
     // The login page should render
     await expect(
-      page.getByText('Sign in to your account'),
+      page.getByText(/Sign in to Compendiq|Create your account/),
     ).toBeVisible({ timeout: 10_000 });
 
-    // 2. Switch to registration mode
+    // 2. Switch to registration mode if on sign in
     const createOneLink = page.getByRole('button', { name: /Create one/i });
-    await expect(createOneLink).toBeVisible();
-    await createOneLink.click();
+    if (await createOneLink.isVisible().catch(() => false)) {
+      await createOneLink.click();
+    }
 
     // Should now show "Create your account"
     await expect(page.getByText('Create your account')).toBeVisible();
 
     // 3. Fill registration form
     await page.getByLabel('Username').fill(TEST_USER);
-    await page.getByLabel('Password').fill(TEST_PASS);
+    await page.locator('input[type="password"]').first().fill(TEST_PASS);
 
     // 4. Submit registration
     await page.getByRole('button', { name: /Create Account/i }).click();
@@ -40,8 +41,7 @@ test.describe('Authentication flow', () => {
     // 5. Should redirect to the main app (pages view at /)
     await expect(page).toHaveURL(/\/$/, { timeout: 15_000 });
 
-    // Verify we can see the main app layout (sidebar or dashboard)
-    // The app should show some authenticated content
+    // Verify we can see the main app layout
     await expect(
       page.locator('[data-testid="app-layout"]').or(page.locator('nav')).or(page.locator('aside')),
     ).toBeVisible({ timeout: 10_000 });
@@ -50,13 +50,12 @@ test.describe('Authentication flow', () => {
     await page.goto('/settings');
     await expect(page).toHaveURL(/\/settings/, { timeout: 10_000 });
 
-    // Should see the settings page content (e.g. Confluence tab)
+    // Should see the settings page content
     await expect(
       page.getByText('Confluence').or(page.getByText('Settings')),
     ).toBeVisible({ timeout: 10_000 });
 
     // 7. Logout via the user menu
-    // Look for the user menu button (usually in the sidebar/header)
     const userMenuTrigger = page
       .getByTestId('user-menu-trigger')
       .or(page.getByRole('button', { name: new RegExp(TEST_USER, 'i') }))
@@ -70,11 +69,9 @@ test.describe('Authentication flow', () => {
 
       if (await logoutBtn.isVisible({ timeout: 3_000 }).catch(() => false)) {
         await logoutBtn.click();
-        // Should redirect to login
         await expect(page).toHaveURL(/\/login/, { timeout: 10_000 });
       }
     } else {
-      // Fallback: clear local storage to simulate logout
       await page.evaluate(() => {
         localStorage.clear();
       });
@@ -86,20 +83,21 @@ test.describe('Authentication flow', () => {
   test('login with existing user and access protected route', async ({
     page,
   }) => {
-    // First, register a user
     const loginUser = `e2e_login_${Date.now()}`;
 
     await page.goto('/login');
-    await expect(page.getByText(/Sign in to your account|Create your account/)).toBeVisible({
+    await expect(page.getByText(/Sign in to Compendiq|Create your account/)).toBeVisible({
       timeout: 10_000,
     });
 
     // Register first
     const createOneLink = page.getByRole('button', { name: /Create one/i });
-    await createOneLink.click();
+    if (await createOneLink.isVisible().catch(() => false)) {
+      await createOneLink.click();
+    }
 
     await page.getByLabel('Username').fill(loginUser);
-    await page.getByLabel('Password').fill(TEST_PASS);
+    await page.locator('input[type="password"]').first().fill(TEST_PASS);
     await page.getByRole('button', { name: /Create Account/i }).click();
 
     // Wait for redirect
@@ -113,10 +111,10 @@ test.describe('Authentication flow', () => {
     await expect(page).toHaveURL(/\/login/, { timeout: 10_000 });
 
     // Now test login
-    await expect(page.getByText('Sign in to your account')).toBeVisible();
+    await expect(page.getByText('Sign in to Compendiq')).toBeVisible();
 
     await page.getByLabel('Username').fill(loginUser);
-    await page.getByLabel('Password').fill(TEST_PASS);
+    await page.locator('input[type="password"]').first().fill(TEST_PASS);
     await page.getByRole('button', { name: /Sign In/i }).click();
 
     // Should redirect to the main app
@@ -124,16 +122,39 @@ test.describe('Authentication flow', () => {
   });
 
   test('unauthenticated user is redirected to login', async ({ page }) => {
-    // Clear any stored auth
     await page.goto('/login');
     await page.evaluate(() => {
       localStorage.clear();
     });
 
-    // Try to access a protected route
     await page.goto('/settings');
-
-    // Should be redirected to /login
     await expect(page).toHaveURL(/\/login/, { timeout: 10_000 });
+  });
+
+  test('authenticated user stays logged in after page reload/refresh', async ({
+    page,
+  }) => {
+    const refreshUser = `e2e_refresh_${Date.now()}`;
+
+    await page.goto('/login');
+    const createOneLink = page.getByRole('button', { name: /Create one/i });
+    if (await createOneLink.isVisible().catch(() => false)) {
+      await createOneLink.click();
+    }
+
+    await page.getByLabel('Username').fill(refreshUser);
+    await page.locator('input[type="password"]').first().fill(TEST_PASS);
+    await page.getByRole('button', { name: /Create Account/i }).click();
+
+    await expect(page).toHaveURL(/\/$/, { timeout: 15_000 });
+
+    // Refresh the page
+    await page.reload();
+
+    // Verify user stays logged in on / (not redirected to /login)
+    await expect(page).toHaveURL(/\/$/, { timeout: 10_000 });
+    await expect(
+      page.locator('[data-testid="app-layout"]').or(page.locator('nav')).or(page.locator('aside')),
+    ).toBeVisible({ timeout: 10_000 });
   });
 });
