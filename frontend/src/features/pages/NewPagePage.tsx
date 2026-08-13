@@ -351,10 +351,11 @@ export function NewPagePage() {
                 <LayoutTemplate size={14} />
                 Use Template
               </button>
-              {/* The hint span (not the button) carries the title: nm-button-primary
-                  sets pointer-events:none on :disabled, so a tooltip on the button
-                  itself would never show while it is disabled — exactly when the
-                  user needs to know why. */}
+              <TagPopover
+                tags={pendingLabels}
+                onAddTag={(t) => setPendingLabels((prev) => [...prev, t])}
+                onRemoveTag={(t) => setPendingLabels((prev) => prev.filter((item) => item !== t))}
+              />
               <span title={showCreateHint ? createHint : undefined}>
                 <button
                   onClick={handleCreate}
@@ -500,13 +501,6 @@ export function NewPagePage() {
                 editor={editorInstance}
                 headerNumbering={headerNumbering}
                 onToggleHeaderNumbering={toggleHeaderNumbering}
-                actions={
-                  <TagPopover
-                    tags={pendingLabels}
-                    onAddTag={(t) => setPendingLabels((prev) => [...prev, t])}
-                    onRemoveTag={(t) => setPendingLabels((prev) => prev.filter((item) => item !== t))}
-                  />
-                }
               />
               <TableContextToolbar editor={editorInstance} />
               <LayoutContextToolbar editor={editorInstance} />

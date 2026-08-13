@@ -729,36 +729,6 @@ export function PageViewPage() {
                 editor={editorInstance}
                 headerNumbering={headerNumbering}
                 onToggleHeaderNumbering={toggleHeaderNumbering}
-                actions={
-                  <>
-                    <TagPopover
-                      tags={editing ? draftLabels : page.labels}
-                      onAddTag={handleAddTag}
-                      onRemoveTag={handleRemoveTag}
-                      suggestions={filterOptions?.labels}
-                      isLoading={labelsMutation.isPending}
-                    />
-                    <button
-                      onClick={handleCancelEditing}
-                      className="shrink-0 rounded-md border border-transparent px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      onClick={handleSave}
-                      disabled={updateMutation.isPending}
-                      className="nm-button-primary shrink-0"
-                    >
-                      {updateMutation.isPending ? 'Saving…' : 'Save'}
-                      {!updateMutation.isPending && (
-                        <ShortcutHint
-                          shortcutId="save"
-                          className="border-primary-foreground/30 bg-transparent text-primary-foreground"
-                        />
-                      )}
-                    </button>
-                  </>
-                }
               />
               <TableContextToolbar editor={editorInstance} />
               <LayoutContextToolbar editor={editorInstance} />
@@ -778,48 +748,11 @@ export function PageViewPage() {
           sticky positioning the strip below now relies on. */}
       <div className={cn(editing && 'mt-4')}>
         {/* Breadcrumb / action strip */}
-        {/* `flex-wrap`: the badge cluster and the action cluster are both
-            unshrinkable, so at 390px they overlapped — "Local / Shared /
-            Skipped" rendered on top of "Move to Confluence / Verify / Graph".
-            Wrapping drops the actions onto their own line instead of hiding
-            either group; on this surface both are worth their vertical space,
-            unlike the list row where the same badges are one tap from here. */}
-        {/* Sticky context strip. Without the card's border to sit inside, it
-            needs its own hairline and its own surface to stay legible over
-            scrolling prose — and it pins to the top of the reading column
-            rather than scrolling away, because the page identity and Edit are
-            wanted at any scroll depth.
-
-            Its contents take the document's own `max-w-[1200px] px-5 sm:px-10`
-            measure, so the space key and the Edit button line up with the
-            body text instead of hugging the window edges. */}
-        {/* Hidden while editing. Its action half is already suppressed there
-            (Cancel/Save take over in the bar above), leaving only badges — so
-            it wedged a strip of read-only status between the save controls and
-            the title you are typing into. The badges return on save. */}
-        <div className={cn('sticky -top-5 z-20 -mx-4 -mt-5 border-b border-border bg-card sm:-mx-6', editing && 'hidden')}>
-        {/* A fixed minimum rather than "whatever the content plus padding came
-            out to": this rule, the left sidebar's and the inspector's are one
-            line running across the app, so all three are pinned to the same
-            48px. `min-h` not `h`, because this row wraps at narrow widths (the
-            badge cluster and the action cluster each take a line) and a fixed
-            height would clip the second one.
-
-            The `-1px` is not a fudge. The sidebar and inspector rows put their
-            `border-b` on the same element as their `h-12`, so under border-box
-            the hairline is *inside* the 48. Here the border is on the sticky
-            parent and the height is on this inner row, so without subtracting
-            it the strip measures 49 and its rule sits one pixel below the other
-            two — which is exactly the seam this alignment exists to remove. */}
+        <div className="sticky -top-5 z-20 -mx-4 -mt-5 border-b border-border bg-card sm:-mx-6">
         <div className="mx-auto flex min-h-[calc(3rem-1px)] max-w-[1248px] flex-wrap items-center justify-between gap-x-4 gap-y-1.5 px-9 py-2 sm:px-16">
           <span className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-muted-foreground/60">
             <FileText size={12} className="shrink-0" />
             {page.spaceKey !== '__local__' && <span className="truncate">{page.spaceKey}</span>}
-            {/* Source badge. Neutral, like Private below: a source is a
-                category, not a state — the label differentiates. Same recipe
-                as the PagesPage rows, so the same badge cannot drift between
-                the two surfaces; the measured rationale lives in
-                neutral-chip.ts. */}
             {page.source === 'standalone' ? (
               <span className={neutralChipClass} data-testid="badge-local">
                 Local
@@ -829,23 +762,25 @@ export function PageViewPage() {
                 Confluence
               </span>
             )}
-            {/* Visibility badge for standalone articles */}
             {page.source === 'standalone' && (
               page.visibility === 'shared' ? (
                 <span className={neutralChipClass} data-testid="badge-shared">
                   <Globe size={10} /> Shared
                 </span>
               ) : (
-                // Private = neutral gray. Was amber, but privacy carries no AI semantic.
                 <span className={neutralChipClass} data-testid="badge-private">
                   <Lock size={10} /> Private
                 </span>
               )
             )}
-            {/* Draft indicator — neutral private-tier palette (drafts read as personal/private state, not AI). */}
             {'hasDraft' in page && Boolean((page as Record<string, unknown>).hasDraft) && (
               <span className={neutralChipClass} data-testid="badge-draft">
                 <AlertCircle size={10} /> Draft
+              </span>
+            )}
+            {editing && isDirty && (
+              <span className={neutralChipClass} data-testid="badge-unsaved">
+                <AlertCircle size={10} /> Unsaved
               </span>
             )}
             <QualityScoreBadge
@@ -862,12 +797,38 @@ export function PageViewPage() {
             />
           </span>
 
-          {/* Two tiers. The secondaries wrap among themselves; Edit is a
-              sibling of that group and `shrink-0`, so it stays pinned at the
-              end of the row instead of being the thing that wraps away. */}
           <div className="flex items-center gap-1.5">
             <PresenceAvatarStack viewers={presenceViewers} className="mr-1" />
-            {editing ? null : (
+            {editing ? (
+              <div className="flex items-center gap-2">
+                <TagPopover
+                  tags={editing ? draftLabels : page.labels}
+                  onAddTag={handleAddTag}
+                  onRemoveTag={handleRemoveTag}
+                  suggestions={filterOptions?.labels}
+                  isLoading={labelsMutation.isPending}
+                />
+                <button
+                  onClick={handleCancelEditing}
+                  className="shrink-0 rounded-md border border-transparent px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSave}
+                  disabled={updateMutation.isPending}
+                  className="nm-button-primary shrink-0"
+                >
+                  {updateMutation.isPending ? 'Saving…' : 'Save'}
+                  {!updateMutation.isPending && (
+                    <ShortcutHint
+                      shortcutId="save"
+                      className="border-primary-foreground/30 bg-transparent text-primary-foreground"
+                    />
+                  )}
+                </button>
+              </div>
+            ) : (
               <>
                 <div className="flex items-center gap-1.5">
                   {canRelocate && (
