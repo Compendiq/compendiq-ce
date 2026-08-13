@@ -52,8 +52,10 @@ export function usePrepareImage() {
       const { blob } = await downscaleImage(file);
       const formData = new FormData();
       // Filename must agree with the re-encode — the server refuses bytes whose
-      // sniffed format contradicts the claimed extension.
-      formData.append('file', blob, 'attachment.webp');
+      // sniffed format contradicts the claimed extension. If canvas.toBlob fell
+      // back to image/png (e.g. when WebP canvas export is unsupported), match its mime type.
+      const ext = blob.type === 'image/png' ? 'png' : blob.type === 'image/jpeg' ? 'jpg' : blob.type === 'image/gif' ? 'gif' : 'webp';
+      formData.append('file', blob, `attachment.${ext}`);
 
       const doFetch = (token: string | null) => {
         const headers: HeadersInit = {};
