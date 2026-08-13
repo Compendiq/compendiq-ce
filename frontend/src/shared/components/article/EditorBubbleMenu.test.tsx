@@ -14,6 +14,7 @@ vi.mock('../../lib/sse', () => ({
 
 import {
   BubbleMenuContent,
+  improvePanelPlacement,
   selectionShouldShow,
   editorBubbleMenuPluginKey,
 } from './EditorBubbleMenu';
@@ -171,6 +172,29 @@ describe('selectionShouldShow', () => {
       act(() => { editor.commands.setTextSelection({ from: 1, to: 6 }); });
       expect(selectionShouldShow(editor, false)).toBe(true);
     });
+  });
+});
+
+describe('improvePanelPlacement', () => {
+  it('keeps the Improve controls below the toolbar by default when the menu is below the selection', () => {
+    expect(improvePanelPlacement(
+      { top: 220, bottom: 320 },
+      { top: 160, bottom: 200 },
+    )).toBe('below');
+  });
+
+  it('moves the Improve controls above the toolbar after the menu flips above the selection', () => {
+    expect(improvePanelPlacement(
+      { top: 40, bottom: 140 },
+      { top: 160, bottom: 200 },
+    )).toBe('above');
+  });
+
+  it('keeps the default downward disclosure for an ambiguous shifted overlap', () => {
+    expect(improvePanelPlacement(
+      { top: 80, bottom: 180 },
+      { top: 160, bottom: 200 },
+    )).toBe('below');
   });
 });
 

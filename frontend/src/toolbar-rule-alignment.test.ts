@@ -46,6 +46,8 @@ const PARENT_BORDERED = [
   ['features/settings/SettingsLayout.tsx', "the settings title strip"],
 ] as const;
 
+const EDIT_TOOLBAR = 'shared/components/article/EditorToolbar.tsx';
+
 describe('the 48px line across the top of every pane', () => {
   it.each(SELF_BORDERED)('%s keeps h-12 on the bordered row (%s)', (file) => {
     const src = read(file);
@@ -72,6 +74,14 @@ describe('the 48px line across the top of every pane', () => {
         `Its border-b is on the sticky parent, so a plain min-h-12 measures 49 and ` +
         `drops this rule one pixel below the sidebar's.`,
     ).toContain('min-h-[calc(3rem-1px)]');
+  });
+
+  it('keeps the edit toolbar on the article strip’s 48px line', () => {
+    // The view-mode strip owns its hairline on the sticky parent; the editor
+    // toolbar does the same. Both inner rows therefore need the 47px minimum
+    // so their parent border completes the shared 48px header height.
+    expect(read('features/pages/PageViewPage.tsx')).toContain('min-h-[calc(3rem-1px)]');
+    expect(read(EDIT_TOOLBAR)).toContain('min-h-[calc(3rem-1px)]');
   });
 
   it('no bordered chrome row falls back to vertical padding for its height', () => {

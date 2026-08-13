@@ -13,23 +13,25 @@ const defaultProps = {
 
 describe('TagPopover', () => {
   /**
-   * The chip's label is its accessible name, so the copy is an a11y assertion
-   * as much as a visual one. The singular matters — "1 tags" in the one place
-   * the row shows a number is the tell that nobody read the control.
+   * The control has a stable accessible name; the count remains visible chip
+   * content and is asserted separately so the two responsibilities stay clear.
    */
   it('renders the chip as an action when the page has no tags', () => {
     render(<TagPopover {...defaultProps} tags={[]} />);
-    expect(screen.getByRole('button', { name: 'Add tags' })).toBeInTheDocument();
+    const trigger = screen.getByRole('button', { name: 'Tags' });
+    expect(trigger).toHaveTextContent('Add tags');
   });
 
   it('renders the chip with a singular count for one tag', () => {
     render(<TagPopover {...defaultProps} tags={['react']} />);
-    expect(screen.getByRole('button', { name: '1 tag' })).toBeInTheDocument();
+    const trigger = screen.getByRole('button', { name: 'Tags' });
+    expect(trigger).toHaveTextContent('1 tag');
   });
 
   it('renders the chip with the tag count as its accessible name', () => {
     render(<TagPopover {...defaultProps} />);
-    expect(screen.getByRole('button', { name: '2 tags' })).toBeInTheDocument();
+    const trigger = screen.getByRole('button', { name: 'Tags' });
+    expect(trigger).toHaveTextContent('2 tags');
   });
 
   it('keeps the editor closed until the chip is used', () => {

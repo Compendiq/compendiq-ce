@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { BubbleMenu } from '@tiptap/react/menus';
 import { useEditorState } from '@tiptap/react';
+import { posToDOMRect } from '@tiptap/core';
 import { PluginKey } from '@tiptap/pm/state';
 import type { Editor as EditorType } from '@tiptap/react';
 import { Sparkles } from 'lucide-react';
@@ -43,6 +44,23 @@ import {
  */
 // eslint-disable-next-line react-refresh/only-export-components
 export const editorBubbleMenuPluginKey = new PluginKey('editorBubbleMenu');
+
+/**
+ * Keep the Improve controls attached to the side of the formatting toolbar
+ * with the room, rather than letting a growing menu pull the toolbar away from
+ * its original anchor. `below` is the intended default; Floating UI reports
+ * an above-selection menu after collision handling, which is the cue to grow
+ * the controls upward instead.
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export function improvePanelPlacement(
+  menuRect: Pick<DOMRect, 'top' | 'bottom'>,
+  selectionRect: Pick<DOMRect, 'top' | 'bottom'>,
+): 'above' | 'below' {
+  // A shifted menu can overlap the selection by a fraction of a pixel. In
+  // that ambiguous case, preserve the default downward disclosure.
+  return menuRect.bottom <= selectionRect.top ? 'above' : 'below';
+}
 
 /**
  * Whether the selection bubble menu should be visible. Exported for unit
@@ -144,9 +162,12 @@ const SELECTION_COPY: ImprovePanelCopy = {
 export function BubbleMenuContent({
   editor,
   onAiOpenChange,
+  improvePanelPosition = 'below',
 }: {
   editor: EditorType;
   onAiOpenChange?: (open: boolean) => void;
+  /** Which side of the toolbar the expanded Improve controls occupy. */
+  improvePanelPosition?: 'above' | 'below';
 }) {
   const [aiOpen, setAiOpen] = useState(false);
   // Range captured the moment "Improve" is clicked, so Replace/Insert act on
@@ -253,7 +274,7 @@ export function BubbleMenuContent({
   useLayoutEffect(() => {
     if (editor.isDestroyed) return;
     editor.view.dispatch(editor.state.tr.setMeta(editorBubbleMenuPluginKey, 'updatePosition'));
-  }, [editor, aiOpen, stream.status]);
+  }, [editor, aiOpen, improvePanelPosition, stream.status]);
 
   // The streamed preview grows on EVERY SSE chunk; dispatching a reposition
   // transaction per chunk would run a full state apply + Floating UI
@@ -368,7 +389,8 @@ export function BubbleMenuContent({
       ref={rootRef}
       data-testid="editor-bubble-menu"
       className={cn(
-        'flex flex-col nm-card-elevated',
+        'flex nm-card-elevated',
+        aiOpen && improvePanelPosition === 'above' ? 'flex-col-reverse' : 'flex-col',
         'motion-safe:animate-in motion-safe:fade-in-0 motion-safe:zoom-in-95',
       )}
     >
@@ -438,31 +460,63 @@ export function EditorBubbleMenu({ editor }: { editor: EditorType }) {
   // closure passed to the BubbleMenu plugin keeps the menu mounted while the
   // AI input has focus.
   const aiOpenRef = useRef(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [improvePanelPosition, setImprovePanelPosition] = useState<'above' | 'below'>('below');
 
   const shouldShow = useCallback(
     ({ editor: e }: { editor: EditorType }) => selectionShouldShow(e, aiOpenRef.current),
     [],
   );
 
+  const updateImprovePanelPosition = useCallback(() => {
+    if (!aiOpenRef.current || editor.isDestroyed || !menuRef.current) return;
+    const { from, to } = editor.state.selection;
+    const next = improvePanelPlacement(
+      menuRef.current.getBoundingClientRect(),
+      posToDOMRect(editor.view, from, to),
+    );
+    setImprovePanelPosition((current) => current === next ? current : next);
+  }, [editor]);
+
+  const handleAiOpenChange = useCallback((open: boolean) => {
+    aiOpenRef.current = open;
+    // Every disclosure begins downward. If the preferred bottom placement is
+    // unavailable, Floating UI's next update switches this to `above`.
+    setImprovePanelPosition('below');
+  }, []);
+
   return (
     <BubbleMenu
+      ref={menuRef}
       editor={editor}
       pluginKey={editorBubbleMenuPluginKey}
       shouldShow={shouldShow}
-      // #782 — single merged panel, single Floating UI anchor (the selection).
-      // Primary side is 'top' so the decorated passage stays readable below
-      // the panel; `flip` drops it below the selection when the expanded panel
-      // runs out of room above, and `shift` keeps it on-screen horizontally.
-      // 8px viewport padding mirrors the old Radix collisionPadding intent.
+      // A single merged panel, anchored below the selection by default. When
+      // its full height cannot fit there, `flip` moves it above the selection;
+      // `onUpdate` then puts the AI controls above the toolbar as well. `size`
+      // makes the rare too-tall panel scroll inside the viewport instead of
+      // escaping it.
       options={{
-        placement: 'top',
+        placement: 'bottom',
         offset: 8,
         flip: { padding: 8 },
         shift: { padding: 8 },
+        size: {
+          padding: 8,
+          apply({ availableHeight, elements }) {
+            elements.floating.style.maxHeight = `${Math.max(0, availableHeight)}px`;
+            elements.floating.style.overflowY = 'auto';
+          },
+        },
+        onUpdate: updateImprovePanelPosition,
       }}
       updateDelay={100}
     >
-      <BubbleMenuContent editor={editor} onAiOpenChange={(open) => { aiOpenRef.current = open; }} />
+      <BubbleMenuContent
+        editor={editor}
+        onAiOpenChange={handleAiOpenChange}
+        improvePanelPosition={improvePanelPosition}
+      />
     </BubbleMenu>
   );
 }
