@@ -77,6 +77,18 @@ export function RefusalSourcesLabel({ className }: { className?: string }) {
  *
  * The region used to say "Answer ready" for every non-error assistant turn
  * with content, which is the one thing a refusal is not.
+ *
+ * It names the STATE and leaves the reason to the turn itself, which is
+ * rendered as plain text directly below it. It used to say "nothing in the
+ * knowledge base matched this question closely enough" — true of the two
+ * score-shaped refusals and FALSE of the third: since #1114's prerequisite
+ * the backend also refuses when the semantic index is unavailable, where the
+ * knowledge base was never searched properly and may cover the question
+ * perfectly. Announcing a corpus verdict for a service outage tells the one
+ * user who cannot see the message the opposite of what it says. Per-reason
+ * announcements are possible now that `refusalReason` rides the final SSE
+ * frame, but that needs the reason carried onto `Message` first, and a wrong
+ * announcement should not wait for it.
  */
 export const REFUSAL_ANNOUNCEMENT =
-  'No answer — nothing in the knowledge base matched this question closely enough';
+  'No answer — the assistant declined to answer this question; its reason follows in the message';

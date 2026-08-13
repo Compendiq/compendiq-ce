@@ -479,6 +479,10 @@ describe('RAG Service', () => {
       }
     });
 
+    // Deliberately UNCHANGED by #1114's prerequisite: the ROUTE now refuses
+    // the turn on `embedding_failed`, but the SEARCH still runs its keyword
+    // leg and still files this row. The refusal is only auditable because
+    // the marker keeps being written — see _gap-predicate.ts's re-derivation.
     it('should record keyword_fallback search type when embedding fails', async () => {
       mocks.mockGenerateEmbedding.mockRejectedValue(new Error('Ollama unreachable'));
       mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);

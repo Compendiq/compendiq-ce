@@ -66,8 +66,19 @@ vi.mock('../../domains/llm/services/openai-compatible-client.js', () => ({
 // Closed stub (#1268 review): the ask route reads the #1105 confidence
 // formula from the retrieval-confidence leaf module (real, dependency-free),
 // so rag-service's heavy module graph stays out of this suite.
+//
+// The row is load-bearing: since #1114's prerequisite `/llm/ask` refuses an
+// EMPTY result set outright, and a refusal never reaches streamChat — with
+// the old `[]` the ask route's success/error/abort cases below would still
+// have gone green without ever exercising the generator they are about.
 vi.mock('../../domains/llm/services/rag-service.js', () => ({
-  hybridSearch: vi.fn().mockResolvedValue([]),
+  hybridSearch: vi.fn().mockResolvedValue([
+    {
+      pageId: 1, confluenceId: 'p1', chunkText: 'grounded text',
+      pageTitle: 'Doc', sectionTitle: 'Sec', spaceKey: 'DEV',
+      score: 0.032, vectorScore: 0.9, keywordRank: null,
+    },
+  ]),
   buildRagContext: vi.fn().mockReturnValue('ctx'),
 }));
 

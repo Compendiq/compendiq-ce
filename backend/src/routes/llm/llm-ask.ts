@@ -11,6 +11,7 @@ import { streamChat, type ChatMessage } from '../../domains/llm/services/openai-
  * refusal turn grounds nothing).
  */
 type StoredChatMessage = ChatMessage & { refused?: boolean };
+
 import { contentToText } from '../../domains/llm/services/prompts.js';
 import { hybridSearch, buildRagContext, type RetrievalMeta } from '../../domains/llm/services/rag-service.js';
 // #1112: deep search's wrapper around hybridSearch. Its own module, not a
@@ -43,6 +44,47 @@ import {
 import { requireGlobalPermission } from '../../core/utils/rbac-guards.js';
 import { userCanAccessPage } from '../../core/services/rbac-service.js';
 import { acquireStreamSlot } from '../../core/services/sse-stream-limiter.js';
+
+/**
+ * Why the ask path declined to answer. Emitted as `refusalReason` on the
+ * refusal's final SSE frame beside `refused: true` — the route's verdict is
+ * strictly more informative to a client than the raw retrieval health it was
+ * derived from, since it says what the route DID. The health facts
+ * (`degradedReason`, `healthCaveat`, coverage) stay in the info log and the
+ * trace, where the operator reads them.
+ */
+type RefusalReason = 'semantic_index_unavailable' | 'no_context' | 'weak_match';
+
+/**
+ * The refusal sentence per reason. `semantic_index_unavailable` must NOT read
+ * like `no_context`: one says the knowledge base has nothing on the question,
+ * the other says we could not look properly. Telling a user the first when
+ * the second is true is the failure this gate exists to prevent — and it is
+ * most likely during the #1116 re-embed window, when a corpus-is-empty claim
+ * is both false and self-confirming.
+ */
+const REFUSAL_TEXT: Record<RefusalReason, string> = {
+  semantic_index_unavailable:
+    'I could not search the knowledge base properly: the semantic index is unavailable right now, so only a plain keyword match ran. That is not enough to ground an answer, so I am not answering rather than guessing. This is a service problem, not a gap in the knowledge base — try again shortly, or check with an administrator if it persists.',
+  no_context:
+    'I could not find any knowledge-base content related to this question, so I am not answering rather than guessing. Try rephrasing, or ask about something the knowledge base covers.',
+  weak_match:
+    'The knowledge-base passages I found are not a strong enough match to this question to ground an answer, so I am not answering rather than guessing.',
+};
+
+/**
+ * Live-only sentence naming the attached sources (see the persisted/live
+ * divergence below). The outage wording must not claim the sources were
+ * measured and found wanting — nothing ranked them against the question.
+ */
+const REFUSAL_SOURCES_NOTE: Record<RefusalReason, string> = {
+  semantic_index_unavailable:
+    ' The keyword-only matches are attached as sources for reference — they were never ranked against your question.',
+  no_context:
+    ' The closest partial matches are attached as sources for reference — none matched well enough to use.',
+  weak_match:
+    ' The closest partial matches are attached as sources for reference — none matched well enough to use.',
+};
 
 export async function llmAskRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
@@ -431,20 +473,48 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       }
     };
 
-    // ── Retrieval-confidence refuse gate (#1105) ─────────────────────────
+    // ── Honest-refusal gate (#1105, widened by #1114's prerequisite) ─────
+    // THREE refusal reasons, and only ONE of them is a threshold verdict.
+    // The other two are unconditional, because they are not measurements at
+    // all — they are statements that retrieval did not happen:
+    //
+    // 1. `semantic_index_unavailable` — the embedding leg THREW
+    //    (`degradedReason === 'embedding_failed'`: provider outage, model
+    //    still loading, 5xx, timeout, missing `embedding` assignment, or a
+    //    pgvector dimension mismatch). The search silently continued
+    //    keyword-only and the answer was rendered as an ordinary one, so a
+    //    user could not tell a degraded answer from a whole-corpus one —
+    //    and during the #1116 re-embed window, which is exactly when this
+    //    fires, that is precisely what they need to know.
+    // 2. `no_context` — retrieval returned NOTHING and nothing else grounds
+    //    the turn. `buildRagContext` hands the model the literal string "No
+    //    relevant context found in the knowledge base." and the model
+    //    answered from parametric memory anyway, with `refused` unset and
+    //    no signal on the wire: an ungrounded answer wearing a grounded
+    //    answer's clothes.
+    // 3. `weak_match` — the #1105 verdict proper: a MEASURED score below
+    //    the operator's threshold for this request's basis.
+    //
+    // Reasons 1 and 2 deliberately do NOT consult a threshold. Both knobs
+    // default to 0, so a threshold-gated version of either would ship dark
+    // in most deployments — including, for reason 1, during the very outage
+    // it exists to disclose. Reason 3 keeps its knob: it is a tuning value
+    // for "how good is good enough", a question reasons 1 and 2 never ask.
+    //
     // Retrieval signals ONLY, never LLM self-report. Diagnostic always (an
     // info log — default LOG_LEVEL shows it, which is what "ship diagnostic
     // first" requires; the same verdict rides the trace as rag.confidence /
-    // rag.confidence_basis); refusal only when the operator raised the
-    // threshold FOR THIS REQUEST'S BASIS above its 0 default. Cosine and
+    // rag.confidence_basis). Cosine and
     // rerank relevance are incommensurable scales and the basis flips per
     // request (a rerank bypass measures on cosine), so each measured basis
     // gates on its own knob — see readConfidenceThreshold in
-    // admin-settings-service. A healthy EMPTY set (basis 'none', score 0)
-    // belongs to no scale and refuses when EITHER knob is raised: "no
-    // grounding at all" is below any positive bar, and mapping it to one
-    // knob left a rerank-only or similarity-only deployment with the
-    // feature's headline case silently open (#1268 review).
+    // admin-settings-service. The basis-'none' arm (max of both knobs) is
+    // now belt-and-braces rather than the empty set's route to refusal:
+    // `computeRetrievalConfidence` only ever returns a non-null 'none'
+    // score for a healthy EMPTY set, and reason 2 refuses that ahead of any
+    // threshold. It stays because the #1268 review's argument still holds
+    // for any future formula that measures on no basis — "no grounding at
+    // all" belongs to no scale and must not be orphaned by the knob split.
     //
     // The gate stands down for grounding that actually MATERIALISED — an
     // assembled sub-page tree, fetched external docs, fetched web results,
@@ -460,25 +530,17 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     // amplified.) When requested grounding did NOT materialise, the refusal
     // text names it below — a refusal whose only named remedy is
     // "rephrase" is wrong when the actual failure is a dead sidecar.
-    // Keyword-only and keyword-led sets and health-caveat
-    // empties (vector leg down, corpus unembedded, coverage probe failed)
-    // carry a null score and are never refused: the gate does not refuse
-    // what it cannot measure. Placed BEFORE the response-cache read so a
-    // low-confidence question cannot serve a stale cached answer either.
+    // That stand-down covers all three reasons, the outage one included: a
+    // sub-page tree, attached documents, web results and a substantive
+    // prior turn are real grounding that the vector index being down does
+    // not touch. Keyword-only and keyword-led sets that DID return rows
+    // still carry a null score and are never refused for reason 3 — the
+    // gate does not threshold what it cannot measure — but a keyword-only
+    // set produced by a THROWN embedding call is now reason 1, which is a
+    // health fact rather than a score. Placed BEFORE the response-cache
+    // read so a low-confidence question cannot serve a stale cached answer
+    // either.
     const confidence = computeRetrievalConfidence(searchResults, retrieval.meta?.healthCaveat ?? null);
-    logger.info(
-      {
-        userId,
-        confidence: confidence.score,
-        basis: confidence.basis,
-        degradedReason: retrieval.meta?.degradedReason ?? null,
-        healthCaveat: retrieval.meta?.healthCaveat ?? null,
-        searchType: retrieval.meta?.searchType ?? null,
-        embeddingCoverage: retrieval.meta?.embeddingCoverage ?? null,
-        aclEmptied: retrieval.meta?.aclEmptied ?? false,
-      },
-      'RAG retrieval confidence',
-    );
     const similarityThreshold = await getRagConfidenceThreshold();
     const rerankThreshold = await getRagConfidenceThresholdRerank();
     const confidenceThreshold =
@@ -496,12 +558,37 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       || askWebSources.length > 0
       || hasSubstantiveHistory,
     );
-    if (
-      confidenceThreshold > 0
-      && !otherGrounding
-      && confidence.score !== null
-      && confidence.score < confidenceThreshold
-    ) {
+    // Precedence is deliberate: the outage reason outranks the empty-set one
+    // because during an embedding outage "I found nothing" is a CONSEQUENCE,
+    // not a finding, and telling the user the corpus has nothing on their
+    // question is the false claim this whole gate exists to avoid.
+    const refusalReason: RefusalReason | null =
+      otherGrounding
+        ? null
+        : retrieval.meta?.degradedReason === 'embedding_failed'
+          ? 'semantic_index_unavailable'
+          : searchResults.length === 0
+            ? 'no_context'
+            : confidenceThreshold > 0
+                && confidence.score !== null
+                && confidence.score < confidenceThreshold
+              ? 'weak_match'
+              : null;
+    logger.info(
+      {
+        userId,
+        confidence: confidence.score,
+        basis: confidence.basis,
+        degradedReason: retrieval.meta?.degradedReason ?? null,
+        healthCaveat: retrieval.meta?.healthCaveat ?? null,
+        searchType: retrieval.meta?.searchType ?? null,
+        embeddingCoverage: retrieval.meta?.embeddingCoverage ?? null,
+        aclEmptied: retrieval.meta?.aclEmptied ?? false,
+        refusalReason,
+      },
+      'RAG retrieval confidence',
+    );
+    if (refusalReason !== null) {
       // Persisted text and live text diverge DELIBERATELY: saveConversation
       // stores {role, content, refused} only, so the reload has no source
       // list to point at — but the live final frame does attach the weak
@@ -526,14 +613,10 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         groundingFailures.length > 0
           ? ` Note: ${groundingFailures.join(', and ')} — that grounding was unavailable for this answer; retry, or check with an administrator if it persists.`
           : '';
-      const refusalText =
-        (searchResults.length === 0
-          ? 'I could not find any knowledge-base content related to this question, so I am not answering rather than guessing. Try rephrasing, or ask about something the knowledge base covers.'
-          : 'The knowledge-base passages I found are not a strong enough match to this question to ground an answer, so I am not answering rather than guessing.')
-        + groundingNote;
+      const refusalText = REFUSAL_TEXT[refusalReason] + groundingNote;
       const liveRefusalText =
         sources.length > 0
-          ? `${refusalText} The closest partial matches are attached as sources for reference — none matched well enough to use.`
+          ? refusalText + REFUSAL_SOURCES_NOTE[refusalReason]
           : refusalText;
       // The refusal is a real assistant turn: persist it (marked `refused`,
       // see StoredChatMessage) so the thread reads coherently on reload, but
@@ -550,6 +633,11 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
           // #1119 keys its refusal treatment on this flag; until it ships
           // the text above renders as an ordinary assistant message.
           refused: true,
+          // The one retrieval-health fact that reaches the client. Without
+          // it an outage refusal is indistinguishable on the wire from "the
+          // corpus does not cover this", which is the same conflation the
+          // text above exists to undo.
+          refusalReason,
           confidence: confidence.score,
           confidenceBasis: confidence.basis,
           conversationId: convId,

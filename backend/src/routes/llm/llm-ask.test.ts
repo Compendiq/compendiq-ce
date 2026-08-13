@@ -250,6 +250,21 @@ describe('POST /api/llm/ask', () => {
     });
   });
 
+  /**
+   * A healthy, well-matched retrieval row.
+   *
+   * Since #1114's prerequisite an EMPTY result set refuses at the default
+   * threshold, so every test whose subject is what happens AFTER retrieval
+   * (the resolved model, the assembled prompt, the streamed frames) has to
+   * retrieve something first. Using a shared strong-match fixture keeps
+   * those tests about their own subject instead of about the gate.
+   */
+  const groundedResult = {
+    pageId: 42, confluenceId: 'p42', chunkText: 'grounded body text',
+    pageTitle: 'Runbook', sectionTitle: 'Restart', spaceKey: 'DEV',
+    score: 0.032, vectorScore: 0.88, keywordRank: null,
+  };
+
   // ─── Validation tests ────────────────────────────────────────────────────
 
   it('should return 400 when question is missing', async () => {
@@ -265,8 +280,10 @@ describe('POST /api/llm/ask', () => {
   it('should accept a request without model and resolve it server-side (#929)', async () => {
     // #929: `model` is optional in the contract — the route resolves it per
     // use-case via resolveUsecase() and ignores any body value (ADR-021).
-    mockHybridSearch.mockResolvedValue([]);
-    mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
+    // Retrieval must return SOMETHING: an empty set now refuses before the
+    // model is resolved into a call, and this test's subject is the call.
+    mockHybridSearch.mockResolvedValue([groundedResult]);
+    mockBuildRagContext.mockReturnValue('[Source 1: grounded]');
     mockStreamChatClient.mockReturnValue(singleChunkGenerator('The deployment uses CI/CD.'));
 
     const response = await app.inject({
@@ -295,8 +312,15 @@ describe('POST /api/llm/ask', () => {
       score: 0.016, vectorScore: null, keywordRank: 0.4,
     };
 
-    it('gate OFF (default 0): answers even with zero results — the pre-#1105 behaviour is the default', async () => {
+    it('both knobs at 0 + zero results: STILL refuses — no context is not a threshold question (#1114 prereq)', async () => {
+      // REVERSED. This case used to answer at the default threshold: the
+      // model was handed the literal string "No relevant context found in
+      // the knowledge base." and answered from parametric memory anyway,
+      // with `refused` unset and no signal on the wire. Both knobs default
+      // to 0, so a threshold-gated version of this refusal ships dark in
+      // every deployment that never opened Settings → Retrieval.
       mockConfidenceThreshold.mockResolvedValue(0);
+      mockConfidenceThresholdRerank.mockResolvedValue(0);
       mockHybridSearch.mockResolvedValue([]);
       mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
       mockStreamChatClient.mockReturnValue(singleChunkGenerator('Answering anyway.'));
@@ -306,12 +330,18 @@ describe('POST /api/llm/ask', () => {
         payload: { question: 'unanswerable question' },
       });
       expect(response.statusCode).toBe(200);
-      expect(mockStreamChatClient).toHaveBeenCalled();
-      const finals = parseSseBody(response.body) as Array<Record<string, unknown>>;
-      expect(finals.some((f) => f.refused === true)).toBe(false);
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+      const events = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      const final = events.find((f) => f.final === true)!;
+      expect(final.refused).toBe(true);
+      expect(final.refusalReason).toBe('no_context');
     });
 
     it('gate ON + zero results: refuses honestly — no LLM call, no cache write, refused flag', async () => {
+      // The raised knob is now INCIDENTAL: since #1114's prerequisite an
+      // empty set refuses either way (see the both-knobs-at-0 test above).
+      // This one stays for what it alone asserts — the measured verdict on
+      // the frame and the never-written cache.
       mockConfidenceThreshold.mockResolvedValue(0.3);
       mockHybridSearch.mockResolvedValue([]);
       mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
@@ -396,30 +426,131 @@ describe('POST /api/llm/ask', () => {
       expect(final.confidence).toBe(0.2);
     });
 
-    it('gate ON + degraded empty set: answers — an outage is not "the KB has nothing" (#1268 B1)', async () => {
-      mockConfidenceThreshold.mockResolvedValue(0.3);
-      // Embedding provider down → keyword fallback found nothing. The route
-      // learns this only through the onRetrievalMeta callback.
+    /** hybridSearch that reports a retrieval-health verdict and returns `rows`. */
+    const searchWithMeta = (meta: Record<string, unknown>, rows: unknown[] = []) =>
       mockHybridSearch.mockImplementation(
         async (_u: unknown, _q: unknown, _k: unknown, _s: unknown, opts?: {
           onRetrievalMeta?: (m: Record<string, unknown>) => void;
         }) => {
-          opts?.onRetrievalMeta?.({
-            degradedReason: 'embedding_failed',
-            healthCaveat: 'embedding_failed',
-            searchType: 'keyword_fallback',
-            embeddingCoverage: 0.5,
-            aclEmptied: false,
-          });
-          return [];
+          opts?.onRetrievalMeta?.(meta);
+          return rows;
         },
       );
+
+    const OUTAGE_META = {
+      degradedReason: 'embedding_failed',
+      healthCaveat: 'embedding_failed',
+      searchType: 'keyword_fallback',
+      embeddingCoverage: 0.5,
+      aclEmptied: false,
+    };
+
+    it('embedding_failed + empty set: refuses as an OUTAGE, at the default threshold (#1114 prereq)', async () => {
+      // REVERSED (#1268 B1 said this must answer). "An outage is not the KB
+      // has nothing" was right about the WORDING and wrong about the
+      // outcome: the route used to answer with the model's own memory and
+      // no disclosure at all. It now refuses, and the refusal says the index
+      // is unavailable rather than that the corpus is empty. Both knobs stay
+      // at their 0 default here — the outage refusal is ungated on purpose,
+      // because an unraised threshold is exactly the state most instances
+      // are in while they re-embed (#1116).
+      mockConfidenceThreshold.mockResolvedValue(0);
+      mockConfidenceThresholdRerank.mockResolvedValue(0);
+      // Embedding provider down → keyword fallback found nothing. The route
+      // learns this only through the onRetrievalMeta callback.
+      searchWithMeta(OUTAGE_META);
       mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
       mockStreamChatClient.mockReturnValue(singleChunkGenerator('Best-effort answer.'));
 
       const response = await app.inject({
         method: 'POST', url: '/api/llm/ask',
         payload: { question: 'question during outage' },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+      const events = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      const final = events.find((f) => f.final === true)!;
+      expect(final.refused).toBe(true);
+      // The wire distinguishes the two refusals; so does the prose.
+      expect(final.refusalReason).toBe('semantic_index_unavailable');
+      const text = events.find((e) => e.content !== undefined)!.content as string;
+      expect(text).toContain('semantic index is unavailable');
+      expect(text).not.toContain('could not find any knowledge-base content');
+    });
+
+    it('embedding_failed WITH keyword rows: refuses over them, and does not call them a weak match', async () => {
+      // The commonest shape of the outage, and the one that used to be
+      // invisible: keyword-only rows dressed as a full-retrieval answer.
+      // They ride along as sources — they are real pages — but nothing
+      // ranked them against the question, so the live text must not borrow
+      // the weak-match wording ("none matched well enough").
+      mockConfidenceThreshold.mockResolvedValue(0);
+      mockConfidenceThresholdRerank.mockResolvedValue(0);
+      searchWithMeta(OUTAGE_META, [keywordOnlyResult]);
+      mockBuildRagContext.mockReturnValue('[Source 1: kw]');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('Keyword-grounded answer.'));
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'question during outage' },
+      });
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+      const events = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      const final = events.find((f) => f.final === true)!;
+      expect(final.refusalReason).toBe('semantic_index_unavailable');
+      expect(final.sources).toHaveLength(1);
+      const text = events.find((e) => e.content !== undefined)!.content as string;
+      expect(text).toContain('never ranked against your question');
+      expect(text).not.toContain('none matched well enough');
+    });
+
+    it('embedding_failed + web results: answers — the vector index is not the only grounding (#1268 stand-down preserved)', async () => {
+      // The exemption survives the reversal verbatim: fetched web results
+      // are grounding that materialised, and a dead vector index takes
+      // nothing away from them.
+      mockConfidenceThreshold.mockResolvedValue(0);
+      mockConfidenceThresholdRerank.mockResolvedValue(0);
+      searchWithMeta(OUTAGE_META);
+      mockFetchWebSources.mockResolvedValue({
+        sources: [{ url: 'https://example.com/a', title: 'A', markdown: 'web content' }],
+        injectionWarnings: [],
+      });
+      mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('Web-grounded answer.'));
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'question during outage', searchWeb: true },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(mockStreamChatClient).toHaveBeenCalled();
+      const finals = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      expect(finals.some((f) => f.refused === true)).toBe(false);
+    });
+
+    it('partial_embeddings with rows: answers — a thin corpus is not a broken index', async () => {
+      // The deliberate non-reversal. `no_embeddings` / `partial_embeddings`
+      // / `coverage_unknown` mean the vector call SUCCEEDED; rows a healthy
+      // leg returned are real grounding, and refusing on coverage alone
+      // would take the whole product down during any re-embed.
+      mockConfidenceThreshold.mockResolvedValue(0);
+      mockConfidenceThresholdRerank.mockResolvedValue(0);
+      searchWithMeta(
+        {
+          degradedReason: 'partial_embeddings',
+          healthCaveat: 'partial_embeddings',
+          searchType: 'hybrid',
+          embeddingCoverage: 0.4,
+          aclEmptied: false,
+        },
+        [lowSimResult],
+      );
+      mockBuildRagContext.mockReturnValue('[Source 1: weak]');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('Partly-embedded answer.'));
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'question during a re-embed' },
       });
       expect(response.statusCode).toBe(200);
       expect(mockStreamChatClient).toHaveBeenCalled();
@@ -602,6 +733,11 @@ describe('POST /api/llm/ask', () => {
       // A rerank deployment tunes rag_confidence_threshold_rerank; an empty
       // healthy set (basis none, score 0) must refuse under EITHER knob, or
       // "ask something unanswerable" stays open on exactly those deployments.
+      // SUBSUMED since #1114's prerequisite — reason 2 refuses an empty set
+      // before any knob is consulted, so this can no longer fail for the
+      // reason it was written for. Kept because the basis-'none' arm of the
+      // threshold selection is kept (belt-and-braces for a future formula
+      // that measures on no basis), and a retained branch keeps its guard.
       mockConfidenceThreshold.mockResolvedValue(0);
       mockConfidenceThresholdRerank.mockResolvedValue(0.4);
       mockHybridSearch.mockResolvedValue([]);
@@ -1156,8 +1292,13 @@ describe('POST /api/llm/ask', () => {
 
   // ─── Empty results test ──────────────────────────────────────────────────
 
-  it('should return 200 and stream LLM response even when hybridSearch returns empty results', async () => {
-    // Arrange: no RAG results → buildRagContext returns "no context" message
+  it('returns 200 and REFUSES when hybridSearch returns empty results — the model is never asked to answer ungrounded', async () => {
+    // REVERSED, and the old assertions passed VACUOUSLY once it was: a
+    // refusal is also a 200 text/event-stream carrying a content frame and
+    // an empty `sources` array, so every line below held while the route
+    // did the opposite of what the title claimed. The discriminating
+    // assertion is the one this test never made — whether the chat model
+    // was called at all.
     mockHybridSearch.mockResolvedValue([]);
     mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
     mockStreamChatClient.mockReturnValue(singleChunkGenerator('I do not have enough context to answer.'));
@@ -1172,21 +1313,17 @@ describe('POST /api/llm/ask', () => {
       },
     });
 
-    // Assert: 200 with SSE — the LLM still streams even with no context
     expect(response.statusCode).toBe(200);
     expect(response.headers['content-type']).toBe('text/event-stream');
+    expect(mockStreamChatClient).not.toHaveBeenCalled();
 
     const events = parseSseBody(response.body);
-    expect(events.length).toBeGreaterThanOrEqual(2);
-
-    const contentEvents = events.filter((e: unknown) => (e as Record<string, unknown>).content !== undefined);
-    expect(contentEvents.length).toBeGreaterThan(0);
-
-    // Sources should be empty array
     const finalEvent = events.find((e: unknown) => (e as Record<string, unknown>).final === true) as Record<string, unknown>;
     expect(finalEvent).toBeDefined();
-    const sources = finalEvent!.sources as Array<unknown>;
-    expect(Array.isArray(sources)).toBe(true);
+    expect(finalEvent.refused).toBe(true);
+    expect(finalEvent.refusalReason).toBe('no_context');
+    // Nothing was retrieved, so there is nothing to attach.
+    const sources = finalEvent.sources as Array<unknown>;
     expect(sources).toHaveLength(0);
   });
 
@@ -1207,7 +1344,8 @@ describe('POST /api/llm/ask', () => {
     });
 
     it('streams via the resolved provider config + model', async () => {
-      mockHybridSearch.mockResolvedValue([]);
+      // Grounded: an empty set refuses and never reaches streamChat.
+      mockHybridSearch.mockResolvedValue([groundedResult]);
       mockResolveUsecase.mockResolvedValue({
         config: {
           providerId: 'provider-acme',
@@ -1277,7 +1415,10 @@ describe('POST /api/llm/ask', () => {
     }
 
     beforeEach(() => {
-      mockHybridSearch.mockResolvedValue([]);
+      // Grounded: these tests read the PROMPT the model was sent, and an
+      // RBAC-denied tree over an empty KB set now refuses instead of
+      // building one.
+      mockHybridSearch.mockResolvedValue([groundedResult]);
       mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
       mockGetMultiPagePromptSuffix.mockReturnValue('');
       seedPageQueries();

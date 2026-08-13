@@ -1378,7 +1378,18 @@ async function hybridSearchInner(
       throw err;
     }
     embeddingFailed = true;
-    logger.warn({ err }, 'Embedding failed, falling back to keyword-only');
+    // One catch covering three stages is deliberate — a missing `embedding`
+    // assignment, a provider 5xx/timeout/still-loading model, and a pgvector
+    // dimension mismatch all leave the caller in the same position (no vector
+    // leg), and which stage threw is in `err`. What CALLERS do about it is no
+    // longer "carry on quietly": `/llm/ask` refuses the turn on this verdict
+    // (its honest-refusal gate) and `/api/search` renders `degradedReason`.
+    // Only the SEARCH degrades to keyword-only; the ANSWER does not — which
+    // is why this no longer says "falling back".
+    logger.warn(
+      { err },
+      'Embedding failed — vector leg down, keyword leg only (degraded_reason: embedding_failed)',
+    );
   }
 
   const keywordResults = await keywordPromise;

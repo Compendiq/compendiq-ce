@@ -34,6 +34,37 @@ export const GAP_FUSION_THRESHOLD = (rrfWorstCase(false) + rrfWorstCase(true)) /
  *   were tuned against.
  * A NULL search_type falls to the ELSE arm; `faceted` rows carry a NULL
  * max_score and are excluded by SQL NULL semantics, as before.
+ *
+ * ## Re-derived against the #1114-prerequisite refusal, and UNCHANGED
+ *
+ * `/llm/ask` now refuses the turn when the embedding call throws, which
+ * raises the question of whether these rows still mean what the arm above
+ * says. They do, and the SQL is deliberately untouched:
+ *
+ * - The refusal happens in the ROUTE, downstream of analytics. `hybridSearch`
+ *   still runs its keyword leg, still returns rows, and still writes
+ *   `search_type = 'keyword_fallback'` with `degraded_reason =
+ *   'embedding_failed'`. Outages did not stop emitting the marker — the row
+ *   is unchanged byte for byte, so the arm keeps its exact meaning.
+ * - The arm's two justifications both survive independently. The UNIT
+ *   argument (a keyword-only fusion max is ~rrfWorstCase(false) = 1/61, under
+ *   any threshold in either scale era) never depended on the route at all.
+ *   The SEMANTIC argument gets stronger: these queries are now ones the user
+ *   was explicitly TOLD were unanswerable-because-degraded, so scoring them
+ *   as missing content would misreport a provider outage as a content gap
+ *   twice over.
+ *
+ * Known limitation, pre-existing and NOT widened here: when the embedding
+ * call throws AND the keyword leg also returns nothing, `search_type` is
+ * `hybrid` (it means "not a keyword fallback", never "both legs produced
+ * rows" — see RetrievalMeta.searchType), so the row lands on the
+ * `result_count = 0` arm and IS counted as a knowledge gap even though it
+ * measures the provider, not the corpus. `degraded_reason` distinguishes
+ * these rows and a future tuning pass can exclude them
+ * (`degraded_reason IS DISTINCT FROM 'embedding_failed'`), but that changes
+ * what an operator-facing report counts and belongs to whoever tunes it —
+ * the same is arguably true of `no_embeddings`, so it is one decision, not a
+ * clause smuggled in beside a refusal change.
  */
 export const KNOWLEDGE_GAP_PREDICATE_SQL = `(result_count = 0 OR CASE
            WHEN search_type IN ('hybrid', 'hybrid_rerank') THEN max_score < ${GAP_FUSION_THRESHOLD}

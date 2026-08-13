@@ -356,7 +356,11 @@ describe.skipIf(!dbAvailable)('#1117 degraded-retrieval signal', () => {
       });
 
       const results = await hybridSearch(USER, 'Runbook body');
-      expect(results.length).toBeGreaterThan(0); // keyword leg still answered
+      // The keyword leg still returns rows — the SEARCH degrades. Since
+      // #1114's prerequisite the ANSWER does not: `/llm/ask` refuses the
+      // turn over exactly these rows and attaches them as unranked
+      // references, so "still answered" would now be the wrong word for it.
+      expect(results.length).toBeGreaterThan(0);
 
       const row = await lastAnalyticsRow();
       expect(row.search_type).toBe('keyword_fallback');
