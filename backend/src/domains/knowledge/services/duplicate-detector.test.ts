@@ -253,6 +253,85 @@ describe('DuplicateDetector', () => {
       expect(result).toHaveLength(1);
       expect(result[0].confluenceId).toBe('close-1');
     });
+
+    // These assert on the `SET LOCAL` statement handed to the client, not on
+    // recall, and that is the honest ceiling here: the client is a mock, so
+    // there is no HNSW graph to under-probe and no result count to observe
+    // moving. `ef_search` cannot change what a mocked query returns, so a test
+    // written against results would pass against the unfixed code. The emitted
+    // statement is the only observable that actually moves.
+    describe('hnsw.ef_search covers the RAW candidate fetch', () => {
+      /** Drive one findDuplicates call to completion, return the `SET LOCAL` it issued. */
+      async function efStatementFor(limit?: number): Promise<string> {
+        mocks.mockQuery.mockResolvedValueOnce({
+          rows: [{ id: 42, title: 'Source Page', space_key: 'DEV' }],
+        });
+        mocks.mockClientQuery.mockResolvedValueOnce(undefined); // BEGIN
+        mocks.mockClientQuery.mockResolvedValueOnce(undefined); // SET LOCAL
+        mocks.mockClientQuery.mockResolvedValueOnce({ rows: [] }); // kNN
+        mocks.mockClientQuery.mockResolvedValueOnce(undefined); // COMMIT
+
+        await findDuplicates('user-1', 'conf-source', limit === undefined ? {} : { limit });
+
+        const stmt = mocks.mockClientQuery.mock.calls
+          .map((call) => call[0])
+          .filter((sql): sql is string => typeof sql === 'string')
+          .find((sql) => sql.includes('hnsw.ef_search'));
+        expect(stmt).toBeDefined();
+        return stmt!;
+      }
+
+      /** The bind param the kNN actually asked for ($2) — the RAW row count. */
+      function rawLimitBind(): number {
+        const knnCall = mocks.mockClientQuery.mock.calls.find(
+          (call) => typeof call[0] === 'string' && (call[0] as string).includes('DISTINCT ON'),
+        );
+        expect(knnCall).toBeDefined();
+        return (knnCall![1] as unknown[])[1] as number;
+      }
+
+      it('covers the RAW fetch at the schema-max limit, not the page limit', async () => {
+        // DuplicatesQuerySchema caps `limit` at 50 and the route passes it
+        // straight through, so this is user-reachable, not hypothetical.
+        const stmt = await efStatementFor(50);
+
+        expect(stmt).toMatch(/^SET LOCAL hnsw\.ef_search = \d+$/);
+        const ef = Number(stmt.match(/= (\d+)$/)![1]);
+
+        // The SQL asks for limit * 3 = 150 rows. An HNSW scan returns at most
+        // ef_search rows regardless of LIMIT, so anything below 150 caps the
+        // scan beneath its own LIMIT — and DISTINCT ON, the ACL predicate and
+        // the distance threshold each take their cut of what comes back.
+        expect(rawLimitBind()).toBe(150);
+        expect(ef).toBeGreaterThanOrEqual(rawLimitBind());
+        // 2x headroom over the raw fetch, same rule as the other two sites.
+        expect(ef).toBe(300);
+      });
+
+      it('is unchanged at the default limit — the floor still wins', async () => {
+        const stmt = await efStatementFor();
+
+        expect(rawLimitBind()).toBe(30); // default limit 10, x3
+        // max(100, 60) = 100: identical to what this call site emitted before.
+        expect(Number(stmt.match(/= (\d+)$/)![1])).toBe(100);
+      });
+
+      it('stays inside pgvector ceiling of 1000, which the knob alone does not bound', async () => {
+        // RAG_EF_SEARCH validates to <= 10000 while pgvector refuses anything
+        // over 1000, so interpolating the bare constant made an over-ceiling
+        // config a SQL error here and nowhere else.
+        for (const limit of [1, 10, 50]) {
+          vi.resetAllMocks();
+          mocks.mockPool.connect.mockResolvedValue(mocks.mockClient);
+          mocks.mockClient.release.mockResolvedValue(undefined);
+          mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
+
+          const ef = Number((await efStatementFor(limit)).match(/= (\d+)$/)![1]);
+          expect(ef).toBeGreaterThanOrEqual(100);
+          expect(ef).toBeLessThanOrEqual(1000);
+        }
+      });
+    });
   });
 
   describe('scanAllDuplicates', () => {

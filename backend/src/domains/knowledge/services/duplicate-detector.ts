@@ -3,9 +3,12 @@ import { getUserAccessibleSpacesMemoized as getUserAccessibleSpaces } from '../.
 import { visiblePagesPredicate } from '../../../core/services/page-visibility.js';
 // The third copy of this constant, now retired. The local `parseInt` had no
 // bounds check, so RAG_EF_SEARCH=garbage produced `SET LOCAL hnsw.ef_search =
-// NaN` and a SQL error here while retrieval quietly fell back to 100. Identical
-// value at the default; one definition, three call sites.
-import { RAG_EF_SEARCH } from '../../llm/services/hnsw-ef-search.js';
+// NaN` and a SQL error here while retrieval quietly fell back to 100.
+// `efSearchFor` closes the matching over-ceiling hole: the knob validates to
+// <= 10000, pgvector's ceiling is 1000, so a bare interpolation of the constant
+// made RAG_EF_SEARCH=2000 a SQL error at this one call site while the other two
+// clamped and worked.
+import { efSearchFor } from '../../llm/services/hnsw-ef-search.js';
 
 interface DuplicateCandidate {
   // Stable page PK — always present, used as the dedup key and as a non-null
@@ -82,11 +85,26 @@ export async function findDuplicates(
   const sourceTitle = sourcePage.title;
   const sourcePageId = sourcePage.id;
 
+  // The RAW row count the kNN below asks for ($2), named once so the ef_search
+  // that has to cover it cannot drift from the LIMIT that consumes it. #733's
+  // over-fetch is chunk-denominated: the scan runs over page_embeddings at CHUNK
+  // level and `DISTINCT ON (cp2.id)` then collapses it to one row per page,
+  // while `deleted_at IS NULL`, `visiblePagesPredicate` and `pe2.page_id != $1`
+  // discard from the same budget — so these are candidates, not answers.
+  const rawCandidateLimit = limit * 3;
+
   // Use a dedicated client for SET LOCAL
   const client = await getPool().connect();
   try {
     await client.query('BEGIN');
-    await client.query(`SET LOCAL hnsw.ef_search = ${RAG_EF_SEARCH}`);
+    // ef_search must cover the RAW fetch, not `limit`: an HNSW scan returns at
+    // most ef_search rows whatever the LIMIT says. `limit` reaches 50 through
+    // DuplicatesQuerySchema, so ?limit=50 asks for 150 rows — a flat 100 floor
+    // silently capped the scan below its own LIMIT, and the post-scan filters
+    // above then cut into what little came back. Same silent-shortfall class as
+    // the relationship kNN; efSearchFor also clamps to pgvector's 1000 ceiling,
+    // which a bare RAG_EF_SEARCH (validated to 10000) did not.
+    await client.query(`SET LOCAL hnsw.ef_search = ${efSearchFor(rawCandidateLimit)}`);
 
     // Find nearest neighbors using pgvector kNN on the average embedding
     const result = await client.query<{
@@ -132,8 +150,9 @@ export async function findDuplicates(
        LIMIT $2`,
       // #733: over-fetch to filter later; candidates restricted to the same
       // retrieval scope as rag-service (accessible Confluence spaces +
-      // shared / own-private standalone articles).
-      [sourcePageId, limit * 3, accessibleSpaces, userId],
+      // shared / own-private standalone articles). Same value the ef_search
+      // above is sized to cover — one constant, so they cannot diverge.
+      [sourcePageId, rawCandidateLimit, accessibleSpaces, userId],
     );
 
     await client.query('COMMIT');
