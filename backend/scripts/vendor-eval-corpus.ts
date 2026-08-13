@@ -23,6 +23,7 @@
 import { readdirSync, readFileSync, writeFileSync, mkdirSync, rmSync, existsSync, statSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { deriveCorpusTitle, type CorpusTitleSource } from '../src/domains/llm/eval/corpus-title.js';
 
 interface Source {
   /** Directory name under the clone root, and the corpus filename prefix. */
@@ -69,10 +70,6 @@ function stripFrontMatter(md: string): { title: string | null; body: string } {
   return { title, body: md.slice(match[0].length) };
 }
 
-function firstHeading(md: string): string | null {
-  return /^#\s+(.+)$/m.exec(md)?.[1]?.trim() ?? null;
-}
-
 const cloneRoot = process.argv[2];
 if (!cloneRoot) {
   console.error('usage: vendor-eval-corpus.ts <clone-root>');
@@ -97,7 +94,7 @@ if (!process.argv.includes('--update') && existsSync(join(OUT_DIR, 'MANIFEST.jso
 if (existsSync(OUT_DIR)) rmSync(OUT_DIR, { recursive: true });
 mkdirSync(OUT_DIR, { recursive: true });
 
-const manifest: Array<{ file: string; title: string; source: string; repo: string; commit: string; path: string; license: string }> = [];
+const manifest: Array<{ file: string; title: string; titleSource: CorpusTitleSource; source: string; repo: string; commit: string; path: string; license: string }> = [];
 
 const notices: string[] = [];
 
@@ -128,12 +125,18 @@ for (const source of SOURCES) {
     if (body.trim().length < MIN_CHARS) continue;
 
     const relPath = relative(root, file);
-    const title = fmTitle ?? firstHeading(body) ?? relPath;
+    // The corpus stands in for a Confluence KB, so a page needs a HUMAN title.
+    // The rule (and every way the old inline `fmTitle ?? /^#/m ?? relPath`
+    // produced a non-title) lives in `eval/corpus-title.ts`, shared with the
+    // test that re-derives every committed title from the vendored bytes — so
+    // a re-run of this script reproduces the manifest rather than depending on
+    // anything hand-edited into it.
+    const { title, source: titleSource } = deriveCorpusTitle({ frontMatterTitle: fmTitle, body, filePath: relPath });
     // Flat filenames: the corpus is a bag of pages, and a nested tree would
     // imply a hierarchy the fixture does not model.
     const name = `${source.name}__${relative(docsRoot, file).replace(/[/\\]/g, '__')}`;
     writeFileSync(join(OUT_DIR, name), body.trimStart());
-    manifest.push({ file: name, title, source: source.name, repo: source.repo, commit, path: relPath, license: 'MIT' });
+    manifest.push({ file: name, title, titleSource, source: source.name, repo: source.repo, commit, path: relPath, license: 'MIT' });
   }
 }
 

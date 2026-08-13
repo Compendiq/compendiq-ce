@@ -1,5 +1,5 @@
 {
-  "corpusManifestSha": "c9fdbace64400cc9974a157af4b5bf2984eed4c8bee2bcef459c47e964f4db87",
+  "corpusManifestSha": "aa452c0884c6303f88452237dcf9b19ca877f51e4482329f357b7b50ef66fc4b",
   "labeledBy": "claude-sonnet via #1102 labeling workflow — 12 independent agents over disjoint corpus slices, blind to the retrieval implementation; the 33 vocabulary-gap labels (#1112) were written against the same corpus and blind to the retrieval implementation, deriving each query from what the page MEANS and deliberately avoiding the words it uses",
   "labels": [
     {
