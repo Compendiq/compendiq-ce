@@ -3,7 +3,8 @@
   "pages": [
     {
       "file": "fastify__Guides__Benchmarking.md",
-      "title": "docs/Guides/Benchmarking.md",
+      "title": "Benchmarking",
+      "titleSource": "filename",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -13,6 +14,7 @@
     {
       "file": "fastify__Guides__Contributing.md",
       "title": "Contributing To Fastify",
+      "titleSource": "heading",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -21,7 +23,8 @@
     },
     {
       "file": "fastify__Guides__Database.md",
-      "title": "docs/Guides/Database.md",
+      "title": "Database",
+      "titleSource": "filename",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -31,6 +34,7 @@
     {
       "file": "fastify__Guides__Delay-Accepting-Requests.md",
       "title": "Delay Accepting Requests",
+      "titleSource": "heading",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -40,6 +44,7 @@
     {
       "file": "fastify__Guides__Detecting-When-Clients-Abort.md",
       "title": "Detecting When Clients Abort",
+      "titleSource": "heading",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -48,7 +53,8 @@
     },
     {
       "file": "fastify__Guides__Ecosystem.md",
-      "title": "docs/Guides/Ecosystem.md",
+      "title": "Ecosystem",
+      "titleSource": "filename",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -57,7 +63,8 @@
     },
     {
       "file": "fastify__Guides__Fluent-Schema.md",
-      "title": "docs/Guides/Fluent-Schema.md",
+      "title": "Fluent Schema",
+      "titleSource": "filename",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -66,7 +73,8 @@
     },
     {
       "file": "fastify__Guides__Getting-Started.md",
-      "title": "docs/Guides/Getting-Started.md",
+      "title": "Getting Started",
+      "titleSource": "filename",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -75,7 +83,8 @@
     },
     {
       "file": "fastify__Guides__Index.md",
-      "title": "docs/Guides/Index.md",
+      "title": "Guides Table Of Contents",
+      "titleSource": "heading",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -85,6 +94,7 @@
     {
       "file": "fastify__Guides__Migration-Guide-V3.md",
       "title": "V3 Migration Guide",
+      "titleSource": "heading",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -94,6 +104,7 @@
     {
       "file": "fastify__Guides__Migration-Guide-V4.md",
       "title": "V4 Migration Guide",
+      "titleSource": "heading",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -103,6 +114,7 @@
     {
       "file": "fastify__Guides__Migration-Guide-V5.md",
       "title": "V5 Migration Guide",
+      "titleSource": "heading",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -112,6 +124,7 @@
     {
       "file": "fastify__Guides__Plugins-Guide.md",
       "title": "The hitchhiker's guide to plugins",
+      "titleSource": "heading",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -120,7 +133,8 @@
     },
     {
       "file": "fastify__Guides__Prototype-Poisoning.md",
-      "title": "docs/Guides/Prototype-Poisoning.md",
+      "title": "Prototype Poisoning",
+      "titleSource": "filename",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -129,7 +143,8 @@
     },
     {
       "file": "fastify__Guides__Recommendations.md",
-      "title": "The global section defines base HAProxy (engine) instance configuration.",
+      "title": "Recommendations",
+      "titleSource": "filename",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -138,7 +153,8 @@
     },
     {
       "file": "fastify__Guides__Serverless.md",
-      "title": "Use the official Node.js LTS image.",
+      "title": "Serverless",
+      "titleSource": "filename",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -148,6 +164,7 @@
     {
       "file": "fastify__Guides__Style-Guide.md",
       "title": "Fastify Style Guide",
+      "titleSource": "heading",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -157,6 +174,7 @@
     {
       "file": "fastify__Guides__Testing.md",
       "title": "Testing",
+      "titleSource": "heading",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -166,6 +184,7 @@
     {
       "file": "fastify__Guides__Write-Plugin.md",
       "title": "How to write a good plugin",
+      "titleSource": "heading",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -174,7 +193,8 @@
     },
     {
       "file": "fastify__Guides__Write-Type-Provider.md",
-      "title": "docs/Guides/Write-Type-Provider.md",
+      "title": "Write Type Provider",
+      "titleSource": "filename",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -183,7 +203,8 @@
     },
     {
       "file": "fastify__Reference__ContentTypeParser.md",
-      "title": "docs/Reference/ContentTypeParser.md",
+      "title": "ContentTypeParser",
+      "titleSource": "filename",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -192,7 +213,8 @@
     },
     {
       "file": "fastify__Reference__Decorators.md",
-      "title": "docs/Reference/Decorators.md",
+      "title": "Decorators",
+      "titleSource": "filename",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -201,7 +223,8 @@
     },
     {
       "file": "fastify__Reference__Encapsulation.md",
-      "title": "{\"answer\":42}",
+      "title": "Encapsulation",
+      "titleSource": "filename",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -210,7 +233,8 @@
     },
     {
       "file": "fastify__Reference__Errors.md",
-      "title": "docs/Reference/Errors.md",
+      "title": "Errors",
+      "titleSource": "filename",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -219,7 +243,8 @@
     },
     {
       "file": "fastify__Reference__HTTP2.md",
-      "title": "docs/Reference/HTTP2.md",
+      "title": "HTTP2",
+      "titleSource": "filename",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -228,7 +253,8 @@
     },
     {
       "file": "fastify__Reference__Hooks.md",
-      "title": "docs/Reference/Hooks.md",
+      "title": "Hooks",
+      "titleSource": "filename",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -237,7 +263,8 @@
     },
     {
       "file": "fastify__Reference__Index.md",
-      "title": "docs/Reference/Index.md",
+      "title": "Core Documents",
+      "titleSource": "heading",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -246,7 +273,8 @@
     },
     {
       "file": "fastify__Reference__LTS.md",
-      "title": "docs/Reference/LTS.md",
+      "title": "LTS",
+      "titleSource": "filename",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -255,7 +283,8 @@
     },
     {
       "file": "fastify__Reference__Lifecycle.md",
-      "title": "docs/Reference/Lifecycle.md",
+      "title": "Lifecycle",
+      "titleSource": "filename",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -264,7 +293,8 @@
     },
     {
       "file": "fastify__Reference__Logging.md",
-      "title": "docs/Reference/Logging.md",
+      "title": "Logging",
+      "titleSource": "filename",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -273,7 +303,8 @@
     },
     {
       "file": "fastify__Reference__Middleware.md",
-      "title": "docs/Reference/Middleware.md",
+      "title": "Middleware",
+      "titleSource": "filename",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -282,7 +313,8 @@
     },
     {
       "file": "fastify__Reference__Plugins.md",
-      "title": "docs/Reference/Plugins.md",
+      "title": "Plugins",
+      "titleSource": "filename",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -292,6 +324,7 @@
     {
       "file": "fastify__Reference__Principles.md",
       "title": "Technical Principles",
+      "titleSource": "heading",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -300,7 +333,8 @@
     },
     {
       "file": "fastify__Reference__Reply.md",
-      "title": "docs/Reference/Reply.md",
+      "title": "Reply",
+      "titleSource": "filename",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -309,7 +343,8 @@
     },
     {
       "file": "fastify__Reference__Request.md",
-      "title": "docs/Reference/Request.md",
+      "title": "Request",
+      "titleSource": "filename",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -318,7 +353,8 @@
     },
     {
       "file": "fastify__Reference__Routes.md",
-      "title": "docs/Reference/Routes.md",
+      "title": "Routes",
+      "titleSource": "filename",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -327,7 +363,8 @@
     },
     {
       "file": "fastify__Reference__Server.md",
-      "title": "docs/Reference/Server.md",
+      "title": "Server",
+      "titleSource": "filename",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -336,7 +373,8 @@
     },
     {
       "file": "fastify__Reference__Type-Providers.md",
-      "title": "docs/Reference/Type-Providers.md",
+      "title": "Type Providers",
+      "titleSource": "filename",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -345,7 +383,8 @@
     },
     {
       "file": "fastify__Reference__TypeScript.md",
-      "title": "docs/Reference/TypeScript.md",
+      "title": "TypeScript",
+      "titleSource": "filename",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -354,7 +393,8 @@
     },
     {
       "file": "fastify__Reference__Validation-and-Serialization.md",
-      "title": "docs/Reference/Validation-and-Serialization.md",
+      "title": "Validation and Serialization",
+      "titleSource": "filename",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -363,7 +403,8 @@
     },
     {
       "file": "fastify__Reference__Warnings.md",
-      "title": "docs/Reference/Warnings.md",
+      "title": "Warnings",
+      "titleSource": "filename",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -372,7 +413,8 @@
     },
     {
       "file": "fastify__index.md",
-      "title": "docs/index.md",
+      "title": "Where To Start",
+      "titleSource": "heading",
       "source": "fastify",
       "repo": "https://github.com/fastify/fastify",
       "commit": "2e81c38bfede1858c3705c5a6f7753abd93019b3",
@@ -382,6 +424,7 @@
     {
       "file": "vitest__api__advanced__artifacts.md",
       "title": "Test Artifacts",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -390,7 +433,8 @@
     },
     {
       "file": "vitest__api__advanced__metadata.md",
-      "title": "Task Metadata <Badge type=\"danger\">advanced</Badge>",
+      "title": "Task Metadata",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -400,6 +444,7 @@
     {
       "file": "vitest__api__advanced__plugin.md",
       "title": "Plugin API",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -409,6 +454,7 @@
     {
       "file": "vitest__api__advanced__reporters.md",
       "title": "Reporters",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -417,7 +463,8 @@
     },
     {
       "file": "vitest__api__advanced__runner.md",
-      "title": "Runner API <Badge type=\"danger\">advanced</Badge>",
+      "title": "Runner API",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -427,6 +474,7 @@
     {
       "file": "vitest__api__advanced__test-case.md",
       "title": "TestCase",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -436,6 +484,7 @@
     {
       "file": "vitest__api__advanced__test-collection.md",
       "title": "TestCollection",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -445,6 +494,7 @@
     {
       "file": "vitest__api__advanced__test-module.md",
       "title": "TestModule",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -454,6 +504,7 @@
     {
       "file": "vitest__api__advanced__test-project.md",
       "title": "TestProject",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -463,6 +514,7 @@
     {
       "file": "vitest__api__advanced__test-specification.md",
       "title": "TestSpecification",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -472,6 +524,7 @@
     {
       "file": "vitest__api__advanced__test-suite.md",
       "title": "TestSuite",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -481,6 +534,7 @@
     {
       "file": "vitest__api__advanced__vitest.md",
       "title": "Vitest API",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -490,6 +544,7 @@
     {
       "file": "vitest__api__assert-type.md",
       "title": "assertType",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -499,6 +554,7 @@
     {
       "file": "vitest__api__assert.md",
       "title": "assert",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -508,6 +564,7 @@
     {
       "file": "vitest__api__browser__assertions.md",
       "title": "Assertion API | Browser Mode",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -517,6 +574,7 @@
     {
       "file": "vitest__api__browser__commands.md",
       "title": "Commands | Browser Mode",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -526,6 +584,7 @@
     {
       "file": "vitest__api__browser__context.md",
       "title": "Context API | Browser Mode",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -535,6 +594,7 @@
     {
       "file": "vitest__api__browser__interactivity.md",
       "title": "Interactivity API | Browser Mode",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -544,6 +604,7 @@
     {
       "file": "vitest__api__browser__locators.md",
       "title": "Locators | Browser Mode",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -553,6 +614,7 @@
     {
       "file": "vitest__api__browser__react.md",
       "title": "vitest-browser-react",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -562,6 +624,7 @@
     {
       "file": "vitest__api__browser__svelte.md",
       "title": "vitest-browser-svelte",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -571,6 +634,7 @@
     {
       "file": "vitest__api__browser__vue.md",
       "title": "vitest-browser-vue",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -580,6 +644,7 @@
     {
       "file": "vitest__api__describe.md",
       "title": "describe",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -589,6 +654,7 @@
     {
       "file": "vitest__api__expect-typeof.md",
       "title": "expectTypeOf",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -598,6 +664,7 @@
     {
       "file": "vitest__api__expect.md",
       "title": "expect",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -607,6 +674,7 @@
     {
       "file": "vitest__api__hooks.md",
       "title": "Hooks",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -616,6 +684,7 @@
     {
       "file": "vitest__api__mock.md",
       "title": "Mocks",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -625,6 +694,7 @@
     {
       "file": "vitest__api__test.md",
       "title": "Test",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -634,6 +704,7 @@
     {
       "file": "vitest__api__vi.md",
       "title": "Vi",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -643,6 +714,7 @@
     {
       "file": "vitest__config__alias.md",
       "title": "alias | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -652,6 +724,7 @@
     {
       "file": "vitest__config__allowonly.md",
       "title": "allowOnly | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -661,6 +734,7 @@
     {
       "file": "vitest__config__api.md",
       "title": "api | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -670,6 +744,7 @@
     {
       "file": "vitest__config__bail.md",
       "title": "bail | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -679,6 +754,7 @@
     {
       "file": "vitest__config__benchmark.md",
       "title": "benchmark | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -688,6 +764,7 @@
     {
       "file": "vitest__config__browser__commands.md",
       "title": "browser.commands | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -697,6 +774,7 @@
     {
       "file": "vitest__config__browser__dependencysourcemaps.md",
       "title": "browser.dependencySourcemaps | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -706,6 +784,7 @@
     {
       "file": "vitest__config__browser__detailspanelposition.md",
       "title": "browser.detailsPanelPosition | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -715,6 +794,7 @@
     {
       "file": "vitest__config__browser__enabled.md",
       "title": "browser.enabled | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -724,6 +804,7 @@
     {
       "file": "vitest__config__browser__expect.md",
       "title": "browser.expect | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -733,6 +814,7 @@
     {
       "file": "vitest__config__browser__instances.md",
       "title": "browser.instances | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -742,6 +824,7 @@
     {
       "file": "vitest__config__browser__locators.md",
       "title": "browser.locators | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -751,6 +834,7 @@
     {
       "file": "vitest__config__browser__orchestratorscripts.md",
       "title": "browser.orchestratorScripts | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -760,6 +844,7 @@
     {
       "file": "vitest__config__browser__playwright.md",
       "title": "Configuring Playwright",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -769,6 +854,7 @@
     {
       "file": "vitest__config__browser__preview.md",
       "title": "Configuring Preview",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -778,6 +864,7 @@
     {
       "file": "vitest__config__browser__provider.md",
       "title": "browser.provider | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -787,6 +874,7 @@
     {
       "file": "vitest__config__browser__trace.md",
       "title": "browser.trace | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -796,6 +884,7 @@
     {
       "file": "vitest__config__browser__traceview.md",
       "title": "browser.traceView | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -805,6 +894,7 @@
     {
       "file": "vitest__config__browser__webdriverio.md",
       "title": "Configuring WebdriverIO",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -814,6 +904,7 @@
     {
       "file": "vitest__config__cache.md",
       "title": "cache | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -823,6 +914,7 @@
     {
       "file": "vitest__config__chaiconfig.md",
       "title": "chaiConfig | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -832,6 +924,7 @@
     {
       "file": "vitest__config__changed.md",
       "title": "changed | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -841,6 +934,7 @@
     {
       "file": "vitest__config__clearmocks.md",
       "title": "clearMocks | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -850,6 +944,7 @@
     {
       "file": "vitest__config__coverage.md",
       "title": "coverage | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -859,6 +954,7 @@
     {
       "file": "vitest__config__css.md",
       "title": "css | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -868,6 +964,7 @@
     {
       "file": "vitest__config__dangerouslyignoreunhandlederrors.md",
       "title": "dangerouslyIgnoreUnhandledErrors | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -877,6 +974,7 @@
     {
       "file": "vitest__config__deps.md",
       "title": "deps | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -886,6 +984,7 @@
     {
       "file": "vitest__config__detectasyncleaks.md",
       "title": "detectAsyncLeaks | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -895,6 +994,7 @@
     {
       "file": "vitest__config__diff.md",
       "title": "diff | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -904,6 +1004,7 @@
     {
       "file": "vitest__config__disableconsoleintercept.md",
       "title": "disableConsoleIntercept | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -913,6 +1014,7 @@
     {
       "file": "vitest__config__environment.md",
       "title": "environment | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -922,6 +1024,7 @@
     {
       "file": "vitest__config__environmentoptions.md",
       "title": "environmentOptions | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -931,6 +1034,7 @@
     {
       "file": "vitest__config__exclude.md",
       "title": "exclude | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -940,6 +1044,7 @@
     {
       "file": "vitest__config__expect.md",
       "title": "expect | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -949,6 +1054,7 @@
     {
       "file": "vitest__config__experimental.md",
       "title": "experimental | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -958,6 +1064,7 @@
     {
       "file": "vitest__config__faketimers.md",
       "title": "fakeTimers | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -967,6 +1074,7 @@
     {
       "file": "vitest__config__forcereruntriggers.md",
       "title": "forceRerunTriggers | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -976,6 +1084,7 @@
     {
       "file": "vitest__config__fsmodulecache.md",
       "title": "fsModuleCache | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -985,6 +1094,7 @@
     {
       "file": "vitest__config__fsmodulecachepath.md",
       "title": "fsModuleCachePath | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -994,6 +1104,7 @@
     {
       "file": "vitest__config__globals.md",
       "title": "globals | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1003,6 +1114,7 @@
     {
       "file": "vitest__config__globalsetup.md",
       "title": "globalSetup | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1012,6 +1124,7 @@
     {
       "file": "vitest__config__include-source.md",
       "title": "includeSource | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1021,6 +1134,7 @@
     {
       "file": "vitest__config__include.md",
       "title": "include | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1030,6 +1144,7 @@
     {
       "file": "vitest__config__includetasklocation.md",
       "title": "includeTaskLocation | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1039,6 +1154,7 @@
     {
       "file": "vitest__config__index.md",
       "title": "Configuring Vitest",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1048,6 +1164,7 @@
     {
       "file": "vitest__config__injectcjsglobals.md",
       "title": "injectCjsGlobals | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1057,6 +1174,7 @@
     {
       "file": "vitest__config__isolate.md",
       "title": "isolate | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1066,6 +1184,7 @@
     {
       "file": "vitest__config__maxworkers.md",
       "title": "maxWorkers | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1075,6 +1194,7 @@
     {
       "file": "vitest__config__mockreset.md",
       "title": "mockReset | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1084,6 +1204,7 @@
     {
       "file": "vitest__config__name.md",
       "title": "name | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1093,6 +1214,7 @@
     {
       "file": "vitest__config__onconsolelog.md",
       "title": "onConsoleLog | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1102,6 +1224,7 @@
     {
       "file": "vitest__config__onstacktrace.md",
       "title": "onStackTrace | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1111,6 +1234,7 @@
     {
       "file": "vitest__config__onunhandlederror.md",
       "title": "onUnhandledError | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1120,6 +1244,7 @@
     {
       "file": "vitest__config__pool.md",
       "title": "pool | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1129,6 +1254,7 @@
     {
       "file": "vitest__config__provide.md",
       "title": "provide | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1138,6 +1264,7 @@
     {
       "file": "vitest__config__reporters.md",
       "title": "reporters | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1147,6 +1274,7 @@
     {
       "file": "vitest__config__resolvesnapshotpath.md",
       "title": "resolveSnapshotPath | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1156,6 +1284,7 @@
     {
       "file": "vitest__config__restoremocks.md",
       "title": "restoreMocks | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1165,6 +1294,7 @@
     {
       "file": "vitest__config__retry.md",
       "title": "retry | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1174,6 +1304,7 @@
     {
       "file": "vitest__config__sequence.md",
       "title": "sequence | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1183,6 +1314,7 @@
     {
       "file": "vitest__config__server.md",
       "title": "server | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1192,6 +1324,7 @@
     {
       "file": "vitest__config__setupfiles.md",
       "title": "setupFiles | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1201,6 +1334,7 @@
     {
       "file": "vitest__config__snapshotenvironment.md",
       "title": "snapshotEnvironment | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1210,6 +1344,7 @@
     {
       "file": "vitest__config__snapshotformat.md",
       "title": "snapshotFormat | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1219,6 +1354,7 @@
     {
       "file": "vitest__config__stricttags.md",
       "title": "strictTags | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1228,6 +1364,7 @@
     {
       "file": "vitest__config__tags.md",
       "title": "tags | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1237,6 +1374,7 @@
     {
       "file": "vitest__config__testnamepattern.md",
       "title": "testNamePattern | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1246,6 +1384,7 @@
     {
       "file": "vitest__config__typecheck.md",
       "title": "typecheck | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1255,6 +1394,7 @@
     {
       "file": "vitest__config__ui.md",
       "title": "ui | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1264,6 +1404,7 @@
     {
       "file": "vitest__config__unstubenvs.md",
       "title": "unstubEnvs | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1273,6 +1414,7 @@
     {
       "file": "vitest__config__unstubglobals.md",
       "title": "unstubGlobals | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1282,6 +1424,7 @@
     {
       "file": "vitest__config__update.md",
       "title": "update | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1291,6 +1434,7 @@
     {
       "file": "vitest__config__vmmemorylimit.md",
       "title": "vmMemoryLimit | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1300,6 +1444,7 @@
     {
       "file": "vitest__config__watchtriggerpatterns.md",
       "title": "watchTriggerPatterns | Config",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1308,7 +1453,8 @@
     },
     {
       "file": "vitest__guide__advanced__benchmark-provider.md",
-      "title": "Custom Benchmark Provider <Version type=\"experimental\">5.0.0</Version> <Badge type=\"danger\">advanced</Badge> {#custom-benchmark-provider}",
+      "title": "Custom Benchmark Provider",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1318,6 +1464,7 @@
     {
       "file": "vitest__guide__advanced__index.md",
       "title": "Advanced API",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1326,7 +1473,8 @@
     },
     {
       "file": "vitest__guide__advanced__pool.md",
-      "title": "Custom Pool <Badge type=\"danger\">advanced</Badge> {#custom-pool}",
+      "title": "Custom Pool",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1335,7 +1483,8 @@
     },
     {
       "file": "vitest__guide__advanced__reporters.md",
-      "title": "Extending Reporters <Badge type=\"danger\">advanced</Badge> {#extending-reporters}",
+      "title": "Extending Reporters",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1344,7 +1493,8 @@
     },
     {
       "file": "vitest__guide__advanced__tests.md",
-      "title": "Running Tests <Badge type=\"danger\">advanced</Badge> {#running-tests}",
+      "title": "Running Tests",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1354,6 +1504,7 @@
     {
       "file": "vitest__guide__benchmarking.md",
       "title": "Benchmarking | Guide",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1363,6 +1514,7 @@
     {
       "file": "vitest__guide__browser__aria-snapshots.md",
       "title": "ARIA Snapshots | Guide",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1372,6 +1524,7 @@
     {
       "file": "vitest__guide__browser__component-testing.md",
       "title": "Component Testing | Guide",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1381,6 +1534,7 @@
     {
       "file": "vitest__guide__browser__index.md",
       "title": "Browser Mode | Guide",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1390,6 +1544,7 @@
     {
       "file": "vitest__guide__browser__multiple-setups.md",
       "title": "Multiple Setups",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1399,6 +1554,7 @@
     {
       "file": "vitest__guide__browser__playwright-traces.md",
       "title": "Playwright Traces",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1407,7 +1563,8 @@
     },
     {
       "file": "vitest__guide__browser__trace-view.md",
-      "title": "Trace View <Badge type=\"warning\" text=\"Experimental\" /> <Version>5.0.0</Version>",
+      "title": "Trace View",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1417,6 +1574,7 @@
     {
       "file": "vitest__guide__browser__visual-regression-testing.md",
       "title": "Visual Regression Testing",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1426,6 +1584,7 @@
     {
       "file": "vitest__guide__browser__why.md",
       "title": "Why Browser Mode | Browser Mode",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1434,7 +1593,8 @@
     },
     {
       "file": "vitest__guide__cli-generated.md",
-      "title": "docs/guide/cli-generated.md",
+      "title": "Cli Generated",
+      "titleSource": "filename",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1444,6 +1604,7 @@
     {
       "file": "vitest__guide__cli.md",
       "title": "Command Line Interface | Guide",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1453,6 +1614,7 @@
     {
       "file": "vitest__guide__common-errors.md",
       "title": "Common Errors | Guide",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1462,6 +1624,7 @@
     {
       "file": "vitest__guide__comparisons.md",
       "title": "Comparisons with Other Test Runners | Guide",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1471,6 +1634,7 @@
     {
       "file": "vitest__guide__coverage.md",
       "title": "Coverage | Guide",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1480,6 +1644,7 @@
     {
       "file": "vitest__guide__debugging.md",
       "title": "Debugging | Guide",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1489,6 +1654,7 @@
     {
       "file": "vitest__guide__environment.md",
       "title": "Test Environment | Guide",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1498,6 +1664,7 @@
     {
       "file": "vitest__guide__extending-matchers.md",
       "title": "Extending Matchers | Guide",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1507,6 +1674,7 @@
     {
       "file": "vitest__guide__features.md",
       "title": "Features | Guide",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1516,6 +1684,7 @@
     {
       "file": "vitest__guide__filtering.md",
       "title": "Test Filtering | Guide",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1525,6 +1694,7 @@
     {
       "file": "vitest__guide__ide.md",
       "title": "IDE Integrations | Guide",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1534,6 +1704,7 @@
     {
       "file": "vitest__guide__improving-performance.md",
       "title": "Improving Performance",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1543,6 +1714,7 @@
     {
       "file": "vitest__guide__in-source.md",
       "title": "In-Source Testing | Guide",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1552,6 +1724,7 @@
     {
       "file": "vitest__guide__index.md",
       "title": "Getting Started | Guide",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1561,6 +1734,7 @@
     {
       "file": "vitest__guide__learn__async.md",
       "title": "Testing Asynchronous Code | Guide",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1570,6 +1744,7 @@
     {
       "file": "vitest__guide__learn__debugging-tests.md",
       "title": "Debugging Failing Tests | Guide",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1579,6 +1754,7 @@
     {
       "file": "vitest__guide__learn__matchers.md",
       "title": "Using Matchers | Guide",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1588,6 +1764,7 @@
     {
       "file": "vitest__guide__learn__mock-functions.md",
       "title": "Mock Functions | Guide",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1597,6 +1774,7 @@
     {
       "file": "vitest__guide__learn__setup-teardown.md",
       "title": "Setup and Teardown | Guide",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1606,6 +1784,7 @@
     {
       "file": "vitest__guide__learn__snapshots.md",
       "title": "Snapshot Testing | Guide",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1615,6 +1794,7 @@
     {
       "file": "vitest__guide__learn__testing-in-practice.md",
       "title": "Testing in Practice | Guide",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1624,6 +1804,7 @@
     {
       "file": "vitest__guide__learn__writing-tests-with-ai.md",
       "title": "Writing Tests with AI | Guide",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1633,6 +1814,7 @@
     {
       "file": "vitest__guide__learn__writing-tests.md",
       "title": "Writing Tests | Guide",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1642,6 +1824,7 @@
     {
       "file": "vitest__guide__lifecycle.md",
       "title": "Test Run Lifecycle | Guide",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1651,6 +1834,7 @@
     {
       "file": "vitest__guide__migration.md",
       "title": "Migration Guide | Guide",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1660,6 +1844,7 @@
     {
       "file": "vitest__guide__mocking.md",
       "title": "Mocking | Guide",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1669,6 +1854,7 @@
     {
       "file": "vitest__guide__mocking__classes.md",
       "title": "Mocking Classes",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1678,6 +1864,7 @@
     {
       "file": "vitest__guide__mocking__dates.md",
       "title": "Mocking Dates",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1687,6 +1874,7 @@
     {
       "file": "vitest__guide__mocking__file-system.md",
       "title": "Mocking the File System",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1696,6 +1884,7 @@
     {
       "file": "vitest__guide__mocking__functions.md",
       "title": "Mocking Functions",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1705,6 +1894,7 @@
     {
       "file": "vitest__guide__mocking__globals.md",
       "title": "Mocking Globals",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1714,6 +1904,7 @@
     {
       "file": "vitest__guide__mocking__modules.md",
       "title": "Mocking Modules",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1723,6 +1914,7 @@
     {
       "file": "vitest__guide__mocking__requests.md",
       "title": "Mocking Requests",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1732,6 +1924,7 @@
     {
       "file": "vitest__guide__mocking__timers.md",
       "title": "Timers",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1740,7 +1933,8 @@
     },
     {
       "file": "vitest__guide__open-telemetry.md",
-      "title": "Open Telemetry Support <Experimental /> {#open-telemetry-support}",
+      "title": "Open Telemetry Support",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1750,6 +1944,7 @@
     {
       "file": "vitest__guide__parallelism.md",
       "title": "Parallelism | Guide",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1759,6 +1954,7 @@
     {
       "file": "vitest__guide__profiling-test-performance.md",
       "title": "Profiling Test Performance",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1768,6 +1964,7 @@
     {
       "file": "vitest__guide__projects.md",
       "title": "Test Projects | Guide",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1777,6 +1974,7 @@
     {
       "file": "vitest__guide__recipes__browser-locators.md",
       "title": "Extending Browser Locators | Recipes",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1786,6 +1984,7 @@
     {
       "file": "vitest__guide__recipes__cancellable.md",
       "title": "Cancellable Test Resources | Recipes",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1795,6 +1994,7 @@
     {
       "file": "vitest__guide__recipes__conditional-mocking.md",
       "title": "Conditional Mocking with vi.when | Recipes",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1804,6 +2004,7 @@
     {
       "file": "vitest__guide__recipes__custom-assertions.md",
       "title": "Custom Assertion Helpers | Recipes",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1813,6 +2014,7 @@
     {
       "file": "vitest__guide__recipes__db-transaction.md",
       "title": "Database Transaction per Test | Recipes",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1822,6 +2024,7 @@
     {
       "file": "vitest__guide__recipes__disable-isolation.md",
       "title": "Per-File Isolation Settings | Recipes",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1830,7 +2033,8 @@
     },
     {
       "file": "vitest__guide__recipes__explicit-resources.md",
-      "title": "Auto-Cleanup with `using` | Recipes",
+      "title": "Auto-Cleanup with using | Recipes",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1840,6 +2044,7 @@
     {
       "file": "vitest__guide__recipes__parallel-sequential.md",
       "title": "Parallel and Sequential Test Files | Recipes",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1849,6 +2054,7 @@
     {
       "file": "vitest__guide__recipes__schema-matching.md",
       "title": "Schema-Driven Assertions | Recipes",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1858,6 +2064,7 @@
     {
       "file": "vitest__guide__recipes__type-narrowing.md",
       "title": "Type Narrowing in Tests | Recipes",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1867,6 +2074,7 @@
     {
       "file": "vitest__guide__recipes__wait-for.md",
       "title": "Waiting for Async Conditions | Recipes",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1876,6 +2084,7 @@
     {
       "file": "vitest__guide__recipes__watch-templates.md",
       "title": "Watching Non-Imported Files | Recipes",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1885,6 +2094,7 @@
     {
       "file": "vitest__guide__reporters.md",
       "title": "Reporters | Guide",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1894,6 +2104,7 @@
     {
       "file": "vitest__guide__snapshot.md",
       "title": "Snapshot | Guide",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1903,6 +2114,7 @@
     {
       "file": "vitest__guide__test-annotations.md",
       "title": "Test Annotations | Guide",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1912,6 +2124,7 @@
     {
       "file": "vitest__guide__test-context.md",
       "title": "Test Context | Guide",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1921,6 +2134,7 @@
     {
       "file": "vitest__guide__test-tags.md",
       "title": "Test Tags | Guide",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1930,6 +2144,7 @@
     {
       "file": "vitest__guide__testing-types.md",
       "title": "Testing Types | Guide",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1939,6 +2154,7 @@
     {
       "file": "vitest__guide__ui.md",
       "title": "Vitest UI | Guide",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1948,6 +2164,7 @@
     {
       "file": "vitest__guide__why.md",
       "title": "Why Vitest | Guide",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1957,6 +2174,7 @@
     {
       "file": "vitest__releases.md",
       "title": "Releases",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1966,6 +2184,7 @@
     {
       "file": "vitest__team.md",
       "title": "Meet the Team",
+      "titleSource": "front-matter",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1975,6 +2194,7 @@
     {
       "file": "vitest__todo.md",
       "title": "Remove UnoCSS - Migration Complete",
+      "titleSource": "heading",
       "source": "vitest",
       "repo": "https://github.com/vitest-dev/vitest",
       "commit": "c67d296f42f93ec888ff148e821877194969cea9",
@@ -1984,6 +2204,7 @@
     {
       "file": "vite__acknowledgements.md",
       "title": "Acknowledgements",
+      "titleSource": "front-matter",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -1992,7 +2213,8 @@
     },
     {
       "file": "vite__changes__hotupdate-hook.md",
-      "title": "HMR `hotUpdate` Plugin Hook",
+      "title": "HMR hotUpdate Plugin Hook",
+      "titleSource": "heading",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2002,6 +2224,7 @@
     {
       "file": "vite__changes__index.md",
       "title": "Breaking Changes",
+      "titleSource": "heading",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2011,6 +2234,7 @@
     {
       "file": "vite__changes__per-environment-apis.md",
       "title": "Move to Per-environment APIs",
+      "titleSource": "heading",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2020,6 +2244,7 @@
     {
       "file": "vite__changes__shared-plugins-during-build.md",
       "title": "Shared Plugins during Build",
+      "titleSource": "heading",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2028,7 +2253,8 @@
     },
     {
       "file": "vite__changes__ssr-using-modulerunner.md",
-      "title": "SSR Using `ModuleRunner` API",
+      "title": "SSR Using ModuleRunner API",
+      "titleSource": "heading",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2037,7 +2263,8 @@
     },
     {
       "file": "vite__changes__this-environment-in-hooks.md",
-      "title": "`this.environment` in Hooks",
+      "title": "this.environment in Hooks",
+      "titleSource": "heading",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2047,6 +2274,7 @@
     {
       "file": "vite__config__build-options.md",
       "title": "Build Options",
+      "titleSource": "heading",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2056,6 +2284,7 @@
     {
       "file": "vite__config__dep-optimization-options.md",
       "title": "Dep Optimization Options",
+      "titleSource": "heading",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2065,6 +2294,7 @@
     {
       "file": "vite__config__index.md",
       "title": "Configuring Vite",
+      "titleSource": "front-matter",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2074,6 +2304,7 @@
     {
       "file": "vite__config__preview-options.md",
       "title": "Preview Options",
+      "titleSource": "heading",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2083,6 +2314,7 @@
     {
       "file": "vite__config__server-options.md",
       "title": "Server Options",
+      "titleSource": "heading",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2092,6 +2324,7 @@
     {
       "file": "vite__config__shared-options.md",
       "title": "Shared Options",
+      "titleSource": "heading",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2101,6 +2334,7 @@
     {
       "file": "vite__config__ssr-options.md",
       "title": "SSR Options",
+      "titleSource": "heading",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2110,6 +2344,7 @@
     {
       "file": "vite__config__worker-options.md",
       "title": "Worker Options",
+      "titleSource": "heading",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2119,6 +2354,7 @@
     {
       "file": "vite__guide__api-environment-frameworks.md",
       "title": "Environment API for Frameworks",
+      "titleSource": "heading",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2127,7 +2363,8 @@
     },
     {
       "file": "vite__guide__api-environment-instances.md",
-      "title": "Using `Environment` Instances",
+      "title": "Using Environment Instances",
+      "titleSource": "heading",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2137,6 +2374,7 @@
     {
       "file": "vite__guide__api-environment-plugins.md",
       "title": "Environment API for Plugins",
+      "titleSource": "heading",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2146,6 +2384,7 @@
     {
       "file": "vite__guide__api-environment-runtimes.md",
       "title": "Environment API for Runtimes",
+      "titleSource": "heading",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2155,6 +2394,7 @@
     {
       "file": "vite__guide__api-environment.md",
       "title": "Environment API",
+      "titleSource": "heading",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2164,6 +2404,7 @@
     {
       "file": "vite__guide__api-hmr.md",
       "title": "HMR API",
+      "titleSource": "heading",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2173,6 +2414,7 @@
     {
       "file": "vite__guide__api-javascript.md",
       "title": "JavaScript API",
+      "titleSource": "heading",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2182,6 +2424,7 @@
     {
       "file": "vite__guide__api-plugin.md",
       "title": "Plugin API",
+      "titleSource": "heading",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2191,6 +2434,7 @@
     {
       "file": "vite__guide__assets.md",
       "title": "Static Asset Handling",
+      "titleSource": "heading",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2200,6 +2444,7 @@
     {
       "file": "vite__guide__backend-integration.md",
       "title": "Backend Integration",
+      "titleSource": "heading",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2209,6 +2454,7 @@
     {
       "file": "vite__guide__build.md",
       "title": "Building for Production",
+      "titleSource": "heading",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2218,6 +2464,7 @@
     {
       "file": "vite__guide__cli.md",
       "title": "Command Line Interface",
+      "titleSource": "heading",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2227,6 +2474,7 @@
     {
       "file": "vite__guide__dep-pre-bundling.md",
       "title": "Dependency Pre-Bundling",
+      "titleSource": "heading",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2236,6 +2484,7 @@
     {
       "file": "vite__guide__env-and-mode.md",
       "title": "Env Variables and Modes",
+      "titleSource": "heading",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2245,6 +2494,7 @@
     {
       "file": "vite__guide__features.md",
       "title": "Features",
+      "titleSource": "heading",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2254,6 +2504,7 @@
     {
       "file": "vite__guide__index.md",
       "title": "Getting Started",
+      "titleSource": "heading",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2263,6 +2514,7 @@
     {
       "file": "vite__guide__migration.md",
       "title": "Migration from v7",
+      "titleSource": "heading",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2272,6 +2524,7 @@
     {
       "file": "vite__guide__performance.md",
       "title": "Performance",
+      "titleSource": "heading",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2281,6 +2534,7 @@
     {
       "file": "vite__guide__philosophy.md",
       "title": "Project Philosophy",
+      "titleSource": "heading",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2290,6 +2544,7 @@
     {
       "file": "vite__guide__ssr.md",
       "title": "Server-Side Rendering (SSR)",
+      "titleSource": "heading",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2299,6 +2554,7 @@
     {
       "file": "vite__guide__static-deploy.md",
       "title": "Deploying a Static Site",
+      "titleSource": "heading",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2308,6 +2564,7 @@
     {
       "file": "vite__guide__troubleshooting.md",
       "title": "Troubleshooting",
+      "titleSource": "heading",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2317,6 +2574,7 @@
     {
       "file": "vite__guide__using-plugins.md",
       "title": "Using Plugins",
+      "titleSource": "heading",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2326,6 +2584,7 @@
     {
       "file": "vite__guide__why.md",
       "title": "Why Vite",
+      "titleSource": "heading",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2335,6 +2594,7 @@
     {
       "file": "vite__plugins__index.md",
       "title": "Plugins",
+      "titleSource": "heading",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2344,6 +2604,7 @@
     {
       "file": "vite__releases.md",
       "title": "Releases",
+      "titleSource": "heading",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",
@@ -2353,6 +2614,7 @@
     {
       "file": "vite__team.md",
       "title": "Meet the Team",
+      "titleSource": "front-matter",
       "source": "vite",
       "repo": "https://github.com/vitejs/vite",
       "commit": "57fea001d154e7dd8d5d74d3082731f1dcfd31be",

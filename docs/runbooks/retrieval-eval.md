@@ -150,6 +150,31 @@ is what enforces that. Labels come from agents that have not seen the
 retrieval implementation — the fixture must never be written by whoever is
 tuning the thing it scores.
 
+### Page titles
+
+The corpus stands in for a Confluence knowledge base, so a corpus page needs a
+**human title** — `pages.title` is half of the `pages.tsv` the keyword leg
+scores against, and it is what the identifier short-circuit matches on.
+`backend/src/domains/llm/eval/corpus-title.ts` is the single derivation, shared
+by the vendor script and by `corpus-title.test.ts`:
+
+1. the front-matter `title`;
+2. else the first `#` heading, **ignoring fenced code**;
+3. else the de-slugified filename (`Fluent-Schema.md` → `Fluent Schema`),
+   unless the filename is positional (`index`, `readme`);
+4. else the first heading at any depth.
+
+Rule 3 sits above the deeper headings deliberately: a page with no `#` opens at
+some `##` that is its first *section*, not its subject, so `Serverless.md`
+would be titled `AWS`. Every title is stripped of VitePress markup — Vue
+components with their decorative content, `{#anchor}` suffixes, backticks.
+
+Nothing in `corpus/MANIFEST.json` may be hand-edited: the vendor script rebuilds
+it from scratch on every run and would delete the edit without a word. Each
+entry records `titleSource`, and `corpus-title.test.ts` re-derives every
+`heading` and `filename` title from the committed bytes — so a hand-edit fails
+in CI rather than surviving until the next refresh.
+
 Fixture floor is **N ≥ 100**, enforced in `assertFixturePower`. Today: 197
 queries over 162 distinct pages, spread across natural questions, bare
 keywords, error text and how-to phrasings, because a fixture made of one
