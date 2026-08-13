@@ -87,6 +87,17 @@ export function buildRagCacheKey(
      * must not serve (or be served) the pinned answer for the TTL — and
      * sorted docIds alone cannot see a MOVED pin. */
     pinnedCount?: number;
+    /**
+     * #1112: deep search retrieves three phrasings and fuses them, so the
+     * same question yields a different ORDER of sources and — once the
+     * paraphrases reach pages the original never did — a different SET. The
+     * doc-id component sees the second and not the first, and it sees
+     * neither when expansion soft-fails and later recovers: a deep ask served
+     * from a normal ask's key (or the reverse) is the two modes serving each
+     * other's answer for the whole TTL. The flag separates the namespaces
+     * outright.
+     */
+    deepSearch?: boolean;
   },
 ): string {
   const sortedIds = [...docIds].sort().join(',');
@@ -105,7 +116,8 @@ export function buildRagCacheKey(
   const contextSuffix = options?.contextChars !== undefined ? `ctx:${options.contextChars}` : '';
   const assembledSuffix = options?.assembledPages !== undefined ? `asm:${options.assembledPages}` : '';
   const pinnedSuffix = options?.pinnedCount !== undefined ? `pin:${options.pinnedCount}` : '';
-  return KEY_PREFIX + hashLlmInputs(model, question, sortedIds, subPageSuffix, externalSuffix, webSuffix, providerSuffix, thinkingSuffix, contextSuffix, assembledSuffix, pinnedSuffix);
+  const deepSuffix = options?.deepSearch ? 'deep:1' : '';
+  return KEY_PREFIX + hashLlmInputs(model, question, sortedIds, subPageSuffix, externalSuffix, webSuffix, providerSuffix, thinkingSuffix, contextSuffix, assembledSuffix, pinnedSuffix, deepSuffix);
 }
 
 export class LlmCache {

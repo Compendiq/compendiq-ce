@@ -122,7 +122,7 @@ vi.mock('../../../core/services/fts-language.js', () => ({
 
 import { buildRagContext, hybridSearch, RAG_EF_SEARCH, reciprocalRankFusion, fuseWithStableHead, rrfWorstCase, vectorSearch, keywordSearch, recordSearchAnalytics, resolveStageLimit, computeRetrievalConfidence, RAG_FETCH_WIDTH_DEFAULT, truncateAtDistinctPages, PAGE_FANOUT, VECTOR_RAW_LIMIT_CAP, vectorRawLimit, IDENTIFIER_LOOKUP_CANDIDATES } from './rag-service.js';
 import type { SearchResult } from './rag-service.js';
-import { invalidateRagFetchWidthCache, invalidateRagRerankCandidatesCache, invalidateRagContextCharsCache, invalidateRagPinIdentifiersCache, invalidateRagMmrCache, invalidateRagRankingPriorCache, RAG_CONTEXT_CHARS_DEFAULT } from '../../../core/services/admin-settings-service.js';
+import { invalidateRagFetchWidthCache, invalidateRagRerankCandidatesCache, invalidateRagContextCharsCache, invalidateRagPinIdentifiersCache, invalidateRagMmrCache, invalidateRagRankingPriorCache, RAG_CONTEXT_CHARS_DEFAULT, RAG_RERANK_CANDIDATES_MIN } from '../../../core/services/admin-settings-service.js';
 import { CircuitBreakerOpenError } from '../../../core/services/circuit-breaker.js';
 
 describe('RAG Service', () => {
@@ -1020,6 +1020,65 @@ describe('RAG Service', () => {
       // Default pool 30 > width 10 — #1103's headroom finally spent; since
       // #1106 the SQL LIMIT is the raw chunk fetch over that pool (4 x 30).
       expect(vectorLimit()).toBe(PAGE_FANOUT * 30);
+    });
+
+    it('takes a caller-supplied pool over the configured one, and never past the knob\'s own clamp (#1112)', async () => {
+      mocks.mockResolveRerank.mockResolvedValue(RERANK_CFG);
+      await hybridSearch('user-1', 'question', 5, undefined, { rerank: true, rerankCandidatesOverride: 60 });
+      expect(vectorLimit()).toBe(PAGE_FANOUT * 60);
+
+      // The clamp is the operator's, not the caller's: a per-request option
+      // must not be able to ship more documents to the rerank provider (and,
+      // under EE ACL, more access checks) than rag_rerank_candidates allows.
+      mocks.mockClientQuery.mockClear();
+      invalidateRagRerankCandidatesCache();
+      await hybridSearch('user-1', 'question', 5, undefined, { rerank: true, rerankCandidatesOverride: 500 });
+      expect(vectorLimit()).toBe(Math.min(PAGE_FANOUT * 100, VECTOR_RAW_LIMIT_CAP));
+    });
+
+    it('the override may LOWER a configured pool — a multi-leg caller divides the budget (#1112)', async () => {
+      // The reason this replaced a floor. `rag_rerank_candidates` bounds ONE
+      // retrieval's rerank cost; deep search runs three concurrently against a
+      // single RERANK_TIMEOUT_MS, so a floor multiplied the operator's ceiling
+      // by the leg count and every leg blew the budget (measured: 3 x 60 docs
+      // = 14.9s against 5s). Dividing is the only direction that keeps one
+      // gesture's cost comparable to one search's.
+      mocks.mockResolveRerank.mockResolvedValue(RERANK_CFG);
+      mocks.mockQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes('rag_rerank_candidates')) return { rows: [{ setting_value: '80' }] };
+        if (sql.includes('COUNT(*)')) return { rows: [{ embedded: 3, total: 3 }] };
+        return { rows: [] };
+      });
+      invalidateRagRerankCandidatesCache();
+      await hybridSearch('user-1', 'question', 5, undefined, { rerank: true, rerankCandidatesOverride: 20 });
+      expect(vectorLimit()).toBe(PAGE_FANOUT * 20);
+      invalidateRagRerankCandidatesCache();
+    });
+
+    it('puts the override through the operator\'s own lower clamp too (#1112)', async () => {
+      // Symmetry with the ceiling: the caller's number is clamped into
+      // [RAG_RERANK_CANDIDATES_MIN, MAX] exactly as the operator's is, so a
+      // per-request value cannot degenerate the stage into rescoring nothing.
+      mocks.mockResolveRerank.mockResolvedValue(RERANK_CFG);
+      await hybridSearch('user-1', 'question', 5, undefined, { rerank: true, rerankCandidatesOverride: 1 });
+      expect(vectorLimit()).toBe(PAGE_FANOUT * RAG_RERANK_CANDIDATES_MIN);
+    });
+
+    it('writes NO analytics row when the caller suppresses it (#1112 paraphrase legs)', async () => {
+      // A deep-search leg's query text was written by a model. Recorded as an
+      // ordinary row it would show up in top-searches and in the
+      // knowledge-gap predicate as a question a user asked; the wrapper files
+      // one row for the merged set instead.
+      await hybridSearch('user-1', 'a model\'s paraphrase', 5, undefined, { recordAnalytics: false });
+      expect(
+        mocks.mockQuery.mock.calls.find(
+          (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('search_analytics'),
+        ),
+      ).toBeUndefined();
+
+      // …and the default is still to write one.
+      await hybridSearch('user-1', 'the user\'s own question', 5);
+      expect(analyticsParams()[1]).toBe('the user\'s own question');
     });
 
     it('returns relevance order, stamps rerankScore, and records hybrid_rerank + rerank_score', async () => {

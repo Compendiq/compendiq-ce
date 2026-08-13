@@ -125,6 +125,14 @@ export const AskRequestSchema = z.object({
   externalUrls: z.array(z.string().url()).max(5).optional(),
   searchWeb: z.boolean().optional(),
   searchQuery: z.string().max(500).optional(),
+  /**
+   * #1112 — multi-query expansion ("deep search"). Per-request and DEFAULT
+   * OFF, exactly like `searchWeb` and `thinking` above: it costs one extra
+   * chat call and two extra retrievals, so it stays the caller's decision per
+   * ask rather than a mode the server infers. Absent and `false` are the same
+   * thing, and `false` must reach retrieval as today's single-query path.
+   */
+  deepSearch: z.boolean().optional(),
 });
 
 export const GenerateDiagramRequestSchema = z.object({

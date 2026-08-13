@@ -13,6 +13,11 @@
  * does not detect it; asserting the vector leg participated does.
  */
 import { hybridSearch, getEmbeddingCoverage } from '../services/rag-service.js';
+import {
+  multiQuerySearch,
+  type ExpansionOutcome,
+  type MultiQuerySearchOptions,
+} from '../services/multi-query-search.js';
 import { trigrams, jaccard } from '../services/mmr.js';
 
 /**
@@ -53,6 +58,14 @@ export interface EvalRunOptions {
   /** #1109: force the MMR narrow for this run (the DB default is off). */
   mmr?: { enabled: boolean; lambda?: number };
   /**
+   * #1112: run every query through multi-query expansion (the `deepSearch`
+   * request flag). Needs a `chat` use-case assignment in the eval DB — the
+   * reformulation call is real, like the embedder. Without one, expansion
+   * soft-fails per query and the run would measure plain retrieval under a
+   * deep label, which the participation guard below refuses to do quietly.
+   */
+  deepSearch?: boolean;
+  /**
    * Fraction of queries that must show at least one vector-leg hit.
    *
    * Deliberately not "> 0": on a fully embedded corpus a healthy vector leg
@@ -61,6 +74,22 @@ export interface EvalRunOptions {
    * genuinely keyword-shaped queries while still failing a dead leg loudly.
    */
   minVectorParticipation?: number;
+  /**
+   * Fraction of queries that must show at least one rerank-scored result when
+   * `rerank` is requested. Same reasoning as `minVectorParticipation`, learned
+   * the expensive way: the first #1112 deep+rerank measurement shipped three
+   * concurrent 60-document rerank calls into one 5s budget, every call timed
+   * out, the aborts tripped the breaker — and the stage still scored 7 of 197
+   * queries in the gaps between cool-downs. A guard that fired only at exactly
+   * zero read those 7 as a working stage and published the run.
+   *
+   * The floor is high because a live reranker participates in essentially
+   * every query: the stage runs whenever the fused candidate list holds more
+   * than one row, which on any real corpus is always. Anything short of that
+   * is a stage failing most of the time, and a metric computed from a pipeline
+   * that is half-on describes neither configuration.
+   */
+  minRerankParticipation?: number;
 }
 
 export interface EvalRunResult {
@@ -77,6 +106,18 @@ export interface EvalRunResult {
    * identifier-style queries — but the COUNT is recorded so a silently
    * dead pin path is visible in the report (the F10 lesson applied). */
   pinParticipatingQueries: number;
+  /**
+   * #1112: queries whose deep search actually retrieved paraphrase legs.
+   * Skips are legitimate and expected (identifier and error-text queries are
+   * excluded by design), so this is reported rather than floored — but zero
+   * across a whole `--deep-search` run is guarded below.
+   */
+  expansionParticipatingQueries: number;
+  /** #1112: queries where expansion stood down BY DESIGN (identifier,
+   * error-text, over-long) rather than failing. Reported so a run that
+   * expanded nothing can be read as "the fixture is all identifiers" or as
+   * "the provider is down" without re-running it. */
+  expansionSkippedQueries: number;
   /**
    * #1109's acceptance metric, and the reason it is computed HERE rather
    * than by post-hoc SQL: the corpus is re-seeded per run, so page ids are
@@ -97,6 +138,7 @@ export interface EvalRunResult {
 
 export async function runEval(fixture: Fixture, opts: EvalRunOptions): Promise<EvalRunResult> {
   const minParticipation = opts.minVectorParticipation ?? 0.5;
+  const minRerankParticipation = opts.minRerankParticipation ?? 0.9;
 
   // A partially embedded corpus inflates every metric: the pages that failed
   // to embed cannot be retrieved by the vector leg, so the queries pointing at
@@ -123,6 +165,8 @@ export async function runEval(fixture: Fixture, opts: EvalRunOptions): Promise<E
   let rerankParticipatingQueries = 0;
   let assemblyParticipatingQueries = 0;
   let pinParticipatingQueries = 0;
+  let expansionParticipatingQueries = 0;
+  let expansionSkippedQueries = 0;
 
   for (const label of fixture.labels) {
     // assembleContext mirrors the shipped chat configuration (#1106 PR 2).
@@ -130,7 +174,13 @@ export async function runEval(fixture: Fixture, opts: EvalRunOptions): Promise<E
     // slice and touches no ranking field, and the runner scores pageIds
     // only — the one-time zero-discordant A/B on the rig is the recorded
     // evidence for that claim (PR body).
-    const results = await hybridSearch(opts.userId, label.query, opts.topK, undefined, {
+    // #1112: the deep-search axis swaps the wrapper in, exactly as the ask
+    // route does for a `deepSearch` request — same options, same widths.
+    const search = opts.deepSearch === true ? multiQuerySearch : hybridSearch;
+    // Declared as the wider type rather than passed inline: `onExpansion` is
+    // meaningless to `hybridSearch`, and a fresh object literal carrying it
+    // would not type-check against that half of the union.
+    const searchOpts: MultiQuerySearchOptions = {
       rerank: opts.rerank === true,
       assembleContext: opts.assembleContext !== false,
       // #1107 mirrors the shipped chat configuration; the fixture's
@@ -138,7 +188,12 @@ export async function runEval(fixture: Fixture, opts: EvalRunOptions): Promise<E
       // what make "natural-language queries unaffected" measurable.
       pinIdentifiers: opts.pinIdentifiers !== false,
       ...(opts.mmr ? { mmr: opts.mmr } : {}),
-    });
+      onExpansion: (outcome: ExpansionOutcome) => {
+        if (outcome.expanded) expansionParticipatingQueries++;
+        else if (outcome.reason !== 'unavailable') expansionSkippedQueries++;
+      },
+    };
+    const results = await search(opts.userId, label.query, opts.topK, undefined, searchOpts);
 
     if (results.some((r) => r.vectorScore !== null)) vectorParticipatingQueries++;
     if (results.some((r) => r.rerankScore != null)) rerankParticipatingQueries++;
@@ -182,14 +237,29 @@ export async function runEval(fixture: Fixture, opts: EvalRunOptions): Promise<E
     );
   }
 
-  // A --rerank run in which the stage never executed once (unassigned,
-  // erroring, always past the budget) is a plain run wearing the wrong
+  // A --rerank run in which the stage MOSTLY did not execute (unassigned,
+  // erroring, past the budget, breaker open) is a plain run wearing the wrong
   // label — the same class of silent lie the vector-participation guard
-  // exists for (#1267 verification, 5).
-  if (opts.rerank === true && rerankParticipatingQueries === 0 && fixture.labels.length > 0) {
+  // exists for (#1267 verification, 5). A fraction, not "> 0", for the same
+  // reason that guard gives: a handful of lucky hits between breaker
+  // cool-downs is evidence of a broken stage, not a working one, and reading
+  // them as health is exactly how the first #1112 deep+rerank run published
+  // a number computed from 7/197 reranked queries.
+  const rerankParticipation =
+    fixture.labels.length === 0 ? 0 : rerankParticipatingQueries / fixture.labels.length;
+  if (
+    opts.rerank === true
+    && fixture.labels.length > 0
+    && rerankParticipation < minRerankParticipation
+  ) {
     throw new VectorLegSilentError(
-      'A rerank run was requested but the rerank stage participated in 0 queries — '
-      + 'check the rerank use-case assignment and the provider endpoint before trusting this measurement.',
+      `A rerank run was requested but the rerank stage participated in only `
+      + `${rerankParticipatingQueries}/${fixture.labels.length} queries `
+      + `(${(rerankParticipation * 100).toFixed(1)}%, floor ${(minRerankParticipation * 100).toFixed(0)}%) — `
+      + 'the stage bypasses itself on ANY failure and still returns the fused order, so this run would '
+      + 'otherwise have reported a confident score for a pipeline that was mostly not the one it names. '
+      + 'Check the rerank use-case assignment, the provider endpoint, and whether the candidate pool fits '
+      + 'inside RERANK_TIMEOUT_MS (a multi-leg search multiplies the pool by its leg count).',
     );
   }
   // Same silent-lie class as the rerank guard: an assembly-on run in which
@@ -202,12 +272,30 @@ export async function runEval(fixture: Fixture, opts: EvalRunOptions): Promise<E
       + 'check rag_context_chars_per_page and the page_embeddings sibling fetch before trusting this measurement.',
     );
   }
+  // #1112, same silent-lie class as the two guards above: expansion is
+  // soft-fail by design, so a `--deep-search` run against a DB with no `chat`
+  // assignment (or an unreachable one) returns perfectly ordinary numbers
+  // labelled "deep". Every query skipping BY DESIGN is a different fact and
+  // is allowed — that is what the skipped count separates.
+  if (
+    opts.deepSearch === true
+    && expansionParticipatingQueries === 0
+    && expansionSkippedQueries < fixture.labels.length
+  ) {
+    throw new VectorLegSilentError(
+      'A deep-search run was requested but query expansion participated in 0 queries '
+      + `(${expansionSkippedQueries}/${fixture.labels.length} skipped by design) — `
+      + 'check the chat use-case assignment and the provider endpoint before trusting this measurement.',
+    );
+  }
   return {
     runs,
     vectorParticipatingQueries,
     rerankParticipatingQueries,
     assemblyParticipatingQueries,
     pinParticipatingQueries,
+    expansionParticipatingQueries,
+    expansionSkippedQueries,
     redundantSlots,
     returnedSlots,
     meanPairwiseSimilarity: pairCount === 0 ? 0 : pairSimTotal / pairCount,

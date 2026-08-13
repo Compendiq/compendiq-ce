@@ -82,6 +82,21 @@ describe('buildRagCacheKey', () => {
     expect(at(1)).toBe(at(1));
   });
 
+  it('keys on deep search — the two modes must never serve each other\'s answers (#1112)', () => {
+    // Not hypothetical arithmetic: deep search fuses three phrasings, so it
+    // can return the SAME pages in a DIFFERENT order (identical docIds — the
+    // id component sees nothing), and when expansion soft-fails it returns
+    // literally the single-query result. Without the flag one mode poisons
+    // the other for the whole TTL, in both directions.
+    const at = (deepSearch?: boolean) =>
+      buildRagCacheKey('m', 'q', ['d1', 'd2'], { provider: 'p1', deepSearch });
+    expect(at(true)).not.toBe(at(false));
+    expect(at(true)).toBe(at(true));
+    // Absent and false are the same request — the flag defaults off, so a
+    // caller that never heard of it keeps today's key.
+    expect(at(undefined)).toBe(at(false));
+  });
+
   it('keys on the REALIZED outcome — a soft-failed chunk-level answer never occupies the assembled key (#1270 F9)', () => {
     const at = (assembledPages: number) =>
       buildRagCacheKey('m', 'q', ['d1'], { provider: 'p1', contextChars: 6000, assembledPages });
