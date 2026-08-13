@@ -1391,7 +1391,7 @@ export function ArticleRightPane({
         aria-label="Resize page sidebar"
         aria-orientation="vertical"
         aria-valuemin={200}
-        aria-valuemax={500}
+        aria-valuemax={1200}
         aria-valuenow={width}
         tabIndex={0}
         onMouseDown={handleResizeStart}
@@ -1410,14 +1410,6 @@ export function ArticleRightPane({
           )}
           aria-hidden="true"
         />
-        {isResizing && (
-          <span
-            className="panel-context pointer-events-none absolute left-3 top-3 rounded-md px-1.5 py-1 text-[11px] font-medium tabular-nums text-foreground"
-            aria-hidden="true"
-          >
-            {width}px
-          </span>
-        )}
       </div>
     </m.aside>
     {confirmTrashDialog}
