@@ -33,15 +33,43 @@ export type RetrievalHealthCaveat = DegradedReason | 'coverage_unknown';
  *   zero-vector twin answers (#1268 review: the partial-embeddings
  *   discontinuity).
  * - `none`: keyword-only or keyword-led results carry NO measurable signal
- *   — score is null, and the gate must not refuse what it cannot measure
- *   (refusing every keyword-fallback would turn the degraded mode into an
- *   outage).
+ *   — score is null, and the THRESHOLD gate must not refuse what it cannot
+ *   measure (thresholding every keyword-fallback would turn the degraded
+ *   mode into an outage).
  *
- * An empty result set from HEALTHY retrieval scores 0 with basis 'none' —
- * the one case that DOES refuse when the gate is on, because "no grounding
- * at all" is exactly what the gate exists to say honestly. An empty set
- * under a health caveat (vector leg down, corpus unembedded, coverage probe
- * failed) is an outage symptom, scores null, and never refuses.
+ * An empty result set from HEALTHY retrieval scores 0 with basis 'none'; an
+ * empty set under a health caveat (vector leg down, corpus unembedded,
+ * coverage probe failed) is an outage symptom and scores null.
+ *
+ * ## "Unmeasurable" no longer means "unrefusable" (owner reversal)
+ *
+ * This module used to carry the stronger claim that an outage is
+ * "unmeasurable, never refusable" — i.e. that a health caveat always
+ * ANSWERS. That was a claim about a decision this module does not make, and
+ * the owner has reversed the consumer half of it. `null` still means
+ * exactly what it meant: there is no number here, so no threshold may be
+ * applied to it. What changed is that `/llm/ask` no longer reads the
+ * absence of a number as permission to answer. On `degradedReason ===
+ * 'embedding_failed'` it refuses the turn outright, without consulting
+ * either knob.
+ *
+ * Why: a keyword-only answer is indistinguishable, to the person reading
+ * it, from one the whole index produced — same prose, same source chips, no
+ * caveat anywhere. The original argument ("refusing every fallback turns a
+ * degraded mode into an outage") weighed availability and left honesty out,
+ * and it is weakest exactly during the #1116 re-embed window: the one time
+ * this fires at corpus scale, and the one time the user most needs to know
+ * that today's answers never saw the semantic index. Both knobs default to
+ * 0, so routing the outage case through a threshold would have shipped it
+ * dark in most deployments.
+ *
+ * Two things the reversal deliberately does NOT touch. `no_embeddings` /
+ * `partial_embeddings` / `coverage_unknown` still answer: the vector call
+ * SUCCEEDED, the corpus is merely thin or unverified, and rows a healthy
+ * leg returned are real grounding. And grounding that materialised
+ * elsewhere — an assembled sub-page tree, attached documents, web results,
+ * a substantive prior turn — stands the refusal down, because none of it
+ * depends on the vector index being up.
  */
 export interface RetrievalConfidence {
   score: number | null;
@@ -65,9 +93,12 @@ export function computeRetrievalConfidence(
     // Empty is a MEASUREMENT ("the KB has nothing for this") only when
     // retrieval was verifiably healthy. With the vector leg down, the
     // corpus unembedded, or the coverage probe itself failed, empty is an
-    // OUTAGE symptom — unmeasurable, never refusable (#1268 review B1 + the
-    // probe-failure finding: unverifiable health must not fail toward a
-    // false corpus claim).
+    // OUTAGE symptom — no number exists for it, so no threshold applies
+    // (#1268 review B1 + the probe-failure finding: unverifiable health must
+    // not fail toward a false corpus claim). Unrefusable is a separate
+    // claim, and no longer true: the route refuses an empty set on its own
+    // terms, and refuses `embedding_failed` on health grounds — see the
+    // reversal note in the module doc.
     return healthCaveat === null ? { score: 0, basis: 'none' } : { score: null, basis: 'none' };
   }
   let maxRerank: number | null = null;

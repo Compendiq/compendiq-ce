@@ -92,8 +92,8 @@ sequenceDiagram
         BE->>MCP: search(question)
         MCP-->>BE: top results (sanitized#59; detections audited — #35;835)
     end
-    opt per-basis confidence threshold above 0 (#35;1105)
-        note right of BE: computeRetrievalConfidence(results, healthCaveat) —<br/>max rerank relevance (full coverage), else max cosine (vector-led)#59;<br/>empty set gates on EITHER knob, measured bases on their own#59;<br/>stands down only for grounding that MATERIALISED<br/>(assembled tree / fetched docs / web results / substantive turn)#59;<br/>refusal: honest SSE turn + weak sources, no chat completion,<br/>cache never read or written#59; health-caveat empties exempt
+    opt honest-refusal gate (#35;1105, widened by #35;1114's prerequisite)
+        note right of BE: THREE reasons, only ONE of them a threshold verdict:<br/>semantic_index_unavailable (degradedReason = embedding_failed) and<br/>no_context (nothing retrieved) refuse UNGATED — both knobs default<br/>to 0, so gating either would ship it dark#59;<br/>weak_match keeps its per-basis knob, on<br/>computeRetrievalConfidence(results, healthCaveat) —<br/>max rerank relevance (full coverage), else max cosine (vector-led)#59;<br/>all three stand down for grounding that MATERIALISED<br/>(assembled tree / fetched docs / web results / substantive turn)#59;<br/>refusal: honest SSE turn + weak sources + refusalReason on the final<br/>frame, no chat completion, cache never read or written#59;<br/>no_embeddings / partial_embeddings / coverage_unknown still ANSWER
     end
     note right of BE: rag cache key folds in the deepSearch flag (#35;1112) —<br/>the doc-id list cannot see a RE-ORDERED set, so without it<br/>the two modes would serve each other's answers for the TTL
     note right of BE: response cache is consulted only PAST the gate<br/>(and only for history-free requests) — a low-confidence<br/>question cannot serve a stale cached answer
@@ -699,7 +699,7 @@ carry the observability. Assembly touches no ranking or score field, so it
 is provably invisible to the eval's pageId scoring — the zero-discordant
 A/B in PR 2's body is the recorded evidence.
 
-## Retrieval-confidence refuse gate (#1105)
+## Honest-refusal gate (#1105, widened by #1114's prerequisite)
 
 `computeRetrievalConfidence(results, healthCaveat)` (the dependency-free
 `retrieval-confidence.ts` leaf module, re-exported from rag-service so
@@ -716,7 +716,9 @@ zero-vector twin answers), else `null` (basis `none`). An empty set scores
 0 only when retrieval health was **positively verified**; under a health
 caveat — a degraded reason (embedding provider down, corpus unembedded) or
 `coverage_unknown` (the probe itself failed) — empty is an outage symptom
-and scores `null`. The route learns the verdict through
+and scores `null`: there is no number, so no threshold applies to it. (That
+is a statement about MEASUREMENT, not about refusal — see the reversal
+below.) The route learns the verdict through
 `HybridSearchOptions.onRetrievalMeta`, fired once at the END of the
 pipeline (after the ACL post-filter and the rerank stage, guarded so a
 throwing observer cannot fail the search) with `{ degradedReason,
@@ -724,20 +726,52 @@ healthCaveat, searchType, embeddingCoverage, aclEmptied }`; the same
 verdict rides the trace as `rag.confidence` / `rag.confidence_basis`.
 
 `/llm/ask` logs it on every question (`RAG retrieval confidence`, info,
-with the full meta — `aclEmptied` marks a healthy set the EE ACL filter
-emptied, a visibility fact the refusal wording deliberately does not
-distinguish), and refuses only when ALL of: the operator raised **the
+with the full meta and the resulting `refusalReason` — `aclEmptied` marks a
+healthy set the EE ACL filter emptied, a visibility fact the refusal
+wording deliberately does not distinguish), and refuses for **one of three
+reasons**, of which only the third consults a knob:
+
+1. **`semantic_index_unavailable`** — `degradedReason === 'embedding_failed'`:
+   the embedding leg THREW (provider outage, model still loading, 5xx,
+   timeout, an unassigned `embedding` use case, or a pgvector dimension
+   mismatch — one `try` in `hybridSearch` covers all of them, and which
+   stage threw is in the logged `err`).
+2. **`no_context`** — retrieval returned nothing at all. `buildRagContext`
+   hands the model the literal string "No relevant context found in the
+   knowledge base."; before this change the model answered over it from
+   parametric memory, with `refused` unset and nothing on the wire.
+3. **`weak_match`** — the #1105 verdict proper: a MEASURED score below the
+   operator's threshold for this request's basis.
+
+Reasons 1 and 2 are **ungated by design**. Both knobs default to 0, so a
+threshold-gated version of either ships dark in every deployment that never
+opened Settings → Retrieval — including, for reason 1, during the #1116
+re-embed window it exists to disclose. Reason 3 keeps its knob because it
+alone asks a tuning question ("how good is good enough") that the other two
+never ask. The wording is per reason and must stay distinguishable: reason 1
+says the index could not be searched and the attached rows were *never
+ranked*; reason 2 says the knowledge base has nothing. Saying the second
+when the first is true is the failure the gate exists to prevent. The final
+SSE frame carries `refusalReason` beside `refused: true` so the client can
+tell them apart too.
+
+Reason 3 fires when ALL of: the operator raised **the
 threshold for this request's basis** above its **0 default** —
 `rag_confidence_threshold` (similarity) or
 `rag_confidence_threshold_rerank` (rerank), two `admin_settings` knobs
 because the scales are incommensurable and the basis flips per request on a
-rerank bypass, while an **empty set (basis `none`) gates on the max of
-both** — "no grounding at all" belongs to no scale and must not be
-orphaned by the knob split; both [0,1), strict-parsed ('' = unset),
+rerank bypass, while a basis-`none` set falls back to the max of
+both — a score belonging to no scale must not be orphaned by the knob
+split (now belt-and-braces: the only non-null `none` score is a healthy
+empty set, which reason 2 refuses ahead of any threshold); both [0,1),
+strict-parsed ('' = unset),
 TTL-cached — the score is measurable (non-null) and below that threshold,
 and no other grounding **materialised**: an assembled sub-page tree,
 fetched external docs, web results that actually came back, or a prior
-**substantive** assistant turn. Request flags alone never stand the gate
+**substantive** assistant turn. That stand-down covers **all three**
+reasons, the outage one included: a page tree, attached documents, web
+results and a substantive prior turn are real grounding, and the vector
+index being down takes nothing away from them. Request flags alone never stand the gate
 down — the sharp case is `includeSubPages`, session-sticky state sent on
 every ask, which as a flag was a one-click session-wide gate bypass even
 when RBAC denied the tree; requested grounding that failed to materialise
@@ -773,7 +807,12 @@ plain text rather than Markdown, the weak sources under a `Closest matches —
 not used` heading, and **no `ConfidenceBadge`** — it would grade an answer that
 does not exist. `/ai`'s polite live region announces the refusal instead of
 "Answer ready", and stays polite: a correct response is not worth interrupting
-for. It is deliberately neither amber (ADR-010 reserves that for
+for. That announcement names the STATE only — it used to name the corpus
+("nothing matched closely enough"), which is false for the
+`semantic_index_unavailable` reason and false to precisely the user who
+cannot see the message saying otherwise. Announcing per reason is possible
+now that `refusalReason` rides the final frame, but it needs the reason
+carried onto `Message` first. The treatment is deliberately neither amber (ADR-010 reserves that for
 warning/attention, and a state that recurs on every uncovered question would
 teach users to ignore it — `/ai` already spends its amber on the
 zero-embeddings notice above the thread) nor destructive (that is the error
