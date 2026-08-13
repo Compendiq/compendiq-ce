@@ -10,6 +10,7 @@ import { cn } from '../../lib/cn';
 import { useImproveStream } from './use-improve-stream';
 import { buildImproveHtml } from './improve-markdown';
 import { EditorFormatBar } from './EditorFormatBar';
+import { BlockTypeMenu } from './BlockTypeMenu';
 import { ImprovePanel, type ImprovePanelCopy } from './ImprovePanel';
 import { buildInstruction, BLOCK_INSTRUCTION, type QuickAction } from './improve-actions';
 import {
@@ -276,6 +277,9 @@ export function EditorBlockMenu({
 
       {textActions ? (
         <>
+          <div className="px-2 pb-1">
+            <BlockTypeMenu editor={editor} getRange={contentRange} className="w-full" />
+          </div>
           <EditorFormatBar
             editor={editor}
             ariaLabel="Block formatting"

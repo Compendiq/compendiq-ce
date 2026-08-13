@@ -11,6 +11,7 @@ import {
   ChevronsUpDown, Hash, Paperclip, ListTree, ImagePlus, Table2,
   Images, Captions, Info, TriangleAlert, StickyNote, Lightbulb,
   Palette, Highlighter,
+  AlignLeft, AlignCenter, AlignRight, AlignJustify,
 } from 'lucide-react';
 import { LAYOUT_PRESETS } from './article-extensions';
 import { ToolbarButton, ToolbarSeparator, ToolbarGroup, LayoutPreview } from './editor-toolbar-primitives';
@@ -217,126 +218,7 @@ function captionSelectedImage(editor: EditorType) {
     .run();
 }
 
-/* ------------------------------------------------------------ block types -- */
-
-interface BlockType {
-  key: string;
-  label: string;
-  Icon: typeof Type;
-  keys?: string;
-  isActive: (e: EditorType) => boolean;
-  run: (e: EditorType) => void;
-}
-
-/**
- * Order is the document's own hierarchy, not the old row's icon order. The
- * FIRST match wins when the trigger reads its label, which is why the headings
- * and the two containers are tested before `paragraph`: a paragraph inside a
- * blockquote is legitimately both, and "Quote" is the useful answer.
- */
-const BLOCK_TYPES: readonly BlockType[] = [
-  {
-    key: 'h1', label: 'Heading 1', Icon: Heading1, keys: 'ctrl+alt+1',
-    isActive: (e) => e.isActive('heading', { level: 1 }),
-    run: (e) => e.chain().focus().toggleHeading({ level: 1 }).run(),
-  },
-  {
-    key: 'h2', label: 'Heading 2', Icon: Heading2, keys: 'ctrl+alt+2',
-    isActive: (e) => e.isActive('heading', { level: 2 }),
-    run: (e) => e.chain().focus().toggleHeading({ level: 2 }).run(),
-  },
-  {
-    key: 'h3', label: 'Heading 3', Icon: Heading3, keys: 'ctrl+alt+3',
-    isActive: (e) => e.isActive('heading', { level: 3 }),
-    run: (e) => e.chain().focus().toggleHeading({ level: 3 }).run(),
-  },
-  {
-    key: 'blockquote', label: 'Quote', Icon: Quote,
-    isActive: (e) => e.isActive('blockquote'),
-    run: (e) => e.chain().focus().toggleBlockquote().run(),
-  },
-  {
-    key: 'codeBlock', label: 'Code block', Icon: CodeSquare,
-    isActive: (e) => e.isActive('codeBlock'),
-    run: (e) => e.chain().focus().toggleCodeBlock().run(),
-  },
-  {
-    key: 'paragraph', label: 'Text', Icon: Type,
-    isActive: (e) => e.isActive('paragraph'),
-    run: (e) => e.chain().focus().setParagraph().run(),
-  },
-];
-
-function BlockTypeMenu({ editor }: { editor: EditorType }) {
-  const [open, setOpen] = useState(false);
-  const { activeKey } = useEditorState({
-    editor,
-    selector: ({ editor: e }) => ({
-      activeKey: BLOCK_TYPES.find((t) => t.isActive(e))?.key ?? null,
-    }),
-  });
-
-  const current = BLOCK_TYPES.find((t) => t.key === activeKey);
-  // Falls back to "Text" rather than to an empty or "Mixed" label: the caret is
-  // always somewhere, and a control whose label blanks out as you move through
-  // the document reads as broken rather than as informative.
-  const CurrentIcon = current?.Icon ?? Type;
-
-  return (
-    <DropdownMenu.Root open={open} onOpenChange={setOpen}>
-      <DropdownMenu.Trigger asChild>
-        <button
-          type="button"
-          {...{ [TOOLBAR_ITEM_ATTR]: '' }}
-          data-testid="block-type-trigger"
-          title="Text style"
-          aria-label={`Text style: ${current?.label ?? 'Text'}`}
-          // Fixed width, not `min-w`. The label swaps between "Text" and
-          // "Heading 1" as the caret moves, and an auto-width trigger would
-          // shove every control to its right a few pixels sideways on each
-          // arrow-key press through a document.
-          className={cn(menuTriggerClass(open), 'w-[8.25rem] justify-start')}
-        >
-          <CurrentIcon size={15} className="shrink-0" />
-          <span className="truncate">{current?.label ?? 'Text'}</span>
-          <ChevronDown size={13} className="ml-auto shrink-0 opacity-60" />
-        </button>
-      </DropdownMenu.Trigger>
-
-      <DropdownMenu.Portal>
-        <DropdownMenu.Content align="start" sideOffset={6} className={MENU_CONTENT}>
-          {BLOCK_TYPES.map(({ key, label, Icon, keys }) => {
-            const isCurrent = key === activeKey;
-            return (
-              <DropdownMenu.Item
-                key={key}
-                onSelect={() => BLOCK_TYPES.find((t) => t.key === key)?.run(editor)}
-                // The current row is marked by ink weight, not by a checkmark
-                // column: a tick would indent all six labels to make room for a
-                // mark that is only ever on one of them.
-                className={cn(MENU_ITEM, isCurrent && 'bg-foreground/[0.06] font-medium text-foreground')}
-              >
-                <Icon size={15} className="shrink-0" />
-                {label}
-                {keys && <MenuShortcut keys={keys} />}
-              </DropdownMenu.Item>
-            );
-          })}
-
-          <DropdownMenu.Separator className="my-1 h-px bg-border" />
-
-          <DropdownMenu.Item
-            onSelect={() => editor.chain().focus().setHorizontalRule().run()}
-            className={MENU_ITEM}
-          >
-            <Minus size={15} className="shrink-0" />
-            Divider
-          </DropdownMenu.Item>
-        </DropdownMenu.Content>
-      </DropdownMenu.Portal>
-    </DropdownMenu.Root>
-  );
-}
+import { BlockTypeMenu } from './BlockTypeMenu';
 
 /* ----------------------------------------------------------- insert menu -- */
 
@@ -807,6 +689,12 @@ export function EditorToolbar({
       strike: e.isActive('strike'),
       underline: e.isActive('underline'),
       code: e.isActive('code'),
+      blockquote: e.isActive('blockquote'),
+      codeBlock: e.isActive('codeBlock'),
+      alignLeft: e.isActive({ textAlign: 'left' }),
+      alignCenter: e.isActive({ textAlign: 'center' }),
+      alignRight: e.isActive({ textAlign: 'right' }),
+      alignJustify: e.isActive({ textAlign: 'justify' }),
       bulletList: e.isActive('bulletList'),
       orderedList: e.isActive('orderedList'),
       taskList: e.isActive('taskList'),
@@ -825,18 +713,34 @@ export function EditorToolbar({
       role="toolbar"
       aria-label="Page editor toolbar"
       // `flex-wrap` so a narrow viewport wraps to another row inside the
-      // toolbar instead of overflowing into the article. Twelve controls make
-      // that far rarer than the thirty-one did — but where it still happens,
-      // below `sm`, the separators are hidden and the gap between groups opens
-      // to 8px instead. A wrapped row otherwise ends on a divider with nothing
-      // after it, which is the classic tell of a toolbar that was never looked
-      // at narrow.
+      // toolbar instead of overflowing into the article. Below `sm`, the
+      // separators are hidden and the gap between groups opens to 8px instead.
       className="flex flex-wrap items-center gap-x-2 gap-y-1 px-2 py-1.5 sm:gap-x-0.5"
       onKeyDown={roving.onKeyDown}
       onFocus={roving.onFocus}
     >
       <ToolbarGroup name="block">
         <BlockTypeMenu editor={editor} />
+        <ToolbarButton
+          onClick={() => editor.chain().focus().toggleBlockquote().run()}
+          active={activeState.blockquote}
+          title="Quote"
+        >
+          <Quote size={16} />
+        </ToolbarButton>
+        <ToolbarButton
+          onClick={() => editor.chain().focus().toggleCodeBlock().run()}
+          active={activeState.codeBlock}
+          title="Code Block"
+        >
+          <CodeSquare size={16} />
+        </ToolbarButton>
+        <ToolbarButton
+          onClick={() => editor.chain().focus().setHorizontalRule().run()}
+          title="Divider"
+        >
+          <Minus size={16} />
+        </ToolbarButton>
       </ToolbarGroup>
 
       <ToolbarSeparator />
@@ -856,6 +760,23 @@ export function EditorToolbar({
         </ToolbarButton>
         <ToolbarButton onClick={() => editor.chain().focus().toggleCode().run()} active={activeState.code} title="Inline Code (Ctrl+E)">
           <Code size={16} />
+        </ToolbarButton>
+      </ToolbarGroup>
+
+      <ToolbarSeparator />
+
+      <ToolbarGroup name="align">
+        <ToolbarButton onClick={() => editor.chain().focus().setTextAlign('left').run()} active={activeState.alignLeft} title="Align Left">
+          <AlignLeft size={16} />
+        </ToolbarButton>
+        <ToolbarButton onClick={() => editor.chain().focus().setTextAlign('center').run()} active={activeState.alignCenter} title="Align Center">
+          <AlignCenter size={16} />
+        </ToolbarButton>
+        <ToolbarButton onClick={() => editor.chain().focus().setTextAlign('right').run()} active={activeState.alignRight} title="Align Right">
+          <AlignRight size={16} />
+        </ToolbarButton>
+        <ToolbarButton onClick={() => editor.chain().focus().setTextAlign('justify').run()} active={activeState.alignJustify} title="Justify">
+          <AlignJustify size={16} />
         </ToolbarButton>
       </ToolbarGroup>
 

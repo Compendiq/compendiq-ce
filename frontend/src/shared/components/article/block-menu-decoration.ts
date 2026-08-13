@@ -63,7 +63,27 @@ export function createBlockMenuTargetPlugin(): Plugin<DecorationSet> {
         }
         // Remap through document changes so the marker stays glued to the block
         // — and drops out entirely if the block was removed.
-        return set.map(tr.mapping, tr.doc);
+        const mapped = set.map(tr.mapping, tr.doc);
+        if (mapped.find().length > 0) return mapped;
+
+        // If node attributes changed on the exact same node type (e.g. setTextAlign),
+        // re-create decoration for the same node type.
+        const oldDeco = set.find()[0];
+        if (oldDeco) {
+          const oldNode = tr.before.nodeAt(oldDeco.from);
+          const newPos = tr.mapping.map(oldDeco.from);
+          if (oldNode && newPos >= 0 && newPos < tr.doc.content.size) {
+            const newNode = tr.doc.nodeAt(newPos);
+            if (newNode && newNode.type === oldNode.type) {
+              return DecorationSet.create(tr.doc, [
+                Decoration.node(newPos, newPos + newNode.nodeSize, {
+                  class: BLOCK_MENU_TARGET_CLASS,
+                }),
+              ]);
+            }
+          }
+        }
+        return DecorationSet.empty;
       },
     },
     props: {
