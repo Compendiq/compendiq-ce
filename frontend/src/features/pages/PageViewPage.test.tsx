@@ -116,7 +116,7 @@ vi.mock('../../shared/components/article/Editor', async () => {
         />
       );
     },
-    EditorToolbar: () => null,
+    EditorToolbar: ({ actions }: { actions?: React.ReactNode }) => <div data-testid="editor-toolbar-mock">{actions}</div>,
     TableContextToolbar: () => null,
     LayoutContextToolbar: () => null,
     ColumnContextToolbar: () => null,

@@ -8,6 +8,7 @@ import { useTemplates, useUseTemplate, useImportMarkdown, useLocalSpaces } from 
 import { Editor, EditorToolbar, TableContextToolbar, LayoutContextToolbar, ColumnContextToolbar, clearDraft } from '../../shared/components/article/Editor';
 import { FeatureErrorBoundary } from '../../shared/components/feedback/FeatureErrorBoundary';
 import { LocationPicker } from '../../shared/components/LocationPicker';
+import { TagPopover } from '../../shared/components/TagPopover';
 import { AutoGrowTextarea } from '../../shared/components/AutoGrowTextarea';
 import type { LocationSelection } from '../../shared/components/LocationPicker';
 import { readLastConfluenceSpace, rememberConfluenceSpace } from './last-confluence-space';
@@ -499,6 +500,13 @@ export function NewPagePage() {
                 editor={editorInstance}
                 headerNumbering={headerNumbering}
                 onToggleHeaderNumbering={toggleHeaderNumbering}
+                actions={
+                  <TagPopover
+                    tags={pendingLabels}
+                    onAddTag={(t) => setPendingLabels((prev) => [...prev, t])}
+                    onRemoveTag={(t) => setPendingLabels((prev) => prev.filter((item) => item !== t))}
+                  />
+                }
               />
               <TableContextToolbar editor={editorInstance} />
               <LayoutContextToolbar editor={editorInstance} />

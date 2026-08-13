@@ -724,99 +724,47 @@ export function PageViewPage() {
             container's `pt-5` (scroll-padding-mask.test.ts). */}
         <div className="-mx-4 border-b border-border bg-card sm:-mx-6">
           {editorInstance && (
-            <div className="border-b border-border">
-              {/* Aligned to the document's text column, not to the window.
-                  The arithmetic: these bars are full-bleed (`-mx-4 sm:-mx-6`),
-                  so they cancel AppLayout's scroll padding and must add it
-                  back — 24px (sm:px-6) + the body's own 40px (sm:px-10) = 64px,
-                  and the max-width grows by the same 48px so the right edge
-                  lands with it too. Below sm: 16 + 20 = 36px.
-                  Edge-to-edge the controls floated free of the text they act
-                  on, which is the tell that a toolbar was bolted above a
-                  document rather than belonging to it. */}
-              <div className="mx-auto max-w-[1248px] px-9 sm:px-16">
-                <EditorToolbar
-                  editor={editorInstance}
-                  headerNumbering={headerNumbering}
-                  onToggleHeaderNumbering={toggleHeaderNumbering}
-                />
-                <TableContextToolbar editor={editorInstance} />
-                <LayoutContextToolbar editor={editorInstance} />
-                <ColumnContextToolbar editor={editorInstance} />
-              </div>
+            <div className="mx-auto max-w-[1248px] px-4 sm:px-16">
+              <EditorToolbar
+                editor={editorInstance}
+                headerNumbering={headerNumbering}
+                onToggleHeaderNumbering={toggleHeaderNumbering}
+                actions={
+                  <>
+                    <TagPopover
+                      tags={editing ? draftLabels : page.labels}
+                      onAddTag={handleAddTag}
+                      onRemoveTag={handleRemoveTag}
+                      suggestions={filterOptions?.labels}
+                      isLoading={labelsMutation.isPending}
+                    />
+                    <button
+                      onClick={handleCancelEditing}
+                      className="shrink-0 rounded-md border border-transparent px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={handleSave}
+                      disabled={updateMutation.isPending}
+                      className="nm-button-primary shrink-0"
+                    >
+                      {updateMutation.isPending ? 'Saving…' : 'Save'}
+                      {!updateMutation.isPending && (
+                        <ShortcutHint
+                          shortcutId="save"
+                          className="border-primary-foreground/30 bg-transparent text-primary-foreground"
+                        />
+                      )}
+                    </button>
+                  </>
+                }
+              />
+              <TableContextToolbar editor={editorInstance} />
+              <LayoutContextToolbar editor={editorInstance} />
+              <ColumnContextToolbar editor={editorInstance} />
             </div>
           )}
-          {/* Action row — one line of controls, pinned to the same 48px as the
-              header, the sidebar header, the inspector header and the context
-              strip directly below.
-
-              It used to be ~92px, because `TagEditor` rendered open here and
-              stacks a pill row, a 12px gap and an input row. It is a chip now
-              (`TagPopover`), which also stops the row mixing three scopes at
-              equal weight: the toolbar above acts on the selection, the chip on
-              the page, Cancel/Save on the session.
-
-              The 48px is DECLARED, not derived, exactly as the context strip
-              below declares it — and for the same reason. Measured in Chromium,
-              `nm-button-primary` and `nm-button-ghost` are 34px, not the 32px
-              their comments claim: both add a 1px border outside a 6+20+6 box,
-              and only `nm-icon-button` sets an explicit 2rem. Deriving the row
-              from padding therefore lands on 50px, and chasing 48 by trimming
-              padding would break again the moment a control's border changed.
-
-              The `-1px` is the same arithmetic the context strip documents: the
-              hairline sits on the sticky parent, not on this row, so without
-              subtracting it the row measures 49 and its rule falls one pixel
-              below the other three — the exact seam this alignment exists to
-              remove.
-
-              `items-center`, not `items-end` — that was there to hide the tag
-              stack's ragged bottom edge, and with three equal-height controls it
-              would now push them all low. */}
-          <div className="mx-auto flex min-h-[calc(3rem-1px)] max-w-[1248px] items-center gap-3 px-9 py-1.5 sm:px-16">
-            <div className="min-w-0 flex-1">
-              <TagPopover
-                tags={editing ? draftLabels : page.labels}
-                onAddTag={handleAddTag}
-                onRemoveTag={handleRemoveTag}
-                suggestions={filterOptions?.labels}
-                isLoading={labelsMutation.isPending}
-              />
-            </div>
-            <button
-              onClick={handleCancelEditing}
-              // Measured to 34px, matching the chip and Save exactly: 6 + 20 + 6
-              // plus a 1px transparent border, which is how `nm-button-primary`
-              // reaches the same figure. It was `py-2` and 36px; `items-end`
-              // used to hide the mismatch by bottom-aligning both against the
-              // tall tag block, and with that block gone it would be a visible
-              // step between two adjacent buttons. The border is load-bearing
-              // arithmetic, not decoration — dropping it leaves this 2px short.
-              className="shrink-0 rounded-md border border-transparent px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleSave}
-              disabled={updateMutation.isPending}
-              // Filled: Save is the primary action of edit mode, and Cancel
-              // sits directly beside it. An outlined pair made the destructive
-              // choice and the committing one look identical.
-              className="nm-button-primary shrink-0"
-            >
-              {updateMutation.isPending ? 'Saving…' : 'Save'}
-              {/* Ink that belongs to the fill. The default chip is
-                  `text-muted-foreground` on `bg-background/50`, tuned for a
-                  neutral surface — on the filled primary it is the
-                  lowest-contrast text in the frame. */}
-              {!updateMutation.isPending && (
-                <ShortcutHint
-                  shortcutId="save"
-                  className="border-primary-foreground/30 bg-transparent text-primary-foreground"
-                />
-              )}
-            </button>
-          </div>
         </div>
         </div>
       )}
