@@ -1,3 +1,4 @@
+import { useRef } from 'react';
 import { useEditorState } from '@tiptap/react';
 import type { Editor as EditorType } from '@tiptap/react';
 import {
@@ -5,6 +6,7 @@ import {
   AlignLeft, AlignCenter, AlignRight, AlignJustify,
 } from 'lucide-react';
 import { cn } from '../../lib/cn';
+import { TOOLBAR_ITEM_ATTR, useToolbarRovingFocus } from './use-toolbar-roving-focus';
 
 /**
  * #708 / #1179 — the editor's inline-formatting toggles, shared by the
@@ -134,6 +136,7 @@ function MenuButton({
   return (
     <button
       type="button"
+      {...{ [TOOLBAR_ITEM_ATTR]: '' }}
       onMouseDown={(e) => e.preventDefault()}
       onClick={onClick}
       title={title}
@@ -159,6 +162,8 @@ export function EditorFormatBar({
   className?: string;
   children?: React.ReactNode;
 }) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const roving = useToolbarRovingFocus(rootRef);
   const scoped = getRange !== undefined;
   const activeState = useEditorState({
     editor,
@@ -176,7 +181,14 @@ export function EditorFormatBar({
   });
 
   return (
-    <div role="toolbar" aria-label={ariaLabel} className={cn('flex flex-wrap items-center gap-0.5 p-1', className)}>
+    <div
+      ref={rootRef}
+      role="toolbar"
+      aria-label={ariaLabel}
+      className={cn('flex flex-wrap items-center gap-0.5 p-1', className)}
+      onKeyDown={roving.onKeyDown}
+      onFocus={roving.onFocus}
+    >
       {MARKS.map(({ key, title, Icon, run }, i) => (
         <MenuButton
           key={key}

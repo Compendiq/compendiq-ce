@@ -54,8 +54,8 @@ describe('EditorToolbar', () => {
   it('presents nineteen main controls plus utilities', () => {
     render(<EditorToolbar editor={createMockEditor()} onToggleHeaderNumbering={vi.fn()} />);
     const toolbar = screen.getByRole('toolbar', { name: 'Page editor toolbar' });
-    // 22 = (block type + quote + code block + divider) + 5 marks + 4 alignments + 3 lists + 2 colours + Insert + header numbering + undo + redo
-    expect(toolbar.querySelectorAll('button').length).toBe(22);
+    // 19 = (block type + quote + code block + divider) + 5 marks + 1 align dropdown + 3 lists + 2 colours + Insert + header numbering + undo + redo
+    expect(toolbar.querySelectorAll('button').length).toBe(19);
   });
 
   it('renders the groups in the restructured order', () => {
@@ -172,16 +172,21 @@ describe('EditorToolbar', () => {
     const editor = createMockEditor({ chain: () => chain });
     render(<EditorToolbar editor={editor} />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Align Left' }));
+    const trigger = screen.getByTestId('align-menu-trigger');
+    open(trigger);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Align Left' }));
     expect(run).toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Align Center' }));
+    open(trigger);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Align Center' }));
     expect(run).toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Align Right' }));
+    open(trigger);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Align Right' }));
     expect(run).toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Justify' }));
+    open(trigger);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Justify' }));
     expect(run).toHaveBeenCalled();
   });
 
@@ -331,7 +336,7 @@ describe('EditorToolbar', () => {
     // so the attribute is not decoration — remove it and the state disappears
     // while the button still looks and behaves normal.
     render(<EditorToolbar editor={createMockEditor()} onToggleHeaderNumbering={vi.fn()} headerNumbering />);
-    const headerNumberingBtn = screen.getByRole('button', { name: 'Toggle Header Numbering' });
+    const headerNumberingBtn = screen.getByRole('button', { name: /Header Numbering/i });
     expect(headerNumberingBtn.className).toContain('nm-icon-button');
     expect(headerNumberingBtn).toHaveAttribute('aria-pressed', 'true');
   });
@@ -364,12 +369,12 @@ describe('EditorToolbar', () => {
   it('renders the header-numbering toggle only when it is wired up', () => {
     const toggle = vi.fn();
     const { rerender } = render(<EditorToolbar editor={createMockEditor()} />);
-    expect(screen.queryByRole('button', { name: 'Toggle Header Numbering' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Header Numbering/i })).not.toBeInTheDocument();
 
     rerender(
       <EditorToolbar editor={createMockEditor()} headerNumbering onToggleHeaderNumbering={toggle} />,
     );
-    const btn = screen.getByRole('button', { name: 'Toggle Header Numbering' });
+    const btn = screen.getByRole('button', { name: /Header Numbering/i });
     expect(btn).toHaveAttribute('aria-pressed', 'true');
 
     fireEvent.click(btn);
