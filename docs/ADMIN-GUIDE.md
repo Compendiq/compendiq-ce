@@ -373,6 +373,48 @@ Tier-downgrade (license change to a non-enterprise tier) disables the flag. Exis
 - Integration regression guard: `backend/src/domains/confluence/services/sync-service.integration.test.ts` (sync path) and `backend/src/domains/llm/services/rag-service.integration.test.ts` (query path).
 - ADR-023 documents the full design and rationale.
 
+### Retrieval settings panel (`Settings → AI Models → Retrieval`)
+
+All nine retrieval knobs below are edited from one admin panel (#1118). They
+were DB-only until it shipped, and raw SQL still works — the panel writes the
+same `admin_settings` rows.
+
+| Setting | Key | Default | Range |
+| --- | --- | --- | --- |
+| Fetch width | `rag_fetch_width` | 10 | 10–200 |
+| Rerank candidate pool | `rag_rerank_candidates` | 30 | 10–100 |
+| Confidence gate, similarity basis | `rag_confidence_threshold` | 0 (off) | 0 – <1 |
+| Confidence gate, rerank basis | `rag_confidence_threshold_rerank` | 0 (off) | 0 – <1 |
+| Assembly budget | `rag_context_chars_per_page` | 6000 | 0–24000 |
+| Exact-identifier pin | `rag_pin_identifiers` | on | on / off |
+| MMR diversity narrow | `rag_mmr_enabled` | off | on / off |
+| MMR λ | `rag_mmr_lambda` | 0.7 | 0–1 |
+| Ranking prior weight | `rag_ranking_prior_weight` | 0 (off) | 0–0.05 |
+
+Three things worth knowing before you use it.
+
+**The panel writes only what you changed.** A knob you never touched keeps no
+`admin_settings` row at all — an absent row and an explicitly-default one read
+alike, but the assembly budget's fail-toward-last-known behaviour is written
+assuming no row exists until an operator sets one.
+
+**A save takes effect within a minute.** Each knob is read through a 60-second
+in-process cache. The server that handled your save drops its cache
+immediately; every other server in the deployment converges as its own TTL
+expires. (Before #1118 the cache was never dropped at all, so a saved value
+could take a full minute even on the server that wrote it.)
+
+**The rerank *stage* is not on this panel.** It is on if and only if a `rerank`
+use-case assignment exists (ADR-021 — rerank never inherits the default
+provider), which lives in **Settings → AI Models → LLM providers**. The
+Retrieval panel owns the candidate-pool size and reports whether the stage is
+live; setting the pool before assigning a provider is fine, it simply has
+nothing to size yet.
+
+The panel refuses out-of-range values at the input instead of accepting a save
+the reader would silently discard — most importantly `1` for either confidence
+threshold, which the reader rejects outright.
+
 ### Retrieval fetch width (`rag_fetch_width`)
 
 How many candidate rows each RAG retrieval leg (vector + full-text) pulls
@@ -381,8 +423,8 @@ back (#1103). `admin_settings` key `rag_fetch_width`; **default 10** (the
 legacy per-leg limit), clamped to **[10, 200]** — values below 10 or
 non-numeric values fall back to the default, values above 200 are capped.
 Read through a 60-second in-process cache, so a change takes effect within a
-minute (immediately in the process that wrote it, once the settings panel
-lands in #1118; until then the only write path is SQL).
+minute (immediately in the process that handled the save — see the panel
+section above).
 
 > **Do not raise this without a reranker.** More candidates is NOT more
 > recall under plain RRF fusion: measured on the retrieval eval fixture,
@@ -412,8 +454,8 @@ at 6000 chars — so the default changes the TYPICAL prompt, not the worst
 case; the 24000 cap quadruples the worst case and there is no input-side
 context-window guard, so raising it is a deliberate capacity decision.
 Negative values clamp to 0 (off). Read through the same 60-second cache as
-the other retrieval knobs; #1118's panel is the write surface, SQL until
-then.
+the other retrieval knobs; **Settings → AI Models → Retrieval** is the write
+surface (#1118).
 
 
 
@@ -463,11 +505,12 @@ Each is a plain decimal in [0, 1) — `0.35`, not `1`, `0,35` or `35%`
 (rejected loudly in the logs, gate stays off); 0, an absent row, or an
 empty value disables that basis and leaves its confidence diagnostic-only
 in logs and traces (`rag.confidence` / `rag.confidence_basis` span
-attributes). Until the Retrieval settings panel lands (#1118) the only
-write path is SQL: `INSERT INTO admin_settings (setting_key, setting_value)
-VALUES ('rag_confidence_threshold', '0.35') ON CONFLICT (setting_key) DO
-UPDATE SET setting_value = EXCLUDED.setting_value;` (60-second read cache —
-takes effect within a minute).
+attributes). Set both from **Settings → AI Models → Retrieval** (#1118),
+which refuses `1` at the input rather than letting the reader discard it.
+SQL still works if you prefer it: `INSERT INTO admin_settings (setting_key,
+setting_value) VALUES ('rag_confidence_threshold', '0.35') ON CONFLICT
+(setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value;`
+(60-second read cache — takes effect within a minute).
 
 Never auto-refused, whatever the thresholds: questions with other grounding
 that actually **materialised** (an assembled sub-page tree, successfully

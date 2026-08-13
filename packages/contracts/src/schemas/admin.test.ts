@@ -21,6 +21,16 @@ const validReadPayload = {
   llmMaxQueueDepth: 50,
   // Issue #1051 — self-registration policy (required on read).
   registrationMode: 'closed',
+  // #1118 — retrieval knobs, required on read. Values are the reader defaults.
+  ragFetchWidth: 10,
+  ragRerankCandidates: 30,
+  ragConfidenceThreshold: 0,
+  ragConfidenceThresholdRerank: 0,
+  ragContextCharsPerPage: 6000,
+  ragPinIdentifiers: true,
+  ragMmrEnabled: false,
+  ragMmrLambda: 0.7,
+  ragRankingPriorWeight: 0,
 } as const;
 
 describe('AdminSettingsSchema (read)', () => {
@@ -380,6 +390,129 @@ describe('registrationMode (issue #1051)', () => {
 
     it('rejects an unknown mode', () => {
       expect(() => UpdateAdminSettingsSchema.parse({ registrationMode: 'invite' })).toThrow();
+    });
+  });
+});
+
+// ─── #1118 — retrieval knobs mirror their readers exactly ────────────────
+//
+// Every bound here was read off `admin-settings-service.ts`. The schema is
+// the panel's only defence against reporting "saved" for a value the reader
+// throws away, so each boundary is pinned on BOTH sides.
+describe('retrieval knobs (#1118)', () => {
+  it('requires every knob on read', () => {
+    for (const key of [
+      'ragFetchWidth',
+      'ragRerankCandidates',
+      'ragConfidenceThreshold',
+      'ragConfidenceThresholdRerank',
+      'ragContextCharsPerPage',
+      'ragPinIdentifiers',
+      'ragMmrEnabled',
+      'ragMmrLambda',
+      'ragRankingPriorWeight',
+    ] as const) {
+      const { [key]: _dropped, ...without } = validReadPayload;
+      expect(() => AdminSettingsSchema.parse(without), `${key} must be required`).toThrow();
+    }
+  });
+
+  it('treats every knob as omit-to-leave-unchanged on update', () => {
+    expect(UpdateAdminSettingsSchema.parse({})).toEqual({});
+  });
+
+  describe('rag_fetch_width — [10, 200] integer', () => {
+    it('accepts the bounds', () => {
+      expect(UpdateAdminSettingsSchema.parse({ ragFetchWidth: 10 }).ragFetchWidth).toBe(10);
+      expect(UpdateAdminSettingsSchema.parse({ ragFetchWidth: 200 }).ragFetchWidth).toBe(200);
+    });
+    // The reader's MIN is a validity floor, not a clamp: `safeIntOr` falls back
+    // to the DEFAULT below it, so accepting 9 here would save a value that
+    // silently reads back as 10.
+    it('rejects below 10, above 200, and non-integers', () => {
+      expect(() => UpdateAdminSettingsSchema.parse({ ragFetchWidth: 9 })).toThrow();
+      expect(() => UpdateAdminSettingsSchema.parse({ ragFetchWidth: 201 })).toThrow();
+      expect(() => UpdateAdminSettingsSchema.parse({ ragFetchWidth: 10.5 })).toThrow();
+    });
+  });
+
+  describe('rag_rerank_candidates — [10, 100] integer', () => {
+    it('accepts the bounds', () => {
+      expect(UpdateAdminSettingsSchema.parse({ ragRerankCandidates: 10 }).ragRerankCandidates).toBe(10);
+      expect(UpdateAdminSettingsSchema.parse({ ragRerankCandidates: 100 }).ragRerankCandidates).toBe(100);
+    });
+    it('rejects below 10, above 100, and non-integers', () => {
+      expect(() => UpdateAdminSettingsSchema.parse({ ragRerankCandidates: 9 })).toThrow();
+      expect(() => UpdateAdminSettingsSchema.parse({ ragRerankCandidates: 101 })).toThrow();
+      expect(() => UpdateAdminSettingsSchema.parse({ ragRerankCandidates: 30.5 })).toThrow();
+    });
+  });
+
+  describe('confidence thresholds — half-open [0, 1)', () => {
+    it.each(['ragConfidenceThreshold', 'ragConfidenceThresholdRerank'] as const)(
+      '%s accepts 0 and 0.999 but REJECTS 1',
+      (key) => {
+        expect(UpdateAdminSettingsSchema.parse({ [key]: 0 })[key]).toBe(0);
+        expect(UpdateAdminSettingsSchema.parse({ [key]: 0.999 })[key]).toBe(0.999);
+        // `readConfidenceThreshold` requires `n < 1` and logs a rejection for
+        // 1, leaving the gate OFF — the opposite of what an operator setting
+        // maximal strictness intends. The schema must refuse it at the edge.
+        expect(() => UpdateAdminSettingsSchema.parse({ [key]: 1 })).toThrow();
+        expect(() => UpdateAdminSettingsSchema.parse({ [key]: -0.1 })).toThrow();
+      },
+    );
+  });
+
+  describe('rag_context_chars_per_page — [0, 24000] integer', () => {
+    it('accepts 0 (assembly off) and the 24000 ceiling', () => {
+      expect(UpdateAdminSettingsSchema.parse({ ragContextCharsPerPage: 0 }).ragContextCharsPerPage).toBe(0);
+      expect(
+        UpdateAdminSettingsSchema.parse({ ragContextCharsPerPage: 24_000 }).ragContextCharsPerPage,
+      ).toBe(24_000);
+    });
+    it('rejects negatives, above 24000, and non-integers', () => {
+      expect(() => UpdateAdminSettingsSchema.parse({ ragContextCharsPerPage: -1 })).toThrow();
+      expect(() => UpdateAdminSettingsSchema.parse({ ragContextCharsPerPage: 24_001 })).toThrow();
+      expect(() => UpdateAdminSettingsSchema.parse({ ragContextCharsPerPage: 6000.5 })).toThrow();
+    });
+  });
+
+  describe('rag_mmr_lambda — [0, 1]', () => {
+    it('accepts both bounds', () => {
+      expect(UpdateAdminSettingsSchema.parse({ ragMmrLambda: 0 }).ragMmrLambda).toBe(0);
+      expect(UpdateAdminSettingsSchema.parse({ ragMmrLambda: 1 }).ragMmrLambda).toBe(1);
+    });
+    it('rejects outside [0, 1]', () => {
+      expect(() => UpdateAdminSettingsSchema.parse({ ragMmrLambda: -0.01 })).toThrow();
+      expect(() => UpdateAdminSettingsSchema.parse({ ragMmrLambda: 1.01 })).toThrow();
+    });
+  });
+
+  describe('rag_ranking_prior_weight — [0, 0.05]', () => {
+    it('accepts 0 (off), the measured 0.003 and the 0.05 ceiling', () => {
+      expect(UpdateAdminSettingsSchema.parse({ ragRankingPriorWeight: 0 }).ragRankingPriorWeight).toBe(0);
+      expect(
+        UpdateAdminSettingsSchema.parse({ ragRankingPriorWeight: 0.003 }).ragRankingPriorWeight,
+      ).toBe(0.003);
+      expect(
+        UpdateAdminSettingsSchema.parse({ ragRankingPriorWeight: 0.05 }).ragRankingPriorWeight,
+      ).toBe(0.05);
+    });
+    // 0.05 is where the prior exceeds the leg-agreement gap and starts
+    // outranking retrieval itself.
+    it('rejects above 0.05 and below 0', () => {
+      expect(() => UpdateAdminSettingsSchema.parse({ ragRankingPriorWeight: 0.051 })).toThrow();
+      expect(() => UpdateAdminSettingsSchema.parse({ ragRankingPriorWeight: -0.001 })).toThrow();
+    });
+  });
+
+  describe('the two boolean knobs', () => {
+    it.each(['ragPinIdentifiers', 'ragMmrEnabled'] as const)('%s accepts both states', (key) => {
+      expect(UpdateAdminSettingsSchema.parse({ [key]: true })[key]).toBe(true);
+      expect(UpdateAdminSettingsSchema.parse({ [key]: false })[key]).toBe(false);
+    });
+    it.each(['ragPinIdentifiers', 'ragMmrEnabled'] as const)('%s rejects a string', (key) => {
+      expect(() => UpdateAdminSettingsSchema.parse({ [key]: 'true' })).toThrow();
     });
   });
 });
