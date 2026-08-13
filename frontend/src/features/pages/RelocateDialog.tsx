@@ -28,6 +28,7 @@ import * as Dialog from '@radix-ui/react-dialog';
 import {
   AlertTriangle,
   ArrowDown,
+  ChevronRight,
   Download,
   Globe,
   KeyRound,
@@ -666,6 +667,29 @@ export function RelocateDialog({ open, pageId, pageTitle, source, onClose }: Rel
                       ))}
                     </select>
                   </label>
+
+                  {/* Visual hierarchy breadcrumb diff preview */}
+                  <div className="rounded-lg border border-border bg-muted/40 p-3" data-testid="relocate-hierarchy-preview">
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Hierarchy Location Diff</p>
+                    <div className="flex flex-col gap-2 text-xs">
+                      <div className="flex items-center gap-1.5 text-muted-foreground">
+                        <span className="w-10 font-semibold text-destructive/80 shrink-0">From:</span>
+                        <div className="flex items-center gap-1 rounded bg-background px-2 py-1 font-mono text-foreground border border-border truncate">
+                          <span>{source === 'standalone' ? 'Local Workspace' : 'Confluence'}</span>
+                          <ChevronRight size={12} className="shrink-0 text-muted-foreground" />
+                          <span className="truncate font-semibold">{displayTitle}</span>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1.5 text-foreground font-medium">
+                        <span className="w-10 font-semibold text-action shrink-0">To:</span>
+                        <div className="flex items-center gap-1 rounded bg-action/10 text-action-foreground px-2 py-1 font-mono border border-action/30 truncate">
+                          <span>{target === 'confluence' ? (spaceKey || 'Choose Space') : (spaceKey || 'Local Workspace')}</span>
+                          <ChevronRight size={12} className="shrink-0 text-action/70" />
+                          <span className="truncate font-semibold">{displayTitle}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
 
                   {target === 'local' && (
                     <fieldset className="space-y-2">

@@ -2,7 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, m } from 'framer-motion';
-import { FileText, X, Upload, Download, ShieldCheck, Globe, Lock, ThumbsUp, ThumbsDown, AlertCircle, GitGraph } from 'lucide-react';
+import { FileText, X, Upload, Download, ShieldCheck, Globe, Lock, ThumbsUp, ThumbsDown, AlertCircle, GitGraph, MoreHorizontal, Pin, Trash2 } from 'lucide-react';
+import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { toast } from 'sonner';
 import {
   usePage,
@@ -374,12 +375,14 @@ export function PageViewPage() {
       for (const msg of drain.errors) {
         toast.warning(msg);
       }
+      if (!editorInstance) {
+        toast.error('Editor instance is not ready. Please try again.');
+        return;
+      }
       // Read the live HTML straight off the editor instance (#954) — it's the
       // single source of truth for body content, and also reflects the
-      // newly-committed draw.io node attributes from the drain above. The
-      // `editHtml` seed is only a fallback for the (practically unreachable)
-      // case where the editor instance isn't ready.
-      const bodyToSave = editorInstance?.getHTML() ?? editHtml;
+      // newly-committed draw.io node attributes from the drain above.
+      const bodyToSave = editorInstance.getHTML();
 
       await updateMutation.mutateAsync({
         id,
@@ -903,49 +906,78 @@ export function PageViewPage() {
             <PresenceAvatarStack viewers={presenceViewers} className="mr-1" />
             {editing ? null : (
               <>
-                <div className="flex flex-wrap items-center justify-end gap-1.5">
-                {/* Relocate between a local space and Confluence (#1123).
-                    Replaces the "Publish to Confluence coming soon" stub,
-                    which also gated on the retired `__local__` sentinel —
-                    standalone pages carry a real local space key (or null)
-                    now, so `source` is the only correct discriminator. */}
-                {canRelocate && (
-                  <button
-                    onClick={() => setRelocateOpen(true)}
-                    className="rounded-md px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
-                    data-testid="relocate-btn"
-                    title={
-                      page.source === 'standalone'
-                        ? 'Publish this article into a Confluence space'
-                        : 'Pull this page out of Confluence into a local space'
-                    }
-                  >
-                    {page.source === 'standalone' ? (
-                      <>
-                        <Upload size={12} className="mr-1 inline" />
-                        <span className="max-lg:hidden">Move to Confluence</span>
-                        <span className="lg:hidden">Move</span>
-                      </>
-                    ) : (
-                      <>
-                        <Download size={12} className="mr-1 inline" />
-                        <span className="max-lg:hidden">Move to local space</span>
-                        <span className="lg:hidden">Move</span>
-                      </>
-                    )}
-                  </button>
-                )}
-                {/* Verify button */}
-                <VerifyButton pageId={id} />
-                <button
-                  onClick={() => navigate(`/graph?focus=${encodeURIComponent(id ?? '')}`)}
-                  className="rounded-md px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
-                  data-testid="show-in-graph-btn"
-                  title="Show in knowledge graph"
-                >
-                  <GitGraph size={12} className="mr-1 inline" />
-                  <span className="max-sm:hidden">Graph</span>
-                </button>
+                <div className="flex items-center gap-1.5">
+                  {canRelocate && (
+                    <button
+                      onClick={() => setRelocateOpen(true)}
+                      className="rounded-md px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+                      data-testid="relocate-btn"
+                      title={
+                        page.source === 'standalone'
+                          ? 'Publish this article into a Confluence space'
+                          : 'Pull this page out of Confluence into a local space'
+                      }
+                    >
+                      {page.source === 'standalone' ? (
+                        <>
+                          <Upload size={12} className="mr-1 inline" />
+                          <span className="max-lg:hidden">Move to Confluence</span>
+                          <span className="lg:hidden">Move</span>
+                        </>
+                      ) : (
+                        <>
+                          <Download size={12} className="mr-1 inline" />
+                          <span className="max-lg:hidden">Move to local space</span>
+                          <span className="lg:hidden">Move</span>
+                        </>
+                      )}
+                    </button>
+                  )}
+                  <VerifyButton pageId={id} lastVerifiedAt={(page as any).lastVerifiedAt ?? null} />
+                  <DropdownMenu.Root>
+                    <DropdownMenu.Trigger asChild>
+                      <button
+                        type="button"
+                        className="rounded-md p-1.5 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        aria-label="More actions"
+                        title="More actions"
+                        data-testid="page-actions-overflow-btn"
+                      >
+                        <MoreHorizontal size={15} />
+                      </button>
+                    </DropdownMenu.Trigger>
+
+                    <DropdownMenu.Portal>
+                      <DropdownMenu.Content
+                        align="end"
+                        sideOffset={8}
+                        className="z-50 w-52 nm-card-elevated p-1.5"
+                      >
+                        <DropdownMenu.Item
+                          onSelect={() => navigate(`/graph?focus=${encodeURIComponent(id ?? '')}`)}
+                          className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-xs text-muted-foreground outline-none transition-colors data-[highlighted]:bg-foreground/[0.07] data-[highlighted]:text-foreground"
+                        >
+                          <GitGraph size={14} />
+                          <span>Show in Graph</span>
+                        </DropdownMenu.Item>
+                        <DropdownMenu.Item
+                          onSelect={handlePinToggle}
+                          className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-xs text-muted-foreground outline-none transition-colors data-[highlighted]:bg-foreground/[0.07] data-[highlighted]:text-foreground"
+                        >
+                          <Pin size={14} />
+                          <span>{isPinned ? 'Unpin Page' : 'Pin Page'}</span>
+                        </DropdownMenu.Item>
+                        <DropdownMenu.Separator className="my-1 h-px bg-border" />
+                        <DropdownMenu.Item
+                          onSelect={handleDeletePage}
+                          className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-xs text-destructive outline-none transition-colors data-[highlighted]:bg-destructive/10"
+                        >
+                          <Trash2 size={14} />
+                          <span>Move to Trash</span>
+                        </DropdownMenu.Item>
+                      </DropdownMenu.Content>
+                    </DropdownMenu.Portal>
+                  </DropdownMenu.Root>
                 </div>
 
                 {/* Edit is the primary action on this route and used to be its
@@ -1221,7 +1253,7 @@ function FeedbackWidget({ pageId }: { pageId: string | undefined }) {
   );
 }
 
-function VerifyButton({ pageId }: { pageId: string | undefined }) {
+function VerifyButton({ pageId, lastVerifiedAt }: { pageId: string | undefined; lastVerifiedAt?: string | null }) {
   const verifyMutation = useVerifyPage();
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
 
@@ -1242,19 +1274,32 @@ function VerifyButton({ pageId }: { pageId: string | undefined }) {
     }
   };
 
+  const verifiedDateStr = lastVerifiedAt
+    ? new Date(lastVerifiedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+    : null;
+
   return (
     <>
       <button
         onClick={handleVerify}
         disabled={verifyMutation.isPending}
-        title="Mark this page as up-to-date. Resets the next review reminder based on the configured review interval."
+        title={
+          lastVerifiedAt
+            ? `Verified on ${new Date(lastVerifiedAt).toLocaleDateString()}. Click to re-verify.`
+            : 'Mark this page as up-to-date. Resets the next review reminder based on the configured review interval.'
+        }
         aria-label="Mark page as verified"
         aria-busy={verifyMutation.isPending}
-        className="rounded-md px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground disabled:opacity-50"
+        className="flex items-center rounded-md px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground disabled:opacity-50"
         data-testid="verify-btn"
       >
-        <ShieldCheck size={12} className="mr-1 inline" />
-        {verifyMutation.isPending ? 'Verifying...' : 'Verify'}
+        <ShieldCheck size={12} className="mr-1 inline shrink-0 text-status-connected" />
+        <span className="max-sm:hidden">
+          {verifyMutation.isPending ? 'Verifying...' : verifiedDateStr ? `Verified ${verifiedDateStr}` : 'Verify'}
+        </span>
+        <span className="sm:hidden">
+          {verifyMutation.isPending ? '...' : 'Verify'}
+        </span>
       </button>
       {statusMsg && (
         <span className="sr-only" role="status" aria-live="polite">
