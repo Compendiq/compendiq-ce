@@ -54,15 +54,23 @@ export interface DockActionOptions {
    */
   deepSearch?: boolean;
   /**
-   * Called by `ask()` once the deep-search flag has been folded into the
-   * request body, so the panel can clear its toggle.
+   * Called once the deep-search flag has been spent, so the panel can clear its
+   * toggle. Both run paths call it, for two different reasons.
    *
-   * The reset is invoked from inside `ask()`, beside `setInput('')` and after
-   * the guards, rather than at the two call sites. `ask()` returns early on an
-   * empty prompt (Enter on an empty composer reaches it), so a reset at the
-   * call site would silently discard the user's choice without sending
-   * anything — and a reset placed after the `await` would be skipped on abort
-   * and on error, leaving the toggle lit for the next question.
+   * `ask()` CONSUMES it: the flag is folded into the request body first. The
+   * reset lives inside `ask()`, beside `setInput('')` and after the guards,
+   * rather than at the two call sites — `ask()` returns early on an empty
+   * prompt (Enter on an empty composer reaches it), so a reset at the call site
+   * would silently discard the user's choice without sending anything, and a
+   * reset placed after the `await` would be skipped on abort and on error,
+   * leaving the toggle lit for the next question.
+   *
+   * `runChip()` CANNOT consume it — none of the four routes it posts to takes
+   * the flag — so it CLEARS it instead. Leaving it lit through a run that
+   * ignores it is the one option ruled out: the control would then be showing a
+   * mode the request it just started is not in. Placed after the same guards
+   * for the same reason, so a chip press that only toasts "No page open." keeps
+   * the choice.
    */
   onDeepSearchConsumed?: () => void;
 }
@@ -131,6 +139,13 @@ export function useDockActions({
       return;
     }
     if (!canRun()) return;
+
+    // A chip run is a run: the toggle describes the next request, and this is
+    // it. None of the four routes below accepts `deepSearch`, so the flag is
+    // dropped here rather than carried silently past a request that ignores it
+    // — see `onDeepSearchConsumed`. Past the guards above, so a chip that
+    // refuses to run keeps the user's choice intact.
+    onDeepSearchConsumed?.();
 
     const instruction = input.trim();
     const userMessage = chipUserMessage(id, { improvementType, diagramType, instruction });
@@ -241,7 +256,8 @@ export function useDockActions({
     }
   }, [
     page, pageId, canRun, input, improvementType, diagramType, thinkingMode, model,
-    includeSubPages, referenceText, imageHandle, isBusy, onImageExpired, runStream, setInput,
+    includeSubPages, referenceText, imageHandle, isBusy, onImageExpired, onDeepSearchConsumed,
+    runStream, setInput,
     setShowDiffView, setImprovedContent, setOriginalMarkdown, setLayoutTokensLost,
     setDiffBaseVersion, setDiagramCode,
   ]);

@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { AskModeInput, AskExamplePrompts, ASK_EMPTY_TITLE, ASK_EMPTY_SUBTITLE } from './AskMode';
 import { ASK_FALLBACK_PROMPTS } from './ask-example-prompts';
-import { AiProvider } from '../AiContext';
+import { AiProvider, useAiContext } from '../AiContext';
 import { useAuthStore } from '../../../stores/auth-store';
 
 Element.prototype.scrollIntoView = vi.fn();
@@ -691,6 +691,17 @@ describe('AskMode', () => {
       )![1] as Record<string, unknown>;
     }
 
+    /**
+     * Stands in for the conversation sidebar, which lives in `AiAssistantPage`
+     * and is not rendered here. What matters is the shape it produces: the
+     * thread underneath changes while the composer stays mounted, so no
+     * unmount tidies the toggle away.
+     */
+    function ConversationSwitcher() {
+      const { setConversationId } = useAiContext();
+      return <button onClick={() => setConversationId('conv-2')}>switch</button>;
+    }
+
     it('defaults to off and omits the flag entirely — an untouched composer sends the body it always sent', async () => {
       withModel();
       render(<AskModeInput />, { wrapper: createWrapper() });
@@ -724,7 +735,6 @@ describe('AskMode', () => {
       await waitFor(() => {
         expect(screen.getByTestId('ask-deep-search')).not.toBeChecked();
       });
-      expect(screen.queryByTestId('ask-deep-search-hint')).not.toBeInTheDocument();
 
       // The part that actually matters: the wire body of the next, ordinary
       // question. A toggle that merely *renders* unchecked while still sending
@@ -749,7 +759,6 @@ describe('AskMode', () => {
       // Zustand slice, a `?deep=1` search param, an `AiThread` field. All four
       // survive it; `useState` in the composer does not.
       expect(screen.getByTestId('ask-deep-search')).not.toBeChecked();
-      expect(screen.queryByTestId('ask-deep-search-hint')).not.toBeInTheDocument();
     });
 
     it('writes nothing to storage when toggled', () => {
@@ -777,11 +786,66 @@ describe('AskMode', () => {
       expect(hint).toMatch(/seconds/i);
       expect(hint).toMatch(/worse/i);
       expect(hint).toMatch(/this question only/i);
-      // The two facts a user needs before agreeing to wait are also on screen
-      // once it is on, because a title attribute is unreachable by touch.
+      // And the measurement is not rounded in the feature's favour: the delta
+      // is 2.36 s (1.40 -> 3.76), so "roughly 2 seconds" undersold it.
+      expect(hint).not.toMatch(/roughly 2 seconds/i);
+      expect(hint).toMatch(/2\.4 seconds/);
+    });
+
+    // The whole reason this ships opt-in is that it is measurably WORSE on
+    // ordinary questions. A caveat that lives only in `title` is unreachable by
+    // touch, by keyboard and by a screen reader — and the text that WAS visible
+    // ("Slower; this question only.") reads as slower-but-better, the inverse of
+    // the measurement. So the downside is on screen, at rest, and wired to the
+    // control as its description.
+    it('shows the downside without hover, before the toggle is switched on', () => {
+      withModel();
+      render(<AskModeInput />, { wrapper: createWrapper() });
+
+      const toggle = screen.getByTestId('ask-deep-search');
+      expect(toggle).not.toBeChecked();
+
+      const caveat = screen.getByTestId('ask-deep-search-caveat');
+      expect(caveat).toBeVisible();
+      // The two halves of an honest description: what it is for, and what it
+      // costs you when it is not.
+      expect(caveat).toHaveTextContent(/normal search missed/i);
+      expect(caveat).toHaveTextContent(/worse on straightforward questions/i);
+      expect(caveat).toHaveTextContent(/2\.4 seconds slower/i);
+      expect(caveat).toHaveTextContent(/this question only/i);
+    });
+
+    it('describes the control with that text rather than leaving it decorative', () => {
+      withModel();
+      render(<AskModeInput />, { wrapper: createWrapper() });
+
+      const describedBy = screen.getByTestId('ask-deep-search').getAttribute('aria-describedby');
+      expect(describedBy).toBeTruthy();
+      // Not just "an id is present": it has to resolve to the element carrying
+      // the caveat, or the reference is dangling and announces nothing.
+      expect(document.getElementById(describedBy!))
+        .toBe(screen.getByTestId('ask-deep-search-caveat'));
+    });
+
+    // #1119 review: the sidebar swaps the thread under a mounted composer, so
+    // this boundary is not covered by the remount test above.
+    it('clears an unconsumed toggle when the conversation changes', async () => {
+      withModel();
+      render(
+        <>
+          <ConversationSwitcher />
+          <AskModeInput />
+        </>,
+        { wrapper: createWrapper() },
+      );
+
       fireEvent.click(screen.getByTestId('ask-deep-search'));
-      expect(screen.getByTestId('ask-deep-search-hint')).toHaveTextContent(/slower/i);
-      expect(screen.getByTestId('ask-deep-search-hint')).toHaveTextContent(/this question only/i);
+      expect(screen.getByTestId('ask-deep-search')).toBeChecked();
+
+      fireEvent.click(screen.getByText('switch'));
+      await waitFor(() => {
+        expect(screen.getByTestId('ask-deep-search')).not.toBeChecked();
+      });
     });
   });
 });

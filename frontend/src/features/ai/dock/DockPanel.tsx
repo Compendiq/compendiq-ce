@@ -16,7 +16,7 @@ import {
 } from '../improvement-types';
 import { cn } from '../../../shared/lib/cn';
 import { DeepSearchToggle } from '../DeepSearchToggle';
-import { RefusalMark, RefusalSourcesLabel } from '../refusal';
+import { RefusalMark, RefusalSourcesLabel, REFUSAL_ANNOUNCEMENT } from '../refusal';
 import { DOCK_CHIPS, improveChipHint } from './dock-chips';
 import { DockDiffCard } from './DockDiffCard';
 import { useDockActions } from './use-dock-actions';
@@ -270,7 +270,19 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
         {(() => {
           if (isStreaming) return null;
           const lastAnswer = [...messages].reverse().find((m2) => m2.role === 'assistant' && !m2.isError && m2.content);
-          return lastAnswer ? <span key={lastAnswer.id}>Answer ready</span> : null;
+          if (!lastAnswer) return null;
+          // The same verdict `/ai`'s announcer reaches, and it has to be
+          // reached twice because there are two renderers (#1119). A refusal
+          // is the one turn this region must not call an answer: the server
+          // ran no completion, so "Answer ready" tells a screen-reader user to
+          // go and read something that is not there. It is not an error
+          // either, so it stays polite rather than being routed into the alert
+          // region above — a correct response is not worth interrupting for.
+          return (
+            <span key={lastAnswer.id}>
+              {lastAnswer.isRefusal ? REFUSAL_ANNOUNCEMENT : 'Answer ready'}
+            </span>
+          );
         })()}
       </div>
 

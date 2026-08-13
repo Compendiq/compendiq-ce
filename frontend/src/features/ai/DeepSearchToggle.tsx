@@ -1,3 +1,4 @@
+import { useId } from 'react';
 import { ScanSearch } from 'lucide-react';
 import { cn } from '../../shared/lib/cn';
 
@@ -53,16 +54,43 @@ interface DeepSearchToggleProps {
  * The tooltip does not sell the feature. It names the one case it helps, the
  * cost, the case it hurts, and the lifetime — in that order, because a user who
  * reads only the first clause should still come away with "sometimes".
+ *
+ * "Roughly 2 seconds" was a rounding of 2.36 in the direction that flatters the
+ * feature. The measurement is 1.40 -> 3.76 s/query, so the number is quoted
+ * both ways: the delta a user waits, and the pair it came from.
  */
 export const DEEP_SEARCH_HINT =
   'Searches again with a few rephrasings of your question and merges the results. '
-  + 'Helps when the page words things differently than you do; adds roughly 2 seconds, '
-  + 'and does slightly worse on straightforward questions. '
-  + 'Applies to this question only — it switches off when you send.';
+  + 'Helps when the page words things differently than you do; adds about 2.4 seconds '
+  + '(measured 1.4 s -> 3.8 s per question), and does slightly worse on straightforward '
+  + 'questions. Applies to this question only — it switches off when you send.';
+
+/**
+ * The same three facts, on screen and unconditional.
+ *
+ * This used to live only in the `title` above, plus a "Slower; this question
+ * only." line that appeared *after* the user switched the toggle on. Both are
+ * the wrong shape for what this control is. The decision a user makes here is
+ * whether to turn it on, so the caveat has to be readable at rest; a `title` is
+ * unreachable by touch and by most screen-reader flows; and "slower" alone
+ * reads as slower-BUT-BETTER, which is the inverse of the measurement — this
+ * ships opt-in precisely because it is a regression on ordinary questions
+ * (R@5 .921 -> .866, McNemar exact p = 0.0225).
+ *
+ * Kept to one line's worth of words because it is permanent chrome now. The
+ * `title` keeps the longer version for anyone who hovers.
+ */
+export const DEEP_SEARCH_CAVEAT =
+  'Helps when normal search missed it; slightly worse on straightforward questions. '
+  + 'About 2.4 seconds slower; this question only.';
 
 export function DeepSearchToggle({
   checked, onChange, disabled = false, testId = 'deep-search-toggle', className,
 }: DeepSearchToggleProps) {
+  // The caveat is the control's accessible description, so it needs a stable id
+  // rather than a testid — `aria-describedby` is the only thing that carries
+  // visible text to a screen reader without also renaming the control.
+  const caveatId = useId();
   return (
     <div className={cn('flex flex-wrap items-center gap-x-2 gap-y-1', className)}>
       <label
@@ -95,20 +123,26 @@ export function DeepSearchToggle({
           onChange={(e) => onChange(e.target.checked)}
           className="sr-only"
           aria-label="Deep search for this question"
+          // The description wins over the label's `title` per the accname spec,
+          // so the two do not double up: hover gets the long form, everyone
+          // else gets the line that is already on screen.
+          aria-describedby={caveatId}
           data-testid={testId}
         />
         <ScanSearch size={12} aria-hidden />
         <span>Deep search</span>
       </label>
-      {/* Shown only while it is on, so it is never permanent chrome. A tooltip
-          is unreachable by touch and by most screen-reader flows, and the two
-          things a user has to know before waiting — that it is slower, and
-          that it is gone after this question — should not be behind hover. */}
-      {checked && (
-        <span className="text-xs text-muted-foreground" data-testid={`${testId}-hint`}>
-          Slower; this question only.
-        </span>
-      )}
+      {/* Unconditional, and that is the point: the moment this text is useful
+          is *before* the toggle is switched on. Muted rather than amber — a
+          permanent banner in amber teaches users to ignore amber (ADR-010), and
+          this is a caveat on an opt-in, not a warning about a state. */}
+      <span
+        id={caveatId}
+        className="text-xs text-muted-foreground"
+        data-testid={`${testId}-caveat`}
+      >
+        {DEEP_SEARCH_CAVEAT}
+      </span>
     </div>
   );
 }

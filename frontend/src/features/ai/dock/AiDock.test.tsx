@@ -347,6 +347,31 @@ describe('AiDock (#1126)', () => {
       expect(screen.getByTestId('ai-dock-deep-search')).toBeChecked();
     });
 
+    // The four chips post to /llm/improve, /llm/summarize, /llm/generate-diagram
+    // and /llm/analyze-quality; none of them takes the flag. So a chip run drops
+    // it rather than leaving a lit control describing a mode the request it just
+    // started is not in.
+    it('is dropped by a chip run rather than left lit and ignored', async () => {
+      renderDock();
+      await openAndSettle();
+
+      fireEvent.click(screen.getByTestId('ai-dock-deep-search'));
+      expect(screen.getByTestId('ai-dock-deep-search')).toBeChecked();
+
+      fireEvent.click(screen.getByTestId('ai-dock-chip-summarize'));
+      await waitFor(() => {
+        expect(streamSSEMock).toHaveBeenCalledWith(
+          '/llm/summarize', expect.anything(), expect.anything(),
+        );
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('ai-dock-deep-search')).not.toBeChecked();
+      });
+      // And it never rode along on the request it was lit for.
+      expect(streamSSEMock.mock.calls[0]![1]).not.toHaveProperty('deepSearch');
+    });
+
     // NON-STICKINESS TEST 2 — must not survive a REMOUNT, and must not be
     // written down anywhere on the way.
     //
@@ -401,7 +426,12 @@ describe('AiDock (#1126)', () => {
           confidence: 0.21,
           confidenceBasis: 'similarity',
           conversationId: 'conv-1',
-          sources: [{ pageId: 'p9', title: 'Vaguely related page', similarity: 0.21 }],
+          // The wire shape, not an approximation of it: `Source` is
+          // {pageTitle, pageId: number, score, similarity} — the same fixture
+          // `/ai`'s refusal suite uses. A hand-rolled {pageId: 'p9', title}
+          // renders an empty chip in every implementation, so it could not tell
+          // a renderer that reads `pageTitle` from one that reads nothing.
+          sources: [{ pageTitle: 'Vaguely related page', pageId: 9, score: 0.01, similarity: 0.21 }],
           done: true,
           final: true,
         },
@@ -431,6 +461,42 @@ describe('AiDock (#1126)', () => {
       await askAndRefuse();
 
       expect(screen.getByTestId('refusal-sources-label')).toHaveTextContent(/closest matches/i);
+      // The chip is a real one built from the wire fields, so the heading is
+      // labelling something a user can actually see and follow.
+      expect(screen.getByTestId('citation-chip-1')).toHaveAttribute('title', 'Vaguely related page');
+    });
+
+    // The announcer is the whole reason this state exists for a screen-reader
+    // user: the visible treatment — neutral chip, hairline, no badge — is
+    // invisible to them, so "Answer ready" would be the *only* thing they were
+    // told about a turn that carries no answer. `/ai` fixed this and the dock
+    // did not, which is how the same bug shipped twice; there was no dock test
+    // to notice. Two directions, so it discriminates: an ordinary answer must
+    // still say "Answer ready".
+    it('announces an ordinary answer as an answer', async () => {
+      renderDock();
+      await openAndSettle();
+      fireEvent.change(composer(), { target: { value: 'where is the PAT setting?' } });
+      fireEvent.keyDown(composer(), { key: 'Enter' });
+
+      const announcer = screen.getByTestId('ai-dock-answer-announcer');
+      await waitFor(() => {
+        expect(announcer).toHaveTextContent('Answer ready');
+      });
+    });
+
+    it('does not announce a refusal as an answer', async () => {
+      await askAndRefuse();
+
+      const announcer = screen.getByTestId('ai-dock-answer-announcer');
+      await waitFor(() => {
+        expect(announcer.textContent).not.toBe('');
+      });
+      expect(announcer).not.toHaveTextContent('Answer ready');
+      expect(announcer).toHaveTextContent(/no answer/i);
+      // Polite, not assertive. The request succeeded and the server declined to
+      // guess; that is a correct outcome, not one worth interrupting for.
+      expect(screen.getByTestId('ai-dock-error-announcer').textContent).toBe('');
     });
 
     it('wears no warning or destructive colour — a refusal is a verdict, not a fault', async () => {

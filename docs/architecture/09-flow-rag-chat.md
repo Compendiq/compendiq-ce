@@ -379,12 +379,26 @@ survives every ask), `AiThread` (12 retained threads, so per-conversation
 sticky), `ai-dock-store` (ephemeral today, but a store is what later work
 persists), a `?deep=1` search param (survives reload). The reset sits *inside*
 the submit handler past its guards, so Enter on an empty composer cannot
-discard the choice and an abort or an error cannot leave the toggle lit. The
-label names the cost and the lifetime rather than selling the feature
-("Slower; this question only"), because a user who cannot see that it is
-sometimes worse has no basis for choosing it. `AskMode.test.tsx` and
-`AiDock.test.tsx` each fail if the flag survives a send or a remount, and on
-any storage write.
+discard the choice and an abort or an error cannot leave the toggle lit. Two
+further boundaries clear it, both found in review: a **chip run** in the dock
+(Improve / Summarize / Diagram / Quality post to routes that do not take the
+flag, so leaving it lit would show a mode the request is not in), and a
+**conversation switch** on `/ai` (the sidebar swaps the thread under a composer
+that stays mounted, which no remount tidies up).
+
+The copy is the other half of the constraint, and it is deliberately
+unflattering. The caveat is **visible at rest and wired to the control via
+`aria-describedby`** — it used to live in a `title` plus a "Slower; this
+question only." line that appeared only *after* the toggle was switched on,
+which put the one fact a user needs before deciding behind hover, out of reach
+of touch, keyboard and screen readers, and read as slower-BUT-better: the
+inverse of the measurement. The visible line names both directions ("Helps when
+normal search missed it; slightly worse on straightforward questions") and
+quotes the cost as **about 2.4 seconds**, not "roughly 2" — the delta is 2.36
+(1.40 → 3.76 s/query) and rounding it down flatters the feature.
+`AskMode.test.tsx` and `AiDock.test.tsx` each fail if the flag survives a send,
+a remount, a chip run or a conversation switch, on any storage write, and if
+the caveat stops being visible or stops describing the control.
 
 ## Quality / recency ranking prior (#1111)
 

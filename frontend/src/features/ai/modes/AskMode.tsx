@@ -41,6 +41,20 @@ export function AskModeInput() {
    */
   const [deepSearch, setDeepSearch] = useState(false);
 
+  // The one boundary a remount does not cover. Switching threads from the
+  // conversation sidebar — or starting a new one — swaps the conversation under
+  // a composer that stays mounted, so an unconsumed toggle would carry a choice
+  // made about one conversation into the first question of another. That is the
+  // per-conversation stickiness this state's placement exists to prevent,
+  // arrived at from the other side; the dock clears its own slots at its pageId
+  // boundary for the same reason.
+  //
+  // Harmless on the id the server assigns mid-answer: `handleAsk` has already
+  // cleared the flag by then, and the toggle is disabled while streaming.
+  useEffect(() => {
+    setDeepSearch(false);
+  }, [conversationId]);
+
   // Check if MCP docs is enabled via public status endpoint (cache for 5 min)
   const { data: mcpSettings } = useQuery<McpDocsSettings>({
     queryKey: ['mcp-docs', 'status'],
