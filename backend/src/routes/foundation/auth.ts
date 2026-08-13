@@ -79,7 +79,7 @@ export async function authRoutes(fastify: FastifyInstance) {
         .setCookie(REFRESH_COOKIE, refreshToken, {
           httpOnly: true,
           secure: process.env.NODE_ENV === 'production',
-          sameSite: 'strict',
+          sameSite: 'lax',
           path: '/api/auth',
           maxAge: REFRESH_MAX_AGE,
         })
@@ -206,7 +206,7 @@ export async function authRoutes(fastify: FastifyInstance) {
       .setCookie(REFRESH_COOKIE, refreshToken, {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
-        sameSite: 'strict',
+        sameSite: 'lax',
         path: '/api/auth',
         maxAge: REFRESH_MAX_AGE,
       })
@@ -285,7 +285,7 @@ export async function authRoutes(fastify: FastifyInstance) {
         .setCookie(REFRESH_COOKIE, newRefreshToken, {
           httpOnly: true,
           secure: process.env.NODE_ENV === 'production',
-          sameSite: 'strict',
+          sameSite: 'lax',
           path: '/api/auth',
           maxAge: REFRESH_MAX_AGE,
         })

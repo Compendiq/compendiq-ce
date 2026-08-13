@@ -308,8 +308,8 @@ function getJwtSecret(): Uint8Array {
 - **PASS:** Refresh tokens stored in database with JTI tracking
 - **PASS:** Token family tracking for reuse detection
 - **PASS:** Automatic family revocation on reuse (security breach response)
-- **PASS:** Refresh token cookie: httpOnly, secure (in production), sameSite=strict, path-scoped
-- **PASS:** OIDC callback uses sameSite=lax (required for cross-origin IdP redirect)
+- **PASS:** Refresh token cookie: httpOnly, secure (in production), sameSite=lax (allows session refresh on page reload across dev/prod ports), path-scoped
+- **PASS:** OIDC callback also uses sameSite=lax (required for cross-origin IdP redirect)
 
 ### Admin-action audit (#264)
 
