@@ -1674,9 +1674,15 @@ describe('POST /api/llm/ask', () => {
       expect(response.statusCode).toBe(200);
       expect(mockStreamChatClient).toHaveBeenCalledTimes(1);
       const messages = mockStreamChatClient.mock.calls[0][2] as Array<{ role: string; content: unknown }>;
+      const systemMessage = messages.find((m: { role: string }) => m.role === 'system');
+      expect(systemMessage).toBeDefined();
+      expect(systemMessage?.content).toContain('An image is attached to the user question.');
+
       const userMessage = messages.find((m: { role: string }) => m.role === 'user');
       expect(userMessage).toBeDefined();
       expect(Array.isArray(userMessage.content)).toBe(true);
+      const textPart = (userMessage.content as Array<{ type: string; text: string }>)[0];
+      expect(textPart?.text).toContain('[Attached Image]');
       expect(userMessage.content[1]).toEqual({
         type: 'image_url',
         image_url: { url: 'data:image/png;base64,dGVzdC1pbWFnZQ==' },

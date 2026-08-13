@@ -687,8 +687,13 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
 
     try {
       // Build messages (use resolveSystemPrompt so guardrails are appended)
-      const askPrompt = await resolveSystemPrompt(userId, 'ask');
-      const userTextContent = `Context from knowledge base:\n\n${ragContext}\n\n---\n\nQuestion: ${sanitizedQuestion}`;
+      let askPrompt = await resolveSystemPrompt(userId, 'ask');
+      if (imagePart) {
+        askPrompt += ' An image is attached to the user question. Analyze the attached image and use both the image and any knowledge base context to answer the question.';
+      }
+      const userTextContent = imagePart
+        ? `[Attached Image]\n\nContext from knowledge base:\n\n${ragContext}\n\n---\n\nQuestion: ${sanitizedQuestion}`
+        : `Context from knowledge base:\n\n${ragContext}\n\n---\n\nQuestion: ${sanitizedQuestion}`;
       const userContent: string | ChatContentPart[] = imagePart
         ? [{ type: 'text', text: userTextContent }, imagePart]
         : userTextContent;
