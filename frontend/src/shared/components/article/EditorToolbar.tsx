@@ -61,7 +61,7 @@ const MENU_ITEM =
  * carry small lowercase type.
  */
 const MENU_LABEL =
-  'px-2.5 pb-1 pt-2 text-[12px] font-medium uppercase tracking-wider text-muted-foreground/70';
+  'px-2.5 pb-1 pt-2 text-[12px] font-medium uppercase tracking-wider text-muted-foreground';
 
 /** Trigger shell shared by the two labelled menus, so they cannot drift apart. */
 const menuTriggerClass = (open: boolean) =>
@@ -241,6 +241,7 @@ function InsertMenu({ editor }: { editor: EditorType }) {
     setPending(null);
     setImageUrl('');
     setStatusText('');
+    editor.commands?.focus?.();
   };
 
   const insertImage = () => {
@@ -650,6 +651,86 @@ function ColorPickerDropdown({
   );
 }
 
+function AlignMenuDropdown({ editor }: { editor: EditorType }) {
+  const [open, setOpen] = useState(false);
+  const activeState = useEditorState({
+    editor,
+    selector: ({ editor: e }) => ({
+      alignLeft: e.isActive({ textAlign: 'left' }),
+      alignCenter: e.isActive({ textAlign: 'center' }),
+      alignRight: e.isActive({ textAlign: 'right' }),
+      alignJustify: e.isActive({ textAlign: 'justify' }),
+    }),
+  });
+
+  const CurrentIcon = activeState.alignCenter
+    ? AlignCenter
+    : activeState.alignRight
+      ? AlignRight
+      : activeState.alignJustify
+        ? AlignJustify
+        : AlignLeft;
+
+  const currentLabel = activeState.alignCenter
+    ? 'Align Center'
+    : activeState.alignRight
+      ? 'Align Right'
+      : activeState.alignJustify
+        ? 'Justify'
+        : 'Align Left';
+
+  return (
+    <DropdownMenu.Root open={open} onOpenChange={setOpen}>
+      <DropdownMenu.Trigger asChild>
+        <button
+          type="button"
+          {...{ [TOOLBAR_ITEM_ATTR]: '' }}
+          data-testid="align-menu-trigger"
+          title={`Text alignment: ${currentLabel}`}
+          aria-label={`Text alignment: ${currentLabel}`}
+          className={menuTriggerClass(open)}
+        >
+          <CurrentIcon size={15} className="shrink-0" />
+          <ChevronDown size={13} className="shrink-0 text-muted-foreground" />
+        </button>
+      </DropdownMenu.Trigger>
+
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content align="start" sideOffset={6} className={MENU_CONTENT}>
+          <DropdownMenu.Item
+            onSelect={() => editor.chain().focus().setTextAlign('left').run()}
+            className={cn(MENU_ITEM, activeState.alignLeft && 'bg-foreground/[0.06] font-medium text-foreground')}
+          >
+            <AlignLeft size={15} className="shrink-0" />
+            Align Left
+          </DropdownMenu.Item>
+          <DropdownMenu.Item
+            onSelect={() => editor.chain().focus().setTextAlign('center').run()}
+            className={cn(MENU_ITEM, activeState.alignCenter && 'bg-foreground/[0.06] font-medium text-foreground')}
+          >
+            <AlignCenter size={15} className="shrink-0" />
+            Align Center
+          </DropdownMenu.Item>
+          <DropdownMenu.Item
+            onSelect={() => editor.chain().focus().setTextAlign('right').run()}
+            className={cn(MENU_ITEM, activeState.alignRight && 'bg-foreground/[0.06] font-medium text-foreground')}
+          >
+            <AlignRight size={15} className="shrink-0" />
+            Align Right
+          </DropdownMenu.Item>
+          <DropdownMenu.Item
+            onSelect={() => editor.chain().focus().setTextAlign('justify').run()}
+            className={cn(MENU_ITEM, activeState.alignJustify && 'bg-foreground/[0.06] font-medium text-foreground')}
+          >
+            <AlignJustify size={15} className="shrink-0" />
+            Justify
+          </DropdownMenu.Item>
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
+  );
+}
+
 /* --------------------------------------------------------------- toolbar -- */
 
 export function EditorToolbar({
@@ -676,10 +757,6 @@ export function EditorToolbar({
       code: e.isActive('code'),
       blockquote: e.isActive('blockquote'),
       codeBlock: e.isActive('codeBlock'),
-      alignLeft: e.isActive({ textAlign: 'left' }),
-      alignCenter: e.isActive({ textAlign: 'center' }),
-      alignRight: e.isActive({ textAlign: 'right' }),
-      alignJustify: e.isActive({ textAlign: 'justify' }),
       bulletList: e.isActive('bulletList'),
       orderedList: e.isActive('orderedList'),
       taskList: e.isActive('taskList'),
@@ -751,18 +828,7 @@ export function EditorToolbar({
       <ToolbarSeparator />
 
       <ToolbarGroup name="align">
-        <ToolbarButton onClick={() => editor.chain().focus().setTextAlign('left').run()} active={activeState.alignLeft} title="Align Left">
-          <AlignLeft size={16} />
-        </ToolbarButton>
-        <ToolbarButton onClick={() => editor.chain().focus().setTextAlign('center').run()} active={activeState.alignCenter} title="Align Center">
-          <AlignCenter size={16} />
-        </ToolbarButton>
-        <ToolbarButton onClick={() => editor.chain().focus().setTextAlign('right').run()} active={activeState.alignRight} title="Align Right">
-          <AlignRight size={16} />
-        </ToolbarButton>
-        <ToolbarButton onClick={() => editor.chain().focus().setTextAlign('justify').run()} active={activeState.alignJustify} title="Justify">
-          <AlignJustify size={16} />
-        </ToolbarButton>
+        <AlignMenuDropdown editor={editor} />
       </ToolbarGroup>
 
       <ToolbarSeparator />
@@ -808,7 +874,12 @@ export function EditorToolbar({
 
       <ToolbarGroup name="utilities">
         {onToggleHeaderNumbering && (
-          <ToolbarButton onClick={onToggleHeaderNumbering} active={headerNumbering} title="Toggle Header Numbering">
+          <ToolbarButton
+            onClick={onToggleHeaderNumbering}
+            active={headerNumbering}
+            title={headerNumbering ? 'Header Numbering (On)' : 'Header Numbering (Off)'}
+            label={headerNumbering ? 'Header Numbering (On)' : 'Header Numbering (Off)'}
+          >
             <Hash size={16} />
           </ToolbarButton>
         )}

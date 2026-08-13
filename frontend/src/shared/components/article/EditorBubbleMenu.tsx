@@ -193,6 +193,7 @@ export function BubbleMenuContent({
     clearImproveDecoration(editor);
     setAi(false);
     rangeRef.current = null;
+    editor.commands?.focus?.();
   }, [editor, stream, setAi]);
 
   // Cmd/Ctrl+J expands the AI section on the current selection (#708 optional

@@ -27,7 +27,7 @@ const menuTriggerClass = (open: boolean) =>
 
 function MenuShortcut({ keys }: { keys: string }) {
   return (
-    <span className="ml-auto pl-4 font-mono text-[11px] text-muted-foreground/60">
+    <span className="ml-auto pl-4 font-mono text-[11px] text-muted-foreground">
       {formatKeysForPlatform(keys, isMac())}
     </span>
   );
