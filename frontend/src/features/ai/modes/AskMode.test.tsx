@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { AskModeInput, AskExamplePrompts, ASK_EMPTY_TITLE, ASK_EMPTY_SUBTITLE } from './AskMode';
 import { ASK_FALLBACK_PROMPTS } from './ask-example-prompts';
-import { AiProvider } from '../AiContext';
+import { AiProvider, useAiContext } from '../AiContext';
 import { useAuthStore } from '../../../stores/auth-store';
 
 Element.prototype.scrollIntoView = vi.fn();
@@ -639,6 +639,213 @@ describe('AskMode', () => {
 
     await waitFor(() => {
       expect(input.value).toBe('');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Deep search (#1119 / #1112)
+  // -------------------------------------------------------------------------
+  //
+  // The constraint under test is not cosmetic. Measured on the #1102 fixture,
+  // multi-query expansion is a win on the vocabulary-gap slice (R@1 .182 ->
+  // .424) and a REGRESSION on ordinary queries (R@5 .921 -> .866, McNemar exact
+  // p = 0.0225) at +2.4 s/query. It is only net-positive while it is chosen per
+  // question, so "the toggle resets" IS the feature, and these are its guard.
+  describe('deep search is per-question and never sticky', () => {
+    /** A model must resolve or the send button stays disabled. */
+    function withModel() {
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.resolve([{ name: 'llama3' }]);
+        }
+        if (path === '/llm/conversations') {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve([]);
+      });
+      streamSSEMock.mockImplementation(async function* fakeStream() {
+        yield { content: 'Answer' };
+      });
+    }
+
+    /** Sends `question` and returns the request body that reached streamSSE. */
+    async function askOnce(question: string) {
+      const input = screen.getByPlaceholderText('Ask a question...');
+      fireEvent.change(input, { target: { value: question } });
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /send message/i })).not.toBeDisabled();
+      });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => {
+        expect(streamSSEMock).toHaveBeenCalledWith(
+          '/llm/ask',
+          expect.objectContaining({ question }),
+          expect.any(Object),
+        );
+      });
+      return streamSSEMock.mock.calls.find(
+        (c) => (c[1] as { question?: string }).question === question,
+      )![1] as Record<string, unknown>;
+    }
+
+    /**
+     * Stands in for the conversation sidebar, which lives in `AiAssistantPage`
+     * and is not rendered here. What matters is the shape it produces: the
+     * thread underneath changes while the composer stays mounted, so no
+     * unmount tidies the toggle away.
+     */
+    function ConversationSwitcher() {
+      const { setConversationId } = useAiContext();
+      return <button onClick={() => setConversationId('conv-2')}>switch</button>;
+    }
+
+    it('defaults to off and omits the flag entirely — an untouched composer sends the body it always sent', async () => {
+      withModel();
+      render(<AskModeInput />, { wrapper: createWrapper() });
+
+      expect(screen.getByTestId('ask-deep-search')).not.toBeChecked();
+      const body = await askOnce('where is the runbook?');
+      expect(body).not.toHaveProperty('deepSearch');
+    });
+
+    it('sends deepSearch: true for the question it was switched on for', async () => {
+      withModel();
+      render(<AskModeInput />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByTestId('ask-deep-search'));
+      expect(screen.getByTestId('ask-deep-search')).toBeChecked();
+
+      const body = await askOnce('what governs the retention window?');
+      expect(body.deepSearch).toBe(true);
+    });
+
+    // NON-STICKINESS TEST 1 — it must not survive a SEND.
+    it('switches itself off at submit, and the NEXT question carries no flag', async () => {
+      withModel();
+      render(<AskModeInput />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByTestId('ask-deep-search'));
+      const first = await askOnce('what governs the retention window?');
+      expect(first.deepSearch).toBe(true);
+
+      // The control is back to resting, so the user can see the mode ended.
+      await waitFor(() => {
+        expect(screen.getByTestId('ask-deep-search')).not.toBeChecked();
+      });
+
+      // The part that actually matters: the wire body of the next, ordinary
+      // question. A toggle that merely *renders* unchecked while still sending
+      // the flag would be the same measured regression with a nicer face on it.
+      const second = await askOnce('who owns the deploy runbook?');
+      expect(second).not.toHaveProperty('deepSearch');
+    });
+
+    // NON-STICKINESS TEST 2 — it must not survive a REMOUNT.
+    it('is off again after a remount — nothing is read back out of storage', async () => {
+      withModel();
+      const { unmount } = render(<AskModeInput />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByTestId('ask-deep-search'));
+      expect(screen.getByTestId('ask-deep-search')).toBeChecked();
+
+      unmount();
+      render(<AskModeInput />, { wrapper: createWrapper() });
+
+      // A remount is the cheapest thing that separates component state from
+      // every persisted home this could have been given — localStorage, a
+      // Zustand slice, a `?deep=1` search param, an `AiThread` field. All four
+      // survive it; `useState` in the composer does not.
+      expect(screen.getByTestId('ask-deep-search')).not.toBeChecked();
+    });
+
+    it('writes nothing to storage when toggled', () => {
+      withModel();
+      render(<AskModeInput />, { wrapper: createWrapper() });
+      // Spy on the instances, not on `Storage.prototype`: test-setup.ts
+      // replaces window.localStorage with a plain object when jsdom's is not
+      // functional, and a prototype spy silently misses that one — a green
+      // assertion against an object it never patched.
+      const local = vi.spyOn(window.localStorage, 'setItem');
+      const session = vi.spyOn(window.sessionStorage, 'setItem');
+
+      fireEvent.click(screen.getByTestId('ask-deep-search'));
+
+      expect(local).not.toHaveBeenCalled();
+      expect(session).not.toHaveBeenCalled();
+    });
+
+    it('names the cost and the lifetime rather than selling the feature', () => {
+      withModel();
+      render(<AskModeInput />, { wrapper: createWrapper() });
+
+      const hint = screen.getByTestId('ask-deep-search').closest('label')!.getAttribute('title')!;
+      // Slower, honest that it is sometimes worse, and explicitly one-shot.
+      expect(hint).toMatch(/seconds/i);
+      expect(hint).toMatch(/worse/i);
+      expect(hint).toMatch(/this question only/i);
+      // And the measurement is not rounded in the feature's favour: the delta
+      // is 2.36 s (1.40 -> 3.76), so "roughly 2 seconds" undersold it.
+      expect(hint).not.toMatch(/roughly 2 seconds/i);
+      expect(hint).toMatch(/2\.4 seconds/);
+    });
+
+    // The whole reason this ships opt-in is that it is measurably WORSE on
+    // ordinary questions. A caveat that lives only in `title` is unreachable by
+    // touch, by keyboard and by a screen reader — and the text that WAS visible
+    // ("Slower; this question only.") reads as slower-but-better, the inverse of
+    // the measurement. So the downside is on screen, at rest, and wired to the
+    // control as its description.
+    it('shows the downside without hover, before the toggle is switched on', () => {
+      withModel();
+      render(<AskModeInput />, { wrapper: createWrapper() });
+
+      const toggle = screen.getByTestId('ask-deep-search');
+      expect(toggle).not.toBeChecked();
+
+      const caveat = screen.getByTestId('ask-deep-search-caveat');
+      expect(caveat).toBeVisible();
+      // The two halves of an honest description: what it is for, and what it
+      // costs you when it is not.
+      expect(caveat).toHaveTextContent(/normal search missed/i);
+      expect(caveat).toHaveTextContent(/worse on straightforward questions/i);
+      expect(caveat).toHaveTextContent(/2\.4 seconds slower/i);
+      expect(caveat).toHaveTextContent(/this question only/i);
+    });
+
+    it('describes the control with that text rather than leaving it decorative', () => {
+      withModel();
+      render(<AskModeInput />, { wrapper: createWrapper() });
+
+      const describedBy = screen.getByTestId('ask-deep-search').getAttribute('aria-describedby');
+      expect(describedBy).toBeTruthy();
+      // Not just "an id is present": it has to resolve to the element carrying
+      // the caveat, or the reference is dangling and announces nothing.
+      expect(document.getElementById(describedBy!))
+        .toBe(screen.getByTestId('ask-deep-search-caveat'));
+    });
+
+    // #1119 review: the sidebar swaps the thread under a mounted composer, so
+    // this boundary is not covered by the remount test above.
+    it('clears an unconsumed toggle when the conversation changes', async () => {
+      withModel();
+      render(
+        <>
+          <ConversationSwitcher />
+          <AskModeInput />
+        </>,
+        { wrapper: createWrapper() },
+      );
+
+      fireEvent.click(screen.getByTestId('ask-deep-search'));
+      expect(screen.getByTestId('ask-deep-search')).toBeChecked();
+
+      fireEvent.click(screen.getByText('switch'));
+      await waitFor(() => {
+        expect(screen.getByTestId('ask-deep-search')).not.toBeChecked();
+      });
     });
   });
 });

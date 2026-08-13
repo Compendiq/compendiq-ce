@@ -38,6 +38,41 @@ export interface DockActionOptions {
    * has to ask for it — see the 410 branch below for the rest of the undo.
    */
   onImageExpired?: () => void;
+  /**
+   * #1119: run this one question through #1112's multi-query expansion.
+   *
+   * Passed in from the panel's own `useState` rather than read from AiContext,
+   * for the same reason the attachments are: it belongs to the question being
+   * typed, not to the conversation — and AiContext is where every sticky option
+   * in this app lives (`thinkingMode` writes localStorage, `includeSubPages`
+   * survives every ask), so putting it there is how it would become one.
+   *
+   * Only `ask()` sends it. The four chips are app-authored jobs over the open
+   * document, not knowledge-base questions the user phrased, so there is no
+   * vocabulary gap for expansion to close — and `improve` / `summarize` /
+   * `diagram` do not post to `/llm/ask` at all.
+   */
+  deepSearch?: boolean;
+  /**
+   * Called once the deep-search flag has been spent, so the panel can clear its
+   * toggle. Both run paths call it, for two different reasons.
+   *
+   * `ask()` CONSUMES it: the flag is folded into the request body first. The
+   * reset lives inside `ask()`, beside `setInput('')` and after the guards,
+   * rather than at the two call sites — `ask()` returns early on an empty
+   * prompt (Enter on an empty composer reaches it), so a reset at the call site
+   * would silently discard the user's choice without sending anything, and a
+   * reset placed after the `await` would be skipped on abort and on error,
+   * leaving the toggle lit for the next question.
+   *
+   * `runChip()` CANNOT consume it — none of the four routes it posts to takes
+   * the flag — so it CLEARS it instead. Leaving it lit through a run that
+   * ignores it is the one option ruled out: the control would then be showing a
+   * mode the request it just started is not in. Placed after the same guards
+   * for the same reason, so a chip press that only toasts "No page open." keeps
+   * the choice.
+   */
+  onDeepSearchConsumed?: () => void;
 }
 
 /**
@@ -51,6 +86,7 @@ export interface DockActionOptions {
  */
 export function useDockActions({
   referenceText, imageHandle, isBusy = false, onImageExpired,
+  deepSearch = false, onDeepSearchConsumed,
 }: DockActionOptions = {}) {
   const {
     page, pageId, model, includeSubPages, thinkingMode, isStreaming, conversationId,
@@ -73,7 +109,12 @@ export function useDockActions({
     const question = input.trim();
     if (!question || !canRun()) return;
 
+    // Captured before the reset and before the await, exactly as `/ai`'s
+    // AskMode does it — see `onDeepSearchConsumed` for why neither the call
+    // site nor a post-await reset is a safe home for this.
+    const useDeepSearch = deepSearch;
     setInput('');
+    onDeepSearchConsumed?.();
     setMessages((prev) => [...prev, { id: nextMessageId(), role: 'user', content: question }]);
 
     await runStream('/llm/ask', {
@@ -83,10 +124,13 @@ export function useDockActions({
       pageId: pageId ?? undefined,
       includeSubPages,
       ...(thinkingMode && { thinking: true }),
+      // Omitted when off, like `thinking` — an untouched toggle sends the body
+      // this composer has always sent.
+      ...(useDeepSearch && { deepSearch: true }),
     });
   }, [
     input, canRun, setInput, setMessages, runStream, model, conversationId, pageId,
-    includeSubPages, thinkingMode,
+    includeSubPages, thinkingMode, deepSearch, onDeepSearchConsumed,
   ]);
 
   const runChip = useCallback(async (id: DockChipId) => {
@@ -95,6 +139,13 @@ export function useDockActions({
       return;
     }
     if (!canRun()) return;
+
+    // A chip run is a run: the toggle describes the next request, and this is
+    // it. None of the four routes below accepts `deepSearch`, so the flag is
+    // dropped here rather than carried silently past a request that ignores it
+    // — see `onDeepSearchConsumed`. Past the guards above, so a chip that
+    // refuses to run keeps the user's choice intact.
+    onDeepSearchConsumed?.();
 
     const instruction = input.trim();
     const userMessage = chipUserMessage(id, { improvementType, diagramType, instruction });
@@ -205,7 +256,8 @@ export function useDockActions({
     }
   }, [
     page, pageId, canRun, input, improvementType, diagramType, thinkingMode, model,
-    includeSubPages, referenceText, imageHandle, isBusy, onImageExpired, runStream, setInput,
+    includeSubPages, referenceText, imageHandle, isBusy, onImageExpired, onDeepSearchConsumed,
+    runStream, setInput,
     setShowDiffView, setImprovedContent, setOriginalMarkdown, setLayoutTokensLost,
     setDiffBaseVersion, setDiagramCode,
   ]);

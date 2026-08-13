@@ -284,4 +284,234 @@ describe('AiDock (#1126)', () => {
     });
     expect(composer()).toBeDisabled();
   });
+
+  // -------------------------------------------------------------------------
+  // Deep search (#1119 / #1112)
+  // -------------------------------------------------------------------------
+  //
+  // The dock posts to the same `/llm/ask` as `/ai`, so a toggle implemented in
+  // only one of them degrades silently in the other. The non-stickiness
+  // constraint is the same one, for the same measured reason: expansion is a
+  // regression on ordinary queries (R@5 .921 -> .866, McNemar p = 0.0225), so
+  // it is safe only per-question.
+  describe('deep search', () => {
+    async function askDock(question: string) {
+      fireEvent.change(composer(), { target: { value: question } });
+      fireEvent.keyDown(composer(), { key: 'Enter' });
+      await waitFor(() => {
+        expect(streamSSEMock).toHaveBeenCalledWith(
+          '/llm/ask',
+          expect.objectContaining({ question }),
+          expect.anything(),
+        );
+      });
+      return streamSSEMock.mock.calls.find(
+        (c) => (c[1] as { question?: string }).question === question,
+      )![1] as Record<string, unknown>;
+    }
+
+    it('is off by default and adds nothing to the request', async () => {
+      renderDock();
+      await openAndSettle();
+
+      expect(screen.getByTestId('ai-dock-deep-search')).not.toBeChecked();
+      expect(await askDock('where is the PAT setting?')).not.toHaveProperty('deepSearch');
+    });
+
+    // NON-STICKINESS TEST 1 — must not survive a SEND.
+    it('sends the flag once, then resets — the next question goes without it', async () => {
+      renderDock();
+      await openAndSettle();
+
+      fireEvent.click(screen.getByTestId('ai-dock-deep-search'));
+      expect((await askDock('what governs the retention window?')).deepSearch).toBe(true);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('ai-dock-deep-search')).not.toBeChecked();
+      });
+      expect(await askDock('who owns this page?')).not.toHaveProperty('deepSearch');
+    });
+
+    // Enter on an empty composer reaches `ask()`, which returns early. The
+    // reset lives *inside* `ask()` past that guard precisely so a keypress
+    // that sends nothing cannot throw the user's choice away.
+    it('survives a keypress that sends nothing', async () => {
+      renderDock();
+      await openAndSettle();
+
+      fireEvent.click(screen.getByTestId('ai-dock-deep-search'));
+      fireEvent.change(composer(), { target: { value: '   ' } });
+      fireEvent.keyDown(composer(), { key: 'Enter' });
+
+      expect(streamSSEMock).not.toHaveBeenCalled();
+      expect(screen.getByTestId('ai-dock-deep-search')).toBeChecked();
+    });
+
+    // The four chips post to /llm/improve, /llm/summarize, /llm/generate-diagram
+    // and /llm/analyze-quality; none of them takes the flag. So a chip run drops
+    // it rather than leaving a lit control describing a mode the request it just
+    // started is not in.
+    it('is dropped by a chip run rather than left lit and ignored', async () => {
+      renderDock();
+      await openAndSettle();
+
+      fireEvent.click(screen.getByTestId('ai-dock-deep-search'));
+      expect(screen.getByTestId('ai-dock-deep-search')).toBeChecked();
+
+      fireEvent.click(screen.getByTestId('ai-dock-chip-summarize'));
+      await waitFor(() => {
+        expect(streamSSEMock).toHaveBeenCalledWith(
+          '/llm/summarize', expect.anything(), expect.anything(),
+        );
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('ai-dock-deep-search')).not.toBeChecked();
+      });
+      // And it never rode along on the request it was lit for.
+      expect(streamSSEMock.mock.calls[0]![1]).not.toHaveProperty('deepSearch');
+    });
+
+    // NON-STICKINESS TEST 2 — must not survive a REMOUNT, and must not be
+    // written down anywhere on the way.
+    //
+    // The two halves are here deliberately. The remount assertion alone is a
+    // weak discriminator IN THE DOCK: the page-boundary effect clears the flag
+    // on mount as well, so it would go green over a persisted implementation
+    // and certify nothing. The storage spies are what actually fail when the
+    // flag is given a home that outlives the panel. Spy on the instances, not
+    // on `Storage.prototype` — test-setup.ts swaps in a plain object when
+    // jsdom's Storage is not functional, and a prototype spy never sees it.
+    it('is off again after a remount, and was never written to storage', async () => {
+      const local = vi.spyOn(window.localStorage, 'setItem');
+      const session = vi.spyOn(window.sessionStorage, 'setItem');
+      const { unmount } = renderDock();
+      await openAndSettle();
+
+      fireEvent.click(screen.getByTestId('ai-dock-deep-search'));
+      expect(screen.getByTestId('ai-dock-deep-search')).toBeChecked();
+      expect(local).not.toHaveBeenCalled();
+      expect(session).not.toHaveBeenCalled();
+
+      unmount();
+      renderDock();
+      await openAndSettle();
+
+      // The dock's own store is the tempting home for this and is explicitly
+      // ruled out: it is ephemeral today, but a store is the thing later work
+      // persists. Component state cannot be persisted by someone else's
+      // decision.
+      expect(screen.getByTestId('ai-dock-deep-search')).not.toBeChecked();
+      expect(local).not.toHaveBeenCalled();
+      expect(session).not.toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Low-confidence refusal (#1119 / #1105)
+  // -------------------------------------------------------------------------
+  describe('low-confidence refusal', () => {
+    /** Exactly the frames `sendCachedSSE` writes on the #1105 refusal path. */
+    function refusalStream() {
+      streamSSEMock.mockImplementation(() => sse(
+        {
+          content: 'The knowledge-base passages I found are not a strong enough match to this'
+            + ' question to ground an answer, so I am not answering rather than guessing.'
+            + ' The closest partial matches are attached as sources for reference —'
+            + ' none matched well enough to use.',
+          done: true,
+        },
+        {
+          refused: true,
+          confidence: 0.21,
+          confidenceBasis: 'similarity',
+          conversationId: 'conv-1',
+          // The wire shape, not an approximation of it: `Source` is
+          // {pageTitle, pageId: number, score, similarity} — the same fixture
+          // `/ai`'s refusal suite uses. A hand-rolled {pageId: 'p9', title}
+          // renders an empty chip in every implementation, so it could not tell
+          // a renderer that reads `pageTitle` from one that reads nothing.
+          sources: [{ pageTitle: 'Vaguely related page', pageId: 9, score: 0.01, similarity: 0.21 }],
+          done: true,
+          final: true,
+        },
+      ));
+    }
+
+    async function askAndRefuse() {
+      refusalStream();
+      renderDock();
+      await openAndSettle();
+      fireEvent.change(composer(), { target: { value: 'what is our policy on X?' } });
+      fireEvent.keyDown(composer(), { key: 'Enter' });
+      return screen.findByTestId('message-refusal');
+    }
+
+    it('renders as its own state — not an error, not an empty bubble', async () => {
+      const refusal = await askAndRefuse();
+
+      expect(refusal).toHaveTextContent('not answering rather than guessing');
+      // Not the destructive path: nothing failed.
+      expect(screen.queryByTestId('message-error')).not.toBeInTheDocument();
+      // And the state is named, not left to the prose.
+      expect(screen.getByTestId('refusal-mark')).toHaveTextContent('Not answered');
+    });
+
+    it('labels the weak sources instead of passing them off as citations', async () => {
+      await askAndRefuse();
+
+      expect(screen.getByTestId('refusal-sources-label')).toHaveTextContent(/closest matches/i);
+      // The chip is a real one built from the wire fields, so the heading is
+      // labelling something a user can actually see and follow.
+      expect(screen.getByTestId('citation-chip-1')).toHaveAttribute('title', 'Vaguely related page');
+    });
+
+    // The announcer is the whole reason this state exists for a screen-reader
+    // user: the visible treatment — neutral chip, hairline, no badge — is
+    // invisible to them, so "Answer ready" would be the *only* thing they were
+    // told about a turn that carries no answer. `/ai` fixed this and the dock
+    // did not, which is how the same bug shipped twice; there was no dock test
+    // to notice. Two directions, so it discriminates: an ordinary answer must
+    // still say "Answer ready".
+    it('announces an ordinary answer as an answer', async () => {
+      renderDock();
+      await openAndSettle();
+      fireEvent.change(composer(), { target: { value: 'where is the PAT setting?' } });
+      fireEvent.keyDown(composer(), { key: 'Enter' });
+
+      const announcer = screen.getByTestId('ai-dock-answer-announcer');
+      await waitFor(() => {
+        expect(announcer).toHaveTextContent('Answer ready');
+      });
+    });
+
+    it('does not announce a refusal as an answer', async () => {
+      await askAndRefuse();
+
+      const announcer = screen.getByTestId('ai-dock-answer-announcer');
+      await waitFor(() => {
+        expect(announcer.textContent).not.toBe('');
+      });
+      expect(announcer).not.toHaveTextContent('Answer ready');
+      expect(announcer).toHaveTextContent(/no answer/i);
+      // Polite, not assertive. The request succeeded and the server declined to
+      // guess; that is a correct outcome, not one worth interrupting for.
+      expect(screen.getByTestId('ai-dock-error-announcer').textContent).toBe('');
+    });
+
+    it('wears no warning or destructive colour — a refusal is a verdict, not a fault', async () => {
+      const refusal = await askAndRefuse();
+
+      const classes = [refusal, screen.getByTestId('refusal-mark')]
+        .map((el) => el.className)
+        .join(' ');
+      // ADR-010: amber is reserved for warning/attention, and this recurs on
+      // every uncovered question — a permanent amber teaches users to ignore
+      // amber. Destructive belongs to the error path.
+      expect(classes).not.toMatch(/warning|amber/);
+      expect(classes).not.toMatch(/destructive/);
+      // Nor does it borrow a reserved status hue for what is a measurement.
+      expect(classes).not.toMatch(/status-(connected|disconnected|syncing|embedding|ai)/);
+    });
+  });
 });

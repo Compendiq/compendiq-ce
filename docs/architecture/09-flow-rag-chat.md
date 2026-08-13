@@ -368,6 +368,38 @@ every ask.** Not a persisted preference, not a remembered mode, not a
 conversation-level setting. A sticky toggle turns a per-question opt-in into
 exactly the arm the "everything else" row measures.
 
+Shipped as `frontend/src/features/ai/DeepSearchToggle.tsx`, rendered above the
+prompt on **both** surfaces that post `/llm/ask` — `/ai`'s `AskModeInput` and
+the docked assistant's `DockPanel`. The constraint is enforced by where the
+state lives rather than by discipline: plain `useState` in each composer, read
+into the request body and cleared at submit beside `setInput('')`, before the
+`await`. Every alternative home was rejected for surviving something it must
+not — `AiContext` (`thinkingMode` writes localStorage, `includeSubPages`
+survives every ask), `AiThread` (12 retained threads, so per-conversation
+sticky), `ai-dock-store` (ephemeral today, but a store is what later work
+persists), a `?deep=1` search param (survives reload). The reset sits *inside*
+the submit handler past its guards, so Enter on an empty composer cannot
+discard the choice and an abort or an error cannot leave the toggle lit. Two
+further boundaries clear it, both found in review: a **chip run** in the dock
+(Improve / Summarize / Diagram / Quality post to routes that do not take the
+flag, so leaving it lit would show a mode the request is not in), and a
+**conversation switch** on `/ai` (the sidebar swaps the thread under a composer
+that stays mounted, which no remount tidies up).
+
+The copy is the other half of the constraint, and it is deliberately
+unflattering. The caveat is **visible at rest and wired to the control via
+`aria-describedby`** — it used to live in a `title` plus a "Slower; this
+question only." line that appeared only *after* the toggle was switched on,
+which put the one fact a user needs before deciding behind hover, out of reach
+of touch, keyboard and screen readers, and read as slower-BUT-better: the
+inverse of the measurement. The visible line names both directions ("Helps when
+normal search missed it; slightly worse on straightforward questions") and
+quotes the cost as **about 2.4 seconds**, not "roughly 2" — the delta is 2.36
+(1.40 → 3.76 s/query) and rounding it down flatters the feature.
+`AskMode.test.tsx` and `AiDock.test.tsx` each fail if the flag survives a send,
+a remount, a chip run or a conversation switch, on any storage write, and if
+the caveat stops being visible or stops describing the control.
+
 ## Quality / recency ranking prior (#1111)
 
 A quality worker already computes `pages.quality_score`, and every page
@@ -729,6 +761,23 @@ per-set sigmoid makes its scale only loosely comparable across requests,
 logged when it engages), which is why the thresholds are operator knobs
 with no universal constant and why `tieredMinScoreForCorpus`'s hardcoded
 tiers were deliberately not ported.
+
+**The refusal as a UI state (#1119).** `Message.isRefusal` is set from that
+final frame in `runStream`, and from the stored `refused` marker in
+`loadConversation` — without the second, reopening a thread downgrades the
+refusal to an ordinary answer. Both chat renderers key on it (`/ai`'s
+`MessageBubble` and the dock's `DockMessage`; implementing it in one only
+degrades silently in the other): the ordinary bubble ground plus a 1px
+hairline and a neutral `Not answered` chip, the backend's sentence rendered as
+plain text rather than Markdown, the weak sources under a `Closest matches —
+not used` heading, and **no `ConfidenceBadge`** — it would grade an answer that
+does not exist. `/ai`'s polite live region announces the refusal instead of
+"Answer ready", and stays polite: a correct response is not worth interrupting
+for. It is deliberately neither amber (ADR-010 reserves that for
+warning/attention, and a state that recurs on every uncovered question would
+teach users to ignore it — `/ai` already spends its amber on the
+zero-embeddings notice above the thread) nor destructive (that is the error
+path; nothing failed here).
 
 ## Retrieval observability (#1117 stage 2)
 

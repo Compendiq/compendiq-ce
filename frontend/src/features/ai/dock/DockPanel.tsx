@@ -15,6 +15,8 @@ import {
   DEFAULT_IMPROVEMENT_TYPE, IMPROVEMENT_DESCRIPTIONS, IMPROVEMENT_TYPES, type ImprovementType,
 } from '../improvement-types';
 import { cn } from '../../../shared/lib/cn';
+import { DeepSearchToggle } from '../DeepSearchToggle';
+import { RefusalMark, RefusalSourcesLabel, REFUSAL_ANNOUNCEMENT } from '../refusal';
 import { DOCK_CHIPS, improveChipHint } from './dock-chips';
 import { DockDiffCard } from './DockDiffCard';
 import { useDockActions } from './use-dock-actions';
@@ -109,11 +111,29 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
     isExtracting, isPreparing, isBusy,
   } = attachments;
 
+  /**
+   * #1112's multi-query expansion, opted into for ONE question (#1119).
+   *
+   * Panel-local `useState`, next to the attachments and for the same reason:
+   * it is state of the next request, not of the conversation. Two stores were
+   * available and both are wrong. `AiContext` is where the sticky options live
+   * (`thinkingMode` is written to localStorage, `includeSubPages` survives every
+   * ask and every page change), and `AiThread` retains 12 threads' `input`, so
+   * a field there would make the toggle per-conversation sticky. Even
+   * `ai-dock-store` — deliberately ephemeral already — is off limits: a store
+   * is a thing later work persists, and this flag must not become persistable
+   * by accident. `ask()` clears it at submit; a remount clears it too.
+   */
+  const [deepSearch, setDeepSearch] = useState(false);
+  const clearDeepSearch = useCallback(() => setDeepSearch(false), []);
+
   const { ask, runChip } = useDockActions({
     referenceText: reference?.result.text,
     imageHandle: image?.handle,
     isBusy,
     onImageExpired: removeImage,
+    deepSearch,
+    onDeepSearchConsumed: clearDeepSearch,
   });
 
   // A document or image attached while reading one page is not background for
@@ -122,7 +142,11 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
   // #1126 set out to remove, so both slots are dropped at the boundary instead.
   useEffect(() => {
     clearAll();
-  }, [pageId, clearAll]);
+    // Same boundary, same argument: the toggle describes the question you were
+    // about to ask about the page you were reading. Carrying it to the next
+    // document would be the quiet stickiness this feature must not have.
+    clearDeepSearch();
+  }, [pageId, clearAll, clearDeepSearch]);
 
   const handlePick = useCallback((file: File) => {
     void pickFile(file);
@@ -246,7 +270,19 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
         {(() => {
           if (isStreaming) return null;
           const lastAnswer = [...messages].reverse().find((m2) => m2.role === 'assistant' && !m2.isError && m2.content);
-          return lastAnswer ? <span key={lastAnswer.id}>Answer ready</span> : null;
+          if (!lastAnswer) return null;
+          // The same verdict `/ai`'s announcer reaches, and it has to be
+          // reached twice because there are two renderers (#1119). A refusal
+          // is the one turn this region must not call an answer: the server
+          // ran no completion, so "Answer ready" tells a screen-reader user to
+          // go and read something that is not there. It is not an error
+          // either, so it stays polite rather than being routed into the alert
+          // region above — a correct response is not worth interrupting for.
+          return (
+            <span key={lastAnswer.id}>
+              {lastAnswer.isRefusal ? REFUSAL_ANNOUNCEMENT : 'Answer ready'}
+            </span>
+          );
         })()}
       </div>
 
@@ -425,6 +461,19 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
             Both attachments will be sent to Improve — a small model may not fit them.
           </p>
         )}
+
+        {/* Per-question retrieval option, in the same slot as `/ai`'s so the
+            two Ask composers read the same way. Above the box rather than in
+            it: the attachments inside are Improve's material, this is Send's,
+            and the chip row above belongs to the four actions — a toggle among
+            four buttons reads as a fifth button. */}
+        <DeepSearchToggle
+          checked={deepSearch}
+          onChange={setDeepSearch}
+          disabled={isStreaming}
+          testId="ai-dock-deep-search"
+          className="mb-2"
+        />
 
         {/* flex-wrap so each zone's row — its card or drop hint plus its own
             trigger — stacks above the prompt inside the same box. An attachment
@@ -684,11 +733,28 @@ function DockMessage({ msg, isLast, isStreaming, isThinking, thinkingElapsed, st
           >
             {msg.content}
           </p>
+        ) : msg.isRefusal ? (
+          // The #1105 refusal (#1119). Neutral: it is a verdict, not a fault
+          // and not a warning — the colour argument is in `refusal.tsx`. Depth
+          // is a value step plus a hairline, which is the whole treatment.
+          // Plain text, not StreamingMessage: the backend writes one prose
+          // sentence with no Markdown in it, and a refusal is the last place to
+          // risk a renderer inventing structure.
+          <div
+            className="rounded-lg border border-border bg-foreground/5 px-2.5 py-2"
+            data-testid="message-refusal"
+          >
+            <RefusalMark />
+            <p className="mt-1.5 whitespace-pre-wrap text-sm text-foreground">{msg.content}</p>
+          </div>
         ) : (
           content && <StreamingMessage content={content} isStreaming={isStreamingThis} />
         )}
         {msg.sources && msg.sources.length > 0 && (
-          <div className="mt-2">
+          <div className="mt-2 space-y-1">
+            {/* Named on a refusal, bare on an answer. Unlabelled chips under
+                "I am not answering" read as the sources it answered from. */}
+            {msg.isRefusal && <RefusalSourcesLabel />}
             <CitationChips sources={msg.sources} />
           </div>
         )}

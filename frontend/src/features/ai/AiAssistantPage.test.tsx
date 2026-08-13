@@ -2305,4 +2305,168 @@ describe('AiAssistantPage', () => {
     });
   });
 
+  // -------------------------------------------------------------------------
+  // Low-confidence refusal (#1105, surfaced by #1119)
+  // -------------------------------------------------------------------------
+  //
+  // When retrieval scores below the operator's threshold the backend runs NO
+  // chat completion and returns an honest refusal turn plus the weak sources it
+  // found, marked `refused: true` on the final SSE frame. Before #1119 the
+  // frontend did not read that flag, so the turn rendered as an ordinary
+  // Markdown answer with a "Low confidence" badge stapled to sources the server
+  // had explicitly declined to use.
+  describe('low-confidence refusal', () => {
+    const REFUSAL_TEXT =
+      'The knowledge-base passages I found are not a strong enough match to this question'
+      + ' to ground an answer, so I am not answering rather than guessing.'
+      + ' The closest partial matches are attached as sources for reference —'
+      + ' none matched well enough to use.';
+
+    /** The exact two frames `sendCachedSSE` writes on the refusal path. */
+    function refusalFrames() {
+      return (async function* () {
+        yield { content: REFUSAL_TEXT, done: true };
+        yield {
+          refused: true,
+          confidence: 0.19,
+          confidenceBasis: 'similarity',
+          conversationId: 'conv-refused',
+          // Weak, but measurable — chosen so a surface that still rated them
+          // would render "Low confidence" rather than nothing.
+          sources: [{ pageTitle: 'Tangentially related', pageId: 9, score: 0.01, similarity: 0.19 }],
+          done: true,
+          final: true,
+        };
+      })();
+    }
+
+    async function askAndRefuse() {
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) return Promise.resolve([{ name: 'llama3' }]);
+        if (path === '/llm/conversations') return Promise.resolve([]);
+        return Promise.resolve([]);
+      });
+      streamSSEMock.mockImplementation(() => refusalFrames());
+
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+      await waitFor(() => {
+        expect(screen.queryByText('Loading models...')).not.toBeInTheDocument();
+      });
+      const input = screen.getByPlaceholderText('Ask a question...');
+      fireEvent.change(input, { target: { value: 'what is our policy on X?' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      return screen.findByTestId('message-refusal');
+    }
+
+    it('renders a distinct state — not an error bubble and not an empty answer', async () => {
+      const refusal = await askAndRefuse();
+
+      expect(refusal).toHaveTextContent('not answering rather than guessing');
+      expect(screen.getByTestId('refusal-mark')).toHaveTextContent('Not answered');
+      // The request succeeded; the server declined to guess. Painting that red
+      // would tell the user to retry something that is working correctly.
+      expect(screen.queryByTestId('message-error')).not.toBeInTheDocument();
+      expect(toastErrorMock).not.toHaveBeenCalled();
+    });
+
+    it('shows the weak sources, under a heading that says they were not used', async () => {
+      await askAndRefuse();
+
+      expect(screen.getByTestId('refusal-sources-label')).toHaveTextContent(/closest matches/i);
+    });
+
+    it('rates nothing: no confidence badge on a turn that carries no answer', async () => {
+      await askAndRefuse();
+
+      // similarity 0.19 would render "Low confidence" on an ordinary answer —
+      // the value is picked so the two implementations disagree. A grade beside
+      // a refusal reads as a weak answer rather than none.
+      expect(screen.queryByTestId('confidence-badge')).not.toBeInTheDocument();
+    });
+
+    it('does not announce a refusal as an answer', async () => {
+      await askAndRefuse();
+
+      const announcer = screen.getByTestId('ai-answer-announcer');
+      await waitFor(() => {
+        expect(announcer.textContent).not.toBe('');
+      });
+      expect(announcer).not.toHaveTextContent('Answer ready');
+      expect(announcer).toHaveTextContent(/no answer/i);
+      // It stays polite. A correct response is not worth interrupting for, so
+      // it must not be routed into the assertive error region either.
+      expect(screen.getByTestId('ai-error-announcer').textContent).toBe('');
+    });
+
+    it('carries no warning or destructive colour', async () => {
+      const refusal = await askAndRefuse();
+
+      const classes = [refusal, screen.getByTestId('refusal-mark')]
+        .map((el) => el.className)
+        .join(' ');
+      // ADR-010: amber is warning/attention only, and `/ai` already spends its
+      // amber on the corpus-wide zero-embeddings notice that sits directly
+      // above this turn on the instances most likely to refuse. Two ambers on
+      // one screen, one of them recurring, is how the reserved colour stops
+      // meaning anything.
+      expect(classes).not.toMatch(/warning|amber/);
+      expect(classes).not.toMatch(/destructive/);
+      expect(classes).not.toMatch(/status-(connected|disconnected|syncing|embedding|ai)/);
+    });
+
+    it('survives a reload of the conversation', async () => {
+      // The gap #1119 found beyond the issue text: the route returns the
+      // messages JSONB verbatim, `refused` and all, but loadConversation used
+      // to map only {role, content, sources} — so reopening a thread silently
+      // downgraded the refusal to an ordinary answer. The persisted copy also
+      // has no sources and drops the "closest matches attached" sentence, so
+      // the reloaded turn must not claim any.
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) return Promise.resolve([{ name: 'llama3' }]);
+        if (path === '/llm/conversations') return Promise.resolve([]);
+        if (path === '/llm/conversations/conv-refused') {
+          return Promise.resolve({
+            id: 'conv-refused',
+            model: 'llama3',
+            messages: [
+              { role: 'user', content: 'what is our policy on X?' },
+              {
+                role: 'assistant',
+                content: 'The knowledge-base passages I found are not a strong enough match'
+                  + ' to this question to ground an answer, so I am not answering rather'
+                  + ' than guessing.',
+                refused: true,
+              },
+            ],
+          });
+        }
+        return Promise.resolve([]);
+      });
+
+      function ThreadReloader() {
+        const { loadConversation } = useAiContext();
+        return <button onClick={() => void loadConversation('conv-refused')}>reload</button>;
+      }
+      render(
+        <>
+          <ThreadReloader />
+          <AiAssistantPage />
+        </>,
+        { wrapper: createWrapper(['/ai']) },
+      );
+      fireEvent.click(screen.getByText('reload'));
+
+      const refusal = await screen.findByTestId('message-refusal');
+      expect(refusal).toHaveTextContent('not answering rather than guessing');
+      // No sources were persisted, so no source heading may appear.
+      expect(screen.queryByTestId('refusal-sources-label')).not.toBeInTheDocument();
+    });
+  });
+
 });
