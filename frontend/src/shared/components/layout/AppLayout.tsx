@@ -532,8 +532,8 @@ export function AppLayout({ children }: { children: ReactNode }) {
         )}
       </AnimatePresence>
 
-      {/* Service status banner (Ollama, etc.) — sits between header and panels */}
-      <div className="shrink-0 px-4 sm:px-6">
+      {/* Service status & notification banners — streamlined compact container */}
+      <div className="shrink-0 px-4 sm:px-6 space-y-1">
         <ServiceStatus />
         <TrialBanner />
         <ConfluencePatBanner />

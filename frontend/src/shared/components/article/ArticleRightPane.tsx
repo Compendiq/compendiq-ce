@@ -358,6 +358,26 @@ export function ArticleRightPane({
     setActiveInspectorView(inspectorViewRequest.view);
   }, [inspectorViewRequest]);
 
+  // Global hotkeys for tab switching: Alt+O (Outline) and Alt+D (Details)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+        const key = e.key.toLowerCase();
+        if (key === 'o') {
+          e.preventDefault();
+          inspectorViewTouchedRef.current = true;
+          setActiveInspectorView('outline');
+        } else if (key === 'd') {
+          e.preventDefault();
+          inspectorViewTouchedRef.current = true;
+          setActiveInspectorView('details');
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
   // Persist collapsed section IDs
   useEffect(() => {
     setCollapsedIds(readCollapsedIds(storageKey));
@@ -960,6 +980,23 @@ export function ArticleRightPane({
           className="grid min-w-0 flex-1 grid-cols-3 gap-0.5 rounded-md border border-border bg-muted p-0.5"
           role="tablist"
           aria-label="Page context views"
+          onKeyDown={(e) => {
+            const tabs: InspectorView[] = ['assistant', 'outline', 'details'];
+            const currentIndex = tabs.indexOf(activeInspectorView);
+            if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+              e.preventDefault();
+              const nextView = tabs[(currentIndex + 1) % tabs.length]!;
+              inspectorViewTouchedRef.current = true;
+              setActiveInspectorView(nextView);
+              document.getElementById(`page-context-tab-${nextView}`)?.focus();
+            } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+              e.preventDefault();
+              const prevView = tabs[(currentIndex - 1 + tabs.length) % tabs.length]!;
+              inspectorViewTouchedRef.current = true;
+              setActiveInspectorView(prevView);
+              document.getElementById(`page-context-tab-${prevView}`)?.focus();
+            }
+          }}
         >
         {/* First, and deliberately: the assistant is the thing people reach for
             most on a page, and it used to be the one behind an extra step. */}
@@ -994,6 +1031,7 @@ export function ArticleRightPane({
           id="page-context-tab-outline"
           aria-controls="page-context-panel-outline"
           aria-selected={activeInspectorView === 'outline'}
+          title="Outline (Alt+O)"
           onClick={() => {
             inspectorViewTouchedRef.current = true;
             setActiveInspectorView('outline');
@@ -1017,6 +1055,7 @@ export function ArticleRightPane({
           id="page-context-tab-details"
           aria-controls="page-context-panel-details"
           aria-selected={activeInspectorView === 'details'}
+          title="Details (Alt+D)"
           onClick={() => {
             inspectorViewTouchedRef.current = true;
             setActiveInspectorView('details');

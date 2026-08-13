@@ -215,6 +215,21 @@ describe('ArticleRightPane', () => {
     expect(screen.getByTestId('article-actions')).toBeInTheDocument();
   });
 
+  it('switches between Outline and Details tabs using Alt+O and Alt+D hotkeys', () => {
+    useArticleViewStore.setState({
+      headings: [{ id: 'intro', text: 'Introduction', level: 1 }],
+    });
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+    expect(screen.getByRole('tab', { name: /Outline/ })).toHaveAttribute('aria-selected', 'true');
+
+    fireEvent.keyDown(window, { key: 'd', altKey: true });
+    expect(screen.getByRole('tab', { name: 'Details' })).toHaveAttribute('aria-selected', 'true');
+
+    fireEvent.keyDown(window, { key: 'o', altKey: true });
+    expect(screen.getByRole('tab', { name: /Outline/ })).toHaveAttribute('aria-selected', 'true');
+  });
+
   it('honors explicit inspector view requests from layout presets', () => {
     useArticleViewStore.setState({
       headings: [{ id: 'intro', text: 'Introduction', level: 1 }],
