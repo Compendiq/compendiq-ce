@@ -641,4 +641,147 @@ describe('AskMode', () => {
       expect(input.value).toBe('');
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Deep search (#1119 / #1112)
+  // -------------------------------------------------------------------------
+  //
+  // The constraint under test is not cosmetic. Measured on the #1102 fixture,
+  // multi-query expansion is a win on the vocabulary-gap slice (R@1 .182 ->
+  // .424) and a REGRESSION on ordinary queries (R@5 .921 -> .866, McNemar exact
+  // p = 0.0225) at +2.4 s/query. It is only net-positive while it is chosen per
+  // question, so "the toggle resets" IS the feature, and these are its guard.
+  describe('deep search is per-question and never sticky', () => {
+    /** A model must resolve or the send button stays disabled. */
+    function withModel() {
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.resolve([{ name: 'llama3' }]);
+        }
+        if (path === '/llm/conversations') {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve([]);
+      });
+      streamSSEMock.mockImplementation(async function* fakeStream() {
+        yield { content: 'Answer' };
+      });
+    }
+
+    /** Sends `question` and returns the request body that reached streamSSE. */
+    async function askOnce(question: string) {
+      const input = screen.getByPlaceholderText('Ask a question...');
+      fireEvent.change(input, { target: { value: question } });
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /send message/i })).not.toBeDisabled();
+      });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => {
+        expect(streamSSEMock).toHaveBeenCalledWith(
+          '/llm/ask',
+          expect.objectContaining({ question }),
+          expect.any(Object),
+        );
+      });
+      return streamSSEMock.mock.calls.find(
+        (c) => (c[1] as { question?: string }).question === question,
+      )![1] as Record<string, unknown>;
+    }
+
+    it('defaults to off and omits the flag entirely — an untouched composer sends the body it always sent', async () => {
+      withModel();
+      render(<AskModeInput />, { wrapper: createWrapper() });
+
+      expect(screen.getByTestId('ask-deep-search')).not.toBeChecked();
+      const body = await askOnce('where is the runbook?');
+      expect(body).not.toHaveProperty('deepSearch');
+    });
+
+    it('sends deepSearch: true for the question it was switched on for', async () => {
+      withModel();
+      render(<AskModeInput />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByTestId('ask-deep-search'));
+      expect(screen.getByTestId('ask-deep-search')).toBeChecked();
+
+      const body = await askOnce('what governs the retention window?');
+      expect(body.deepSearch).toBe(true);
+    });
+
+    // NON-STICKINESS TEST 1 — it must not survive a SEND.
+    it('switches itself off at submit, and the NEXT question carries no flag', async () => {
+      withModel();
+      render(<AskModeInput />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByTestId('ask-deep-search'));
+      const first = await askOnce('what governs the retention window?');
+      expect(first.deepSearch).toBe(true);
+
+      // The control is back to resting, so the user can see the mode ended.
+      await waitFor(() => {
+        expect(screen.getByTestId('ask-deep-search')).not.toBeChecked();
+      });
+      expect(screen.queryByTestId('ask-deep-search-hint')).not.toBeInTheDocument();
+
+      // The part that actually matters: the wire body of the next, ordinary
+      // question. A toggle that merely *renders* unchecked while still sending
+      // the flag would be the same measured regression with a nicer face on it.
+      const second = await askOnce('who owns the deploy runbook?');
+      expect(second).not.toHaveProperty('deepSearch');
+    });
+
+    // NON-STICKINESS TEST 2 — it must not survive a REMOUNT.
+    it('is off again after a remount — nothing is read back out of storage', async () => {
+      withModel();
+      const { unmount } = render(<AskModeInput />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByTestId('ask-deep-search'));
+      expect(screen.getByTestId('ask-deep-search')).toBeChecked();
+
+      unmount();
+      render(<AskModeInput />, { wrapper: createWrapper() });
+
+      // A remount is the cheapest thing that separates component state from
+      // every persisted home this could have been given — localStorage, a
+      // Zustand slice, a `?deep=1` search param, an `AiThread` field. All four
+      // survive it; `useState` in the composer does not.
+      expect(screen.getByTestId('ask-deep-search')).not.toBeChecked();
+      expect(screen.queryByTestId('ask-deep-search-hint')).not.toBeInTheDocument();
+    });
+
+    it('writes nothing to storage when toggled', () => {
+      withModel();
+      render(<AskModeInput />, { wrapper: createWrapper() });
+      // Spy on the instances, not on `Storage.prototype`: test-setup.ts
+      // replaces window.localStorage with a plain object when jsdom's is not
+      // functional, and a prototype spy silently misses that one — a green
+      // assertion against an object it never patched.
+      const local = vi.spyOn(window.localStorage, 'setItem');
+      const session = vi.spyOn(window.sessionStorage, 'setItem');
+
+      fireEvent.click(screen.getByTestId('ask-deep-search'));
+
+      expect(local).not.toHaveBeenCalled();
+      expect(session).not.toHaveBeenCalled();
+    });
+
+    it('names the cost and the lifetime rather than selling the feature', () => {
+      withModel();
+      render(<AskModeInput />, { wrapper: createWrapper() });
+
+      const hint = screen.getByTestId('ask-deep-search').closest('label')!.getAttribute('title')!;
+      // Slower, honest that it is sometimes worse, and explicitly one-shot.
+      expect(hint).toMatch(/seconds/i);
+      expect(hint).toMatch(/worse/i);
+      expect(hint).toMatch(/this question only/i);
+      // The two facts a user needs before agreeing to wait are also on screen
+      // once it is on, because a title attribute is unreachable by touch.
+      fireEvent.click(screen.getByTestId('ask-deep-search'));
+      expect(screen.getByTestId('ask-deep-search-hint')).toHaveTextContent(/slower/i);
+      expect(screen.getByTestId('ask-deep-search-hint')).toHaveTextContent(/this question only/i);
+    });
+  });
 });

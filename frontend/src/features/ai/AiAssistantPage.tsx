@@ -9,6 +9,7 @@ import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { cn } from '../../shared/lib/cn';
 import { ConfidenceBadge } from '../../shared/components/badges/ConfidenceBadge';
+import { RefusalMark, RefusalSourcesLabel, REFUSAL_ANNOUNCEMENT } from './refusal';
 import { AIThinkingBlob } from '../../shared/components/feedback/AIThinkingBlob';
 import { TypingIndicator } from '../../shared/components/feedback/TypingIndicator';
 import { SourceCitations } from './SourceCitations';
@@ -81,13 +82,19 @@ const MessageBubble = memo(function MessageBubble({
             ? 'bg-primary/10 text-foreground'
             : msg.isError
               ? 'border border-destructive/40 bg-destructive/10'
-              : 'bg-foreground/5',
+              // The #1105 refusal (#1119): the ordinary bubble ground plus a
+              // hairline. A value step and a 1px border is all ADR-010 v0.6
+              // allows for distinguishing a surface, and the "Not answered"
+              // chip inside carries the meaning. No hue — see `refusal.tsx`.
+              : msg.isRefusal
+                ? 'border border-border bg-foreground/5'
+                : 'bg-foreground/5',
         )}
         // No role="alert" here: the role and the error content would arrive
         // in the same render, which AT generally does not announce (MDN alert
         // role). The primed announcer next to the message list handles SR
         // announcement; this bubble is the visual surface only.
-        data-testid={msg.isError ? 'message-error' : undefined}
+        data-testid={msg.isError ? 'message-error' : msg.isRefusal ? 'message-refusal' : undefined}
       >
         {showThinkingBlob && <AIThinkingBlob active />}
         {showTypingIndicator && <TypingIndicator />}
@@ -106,6 +113,14 @@ const MessageBubble = memo(function MessageBubble({
           // Error messages render as plain text (not Markdown) so the
           // destructive color isn't overridden by the prose styles.
           <p className="text-destructive">{msg.content}</p>
+        ) : msg.isRefusal ? (
+          // Plain text, not Markdown: the backend writes one prose sentence
+          // with no Markdown in it, and a refusal is the last place to let a
+          // renderer invent structure over what the server actually said.
+          <>
+            <RefusalMark />
+            <p className="mt-2 whitespace-pre-wrap text-foreground">{msg.content}</p>
+          </>
         ) : (
           <div className={cn('prose prose-sm max-w-none', !isLight && 'prose-invert')}>
             {msg.content ? (
@@ -115,8 +130,19 @@ const MessageBubble = memo(function MessageBubble({
         )}
         {msg.role === 'assistant' && msg.sources && msg.sources.length > 0 && (
           <div className="mt-3 space-y-2">
+            {/* Named on a refusal, bare on an answer: an unlabelled chip row
+                under "I am not answering" reads as the sources the answer was
+                built from, which is the reading the backend's own live text
+                goes out of its way to prevent. */}
+            {msg.isRefusal && <RefusalSourcesLabel />}
             <div className="flex items-center gap-2">
               {(() => {
+                // A refusal gets NO ConfidenceBadge. The badge rates the
+                // sources an answer stands on; here there is no answer, and
+                // "Low confidence" beside a turn that declined to answer reads
+                // as a weak answer rather than none — rating a thing that does
+                // not exist (#1119).
+                if (msg.isRefusal) return null;
                 // null means no similarity was measured (keyword-only hit, a
                 // web source, or a pre-#1117 conversation) — render no badge
                 // rather than a zero, which paints it red.
@@ -143,6 +169,11 @@ const MessageBubble = memo(function MessageBubble({
   if (prev.msg.id !== next.msg.id) return false;
   if (prev.msg.content !== next.msg.content) return false;
   if (prev.msg.isError !== next.msg.isError) return false;
+  // Without this, the placeholder committed as a refusal keeps the bubble it
+  // was already rendering: `content` changes on the same commit today, so the
+  // bug would only surface for an empty-bodied refusal — a landmine, not a
+  // theoretical.
+  if (prev.msg.isRefusal !== next.msg.isRefusal) return false;
   if (prev.msg.sources !== next.msg.sources) return false;
   if (prev.isLast !== next.isLast) return false;
   if (prev.isStreaming !== next.isStreaming) return false;
@@ -536,7 +567,16 @@ export function AiAssistantPage() {
           const lastAnswer = [...messages].reverse().find(
             (msg) => msg.role === 'assistant' && !msg.isError && msg.content,
           );
-          return lastAnswer ? <span key={lastAnswer.id}>Answer ready</span> : null;
+          if (!lastAnswer) return null;
+          // A refusal is the one thing this region must not call an answer
+          // (#1119). It is not an error either, so it stays in the polite
+          // region rather than being routed to the alert one above — a correct
+          // response does not warrant interrupting.
+          return (
+            <span key={lastAnswer.id}>
+              {lastAnswer.isRefusal ? REFUSAL_ANNOUNCEMENT : 'Answer ready'}
+            </span>
+          );
         })()}
       </div>
 

@@ -30,6 +30,17 @@ export interface Message {
   /** True when this assistant message reports a failed request (rendered with
    * destructive styling instead of the regular bubble). */
   isError?: boolean;
+  /**
+   * True when this assistant turn is the #1105 low-confidence refusal: the
+   * backend measured retrieval below the operator's threshold, ran no chat
+   * completion, and returned an honest "I am not answering" turn plus the weak
+   * sources it did find.
+   *
+   * Deliberately NOT `isError`. The request succeeded; the server declined to
+   * guess, which is the correct outcome. Both renderers key a distinct, neutral
+   * state on this — see `refusal.tsx` for the colour argument.
+   */
+  isRefusal?: boolean;
 }
 
 interface Conversation {
@@ -212,6 +223,12 @@ interface StreamChunk {
   originalMarkdown?: string;
   /** Improve route: backend verdict that the output lost the layout tokens beyond recovery. */
   layoutTokensLost?: boolean;
+  /**
+   * Ask route (#1105): this turn is the low-confidence refusal, not an answer.
+   * Carried on the final frame beside `sources`, which on this path are the
+   * closest partial matches the gate declined to use.
+   */
+  refused?: boolean;
 }
 
 /** Extra, non-content metadata surfaced to `onComplete` once a stream finishes. */
@@ -656,11 +673,25 @@ export function AiProvider({ children }: { children: ReactNode }) {
 
   const loadConversation = useCallback(async (id: string) => {
     try {
-      const conv = await apiFetch<{ messages: Array<{ role: string; content: string; sources?: Source[] }>; model: string; id: string }>(`/llm/conversations/${id}`);
+      // `refused` is what `saveConversation` writes onto a #1105 refusal turn
+      // (llm-ask.ts `StoredChatMessage`), and the route returns the messages
+      // JSONB verbatim — so reopening a thread must carry the marker across or
+      // the refusal silently downgrades to an ordinary answer on reload, which
+      // is precisely the state #1119 exists to stop rendering. Note the
+      // persisted turn has no `sources`: the backend stores only
+      // {role, content, refused} and drops the "closest matches attached"
+      // sentence with them, so the reloaded turn claims nothing it cannot show.
+      const conv = await apiFetch<{ messages: Array<{ role: string; content: string; sources?: Source[]; refused?: boolean }>; model: string; id: string }>(`/llm/conversations/${id}`);
       updateThread(threadKey, () => ({
         messages: conv.messages
           .filter((m) => m.role !== 'system')
-          .map((m) => ({ id: nextMessageId(), role: m.role as 'user' | 'assistant', content: m.content, sources: m.sources })),
+          .map((m) => ({
+            id: nextMessageId(),
+            role: m.role as 'user' | 'assistant',
+            content: m.content,
+            sources: m.sources,
+            ...(m.refused === true ? { isRefusal: true } : {}),
+          })),
         conversationId: conv.id,
       }));
       setModel(conv.model);
@@ -772,6 +803,9 @@ export function AiProvider({ children }: { children: ReactNode }) {
     let finalSources: Source[] = [];
     let originalMarkdown: string | undefined;
     let streamLayoutTokensLost: boolean | undefined;
+    // #1119: the #1105 refusal verdict, read off the final frame. Local rather
+    // than state because it is committed with the content in one update below.
+    let refusedTurn = false;
 
     // Add the placeholder assistant message with a stable ID. It stays empty
     // during the stream (#747) — the in-flight answer renders through the
@@ -792,6 +826,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
             ...lastMsg,
             content: accumulated,
             ...(finalSources.length > 0 ? { sources: finalSources } : {}),
+            ...(refusedTurn ? { isRefusal: true } : {}),
           };
         }
         return updated;
@@ -835,6 +870,13 @@ export function AiProvider({ children }: { children: ReactNode }) {
         }
         if (chunk.final && chunk.sources) {
           finalSources = chunk.sources;
+        }
+        // #1119: the #1105 refusal marker rides the same final frame as
+        // `sources`, and is read the same way. Only ever set true here — a
+        // later frame cannot un-refuse a turn, and the refusal path emits
+        // exactly one final frame anyway.
+        if (chunk.final && chunk.refused === true) {
+          refusedTurn = true;
         }
         // Improve route (#704): capture the original markdown baseline so the
         // diff compares like-for-like markdown instead of stripped bodyText.

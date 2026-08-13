@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Send, Loader2, Link2, X, Plus } from 'lucide-react';
 import { useAiContext, nextMessageId } from '../AiContext';
+import { DeepSearchToggle } from '../DeepSearchToggle';
 import { toast } from 'sonner';
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '../../../shared/lib/api';
@@ -28,6 +29,17 @@ export function AskModeInput() {
   const [externalUrls, setExternalUrls] = useState<string[]>([]);
   const [urlInput, setUrlInput] = useState('');
   const [showUrlInput, setShowUrlInput] = useState(false);
+  /**
+   * #1112's multi-query expansion, opted into for ONE question (#1119).
+   *
+   * Plain `useState` in the composer that submits it, and that is the whole
+   * enforcement: there is no store to persist it into, no `AiThread` field to
+   * make it per-conversation sticky, and no localStorage read to seed it. A
+   * remount — a route change, a mode switch — is a fresh `false`. See
+   * `DeepSearchToggle` for why the sticky version would be a measured
+   * regression rather than a taste question.
+   */
+  const [deepSearch, setDeepSearch] = useState(false);
 
   // Check if MCP docs is enabled via public status endpoint (cache for 5 min)
   const { data: mcpSettings } = useQuery<McpDocsSettings>({
@@ -95,7 +107,15 @@ export function AskModeInput() {
     }
 
     const question = input.trim();
+    // Read-and-clear at SUBMIT time, beside the input clear and before the
+    // await — not in `onComplete`, and not after `runStream` the way
+    // `externalUrls` is cleared below. runStream never rethrows and swallows
+    // aborts, so a reset placed after it is skipped on exactly the paths where
+    // a still-lit toggle would silently apply the measured regression to the
+    // user's next, ordinary question (#1119).
+    const useDeepSearch = deepSearch;
     setInput('');
+    setDeepSearch(false);
     setMessages((prev) => [...prev, { id: nextMessageId(), role: 'user', content: question }]);
 
     const body: Record<string, unknown> = {
@@ -105,6 +125,9 @@ export function AskModeInput() {
       pageId: pageId ?? undefined,
       includeSubPages,
       ...(thinkingMode && { thinking: true }),
+      // Same shape as `thinking` above: omitted entirely when off, so an
+      // untouched toggle sends the wire body it always sent.
+      ...(useDeepSearch && { deepSearch: true }),
     };
 
     if (externalUrls.length > 0) {
@@ -120,7 +143,7 @@ export function AskModeInput() {
     // Clear external URLs after sending
     setExternalUrls([]);
     setShowUrlInput(false);
-  }, [input, model, isStreaming, conversationId, pageId, includeSubPages, thinkingMode, externalUrls, setInput, setMessages, runStream]);
+  }, [input, model, isStreaming, conversationId, pageId, includeSubPages, thinkingMode, deepSearch, externalUrls, setInput, setMessages, runStream]);
 
   const handleSubmit = () => handleAsk();
 
@@ -186,6 +209,20 @@ export function AskModeInput() {
           </button>
         </div>
       )}
+
+      {/* Per-question retrieval options. Deliberately here rather than in the
+          header chip row beside `Think`: that row holds settings that outlive
+          the question (thinking mode is in localStorage, sub-pages is session
+          state), and a control that resets itself on send would read as broken
+          among them. Here it sits with the external URLs above, the composer's
+          other per-send state. */}
+      <DeepSearchToggle
+        checked={deepSearch}
+        onChange={setDeepSearch}
+        disabled={isStreaming}
+        testId="ask-deep-search"
+        className="mb-2"
+      />
 
       {/* Main input row */}
       <div className="nm-composer">

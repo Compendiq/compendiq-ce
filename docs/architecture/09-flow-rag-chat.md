@@ -368,6 +368,24 @@ every ask.** Not a persisted preference, not a remembered mode, not a
 conversation-level setting. A sticky toggle turns a per-question opt-in into
 exactly the arm the "everything else" row measures.
 
+Shipped as `frontend/src/features/ai/DeepSearchToggle.tsx`, rendered above the
+prompt on **both** surfaces that post `/llm/ask` — `/ai`'s `AskModeInput` and
+the docked assistant's `DockPanel`. The constraint is enforced by where the
+state lives rather than by discipline: plain `useState` in each composer, read
+into the request body and cleared at submit beside `setInput('')`, before the
+`await`. Every alternative home was rejected for surviving something it must
+not — `AiContext` (`thinkingMode` writes localStorage, `includeSubPages`
+survives every ask), `AiThread` (12 retained threads, so per-conversation
+sticky), `ai-dock-store` (ephemeral today, but a store is what later work
+persists), a `?deep=1` search param (survives reload). The reset sits *inside*
+the submit handler past its guards, so Enter on an empty composer cannot
+discard the choice and an abort or an error cannot leave the toggle lit. The
+label names the cost and the lifetime rather than selling the feature
+("Slower; this question only"), because a user who cannot see that it is
+sometimes worse has no basis for choosing it. `AskMode.test.tsx` and
+`AiDock.test.tsx` each fail if the flag survives a send or a remount, and on
+any storage write.
+
 ## Quality / recency ranking prior (#1111)
 
 A quality worker already computes `pages.quality_score`, and every page
@@ -729,6 +747,23 @@ per-set sigmoid makes its scale only loosely comparable across requests,
 logged when it engages), which is why the thresholds are operator knobs
 with no universal constant and why `tieredMinScoreForCorpus`'s hardcoded
 tiers were deliberately not ported.
+
+**The refusal as a UI state (#1119).** `Message.isRefusal` is set from that
+final frame in `runStream`, and from the stored `refused` marker in
+`loadConversation` — without the second, reopening a thread downgrades the
+refusal to an ordinary answer. Both chat renderers key on it (`/ai`'s
+`MessageBubble` and the dock's `DockMessage`; implementing it in one only
+degrades silently in the other): the ordinary bubble ground plus a 1px
+hairline and a neutral `Not answered` chip, the backend's sentence rendered as
+plain text rather than Markdown, the weak sources under a `Closest matches —
+not used` heading, and **no `ConfidenceBadge`** — it would grade an answer that
+does not exist. `/ai`'s polite live region announces the refusal instead of
+"Answer ready", and stays polite: a correct response is not worth interrupting
+for. It is deliberately neither amber (ADR-010 reserves that for
+warning/attention, and a state that recurs on every uncovered question would
+teach users to ignore it — `/ai` already spends its amber on the
+zero-embeddings notice above the thread) nor destructive (that is the error
+path; nothing failed here).
 
 ## Retrieval observability (#1117 stage 2)
 
