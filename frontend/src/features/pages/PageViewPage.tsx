@@ -180,6 +180,7 @@ export function PageViewPage() {
   // the live HTML is read from `editorInstance.getHTML()` on save (#954).
   const [editHtml, setEditHtml] = useState('');
   const [editTitle, setEditTitle] = useState('');
+  const [draftLabels, setDraftLabels] = useState<string[]>([]);
   // Dirty flag flipped by the editor's onChange (#954). A cheap boolean avoids
   // storing/serializing the whole document on every keystroke: after the first
   // change setIsDirty(true) is a no-op re-render, so typing no longer re-renders
@@ -239,24 +240,24 @@ export function PageViewPage() {
   // here: the per-page localStorage draft is keyed by id and its
   // restore-on-edit feature must survive navigation.
   useEffect(() => {
-    const pageChanged = previousPageIdRef.current !== id;
-    previousPageIdRef.current = id;
-    if (pageChanged) {
+    if (previousPageIdRef.current !== id) {
+      previousPageIdRef.current = id;
       // ArticleViewer publishes the destination headings asynchronously.
       // Clear page A's structure immediately so the app-level inspector cannot
       // expose a stale Outline while page B is loading or has no headings.
       setHeadings([]);
       setStoreHeadings([]);
+      setEditing(false);
+      setEditHtml('');
+      setEditTitle('');
+      setDraftLabels([]);
+      setIsDirty(false);
+      setPendingDraft(null);
+      setEditorInstance(null);
+      setConfirmDiscardOpen(false);
+      setConfirmTrashOpen(false);
+      setRelocateOpen(false);
     }
-    setEditing(false);
-    setEditHtml('');
-    setEditTitle('');
-    setIsDirty(false);
-    setPendingDraft(null);
-    setEditorInstance(null);
-    setConfirmDiscardOpen(false);
-    setConfirmTrashOpen(false);
-    setRelocateOpen(false);
   }, [id, setStoreHeadings]);
 
   useLayoutEffect(() => {
@@ -290,6 +291,7 @@ export function PageViewPage() {
   const handleStartEditing = useCallback(() => {
     if (!page || !id) return;
     setEditTitle(page.title);
+    setDraftLabels(page.labels ?? []);
     const draft = getDraft(`page-${id}`);
     if (draft && draft !== page.bodyHtml) {
       // Defer edit mode until the user decides in the ConfirmDialog below:
@@ -306,34 +308,38 @@ export function PageViewPage() {
   const handleRestoreDraft = useCallback(() => {
     if (pendingDraft === null) return;
     setEditHtml(pendingDraft);
+    if (page?.labels) setDraftLabels(page.labels);
     // A restored draft diverges from the published page, so the editor is
     // dirty from the outset — Cancel must guard it and Save must persist it.
     setIsDirty(true);
     setPendingDraft(null);
     setEditing(true);
-  }, [pendingDraft]);
+  }, [pendingDraft, page]);
 
   const handleDeclineDraft = useCallback(() => {
     setPendingDraft(null);
     if (!page) return;
     setEditHtml(page.bodyHtml);
+    setDraftLabels(page.labels ?? []);
     setIsDirty(false);
     setEditing(true);
   }, [page]);
 
-  // The editor is dirty when the title diverges from the persisted page or the
-  // body was touched. `isDirty` is set by the Editor's onChange (and seeded
-  // true when a draft is restored), so a pristine editor produces no false
-  // positive (#944). Body edits are tracked via the flag rather than a live
-  // HTML string so typing doesn't re-render the page (#954).
+  // The editor is dirty when the title diverges from the persisted page, the
+  // body was touched, or draft tag changes exist.
   const isEditorDirty = useCallback(() => {
     if (!page) return false;
-    return editTitle !== page.title || isDirty;
-  }, [page, editTitle, isDirty]);
+    const currentLabels = page.labels ?? [];
+    const labelsDiverged =
+      draftLabels.length !== currentLabels.length ||
+      draftLabels.some((l) => !currentLabels.includes(l));
+    return editTitle !== page.title || isDirty || labelsDiverged;
+  }, [page, editTitle, isDirty, draftLabels]);
 
   const discardAndExit = useCallback(() => {
     if (draftKey) clearDraft(draftKey);
     setIsDirty(false);
+    setDraftLabels([]);
     setEditing(false);
   }, [draftKey]);
 
@@ -381,10 +387,20 @@ export function PageViewPage() {
         bodyHtml: bodyToSave,
         version: page.version,
       });
+      if (editing) {
+        const currentLabels = page.labels ?? [];
+        const addLabels = draftLabels.filter((l) => !currentLabels.includes(l));
+        const removeLabels = currentLabels.filter((l) => !draftLabels.includes(l));
+        if (addLabels.length > 0 || removeLabels.length > 0) {
+          await labelsMutation.mutateAsync({ id, addLabels, removeLabels });
+        }
+      }
       if (draftKey) clearDraft(draftKey);
       setIsDirty(false);
+      setDraftLabels([]);
       setEditing(false);
-      toast.success('Page saved.');
+      const isConfluence = page.source === 'confluence' || Boolean(page.confluenceId);
+      toast.success(isConfluence ? 'Page saved & synced to Confluence DC.' : 'Page saved.');
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to save page.';
       if (message.includes('modified since you loaded')) {
@@ -402,7 +418,7 @@ export function PageViewPage() {
         toast.error(message);
       }
     }
-  }, [draftKey, editHtml, editTitle, editorInstance, id, page, queryClient, updateMutation]);
+  }, [draftKey, draftLabels, editHtml, editTitle, editing, editorInstance, id, labelsMutation, page, queryClient, updateMutation]);
 
   // Draw.io inline editing handlers
   const handleEditDiagram = useCallback(async (diagramName: string) => {
@@ -470,19 +486,31 @@ export function PageViewPage() {
 
   const handleAddTag = useCallback((tag: string) => {
     if (!id) return;
+    if (editing) {
+      if (!draftLabels.includes(tag)) {
+        setDraftLabels((prev) => [...prev, tag]);
+        setIsDirty(true);
+      }
+      return;
+    }
     labelsMutation.mutate(
       { id, addLabels: [tag] },
       { onError: () => toast.error('Failed to add tag.') },
     );
-  }, [id, labelsMutation]);
+  }, [editing, draftLabels, id, labelsMutation]);
 
   const handleRemoveTag = useCallback((tag: string) => {
     if (!id) return;
+    if (editing) {
+      setDraftLabels((prev) => prev.filter((t) => t !== tag));
+      setIsDirty(true);
+      return;
+    }
     labelsMutation.mutate(
       { id, removeLabels: [tag] },
       { onError: () => toast.error('Failed to remove tag.') },
     );
-  }, [id, labelsMutation]);
+  }, [editing, id, labelsMutation]);
 
   const handlePinToggle = useCallback(() => {
     if (!id || !page) return;
@@ -730,7 +758,7 @@ export function PageViewPage() {
           <div className="mx-auto flex min-h-[calc(3rem-1px)] max-w-[1248px] items-center gap-3 px-9 py-1.5 sm:px-16">
             <div className="min-w-0 flex-1">
               <TagPopover
-                tags={page.labels}
+                tags={editing ? draftLabels : page.labels}
                 onAddTag={handleAddTag}
                 onRemoveTag={handleRemoveTag}
                 suggestions={filterOptions?.labels}
@@ -895,12 +923,14 @@ export function PageViewPage() {
                     {page.source === 'standalone' ? (
                       <>
                         <Upload size={12} className="mr-1 inline" />
-                        Move to Confluence
+                        <span className="max-lg:hidden">Move to Confluence</span>
+                        <span className="lg:hidden">Move</span>
                       </>
                     ) : (
                       <>
                         <Download size={12} className="mr-1 inline" />
-                        Move to local space
+                        <span className="max-lg:hidden">Move to local space</span>
+                        <span className="lg:hidden">Move</span>
                       </>
                     )}
                   </button>
@@ -914,7 +944,7 @@ export function PageViewPage() {
                   title="Show in knowledge graph"
                 >
                   <GitGraph size={12} className="mr-1 inline" />
-                  Graph
+                  <span className="max-sm:hidden">Graph</span>
                 </button>
                 </div>
 
@@ -1193,37 +1223,44 @@ function FeedbackWidget({ pageId }: { pageId: string | undefined }) {
 
 function VerifyButton({ pageId }: { pageId: string | undefined }) {
   const verifyMutation = useVerifyPage();
+  const [statusMsg, setStatusMsg] = useState<string | null>(null);
 
   const handleVerify = async () => {
     if (!pageId) return;
     try {
       await verifyMutation.mutateAsync({ pageId: Number(pageId) });
       toast.success('Page verified — next review reminder rescheduled');
+      setStatusMsg('Page verified');
+      setTimeout(() => setStatusMsg(null), 3000);
     } catch (err) {
       // #357: surface the server's specific message instead of a generic
       // toast. ApiError.message already carries the backend reply.
       const msg = err instanceof Error && err.message ? err.message : 'Failed to verify page';
       toast.error(msg);
+      setStatusMsg(msg);
+      setTimeout(() => setStatusMsg(null), 3000);
     }
   };
 
   return (
-    <button
-      onClick={handleVerify}
-      disabled={verifyMutation.isPending}
-      title="Mark this page as up-to-date. Resets the next review reminder based on the configured review interval."
-      aria-label="Mark page as verified"
-      // Neutral, like every other action in this toolbar. It was
-      // `text-success`, which collides with the status vocabulary: green
-      // means "connected / healthy" throughout the app, so a green control read
-      // as a state readout rather than a thing you press — and it was the only
-      // coloured item in a row of otherwise neutral actions, which made the
-      // least consequential one the most prominent.
-      className="rounded-md px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
-      data-testid="verify-btn"
-    >
-      <ShieldCheck size={12} className="mr-1 inline" />
-      {verifyMutation.isPending ? 'Verifying...' : 'Verify'}
-    </button>
+    <>
+      <button
+        onClick={handleVerify}
+        disabled={verifyMutation.isPending}
+        title="Mark this page as up-to-date. Resets the next review reminder based on the configured review interval."
+        aria-label="Mark page as verified"
+        aria-busy={verifyMutation.isPending}
+        className="rounded-md px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground disabled:opacity-50"
+        data-testid="verify-btn"
+      >
+        <ShieldCheck size={12} className="mr-1 inline" />
+        {verifyMutation.isPending ? 'Verifying...' : 'Verify'}
+      </button>
+      {statusMsg && (
+        <span className="sr-only" role="status" aria-live="polite">
+          {statusMsg}
+        </span>
+      )}
+    </>
   );
 }
