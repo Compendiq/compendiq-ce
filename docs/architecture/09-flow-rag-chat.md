@@ -581,6 +581,53 @@ fixture's
 acceptance criteria: exact queries pin first, natural-language queries with
 identifier-shaped tokens are provably unmoved.
 
+### No dedicated title retrieval leg (#1110, closed as superseded)
+
+**Title matching is this pin stage, and nothing else.** #1110 asked for a
+third RRF leg over titles (or a `setweight` of the title portion of
+`pages.tsv`); it was closed without one, because the case it targeted is
+either already served here or provably unreachable by ranking.
+
+Exact titles — quoted, "page called X", or the whole query — and
+key-in-title are pinned above, on a normalised equality and a token-bounded
+`title ~* key`. What a title leg would have added is the *approximate* half:
+partial or typo'd titles, queries past the detector's 6-token bound, and
+unquoted uncued ones.
+
+**Titles are near-invisible to retrieval today, so re-weighting them moves
+nothing users see.** The vector leg cannot see a title at all since #1261
+dropped the chunk title prefix, and inside `pages.tsv` — where migration 049
+concatenates title and body with no `setweight`, i.e. at weight D — a title
+is a handful of lexemes among thousands. That is measured, not assumed:
+when #1282 corrected 45 of the corpus's 262 titles from file paths and code
+comments to real titles, **0 of 197 fixture queries changed rank** (R@1
+0.6294, R@5 0.8579, MRR 0.7306 — identical to four decimals before and
+after). Probing the keyword leg directly over both title sets, the expected
+page moved on 7 of 46 affected queries and every move was deep in the tail
+(73→55, 32→25, 20→18) — never near the window RRF and the reranker actually
+consume.
+
+A third leg would therefore act where nothing downstream reads, while
+breaking analytics continuity: `rrfWorstCase` goes 2/(k+1) → 3/(k+1) ≈
+0.049, and that value is the documented unit of `search_analytics.max_score`
+for `hybrid` / `hybrid_rerank` (the historical-incomparability problem
+#1106 hit). It is also unmeasurable as things stand — no fixture label
+covers the near-miss title class. The `vocabulary-gap` slice averages 0.03
+query∩title token overlap *by construction*, and the 3 `identifier` labels
+average 1.00 and already pin at rank 1, where a title leg can improve
+nothing.
+
+Two corrections for anyone revisiting this, because the issue's own A/B had
+them backwards. A title-only tsvector is **not** backfill-free: it needs a
+column plus a trigger plus a backfill, or an expression index that cannot be
+built at all because `fts_language` is runtime-configurable through
+`admin_settings`. And `setweight` is **smaller** than described: the title is
+already inside `tsv`, so it is pure re-weighting — a trigger edit plus an
+`UPDATE pages`, no reindex. The cheapest shape is neither: pg_trgm over
+`pages.title`, reusing `idx_pages_title_trgm` (migration 045), which would
+also close the documented gap where `/api/search`'s semantic and hybrid
+modes lack the trigram title match that keyword mode has.
+
 ## Sibling-chunk context assembly (#1106 PR 2)
 
 After the topK slice — and before analytics, the confidence computation and

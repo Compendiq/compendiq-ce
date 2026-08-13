@@ -1234,7 +1234,21 @@ async function lookupIdentifier(
     rows = r.rows;
   } else {
     // spaceKey (and any future kind) verifies nothing here by design — a
-    // space is not a page; #1110 is the intended consumer.
+    // space is not a page, so there is nothing for THIS stage to pin. The
+    // pin stage filters the kind out before it ever reaches this function,
+    // so a space-key detection is currently INERT end to end: recognised,
+    // then deliberately consumed by nobody.
+    //
+    // That is a decision, not a placeholder waiting on an issue. #1110 was
+    // named here as the intended consumer and has since been CLOSED without
+    // one being built — titles turned out to be near-invisible to retrieval,
+    // so a dedicated title/space leg would act in a region nothing
+    // downstream reads (the measurement is recorded under "No dedicated
+    // title retrieval leg" in docs/architecture/09-flow-rag-chat.md).
+    // Scoping or boosting retrieval by a detected space key is UNCLAIMED
+    // work with no owner. Whoever picks it up should note it is probably a
+    // filter on the visibility predicate rather than a pin: a space names a
+    // collection, and this stage returns pages.
     return [];
   }
   return rows.map((row) => ({
