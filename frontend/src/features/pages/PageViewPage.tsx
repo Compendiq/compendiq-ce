@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, m } from 'framer-motion';
-import { FileText, X, Upload, Download, ShieldCheck, Globe, Lock, ThumbsUp, ThumbsDown, AlertCircle, GitGraph, MoreHorizontal, Pin, Trash2 } from 'lucide-react';
+import { FileText, X, Save, Upload, Download, ShieldCheck, Globe, Lock, ThumbsUp, ThumbsDown, AlertCircle, GitGraph, MoreHorizontal, Pin, Trash2 } from 'lucide-react';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { toast } from 'sonner';
 import {
@@ -740,22 +740,28 @@ export function PageViewPage() {
                     />
                     <button
                       onClick={handleCancelEditing}
-                      className="shrink-0 rounded-md border border-transparent px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+                      title="Cancel editing (Esc)"
+                      aria-label="Cancel"
+                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                      data-testid="cancel-edit-btn"
                     >
-                      Cancel
+                      <X size={15} />
+                      <span className="sr-only">Cancel</span>
                     </button>
                     <button
                       onClick={handleSave}
                       disabled={updateMutation.isPending}
-                      className="nm-button-primary flex shrink-0 items-center gap-1.5 px-3 py-1 text-xs font-medium"
+                      title="Save changes (Ctrl+S)"
+                      aria-label="Save"
+                      className="nm-button-primary flex h-7 w-7 shrink-0 items-center justify-center rounded-md p-0"
+                      data-testid="save-page-btn"
                     >
-                      {updateMutation.isPending ? 'Saving…' : 'Save'}
-                      {!updateMutation.isPending && (
-                        <ShortcutHint
-                          shortcutId="save"
-                          className="border-primary-foreground/30 bg-transparent text-primary-foreground text-[10px]"
-                        />
+                      {updateMutation.isPending ? (
+                        <span className="animate-spin text-xs">…</span>
+                      ) : (
+                        <Save size={15} />
                       )}
+                      <span className="sr-only">Save</span>
                     </button>
                   </>
                 }

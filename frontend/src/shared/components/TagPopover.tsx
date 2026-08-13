@@ -66,15 +66,15 @@ export function TagPopover({
       <Popover.Trigger
         type="button"
         data-testid="tag-popover-trigger"
-        // `nm-button-ghost` is the 32px bordered secondary. Reusing it costs no
-        // new CSS and carries ADR-010's 1px operable border (WCAG 1.4.11) with
-        // it. Left to right the row now reads bordered field → bare ghost
-        // (Cancel) → filled primary (Save), which is also its three scopes:
-        // page, session abort, session commit.
-        className={cn('nm-button-ghost shrink-0 data-[state=open]:bg-accent', className)}
+        title="Tags"
+        aria-label="Tags"
+        className={cn(
+          'flex h-7 min-w-[1.75rem] shrink-0 items-center justify-center gap-1 rounded-md px-1.5 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground data-[state=open]:bg-foreground/10 data-[state=open]:text-foreground',
+          className,
+        )}
       >
-        <Tag size={14} className="shrink-0 opacity-70" aria-hidden />
-        <span className="tabular-nums">{tagChipLabel(tags.length)}</span>
+        <Tag size={15} className="shrink-0" aria-hidden />
+        <span className="tabular-nums text-[11px] font-medium">{tagChipLabel(tags.length)}</span>
       </Popover.Trigger>
 
       <Popover.Portal>
