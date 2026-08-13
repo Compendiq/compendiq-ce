@@ -729,6 +729,36 @@ export function PageViewPage() {
                 editor={editorInstance}
                 headerNumbering={headerNumbering}
                 onToggleHeaderNumbering={toggleHeaderNumbering}
+                actions={
+                  <>
+                    <TagPopover
+                      tags={editing ? draftLabels : page.labels}
+                      onAddTag={handleAddTag}
+                      onRemoveTag={handleRemoveTag}
+                      suggestions={filterOptions?.labels}
+                      isLoading={labelsMutation.isPending}
+                    />
+                    <button
+                      onClick={handleCancelEditing}
+                      className="shrink-0 rounded-md border border-transparent px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={handleSave}
+                      disabled={updateMutation.isPending}
+                      className="nm-button-primary flex shrink-0 items-center gap-1.5 px-3 py-1 text-xs font-medium"
+                    >
+                      {updateMutation.isPending ? 'Saving…' : 'Save'}
+                      {!updateMutation.isPending && (
+                        <ShortcutHint
+                          shortcutId="save"
+                          className="border-primary-foreground/30 bg-transparent text-primary-foreground text-[10px]"
+                        />
+                      )}
+                    </button>
+                  </>
+                }
               />
               <TableContextToolbar editor={editorInstance} />
               <LayoutContextToolbar editor={editorInstance} />
@@ -738,17 +768,9 @@ export function PageViewPage() {
         </div>
         </div>
       )}
-      {/* No card. The document sits directly on the main column, which carries
-          the pane surface for this route (see AppLayout). A rounded, bordered
-          panel floating on the chassis framed the page as an object on a desk;
-          full-bleed, it reads as the surface you are working on.
-
-          `overflow-hidden` went with it — it was there to clip content to the
-          rounded corners, and an overflow-hidden ancestor also breaks the
-          sticky positioning the strip below now relies on. */}
       <div className={cn(editing && 'mt-4')}>
-        {/* Breadcrumb / action strip */}
-        <div className="sticky -top-5 z-20 -mx-4 -mt-5 border-b border-border bg-card sm:-mx-6">
+        {/* Breadcrumb / action strip (hidden while editing to keep top overhead to a single 44px toolbar) */}
+        <div className={cn('sticky -top-5 z-20 -mx-4 -mt-5 border-b border-border bg-card sm:-mx-6', editing && 'hidden')}>
         <div className="mx-auto flex min-h-[calc(3rem-1px)] max-w-[1248px] flex-wrap items-center justify-between gap-x-4 gap-y-1.5 px-9 py-2 sm:px-16">
           <span className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-muted-foreground/60">
             <FileText size={12} className="shrink-0" />
@@ -778,11 +800,6 @@ export function PageViewPage() {
                 <AlertCircle size={10} /> Draft
               </span>
             )}
-            {editing && isDirty && (
-              <span className={neutralChipClass} data-testid="badge-unsaved">
-                <AlertCircle size={10} /> Unsaved
-              </span>
-            )}
             <QualityScoreBadge
               qualityScore={page.qualityScore ?? null}
               qualityStatus={page.qualityStatus ?? null}
@@ -799,36 +816,7 @@ export function PageViewPage() {
 
           <div className="flex items-center gap-1.5">
             <PresenceAvatarStack viewers={presenceViewers} className="mr-1" />
-            {editing ? (
-              <div className="flex items-center gap-2">
-                <TagPopover
-                  tags={editing ? draftLabels : page.labels}
-                  onAddTag={handleAddTag}
-                  onRemoveTag={handleRemoveTag}
-                  suggestions={filterOptions?.labels}
-                  isLoading={labelsMutation.isPending}
-                />
-                <button
-                  onClick={handleCancelEditing}
-                  className="shrink-0 rounded-md border border-transparent px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleSave}
-                  disabled={updateMutation.isPending}
-                  className="nm-button-primary shrink-0"
-                >
-                  {updateMutation.isPending ? 'Saving…' : 'Save'}
-                  {!updateMutation.isPending && (
-                    <ShortcutHint
-                      shortcutId="save"
-                      className="border-primary-foreground/30 bg-transparent text-primary-foreground"
-                    />
-                  )}
-                </button>
-              </div>
-            ) : (
+            {editing ? null : (
               <>
                 <div className="flex items-center gap-1.5">
                   {canRelocate && (
