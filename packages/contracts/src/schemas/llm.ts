@@ -133,6 +133,7 @@ export const AskRequestSchema = z.object({
    * thing, and `false` must reach retrieval as today's single-query path.
    */
   deepSearch: z.boolean().optional(),
+  imageHandle: ImageHandleSchema.optional(), // #1154: staged image handle from POST /llm/prepare-image
 });
 
 export const GenerateDiagramRequestSchema = z.object({

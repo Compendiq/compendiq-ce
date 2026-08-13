@@ -132,6 +132,7 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
     imageHandle: image?.handle,
     isBusy,
     onImageExpired: removeImage,
+    onImageConsumed: removeImage,
     deepSearch,
     onDeepSearchConsumed: clearDeepSearch,
   });
@@ -516,8 +517,6 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
             onRemove={removeImage}
             isPreparing={isPreparing}
             disabled={isStreaming}
-            triggerLabel="Attach an image as reference for Improve"
-            usageHint="reference for Improve"
             testIdPrefix="ai-dock-image"
           />
           <textarea

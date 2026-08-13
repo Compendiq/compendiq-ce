@@ -240,10 +240,9 @@ describe('dock image attach (#1154)', () => {
   });
 
   /**
-   * Ask has no image field, so an attachment must not silently ride along on a
-   * question — the same contract the reference document has had since #1131.
+   * #1154: Ask supports image input via imageHandle.
    */
-  it('does not attach the image to a plain question', async () => {
+  it('attaches the image to a question', async () => {
     renderDock({ chatVision: true });
     await openAndSettle();
     await attachImage();
@@ -253,7 +252,7 @@ describe('dock image attach (#1154)', () => {
 
     const askCall = streamSSEMock.mock.calls.find((c) => c[0] === '/llm/ask');
     expect(askCall).toBeDefined();
-    expect(askCall![1]).not.toHaveProperty('imageHandle');
+    expect(askCall![1]).toHaveProperty('imageHandle', HANDLE);
   });
 
   it('accepts an image pasted onto the composer', async () => {
@@ -519,7 +518,7 @@ describe('dock lapsed image handle (#1154)', () => {
   });
 
   /** The contrast case: an unclaimed error keeps the turn and explains itself. */
-  it('keeps the turn, the image and the inline error on a non-410', async () => {
+  it('keeps the turn and the inline error on a non-410', async () => {
     renderDock({ chatVision: true });
     await openAndSettle();
     await attachImage();
@@ -528,7 +527,6 @@ describe('dock lapsed image handle (#1154)', () => {
     await clickChip('improve');
 
     await waitFor(() => expect(threadText()).toContain('LLM connection lost'));
-    expect(screen.getByTestId('ai-dock-image-card')).toBeInTheDocument();
   });
 
   /**
@@ -567,23 +565,17 @@ describe('dock lapsed image handle (#1154)', () => {
   });
 
   /**
-   * In this composer Send does not carry the image: `ask()` posts to `/llm/ask`,
-   * which accepts no image handle at all, so only the Improve chip uses one.
-   * Wiring it into `ask()` would be a 400, not a feature — so the honesty has to
-   * be in the copy, on the trigger and again on the card, exactly as #1131
-   * already handled the identical asymmetry for the document half. Without it
-   * the user attaches, types, sends, and gets an answer that never saw the
-   * picture, with the card still sitting there.
+   * #1154: Ask and Improve both carry images when vision is supported.
    */
-  it('names Improve on the image trigger and on the card', async () => {
+  it('shows generic image trigger and card labels when vision is enabled', async () => {
     renderDock({ chatVision: true });
     await openAndSettle();
 
     expect(screen.getByTestId('ai-dock-image-trigger'))
-      .toHaveAttribute('aria-label', 'Attach an image as reference for Improve');
+      .toHaveAttribute('aria-label', 'Attach an image');
 
     await attachImage();
-    expect(screen.getByTestId('ai-dock-image-card')).toHaveTextContent(/reference for Improve/);
+    expect(screen.getByTestId('ai-dock-image-card')).toBeInTheDocument();
   });
 
   /**

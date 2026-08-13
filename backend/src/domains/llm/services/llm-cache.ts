@@ -98,6 +98,7 @@ export function buildRagCacheKey(
      * outright.
      */
     deepSearch?: boolean;
+    imageHash?: string;
   },
 ): string {
   const sortedIds = [...docIds].sort().join(',');
@@ -117,7 +118,8 @@ export function buildRagCacheKey(
   const assembledSuffix = options?.assembledPages !== undefined ? `asm:${options.assembledPages}` : '';
   const pinnedSuffix = options?.pinnedCount !== undefined ? `pin:${options.pinnedCount}` : '';
   const deepSuffix = options?.deepSearch ? 'deep:1' : '';
-  return KEY_PREFIX + hashLlmInputs(model, question, sortedIds, subPageSuffix, externalSuffix, webSuffix, providerSuffix, thinkingSuffix, contextSuffix, assembledSuffix, pinnedSuffix, deepSuffix);
+  const imageSuffix = options?.imageHash ? `img:${options.imageHash}` : '';
+  return KEY_PREFIX + hashLlmInputs(model, question, sortedIds, subPageSuffix, externalSuffix, webSuffix, providerSuffix, thinkingSuffix, contextSuffix, assembledSuffix, pinnedSuffix, deepSuffix, imageSuffix);
 }
 
 export class LlmCache {

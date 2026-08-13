@@ -39,6 +39,10 @@ export interface DockActionOptions {
    */
   onImageExpired?: () => void;
   /**
+   * Clear the attached image once it has been consumed by a request (ask or improve).
+   */
+  onImageConsumed?: () => void;
+  /**
    * #1119: run this one question through #1112's multi-query expansion.
    *
    * Passed in from the panel's own `useState` rather than read from AiContext,
@@ -85,7 +89,7 @@ export interface DockActionOptions {
  * into four chips without moving any data.
  */
 export function useDockActions({
-  referenceText, imageHandle, isBusy = false, onImageExpired,
+  referenceText, imageHandle, isBusy = false, onImageExpired, onImageConsumed,
   deepSearch = false, onDeepSearchConsumed,
 }: DockActionOptions = {}) {
   const {
@@ -109,28 +113,48 @@ export function useDockActions({
     const question = input.trim();
     if (!question || !canRun()) return;
 
+    if (isBusy) {
+      toast.error('Still attaching — try again in a moment.');
+      return;
+    }
+
     // Captured before the reset and before the await, exactly as `/ai`'s
     // AskMode does it — see `onDeepSearchConsumed` for why neither the call
     // site nor a post-await reset is a safe home for this.
     const useDeepSearch = deepSearch;
     setInput('');
     onDeepSearchConsumed?.();
+    if (imageHandle) onImageConsumed?.();
     setMessages((prev) => [...prev, { id: nextMessageId(), role: 'user', content: question }]);
 
-    await runStream('/llm/ask', {
-      question,
-      model,
-      conversationId: conversationId ?? undefined,
-      pageId: pageId ?? undefined,
-      includeSubPages,
-      ...(thinkingMode && { thinking: true }),
-      // Omitted when off, like `thinking` — an untouched toggle sends the body
-      // this composer has always sent.
-      ...(useDeepSearch && { deepSearch: true }),
-    });
+    await runStream(
+      '/llm/ask',
+      {
+        question,
+        model,
+        conversationId: conversationId ?? undefined,
+        pageId: pageId ?? undefined,
+        includeSubPages,
+        ...(imageHandle && { imageHandle }),
+        ...(thinkingMode && { thinking: true }),
+        // Omitted when off, like `thinking` — an untouched toggle sends the body
+        // this composer has always sent.
+        ...(useDeepSearch && { deepSearch: true }),
+      },
+      {
+        onError: (err) => {
+          if (!imageHandle) return false;
+          if (!(err instanceof ApiError) || err.statusCode !== 410) return false;
+          onImageExpired?.();
+          setInput(question);
+          toast.error('The image expired — attach it again.');
+          return true;
+        },
+      },
+    );
   }, [
-    input, canRun, setInput, setMessages, runStream, model, conversationId, pageId,
-    includeSubPages, thinkingMode, deepSearch, onDeepSearchConsumed,
+    input, canRun, isBusy, setInput, onDeepSearchConsumed, imageHandle, onImageConsumed, setMessages, runStream,
+    model, conversationId, pageId, includeSubPages, thinkingMode, deepSearch, onImageExpired,
   ]);
 
   const runChip = useCallback(async (id: DockChipId) => {
@@ -170,6 +194,7 @@ export function useDockActions({
         // consumes it. The other three leave it in place rather than swallowing
         // a prompt they cannot use.
         if (instruction) setInput('');
+        if (imageHandle) onImageConsumed?.();
         setShowDiffView(false);
         setImprovedContent('');
         setOriginalMarkdown('');
@@ -256,7 +281,7 @@ export function useDockActions({
     }
   }, [
     page, pageId, canRun, input, improvementType, diagramType, thinkingMode, model,
-    includeSubPages, referenceText, imageHandle, isBusy, onImageExpired, onDeepSearchConsumed,
+    includeSubPages, referenceText, imageHandle, isBusy, onImageExpired, onImageConsumed, onDeepSearchConsumed,
     runStream, setInput,
     setShowDiffView, setImprovedContent, setOriginalMarkdown, setLayoutTokensLost,
     setDiffBaseVersion, setDiagramCode,

@@ -170,6 +170,24 @@ vi.mock('../../core/services/mcp-docs-client.js', () => ({
   searchDocumentation: vi.fn(),
 }));
 
+const mockGetVisionCapability = vi.fn().mockResolvedValue(true);
+vi.mock('../../domains/llm/services/model-capabilities.js', () => ({
+  getVisionCapability: (...args: unknown[]) => mockGetVisionCapability(...args),
+}));
+
+const mockLoadStagedImage = vi.fn().mockResolvedValue({
+  format: 'png',
+  bytes: Buffer.from('fake-image-bytes'),
+  createdAt: Date.now(),
+});
+vi.mock('../../core/services/image-staging.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../core/services/image-staging.js')>();
+  return {
+    ...actual,
+    loadStagedImage: (...args: unknown[]) => mockLoadStagedImage(...args),
+  };
+});
+
 // Import the route after all mocks are registered
 import { llmAskRoutes } from './llm-ask.js';
 import { sanitizeLlmInput } from '../../core/utils/sanitize-llm-input.js';
@@ -232,9 +250,14 @@ describe('POST /api/llm/ask', () => {
     mockConfidenceThresholdRerank.mockResolvedValue(0);
     // Default query mock: returns row with id for saveConversation INSERT
     mockQuery.mockResolvedValue({ rows: [{ id: 'test-conv-id' }] });
+    mockHybridSearch.mockResolvedValue([]);
     mockBuildRagContext.mockReturnValue('Relevant context from the knowledge base.');
     mockFetchWebSources.mockResolvedValue({ sources: [], injectionWarnings: [] });
     mockFormatWebContext.mockReturnValue('');
+    mockGetVisionCapability.mockReset().mockResolvedValue(true);
+    mockLoadStagedImage.mockReset().mockResolvedValue({
+      bytes: Buffer.from([0x89, 0x50, 0x4e, 0x47]), format: 'png',
+    });
     // Default resolveUsecase: provider 'p1' with model 'm'
     mockResolveUsecase.mockResolvedValue({
       config: {
@@ -1626,6 +1649,63 @@ describe('POST /api/llm/ask', () => {
       expect(mockEmitLlmAudit).toHaveBeenCalledWith(
         expect.objectContaining({ promptInjectionDetected: false, sanitized: false }),
       );
+    });
+  });
+
+  describe('POST /llm/ask with imageHandle (#1154)', () => {
+    const HANDLE = 'a'.repeat(64);
+
+    it('attaches imagePart to user content when imageHandle is provided', async () => {
+      mockGetVisionCapability.mockResolvedValueOnce(true);
+      mockLoadStagedImage.mockResolvedValueOnce({
+        format: 'png',
+        bytes: Buffer.from('test-image'),
+        createdAt: Date.now(),
+      });
+
+      mockStreamChatClient.mockReturnValueOnce(singleChunkGenerator('I see a picture of a cat.'));
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/llm/ask',
+        payload: { question: 'What do you see in the image?', model: 'm', imageHandle: HANDLE },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockStreamChatClient).toHaveBeenCalledTimes(1);
+      const messages = mockStreamChatClient.mock.calls[0][2] as Array<{ role: string; content: unknown }>;
+      const userMessage = messages.find((m: { role: string }) => m.role === 'user');
+      expect(userMessage).toBeDefined();
+      expect(Array.isArray(userMessage.content)).toBe(true);
+      expect(userMessage.content[1]).toEqual({
+        type: 'image_url',
+        image_url: { url: 'data:image/png;base64,dGVzdC1pbWFnZQ==' },
+      });
+    });
+
+    it('returns 422 when model is not vision capable', async () => {
+      mockGetVisionCapability.mockResolvedValueOnce(false);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/llm/ask',
+        payload: { question: 'What is this?', model: 'm', imageHandle: HANDLE },
+      });
+
+      expect(response.statusCode).toBe(422);
+    });
+
+    it('returns 410 when staged image has expired', async () => {
+      mockGetVisionCapability.mockResolvedValueOnce(true);
+      mockLoadStagedImage.mockResolvedValueOnce(null);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/llm/ask',
+        payload: { question: 'What is this?', model: 'm', imageHandle: HANDLE },
+      });
+
+      expect(response.statusCode).toBe(410);
     });
   });
 });
