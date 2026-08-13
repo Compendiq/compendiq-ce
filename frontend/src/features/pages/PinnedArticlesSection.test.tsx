@@ -180,10 +180,7 @@ describe('PinnedArticlesSection', () => {
     });
   });
 
-  // ── Unbounded pins (#1130) ───────────────────────────────────────────────
-  // The server-side cap is gone, so the section has to stay a dashboard strip
-  // rather than a wall of cards. It collapses to COLLAPSED_PIN_COUNT and hands
-  // the rest over on request.
+  // ── Unbounded pins ───────────────────────────────────────────────────────
 
   function manyPinsResponse(count: number) {
     return {
@@ -209,61 +206,19 @@ describe('PinnedArticlesSection', () => {
     });
   }
 
-  it('collapses to COLLAPSED_PIN_COUNT cards when the user has more', async () => {
+  it('renders all pinned cards without collapsing at 8', async () => {
     mockPins(30);
 
     render(<PinnedArticlesSection />, { wrapper: createWrapper() });
     await screen.findByTestId('pinned-articles-section');
 
-    for (let i = 1; i <= COLLAPSED_PIN_COUNT; i++) {
-      expect(screen.getByTestId(`pinned-card-pin-${i}`)).toBeInTheDocument();
-    }
-    // The rest are out of the DOM, not merely hidden — they must not be tab
-    // stops or reachable by a screen reader while collapsed.
-    for (let i = COLLAPSED_PIN_COUNT + 1; i <= 30; i++) {
-      expect(screen.queryByTestId(`pinned-card-pin-${i}`)).not.toBeInTheDocument();
-    }
-  });
-
-  it('expands to every pin when the toggle is used, and collapses again', async () => {
-    mockPins(30);
-
-    render(<PinnedArticlesSection />, { wrapper: createWrapper() });
-    await screen.findByTestId('pinned-articles-section');
-
-    const toggle = screen.getByTestId('pinned-expand-toggle');
-    expect(toggle).toHaveAttribute('aria-expanded', 'false');
-    // The label names how many are hidden, so the count is never a guess.
-    expect(toggle).toHaveTextContent('22 more');
-
-    fireEvent.click(toggle);
-
-    await waitFor(() => {
-      expect(screen.getByTestId('pinned-card-pin-30')).toBeInTheDocument();
-    });
-    expect(screen.getByTestId('pinned-expand-toggle')).toHaveAttribute('aria-expanded', 'true');
-    expect(screen.getByTestId('pinned-expand-toggle')).toHaveTextContent('Show fewer');
-
-    fireEvent.click(screen.getByTestId('pinned-expand-toggle'));
-
-    await waitFor(() => {
-      expect(screen.queryByTestId('pinned-card-pin-30')).not.toBeInTheDocument();
-    });
-  });
-
-  it('renders every pin and no toggle when at or below the collapsed count', async () => {
-    mockPins(COLLAPSED_PIN_COUNT);
-
-    render(<PinnedArticlesSection />, { wrapper: createWrapper() });
-    await screen.findByTestId('pinned-articles-section');
-
-    for (let i = 1; i <= COLLAPSED_PIN_COUNT; i++) {
+    for (let i = 1; i <= 30; i++) {
       expect(screen.getByTestId(`pinned-card-pin-${i}`)).toBeInTheDocument();
     }
     expect(screen.queryByTestId('pinned-expand-toggle')).not.toBeInTheDocument();
   });
 
-  it('states the total in the section heading', async () => {
+  it('states the total in the section heading for large pin counts', async () => {
     mockPins(30);
 
     render(<PinnedArticlesSection />, { wrapper: createWrapper() });
@@ -272,36 +227,15 @@ describe('PinnedArticlesSection', () => {
     expect(screen.getByTestId('pinned-count')).toHaveTextContent('30');
   });
 
-  it('renders every pin once expanded, however many there are', async () => {
+  it('renders every pin, even 100 pins, directly without a toggle', async () => {
     mockPins(100);
 
     render(<PinnedArticlesSection />, { wrapper: createWrapper() });
     await screen.findByTestId('pinned-articles-section');
-    fireEvent.click(screen.getByTestId('pinned-expand-toggle'));
 
-    await waitFor(() => {
-      expect(screen.getByTestId('pinned-card-pin-100')).toBeInTheDocument();
-    });
+    expect(screen.getByTestId('pinned-card-pin-100')).toBeInTheDocument();
     expect(screen.getAllByTestId(/^pinned-card-pin-/)).toHaveLength(100);
-  });
-
-  // The boundary the toggle's render condition turns on. Tested at 8 (absent)
-  // and 30 (present) before, which leaves an off-by-one free to hide the ninth
-  // pin permanently.
-  it('shows the toggle at exactly one pin past the collapsed count', async () => {
-    mockPins(COLLAPSED_PIN_COUNT + 1);
-
-    render(<PinnedArticlesSection />, { wrapper: createWrapper() });
-    await screen.findByTestId('pinned-articles-section');
-
-    const toggle = screen.getByTestId('pinned-expand-toggle');
-    expect(toggle).toHaveTextContent('1 more');
-    expect(screen.queryByTestId(`pinned-card-pin-${COLLAPSED_PIN_COUNT + 1}`)).not.toBeInTheDocument();
-
-    fireEvent.click(toggle);
-    await waitFor(() => {
-      expect(screen.getByTestId(`pinned-card-pin-${COLLAPSED_PIN_COUNT + 1}`)).toBeInTheDocument();
-    });
+    expect(screen.queryByTestId('pinned-expand-toggle')).not.toBeInTheDocument();
   });
 
   it('states the count for a screen reader, not just as a bare number', async () => {
@@ -310,7 +244,6 @@ describe('PinnedArticlesSection', () => {
     render(<PinnedArticlesSection />, { wrapper: createWrapper() });
     await screen.findByTestId('pinned-articles-section');
 
-    // The visual badge is decorative; the sentence beside it is what is read.
     expect(screen.getByTestId('pinned-count')).toHaveAttribute('aria-hidden', 'true');
     expect(screen.getByText('30 pinned')).toBeInTheDocument();
   });
@@ -326,9 +259,6 @@ describe('PinnedArticlesSection', () => {
     expect(document.getElementById('pinned-pages-heading')).toHaveTextContent('Pinned Pages');
   });
 
-  // Unpinning unmounts the card that owns the focused button. Without a
-  // handover, focus falls to <body> — which with the cap gone can be a very
-  // long way back up the document.
   it('moves focus to the next unpin button after unpinning', async () => {
     let items = 3;
     fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
@@ -355,127 +285,5 @@ describe('PinnedArticlesSection', () => {
       expect(document.activeElement).toBe(screen.getByTestId('unpin-btn-pin-2'));
     });
   });
-
-  // Latched `expanded` used to survive the toggle unmounting, so re-crossing
-  // the threshold silently re-expanded the section.
-  it('does not stay expanded once the count falls back to the collapsed size', async () => {
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const wrapper = ({ children }: { children: React.ReactNode }) => (
-      <QueryClientProvider client={queryClient}>
-        <MemoryRouter>{children}</MemoryRouter>
-      </QueryClientProvider>
-    );
-    queryClient.setQueryData(['pages', 'pinned'], manyPinsResponse(30));
-
-    render(<PinnedArticlesSection />, { wrapper });
-    await screen.findByTestId('pinned-articles-section');
-    fireEvent.click(screen.getByTestId('pinned-expand-toggle'));
-    await waitFor(() => expect(screen.getByTestId('pinned-card-pin-30')).toBeInTheDocument());
-
-    // The list drops below the cut-off; the toggle goes with it, and the
-    // section must not remain latched open behind it.
-    await act(async () => {
-      queryClient.setQueryData(['pages', 'pinned'], manyPinsResponse(COLLAPSED_PIN_COUNT));
-    });
-
-    await waitFor(() => {
-      expect(screen.queryByTestId('pinned-expand-toggle')).not.toBeInTheDocument();
-    });
-    expect(screen.getAllByTestId(/^pinned-card-pin-/)).toHaveLength(COLLAPSED_PIN_COUNT);
-  });
-
-  it('states the total in the section heading', async () => {
-    mockPins(30);
-
-    render(<PinnedArticlesSection />, { wrapper: createWrapper() });
-    await screen.findByTestId('pinned-articles-section');
-
-    expect(screen.getByTestId('pinned-count')).toHaveTextContent('30');
-  });
-
-  it('renders every pin once expanded, however many there are', async () => {
-    mockPins(100);
-
-    render(<PinnedArticlesSection />, { wrapper: createWrapper() });
-    await screen.findByTestId('pinned-articles-section');
-    fireEvent.click(screen.getByTestId('pinned-expand-toggle'));
-
-    await waitFor(() => {
-      expect(screen.getByTestId('pinned-card-pin-100')).toBeInTheDocument();
-    });
-    expect(screen.getAllByTestId(/^pinned-card-pin-/)).toHaveLength(100);
-  });
-
-  // The boundary the toggle's render condition turns on. Tested at 8 (absent)
-  // and 30 (present) before, which leaves an off-by-one free to hide the ninth
-  // pin permanently.
-  it('shows the toggle at exactly one pin past the collapsed count', async () => {
-    mockPins(COLLAPSED_PIN_COUNT + 1);
-
-    render(<PinnedArticlesSection />, { wrapper: createWrapper() });
-    await screen.findByTestId('pinned-articles-section');
-
-    const toggle = screen.getByTestId('pinned-expand-toggle');
-    expect(toggle).toHaveTextContent('1 more');
-    expect(screen.queryByTestId(`pinned-card-pin-${COLLAPSED_PIN_COUNT + 1}`)).not.toBeInTheDocument();
-
-    fireEvent.click(toggle);
-    await waitFor(() => {
-      expect(screen.getByTestId(`pinned-card-pin-${COLLAPSED_PIN_COUNT + 1}`)).toBeInTheDocument();
-    });
-  });
-
-  it('states the count for a screen reader, not just as a bare number', async () => {
-    mockPins(30);
-
-    render(<PinnedArticlesSection />, { wrapper: createWrapper() });
-    await screen.findByTestId('pinned-articles-section');
-
-    // The visual badge is decorative; the sentence beside it is what is read.
-    expect(screen.getByTestId('pinned-count')).toHaveAttribute('aria-hidden', 'true');
-    expect(screen.getByText('30 pinned')).toBeInTheDocument();
-  });
-
-  it('names the section by its heading', async () => {
-    mockPins(2);
-
-    render(<PinnedArticlesSection />, { wrapper: createWrapper() });
-
-    const section = await screen.findByTestId('pinned-articles-section');
-    expect(section.tagName).toBe('SECTION');
-    expect(section).toHaveAttribute('aria-labelledby', 'pinned-pages-heading');
-    expect(document.getElementById('pinned-pages-heading')).toHaveTextContent('Pinned Pages');
-  });
-
-  // Unpinning unmounts the card that owns the focused button. Without a
-  // handover, focus falls to <body> — which with the cap gone can be a very
-  // long way back up the document.
-  it('moves focus to the next unpin button after unpinning', async () => {
-    let items = 3;
-    fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
-      const url = typeof input === 'string' ? input : (input as Request).url;
-      if ((init?.method ?? 'GET') === 'DELETE' && url.includes('/pin')) {
-        items = 2;
-        return new Response(JSON.stringify({ message: 'Page unpinned' }), {
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-      return new Response(JSON.stringify(manyPinsResponse(items)), {
-        headers: { 'Content-Type': 'application/json' },
-      });
-    });
-
-    render(<PinnedArticlesSection />, { wrapper: createWrapper() });
-    await screen.findByTestId('pinned-articles-section');
-
-    const first = screen.getByTestId('unpin-btn-pin-1');
-    first.focus();
-    fireEvent.click(first);
-
-    await waitFor(() => {
-      expect(document.activeElement).toBe(screen.getByTestId('unpin-btn-pin-2'));
-    });
-  });
-
-
 });
+
