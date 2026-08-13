@@ -117,7 +117,7 @@ export function BlockTypeMenu({
           data-testid="block-type-trigger"
           title="Text style"
           aria-label={`Text style: ${current?.label ?? 'Text'}`}
-          className={cn(menuTriggerClass(open), 'w-[8.25rem] justify-start', className)}
+          className={cn(menuTriggerClass(open), 'w-[6.25rem] justify-start', className)}
         >
           <CurrentIcon size={15} className="shrink-0" />
           <span className="truncate">{current?.label ?? 'Text'}</span>
