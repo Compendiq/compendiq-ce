@@ -202,6 +202,17 @@ export function PageViewPage() {
   // Relocate between a local space and Confluence (#1123).
   const [relocateOpen, setRelocateOpen] = useState(false);
 
+  const [headerNumbering, setHeaderNumbering] = useState(() =>
+    localStorage.getItem('editor-header-numbering') === 'true',
+  );
+
+  const toggleHeaderNumbering = useCallback(() => {
+    setHeaderNumbering((prev) => {
+      localStorage.setItem('editor-header-numbering', String(!prev));
+      return !prev;
+    });
+  }, []);
+
   // Sync editing state to the shared store (consumed by ArticleRightPane)
   useEffect(() => {
     setStoreEditing(editing);
@@ -724,7 +735,11 @@ export function PageViewPage() {
                   on, which is the tell that a toolbar was bolted above a
                   document rather than belonging to it. */}
               <div className="mx-auto max-w-[1248px] px-9 sm:px-16">
-                <EditorToolbar editor={editorInstance} />
+                <EditorToolbar
+                  editor={editorInstance}
+                  headerNumbering={headerNumbering}
+                  onToggleHeaderNumbering={toggleHeaderNumbering}
+                />
                 <TableContextToolbar editor={editorInstance} />
                 <LayoutContextToolbar editor={editorInstance} />
                 <ColumnContextToolbar editor={editorInstance} />
@@ -1030,7 +1045,7 @@ export function PageViewPage() {
 
             {/* Editor body — same 1200px reading column so the editing
                 experience matches the reader's line length exactly. */}
-            <div className="mx-auto max-w-[1200px]">
+            <div className={cn('mx-auto max-w-[1200px]', headerNumbering && 'header-numbering')}>
               <FeatureErrorBoundary featureName="Editor">
                 <Editor content={editHtml} onChange={() => setIsDirty(true)} draftKey={draftKey} naked onEditorReady={setEditorInstance} hideToolbar pageId={id} onSave={handleSave} />
               </FeatureErrorBoundary>
