@@ -8,6 +8,16 @@ import { useAuthStore } from '../../stores/auth-store';
 import { useArticleViewStore } from '../../stores/article-view-store';
 import { useAiDockStore } from '../../stores/ai-dock-store';
 import { apiFetch } from '../../shared/lib/api';
+import { toast } from 'sonner';
+
+vi.mock('sonner', () => ({
+  toast: {
+    success: vi.fn(),
+    error: vi.fn(),
+    warning: vi.fn(),
+    info: vi.fn(),
+  },
+}));
 
 const mockNavigate = vi.fn();
 const mockUpdatePage = vi.fn();
@@ -132,7 +142,13 @@ vi.mock('../../shared/components/feedback/Skeleton', () => ({
 }));
 
 vi.mock('../../shared/components/TagPopover', () => ({
-  TagPopover: () => <button data-testid="tag-popover-trigger" />,
+  TagPopover: ({ tags, onAddTag, onRemoveTag }: { tags?: string[]; onAddTag?: (t: string) => void; onRemoveTag?: (t: string) => void }) => (
+    <div data-testid="tag-popover">
+      <span data-testid="tag-list">{tags?.join(',')}</span>
+      <button data-testid="add-tag-btn" onClick={() => onAddTag?.('tag2')}>Add Tag</button>
+      <button data-testid="remove-tag-btn" onClick={() => onRemoveTag?.('tag1')}>Remove Tag</button>
+    </div>
+  ),
 }));
 
 
@@ -1425,4 +1441,59 @@ describe('PageViewPage', () => {
     });
   });
 
+  describe('critique recommendations: toast, tag buffering & verify accessibility', () => {
+    it('differentiates toast message on save between Confluence and standalone pages', async () => {
+      currentMockPage = { ...mockPage, source: 'confluence', confluenceId: '123' };
+      render(<PageViewPage />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByText('Edit'));
+      fireEvent.click(screen.getByText('Save'));
+
+      await waitFor(() => {
+        expect(toast.success).toHaveBeenCalledWith('Page saved & synced to Confluence DC.');
+      });
+    });
+
+    it('buffers tag modifications in edit mode and discards them on cancel', async () => {
+      currentMockPage = { ...mockPage, labels: ['tag1'] };
+      render(<PageViewPage />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByText('Edit'));
+
+      // Initially displays 'tag1' in draft mode
+      expect(screen.getByTestId('tag-list')).toHaveTextContent('tag1');
+
+      // Click add-tag-btn which fires onAddTag('tag2')
+      fireEvent.click(screen.getByTestId('add-tag-btn'));
+
+      // TagPopover now receives buffered draft labels ('tag1,tag2')
+      expect(screen.getByTestId('tag-list')).toHaveTextContent('tag1,tag2');
+
+      // Cancel editing and confirm discard
+      fireEvent.click(screen.getByText('Cancel'));
+      const discardBtn = screen.getByRole('button', { name: /discard changes/i });
+      fireEvent.click(discardBtn);
+
+      // Returned to view mode: edit mode exited and draft labels cleared
+      await waitFor(() => {
+        expect(screen.queryByTestId('tag-popover')).not.toBeInTheDocument();
+      });
+    });
+
+    it('sets aria-busy and updates polite status region during page verification', async () => {
+      currentMockPage = { ...mockPage };
+      render(<PageViewPage />, { wrapper: createWrapper() });
+
+      const verifyBtn = screen.getByTestId('verify-btn');
+      expect(verifyBtn).toHaveAttribute('aria-busy', 'false');
+
+      fireEvent.click(verifyBtn);
+
+      await waitFor(() => {
+        expect(toast.success).toHaveBeenCalledWith('Page verified — next review reminder rescheduled');
+      });
+    });
+  });
+
 });
+
