@@ -51,17 +51,11 @@ describe('EditorToolbar', () => {
     expect(screen.getByRole('toolbar', { name: 'Page editor toolbar' })).toBeInTheDocument();
   });
 
-  it('presents twelve controls, not the thirty-one of the flat row', () => {
-    // The whole point of the restructure. If this climbs back toward the
-    // thirties, the long tail has leaked out of the menus again.
+  it('presents nineteen main controls plus utilities', () => {
     render(<EditorToolbar editor={createMockEditor()} onToggleHeaderNumbering={vi.fn()} />);
     const toolbar = screen.getByRole('toolbar', { name: 'Page editor toolbar' });
-    // 12 = block type + 5 marks + 3 lists + 2 colours + Insert. Then header
-    // numbering, undo and redo at the far end, which act on the document
-    // rather than on the selection. (Vim mode used to be a fourth here —
-    // moved to Settings -> Appearance as a personal preference, not a
-    // permanent toolbar slot; see ui-store.ts's vimModeEnabled.)
-    expect(toolbar.querySelectorAll('button').length).toBe(15);
+    // 22 = (block type + quote + code block + divider) + 5 marks + 4 alignments + 3 lists + 2 colours + Insert + header numbering + undo + redo
+    expect(toolbar.querySelectorAll('button').length).toBe(22);
   });
 
   it('renders the groups in the restructured order', () => {
@@ -70,11 +64,12 @@ describe('EditorToolbar', () => {
       document.querySelectorAll<HTMLElement>('[data-testid^="toolbar-group-"]'),
     ).map((el) => el.dataset.testid);
 
-    // What the block IS, then how the words look, then how they are listed,
-    // then their colour, then what else can go here.
+    // What the block IS, then how the words look, then alignment, then lists,
+    // then colour, then what else can go here.
     expect(groups).toEqual([
       'toolbar-group-block',
       'toolbar-group-inline',
+      'toolbar-group-align',
       'toolbar-group-lists',
       'toolbar-group-colors',
       'toolbar-group-insert',
@@ -118,25 +113,79 @@ describe('EditorToolbar', () => {
     expect(screen.getByTestId('block-type-trigger')).toHaveTextContent('Text');
   });
 
-  it('prefers the container over the paragraph inside it', () => {
-    // A paragraph in a blockquote is legitimately both; "Quote" is the useful
-    // answer, and it is the ORDER of BLOCK_TYPES that decides.
+  it('highlights the Quote toggle when inside a blockquote', () => {
     const editor = createMockEditor({
       isActive: (name: string) => name === 'blockquote' || name === 'paragraph',
     });
     render(<EditorToolbar editor={editor} />);
-    expect(screen.getByTestId('block-type-trigger')).toHaveTextContent('Quote');
+    expect(screen.getByRole('button', { name: 'Quote' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('block-type-trigger')).toHaveTextContent('Text');
   });
 
-  it('offers every block type the flat row had, plus the divider', () => {
+  it('offers headings and text in the dropdown, with Quote, Code block, and Divider on the toolbar', () => {
     render(<EditorToolbar editor={createMockEditor()} />);
+    // Check toolbar buttons outside dropdown
+    expect(screen.getByRole('button', { name: 'Quote' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Code Block' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Divider' })).toBeInTheDocument();
+
     openBlockMenu();
-    for (const label of ['Text', 'Heading 1', 'Heading 2', 'Heading 3', 'Quote', 'Code block', 'Divider']) {
+    // Check dropdown options
+    for (const label of ['Text', 'Heading 1', 'Heading 2', 'Heading 3']) {
       expect(screen.getByRole('menuitem', { name: new RegExp(`^${label}`) })).toBeInTheDocument();
+    }
+    // Ensure Quote, Code block, and Divider are no longer in the dropdown
+    for (const label of ['Quote', 'Code block', 'Divider']) {
+      expect(screen.queryByRole('menuitem', { name: new RegExp(`^${label}`) })).not.toBeInTheDocument();
     }
   });
 
-  it('runs the block command on select', () => {
+  it('runs block quote, code block, and divider commands when toolbar buttons are clicked', () => {
+    const run = vi.fn();
+    const chain: Record<string, unknown> = new Proxy({} as Record<string, unknown>, {
+      get(_t, prop: string) {
+        if (prop === 'run') return run;
+        return () => chain;
+      },
+    });
+    const editor = createMockEditor({ chain: () => chain });
+    render(<EditorToolbar editor={editor} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Quote' }));
+    expect(run).toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Code Block' }));
+    expect(run).toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Divider' }));
+    expect(run).toHaveBeenCalled();
+  });
+
+  it('runs setTextAlign when alignment buttons are clicked', () => {
+    const run = vi.fn();
+    const chain: Record<string, unknown> = new Proxy({} as Record<string, unknown>, {
+      get(_t, prop: string) {
+        if (prop === 'run') return run;
+        return () => chain;
+      },
+    });
+    const editor = createMockEditor({ chain: () => chain });
+    render(<EditorToolbar editor={editor} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Align Left' }));
+    expect(run).toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Align Center' }));
+    expect(run).toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Align Right' }));
+    expect(run).toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Justify' }));
+    expect(run).toHaveBeenCalled();
+  });
+
+  it('runs the heading block command on select from dropdown', () => {
     const run = vi.fn();
     const chain: Record<string, unknown> = new Proxy({} as Record<string, unknown>, {
       get(_t, prop: string) {

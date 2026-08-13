@@ -35,6 +35,7 @@
     "@tiptap/extension-image": "^3.0.0",
     "@tiptap/extension-list": "^3.0.0",
     "@tiptap/extension-table": "^3.0.0",
+    "@tiptap/extension-text-align": "3.21.0",
     "@tiptap/extension-text-style": "^3.21.0",
     "@tiptap/extensions": "^3.0.0",
     "@tiptap/pm": "^3.0.0",

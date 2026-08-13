@@ -6,6 +6,7 @@ import { useEffect, useState } from 'react';
 import { useEditor, EditorContent } from '@tiptap/react';
 import { Node } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
+import TextAlign from '@tiptap/extension-text-align';
 import { Highlight } from '@tiptap/extension-highlight';
 import { toast } from 'sonner';
 import { ConfluenceStatus, ConfluenceUserMention } from './article-extensions';
@@ -105,6 +106,9 @@ function Harness({
   const editor = useEditor({
     extensions: [
       StarterKit.configure(trailingNode ? {} : { trailingNode: false }),
+      TextAlign.configure({
+        types: ['heading', 'paragraph', 'blockquote'],
+      }),
       Highlight.configure({ multicolor: true }),
       DrawioDiagram,
       // The REAL inline Confluence atoms — the macro-loss guard below is about
@@ -180,12 +184,37 @@ describe('EditorBlockMenu — text blocks', () => {
     expect(screen.getByTestId('block-menu-label')).toHaveTextContent('Heading 2');
   });
 
-  it('offers formatting, Improve and Delete', async () => {
+  it('offers block type dropdown, formatting, Improve and Delete', async () => {
     await mountMenu('<p>Hello world</p>');
+    expect(screen.getByTestId('block-type-trigger')).toHaveTextContent('Text');
     expect(screen.getByRole('toolbar', { name: 'Block formatting' })).toBeTruthy();
     expect(screen.getByTitle('Bold (Ctrl+B)')).toBeTruthy();
     expect(screen.getByTestId('block-ai-trigger')).toBeTruthy();
     expect(screen.getByTestId('block-menu-delete')).toBeTruthy();
+  });
+
+  it('changes block type (e.g. paragraph to Heading 1) via the block type dropdown', async () => {
+    const { editor } = await mountMenu('<p>Hello world</p>');
+    expect(screen.getByTestId('block-type-trigger')).toHaveTextContent('Text');
+
+    fireEvent.pointerDown(screen.getByTestId('block-type-trigger'), { button: 0, pointerType: 'mouse' });
+    fireEvent.click(screen.getByTestId('block-type-trigger'));
+
+    const h1Option = await screen.findByRole('menuitem', { name: /^Heading 1/ });
+    fireEvent.click(h1Option);
+
+    expect(editor.getHTML()).toContain('<h1>Hello world</h1>');
+    expect(screen.getByTestId('block-type-trigger')).toHaveTextContent('Heading 1');
+  });
+
+  it('aligns the block (e.g. Center, Right, Justify) from the block menu', async () => {
+    const { editor } = await mountMenu('<p>Hello world</p>');
+
+    fireEvent.click(screen.getByTitle('Align center'));
+    expect(editor.getHTML()).toContain('style="text-align: center;"');
+
+    fireEvent.click(screen.getByTitle('Align right'));
+    expect(editor.getHTML()).toContain('style="text-align: right;"');
   });
 
   it('formats the WHOLE block, not wherever the caret happens to be', async () => {

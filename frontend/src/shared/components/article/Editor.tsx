@@ -6,6 +6,7 @@ import { TaskList, TaskItem } from '@tiptap/extension-list';
 import { Image } from '@tiptap/extension-image';
 import { TitledCodeBlock } from './TitledCodeBlock';
 import { Placeholder } from '@tiptap/extensions';
+import TextAlign from '@tiptap/extension-text-align';
 import { Highlight } from '@tiptap/extension-highlight';
 import { TextStyle } from '@tiptap/extension-text-style';
 import { Color } from '@tiptap/extension-color';
@@ -839,6 +840,10 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
     extensions: [
       StarterKit.configure({
         codeBlock: false,
+      }),
+      TextAlign.configure({
+        types: ['heading', 'paragraph', 'blockquote'],
+        alignments: ['left', 'center', 'right', 'justify'],
       }),
       TextStyle,
       Color,

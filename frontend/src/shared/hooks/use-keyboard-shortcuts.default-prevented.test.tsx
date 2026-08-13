@@ -306,7 +306,7 @@ describe('the mechanism the fix relies on', () => {
       // Radix Popover.Content carries role="dialog" — present before the key.
       expect(document.querySelector('[role="dialog"]')).not.toBeNull();
 
-      fireEvent.keyDown(getByTestId('layer-item'), { key: 'Escape' });
+      fireEvent.keyDown(getByTestId('layer-item'), { key: 'Escape', cancelable: true });
 
       expect(seen).toEqual([{ defaultPrevented: true, dialogInDom: false }]);
     } finally {

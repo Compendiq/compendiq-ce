@@ -169,7 +169,7 @@ function press(open: boolean, wiring: Wiring, from: From, syncUnmount = false) {
   } else {
     target = document.body;
   }
-  fireEvent.keyDown(target, { key: 'Escape' });
+  fireEvent.keyDown(target, { key: 'Escape', cancelable: true });
 
   return { onClose, onExit };
 }
