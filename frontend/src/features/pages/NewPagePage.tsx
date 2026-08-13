@@ -52,6 +52,16 @@ export function NewPagePage() {
   const [visibility, setVisibility] = useState<Visibility>('private');
   const [showTemplateGallery, setShowTemplateGallery] = useState(false);
   const [editorInstance, setEditorInstance] = useState<EditorType | null>(null);
+  const [headerNumbering, setHeaderNumbering] = useState(() =>
+    localStorage.getItem('editor-header-numbering') === 'true',
+  );
+
+  const toggleHeaderNumbering = useCallback(() => {
+    setHeaderNumbering((prev) => {
+      localStorage.setItem('editor-header-numbering', String(!prev));
+      return !prev;
+    });
+  }, []);
   // Labels declared in an imported file's YAML front-matter (#1133). They can
   // only be applied once the page exists, because `POST /pages` has no labels
   // field — so they wait here until the create returns an id.
@@ -485,7 +495,11 @@ export function NewPagePage() {
           {/* Editor toolbar */}
           {editorInstance && (
             <div className="border-b border-border px-1">
-              <EditorToolbar editor={editorInstance} />
+              <EditorToolbar
+                editor={editorInstance}
+                headerNumbering={headerNumbering}
+                onToggleHeaderNumbering={toggleHeaderNumbering}
+              />
               <TableContextToolbar editor={editorInstance} />
               <LayoutContextToolbar editor={editorInstance} />
               <ColumnContextToolbar editor={editorInstance} />
@@ -508,16 +522,18 @@ export function NewPagePage() {
           </div>
 
           {/* Editor body */}
-          <FeatureErrorBoundary featureName="Editor">
-            <Editor
-              content={bodyHtml}
-              placeholder="Start writing your page..."
-              draftKey={NEW_PAGE_DRAFT_KEY}
-              naked
-              hideToolbar
-              onEditorReady={setEditorInstance}
-            />
-          </FeatureErrorBoundary>
+          <div className={cn(headerNumbering && 'header-numbering')}>
+            <FeatureErrorBoundary featureName="Editor">
+              <Editor
+                content={bodyHtml}
+                placeholder="Start writing your page..."
+                draftKey={NEW_PAGE_DRAFT_KEY}
+                naked
+                hideToolbar
+                onEditorReady={setEditorInstance}
+              />
+            </FeatureErrorBoundary>
+          </div>
         </div>
       </div>
 
