@@ -42,4 +42,18 @@ describe('ui-store', () => {
     useUiStore.getState().setVimModeEnabled(false);
     expect(useUiStore.getState().vimModeEnabled).toBe(false);
   });
+
+  it('clamps setArticleSidebarWidth between 200 and 1200', () => {
+    useUiStore.getState().setArticleSidebarWidth(800);
+    expect(useUiStore.getState().articleSidebarWidth).toBe(800);
+
+    useUiStore.getState().setArticleSidebarWidth(1200);
+    expect(useUiStore.getState().articleSidebarWidth).toBe(1200);
+
+    useUiStore.getState().setArticleSidebarWidth(1500);
+    expect(useUiStore.getState().articleSidebarWidth).toBe(1200);
+
+    useUiStore.getState().setArticleSidebarWidth(100);
+    expect(useUiStore.getState().articleSidebarWidth).toBe(200);
+  });
 });

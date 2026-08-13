@@ -714,6 +714,7 @@ describe('ArticleRightPane', () => {
 
     const handle = screen.getByRole('separator', { name: 'Resize page sidebar' });
     expect(handle).toHaveAttribute('aria-valuenow', '280');
+    expect(handle).toHaveAttribute('aria-valuemax', '1200');
     expect(handle).toHaveAttribute('tabindex', '0');
   });
 
@@ -727,6 +728,12 @@ describe('ArticleRightPane', () => {
 
     fireEvent.keyDown(handle, { key: 'ArrowRight' });
     expect(useUiStore.getState().articleSidebarWidth).toBe(320);
+
+    act(() => {
+      useUiStore.setState({ articleSidebarWidth: 1195 });
+    });
+    fireEvent.keyDown(handle, { key: 'ArrowLeft' });
+    expect(useUiStore.getState().articleSidebarWidth).toBe(1200);
 
     fireEvent.doubleClick(handle);
     expect(useUiStore.getState().articleSidebarWidth).toBe(360);

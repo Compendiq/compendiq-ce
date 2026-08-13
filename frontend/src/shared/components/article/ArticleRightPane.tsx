@@ -1391,7 +1391,7 @@ export function ArticleRightPane({
         aria-label="Resize page sidebar"
         aria-orientation="vertical"
         aria-valuemin={200}
-        aria-valuemax={500}
+        aria-valuemax={1200}
         aria-valuenow={width}
         tabIndex={0}
         onMouseDown={handleResizeStart}
