@@ -81,6 +81,26 @@ describe('article-extensions', () => {
       expect(editor.getHTML()).not.toMatch(/<details[^>]*\sopen\b/);
       editor.destroy();
     });
+
+    it('keeps a reader toggle ephemeral instead of changing the document', () => {
+      const editor = new Editor({
+        extensions: [StarterKit, Details, DetailsSummary],
+        content:
+          '<details data-macro-name="ui-expand"><summary>T</summary><p>B</p></details>',
+        editable: false,
+      });
+      const details = editor.view.dom.querySelector('details')!;
+      const summary = editor.view.dom.querySelector('summary')!;
+
+      expect(details).not.toHaveAttribute('open');
+      summary.click();
+      expect(details).toHaveAttribute('open');
+      expect(editor.getHTML()).not.toMatch(/<details[^>]*\sopen\b/);
+
+      summary.click();
+      expect(details).not.toHaveAttribute('open');
+      editor.destroy();
+    });
   });
 
   describe('DetailsSummary', () => {

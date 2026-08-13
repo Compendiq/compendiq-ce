@@ -188,9 +188,13 @@ function insertPanel(editor: EditorType, panelType: PanelType) {
  * a user who types gets a real title and a user who moves on to the body gets a
  * genuinely untitled section.
  */
-function insertExpandSection(editor: EditorType) {
+function insertExpandSection(editor: EditorType, macroName?: 'ui-expand') {
   insertBlockWithCaret(editor, 'details', {
     type: 'details',
+    // A bare details node remains the native Atlassian expand for backwards
+    // compatibility. Refined's separate macro must carry its identity through
+    // the editor so htmlToConfluence writes ac:name="ui-expand" on save.
+    ...(macroName ? { attrs: { macroName } } : {}),
     content: [
       { type: 'detailsSummary' },
       { type: 'paragraph', content: [{ type: 'text', text: 'Content here...' }] },
@@ -452,6 +456,14 @@ function InsertMenu({ editor }: { editor: EditorType }) {
                 <DropdownMenu.Item onSelect={() => insertExpandSection(editor)} className={MENU_ITEM}>
                   <ChevronsUpDown size={15} className="shrink-0" />
                   Expand section
+                </DropdownMenu.Item>
+
+                <DropdownMenu.Item
+                  onSelect={() => insertExpandSection(editor, 'ui-expand')}
+                  className={MENU_ITEM}
+                >
+                  <ChevronsUpDown size={15} className="shrink-0" />
+                  UI Expand section
                 </DropdownMenu.Item>
 
                 <DropdownMenu.Sub>
