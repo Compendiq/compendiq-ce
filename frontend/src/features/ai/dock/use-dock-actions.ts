@@ -281,7 +281,7 @@ export function useDockActions({
     }
   }, [
     page, pageId, canRun, input, improvementType, diagramType, thinkingMode, model,
-    includeSubPages, referenceText, imageHandle, isBusy, onImageExpired, onDeepSearchConsumed,
+    includeSubPages, referenceText, imageHandle, isBusy, onImageExpired, onImageConsumed, onDeepSearchConsumed,
     runStream, setInput,
     setShowDiffView, setImprovedContent, setOriginalMarkdown, setLayoutTokensLost,
     setDiffBaseVersion, setDiagramCode,
