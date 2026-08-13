@@ -9,6 +9,9 @@ import { ChildrenMacroView } from './ChildrenMacroView';
 import { FigureIndexView } from './FigureIndexView';
 import { TableIndexView } from './TableIndexView';
 
+const SUMMARY_INTERACTIVE_DESCENDANT =
+  'a[href], button, input, select, textarea, [role="button"], [role="link"], [contenteditable="true"]';
+
 declare module '@tiptap/core' {
   interface Commands<ReturnType> {
     confluenceSection: {
@@ -46,8 +49,9 @@ export const LAYOUT_PRESETS = [
  * Two fixes for TipTap editor:
  * 1. In edit mode, force `open` attribute so the content area is always
  *    visible and the cursor can be placed inside.
- * 2. Add a click handler on <summary> to toggle the `open` node attribute
- *    via ProseMirror transaction (native toggle is swallowed by PM).
+ * 2. Handle <summary> activation explicitly because ProseMirror swallows the
+ *    native toggle: edit mode updates the node attribute, while read mode
+ *    changes only the rendered DOM.
  */
 export const Details = Node.create({
   name: 'details',
@@ -98,6 +102,10 @@ export const Details = Node.create({
         key: new PluginKey('detailsToggle'),
         props: {
           handleClickOn(view, pos, node, nodePos, event) {
+            // Read mode owns an ephemeral DOM-only toggle below. Updating the
+            // ProseMirror document there would turn a reader's local choice
+            // into content state, even though ArticleViewer is read-only.
+            if (!view.editable) return false;
             // Check if the click target is a <summary> element
             const target = event.target as HTMLElement;
             if (target.tagName !== 'SUMMARY' && !target.closest('summary')) {
@@ -122,6 +130,30 @@ export const Details = Node.create({
           // In edit mode, force all <details> elements to be open in the DOM
           // so users can always access the content area
           handleDOMEvents: {
+            click(view, event) {
+              if (view.editable) return false;
+
+              const target = event.target;
+              if (!(target instanceof HTMLElement)) return false;
+              const summary = target.closest('summary');
+              const details = summary?.parentElement;
+              if (!summary || details?.tagName !== 'DETAILS' || !view.dom.contains(details)) {
+                return false;
+              }
+              const interactiveDescendant = target.closest(SUMMARY_INTERACTIVE_DESCENDANT);
+              if (interactiveDescendant && summary.contains(interactiveDescendant)) {
+                return false;
+              }
+
+              // ProseMirror consumes the summary click before the browser's
+              // native <details> default action can run. In read mode the open
+              // state is presentation-only, so toggle the rendered element
+              // without dispatching a document transaction. Keyboard
+              // activation of <summary> also produces this click event.
+              details.toggleAttribute('open', !details.hasAttribute('open'));
+              event.preventDefault();
+              return true;
+            },
             focus(view) {
               if (!view.editable) return false;
               const detailsEls = view.dom.querySelectorAll('details');

@@ -467,8 +467,10 @@ describe('ArticleViewer', () => {
     expect(container.textContent).not.toContain('[Attachments]');
   });
 
-  it('renders collapsible details/summary sections', async () => {
-    const html = '<details><summary>Section title</summary><p>Hidden content</p></details>';
+  it('lets readers expand and collapse a UI Expand section', async () => {
+    const html =
+      '<details data-macro-name="ui-expand"><summary>Section title</summary>' +
+      '<p>Hidden content</p></details>';
 
     const { container } = render(<ArticleViewer content={html} />);
 
@@ -476,7 +478,31 @@ describe('ArticleViewer', () => {
       expect(container.querySelector('details')).toBeTruthy();
     });
 
-    expect(container.querySelector('summary')?.textContent).toBe('Section title');
+    const details = container.querySelector('details')!;
+    const summary = container.querySelector('summary')!;
+    expect(summary.textContent).toBe('Section title');
+    expect(details).not.toHaveAttribute('open');
+
+    fireEvent.click(summary);
+    expect(details).toHaveAttribute('open');
+
+    fireEvent.click(summary);
+    expect(details).not.toHaveAttribute('open');
+  });
+
+  it('lets readers collapse a UI Expand section that is open by default', async () => {
+    const html =
+      '<details data-macro-name="ui-expand" open><summary>Section title</summary>' +
+      '<p>Visible content</p></details>';
+
+    const { container } = render(<ArticleViewer content={html} />);
+
+    await waitFor(() => {
+      expect(container.querySelector('details')).toHaveAttribute('open');
+    });
+
+    fireEvent.click(container.querySelector('summary')!);
+    expect(container.querySelector('details')).not.toHaveAttribute('open');
   });
 
   // #1227: an untitled section stores no title, so the read view has to supply

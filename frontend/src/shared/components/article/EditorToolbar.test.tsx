@@ -165,6 +165,7 @@ describe('EditorToolbar', () => {
       'Diagram',
       'Status label…',
       'Expand section',
+      'UI Expand section',
       'Attachments',
       'Child pages',
       'Caption for selected image',

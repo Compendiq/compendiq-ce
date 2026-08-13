@@ -515,6 +515,18 @@ describe('Editor', () => {
       expect(editor.state.selection.$from.parent.textContent).toBe('');
       expect(editor.getHTML()).toContain('<summary>Outer</summary>');
     });
+
+    it('inserts a Refined UI Expand with its macro identity intact', async () => {
+      const editor = await renderEditorWithToolbar();
+
+      chooseInsertItem('UI Expand section');
+
+      const html = editor.getHTML();
+      expect(html).toContain('data-macro-name="ui-expand"');
+      expect(html).toContain('<summary></summary>');
+      expect(html).not.toContain('Click here to expand');
+      expect(editor.state.selection.$from.parent.type.name).toBe('detailsSummary');
+    });
   });
 
   describe('clipboard image paste (#17)', () => {

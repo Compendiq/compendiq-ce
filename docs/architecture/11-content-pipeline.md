@@ -127,12 +127,13 @@ Custom turndown rules handle Confluence-specific macros:
   search still found them), and an empty `title` parameter absorbed the body,
   titling the section with its own opening prose. Expanding the tag closes both.
 - `<details>` carries its producing macro's identity (#1211):
-  the forward expand branch stamps `data-macro-name="expand"` (plus
+  the forward expand branch stamps the source `ac:name` as
+  `data-macro-name="expand|ui-expand"` (plus
   non-`title` parameters as JSON `data-macro-params`; `title` lives in
   `<summary>` only), and the reverse pass writes that value back as
-  `ac:name` — defaulting to `expand` when absent (safe: only the native
-  expand branch has ever produced `<details>`, so stored `body_html` and
-  editor-created sections are all genuinely expands) and passing an
+  `ac:name` — defaulting to `expand` when absent (safe for legacy stored
+  `body_html` and the editor's native Expand action; its separate UI Expand
+  action explicitly stamps `ui-expand`) and passing an
   unrecognised value through rather than coercing it. Without the stamp, the
   second macro mapping to `<details>` (#1129, Refined "UI Expand") would be
   silently rewritten into a native expand on the first editor save. The
@@ -233,6 +234,10 @@ Custom turndown rules handle Confluence-specific macros:
   inert — Atlassian's macro has no such parameter, and the editor both forces
   every `<details>` open in edit mode and toggles the attribute on a summary
   click, so an `open` native section is reachable and must not fabricate one.
+  Authors can create either identity from the editor's Insert menu; the UI
+  Expand action stamps `data-macro-name="ui-expand"` and starts collapsed.
+  In read mode summary activation toggles only the rendered `<details>` DOM,
+  leaving the ProseMirror document and stored default-open state unchanged.
   Refined's bodies carry its own classed markup (`ordered-list top_level`,
   `rw_adf_text_strong`); that rides through as ordinary body HTML, but we have
   no rule for those classes, so `rw_adf_text_strong` renders as plain text
