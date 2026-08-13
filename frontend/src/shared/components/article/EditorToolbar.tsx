@@ -737,10 +737,12 @@ export function EditorToolbar({
   editor,
   headerNumbering,
   onToggleHeaderNumbering,
+  actions,
 }: {
   editor: EditorType;
   headerNumbering?: boolean;
   onToggleHeaderNumbering?: () => void;
+  actions?: React.ReactNode;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const roving = useToolbarRovingFocus(rootRef);
@@ -766,127 +768,134 @@ export function EditorToolbar({
   });
 
   return (
-    // Reading order is the shape of a sentence about the document: what this
-    // block IS, then how the words look, then how they are listed, then their
-    // colour, then what else can go here. Utilities are pushed to the far end
-    // because undo/redo act on the session rather than on the selection.
-    <div
-      ref={rootRef}
-      role="toolbar"
-      aria-label="Page editor toolbar"
-      className="flex flex-wrap items-center gap-x-2 gap-y-1 px-2 py-1.5 sm:gap-x-0.5"
-      onKeyDown={roving.onKeyDown}
-      onFocus={roving.onFocus}
-    >
-      <ToolbarGroup name="block">
-        <BlockTypeMenu editor={editor} />
-        <ToolbarButton
-          onClick={() => editor.chain().focus().toggleBlockquote().run()}
-          active={activeState.blockquote}
-          title="Quote"
-        >
-          <Quote size={16} />
-        </ToolbarButton>
-        <ToolbarButton
-          onClick={() => editor.chain().focus().toggleCodeBlock().run()}
-          active={activeState.codeBlock}
-          title="Code Block"
-        >
-          <CodeSquare size={16} />
-        </ToolbarButton>
-        <ToolbarButton
-          onClick={() => editor.chain().focus().setHorizontalRule().run()}
-          title="Divider"
-        >
-          <Minus size={16} />
-        </ToolbarButton>
-      </ToolbarGroup>
-
-      <ToolbarSeparator />
-
-      <ToolbarGroup name="inline">
-        <ToolbarButton onClick={() => editor.chain().focus().toggleBold().run()} active={activeState.bold} title="Bold (Ctrl+B)">
-          <Bold size={16} />
-        </ToolbarButton>
-        <ToolbarButton onClick={() => editor.chain().focus().toggleItalic().run()} active={activeState.italic} title="Italic (Ctrl+I)">
-          <Italic size={16} />
-        </ToolbarButton>
-        <ToolbarButton onClick={() => editor.chain().focus().toggleUnderline().run()} active={activeState.underline} title="Underline (Ctrl+U)">
-          <Underline size={16} />
-        </ToolbarButton>
-        <ToolbarButton onClick={() => editor.chain().focus().toggleStrike().run()} active={activeState.strike} title="Strikethrough (Ctrl+Shift+X)">
-          <Strikethrough size={16} />
-        </ToolbarButton>
-        <ToolbarButton onClick={() => editor.chain().focus().toggleCode().run()} active={activeState.code} title="Inline Code (Ctrl+E)">
-          <Code size={16} />
-        </ToolbarButton>
-      </ToolbarGroup>
-
-      <ToolbarSeparator />
-
-      <ToolbarGroup name="align">
-        <AlignMenuDropdown editor={editor} />
-      </ToolbarGroup>
-
-      <ToolbarSeparator />
-
-      <ToolbarGroup name="lists">
-        <ToolbarButton onClick={() => editor.chain().focus().toggleBulletList().run()} active={activeState.bulletList} title="Bullet List (Ctrl+Shift+8)">
-          <List size={16} />
-        </ToolbarButton>
-        <ToolbarButton onClick={() => editor.chain().focus().toggleOrderedList().run()} active={activeState.orderedList} title="Ordered List (Ctrl+Shift+7)">
-          <ListOrdered size={16} />
-        </ToolbarButton>
-        <ToolbarButton onClick={() => editor.chain().focus().toggleTaskList().run()} active={activeState.taskList} title="Task List">
-          <CheckSquare size={16} />
-        </ToolbarButton>
-      </ToolbarGroup>
-
-      <ToolbarSeparator />
-
-      <ToolbarGroup name="colors">
-        <ColorPickerDropdown
-          icon={<Palette size={16} />}
-          title="Text Color"
-          activeColor={activeState.textColor}
-          onSelect={(color) => editor.chain().focus().setColor(color).run()}
-          onReset={() => editor.chain().focus().unsetColor().run()}
-        />
-        <ColorPickerDropdown
-          icon={<Highlighter size={16} />}
-          title="Highlight (Ctrl+Shift+H)"
-          activeColor={activeState.highlightColor}
-          onSelect={(color) => editor.chain().focus().toggleHighlight({ color }).run()}
-          onReset={() => editor.chain().focus().unsetHighlight().run()}
-        />
-      </ToolbarGroup>
-
-      <ToolbarSeparator />
-
-      <ToolbarGroup name="insert">
-        <InsertMenu editor={editor} />
-      </ToolbarGroup>
-
-      <div className="hidden flex-1 sm:block" />
-
-      <ToolbarGroup name="utilities">
-        {onToggleHeaderNumbering && (
+    // Single non-wrapping row: actions live on the right, formatting tools on
+    // the left. overflow-x-auto allows horizontal scrolling on narrow viewports
+    // while guaranteeing flex items never wrap into a 2nd row.
+    <div className="flex flex-nowrap items-center justify-between gap-x-2 overflow-x-auto scrollbar-none min-h-[calc(3rem-1px)] py-1 px-1">
+      <div
+        ref={rootRef}
+        role="toolbar"
+        aria-label="Page editor toolbar"
+        className="flex flex-nowrap items-center gap-x-1 shrink-0"
+        onKeyDown={roving.onKeyDown}
+        onFocus={roving.onFocus}
+      >
+        <ToolbarGroup name="block">
+          <BlockTypeMenu editor={editor} />
           <ToolbarButton
-            onClick={onToggleHeaderNumbering}
-            active={headerNumbering}
-            title={headerNumbering ? 'Header Numbering (On)' : 'Header Numbering (Off)'}
-            label={headerNumbering ? 'Header Numbering (On)' : 'Header Numbering (Off)'}
+            onClick={() => editor.chain().focus().toggleBlockquote().run()}
+            active={activeState.blockquote}
+            title="Quote"
           >
-            <Hash size={16} />
+            <Quote size={15} />
           </ToolbarButton>
-        )}
-        <ToolbarButton onClick={() => editor.chain().focus().undo().run()} disabled={!editor.can().undo()} title="Undo">
-          <Undo2 size={16} />
-        </ToolbarButton>
-        <ToolbarButton onClick={() => editor.chain().focus().redo().run()} disabled={!editor.can().redo()} title="Redo">
-          <Redo2 size={16} />
-        </ToolbarButton>
-      </ToolbarGroup>
+          <ToolbarButton
+            onClick={() => editor.chain().focus().toggleCodeBlock().run()}
+            active={activeState.codeBlock}
+            title="Code Block"
+          >
+            <CodeSquare size={15} />
+          </ToolbarButton>
+          <ToolbarButton
+            onClick={() => editor.chain().focus().setHorizontalRule().run()}
+            title="Divider"
+          >
+            <Minus size={15} />
+          </ToolbarButton>
+        </ToolbarGroup>
+
+        <ToolbarSeparator />
+
+        <ToolbarGroup name="inline">
+          <ToolbarButton onClick={() => editor.chain().focus().toggleBold().run()} active={activeState.bold} title="Bold (Ctrl+B)">
+            <Bold size={15} />
+          </ToolbarButton>
+          <ToolbarButton onClick={() => editor.chain().focus().toggleItalic().run()} active={activeState.italic} title="Italic (Ctrl+I)">
+            <Italic size={15} />
+          </ToolbarButton>
+          <ToolbarButton onClick={() => editor.chain().focus().toggleUnderline().run()} active={activeState.underline} title="Underline (Ctrl+U)">
+            <Underline size={15} />
+          </ToolbarButton>
+          <ToolbarButton onClick={() => editor.chain().focus().toggleStrike().run()} active={activeState.strike} title="Strikethrough (Ctrl+Shift+X)">
+            <Strikethrough size={15} />
+          </ToolbarButton>
+          <ToolbarButton onClick={() => editor.chain().focus().toggleCode().run()} active={activeState.code} title="Inline Code (Ctrl+E)">
+            <Code size={15} />
+          </ToolbarButton>
+        </ToolbarGroup>
+
+        <ToolbarSeparator />
+
+        <ToolbarGroup name="align">
+          <AlignMenuDropdown editor={editor} />
+        </ToolbarGroup>
+
+        <ToolbarSeparator />
+
+        <ToolbarGroup name="lists">
+          <ToolbarButton onClick={() => editor.chain().focus().toggleBulletList().run()} active={activeState.bulletList} title="Bullet List (Ctrl+Shift+8)">
+            <List size={15} />
+          </ToolbarButton>
+          <ToolbarButton onClick={() => editor.chain().focus().toggleOrderedList().run()} active={activeState.orderedList} title="Ordered List (Ctrl+Shift+7)">
+            <ListOrdered size={15} />
+          </ToolbarButton>
+          <ToolbarButton onClick={() => editor.chain().focus().toggleTaskList().run()} active={activeState.taskList} title="Task List">
+            <CheckSquare size={15} />
+          </ToolbarButton>
+        </ToolbarGroup>
+
+        <ToolbarSeparator />
+
+        <ToolbarGroup name="colors">
+          <ColorPickerDropdown
+            icon={<Palette size={15} />}
+            title="Text Color"
+            activeColor={activeState.textColor}
+            onSelect={(color) => editor.chain().focus().setColor(color).run()}
+            onReset={() => editor.chain().focus().unsetColor().run()}
+          />
+          <ColorPickerDropdown
+            icon={<Highlighter size={15} />}
+            title="Highlight (Ctrl+Shift+H)"
+            activeColor={activeState.highlightColor}
+            onSelect={(color) => editor.chain().focus().toggleHighlight({ color }).run()}
+            onReset={() => editor.chain().focus().unsetHighlight().run()}
+          />
+        </ToolbarGroup>
+
+        <ToolbarSeparator />
+
+        <ToolbarGroup name="insert">
+          <InsertMenu editor={editor} />
+        </ToolbarGroup>
+
+        <ToolbarSeparator />
+
+        <ToolbarGroup name="utilities">
+          {onToggleHeaderNumbering && (
+            <ToolbarButton
+              onClick={onToggleHeaderNumbering}
+              active={headerNumbering}
+              title={headerNumbering ? 'Header Numbering (On)' : 'Header Numbering (Off)'}
+              label={headerNumbering ? 'Header Numbering (On)' : 'Header Numbering (Off)'}
+            >
+              <Hash size={15} />
+            </ToolbarButton>
+          )}
+          <ToolbarButton onClick={() => editor.chain().focus().undo().run()} disabled={!editor.can().undo()} title="Undo">
+            <Undo2 size={15} />
+          </ToolbarButton>
+          <ToolbarButton onClick={() => editor.chain().focus().redo().run()} disabled={!editor.can().redo()} title="Redo">
+            <Redo2 size={15} />
+          </ToolbarButton>
+        </ToolbarGroup>
+      </div>
+
+      {actions && (
+        <div role="group" aria-label="Page actions" className="ml-auto flex flex-nowrap shrink-0 items-center gap-1.5 pl-2">
+          {actions}
+        </div>
+      )}
     </div>
   );
 }
