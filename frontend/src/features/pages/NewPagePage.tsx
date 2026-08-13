@@ -492,11 +492,7 @@ export function NewPagePage() {
             </div>
           )}
 
-          {/* Title input. `article-document` measures it to the same column as
-              the editor's prose below — `Editor` carries `article-measure` for
-              every caller, so without this the title would stretch the full
-              card width while the body sat at 40rem. */}
-          <div className="article-document px-5 pt-5 sm:px-10 sm:pt-8">
+          <div className="px-5 pt-5 sm:px-10 sm:pt-8">
             {/* Same auto-growing field as the edit route: a title is one
                 logical line but not one visual line, and an <input> clipped it
                 mid-word with no ellipsis. */}

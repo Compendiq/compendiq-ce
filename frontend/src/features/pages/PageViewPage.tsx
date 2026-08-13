@@ -950,18 +950,8 @@ export function PageViewPage() {
 
         {editing ? (
           <>
-            {/* Editable title. `article-document` measures the input to the
-                same column as the editor's prose below it — without it the
-                title sits at the full 1200px while the body is 40rem, so it
-                hangs left of its own paragraphs and jumps sideways every time
-                you toggle Edit. This is the edit-mode half of the alignment the
-                reading branch gets from the same class. */}
-            {/* Box model must match the reading shell exactly: padding INSIDE
-                the 1200px box, not outside it. With the padding on an outer
-                wrapper the centres differ and the measured title lands ~280px
-                left of the measured body. */}
             <div className="border-b border-border py-5">
-              <div className="article-document mx-auto max-w-[1200px] px-5 sm:px-10">
+              <div className="mx-auto max-w-[1200px] px-5 sm:px-10">
                 {/* Type ramp is copied from the read-mode <h1> verbatim
                     (`text-3xl sm:text-4xl leading-[1.2] tracking-[-0.02em]`) so
                     the title does not resize or re-wrap when you toggle Edit. */}
@@ -988,11 +978,7 @@ export function PageViewPage() {
           /* Empty page — no content yet */
           <div
             ref={contentRef}
-            // `article-document` measures the blocks that sit beside the prose
-            // (today: the AI summary) against the same measure, so nothing can
-            // end up wider than the article it belongs to. The 1200px shell
-            // stays — it is the track wide blocks break out into.
-            className="article-document mx-auto max-w-[1200px] px-5 pb-16 pt-10 sm:px-10 sm:pt-12"
+            className="mx-auto max-w-[1200px] px-5 pb-16 pt-10 sm:px-10 sm:pt-12"
             data-testid="article-content-shell"
           >
             <h1 className="mb-6 text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground sm:text-4xl">
@@ -1011,18 +997,10 @@ export function PageViewPage() {
             </div>
           </div>
         ) : (
-          /* Reading view. The 1200px here is NOT the reading measure — it is the
-             outer track that wide blocks (tables, code, diagrams) use. The
-             measure itself is `--measure-article` on the block children; at
-             1200px the body ran ~99–133 characters per line depending on
-             viewport. See the `.article-measure` block in index.css. */
+          /* Reading view — constrained to 1200px reading column */
           <div
             ref={contentRef}
-            // `article-document` measures the blocks that sit beside the prose
-            // (today: the AI summary) against the same measure, so nothing can
-            // end up wider than the article it belongs to. The 1200px shell
-            // stays — it is the track wide blocks break out into.
-            className="article-document mx-auto max-w-[1200px] px-5 pb-16 pt-10 sm:px-10 sm:pt-12"
+            className="mx-auto max-w-[1200px] px-5 pb-16 pt-10 sm:px-10 sm:pt-12"
             data-testid="article-content-shell"
           >
             <h1 className="mb-4 text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground sm:text-4xl">
