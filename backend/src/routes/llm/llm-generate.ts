@@ -152,8 +152,15 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
       imageHash = resolved.hash;
     }
 
+    let finalSystemPrompt = systemPrompt;
+    let finalUserText = userContent;
+    if (imagePart) {
+      finalSystemPrompt += ' An image is attached to the user request as source material. Analyze the visual content, text, diagrams, and details in the attached image and use them to generate the requested content.';
+      finalUserText = `[Attached Image]\n\n${userContent}`;
+    }
+
     // Check LLM cache with stampede protection
-    const cacheKey = buildLlmCacheKey(resolvedModel, systemPrompt, userContent, chatConfig.providerId, { thinking: body.thinking, imageHash });
+    const cacheKey = buildLlmCacheKey(resolvedModel, finalSystemPrompt, finalUserText, chatConfig.providerId, { thinking: body.thinking, imageHash });
     const { cached, lockAcquired } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
       sendCachedSSE(reply, cached.content);
@@ -161,12 +168,12 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
     }
 
     const generateMessages: ChatMessage[] = [
-      { role: 'system', content: systemPrompt },
+      { role: 'system', content: finalSystemPrompt },
       {
         role: 'user',
         content: imagePart
-          ? [{ type: 'text', text: userContent }, imagePart]
-          : userContent,
+          ? [{ type: 'text', text: finalUserText }, imagePart]
+          : finalUserText,
       },
     ];
 

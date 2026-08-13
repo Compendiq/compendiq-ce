@@ -187,8 +187,15 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
       imageHash = resolved.hash;
     }
 
+    let finalSystemPrompt = systemPrompt;
+    let finalImproveText = improveContent;
+    if (imagePart) {
+      finalSystemPrompt += '\n\nAn image is attached to this request. Analyze the attached image and use its visual content, text, or details when improving the article.';
+      finalImproveText = `[Attached Image]\n\n${improveContent}`;
+    }
+
     // Check LLM cache with stampede protection
-    const cacheKey = buildLlmCacheKey(resolvedModel, systemPrompt, improveContent, chatConfig.providerId, { thinking: body.thinking, imageHash });
+    const cacheKey = buildLlmCacheKey(resolvedModel, finalSystemPrompt, finalImproveText, chatConfig.providerId, { thinking: body.thinking, imageHash });
     const { cached, lockAcquired } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
       // Echo back the markdown the model was given (#704) so the frontend can
@@ -232,12 +239,12 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
     }
 
     const improveMessages: ChatMessage[] = [
-      { role: 'system', content: systemPrompt },
+      { role: 'system', content: finalSystemPrompt },
       {
         role: 'user',
         content: imagePart
-          ? [{ type: 'text', text: improveContent }, imagePart]
-          : improveContent,
+          ? [{ type: 'text', text: finalImproveText }, imagePart]
+          : finalImproveText,
       },
     ];
 
