@@ -9,6 +9,9 @@ import { ChildrenMacroView } from './ChildrenMacroView';
 import { FigureIndexView } from './FigureIndexView';
 import { TableIndexView } from './TableIndexView';
 
+const SUMMARY_INTERACTIVE_DESCENDANT =
+  'a[href], button, input, select, textarea, [role="button"], [role="link"], [contenteditable="true"]';
+
 declare module '@tiptap/core' {
   interface Commands<ReturnType> {
     confluenceSection: {
@@ -135,6 +138,10 @@ export const Details = Node.create({
               const summary = target.closest('summary');
               const details = summary?.parentElement;
               if (!summary || details?.tagName !== 'DETAILS' || !view.dom.contains(details)) {
+                return false;
+              }
+              const interactiveDescendant = target.closest(SUMMARY_INTERACTIVE_DESCENDANT);
+              if (interactiveDescendant && summary.contains(interactiveDescendant)) {
                 return false;
               }
 

@@ -101,6 +101,24 @@ describe('article-extensions', () => {
       expect(details).not.toHaveAttribute('open');
       editor.destroy();
     });
+
+    it('preserves interactive descendants inside a read-only summary', () => {
+      const editor = new Editor({
+        extensions: [StarterKit, Details, DetailsSummary],
+        content:
+          '<details data-macro-name="ui-expand"><summary>' +
+          '<a href="#linked-section">Linked title</a></summary><p>B</p></details>',
+        editable: false,
+      });
+      const details = editor.view.dom.querySelector('details')!;
+      const link = editor.view.dom.querySelector('summary a')!;
+      const event = new MouseEvent('click', { bubbles: true, cancelable: true });
+
+      expect(link.dispatchEvent(event)).toBe(true);
+      expect(event.defaultPrevented).toBe(false);
+      expect(details).not.toHaveAttribute('open');
+      editor.destroy();
+    });
   });
 
   describe('DetailsSummary', () => {
