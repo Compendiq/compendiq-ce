@@ -67,13 +67,12 @@ describe('EditorToolbar', () => {
     // What the block IS, then how the words look, then alignment, then lists,
     // then colour, then what else can go here.
     expect(groups).toEqual([
+      'toolbar-group-history',
       'toolbar-group-block',
       'toolbar-group-inline',
-      'toolbar-group-align',
       'toolbar-group-lists',
       'toolbar-group-colors',
       'toolbar-group-insert',
-      'toolbar-group-utilities',
     ]);
   });
 
