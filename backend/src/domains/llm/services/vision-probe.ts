@@ -142,15 +142,14 @@ export async function probeVision(
   try {
     // Routed through chat(), so the probe inherits the queue and the
     // per-provider breaker rather than bypassing backpressure.
-    // 64, not 16: the matcher deliberately tolerates filler ("The three
-    // horizontal bands from top to bottom are yellow, purple, and green."),
-    // and 16 tokens cuts that sentence before `green` — turning a correct
-    // answer into a cached `false`. A reasoning model can also spend a tight
-    // budget entirely on thinking tokens and return empty content, which maps
-    // to the same wrong verdict. Not larger because the system prompt and the
-    // "three words and nothing else" instruction are what keep the reply
-    // short; this is only a runaway guard.
-    const reply = await chat(cfg, model, messages, { maxTokens: 64 });
+    // 512, not 64: the matcher deliberately tolerates filler ("The three
+    // horizontal bands from top to bottom are yellow, purple, and green.").
+    // Reasoning models (such as Qwen 3.6, Gemma 4, DeepSeek R1) emit thinking
+    // tokens inside a <think> block before producing the final answer. A tight 64
+    // token budget cuts off mid-think, turning a capable vision-reasoning model into
+    // a cached false negative. 512 tokens gives reasoning models enough room to
+    // complete their thinking block and output the answer.
+    const reply = await chat(cfg, model, messages, { maxTokens: 512 });
     const vision = replyNamesBandsInOrder(reply);
     logger.debug(
       { providerId: cfg.providerId, model, vision, reply: reply.slice(0, 120) },
