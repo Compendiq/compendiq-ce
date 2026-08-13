@@ -31,6 +31,7 @@ const schema = new Schema({
     confluenceLayout: { group: 'block', content: 'block+' },
     unknownMacro: { group: 'block', content: 'block*', attrs: { macroName: { default: null } } },
     figure: { group: 'block', content: 'paragraph*' },
+    details: { group: 'block', content: 'paragraph*', attrs: { macroName: { default: null } } },
     confluenceRoadmapPlanner: { group: 'block', atom: true },
   },
   marks: {
@@ -100,6 +101,12 @@ describe('blockLabel', () => {
     expect(blockLabel(node('drawioDiagram'))).toBe('Draw.io diagram');
     expect(blockLabel(node('confluenceLayout'))).toBe('Layout');
     expect(blockLabel(node('blockquote'))).toBe('Quote');
+  });
+
+  it('names details nodes as Expand or UI Expand based on macroName', () => {
+    expect(blockLabel(node('details'))).toBe('Expand');
+    expect(blockLabel(node('details', { macroName: 'expand' }))).toBe('Expand');
+    expect(blockLabel(node('details', { macroName: 'ui-expand' }))).toBe('UI Expand');
   });
 
   it('humanises a node type it has no entry for', () => {
