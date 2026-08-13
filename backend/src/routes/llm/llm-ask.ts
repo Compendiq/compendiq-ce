@@ -76,6 +76,11 @@ const REFUSAL_TEXT: Record<RefusalReason, string> = {
  * Live-only sentence naming the attached sources (see the persisted/live
  * divergence below). The outage wording must not claim the sources were
  * measured and found wanting — nothing ranked them against the question.
+ *
+ * The `no_context` entry is unreachable in practice and present for total
+ * typing: that reason requires zero retrieved rows AND no other grounding,
+ * which is exactly the state in which `sources` is empty and this sentence
+ * is never appended.
  */
 const REFUSAL_SOURCES_NOTE: Record<RefusalReason, string> = {
   semantic_index_unavailable:
