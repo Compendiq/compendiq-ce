@@ -780,6 +780,17 @@ export function EditorToolbar({
         onKeyDown={roving.onKeyDown}
         onFocus={roving.onFocus}
       >
+        <ToolbarGroup name="history">
+          <ToolbarButton onClick={() => editor.chain().focus().undo().run()} disabled={!editor.can().undo()} title="Undo">
+            <Undo2 size={15} />
+          </ToolbarButton>
+          <ToolbarButton onClick={() => editor.chain().focus().redo().run()} disabled={!editor.can().redo()} title="Redo">
+            <Redo2 size={15} />
+          </ToolbarButton>
+        </ToolbarGroup>
+
+        <ToolbarSeparator />
+
         <ToolbarGroup name="block">
           <BlockTypeMenu editor={editor} />
           <ToolbarButton
@@ -826,12 +837,6 @@ export function EditorToolbar({
 
         <ToolbarSeparator />
 
-        <ToolbarGroup name="align">
-          <AlignMenuDropdown editor={editor} />
-        </ToolbarGroup>
-
-        <ToolbarSeparator />
-
         <ToolbarGroup name="lists">
           <ToolbarButton onClick={() => editor.chain().focus().toggleBulletList().run()} active={activeState.bulletList} title="Bullet List (Ctrl+Shift+8)">
             <List size={15} />
@@ -842,6 +847,7 @@ export function EditorToolbar({
           <ToolbarButton onClick={() => editor.chain().focus().toggleTaskList().run()} active={activeState.taskList} title="Task List">
             <CheckSquare size={15} />
           </ToolbarButton>
+          <AlignMenuDropdown editor={editor} />
         </ToolbarGroup>
 
         <ToolbarSeparator />
@@ -867,11 +873,6 @@ export function EditorToolbar({
 
         <ToolbarGroup name="insert">
           <InsertMenu editor={editor} />
-        </ToolbarGroup>
-
-        <ToolbarSeparator />
-
-        <ToolbarGroup name="utilities">
           {onToggleHeaderNumbering && (
             <ToolbarButton
               onClick={onToggleHeaderNumbering}
@@ -882,12 +883,6 @@ export function EditorToolbar({
               <Hash size={15} />
             </ToolbarButton>
           )}
-          <ToolbarButton onClick={() => editor.chain().focus().undo().run()} disabled={!editor.can().undo()} title="Undo">
-            <Undo2 size={15} />
-          </ToolbarButton>
-          <ToolbarButton onClick={() => editor.chain().focus().redo().run()} disabled={!editor.can().redo()} title="Redo">
-            <Redo2 size={15} />
-          </ToolbarButton>
         </ToolbarGroup>
       </div>
 
