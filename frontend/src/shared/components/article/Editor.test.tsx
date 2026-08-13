@@ -1289,6 +1289,7 @@ it('declines a click outside any table so ProseMirror\'s default runs', async ()
 
       const trigger = await screen.findByTestId('drag-handle-trigger');
       expect(trigger.closest('.drag-handle')).toBeTruthy();
+      expect(trigger.getAttribute('title')).toBe('Drag to move · Click for block actions');
       // Closed: nothing declares the open state, so the CSS reveal is inert.
       expect(trigger.getAttribute('data-block-menu-open')).toBeNull();
     });
