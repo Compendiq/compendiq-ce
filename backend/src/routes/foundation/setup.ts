@@ -6,7 +6,18 @@
  * initial admin account, and testing LLM connectivity before persisting config.
  */
 
-import { FastifyInstance } from 'fastify';
+import { FastifyInstance, FastifyRequest } from 'fastify';
+
+function isCookieSecure(request: FastifyRequest): boolean {
+  if (process.env.COOKIE_SECURE !== undefined) {
+    return process.env.COOKIE_SECURE === 'true';
+  }
+  const proto = request.headers['x-forwarded-proto'];
+  if (typeof proto === 'string') {
+    return proto.split(',')[0]?.trim() === 'https';
+  }
+  return process.env.NODE_ENV === 'production' && request.protocol === 'https';
+}
 import bcrypt from 'bcrypt';
 import { z } from 'zod';
 import { query } from '../../core/db/postgres.js';
@@ -167,7 +178,7 @@ export async function setupRoutes(fastify: FastifyInstance) {
       reply
         .setCookie(REFRESH_COOKIE, refreshToken, {
           httpOnly: true,
-          secure: process.env.NODE_ENV === 'production',
+          secure: isCookieSecure(request),
           sameSite: 'lax',
           path: '/api/auth',
           maxAge: REFRESH_MAX_AGE,
