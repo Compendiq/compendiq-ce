@@ -119,7 +119,7 @@ export function PinnedArticlesSection() {
               </button>
 
               {/* Title */}
-              <p className="truncate pr-6 font-medium">{item.title}</p>
+              <p className="line-clamp-2 pr-6 font-medium">{item.title}</p>
 
               {/* Metadata row */}
               <div className="flex items-center gap-3 text-xs text-muted-foreground">
@@ -137,13 +137,6 @@ export function PinnedArticlesSection() {
                   </span>
                 )}
               </div>
-
-              {/* Excerpt */}
-              {item.excerpt && (
-                <p className="line-clamp-2 text-xs text-muted-foreground">
-                  {item.excerpt}
-                </p>
-              )}
             </div>
           </m.div>
         ))}

@@ -93,7 +93,7 @@ describe('PinnedArticlesSection', () => {
     expect(container.innerHTML).toBe('');
   });
 
-  it('shows space key, author, and excerpt on pinned cards', async () => {
+  it('shows space key and author on pinned cards without excerpt', async () => {
     fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
       return new Response(JSON.stringify(mockPinnedResponse), {
         headers: { 'Content-Type': 'application/json' },
@@ -106,7 +106,23 @@ describe('PinnedArticlesSection', () => {
 
     expect(screen.getByText('DEV')).toBeInTheDocument();
     expect(screen.getByText('Alice')).toBeInTheDocument();
-    expect(screen.getByText('This is a getting started guide for new developers.')).toBeInTheDocument();
+    expect(screen.queryByText('This is a getting started guide for new developers.')).not.toBeInTheDocument();
+  });
+
+  it('renders title with line-clamp-2 allowing multiline title up to 2 lines', async () => {
+    fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      return new Response(JSON.stringify(mockPinnedResponse), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    render(<PinnedArticlesSection />, { wrapper: createWrapper() });
+
+    await screen.findByTestId('pinned-articles-section');
+
+    const titleElement = screen.getByText('Getting Started Guide');
+    expect(titleElement.className).toContain('line-clamp-2');
+    expect(titleElement.className).not.toContain('truncate');
   });
 
   it('shows unpin button on each card', async () => {
