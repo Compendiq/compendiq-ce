@@ -35,7 +35,7 @@ sequenceDiagram
         note right of BE: SKIPPED (never failed) for an exact-identifier query —<br/>#35;1107 pins those — for pasted error text, and for a paste<br/>over 1,000 chars#59; rag.expansion_skip_reason records which
         BE->>PROV: chat(resolveUsecase('chat')) — ONE call, 5s budget<br/>"rewrite this query 2 ways, same meaning"
         PROV-->>BE: 2 paraphrases (unusable reply = no expansion)
-        note right of BE: NOT a new ADR-021 use case#59; timeout / open breaker /<br/>unassigned provider / unparseable output all soft-fail to<br/>the ORIGINAL query alone — the ask never fails.<br/>Everything below then runs 3x (original + 2 paraphrases),<br/>each leg 20 wide with the rerank pool floored at 60,<br/>merged by SUMMED weighted RRF (original 1.0, each<br/>paraphrase 0.6) — see "Multi-query expansion" below
+        note right of BE: NOT a new ADR-021 use case#59; timeout / open breaker /<br/>unassigned provider / unparseable output all soft-fail to<br/>the ORIGINAL query alone — the ask never fails.<br/>Everything below then runs 3x (original + 2 paraphrases),<br/>each leg 20 wide with a 20-document rerank pool,<br/>merged by SUMMED weighted RRF (original 1.0, each<br/>paraphrase 0.6) — see "Multi-query expansion" below
     end
     BE->>EMB: POST /v1/embeddings (question)
     EMB-->>BE: q_vector[N]
@@ -276,6 +276,19 @@ feature for ordinary questions. `multi-query-search.test.ts` runs the detector
 over the whole #1102 fixture and asserts zero hits on the question, how-to,
 keywords and vocabulary-gap styles.
 
+The list was widened after the first measurement, where three of the ten R@5
+regressions were error-text queries it did not catch. Each of the added rules
+is still a marker rather than a vibe — a code-comment prefix, a GNU long
+option, an IANA media type, a single-quoted identifier, a source path (the
+directory separator is load-bearing; a bare `vite.config.js` is something
+people ask about), a constructor expression, a `host:port` literal. A phrase
+detector ("cannot", "failed to", "is not defined") was tried and rejected: on
+the same fixture it fired on three ordinary questions. Measured after
+widening: **17 of the 20 `error-text` labels, 0 of the 162** question /
+how-to / keywords / vocabulary-gap / identifier-negative ones. The three
+misses are prose ABOUT an error with no literal in them at all, and are left
+alone deliberately.
+
 **Everything soft-fails to the original query alone** — a timeout (5s,
 covering queue wait, so a backlogged queue cannot strand a slot), an open
 breaker, no `chat` assignment, or a reply with no usable line. Reformulation
@@ -283,13 +296,31 @@ deliberately reuses the `chat` use case rather than adding a sixth ADR-021
 assignment: it is a one-sentence rewrite, and a new knob would be one more
 thing to configure before the feature works at all.
 
-**Legs run 20 wide with the rerank pool floored at 60**
-(`rerankCandidatesFloor`, which only ever RAISES the operator's
-`rag_rerank_candidates` and stays inside its [10, 100] clamp). Both are
-constants, not knobs — #1118 owns the knobs. The floor is not decoration: the
-rerank stage rebuilds its result from the pool alone, so at the default 30 the
-extra candidates the wider legs surfaced would be dropped before the merge saw
-them.
+**Legs run 20 wide, and each leg's rerank pool is 20**
+(`rerankCandidatesOverride`, which REPLACES the operator's
+`rag_rerank_candidates` for the request and stays inside its [10, 100] clamp).
+Both are constants, not knobs — #1118 owns the knobs.
+
+It began as a *floor* of 60, on the reasoning that the rerank stage rebuilds
+its result from the pool alone, so at the default 30 the extra candidates the
+wider legs surfaced would be dropped before the merge saw them. That was right
+about the mechanism and wrong about the budget. `rag_rerank_candidates` bounds
+ONE retrieval's rerank cost, and the three legs run concurrently against one
+provider and one `RERANK_TIMEOUT_MS` (5s) — so a floor multiplied the
+operator's ceiling by the leg count. Measured on the #1102 rig against a local
+`bge-reranker-v2-m3` (2000-char chunks): 30 docs 2.4s, 3×20 4.8s, 3×30 7.2s,
+3×60 **14.9s**. The first deep+rerank measurement was void because of exactly
+that — every leg blew the budget, the aborts counted as breaker failures, and
+the stage participated in 7 of 197 queries while the run still reported a
+number.
+
+20 per leg keeps the gesture's total at 3×20 = 60 documents, the same order as
+one ordinary search, and it is the floor of what is useful rather than an
+arbitrary shrink: a leg hands `DEEP_SEARCH_LEG_TOPK` = 20 rows to the merge, so
+a pool below 20 could only rescore a strict subset of the merge's own input.
+The eval runner's rerank-participation guard is a **fraction** (default 0.9)
+for the same episode's sake: firing only at exactly zero, it read those 7 lucky
+queries as a healthy stage.
 
 **One gesture, one analytics row.** The legs run with `recordAnalytics: false`
 and the wrapper files a single `hybrid_multi_query` row under the USER's

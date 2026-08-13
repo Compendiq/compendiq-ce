@@ -40,7 +40,9 @@ const {
   DEEP_SEARCH_LEG_TOPK,
   DEEP_SEARCH_RERANK_CANDIDATES,
   REFORMULATION_TIMEOUT_MS,
+  PARAPHRASE_COUNT,
 } = await import('./multi-query-search.js');
+const { RAG_RERANK_CANDIDATES_DEFAULT } = await import('../../../core/services/admin-settings-service.js');
 
 function row(pageId: number, over: Partial<SearchResult> = {}): SearchResult {
   return {
@@ -197,8 +199,40 @@ describe('shouldExpandQuery (#1112) — what must never be paraphrased', () => {
       'Segmentation fault (core dumped) running vitest',
       'Traceback (most recent call last)\n  File "x.py", line 3',
       '    at handler (/srv/app/routes.js:31:14)',
+      // The shapes the first #1112 measurement caught this list missing —
+      // three of its ten R@5 regressions were error-text queries whose
+      // literals FTS was matching and the paraphrases threw away.
+      '// bad, nothing is assignable to never (except for itself)',
+      'You cannot use this option with --watch enabled',
+      'Fastify process remaining stuck after receiving Content-Type application/json',
+      "body should have required property 'name'",
+      "Cannot access '__vi_import_0__' before initialization",
+      'Timeout leaking in test/checkout-screen.test.tsx',
+      'new MockedClass() instanceof MockedClass returns false',
+      'vitest ui localhost:51204 token error',
     ]) {
       expect(shouldExpandQuery(q), q).toEqual({ expand: false, reason: 'error_text' });
+    }
+  });
+
+  /**
+   * The widened rules' own failure mode. A single-quoted identifier is a
+   * literal; a prose apostrophe is not, and the two are the same character.
+   * What separates them is that the quoted-run character class cannot cross a
+   * space, so "the server's job" offers no closing quote — worth pinning,
+   * because widening the class to admit `'user id'` would silently turn this
+   * guard into one that suppresses ordinary English.
+   */
+  it('does not read prose apostrophes, hyphens or filenames as pasted error text', () => {
+    for (const q of [
+      "what's the difference between vite's ssr build and the client's",
+      "why doesn't fastify's decorator survive the plugin's scope",
+      'how to load values from a .env file inside vite.config.js',
+      'fastify — what does the docs style guide say about wording',
+      'client/server split in a vite app',
+      'when should I use typeof versus instanceof in typescript',
+    ]) {
+      expect(shouldExpandQuery(q).expand, q).toBe(true);
     }
   });
 
@@ -229,10 +263,13 @@ describe('shouldExpandQuery (#1112) — what must never be paraphrased', () => {
       readFileSync(new URL('../eval/fixture.json', import.meta.url), 'utf8'),
     ) as { labels: Array<{ query: string; style: string }> };
     const errors = fixture.labels.filter((l) => l.style === 'error-text');
-    // Not all 20: half the slice is prose ABOUT an error ("vitest ui
-    // localhost:51204 token error"), which paraphrases perfectly well. The
-    // floor is on the literal ones — codes, error classes, crash banners.
-    expect(errors.filter((l) => looksLikeErrorText(l.query)).length).toBeGreaterThanOrEqual(9);
+    // 17 of 20, measured. The three left are prose ABOUT an error carrying no
+    // literal at all ("pino-pretty needs to be installed as a dev dependency")
+    // and are deliberately not chased: the only rule that reaches them is a
+    // phrase rule, and a phrase rule measured on this same fixture fires on
+    // ordinary questions. Ratchet, not a range — a widening that drops one of
+    // the 17 should have to say so.
+    expect(errors.filter((l) => looksLikeErrorText(l.query)).length).toBeGreaterThanOrEqual(17);
   });
 });
 
@@ -342,7 +379,7 @@ describe('multiQuerySearch (#1112)', () => {
         rerank: true,
         assembleContext: true,
         pinIdentifiers: true,
-        rerankCandidatesFloor: DEEP_SEARCH_RERANK_CANDIDATES,
+        rerankCandidatesOverride: DEEP_SEARCH_RERANK_CANDIDATES,
         // One gesture, one analytics row — see below.
         recordAnalytics: false,
       });
@@ -350,6 +387,23 @@ describe('multiQuerySearch (#1112)', () => {
     expect(mockHybridSearch.mock.calls[0]![4].onRetrievalMeta).toBeTypeOf('function');
     expect(mockHybridSearch.mock.calls[1]![4].onRetrievalMeta).toBeUndefined();
     expect(mockHybridSearch.mock.calls[2]![4].onRetrievalMeta).toBeUndefined();
+  });
+
+  /**
+   * The pool arithmetic, pinned as arithmetic rather than as a magic number.
+   * The legs run CONCURRENTLY against one provider and one RERANK_TIMEOUT_MS,
+   * so what the reranker sees per gesture is legs x pool — the quantity that
+   * has to stay near a single search's, not the per-leg figure.
+   */
+  it('keeps the whole gesture\'s rerank pool near ONE search\'s, not N times it (#1112)', async () => {
+    const legs = PARAPHRASE_COUNT + 1;
+    // Measured on the #1102 rig (bge-reranker-v2-m3, 2000-char chunks):
+    // 3 x 20 docs = 4.8s, 3 x 30 = 7.2s, 3 x 60 = 14.9s, against a 5s budget.
+    expect(legs * DEEP_SEARCH_RERANK_CANDIDATES).toBeLessThanOrEqual(2 * RAG_RERANK_CANDIDATES_DEFAULT);
+    // …and never below what the leg is about to hand the merge: the stage
+    // rebuilds its result from the pool alone, so a pool under the leg's own
+    // topK would rescore a strict subset of the merge's input.
+    expect(DEEP_SEARCH_RERANK_CANDIDATES).toBeGreaterThanOrEqual(DEEP_SEARCH_LEG_TOPK);
   });
 
   it('files ONE analytics row, under the user\'s own query and its own unit', async () => {

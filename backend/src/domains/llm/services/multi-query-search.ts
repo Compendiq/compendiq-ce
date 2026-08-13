@@ -86,14 +86,32 @@ export const MULTI_QUERY_RRF_K = 60;
 export const DEEP_SEARCH_LEG_TOPK = 20;
 
 /**
- * Rerank pool floor for deep-search legs (#1118 owns the knob later). The
- * default `rag_rerank_candidates` is 30 and the rerank stage DROPS candidates
- * past the pool, so wider legs feeding a three-way merge would have their
- * extra candidates truncated away before the merge ever saw them. 60 sits
- * inside the knob's existing [10, 100] clamp, and `rerankCandidatesFloor`
- * only ever raises an operator's configured value.
+ * Rerank pool PER LEG (#1118 owns the knob later). The arithmetic, which is
+ * the whole reason this number is what it is:
+ *
+ *   a single-leg search reranks `rag_rerank_candidates` = 30 documents;
+ *   deep search runs 3 legs CONCURRENTLY, each with its own
+ *   `RERANK_TIMEOUT_MS` = 5s budget, against one provider;
+ *   so the pool the provider actually sees per gesture is 3 x this constant.
+ *
+ * At the original 60 that was 180 documents inside a 5s budget. Measured on
+ * the #1102 rig against a local bge-reranker-v2-m3 (2000-char chunks, the
+ * client's own truncation): 30 docs 2.4s, 3 x 20 = 60 docs 4.8s, 3 x 30 = 90
+ * docs 7.2s, 3 x 60 = 180 docs 14.9s. The last one is why the first
+ * deep+rerank measurement was void — every leg blew the budget, the aborts
+ * counted as breaker failures, and the stage participated in 7 of 197
+ * queries while the run still reported a number.
+ *
+ * 20 keeps the gesture's total at 3 x 20 = 60 documents — the same order as
+ * one ordinary search, and inside the budget with ~4% headroom on that rig.
+ * It is also the floor of what is useful rather than an arbitrary shrink:
+ * a leg returns `DEEP_SEARCH_LEG_TOPK` = 20 rows to the merge, and the rerank
+ * stage rebuilds its result from the pool alone, so a pool below 20 could
+ * only rescore part of what the leg is about to hand over. Below 20 the stage
+ * would be reordering a strict subset of the merge's own input; above it the
+ * extra recall is bought with latency the budget does not have.
  */
-export const DEEP_SEARCH_RERANK_CANDIDATES = 60;
+export const DEEP_SEARCH_RERANK_CANDIDATES = 20;
 
 /**
  * Reformulation budget, covering queue wait plus the request (see
@@ -126,6 +144,13 @@ const MAX_PARAPHRASE_CHARS = 200;
  * disable the feature for ordinary questions. `multi-query-search.test.ts`
  * runs this over the whole #1102 fixture and asserts zero hits on the
  * question / how-to / keywords / vocabulary-gap styles.
+ *
+ * Measured on that fixture: 17 of the 20 `error-text` labels, 0 of the 162
+ * question / how-to / keywords / vocabulary-gap / identifier-negative ones.
+ * The three it still misses are prose ABOUT an error carrying no literal at
+ * all ("pino-pretty needs to be installed as a dev dependency"), and they are
+ * left alone on purpose: catching them needs a phrase rule, and a phrase rule
+ * measured on the same fixture takes ordinary questions with it.
  */
 const ERROR_TEXT_PATTERNS: RegExp[] = [
   // `ReferenceError: x is not defined`, `Error: ENOSPC: ...`, `TypeError:`.
@@ -144,6 +169,43 @@ const ERROR_TEXT_PATTERNS: RegExp[] = [
   /\bSegmentation fault\b|\bcore dumped\b/i,
   /\bpanic:\s|\bnil pointer dereference\b/,
   /\berror\[E\d{3,4}\]/,
+  // ── Widened after the first #1112 measurement ────────────────────────────
+  // Three of the ten R@5 regressions were error-text queries this list did
+  // not catch, and each carried a structural marker the rules above simply
+  // did not name. Every rule below is still a MARKER, not a vibe: a phrase
+  // detector ("cannot", "failed to", "is not defined") was measured on the
+  // fixture and fired on three ordinary questions, so it was rejected.
+  //
+  // A pasted code comment. `//` and `/*` only — a bare `#` is prose ("# of
+  // retries") far more often than it is a shell comment.
+  /^\s*(?:\/\/|\/\*)/,
+  // A GNU long option (`--watch`, `--no-color`). A flag is a literal the
+  // user copied out of a terminal, and FTS matches it character for
+  // character. Anchored to start-or-space so an em-dash typed as `--` and a
+  // hyphenated word cannot match.
+  /(?:^|\s)--[a-z][a-z0-9]+(?:-[a-z0-9]+)*\b/,
+  // An IANA media type (`application/json`, `text/html`). Closed list of
+  // top-level types, so an ordinary `and/or` or `client/server` cannot hit.
+  /\b(?:application|text|image|audio|video|multipart)\/[a-z0-9][a-z0-9.+-]*\b/,
+  // A single-quoted contiguous identifier — the shape validators and runtimes
+  // quote in their messages (`required property 'name'`, `Cannot access
+  // '__vi_import_0__'`). DOUBLE-quoted text is already handled upstream:
+  // `detectIdentifiers` reads a quoted phrase as a title, so `shouldExpandQuery`
+  // skips it as `identifier`. The character class excludes whitespace, which is
+  // what keeps prose apostrophes out: "it's the server's job" offers no
+  // closing quote for a run that cannot cross a space.
+  /'[A-Za-z_$][\w$.]*'/,
+  // A SOURCE PATH — a directory separator AND a code extension. The
+  // separator is load-bearing: a bare filename is something people ask about
+  // in prose (the fixture's own "how to load values from a .env file inside
+  // vite.config.js"), a path is something they pasted out of a stack trace.
+  /\b[\w.-]+\/[\w.-]+\.(?:[jt]sx?|mjs|cjs|json|ya?ml|toml|py|go|rs|rb|php|sh|css|scss|html)\b/,
+  // A constructor expression (`new MockedClass()`). Deliberately not the JS
+  // keywords `typeof` / `instanceof`, which are legitimate things to ASK
+  // about; an instantiated call is code that was copied, not typed.
+  /\bnew\s+[A-Z][\w$]*\s*\(/,
+  // A host:port literal (`localhost:51204`). The port is the token.
+  /\b(?:localhost|127\.0\.0\.1|0\.0\.0\.0)[:/]\d{2,5}\b/,
 ];
 
 export function looksLikeErrorText(query: string): boolean {
@@ -390,7 +452,7 @@ export async function multiQuerySearch(
     const legTopK = Math.max(topK, DEEP_SEARCH_LEG_TOPK);
     const legOpts: HybridSearchOptions = {
       ...opts,
-      rerankCandidatesFloor: DEEP_SEARCH_RERANK_CANDIDATES,
+      rerankCandidatesOverride: DEEP_SEARCH_RERANK_CANDIDATES,
       // One gesture, one analytics row — written below for the merged set.
       recordAnalytics: false,
     };

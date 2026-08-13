@@ -74,6 +74,22 @@ export interface EvalRunOptions {
    * genuinely keyword-shaped queries while still failing a dead leg loudly.
    */
   minVectorParticipation?: number;
+  /**
+   * Fraction of queries that must show at least one rerank-scored result when
+   * `rerank` is requested. Same reasoning as `minVectorParticipation`, learned
+   * the expensive way: the first #1112 deep+rerank measurement shipped three
+   * concurrent 60-document rerank calls into one 5s budget, every call timed
+   * out, the aborts tripped the breaker — and the stage still scored 7 of 197
+   * queries in the gaps between cool-downs. A guard that fired only at exactly
+   * zero read those 7 as a working stage and published the run.
+   *
+   * The floor is high because a live reranker participates in essentially
+   * every query: the stage runs whenever the fused candidate list holds more
+   * than one row, which on any real corpus is always. Anything short of that
+   * is a stage failing most of the time, and a metric computed from a pipeline
+   * that is half-on describes neither configuration.
+   */
+  minRerankParticipation?: number;
 }
 
 export interface EvalRunResult {
@@ -122,6 +138,7 @@ export interface EvalRunResult {
 
 export async function runEval(fixture: Fixture, opts: EvalRunOptions): Promise<EvalRunResult> {
   const minParticipation = opts.minVectorParticipation ?? 0.5;
+  const minRerankParticipation = opts.minRerankParticipation ?? 0.9;
 
   // A partially embedded corpus inflates every metric: the pages that failed
   // to embed cannot be retrieved by the vector leg, so the queries pointing at
@@ -220,14 +237,29 @@ export async function runEval(fixture: Fixture, opts: EvalRunOptions): Promise<E
     );
   }
 
-  // A --rerank run in which the stage never executed once (unassigned,
-  // erroring, always past the budget) is a plain run wearing the wrong
+  // A --rerank run in which the stage MOSTLY did not execute (unassigned,
+  // erroring, past the budget, breaker open) is a plain run wearing the wrong
   // label — the same class of silent lie the vector-participation guard
-  // exists for (#1267 verification, 5).
-  if (opts.rerank === true && rerankParticipatingQueries === 0 && fixture.labels.length > 0) {
+  // exists for (#1267 verification, 5). A fraction, not "> 0", for the same
+  // reason that guard gives: a handful of lucky hits between breaker
+  // cool-downs is evidence of a broken stage, not a working one, and reading
+  // them as health is exactly how the first #1112 deep+rerank run published
+  // a number computed from 7/197 reranked queries.
+  const rerankParticipation =
+    fixture.labels.length === 0 ? 0 : rerankParticipatingQueries / fixture.labels.length;
+  if (
+    opts.rerank === true
+    && fixture.labels.length > 0
+    && rerankParticipation < minRerankParticipation
+  ) {
     throw new VectorLegSilentError(
-      'A rerank run was requested but the rerank stage participated in 0 queries — '
-      + 'check the rerank use-case assignment and the provider endpoint before trusting this measurement.',
+      `A rerank run was requested but the rerank stage participated in only `
+      + `${rerankParticipatingQueries}/${fixture.labels.length} queries `
+      + `(${(rerankParticipation * 100).toFixed(1)}%, floor ${(minRerankParticipation * 100).toFixed(0)}%) — `
+      + 'the stage bypasses itself on ANY failure and still returns the fused order, so this run would '
+      + 'otherwise have reported a confident score for a pipeline that was mostly not the one it names. '
+      + 'Check the rerank use-case assignment, the provider endpoint, and whether the candidate pool fits '
+      + 'inside RERANK_TIMEOUT_MS (a multi-leg search multiplies the pool by its leg count).',
     );
   }
   // Same silent-lie class as the rerank guard: an assembly-on run in which

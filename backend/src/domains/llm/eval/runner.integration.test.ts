@@ -38,12 +38,24 @@ vi.mock('../services/openai-compatible-client.js', async () => {
     chat: vi.fn(async () => ''),
   };
 });
+// Inlined rather than hoisted into a shared const: `vi.mock` factories are
+// lifted above every module-level declaration, so a reference here would be a
+// TDZ error at load time.
 vi.mock('../services/llm-provider-resolver.js', () => ({
   resolveUsecase: vi.fn(async () => ({
     config: { providerId: 'stub', id: 'stub', name: 'stub', baseUrl: '', apiKey: null, authType: 'none', verifySsl: true, defaultModel: 'stub' },
     model: 'stub',
   })),
+  // The rerank stage's own resolver. Default REJECTS, so every test that does
+  // not opt in keeps measuring the un-reranked pipeline exactly as before
+  // (rag-service catches this and disables the stage for the request).
+  resolveRerankUsecase: vi.fn(async () => {
+    throw new Error('no rerank assignment in this eval DB');
+  }),
 }));
+// rag-service imports this as `rerank as rerankDocuments` — the MOCK must
+// carry the module's own export name.
+vi.mock('../services/rerank-client.js', () => ({ rerank: vi.fn(async () => []) }));
 
 const { runEval, VectorLegSilentError } = await import('./runner.js');
 
@@ -240,5 +252,53 @@ describe.skipIf(!dbAvailable)('eval runner (#1102)', () => {
     await expect(runEval(fixtureOf(labels), { userId: USER, pageIdByFile, topK: 5 })).rejects.toThrow(
       /1\/4 queries/,
     );
+  });
+
+  it('fails a --rerank run in which the stage worked for only a token minority of queries', async () => {
+    // The defect this test exists for: the guard used to fire only at EXACTLY
+    // zero. The first #1112 deep+rerank measurement sent three concurrent
+    // 60-document rerank calls into one 5s budget, every call aborted, the
+    // aborts tripped the breaker — and the stage still scored 7 of 197
+    // queries in the gaps between cool-downs, which the zero-only guard read
+    // as a healthy stage and published.
+    const alpha = await seedPage('Alpha topic', 'alpha content about hooks', 5);
+    await seedPage('Beta topic', 'beta content about hooks and bundling', 6);
+    const pageIdByFile = new Map([['alpha.md', alpha]]);
+    const labels = Array.from({ length: 4 }, (_, i) => ({
+      id: `q${i}`,
+      query: `query ${i} about hooks`,
+      expectedFiles: ['alpha.md'],
+    }));
+
+    // The vector-minority test above replaces the embedding implementation
+    // with a counting one, and `beforeEach` only resets the flags it reads —
+    // without this the vector guard fires first and the assertion below would
+    // pass on the wrong error.
+    const client = await import('../services/openai-compatible-client.js');
+    vi.mocked(client.generateEmbedding).mockImplementation(async () => [topicVec(5)]);
+
+    const resolver = await import('../services/llm-provider-resolver.js');
+    vi.mocked(resolver.resolveRerankUsecase).mockResolvedValue({ config: {
+      providerId: 'stub', id: 'stub', name: 'stub', baseUrl: '', apiKey: null,
+      authType: 'none', verifySsl: true, defaultModel: 'rr',
+    }, model: 'rr' } as never);
+    const rerankClient = await import('../services/rerank-client.js');
+    let call = 0;
+    vi.mocked(rerankClient.rerank).mockImplementation(async (_c, _m, _q, docs) => {
+      // Only the first query is scored; the rest time out the way an
+      // over-sized pool does against RERANK_TIMEOUT_MS.
+      if (call++ > 0) throw new Error('The operation was aborted due to timeout');
+      return docs.map((_d: string, i: number) => ({ index: i, relevanceScore: 1 - i / 100 }));
+    });
+
+    try {
+      await expect(
+        runEval(fixtureOf(labels), { userId: USER, pageIdByFile, topK: 5, rerank: true }),
+      ).rejects.toThrow(/participated in only 1\/4 queries/);
+
+    } finally {
+      vi.mocked(resolver.resolveRerankUsecase).mockRejectedValue(new Error('no rerank assignment'));
+      vi.mocked(rerankClient.rerank).mockResolvedValue([]);
+    }
   });
 });

@@ -26,6 +26,7 @@ import {
   RAG_MMR_LAMBDA_DEFAULT,
   getRagRerankCandidates,
   RAG_RERANK_CANDIDATES_MAX,
+  RAG_RERANK_CANDIDATES_MIN,
   RAG_FETCH_WIDTH_DEFAULT,
   RAG_FETCH_WIDTH_MAX,
 } from '../../../core/services/admin-settings-service.js';
@@ -952,17 +953,29 @@ export interface HybridSearchOptions {
    * admin_settings so the stage is measurable within one tree. */
   mmr?: { enabled: boolean; lambda?: number };
   /**
-   * #1112 — a FLOOR under the rerank candidate pool for this request, never
-   * a replacement for the operator's `rag_rerank_candidates`: the effective
-   * pool is `min(max(configured, floor), RAG_RERANK_CANDIDATES_MAX)`. Deep
-   * search asks for a wider funnel because its merge is fed by three legs,
-   * and the rerank stage DROPS everything past the pool (`reranked` is built
-   * from `pool` alone) — at the default 30 the extra candidates the wider
-   * legs surfaced would be truncated away before the merge ever saw them.
-   * Ignored unless `rerank` is also requested; a floor below the configured
-   * value is a no-op by construction.
+   * #1112 — the rerank candidate pool for THIS request, replacing the
+   * operator's `rag_rerank_candidates`: the effective pool is
+   * `min(max(override, RAG_RERANK_CANDIDATES_MIN), RAG_RERANK_CANDIDATES_MAX)`,
+   * i.e. the caller's number put through the operator's own clamp, and then
+   * floored at `topK` by the stage itself (a pool narrower than the result
+   * would truncate the result).
+   *
+   * It was a FLOOR when introduced, on the reasoning that the rerank stage
+   * DROPS everything past the pool (`reranked` is built from `pool` alone), so
+   * deep search's wider legs needed a wider funnel. That reasoning was right
+   * about the mechanism and wrong about the budget: `rag_rerank_candidates`
+   * bounds ONE retrieval's rerank cost, and deep search runs three of them
+   * concurrently against a single `RERANK_TIMEOUT_MS`, so a floor MULTIPLIED
+   * the operator's ceiling by the leg count (measured: 3 x 60 = 180 documents
+   * took 14.9s against a 5s budget, timed out, and tripped the breaker).
+   * Replacing rather than raising lets a multi-leg caller DIVIDE that budget,
+   * which is the only direction that keeps one gesture's cost comparable to
+   * one search's. Raising is still reachable — the clamp is the operator's
+   * ceiling, not their configured value — but no caller does it today.
+   *
+   * Ignored unless `rerank` is also requested.
    */
-  rerankCandidatesFloor?: number;
+  rerankCandidatesOverride?: number;
   /**
    * Write a `search_analytics` row for this search (default TRUE — every
    * pre-#1112 caller). Deep search's PARAPHRASE legs pass false: their query
@@ -1285,16 +1298,20 @@ async function hybridSearchInner(
         return null;
       })
     : Promise.resolve(null);
-  // #1112: a caller-supplied FLOOR only raises the pool, and stays inside the
-  // knob's own ceiling — a per-request option must not be able to ship more
+  // #1112: a caller-supplied pool REPLACES the configured one, through the
+  // operator's own clamp — a per-request option must not be able to ship more
   // documents to the rerank provider (and, under EE ACL, more access checks)
-  // than the operator's clamp allows.
+  // than `rag_rerank_candidates`' ceiling allows, and must be able to ship
+  // FEWER when one gesture fans out into several concurrent searches.
   const rerankCandidatesPromise = opts?.rerank
-    ? getRagRerankCandidates().then((configured) =>
-        opts.rerankCandidatesFloor === undefined
-          ? configured
-          : Math.min(Math.max(configured, opts.rerankCandidatesFloor), RAG_RERANK_CANDIDATES_MAX),
-      )
+    ? opts.rerankCandidatesOverride === undefined
+      ? getRagRerankCandidates()
+      : Promise.resolve(
+          Math.min(
+            Math.max(opts.rerankCandidatesOverride, RAG_RERANK_CANDIDATES_MIN),
+            RAG_RERANK_CANDIDATES_MAX,
+          ),
+        )
     : Promise.resolve(0);
   // With an active rerank stage the legs widen to the candidate pool — this
   // is the deliberate spend of #1103's over-fetch headroom, paired with the
