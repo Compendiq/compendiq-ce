@@ -997,14 +997,6 @@ export function SidebarTreeView({
           )}
           aria-hidden="true"
         />
-        {isResizing && (
-          <span
-            className="panel-context pointer-events-none absolute right-3 top-3 rounded-md px-1.5 py-1 text-[11px] font-medium tabular-nums text-foreground"
-            aria-hidden="true"
-          >
-            {treeSidebarWidth}px
-          </span>
-        )}
       </div>
     </m.aside>
   );
