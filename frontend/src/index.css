@@ -2382,9 +2382,27 @@ pre:focus-within .code-copy-btn,
 }
 
 .tiptap .tableWrapper {
+  position: relative;
   overflow-x: auto;
-  margin: 1rem 0;
+  margin: 1.25rem 0;
   -webkit-overflow-scrolling: touch;
+  border-radius: var(--radius-md, 6px);
+}
+
+.tiptap:not([contenteditable="false"]) .tableWrapper:hover,
+.tiptap:not([contenteditable="false"]) .tableWrapper:focus-within {
+  outline: 1px solid var(--color-border-interactive);
+}
+
+/* Notion-style full-width table expansion */
+.tiptap table[data-layout="full-width"],
+.tiptap .tableWrapper[data-layout="full-width"],
+.article-viewer .tiptap table[data-layout="full-width"],
+.article-viewer .tiptap .tableWrapper[data-layout="full-width"] {
+  width: 100% !important;
+  max-width: none !important;
+  margin-left: 0 !important;
+  margin-right: 0 !important;
 }
 
 .tiptap table {

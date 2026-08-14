@@ -32,6 +32,7 @@ import {
   FigureIndex,
   TableIndex,
   UnknownMacro,
+  ExtendedTable,
 } from './article-extensions';
 import { MermaidBlock } from './MermaidBlockExtension';
 import { fetchAuthenticatedBlob } from '../../hooks/use-authenticated-src';
@@ -48,6 +49,7 @@ DOMPurify.addHook('uponSanitizeAttribute', (_node, data) => {
     data.attrName === 'data-confluence-link' ||
     data.attrName === 'data-type' ||
     data.attrName === 'data-checked' ||
+    data.attrName === 'data-layout' ||
     data.attrName === 'data-layout-type' ||
     data.attrName === 'data-cell-width' ||
     data.attrName === 'data-border'
@@ -122,7 +124,7 @@ export function ArticleViewer({
         types: ['heading', 'paragraph', 'blockquote'],
         alignments: ['left', 'center', 'right', 'justify'],
       }),
-      Table.configure({ resizable: false }),
+      ExtendedTable.configure({ resizable: false }),
       TableRow,
       TableCell,
       TableHeader,
