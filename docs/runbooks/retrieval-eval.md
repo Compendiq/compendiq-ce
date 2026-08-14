@@ -62,7 +62,9 @@ curl https://compendiq.example/api/admin/retrieval-benchmark/<run-id> \
 
 Custom labels are the only basis for Recall/MRR. The endpoint is admin-only,
 allows one queued/running comparison at a time, and stores the query text plus
-compact page ids/titles and timings—not retrieved chunk text.
+compact page ids/titles and timings—not retrieved chunk text. Runs heartbeat
+while they progress; if a worker disappears, the next start request marks a
+stale run failed so it cannot block future benchmarks.
 
 ## Running it
 

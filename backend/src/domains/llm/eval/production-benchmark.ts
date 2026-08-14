@@ -101,7 +101,11 @@ export class ProductionBenchmarkAlreadyRunningError extends Error {
   }
 }
 
+const STALE_BENCHMARK_AFTER = '30 minutes';
+const STALE_BENCHMARK_ERROR = 'The benchmark worker stopped before the run completed. Start a new benchmark.';
+
 export async function getActiveProductionBenchmark(): Promise<{ id: string } | null> {
+  await recoverStaleProductionBenchmarks();
   const result = await query<{ id: string }>(
     `SELECT id FROM retrieval_benchmark_runs
      WHERE status IN ('queued', 'running')
@@ -109,6 +113,23 @@ export async function getActiveProductionBenchmark(): Promise<{ id: string } | n
      LIMIT 1`,
   );
   return result.rows[0] ?? null;
+}
+
+async function recoverStaleProductionBenchmarks(): Promise<void> {
+  const result = await query<{ id: string }>(
+    `UPDATE retrieval_benchmark_runs
+     SET status = 'failed', error = $1, completed_at = NOW(), last_heartbeat_at = NOW()
+     WHERE status IN ('queued', 'running')
+       AND last_heartbeat_at < NOW() - $2::interval
+     RETURNING id`,
+    [STALE_BENCHMARK_ERROR, STALE_BENCHMARK_AFTER],
+  );
+  if (result.rows.length > 0) {
+    logger.warn(
+      { benchmarkRunIds: result.rows.map((row) => row.id) },
+      'Recovered abandoned production retrieval benchmark runs',
+    );
+  }
 }
 
 export async function createProductionBenchmarkRun(
@@ -147,25 +168,31 @@ export async function getProductionBenchmarkRun(id: string): Promise<ProductionB
 }
 
 export async function runProductionBenchmark(id: string, userId: string): Promise<void> {
-  const row = await query<Pick<BenchmarkRunRow, 'config' | 'status'>>(
-    `SELECT config, status FROM retrieval_benchmark_runs WHERE id = $1`,
-    [id],
-  );
-  const config = row.rows[0]?.config;
-  if (!config || row.rows[0]?.status !== 'queued') return;
-
-  await query(
-    `UPDATE retrieval_benchmark_runs
-     SET status = 'running', started_at = NOW(), progress_done = 0,
-         progress_total = $2, error = NULL
-     WHERE id = $1`,
-    [id, config.source === 'custom' ? config.queries?.length ?? 0 : config.limit],
-  );
-
   try {
+    // Keep the claim path inside the failure handler. If the process dies
+    // after insertion but before this transition, the heartbeat recovery in
+    // getActiveProductionBenchmark() will release the queued row later.
+    const row = await query<Pick<BenchmarkRunRow, 'config' | 'status'>>(
+      `SELECT config, status FROM retrieval_benchmark_runs WHERE id = $1`,
+      [id],
+    );
+    const config = row.rows[0]?.config;
+    if (!config || row.rows[0]?.status !== 'queued') return;
+
+    const claimed = await query(
+      `UPDATE retrieval_benchmark_runs
+       SET status = 'running', started_at = NOW(), progress_done = 0,
+           progress_total = $2, error = NULL, last_heartbeat_at = NOW()
+       WHERE id = $1 AND status = 'queued'`,
+      [id, config.source === 'custom' ? config.queries?.length ?? 0 : config.limit],
+    );
+    if (claimed.rowCount !== 1) return;
+
     const queries = await resolveBenchmarkQueries(config);
     await query(
-      `UPDATE retrieval_benchmark_runs SET progress_total = $2 WHERE id = $1`,
+      `UPDATE retrieval_benchmark_runs
+       SET progress_total = $2, last_heartbeat_at = NOW()
+       WHERE id = $1`,
       [id, queries.length],
     );
 
@@ -175,7 +202,9 @@ export async function runProductionBenchmark(id: string, userId: string): Promis
 
     const report = await executeBenchmark(queries, userId, config, async (done) => {
       await query(
-        `UPDATE retrieval_benchmark_runs SET progress_done = $2 WHERE id = $1`,
+        `UPDATE retrieval_benchmark_runs
+         SET progress_done = $2, last_heartbeat_at = NOW()
+         WHERE id = $1`,
         [id, done],
       );
     });
@@ -183,7 +212,7 @@ export async function runProductionBenchmark(id: string, userId: string): Promis
     await query(
       `UPDATE retrieval_benchmark_runs
        SET status = 'completed', progress_done = progress_total,
-           result = $2::jsonb, completed_at = NOW()
+           result = $2::jsonb, completed_at = NOW(), last_heartbeat_at = NOW()
        WHERE id = $1`,
       [id, JSON.stringify(report)],
     );
@@ -191,7 +220,7 @@ export async function runProductionBenchmark(id: string, userId: string): Promis
     logger.error({ err, benchmarkRunId: id }, 'Production retrieval benchmark failed');
     await query(
       `UPDATE retrieval_benchmark_runs
-       SET status = 'failed', error = $2, completed_at = NOW()
+       SET status = 'failed', error = $2, completed_at = NOW(), last_heartbeat_at = NOW()
        WHERE id = $1`,
       [id, publicErrorMessage(err)],
     ).catch((updateErr) => logger.error({ err: updateErr, benchmarkRunId: id }, 'Failed to persist benchmark failure'));
