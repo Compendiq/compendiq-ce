@@ -2396,13 +2396,30 @@ pre:focus-within .code-copy-btn,
 
 /* Notion-style full-width table expansion */
 .tiptap table[data-layout="full-width"],
+.article-viewer .tiptap table[data-layout="full-width"] {
+  width: 100% !important;
+  max-width: none !important;
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+  table-layout: auto !important;
+}
+
 .tiptap .tableWrapper[data-layout="full-width"],
-.article-viewer .tiptap table[data-layout="full-width"],
 .article-viewer .tiptap .tableWrapper[data-layout="full-width"] {
   width: 100% !important;
   max-width: none !important;
   margin-left: 0 !important;
   margin-right: 0 !important;
+}
+
+/* Force column widths to scale fluidly across the full page width when expanded */
+.tiptap table[data-layout="full-width"] col,
+.tiptap table[data-layout="full-width"] td,
+.tiptap table[data-layout="full-width"] th,
+.article-viewer .tiptap table[data-layout="full-width"] col,
+.article-viewer .tiptap table[data-layout="full-width"] td,
+.article-viewer .tiptap table[data-layout="full-width"] th {
+  width: auto !important;
 }
 
 .tiptap table {

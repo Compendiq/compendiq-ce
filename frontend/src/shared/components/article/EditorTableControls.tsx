@@ -1,6 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import * as Popover from '@radix-ui/react-popover';
+import { BubbleMenu } from '@tiptap/react/menus';
 import { useEditorState } from '@tiptap/react';
+import { PluginKey } from '@tiptap/pm/state';
 import type { Editor as EditorType } from '@tiptap/react';
 import {
   ArrowUpFromLine,
@@ -15,7 +17,6 @@ import {
   ToggleLeft,
   PanelTop,
   TableProperties,
-  Table as TableIcon,
   Plus,
   Maximize2,
   Minimize2,
@@ -23,6 +24,8 @@ import {
 } from 'lucide-react';
 import { cn } from '../../lib/cn';
 import { ToolbarButton, ToolbarSeparator } from './editor-toolbar-primitives';
+
+export const tableBubbleMenuPluginKey = new PluginKey('tableBubbleMenu');
 
 /**
  * Hook to observe the active table node in the TipTap editor.
@@ -98,23 +101,29 @@ export function useActiveTableElement(editor: EditorType | null) {
 
 /**
  * Modernized Notion-style Table Context Toolbar.
- * Renders in the editor sticky toolbar or floating above the table.
- * Includes row/column ops, cell merge/split, header toggles, table caption,
- * and page-width expansion toggle.
+ * Provides controls for row/column operations, header toggles, cell merging, table layout expansion, and deletion.
  */
 export function TableContextToolbar({ editor }: { editor: EditorType }) {
-  const { isTable, isHeaderRow, canMerge, canSplit, isFullWidth } = useEditorState({
+  const { isFullWidth } = useActiveTableElement(editor);
+
+  const editorState = useEditorState({
     editor,
     selector: ({ editor: e }) => ({
-      isTable: e.isActive('table'),
-      isHeaderRow: e.isActive('tableHeader'),
-      canMerge: e.can().mergeCells(),
-      canSplit: e.can().splitCell(),
-      isFullWidth: e.getAttributes('table')['data-layout'] === 'full-width',
+      isInTable: e.isActive('table'),
+      canMergeCells: e.can().mergeCells(),
+      canSplitCell: e.can().splitCell(),
+      canAddRowBefore: e.can().addRowBefore(),
+      canAddRowAfter: e.can().addRowAfter(),
+      canDeleteRow: e.can().deleteRow(),
+      canAddColumnBefore: e.can().addColumnBefore(),
+      canAddColumnAfter: e.can().addColumnAfter(),
+      canDeleteColumn: e.can().deleteColumn(),
     }),
   });
 
-  if (!isTable) return null;
+  if (!editorState.isInTable) {
+    return null;
+  }
 
   const toggleFullWidth = () => {
     const nextLayout = isFullWidth ? 'default' : 'full-width';
@@ -123,120 +132,95 @@ export function TableContextToolbar({ editor }: { editor: EditorType }) {
 
   return (
     <div
+      aria-label="Table options"
+      role="toolbar"
       data-testid="table-context-toolbar"
-      className="flex flex-wrap items-center gap-1 border-t border-border bg-card px-2 py-1.5 text-xs text-foreground transition-all duration-150"
+      className="flex flex-wrap items-center gap-0.5 rounded-lg border border-border bg-card p-1 text-card-foreground nm-card-elevated animate-in fade-in-50"
     >
-      {/* Table Badge */}
-      <div className="flex items-center gap-1.5 pr-1 select-none">
-        <span className="flex h-6 items-center gap-1 rounded border border-border-interactive/30 bg-foreground/5 px-2 font-medium text-foreground">
-          <TableIcon size={13} className="text-primary shrink-0" />
-          <span>Table</span>
-        </span>
-      </div>
-
-      <ToolbarSeparator />
-
-      {/* Row operations */}
-      <div className="flex items-center gap-0.5" role="group" aria-label="Row operations">
-        <ToolbarButton
-          onClick={() => editor.chain().focus().addRowBefore().run()}
-          disabled={!editor.can().addRowBefore()}
-          title="Add row before"
-        >
-          <ArrowUpFromLine size={15} />
-        </ToolbarButton>
-        <ToolbarButton
-          onClick={() => editor.chain().focus().addRowAfter().run()}
-          disabled={!editor.can().addRowAfter()}
-          title="Add row after"
-        >
-          <ArrowDownFromLine size={15} />
-        </ToolbarButton>
-        <ToolbarButton
-          onClick={() => editor.chain().focus().deleteRow().run()}
-          disabled={!editor.can().deleteRow()}
-          title="Delete row"
-        >
-          <Rows3 size={15} className="text-destructive/80 transition-colors hover:text-destructive" />
-        </ToolbarButton>
-      </div>
-
-      <ToolbarSeparator />
-
-      {/* Column operations */}
-      <div className="flex items-center gap-0.5" role="group" aria-label="Column operations">
-        <ToolbarButton
-          onClick={() => editor.chain().focus().addColumnBefore().run()}
-          disabled={!editor.can().addColumnBefore()}
-          title="Add column before"
-        >
-          <ArrowLeftFromLine size={15} />
-        </ToolbarButton>
-        <ToolbarButton
-          onClick={() => editor.chain().focus().addColumnAfter().run()}
-          disabled={!editor.can().addColumnAfter()}
-          title="Add column after"
-        >
-          <ArrowRightFromLine size={15} />
-        </ToolbarButton>
-        <ToolbarButton
-          onClick={() => editor.chain().focus().deleteColumn().run()}
-          disabled={!editor.can().deleteColumn()}
-          title="Delete column"
-        >
-          <Columns3 size={15} className="text-destructive/80 transition-colors hover:text-destructive" />
-        </ToolbarButton>
-      </div>
-
-      <ToolbarSeparator />
-
-      {/* Merge / Split */}
-      <div className="flex items-center gap-0.5" role="group" aria-label="Cell layout">
-        <ToolbarButton
-          onClick={() => editor.chain().focus().mergeCells().run()}
-          disabled={!canMerge}
-          title="Merge cells"
-        >
-          <Merge size={15} />
-        </ToolbarButton>
-        <ToolbarButton
-          onClick={() => editor.chain().focus().splitCell().run()}
-          disabled={!canSplit}
-          title="Split cell"
-        >
-          <SplitSquareHorizontal size={15} />
-        </ToolbarButton>
-      </div>
-
-      <ToolbarSeparator />
-
-      {/* Header Toggles */}
-      <div className="flex items-center gap-0.5" role="group" aria-label="Header formatting">
-        <ToolbarButton
-          onClick={() => editor.chain().focus().toggleHeaderRow().run()}
-          disabled={!editor.can().toggleHeaderRow()}
-          active={isHeaderRow}
-          title="Toggle header row"
-        >
-          <PanelTop size={15} />
-        </ToolbarButton>
-        <ToolbarButton
-          onClick={() => editor.chain().focus().toggleHeaderColumn().run()}
-          disabled={!editor.can().toggleHeaderColumn()}
-          title="Toggle header column"
-        >
-          <ToggleLeft size={15} />
-        </ToolbarButton>
-      </div>
-
-      <ToolbarSeparator />
-
-      {/* Table Caption */}
+      {/* Row Operations */}
       <ToolbarButton
-        onClick={() => {
-          editor.chain().focus().insertContent({ type: 'tableCaption' }).run();
-        }}
-        title="Add Table Caption"
+        onClick={() => editor.chain().focus().addRowBefore().run()}
+        disabled={!editorState.canAddRowBefore}
+        title="Add row before"
+      >
+        <ArrowUpFromLine size={15} />
+      </ToolbarButton>
+      <ToolbarButton
+        onClick={() => editor.chain().focus().addRowAfter().run()}
+        disabled={!editorState.canAddRowAfter}
+        title="Add row after"
+      >
+        <ArrowDownFromLine size={15} />
+      </ToolbarButton>
+      <ToolbarButton
+        onClick={() => editor.chain().focus().deleteRow().run()}
+        disabled={!editorState.canDeleteRow}
+        title="Delete row"
+      >
+        <Rows3 size={15} className="text-destructive/80 transition-colors hover:text-destructive" />
+      </ToolbarButton>
+
+      <ToolbarSeparator />
+
+      {/* Column Operations */}
+      <ToolbarButton
+        onClick={() => editor.chain().focus().addColumnBefore().run()}
+        disabled={!editorState.canAddColumnBefore}
+        title="Add column before"
+      >
+        <ArrowLeftFromLine size={15} />
+      </ToolbarButton>
+      <ToolbarButton
+        onClick={() => editor.chain().focus().addColumnAfter().run()}
+        disabled={!editorState.canAddColumnAfter}
+        title="Add column after"
+      >
+        <ArrowRightFromLine size={15} />
+      </ToolbarButton>
+      <ToolbarButton
+        onClick={() => editor.chain().focus().deleteColumn().run()}
+        disabled={!editorState.canDeleteColumn}
+        title="Delete column"
+      >
+        <Columns3 size={15} className="text-destructive/80 transition-colors hover:text-destructive" />
+      </ToolbarButton>
+
+      <ToolbarSeparator />
+
+      {/* Cell Merge / Split */}
+      <ToolbarButton
+        onClick={() => editor.chain().focus().mergeCells().run()}
+        disabled={!editorState.canMergeCells}
+        title="Merge cells"
+      >
+        <Merge size={15} />
+      </ToolbarButton>
+      <ToolbarButton
+        onClick={() => editor.chain().focus().splitCell().run()}
+        disabled={!editorState.canSplitCell}
+        title="Split cell"
+      >
+        <SplitSquareHorizontal size={15} />
+      </ToolbarButton>
+
+      <ToolbarSeparator />
+
+      {/* Header Toggles & Caption */}
+      <ToolbarButton
+        onClick={() => editor.chain().focus().toggleHeaderRow().run()}
+        title="Toggle header row"
+      >
+        <PanelTop size={15} />
+      </ToolbarButton>
+      <ToolbarButton
+        onClick={() => editor.chain().focus().toggleHeaderColumn().run()}
+        title="Toggle header column"
+      >
+        <ToggleLeft size={15} />
+      </ToolbarButton>
+      <ToolbarButton
+        onClick={() => editor.chain().focus().insertContent({ type: 'tableCaption' }).run()}
+        title="Add table caption"
       >
         <TableProperties size={15} />
       </ToolbarButton>
@@ -262,7 +246,7 @@ export function TableContextToolbar({ editor }: { editor: EditorType }) {
         <span>{isFullWidth ? 'Page width' : 'Expand'}</span>
       </button>
 
-      <div className="flex-1" />
+      <ToolbarSeparator />
 
       {/* Delete Table */}
       <ToolbarButton
@@ -277,17 +261,82 @@ export function TableContextToolbar({ editor }: { editor: EditorType }) {
 }
 
 /**
- * Notion-Style Floating Table Overlay Controls attached directly to the active Table inside the editor canvas.
- * Renders:
- * 1. Corner Handle Button (`::`) at top-left corner of table with Table Options Popover.
- * 2. Edge Column Adder (`+`) button at the right boundary of the table.
- * 3. Edge Row Adder (`+`) button at the bottom boundary of the table.
+ * Floating Table Context Toolbar attached DIRECTLY to the active Table in the editor canvas using TipTap BubbleMenu.
+ */
+export function FloatingTableToolbar({ editor }: { editor: EditorType }) {
+  const shouldShow = useCallback(({ editor: e }: { editor: EditorType }) => {
+    if (!e || e.isDestroyed || !e.isEditable) return false;
+    return e.isActive('table');
+  }, []);
+
+  return (
+    <BubbleMenu
+      editor={editor}
+      pluginKey={tableBubbleMenuPluginKey}
+      shouldShow={shouldShow}
+      options={{
+        placement: 'top-start',
+        offset: 8,
+        flip: { padding: 8 },
+        shift: { padding: 8 },
+      }}
+      updateDelay={50}
+    >
+      <TableContextToolbar editor={editor} />
+    </BubbleMenu>
+  );
+}
+
+/**
+ * Notion-Style Floating Table Overlay Controls positioned directly at the active Table in the editor canvas.
+ * Computes exact DOM coordinates relative to the editor container so controls map 1:1 to table boundaries:
+ * 1. Corner Handle Button (`:: Table`) at top-left corner of table with Table Options Popover.
+ * 2. Edge Column Adder (`+ Column`) button at the right boundary of the table.
+ * 3. Edge Row Adder (`+ Row`) button at the bottom boundary of the table.
  */
 export function EditorTableOverlay({ editor }: { editor: EditorType }) {
   const { wrapperElement, isFullWidth } = useActiveTableElement(editor);
   const [popoverOpen, setPopoverOpen] = useState(false);
+  const [rect, setRect] = useState<{ top: number; left: number; width: number; height: number } | null>(null);
 
-  if (!wrapperElement || !editor.isEditable) return null;
+  // Update bounds relative to editor view container
+  useEffect(() => {
+    if (!wrapperElement || !editor.view.dom) {
+      setRect(null);
+      return;
+    }
+
+    const updateRect = () => {
+      const container = editor.view.dom.parentElement;
+      if (!container) return;
+      const containerRect = container.getBoundingClientRect();
+      const elemRect = wrapperElement.getBoundingClientRect();
+
+      setRect({
+        top: elemRect.top - containerRect.top,
+        left: elemRect.left - containerRect.left,
+        width: elemRect.width,
+        height: elemRect.height,
+      });
+    };
+
+    updateRect();
+    const ro = new ResizeObserver(updateRect);
+    ro.observe(wrapperElement);
+    if (editor.view.dom.parentElement) {
+      ro.observe(editor.view.dom.parentElement);
+    }
+    window.addEventListener('scroll', updateRect, true);
+    window.addEventListener('resize', updateRect);
+
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('scroll', updateRect, true);
+      window.removeEventListener('resize', updateRect);
+    };
+  }, [wrapperElement, editor]);
+
+  if (!wrapperElement || !rect || !editor.isEditable) return null;
 
   const handleAddColumn = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -313,8 +362,11 @@ export function EditorTableOverlay({ editor }: { editor: EditorType }) {
       className="pointer-events-none absolute inset-0 z-20"
       style={{ overflow: 'visible' }}
     >
-      {/* Corner Options Handle (Notion-style :: button) */}
-      <div className="pointer-events-auto absolute -top-3.5 left-2 z-30">
+      {/* Corner Options Handle (Notion-style :: button) anchored directly at top-left of table */}
+      <div
+        className="pointer-events-auto absolute z-30"
+        style={{ top: `${rect.top - 14}px`, left: `${rect.left + 4}px` }}
+      >
         <Popover.Root open={popoverOpen} onOpenChange={setPopoverOpen}>
           <Popover.Trigger asChild>
             <button
@@ -404,8 +456,11 @@ export function EditorTableOverlay({ editor }: { editor: EditorType }) {
         </Popover.Root>
       </div>
 
-      {/* Right-edge Add Column (+) Button */}
-      <div className="pointer-events-auto absolute -top-3.5 right-2 z-30">
+      {/* Right-edge Add Column (+) Button anchored at top-right boundary of table */}
+      <div
+        className="pointer-events-auto absolute z-30"
+        style={{ top: `${rect.top - 14}px`, left: `${rect.left + rect.width - 70}px` }}
+      >
         <button
           type="button"
           onClick={handleAddColumn}
@@ -419,8 +474,11 @@ export function EditorTableOverlay({ editor }: { editor: EditorType }) {
         </button>
       </div>
 
-      {/* Bottom-edge Add Row (+) Button */}
-      <div className="pointer-events-auto absolute -bottom-3.5 left-4 z-30">
+      {/* Bottom-edge Add Row (+) Button anchored at bottom-left boundary of table */}
+      <div
+        className="pointer-events-auto absolute z-30"
+        style={{ top: `${rect.top + rect.height - 10}px`, left: `${rect.left + 16}px` }}
+      >
         <button
           type="button"
           onClick={handleAddRow}
