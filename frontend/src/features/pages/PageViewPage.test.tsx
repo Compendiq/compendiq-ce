@@ -873,15 +873,14 @@ describe('PageViewPage', () => {
       const mask = screen.getByTestId('edit-toolbar-mask');
 
       // Resolve the wrapper THROUGH the mask rather than by querying
-      // `.sticky.top-0`: the article route now has two sticky-top-0 elements
-      // (the context strip and this toolbar), and the bare selector silently
-      // returned whichever came first in the DOM.
+      // `.sticky`: the article route has multiple sticky surfaces, and the
+      // bare selector silently returned whichever came first in the DOM.
       const toolbar = mask.parentElement;
       expect(toolbar).not.toBeNull();
       // The wrapper establishes its own stacking context (isolate) so the
       // negative-z mask sits behind it, not behind the page.
       expect(toolbar!.className).toContain('sticky');
-      expect(toolbar!.className).toContain('top-0');
+      expect(toolbar!.className).toContain('-top-5');
       expect(toolbar!.className).toContain('isolate');
 
       // Opaque, and in the colour of the surface it hides content against. On
@@ -1496,4 +1495,3 @@ describe('PageViewPage', () => {
   });
 
 });
-

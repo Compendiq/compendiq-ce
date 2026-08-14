@@ -771,7 +771,7 @@ export function EditorToolbar({
     // Single non-wrapping row: actions live on the right, formatting tools on
     // the left. overflow-x-auto allows horizontal scrolling on narrow viewports
     // while guaranteeing flex items never wrap into a 2nd row.
-    <div className="flex flex-nowrap items-center justify-between gap-x-2 overflow-x-auto scrollbar-none min-h-[calc(3rem-1px)] py-1 px-1">
+    <div className="flex h-[calc(3rem-1px)] min-h-[calc(3rem-1px)] flex-nowrap items-center justify-between gap-x-2 overflow-x-auto scrollbar-none py-1 px-1">
       <div
         ref={rootRef}
         role="toolbar"
