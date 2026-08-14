@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AlertTriangle, Loader2, PanelRightClose, Send, Sparkles, X } from 'lucide-react';
+import { AlertTriangle, Loader2, PanelRightClose, Paperclip, Send, Sparkles, X } from 'lucide-react';
+import { SUPPORTED_DOCUMENT_FORMATS, SUPPORTED_IMAGE_FORMATS } from '@compendiq/contracts';
 import { useAiContext, type Message } from '../AiContext';
 import { StreamingMessage } from '../StreamingMessage';
 import { CitationChips } from '../CitationChips';
@@ -16,6 +17,54 @@ import { RefusalMark, RefusalSourcesLabel, REFUSAL_ANNOUNCEMENT } from '../refus
 import { DockDiffCard } from './DockDiffCard';
 import { useDockActions } from './use-dock-actions';
 import { AssistantActionSelect, resolveAssistantAction } from '../AssistantActionSelect';
+
+// This filter helps native file pickers offer the full attachment surface. It
+// does not decide what is accepted: `useAttachments` routes and validates the
+// selected files, including the chat model's vision capability.
+const ATTACHMENT_ACCEPT = [
+  ...SUPPORTED_DOCUMENT_FORMATS.map((format) => `.${format}`),
+  '.markdown', '.text', '.yml', '.yaml',
+  ...SUPPORTED_IMAGE_FORMATS.map((format) => `image/${format}`),
+  '.png', '.jpg', '.jpeg', '.webp', '.gif',
+].join(',');
+
+function DockAttachmentPicker({
+  onPickFiles,
+  disabled,
+}: {
+  onPickFiles: (files: readonly File[]) => void;
+  disabled: boolean;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  return (
+    <div className="flex shrink-0 items-center self-end">
+      <input
+        ref={inputRef}
+        type="file"
+        accept={ATTACHMENT_ACCEPT}
+        multiple
+        className="hidden"
+        onChange={(event) => {
+          onPickFiles(Array.from(event.target.files ?? []));
+          event.target.value = '';
+        }}
+        data-testid="ai-dock-attach-file-input"
+      />
+      <button
+        type="button"
+        onClick={() => inputRef.current?.click()}
+        disabled={disabled}
+        aria-label="Attach a document or image"
+        title="Attach a document or image"
+        className="flex shrink-0 items-center rounded-md border border-transparent px-2 py-2 text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+        data-testid="ai-dock-attach-button"
+      >
+        <Paperclip size={16} aria-hidden />
+      </button>
+    </div>
+  );
+}
 
 /**
  * The assistant's contents — everything between the header and the composer.
@@ -342,10 +391,11 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
           />
         )}
 
-        {/* flex-wrap so each zone's row — its card or drop hint plus its own
-            trigger — stacks above the prompt inside the same box. An attachment
-            belongs to what you are about to send, so it lives in the thing you
-            send from, not in a band above it.
+        {/* flex-wrap so attached-source rows stack above the prompt inside the
+            same box. One Attach control receives both documents and images;
+            the shared router decides their path. An attachment belongs to what
+            you are about to send, so it lives in the thing you send from, not
+            in a band above it.
             Document order is the only order here: no `order-*` on any child,
             because that is what keeps the tab sequence matching what the eye
             reads (WCAG 2.4.3 — see `composerRowClass`). Anything added below
@@ -361,7 +411,7 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
             documents={references}
             onRemove={removeDocument}
             disabled={isStreaming || selectedAction === 'diagram'}
-            triggerLabel="Attach a document for Q&A or a rewrite skill"
+            showTrigger={false}
             usageHint="context for Q&A or rewriting"
             isDragOver={isDragOver}
             testIdPrefix="ai-dock-doc"
@@ -374,7 +424,12 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
             onRemove={removeImage}
             isPreparing={isPreparing}
             disabled={isStreaming || selectedAction === 'diagram'}
+            showTrigger={false}
             testIdPrefix="ai-dock-image"
+          />
+          <DockAttachmentPicker
+            onPickFiles={handlePickFiles}
+            disabled={isStreaming || selectedAction === 'diagram' || isBusy}
           />
           <AssistantActionSelect disabled={isStreaming || modelsError} className="self-end" />
           <textarea

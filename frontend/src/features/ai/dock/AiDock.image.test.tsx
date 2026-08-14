@@ -148,13 +148,13 @@ async function openAndSettle() {
 
 async function attachImage() {
   await act(async () => {
-    fireEvent.change(screen.getByTestId('ai-dock-image-file-input'), { target: { files: [PNG()] } });
+    fireEvent.change(screen.getByTestId('ai-dock-attach-file-input'), { target: { files: [PNG()] } });
   });
 }
 
 async function attachDocument() {
   await act(async () => {
-    fireEvent.change(screen.getByTestId('ai-dock-doc-file-input'), { target: { files: [PDF()] } });
+    fireEvent.change(screen.getByTestId('ai-dock-attach-file-input'), { target: { files: [PDF()] } });
   });
 }
 
@@ -291,14 +291,14 @@ describe('dock image attach (#1154)', () => {
    * while React delegates to its root container, so if `DocumentUploadZone` kept
    * its own handlers the ancestor would fire first and `stopPropagation` could
    * not deduplicate after the fact — passing `isDragOver` is what makes the zone
-   * stop listening. The attach trigger is the one element both would see.
+   * stop listening. The shared attach trigger is the one element both would see.
    */
   it('stages exactly once for an image dropped on the attach trigger', async () => {
     renderDock({ chatVision: true });
     await openAndSettle();
 
     await act(async () => {
-      fireEvent.drop(screen.getByTestId('ai-dock-doc-attach-button'), {
+      fireEvent.drop(screen.getByTestId('ai-dock-attach-button'), {
         dataTransfer: { files: [PNG()] },
       });
     });
@@ -321,30 +321,18 @@ describe('dock image attach (#1154)', () => {
     });
   });
 
-  it('disables the image trigger on a text-only model', async () => {
-    renderDock({ chatVision: false });
-    await openAndSettle();
+  it.each([false, null, true] as const)(
+    'keeps the shared attach control available when vision is %s',
+    async (chatVision) => {
+      renderDock({ chatVision });
+      await openAndSettle();
 
-    expect(screen.getByTestId('ai-dock-image-trigger')).toBeDisabled();
-    expect(screen.getByTestId('ai-dock-image-trigger'))
-      .toHaveAttribute('title', expect.stringMatching(/can't read images/i));
-  });
-
-  it('disables the image trigger while vision is unconfirmed', async () => {
-    renderDock({ chatVision: null });
-    await openAndSettle();
-
-    expect(screen.getByTestId('ai-dock-image-trigger')).toBeDisabled();
-    expect(screen.getByTestId('ai-dock-image-trigger'))
-      .toHaveAttribute('title', expect.stringMatching(/isn't confirmed/i));
-  });
-
-  it('enables the image trigger on a vision-capable model', async () => {
-    renderDock({ chatVision: true });
-    await openAndSettle();
-
-    expect(screen.getByTestId('ai-dock-image-trigger')).not.toBeDisabled();
-  });
+      const trigger = screen.getByTestId('ai-dock-attach-button');
+      expect(trigger).not.toBeDisabled();
+      expect(trigger).toHaveAccessibleName('Attach a document or image');
+      expect(screen.queryByTestId('ai-dock-image-trigger')).not.toBeInTheDocument();
+    },
+  );
 
   /**
    * Disabling the trigger only closes the click path. A drop never touches it,
@@ -406,12 +394,11 @@ describe('dock image attach (#1154)', () => {
 
 /**
  * The dock is the surface where this mattered most: it is the only composer
- * holding both zones *and* a send button, so before #1154's per-zone rows Tab
- * ran doc-remove → doc-trigger → image-remove → image-trigger while the eye read
- * both cards and then both triggers, crossing rows twice (WCAG 2.4.3).
+ * holding both cards and a send button. The shared Attach control follows the
+ * cards in both DOM and visual order, so Tab does not cross between rows.
  */
 describe('dock composer focus order (#1154)', () => {
-  it('reaches every control in reading order: each card, then its own trigger', async () => {
+  it('reaches every control in reading order: each card, then shared Attach', async () => {
     renderDock({ chatVision: true });
     await openAndSettle();
     await attachDocument();
@@ -419,9 +406,8 @@ describe('dock composer focus order (#1154)', () => {
 
     expectComposerFocusOrder(composerBox(), [
       'ai-dock-doc-remove-button',
-      'ai-dock-doc-attach-button',
       'ai-dock-image-remove',
-      'ai-dock-image-trigger',
+      'ai-dock-attach-button',
       'assistant-action-select',
       'ai-dock-input',
       'ai-dock-send',
@@ -433,8 +419,8 @@ describe('dock composer focus order (#1154)', () => {
    * so it is a state no other test reaches — and it carries nothing focusable,
    * which puts it out of reach of the focus-order sweep above. What has to hold
    * for it is structural: the hint belongs to the document zone's row, beside
-   * that zone's own trigger, so mid-drag the composer still reads as rows. A
-   * hint that escaped its row would restore the interleaving #1154 removed.
+   * the shared trigger, so mid-drag the composer still reads as rows. A hint
+   * that escaped its row would separate the input feedback from Attach.
    */
   it('keeps the mid-drag drop hint in the document zone\'s own row', async () => {
     renderDock({ chatVision: true });
@@ -447,7 +433,7 @@ describe('dock composer focus order (#1154)', () => {
     const docRow = screen.getByTestId('ai-dock-doc-row');
     const imageRow = screen.getByTestId('ai-dock-image-row');
     expect(hint.parentElement).toBe(docRow);
-    expect(screen.getByTestId('ai-dock-doc-attach-button').parentElement).toBe(docRow);
+    expect(screen.getByTestId('ai-dock-attach-button').closest('.nm-composer')).toBe(composerBox());
 
     // ...and that row is read before the image's, as the markup has it.
     const rows = Array.from(composerBox().children);
@@ -554,14 +540,14 @@ describe('dock lapsed image handle (#1154)', () => {
   });
 
   /**
-   * #1154: Ask and Improve both carry images when vision is supported.
+   * Ask and Improve both carry images when vision is supported.
    */
-  it('shows generic image trigger and card labels when vision is enabled', async () => {
+  it('uses the shared trigger for an image and then shows its card', async () => {
     renderDock({ chatVision: true });
     await openAndSettle();
 
-    expect(screen.getByTestId('ai-dock-image-trigger'))
-      .toHaveAttribute('aria-label', 'Attach an image');
+    expect(screen.getByTestId('ai-dock-attach-button'))
+      .toHaveAttribute('aria-label', 'Attach a document or image');
 
     await attachImage();
     expect(screen.getByTestId('ai-dock-image-card')).toBeInTheDocument();
