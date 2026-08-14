@@ -240,6 +240,71 @@ describe('AiAssistantPage', () => {
     expect(mockPrepareImage).toHaveBeenCalledTimes(1);
   });
 
+  it('sends attached documents and configuration to the Completeness skill', async () => {
+    mockPageData = {
+      data: {
+        id: 'p1', title: 'Deployment guide', bodyHtml: '<p>Original</p>', bodyText: 'Original', version: 1,
+      },
+    };
+    apiFetchMock.mockImplementation((path: string) => {
+      if (path === '/llm/usecase-default?usecase=chat') {
+        return Promise.resolve({
+          usecase: 'chat', providerId: 'p1', providerName: 'Local', model: 'llama3', vision: false,
+        });
+      }
+      if (path.startsWith('/ollama/models')) return Promise.resolve([{ name: 'llama3' }]);
+      if (path === '/llm/conversations') return Promise.resolve([]);
+      return Promise.resolve([]);
+    });
+    mockExtractDocument
+      .mockResolvedValueOnce({
+        format: 'pdf',
+        text: 'Production requires two approval steps.',
+        fileSize: 1024,
+        preview: 'Production requires two approval steps.',
+      })
+      .mockResolvedValueOnce({
+        format: 'yaml',
+        text: 'replicas: 3\nhealthcheck: /ready',
+        fileSize: 256,
+        preview: 'replicas: 3\nhealthcheck: /ready',
+      });
+    streamSSEMock.mockImplementation(() => (async function* () {
+      yield { content: 'Completed rewrite' };
+      yield { final: true, done: true };
+    })());
+
+    render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?pageId=p1']) });
+    await waitFor(() => expect(screen.getByTestId('assistant-action-select')).not.toBeDisabled());
+
+    fireEvent.change(screen.getByTestId('ask-doc-file-input'), {
+      target: {
+        files: [
+          new File(['pdf'], 'release-process.pdf', { type: 'application/pdf' }),
+          new File(['yaml'], 'production.yaml', { type: 'application/yaml' }),
+        ],
+      },
+    });
+    await screen.findByTestId('ask-doc-attachment-card-1');
+
+    fireEvent.pointerDown(screen.getByTestId('assistant-action-select'), { button: 0 });
+    fireEvent.click(await screen.findByTestId('assistant-action-completeness'));
+
+    expect(screen.getByTestId('document-attachment-card')).toHaveTextContent('release-process.pdf');
+    expect(screen.getByTestId('document-attachment-card-1')).toHaveTextContent('production.yaml');
+    fireEvent.click(screen.getByTestId('improve-send'));
+
+    await waitFor(() => {
+      const improveCall = streamSSEMock.mock.calls.find((call) => call[0] === '/llm/improve');
+      expect(improveCall).toBeDefined();
+      expect(improveCall![1]).toMatchObject({ type: 'completeness' });
+      expect(improveCall![1].referenceText).toContain('--- release-process.pdf ---');
+      expect(improveCall![1].referenceText).toContain('Production requires two approval steps.');
+      expect(improveCall![1].referenceText).toContain('--- production.yaml ---');
+      expect(improveCall![1].referenceText).toContain('replicas: 3\nhealthcheck: /ready');
+    });
+  });
+
   it('keeps prepared attachments paused while Diagram sends only the shared instruction', async () => {
     mockPageData = {
       data: {
