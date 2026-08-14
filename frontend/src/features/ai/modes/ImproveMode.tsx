@@ -1,16 +1,17 @@
 /* eslint-disable react-refresh/only-export-components */
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { AlertTriangle, Send, Loader2, Globe } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { useAiContext } from '../AiContext';
 import { DiffView } from '../../../shared/components/article/DiffView';
-import { buildDocumentReferenceText, useAttachments } from '../../../shared/hooks/use-attachments';
+import { buildDocumentReferenceText } from '../../../shared/hooks/use-attachments';
 import { useAutoGrowTextarea } from '../../../shared/hooks/use-auto-grow-textarea';
 import { DocumentUploadZone } from '../../../shared/components/upload/DocumentUploadZone';
-import { ImageAttachZone, imageDisabledReason } from '../../../shared/components/upload/ImageAttachZone';
+import { ImageAttachZone } from '../../../shared/components/upload/ImageAttachZone';
 import { apiFetch, ApiError } from '../../../shared/lib/api';
 import { toast } from 'sonner';
 import { AssistantActionSelect } from '../AssistantActionSelect';
+import { AssistantAttachmentsScope, useAssistantAttachments } from '../AssistantAttachments';
 
 /**
  * Diff view shown after an improve stream completes.
@@ -91,32 +92,32 @@ export function ImproveDiffView() {
  * action button.
  */
 export function ImproveModeInput() {
+  return (
+    <AssistantAttachmentsScope>
+      <ImproveModeInputContent />
+    </AssistantAttachmentsScope>
+  );
+}
+
+function ImproveModeInputContent() {
   const {
-    isStreaming, page, isPageLoading, model, pageId, includeSubPages, thinkingMode, runStream,
+    input, setInput, isStreaming, page, isPageLoading, model, pageId, includeSubPages, thinkingMode, runStream,
     improvementType, setShowDiffView, setImprovedContent, setOriginalMarkdown, setLayoutTokensLost,
     chatVision,
     chatVisionModel,
   } = useAiContext();
-  const [instruction, setInstruction] = useState('');
   const [searchWeb, setSearchWeb] = useState(false);
-  const textareaRef = useAutoGrowTextarea(instruction);
+  const textareaRef = useAutoGrowTextarea(input);
 
   // Both attachment slots, all intake routing, the shared drop target and paste
-  // live in `useAttachments` (#1154) — including the format and 20 MB gates the
-  // upload component used to apply.
+  // live in the page-owned `useAttachments` controller (#1154), including the
+  // format and 20 MB gates the upload component used to apply.
   //
-  // The ref goes on the whole Improve block rather than the composer box alone:
-  // the block is short, and a file dropped on the gap beside the Improve button
-  // would otherwise reach no handler at all, letting the browser navigate the
-  // tab to the dropped file and take the typed instruction with it.
-  const surfaceRef = useRef<HTMLDivElement>(null);
-  const attachments = useAttachments({
-    dropTargetRef: surfaceRef,
-    imageEnabled: chatVision === true,
-    imageDisabledReason: imageDisabledReason(chatVision, chatVisionModel),
-    disabled: isStreaming,
-  });
-  // Destructured for the improve callback's dependency array: `useAttachments`
+  // `/ai` owns this controller above the action switch, so selecting a rewrite
+  // skill keeps the files the user prepared while Q&A was selected. Focused
+  // mode tests get the same owner from the nested scope above.
+  const attachments = useAssistantAttachments();
+  // Destructured for the improve callback's dependency array: the controller
   // returns a fresh object literal every render, so a `useCallback` depending
   // on `attachments` itself was rebuilt on every render and memoized nothing.
   const {
@@ -154,6 +155,7 @@ export function ImproveModeInput() {
     setOriginalMarkdown('');
     setLayoutTokensLost(undefined);
 
+    const instruction = input.trim();
     const referenceText = buildDocumentReferenceText(attachedDocuments);
     const body: Record<string, unknown> = {
       content: page.bodyHtml, type: improvementType, model, pageId: pageId ?? undefined, includeSubPages,
@@ -164,8 +166,8 @@ export function ImproveModeInput() {
       ...(referenceText && { referenceText }),
       ...(attachedImage && { imageHandle: attachedImage.handle }),
     };
-    if (instruction.trim()) {
-      body.instruction = instruction.trim();
+    if (instruction) {
+      body.instruction = instruction;
     }
     if (searchWeb) {
       body.searchWeb = true;
@@ -183,8 +185,8 @@ export function ImproveModeInput() {
         // was improved, so the send is rolled back rather than left as a dead
         // turn with an error under it. Only the image slot is cleared here:
         // this mode seeds no turn of its own (it passes `userMessage`, so
-        // runStream owns and withdraws both rows it added) and it never clears
-        // the instruction, so there is nothing else of ours to put back.
+        // runStream owns and withdraws both rows it added) and it keeps the
+        // shared instruction for another pass, so only the dead handle clears.
         // Guarded on the image the way the dock's handler is: only the image
         // path can produce a 410 today, and a 410 from anywhere else is
         // somebody else's error, which keeps its normal inline treatment.
@@ -208,7 +210,7 @@ export function ImproveModeInput() {
       },
     );
   }, [
-    page, model, improvementType, pageId, isStreaming, includeSubPages, thinkingMode, instruction,
+    input, page, model, improvementType, pageId, isStreaming, includeSubPages, thinkingMode,
     searchWeb, runStream, setShowDiffView, setImprovedContent, setOriginalMarkdown,
     setLayoutTokensLost,
     isBusy, attachedDocuments, attachedImage, removeImage,
@@ -221,7 +223,7 @@ export function ImproveModeInput() {
   };
 
   return (
-    <div ref={surfaceRef} className="mt-3 flex flex-col gap-3 border-t border-border pt-3">
+    <div className="mt-3 flex flex-col gap-3 border-t border-border pt-3">
       {/* An advisory, not a refusal: the backend accepts both, and only the
           resolved model knows whether they fit. Amber is the attention colour
           under ADR-010 v0.5 and this is exactly that. */}
@@ -271,8 +273,8 @@ export function ImproveModeInput() {
         <AssistantActionSelect includeGenerate disabled={isStreaming} className="self-end" />
         <textarea
           ref={textareaRef}
-          value={instruction}
-          onChange={(e) => setInstruction(e.target.value)}
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder={`Additional instructions for ${improvementType} (optional)`}
           maxLength={10000}

@@ -23,6 +23,25 @@ vi.mock('../../shared/lib/sse', () => ({
   streamSSE: (...args: unknown[]) => streamSSEMock(...args),
 }));
 
+const mockExtractDocument = vi.fn();
+vi.mock('../../shared/hooks/use-extract-document', () => ({
+  useExtractDocument: () => ({
+    extractDocument: (...args: unknown[]) => mockExtractDocument(...args),
+    isExtracting: false,
+    error: null,
+  }),
+}));
+
+const IMAGE_HANDLE = 'a'.repeat(64);
+const mockPrepareImage = vi.fn();
+vi.mock('../../shared/hooks/use-prepare-image', () => ({
+  usePrepareImage: () => ({
+    prepareImage: (...args: unknown[]) => mockPrepareImage(...args),
+    isPreparing: false,
+    error: null,
+  }),
+}));
+
 // Default: no page selected
 let mockPageData: { data: unknown; isLoading?: boolean } = { data: undefined };
 // Controllable embedding-status feed for the #938 zero-embeddings notice.
@@ -106,6 +125,20 @@ describe('AiAssistantPage', () => {
     vi.clearAllMocks();
     mockPageData = { data: undefined };
     mockEmbeddingStatus = { data: undefined };
+    mockExtractDocument.mockResolvedValue({
+      format: 'pdf',
+      text: 'The service retries three times.',
+      fileSize: 1024,
+      preview: 'The service retries three times.',
+    });
+    mockPrepareImage.mockResolvedValue({
+      handle: IMAGE_HANDLE,
+      format: 'webp',
+      width: 800,
+      height: 600,
+      fileSize: 40_000,
+      previewUrl: 'blob:assistant-preview',
+    });
     useAuthStore.getState().setAuth('test-token', {
       id: '1',
       username: 'testuser',
@@ -140,6 +173,129 @@ describe('AiAssistantPage', () => {
     }
     expect(screen.queryByText('Summarize')).not.toBeInTheDocument();
     expect(screen.queryByText('Quality')).not.toBeInTheDocument();
+  });
+
+  it('sends the composed draft and attachments through the rewrite skill selected beside Send', async () => {
+    mockPageData = {
+      data: {
+        id: 'p1', title: 'Runbook', bodyHtml: '<p>Original</p>', bodyText: 'Original', version: 1,
+      },
+    };
+    apiFetchMock.mockImplementation((path: string) => {
+      if (path === '/llm/usecase-default?usecase=chat') {
+        return Promise.resolve({
+          usecase: 'chat', providerId: 'p1', providerName: 'Local', model: 'llama3', vision: true,
+        });
+      }
+      if (path.startsWith('/ollama/models')) return Promise.resolve([{ name: 'llama3' }]);
+      if (path === '/llm/conversations') return Promise.resolve([]);
+      if (path === '/embeddings/status') return Promise.resolve({ total: 1, embedded: 1, isProcessing: false });
+      return Promise.resolve([]);
+    });
+    streamSSEMock.mockImplementation(() => (async function* () {
+      yield { content: 'Improved' };
+      yield { final: true, done: true };
+    })());
+
+    render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?pageId=p1']) });
+    await waitFor(() => expect(screen.getByTestId('ask-image-trigger')).not.toBeDisabled());
+
+    fireEvent.change(screen.getByTestId('ask-input'), {
+      target: { value: 'Make the retry policy explicit.' },
+    });
+    fireEvent.change(screen.getByTestId('ask-doc-file-input'), {
+      target: { files: [new File(['pdf'], 'retry-policy.pdf', { type: 'application/pdf' })] },
+    });
+    fireEvent.change(screen.getByTestId('ask-image-file-input'), {
+      target: { files: [new File(['png'], 'flow.png', { type: 'image/png' })] },
+    });
+    await screen.findByTestId('ask-doc-attachment-card');
+    await screen.findByTestId('ask-image-card');
+
+    fireEvent.pointerDown(screen.getByTestId('assistant-action-select'), { button: 0 });
+    fireEvent.click(await screen.findByTestId('assistant-action-grammar'));
+
+    const instruction = screen.getByPlaceholderText(
+      'Additional instructions for grammar (optional)',
+    );
+    expect(instruction).toHaveValue('Make the retry policy explicit.');
+    expect(screen.getByTestId('document-attachment-card')).toHaveTextContent('retry-policy.pdf');
+    expect(screen.getByTestId('image-attach-card')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('improve-send'));
+
+    await waitFor(() => {
+      expect(streamSSEMock).toHaveBeenCalledWith(
+        '/llm/improve',
+        expect.objectContaining({
+          type: 'grammar',
+          instruction: 'Make the retry policy explicit.',
+          referenceText: 'The service retries three times.',
+          imageHandle: IMAGE_HANDLE,
+        }),
+        expect.anything(),
+      );
+    });
+    expect(mockExtractDocument).toHaveBeenCalledTimes(1);
+    expect(mockPrepareImage).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps prepared attachments paused while Diagram sends only the shared instruction', async () => {
+    mockPageData = {
+      data: {
+        id: 'p1', title: 'Runbook', bodyHtml: '<p>Original</p>', bodyText: 'Original', version: 1,
+      },
+    };
+    apiFetchMock.mockImplementation((path: string) => {
+      if (path === '/llm/usecase-default?usecase=chat') {
+        return Promise.resolve({
+          usecase: 'chat', providerId: 'p1', providerName: 'Local', model: 'llama3', vision: true,
+        });
+      }
+      if (path.startsWith('/ollama/models')) return Promise.resolve([{ name: 'llama3' }]);
+      if (path === '/llm/conversations') return Promise.resolve([]);
+      return Promise.resolve([]);
+    });
+    streamSSEMock.mockImplementation(() => (async function* () {
+      yield { content: 'flowchart TD' };
+      yield { final: true, done: true };
+    })());
+
+    render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?pageId=p1']) });
+    await waitFor(() => expect(screen.getByTestId('ask-image-trigger')).not.toBeDisabled());
+    fireEvent.change(screen.getByTestId('ask-input'), {
+      target: { value: 'Show the approval loop.' },
+    });
+    fireEvent.change(screen.getByTestId('ask-doc-file-input'), {
+      target: { files: [new File(['pdf'], 'approval.pdf', { type: 'application/pdf' })] },
+    });
+    fireEvent.change(screen.getByTestId('ask-image-file-input'), {
+      target: { files: [new File(['png'], 'approval.png', { type: 'image/png' })] },
+    });
+    await screen.findByTestId('ask-doc-attachment-card');
+    await screen.findByTestId('ask-image-card');
+
+    fireEvent.pointerDown(screen.getByTestId('assistant-action-select'), { button: 0 });
+    fireEvent.click(await screen.findByTestId('assistant-action-diagram'));
+
+    expect(screen.getByTestId('diagram-instruction')).toHaveValue('Show the approval loop.');
+    expect(screen.getByTestId('ai-attachments-paused')).toHaveTextContent(
+      'Attachments are kept here but are not sent to Diagram.',
+    );
+    fireEvent.click(screen.getByTestId('diagram-send'));
+
+    await waitFor(() => {
+      const diagramCall = streamSSEMock.mock.calls.find((call) => call[0] === '/llm/generate-diagram');
+      expect(diagramCall).toBeDefined();
+      expect(diagramCall![1]).toMatchObject({ instruction: 'Show the approval loop.' });
+      expect(diagramCall![1]).not.toHaveProperty('referenceText');
+      expect(diagramCall![1]).not.toHaveProperty('imageHandle');
+    });
+
+    fireEvent.pointerDown(screen.getByTestId('assistant-action-select'), { button: 0 });
+    fireEvent.click(await screen.findByTestId('assistant-action-ask'));
+    expect(await screen.findByTestId('ask-doc-attachment-card')).toHaveTextContent('approval.pdf');
+    expect(screen.getByTestId('ask-image-card')).toBeInTheDocument();
   });
 
   it('uses flex-1 column layout so the input bar anchors to the bottom of the viewport', () => {

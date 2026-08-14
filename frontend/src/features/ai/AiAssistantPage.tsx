@@ -25,6 +25,7 @@ import {
 } from './modes';
 import { isZeroEmbeddings } from '../../shared/hooks/use-pages';
 import { SETTINGS_PANELS } from '../settings/settings-nav';
+import { AssistantAttachmentsScope } from './AssistantAttachments';
 
 // ---------------------------------------------------------------------------
 // Memoized message bubble: skips re-render for completed (non-streaming) messages
@@ -566,10 +567,12 @@ export function AiAssistantPage() {
           aria-hidden
           className="pointer-events-none absolute inset-0 z-[-1] bg-background"
         />
-        {mode === 'ask' && <AskModeInput />}
-        {mode === 'improve' && <ImproveModeInput />}
-        {mode === 'generate' && <GenerateModeInput />}
-        {mode === 'diagram' && <DiagramModeInput />}
+        <AssistantAttachmentsScope>
+          {mode === 'ask' && <AskModeInput />}
+          {mode === 'improve' && <ImproveModeInput />}
+          {mode === 'generate' && <GenerateModeInput />}
+          {mode === 'diagram' && <DiagramModeInput />}
+        </AssistantAttachmentsScope>
       </div>
     </m.div>
   );

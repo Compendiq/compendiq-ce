@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useRef } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { AlertTriangle, Send, Loader2, Save, Search, ChevronDown, X, FolderOpen, Globe } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { useAiContext, nextMessageId } from '../AiContext';
@@ -6,15 +6,16 @@ import { AssistantActionSelect } from '../AssistantActionSelect';
 import { useSpaces } from '../../../shared/hooks/use-spaces';
 import { useLocalSpaces } from '../../../shared/hooks/use-standalone';
 import { usePages, useCreatePage, type PageFilters } from '../../../shared/hooks/use-pages';
-import { buildDocumentReferenceText, useAttachments } from '../../../shared/hooks/use-attachments';
+import { buildDocumentReferenceText } from '../../../shared/hooks/use-attachments';
 import { DocumentUploadZone } from '../../../shared/components/upload/DocumentUploadZone';
-import { ImageAttachZone, imageDisabledReason } from '../../../shared/components/upload/ImageAttachZone';
+import { ImageAttachZone } from '../../../shared/components/upload/ImageAttachZone';
 import { useAutoGrowTextarea } from '../../../shared/hooks/use-auto-grow-textarea';
 import { PROMPT_MAX_LENGTH } from './prompt-limits';
 import { apiFetch, ApiError } from '../../../shared/lib/api';
 import { improveMarkdownToHtml } from '../../../shared/components/article/improve-markdown';
 import { toast } from 'sonner';
 import { cn } from '../../../shared/lib/cn';
+import { AssistantAttachmentsScope, useAssistantAttachments } from '../AssistantAttachments';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -330,6 +331,14 @@ export function GenerateSavePanel({
  * After generation completes, shows a save panel to publish to Confluence.
  */
 export function GenerateModeInput() {
+  return (
+    <AssistantAttachmentsScope>
+      <GenerateModeInputContent />
+    </AssistantAttachmentsScope>
+  );
+}
+
+function GenerateModeInputContent() {
   const {
     input, setInput, isStreaming, model, thinkingMode, setMessages, runStream, chatVision,
     chatVisionModel,
@@ -348,22 +357,14 @@ export function GenerateModeInput() {
   const mcpEnabled = mcpSettings?.enabled ?? false;
 
   // Both attachment slots, all intake routing, the shared drop target and paste
-  // live in `useAttachments` (#1154). It owns the single `useExtractDocument`
+  // live in the page-owned `useAttachments` controller (#1154). It owns the single `useExtractDocument`
   // instance the zone's spinner reads (#940), the format and 20 MB gates the
   // component used to apply, and — new here — the image half.
   //
-  // The ref goes on the whole Generate block rather than just the prompt box:
-  // the dashed dropzone, the web-search toggle and the composer are one surface
-  // to a user with a file in hand, and a drop that lands on the gap between
-  // them should attach rather than navigate the tab away.
-  const surfaceRef = useRef<HTMLDivElement>(null);
-  const attachments = useAttachments({
-    dropTargetRef: surfaceRef,
-    imageEnabled: chatVision === true,
-    imageDisabledReason: imageDisabledReason(chatVision, chatVisionModel),
-    disabled: isStreaming,
-  });
-  // Destructured for the send callback's dependency array: `useAttachments`
+  // `/ai` owns this controller above the action switch, so source material
+  // remains attached when the user selects Generate after composing elsewhere.
+  const attachments = useAssistantAttachments();
+  // Destructured for the send callback's dependency array: the controller
   // returns a fresh object literal every render, so a `useCallback` depending
   // on `attachments` itself was rebuilt on every render and memoized nothing.
   const {
@@ -474,7 +475,7 @@ export function GenerateModeInput() {
         />
       )}
 
-      <div ref={surfaceRef} className="mt-3 space-y-3 border-t border-border pt-3">
+      <div className="mt-3 space-y-3 border-t border-border pt-3">
         {/* No `formats` prop: Generate offers everything the extractor supports
             (#1132), and the zone derives its accept list and every string it
             renders from that default.

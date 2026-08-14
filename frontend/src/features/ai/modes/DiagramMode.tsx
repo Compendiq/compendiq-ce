@@ -1,5 +1,5 @@
 /* eslint-disable react-refresh/only-export-components */
-import { useCallback, useState } from 'react';
+import { useCallback } from 'react';
 import { Send, FileInput, Loader2 } from 'lucide-react';
 import { useAiContext } from '../AiContext';
 import { AssistantActionSelect } from '../AssistantActionSelect';
@@ -8,6 +8,7 @@ import { cn } from '../../../shared/lib/cn';
 import { apiFetch } from '../../../shared/lib/api';
 import { toast } from 'sonner';
 import { useAutoGrowTextarea } from '../../../shared/hooks/use-auto-grow-textarea';
+import { AssistantAttachmentsScope, useAssistantAttachments } from '../AssistantAttachments';
 
 /** HTML-encode a string so it is safe to interpolate inside HTML elements. */
 function escapeHtml(str: string): string {
@@ -125,9 +126,20 @@ export function DiagramPreview() {
  * Input bar for diagram mode: a single action button.
  */
 export function DiagramModeInput() {
-  const { isStreaming, page, model, pageId, thinkingMode, runStream, diagramType, setDiagramCode } = useAiContext();
-  const [instruction, setInstruction] = useState('');
-  const inputRef = useAutoGrowTextarea(instruction);
+  return (
+    <AssistantAttachmentsScope>
+      <DiagramModeInputContent />
+    </AssistantAttachmentsScope>
+  );
+}
+
+function DiagramModeInputContent() {
+  const {
+    input, setInput, isStreaming, page, model, pageId, thinkingMode,
+    runStream, diagramType, setDiagramCode,
+  } = useAiContext();
+  const attachments = useAssistantAttachments();
+  const inputRef = useAutoGrowTextarea(input);
 
   const handleDiagram = useCallback(async () => {
     if (isStreaming) return;
@@ -141,6 +153,7 @@ export function DiagramModeInput() {
     }
 
     setDiagramCode('');
+    const instruction = input.trim();
 
     await runStream(
       '/llm/generate-diagram',
@@ -149,17 +162,17 @@ export function DiagramModeInput() {
         model,
         diagramType,
         pageId: pageId ?? undefined,
-        ...(instruction.trim() && { instruction: instruction.trim() }),
+        ...(instruction && { instruction }),
         ...(thinkingMode && { thinking: true }),
       },
       {
-        userMessage: instruction.trim() || `Generate ${diagramType} diagram: ${page.title}`,
+        userMessage: instruction || `Generate ${diagramType} diagram: ${page.title}`,
         onComplete: (accumulated) => {
           setDiagramCode(accumulated);
         },
       },
     );
-  }, [page, model, diagramType, pageId, instruction, thinkingMode, isStreaming, runStream, setDiagramCode]);
+  }, [input, page, model, diagramType, pageId, thinkingMode, isStreaming, runStream, setDiagramCode]);
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key !== 'Enter' || event.shiftKey) return;
@@ -169,12 +182,17 @@ export function DiagramModeInput() {
 
   return (
     <div className="mt-3 border-t border-border pt-3">
+      {(attachments.documents.length > 0 || attachments.image) && (
+        <p className="mb-2 text-xs text-muted-foreground" data-testid="ai-attachments-paused">
+          Attachments are kept here but are not sent to Diagram.
+        </p>
+      )}
       <div className="nm-composer">
         <AssistantActionSelect includeGenerate disabled={isStreaming} className="self-end" />
         <textarea
           ref={inputRef}
-          value={instruction}
-          onChange={(event) => setInstruction(event.target.value)}
+          value={input}
+          onChange={(event) => setInput(event.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="Diagram instructions (optional)"
           maxLength={10000}

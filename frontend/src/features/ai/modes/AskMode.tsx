@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, Send, Loader2, Link2, X, Plus } from 'lucide-react';
 import { useAiContext, nextMessageId } from '../AiContext';
 import { AssistantActionSelect } from '../AssistantActionSelect';
@@ -8,13 +8,14 @@ import { useQuery } from '@tanstack/react-query';
 import { apiFetch, ApiError } from '../../../shared/lib/api';
 import { cn } from '../../../shared/lib/cn';
 import { useAutoGrowTextarea } from '../../../shared/hooks/use-auto-grow-textarea';
-import { buildDocumentReferenceText, useAttachments } from '../../../shared/hooks/use-attachments';
+import { buildDocumentReferenceText } from '../../../shared/hooks/use-attachments';
 import { DocumentUploadZone } from '../../../shared/components/upload/DocumentUploadZone';
-import { ImageAttachZone, imageDisabledReason } from '../../../shared/components/upload/ImageAttachZone';
+import { ImageAttachZone } from '../../../shared/components/upload/ImageAttachZone';
 import { PROMPT_MAX_LENGTH } from './prompt-limits';
 import { buildAskPrompts } from './ask-example-prompts';
 import { usePages, usePageFilterOptions, isZeroEmbeddings } from '../../../shared/hooks/use-pages';
 import { useSpaces } from '../../../shared/hooks/use-spaces';
+import { AssistantAttachmentsScope, useAssistantAttachments } from '../AssistantAttachments';
 
 interface McpDocsSettings {
   enabled: boolean;
@@ -25,6 +26,14 @@ interface McpDocsSettings {
  * Supports attaching external URLs for documentation context via MCP sidecar.
  */
 export function AskModeInput() {
+  return (
+    <AssistantAttachmentsScope>
+      <AskModeInputContent />
+    </AssistantAttachmentsScope>
+  );
+}
+
+function AskModeInputContent() {
   const {
     input, setInput, isStreaming, model, conversationId, pageId,
     includeSubPages, thinkingMode, setMessages, runStream,
@@ -45,13 +54,7 @@ export function AskModeInput() {
    * regression rather than a taste question.
    */
   const [deepSearch, setDeepSearch] = useState(false);
-  const composerRef = useRef<HTMLDivElement>(null);
-  const attachments = useAttachments({
-    dropTargetRef: composerRef,
-    imageEnabled: chatVision === true,
-    imageDisabledReason: imageDisabledReason(chatVision, chatVisionModel),
-    disabled: isStreaming,
-  });
+  const attachments = useAssistantAttachments();
   const {
     documents, image, pickFiles, removeDocument, removeImage,
     isDragOver, isExtracting, isPreparing, isBusy,
@@ -206,7 +209,7 @@ export function AskModeInput() {
   };
 
   return (
-    <div ref={composerRef} className="mt-3 border-t border-border pt-3">
+    <div className="mt-3 border-t border-border pt-3">
       {documents.length > 0 && image && (
         <p className="mb-2 flex items-center gap-1.5 text-xs text-warning" data-testid="ask-attachment-context-warning">
           <AlertTriangle size={12} className="shrink-0" aria-hidden />
