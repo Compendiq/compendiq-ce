@@ -1,0 +1,184 @@
+/* eslint-disable react-refresh/only-export-components */
+import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
+import {
+  Check,
+  ChevronDown,
+  FilePlus2,
+  GitBranch,
+  ListPlus,
+  ListTree,
+  MessageSquare,
+  ScanText,
+  SpellCheck2,
+  Wrench,
+  type LucideIcon,
+} from 'lucide-react';
+import { useAiContext, type Mode } from './AiContext';
+import {
+  IMPROVEMENT_DESCRIPTIONS,
+  IMPROVEMENT_TYPES,
+  type ImprovementType,
+} from './improvement-types';
+import { cn } from '../../shared/lib/cn';
+
+export type AssistantAction = 'ask' | ImprovementType | 'diagram' | 'generate';
+
+interface ActionDefinition {
+  id: AssistantAction;
+  label: string;
+  description: string;
+  Icon: LucideIcon;
+}
+
+const IMPROVEMENT_ICONS: Record<ImprovementType, LucideIcon> = {
+  grammar: SpellCheck2,
+  structure: ListTree,
+  clarity: ScanText,
+  technical: Wrench,
+  completeness: ListPlus,
+};
+
+const CHAT_ACTION: ActionDefinition = {
+  id: 'ask',
+  label: 'Q&A',
+  description: 'Ask your synced knowledge base',
+  Icon: MessageSquare,
+};
+
+const IMPROVEMENT_ACTIONS: ActionDefinition[] = IMPROVEMENT_TYPES.map((type) => ({
+  id: type,
+  label: type.charAt(0).toUpperCase() + type.slice(1),
+  description: IMPROVEMENT_DESCRIPTIONS[type],
+  Icon: IMPROVEMENT_ICONS[type],
+}));
+
+const DIAGRAM_ACTION: ActionDefinition = {
+  id: 'diagram',
+  label: 'Diagram',
+  description: 'Turn the open page into a Mermaid diagram',
+  Icon: GitBranch,
+};
+
+const GENERATE_ACTION: ActionDefinition = {
+  id: 'generate',
+  label: 'Generate',
+  description: 'Create a new page from a prompt',
+  Icon: FilePlus2,
+};
+
+export function resolveAssistantAction(mode: Mode, improvementType: ImprovementType): AssistantAction {
+  return mode === 'improve' ? improvementType : mode;
+}
+
+export function applyAssistantAction(
+  action: AssistantAction,
+  setMode: (mode: Mode) => void,
+  setImprovementType: (type: ImprovementType) => void,
+) {
+  if (IMPROVEMENT_TYPES.includes(action as ImprovementType)) {
+    setImprovementType(action as ImprovementType);
+    setMode('improve');
+    return;
+  }
+  setMode(action as Mode);
+}
+
+function ActionItem({ action, selected, onSelect }: {
+  action: ActionDefinition;
+  selected: boolean;
+  onSelect: (action: AssistantAction) => void;
+}) {
+  const { Icon } = action;
+  return (
+    <DropdownMenu.Item
+      onSelect={() => onSelect(action.id)}
+      className={cn(
+        'flex cursor-default select-none items-start gap-2.5 rounded-md px-2.5 py-2 outline-none',
+        'data-[highlighted]:bg-foreground/[0.06] data-[highlighted]:text-foreground',
+        selected && 'bg-foreground/[0.06]',
+      )}
+      data-testid={`assistant-action-${action.id}`}
+    >
+      <Icon size={15} className="mt-0.5 shrink-0 text-muted-foreground" aria-hidden />
+      <span className="min-w-0 flex-1">
+        <span className="block text-sm font-medium text-foreground">{action.label}</span>
+        <span className="block text-xs leading-4 text-muted-foreground">{action.description}</span>
+      </span>
+      {selected && <Check size={14} className="mt-0.5 shrink-0 text-foreground" aria-hidden />}
+    </DropdownMenu.Item>
+  );
+}
+
+export function AssistantActionSelect({
+  includeGenerate = false,
+  disabled = false,
+  className,
+}: {
+  includeGenerate?: boolean;
+  disabled?: boolean;
+  className?: string;
+}) {
+  const { mode, setMode, improvementType, setImprovementType } = useAiContext();
+  const selected = resolveAssistantAction(mode, improvementType);
+  const available = includeGenerate || selected !== 'generate' ? selected : 'ask';
+  const definitions = [CHAT_ACTION, ...IMPROVEMENT_ACTIONS, DIAGRAM_ACTION, ...(includeGenerate ? [GENERATE_ACTION] : [])];
+  const current = definitions.find((action) => action.id === available) ?? CHAT_ACTION;
+  const { Icon } = current;
+
+  const selectAction = (action: AssistantAction) => {
+    applyAssistantAction(action, setMode, setImprovementType);
+  };
+
+  return (
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger asChild>
+        <button
+          type="button"
+          disabled={disabled}
+          aria-label={`Selected action: ${current.label}`}
+          title={`Selected action: ${current.label}`}
+          className={cn(
+            'flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border-interactive px-2.5 text-xs font-medium text-foreground',
+            'transition-colors hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50',
+            className,
+          )}
+          data-testid="assistant-action-select"
+        >
+          <Icon size={14} className="text-muted-foreground" aria-hidden />
+          <span>{current.label}</span>
+          <ChevronDown size={12} className="text-muted-foreground" aria-hidden />
+        </button>
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content
+          align="start"
+          sideOffset={6}
+          collisionPadding={8}
+          className="nm-card-elevated z-50 max-h-[min(32rem,var(--radix-dropdown-menu-content-available-height))] w-80 overflow-y-auto p-1.5"
+        >
+          <DropdownMenu.Label className="px-2.5 pb-1 pt-1.5 text-xs font-medium text-muted-foreground">
+            Assistant chat
+          </DropdownMenu.Label>
+          <ActionItem action={CHAT_ACTION} selected={available === 'ask'} onSelect={selectAction} />
+
+          <DropdownMenu.Separator className="my-1.5 h-px bg-border" />
+          <DropdownMenu.Label className="px-2.5 pb-1 pt-1.5 text-xs font-medium text-muted-foreground">
+            Rewrite skills
+          </DropdownMenu.Label>
+          {IMPROVEMENT_ACTIONS.map((action) => (
+            <ActionItem key={action.id} action={action} selected={available === action.id} onSelect={selectAction} />
+          ))}
+
+          <DropdownMenu.Separator className="my-1.5 h-px bg-border" />
+          <DropdownMenu.Label className="px-2.5 pb-1 pt-1.5 text-xs font-medium text-muted-foreground">
+            Create
+          </DropdownMenu.Label>
+          <ActionItem action={DIAGRAM_ACTION} selected={available === 'diagram'} onSelect={selectAction} />
+          {includeGenerate && (
+            <ActionItem action={GENERATE_ACTION} selected={available === 'generate'} onSelect={selectAction} />
+          )}
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
+  );
+}

@@ -1,12 +1,16 @@
-import { useCallback, useEffect, useState } from 'react';
-import { Send, Loader2, Link2, X, Plus } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { AlertTriangle, Send, Loader2, Link2, X, Plus } from 'lucide-react';
 import { useAiContext, nextMessageId } from '../AiContext';
+import { AssistantActionSelect } from '../AssistantActionSelect';
 import { DeepSearchToggle } from '../DeepSearchToggle';
 import { toast } from 'sonner';
 import { useQuery } from '@tanstack/react-query';
-import { apiFetch } from '../../../shared/lib/api';
+import { apiFetch, ApiError } from '../../../shared/lib/api';
 import { cn } from '../../../shared/lib/cn';
 import { useAutoGrowTextarea } from '../../../shared/hooks/use-auto-grow-textarea';
+import { buildDocumentReferenceText, useAttachments } from '../../../shared/hooks/use-attachments';
+import { DocumentUploadZone } from '../../../shared/components/upload/DocumentUploadZone';
+import { ImageAttachZone, imageDisabledReason } from '../../../shared/components/upload/ImageAttachZone';
 import { PROMPT_MAX_LENGTH } from './prompt-limits';
 import { buildAskPrompts } from './ask-example-prompts';
 import { usePages, usePageFilterOptions, isZeroEmbeddings } from '../../../shared/hooks/use-pages';
@@ -24,6 +28,7 @@ export function AskModeInput() {
   const {
     input, setInput, isStreaming, model, conversationId, pageId,
     includeSubPages, thinkingMode, setMessages, runStream,
+    chatVision, chatVisionModel,
   } = useAiContext();
 
   const [externalUrls, setExternalUrls] = useState<string[]>([]);
@@ -40,6 +45,21 @@ export function AskModeInput() {
    * regression rather than a taste question.
    */
   const [deepSearch, setDeepSearch] = useState(false);
+  const composerRef = useRef<HTMLDivElement>(null);
+  const attachments = useAttachments({
+    dropTargetRef: composerRef,
+    imageEnabled: chatVision === true,
+    imageDisabledReason: imageDisabledReason(chatVision, chatVisionModel),
+    disabled: isStreaming,
+  });
+  const {
+    documents, image, pickFiles, removeDocument, removeImage,
+    isDragOver, isExtracting, isPreparing, isBusy,
+  } = attachments;
+
+  const handlePickFiles = useCallback((files: readonly File[]) => {
+    void pickFiles(files);
+  }, [pickFiles]);
 
   // The one boundary a remount does not cover. Switching threads from the
   // conversation sidebar — or starting a new one — swaps the conversation under
@@ -114,7 +134,7 @@ export function AskModeInput() {
   // stay inert until it verifiably exists. The amber banner above the thread
   // keeps naming the degradation in both empty and answered states.
   const handleAsk = useCallback(async () => {
-    if (!input.trim() || isStreaming) return;
+    if (!input.trim() || isStreaming || isBusy) return;
     if (!model) {
       toast.error('No model available. Check your LLM provider settings.');
       return;
@@ -128,8 +148,11 @@ export function AskModeInput() {
     // a still-lit toggle would silently apply the measured regression to the
     // user's next, ordinary question (#1119).
     const useDeepSearch = deepSearch;
+    const referenceText = buildDocumentReferenceText(documents);
+    const imageHandle = image?.handle;
     setInput('');
     setDeepSearch(false);
+    if (imageHandle) removeImage();
     setMessages((prev) => [...prev, { id: nextMessageId(), role: 'user', content: question }]);
 
     const body: Record<string, unknown> = {
@@ -142,6 +165,8 @@ export function AskModeInput() {
       // Same shape as `thinking` above: omitted entirely when off, so an
       // untouched toggle sends the wire body it always sent.
       ...(useDeepSearch && { deepSearch: true }),
+      ...(referenceText && { referenceText }),
+      ...(imageHandle && { imageHandle }),
     };
 
     if (externalUrls.length > 0) {
@@ -149,6 +174,12 @@ export function AskModeInput() {
     }
 
     await runStream('/llm/ask', body, {
+      onError: (err) => {
+        if (!imageHandle || !(err instanceof ApiError) || err.statusCode !== 410) return false;
+        setInput(question);
+        toast.error('The image expired — attach it again.');
+        return true;
+      },
       onComplete: () => {
         // Sources are attached by runStream automatically
       },
@@ -157,7 +188,10 @@ export function AskModeInput() {
     // Clear external URLs after sending
     setExternalUrls([]);
     setShowUrlInput(false);
-  }, [input, model, isStreaming, conversationId, pageId, includeSubPages, thinkingMode, deepSearch, externalUrls, setInput, setMessages, runStream]);
+  }, [
+    input, model, isStreaming, isBusy, conversationId, pageId, includeSubPages, thinkingMode,
+    deepSearch, documents, image, externalUrls, setInput, setMessages, removeImage, runStream,
+  ]);
 
   const handleSubmit = () => handleAsk();
 
@@ -172,7 +206,13 @@ export function AskModeInput() {
   };
 
   return (
-    <div className="mt-3 border-t border-border pt-3">
+    <div ref={composerRef} className="mt-3 border-t border-border pt-3">
+      {documents.length > 0 && image && (
+        <p className="mb-2 flex items-center gap-1.5 text-xs text-warning" data-testid="ask-attachment-context-warning">
+          <AlertTriangle size={12} className="shrink-0" aria-hidden />
+          Both attachments will be sent — a small model may not fit them.
+        </p>
+      )}
       {/* External URLs chips */}
       {externalUrls.length > 0 && (
         <div className="mb-2 flex flex-wrap gap-1.5">
@@ -239,7 +279,32 @@ export function AskModeInput() {
       />
 
       {/* Main input row */}
-      <div className="nm-composer">
+      <div className="nm-composer flex-wrap">
+        <DocumentUploadZone
+          variant="composer"
+          onPick={(file) => handlePickFiles([file])}
+          onPickFiles={handlePickFiles}
+          isExtracting={isExtracting}
+          extracted={documents[0]?.result ?? null}
+          filename={documents[0]?.filename ?? null}
+          documents={documents}
+          onRemove={removeDocument}
+          disabled={isStreaming}
+          triggerLabel="Attach a document to this Q&A request"
+          usageHint="context for Q&A"
+          isDragOver={isDragOver}
+          testIdPrefix="ask-doc"
+        />
+        <ImageAttachZone
+          vision={chatVision}
+          visionModel={chatVisionModel}
+          image={image}
+          onPick={(file) => handlePickFiles([file])}
+          onRemove={removeImage}
+          isPreparing={isPreparing}
+          disabled={isStreaming}
+          testIdPrefix="ask-image"
+        />
         {mcpEnabled && (
           <button
             onClick={() => setShowUrlInput(!showUrlInput)}
@@ -254,6 +319,7 @@ export function AskModeInput() {
             <Link2 size={16} />
           </button>
         )}
+        <AssistantActionSelect includeGenerate disabled={isStreaming} className="self-end" />
         <textarea
           ref={inputRef}
           value={input}
@@ -273,7 +339,7 @@ export function AskModeInput() {
         />
         <button
           onClick={handleSubmit}
-          disabled={isStreaming || !input.trim() || !model}
+          disabled={isStreaming || isBusy || !input.trim() || !model}
           aria-label={isStreaming ? 'Sending...' : 'Send message'}
           // self-end keeps Send on the last line of a grown prompt instead of
           // floating it in the middle of the text block.

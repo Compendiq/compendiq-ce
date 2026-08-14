@@ -129,7 +129,7 @@ describe('DiagramMode', () => {
 
     it('disables button when no page is selected', () => {
       render(<DiagramModeInput />, { wrapper: createWrapper() });
-      const btn = screen.getByRole('button');
+      const btn = screen.getByRole('button', { name: 'Generate Diagram' });
       expect(btn).toBeDisabled();
     });
 
@@ -143,7 +143,7 @@ describe('DiagramMode', () => {
 
       // The button is disabled, so the handler would show a toast if called directly.
       // We verify the button is disabled which prevents the call.
-      const btn = screen.getByRole('button');
+      const btn = screen.getByRole('button', { name: 'Generate Diagram' });
       expect(btn).toBeDisabled();
     });
 

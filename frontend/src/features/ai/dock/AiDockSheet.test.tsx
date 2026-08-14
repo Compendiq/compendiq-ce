@@ -84,7 +84,7 @@ async function openAndSettle() {
     useAiDockStore.getState().openDock();
   });
   await waitFor(() => expect(screen.getByTestId('ai-dock-input')).toBeInTheDocument());
-  await waitFor(() => expect(screen.getByTestId('ai-dock-chip-summarize')).not.toBeDisabled());
+  await waitFor(() => expect(screen.getByTestId('assistant-action-select')).not.toBeDisabled());
 }
 
 function sheet(): HTMLElement {
@@ -403,21 +403,28 @@ describe('AiDockSheet (#1126)', () => {
     expect(sheet()).toHaveStyle({ height: `${Math.round(600 * 0.52)}px` });
   });
 
-  it('carries the same panel as the dock — chips, composer and thread', async () => {
+  it('carries the same panel as the dock — action selector, composer and thread', async () => {
     renderSheet();
     await openAndSettle();
 
-    for (const id of ['improve', 'summarize', 'diagram', 'quality']) {
-      expect(screen.getByTestId(`ai-dock-chip-${id}`)).toBeInTheDocument();
+    fireEvent.pointerDown(screen.getByTestId('assistant-action-select'), { button: 0 });
+    for (const action of ['ask', 'grammar', 'structure', 'clarity', 'technical', 'completeness', 'diagram']) {
+      expect(await screen.findByTestId(`assistant-action-${action}`)).toBeInTheDocument();
     }
+    expect(screen.queryByTestId('assistant-action-generate')).not.toBeInTheDocument();
     expect(screen.getByTestId('ai-dock-thread')).toBeInTheDocument();
     expect(screen.getByTestId('ai-dock-empty')).toHaveTextContent('Onboarding Guide');
 
-    fireEvent.click(screen.getByTestId('ai-dock-chip-summarize'));
+    fireEvent.click(screen.getByTestId('assistant-action-grammar'));
+    await waitFor(() => {
+      expect(screen.getByTestId('assistant-action-select')).toHaveAccessibleName('Selected action: Grammar');
+      expect(screen.getByTestId('ai-dock-send')).not.toBeDisabled();
+    });
+    fireEvent.click(screen.getByTestId('ai-dock-send'));
     await waitFor(() => {
       expect(streamSSEMock).toHaveBeenCalledWith(
-        '/llm/summarize',
-        expect.objectContaining({ pageId: 'page-1' }),
+        '/llm/improve',
+        expect.objectContaining({ pageId: 'page-1', type: 'grammar' }),
         expect.anything(),
       );
     });

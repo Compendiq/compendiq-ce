@@ -73,7 +73,7 @@ function renderDock(
   );
 }
 
-/** Open the dock and wait until it has a model, i.e. until the chips are live. */
+/** Open the dock and wait until it has a model, i.e. until Send can run. */
 async function openAndSettle() {
   act(() => {
     useAiDockStore.getState().openDock();
@@ -82,8 +82,13 @@ async function openAndSettle() {
     expect(screen.getByTestId('ai-dock-send')).toBeInTheDocument();
   });
   await waitFor(() => {
-    expect(screen.getByTestId('ai-dock-chip-summarize')).not.toBeDisabled();
+    expect(screen.getByTestId('assistant-action-select')).not.toBeDisabled();
   });
+}
+
+async function selectDockAction(action: 'ask' | 'grammar' | 'structure' | 'clarity' | 'technical' | 'completeness' | 'diagram') {
+  fireEvent.pointerDown(screen.getByTestId('assistant-action-select'), { button: 0 });
+  fireEvent.click(await screen.findByTestId(`assistant-action-${action}`));
 }
 
 function composer(): HTMLTextAreaElement {
@@ -162,14 +167,15 @@ describe('AiDock (#1126)', () => {
   // Nothing about the click said which of the five improvement types to use, the
   // dock has no way to stop a run once it starts, and closing it does not abort
   // one — so the only safe thing for an *opening* gesture to do is open.
-  it('sends nothing when it opens, and improves only once the chip is pressed', async () => {
+  it('sends nothing when it opens, and runs a rewrite only from Send', async () => {
     renderDock();
     await openAndSettle();
 
     expect(streamSSEMock).not.toHaveBeenCalled();
     expect(screen.getByTestId('ai-dock-empty')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByTestId('ai-dock-chip-improve'));
+    await selectDockAction('grammar');
+    fireEvent.click(screen.getByTestId('ai-dock-send'));
 
     await waitFor(() => {
       expect(streamSSEMock).toHaveBeenCalledWith(
@@ -180,7 +186,7 @@ describe('AiDock (#1126)', () => {
     });
   });
 
-  it('greets an empty thread with the chips and composer, not placeholder bubbles', async () => {
+  it('greets an empty thread with the action selector and composer', async () => {
     renderDock();
     await openAndSettle();
 
@@ -189,25 +195,29 @@ describe('AiDock (#1126)', () => {
     const empty = screen.getByTestId('ai-dock-empty');
     expect(empty).toHaveTextContent('Onboarding Guide');
     expect(empty).toHaveTextContent('Ask about it, or pick an action.');
-    for (const id of ['improve', 'summarize', 'diagram', 'quality']) {
-      expect(screen.getByTestId(`ai-dock-chip-${id}`)).toBeInTheDocument();
+    fireEvent.pointerDown(screen.getByTestId('assistant-action-select'), { button: 0 });
+    for (const id of ['ask', 'grammar', 'structure', 'clarity', 'technical', 'completeness', 'diagram']) {
+      expect(await screen.findByTestId(`assistant-action-${id}`)).toBeInTheDocument();
     }
+    expect(screen.queryByText('Summarize')).not.toBeInTheDocument();
+    expect(screen.queryByText('Quality')).not.toBeInTheDocument();
   });
 
-  it('runs a chip against the open document without a mode switch', async () => {
+  it('runs Diagram against the open document from the same Send button', async () => {
     renderDock();
     await openAndSettle();
 
-    fireEvent.click(screen.getByTestId('ai-dock-chip-summarize'));
+    await selectDockAction('diagram');
+    fireEvent.click(screen.getByTestId('ai-dock-send'));
 
     await waitFor(() => {
       expect(streamSSEMock).toHaveBeenCalledWith(
-        '/llm/summarize',
+        '/llm/generate-diagram',
         expect.objectContaining({ content: PAGE.bodyHtml, model: 'llama3', pageId: 'page-1' }),
         expect.anything(),
       );
     });
-    expect(await screen.findByText('Summarize this page.')).toBeInTheDocument();
+    expect(await screen.findByText('Draw a flowchart diagram of this page.')).toBeInTheDocument();
   });
 
   // The core of "one thread, four chips". runStream used to `setMessages([...])`
@@ -220,9 +230,10 @@ describe('AiDock (#1126)', () => {
     fireEvent.keyDown(composer(), { key: 'Enter' });
     expect(await screen.findByText('what does this cover?')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByTestId('ai-dock-chip-quality'));
+    await selectDockAction('diagram');
+    fireEvent.click(screen.getByTestId('ai-dock-send'));
 
-    expect(await screen.findByText('Analyze this page’s quality.')).toBeInTheDocument();
+    expect(await screen.findByText('Draw a flowchart diagram of this page.')).toBeInTheDocument();
     // The earlier question is still there — that is the whole fix.
     expect(screen.getByText('what does this cover?')).toBeInTheDocument();
   });
@@ -231,8 +242,9 @@ describe('AiDock (#1126)', () => {
     renderDock();
     await openAndSettle();
 
+    await selectDockAction('grammar');
     fireEvent.change(composer(), { target: { value: 'tighten the intro' } });
-    fireEvent.click(screen.getByTestId('ai-dock-chip-improve'));
+    fireEvent.click(screen.getByTestId('ai-dock-send'));
 
     await waitFor(() => {
       expect(streamSSEMock).toHaveBeenCalledWith(
@@ -245,15 +257,20 @@ describe('AiDock (#1126)', () => {
     expect(composer().value).toBe('');
   });
 
-  it('leaves the composer text alone for a chip that cannot carry it', async () => {
+  it('uses composer text as Diagram instructions', async () => {
     renderDock();
     await openAndSettle();
 
-    fireEvent.change(composer(), { target: { value: 'a question for later' } });
-    fireEvent.click(screen.getByTestId('ai-dock-chip-summarize'));
+    await selectDockAction('diagram');
+    fireEvent.change(composer(), { target: { value: 'focus on the approval flow' } });
+    fireEvent.click(screen.getByTestId('ai-dock-send'));
 
-    await waitFor(() => expect(streamSSEMock).toHaveBeenCalled());
-    expect(composer().value).toBe('a question for later');
+    await waitFor(() => expect(streamSSEMock).toHaveBeenCalledWith(
+      '/llm/generate-diagram',
+      expect.objectContaining({ instruction: 'focus on the approval flow' }),
+      expect.anything(),
+    ));
+    expect(composer().value).toBe('');
   });
 
   it('offers a retry instead of chips when the model list cannot be loaded', async () => {
@@ -264,7 +281,7 @@ describe('AiDock (#1126)', () => {
     });
 
     expect(await screen.findByText('Models unavailable — retry')).toBeInTheDocument();
-    expect(screen.queryByTestId('ai-dock-chip-improve')).not.toBeInTheDocument();
+    expect(screen.getByTestId('assistant-action-select')).toBeDisabled();
   });
 
 
@@ -277,7 +294,8 @@ describe('AiDock (#1126)', () => {
 
     renderDock();
     await openAndSettle();
-    fireEvent.click(screen.getByTestId('ai-dock-chip-summarize'));
+    await selectDockAction('diagram');
+    fireEvent.click(screen.getByTestId('ai-dock-send'));
 
     await waitFor(() => {
       expect(screen.getByTestId('ai-dock-streaming')).toBeInTheDocument();
@@ -347,27 +365,24 @@ describe('AiDock (#1126)', () => {
       expect(screen.getByTestId('ai-dock-deep-search')).toBeChecked();
     });
 
-    // The four chips post to /llm/improve, /llm/summarize, /llm/generate-diagram
-    // and /llm/analyze-quality; none of them takes the flag. So a chip run drops
-    // it rather than leaving a lit control describing a mode the request it just
-    // started is not in.
-    it('is dropped by a chip run rather than left lit and ignored', async () => {
+    it('is dropped by a selected skill run rather than carried back to Q&A', async () => {
       renderDock();
       await openAndSettle();
 
       fireEvent.click(screen.getByTestId('ai-dock-deep-search'));
       expect(screen.getByTestId('ai-dock-deep-search')).toBeChecked();
 
-      fireEvent.click(screen.getByTestId('ai-dock-chip-summarize'));
+      await selectDockAction('diagram');
+      expect(screen.queryByTestId('ai-dock-deep-search')).not.toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('ai-dock-send'));
       await waitFor(() => {
         expect(streamSSEMock).toHaveBeenCalledWith(
-          '/llm/summarize', expect.anything(), expect.anything(),
+          '/llm/generate-diagram', expect.anything(), expect.anything(),
         );
       });
 
-      await waitFor(() => {
-        expect(screen.getByTestId('ai-dock-deep-search')).not.toBeChecked();
-      });
+      await selectDockAction('ask');
+      expect(screen.getByTestId('ai-dock-deep-search')).not.toBeChecked();
       // And it never rode along on the request it was lit for.
       expect(streamSSEMock.mock.calls[0]![1]).not.toHaveProperty('deepSearch');
     });

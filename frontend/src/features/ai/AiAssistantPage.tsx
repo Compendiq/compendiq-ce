@@ -2,8 +2,8 @@ import { memo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { m, useReducedMotion } from 'framer-motion';
 import {
-  Bot, User, Loader2, MessageSquare, Brain, AlertTriangle,
-  Sparkles, Network, FileText, X,
+  Bot, User, Loader2, Brain, AlertTriangle,
+  Network, FileText, X,
 } from 'lucide-react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -19,15 +19,12 @@ import { StreamingMessage } from './StreamingMessage';
 import { useAiContext, type Mode, type Message } from './AiContext';
 import {
   AskModeInput, AskExamplePrompts, ASK_EMPTY_TITLE, ASK_EMPTY_SUBTITLE, NO_EMBEDDINGS_NOTICE_ID,
-  ImproveTypeSelector, ImproveDiffView, ImproveModeInput, IMPROVE_EMPTY_TITLE, improveEmptySubtitle,
+  ImproveDiffView, ImproveModeInput, IMPROVE_EMPTY_TITLE, improveEmptySubtitle,
   GenerateModeInput, GENERATE_EMPTY_TITLE, GENERATE_EMPTY_SUBTITLE,
-  SummarizeModeInput, SUMMARIZE_EMPTY_TITLE, summarizeEmptySubtitle,
   DiagramTypeSelector, DiagramPreview, DiagramModeInput, DIAGRAM_EMPTY_TITLE, diagramEmptySubtitle,
-  QualityModeInput, QUALITY_EMPTY_TITLE, qualityEmptySubtitle,
 } from './modes';
 import { isZeroEmbeddings } from '../../shared/hooks/use-pages';
 import { SETTINGS_PANELS } from '../settings/settings-nav';
-import { ShortcutHint } from '../../shared/components/ShortcutHint';
 
 // ---------------------------------------------------------------------------
 // Memoized message bubble: skips re-render for completed (non-streaming) messages
@@ -185,32 +182,6 @@ const MessageBubble = memo(function MessageBubble({
 });
 
 // ---------------------------------------------------------------------------
-// Mode button definitions
-// ---------------------------------------------------------------------------
-
-/**
- * The tabs `/ai` offers (#1126).
- *
- * Improve, Summarize, Diagram and Quality are gone from this list: they act on
- * an open document, and the dock is where a document is open. Leaving them here
- * would advertise six modes on a route that cannot show you the page they
- * operate on, beside a dock offering four chips for the same jobs — two
- * surfaces for one task, with no signal which is canonical.
- *
- * Their screens below are NOT removed. `/ai?mode=improve&pageId=…` still
- * renders Improve in full, so bookmarks and any link made before this change
- * keep working. Nothing in the app builds such a URL any more, and
- * SidebarTreeView never did: its `isAiRoute` re-navigation is `/ai?pageId=…`
- * with `replace: true`, which drops a `mode=` rather than carrying one, and
- * AiContext reads the mode-less result as Ask. Retiring those screens is a
- * separate change, once nothing is observed reaching them.
- */
-const MODE_BUTTONS: Array<{ key: Mode; icon: typeof MessageSquare; label: string }> = [
-  { key: 'ask', icon: MessageSquare, label: 'Q&A' },
-  { key: 'generate', icon: Sparkles, label: 'Generate' },
-];
-
-// ---------------------------------------------------------------------------
 // Empty state text per mode
 // ---------------------------------------------------------------------------
 
@@ -219,9 +190,7 @@ function getEmptyTitle(mode: Mode): string {
     case 'ask': return ASK_EMPTY_TITLE;
     case 'improve': return IMPROVE_EMPTY_TITLE;
     case 'generate': return GENERATE_EMPTY_TITLE;
-    case 'summarize': return SUMMARIZE_EMPTY_TITLE;
     case 'diagram': return DIAGRAM_EMPTY_TITLE;
-    case 'quality': return QUALITY_EMPTY_TITLE;
   }
 }
 
@@ -230,9 +199,7 @@ function getEmptySubtitle(mode: Mode, page: { title: string } | undefined): stri
     case 'ask': return ASK_EMPTY_SUBTITLE;
     case 'improve': return improveEmptySubtitle(page);
     case 'generate': return GENERATE_EMPTY_SUBTITLE;
-    case 'summarize': return summarizeEmptySubtitle(page);
     case 'diagram': return diagramEmptySubtitle(page);
-    case 'quality': return qualityEmptySubtitle(page);
   }
 }
 
@@ -247,7 +214,7 @@ function getEmptySubtitle(mode: Mode, page: { title: string } | undefined): stri
 export function AiAssistantPage() {
   const ctx = useAiContext();
   const {
-    mode, setMode, page, pageHasChildren,
+    mode, page, pageHasChildren,
     messages, messagesEndRef, isStreaming, isThinking, thinkingElapsed,
     streamingContent,
     model, models, setModel, modelsError, refetchModels, isLight,
@@ -258,9 +225,6 @@ export function AiAssistantPage() {
 
   const shouldReduceMotion = useReducedMotion();
   const [searchParams, setSearchParams] = useSearchParams();
-  // False when a `?mode=` deep link put us on one of the four document screens
-  // that no longer have a tab here (#1126).
-  const modeHasTab = MODE_BUTTONS.some((b) => b.key === mode);
 
   return (
     <m.div
@@ -314,10 +278,9 @@ export function AiAssistantPage() {
           after the scroll container's padding (#1186). What removed the live
           strip that gap used to expose is the min-h-0 chain, not this mask.
 
-          Visual grammar: two clear groups separated by a thin divider.
-          Group A (left): which mode are we in. Inset segmented control.
-          Group B (right): what's the model + what's the context window +
-            what options are on. Outlined chips of uniform 28 px height. */}
+          The action selector moved into the composer: it now describes the
+          very Send button it controls. This header carries only request
+          context and durable options. */}
       {/* Opaque, no blur. The `inset-0` under-mask directly below already
           guarantees occlusion, so `bg-background/85 backdrop-blur` on the bar
           itself was belt-and-braces over something already solid — and blur is
@@ -331,79 +294,6 @@ export function AiAssistantPage() {
         className="pointer-events-none absolute inset-0 z-[-1] bg-background"
       />
       <div className="flex flex-wrap items-center gap-x-2 gap-y-2 rounded-xl border border-border bg-card px-3 py-2">
-        {/* Group A — mode segmented control */}
-        {/* Horizontally scrollable below the width that fits all six modes.
-            At 390px the row previously cut off mid-word after "Summar…", so
-            Diagram and Quality were unreachable with no scroll cue at all —
-            two of six modes simply did not exist on a phone. snap-x keeps the
-            tabs from resting half-visible; the edge mask signals there is more
-            to the right. Arrow-key navigation still reaches every tab, moving
-            focus with the selection so the focused tab is the visible one. */}
-        <div
-          role="tablist"
-          aria-label="AI mode"
-          data-testid="ai-mode-tablist"
-          className="flex max-w-full snap-x snap-mandatory items-center gap-0.5 overflow-x-auto rounded-lg bg-foreground/[0.04] p-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden [mask-image:linear-gradient(to_right,transparent_0,black_12px,black_calc(100%-12px),transparent_100%)]"
-          onKeyDown={(e) => {
-            if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
-              e.preventDefault();
-              const keys = MODE_BUTTONS.map((b) => b.key);
-              const idx = keys.indexOf(mode);
-              const next = e.key === 'ArrowRight'
-                ? (idx + 1) % keys.length
-                : (idx - 1 + keys.length) % keys.length;
-              const nextKey = keys[next];
-              if (nextKey) {
-                setMode(nextKey);
-                // Move DOM focus along with the selection. These tabs use a
-                // roving tabindex, so selecting without focusing strands focus
-                // on a tab that just became tabIndex={-1} — and once the row
-                // scrolls, off-screen as well: the highlighted tab and the
-                // focused one were different tabs. preventScroll + an explicit
-                // scrollIntoView keeps the correction horizontal, inside the
-                // tablist, instead of letting the browser jump the page.
-                const nextTab = e.currentTarget.querySelector<HTMLElement>(
-                  `[data-mode-tab="${nextKey}"]`,
-                );
-                nextTab?.focus({ preventScroll: true });
-                nextTab?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-              }
-            }
-          }}
-        >
-          {MODE_BUTTONS.map(({ key, icon: Icon, label }, i) => (
-            <button
-              key={key}
-              role="tab"
-              data-mode-tab={key}
-              aria-selected={mode === key}
-              // A `?mode=` deep link can put `mode` on a document screen that
-              // has no tab here. Without this fallback every tab would be
-              // tabIndex={-1} and the roving-tabindex tablist would have no
-              // keyboard entry point at all (WCAG 2.1.1) — someone following an
-              // old bookmark could not reach Q&A or Generate without editing
-              // the URL. Arrow keys recover too: indexOf(mode) is -1, so either
-              // arrow lands on the first tab.
-              tabIndex={mode === key || (!modeHasTab && i === 0) ? 0 : -1}
-              onClick={() => setMode(key)}
-              className={cn(
-                'flex h-7 shrink-0 snap-start items-center gap-1.5 rounded-md px-2.5 text-sm transition-colors',
-                mode === key
-                  // `panel-tab-active` is the one active-segment treatment in
-                  // the system, shared with the inspector's view switcher, the
-                  // main nav and Settings' sub-tabs. This was a second copy of
-                  // the retired v0.5 shape — a tinted pane carrying `shadow-sm`
-                  // and a primary ring — which is how the same control ended up
-                  // looking different on four routes.
-                  ? 'panel-tab-active font-medium'
-                  : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
-              )}
-            >
-              <Icon size={14} /> {label}
-            </button>
-          ))}
-        </div>
-
         <div className="flex-1" />
 
         {/* Group B — context + options. Each chip is 28 px tall (h-7),
@@ -519,21 +409,8 @@ export function AiAssistantPage() {
         </div>
       </div>
 
-      {/* Arrived on a document screen from an old `?mode=` link. Say so, rather
-          than leaving a tablist with nothing selected looking broken (#1126). */}
-      {!modeHasTab && (
-        <p
-          className="rounded-xl border border-border bg-card px-3 py-2 text-xs text-muted-foreground"
-          data-testid="ai-legacy-mode-notice"
-        >
-          This view moved into the assistant that opens beside an article. Open the page and press{' '}
-          <ShortcutHint shortcutId="ai-assistant" /> — or pick Q&amp;A or Generate above.
-        </p>
-      )}
-
-      {/* Mode-specific type selectors — included in the sticky header so
-          they stay alongside the tabs while scrolling. */}
-      {mode === 'improve' && <ImproveTypeSelector />}
+      {/* Diagram has one secondary setting. The selected primary action lives
+          beside Send; this only refines which diagram that action produces. */}
       {mode === 'diagram' && <DiagramTypeSelector />}
       </div>
 
@@ -692,9 +569,7 @@ export function AiAssistantPage() {
         {mode === 'ask' && <AskModeInput />}
         {mode === 'improve' && <ImproveModeInput />}
         {mode === 'generate' && <GenerateModeInput />}
-        {mode === 'summarize' && <SummarizeModeInput />}
         {mode === 'diagram' && <DiagramModeInput />}
-        {mode === 'quality' && <QualityModeInput />}
       </div>
     </m.div>
   );

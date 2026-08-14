@@ -21,6 +21,16 @@ vi.mock('../../../shared/lib/sse', () => ({
   streamSSE: (...args: unknown[]) => streamSSEMock(...args),
 }));
 
+const IMAGE_HANDLE = 'b'.repeat(64);
+const prepareImageMock = vi.fn();
+vi.mock('../../../shared/hooks/use-prepare-image', () => ({
+  usePrepareImage: () => ({
+    prepareImage: (...args: unknown[]) => prepareImageMock(...args),
+    isPreparing: false,
+    error: null,
+  }),
+}));
+
 // Example prompts are derived from real instance content, so these three
 // queries decide what AskExamplePrompts renders. Overridable per test via
 // `promptSourceData` so a populated instance can be simulated.
@@ -94,6 +104,14 @@ describe('AskMode', () => {
       username: 'testuser',
       role: 'user',
     });
+    prepareImageMock.mockResolvedValue({
+      handle: IMAGE_HANDLE,
+      format: 'webp',
+      width: 800,
+      height: 600,
+      fileSize: 40_000,
+      previewUrl: 'blob:ask-preview',
+    });
 
     apiFetchMock.mockImplementation((path: string) => {
       if (path === '/settings') {
@@ -130,7 +148,77 @@ describe('AskMode', () => {
   it('renders input field and send button', () => {
     render(<AskModeInput />, { wrapper: createWrapper() });
     expect(screen.getByPlaceholderText('Ask a question...')).toBeInTheDocument();
-    expect(screen.getByRole('button')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeInTheDocument();
+  });
+
+  it('sends an extracted document as Q&A reference context', async () => {
+    apiFetchMock.mockImplementation((path: string) => {
+      if (path === '/settings') {
+        return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+      }
+      if (path.startsWith('/ollama/models')) return Promise.resolve([{ name: 'llama3' }]);
+      if (path === '/llm/conversations') return Promise.resolve([]);
+      return Promise.resolve([]);
+    });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      format: 'txt',
+      text: 'The rollout requires two approvals.',
+      fileSize: 35,
+      preview: 'The rollout requires two approvals.',
+    }), { headers: { 'Content-Type': 'application/json' } }));
+    streamSSEMock.mockImplementation(async function* fakeStream() {
+      yield { content: 'Answer' };
+    });
+
+    render(<AskModeInput />, { wrapper: createWrapper() });
+    fireEvent.change(screen.getByTestId('ask-doc-file-input'), {
+      target: { files: [new File(['policy'], 'policy.txt', { type: 'text/plain' })] },
+    });
+    await screen.findByTestId('ask-doc-attachment-card');
+    fireEvent.change(screen.getByPlaceholderText('Ask a question...'), {
+      target: { value: 'What does the rollout require?' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+
+    await waitFor(() => expect(streamSSEMock).toHaveBeenCalledWith(
+      '/llm/ask',
+      expect.objectContaining({ referenceText: 'The rollout requires two approvals.' }),
+      expect.any(Object),
+    ));
+  });
+
+  it('sends an attached image to Q&A when the selected chat model supports vision', async () => {
+    apiFetchMock.mockImplementation((path: string) => {
+      if (path === '/settings') {
+        return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+      }
+      if (path === '/llm/usecase-default?usecase=chat') {
+        return Promise.resolve({ model: 'llama3', vision: true });
+      }
+      if (path.startsWith('/ollama/models')) return Promise.resolve([{ name: 'llama3' }]);
+      if (path === '/llm/conversations') return Promise.resolve([]);
+      return Promise.resolve([]);
+    });
+    streamSSEMock.mockImplementation(async function* fakeStream() {
+      yield { content: 'Answer' };
+    });
+
+    render(<AskModeInput />, { wrapper: createWrapper() });
+    await waitFor(() => expect(screen.getByTestId('ask-image-trigger')).not.toBeDisabled());
+    fireEvent.change(screen.getByTestId('ask-image-file-input'), {
+      target: { files: [new File(['image'], 'diagram.png', { type: 'image/png' })] },
+    });
+    await screen.findByTestId('ask-image-card');
+    fireEvent.change(screen.getByPlaceholderText('Ask a question...'), {
+      target: { value: 'What is shown here?' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+
+    await waitFor(() => expect(streamSSEMock).toHaveBeenCalledWith(
+      '/llm/ask',
+      expect.objectContaining({ imageHandle: IMAGE_HANDLE }),
+      expect.any(Object),
+    ));
   });
 
   /** Exposes the current URL search string so tests can assert ?q was consumed. */
@@ -304,7 +392,7 @@ describe('AskMode', () => {
     fireEvent.change(input, { target: { value: 'where is the deploy runbook?' } });
 
     await waitFor(() => {
-      expect(screen.getByRole('button')).not.toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Send message' })).not.toBeDisabled();
     });
 
     fireEvent.keyDown(input, { key: 'Enter' });
@@ -333,7 +421,7 @@ describe('AskMode', () => {
 
   it('disables send button when input is empty', () => {
     render(<AskModeInput />, { wrapper: createWrapper() });
-    const btn = screen.getByRole('button');
+    const btn = screen.getByRole('button', { name: 'Send message' });
     expect(btn).toBeDisabled();
   });
 
@@ -341,7 +429,7 @@ describe('AskMode', () => {
     render(<AskModeInput />, { wrapper: createWrapper() });
     const input = screen.getByPlaceholderText('Ask a question...');
     fireEvent.change(input, { target: { value: 'test question' } });
-    const btn = screen.getByRole('button');
+    const btn = screen.getByRole('button', { name: 'Send message' });
     expect(btn).toBeDisabled();
   });
 
@@ -370,7 +458,7 @@ describe('AskMode', () => {
     fireEvent.change(input, { target: { value: 'test question' } });
 
     await waitFor(() => {
-      const btn = screen.getByRole('button');
+      const btn = screen.getByRole('button', { name: 'Send message' });
       expect(btn).not.toBeDisabled();
     });
   });
@@ -405,7 +493,7 @@ describe('AskMode', () => {
     fireEvent.change(input, { target: { value: 'What is Confluence?' } });
 
     await waitFor(() => {
-      const btn = screen.getByRole('button');
+      const btn = screen.getByRole('button', { name: 'Send message' });
       expect(btn).not.toBeDisabled();
     });
 
@@ -454,7 +542,7 @@ describe('AskMode', () => {
     fireEvent.change(input, { target: { value: 'first line' } });
 
     await waitFor(() => {
-      expect(screen.getByRole('button')).not.toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Send message' })).not.toBeDisabled();
     });
 
     // Shift+Enter must fall through to the textarea's own newline handling:
@@ -504,7 +592,7 @@ describe('AskMode', () => {
     fireEvent.change(input, { target: { value: 'a question' } });
 
     await waitFor(() => {
-      expect(screen.getByRole('button')).not.toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Send message' })).not.toBeDisabled();
     });
 
     // fireEvent returns false when the handler called preventDefault. Without
@@ -541,7 +629,7 @@ describe('AskMode', () => {
     fireEvent.change(input, { target: { value: 'test question' } });
 
     await waitFor(() => {
-      const btn = screen.getByRole('button');
+      const btn = screen.getByRole('button', { name: 'Send message' });
       expect(btn).not.toBeDisabled();
     });
 

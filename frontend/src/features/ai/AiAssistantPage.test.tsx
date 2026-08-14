@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
@@ -132,14 +132,14 @@ describe('AiAssistantPage', () => {
     useAuthStore.getState().clearAuth();
   });
 
-  // #1126: /ai is the no-document home for Ask and Generate. Improve,
-  // Summarize, Diagram and Quality act on an open document and moved to the
-  // dock as chips — offering them here too would be two surfaces for one job
-  // on a route that cannot show you the document they operate on.
-  it('offers Q&A and Generate, and no document-mode tabs', () => {
+  it('offers Q&A, five standalone rewrite skills, Diagram, and Generate', async () => {
     render(<AiAssistantPage />, { wrapper: createWrapper() });
-    const tabs = screen.getAllByRole('tab').map((t) => t.textContent?.trim());
-    expect(tabs).toEqual(['Q&A', 'Generate']);
+    fireEvent.pointerDown(screen.getByTestId('assistant-action-select'), { button: 0 });
+    for (const action of ['ask', 'grammar', 'structure', 'clarity', 'technical', 'completeness', 'diagram', 'generate']) {
+      expect(await screen.findByTestId(`assistant-action-${action}`)).toBeInTheDocument();
+    }
+    expect(screen.queryByText('Summarize')).not.toBeInTheDocument();
+    expect(screen.queryByText('Quality')).not.toBeInTheDocument();
   });
 
   it('uses flex-1 column layout so the input bar anchors to the bottom of the viewport', () => {
@@ -361,49 +361,19 @@ describe('AiAssistantPage', () => {
       expect(loadingBtn).toBeDisabled();
     });
 
-    // #1126: `?mode=improve` no longer selects a tab — there isn't one — but it
-    // must still reach the Improve screen, which is what keeps pre-existing
-    // deep links and bookmarks working.
-    it('reads mode from the URL query param even without a tab for it', () => {
+    it('reads an Improve deep link as the current standalone rewrite skill', () => {
       render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve']) });
 
       expect(screen.getByText(/Navigate to a page/)).toBeInTheDocument();
-      expect(screen.queryByRole('tab', { selected: true })).toBeNull();
+      expect(screen.getByTestId('assistant-action-select')).toHaveAccessibleName('Selected action: Grammar');
     });
 
-    // WCAG 2.1.1. A roving-tabindex tablist whose selected tab is absent gives
-    // every tab tabIndex={-1}, leaving no keyboard entry point at all: someone
-    // following an old bookmark could not reach Q&A or Generate without editing
-    // the URL. Mouse users click and recover; keyboard users were stranded.
-    it('keeps a keyboard tab stop when the active mode has no tab', () => {
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve']) });
-
-      const tabs = screen.getAllByRole('tab');
-      expect(tabs[0]).toHaveAttribute('tabindex', '0');
-    });
-
-    it('recovers to a real tab when arrowing from a mode that has none', () => {
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve']) });
-
-      fireEvent.keyDown(screen.getByTestId('ai-mode-tablist'), { key: 'ArrowRight' });
-
-      expect(screen.getByRole('tab', { selected: true })).toHaveTextContent('Q&A');
-    });
-
-    it('explains where the mode went instead of leaving the tablist looking broken', () => {
-      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve']) });
-
-      const notice = screen.getByTestId('ai-legacy-mode-notice');
-      expect(notice).toBeInTheDocument();
-
-      // The notice sends the reader to a keyboard shortcut, and `ShortcutHint`
-      // renders NOTHING for a registry id it cannot find. #1176 renamed this one
-      // (`ai-improve` → `ai-assistant`), so asserting only that the notice
-      // exists would still pass with the badge silently blank — the sentence
-      // would tell the user to "press" nothing at all. Assert the key reached
-      // the screen. Alt prints as "Alt" off macOS and ⌥ on it, and `isMac()`
-      // reads a real navigator here.
-      expect(within(notice).getByText(/(Alt\+|⌥)I/)).toBeInTheDocument();
+    it('falls back to Q&A for retired Summarize and Quality URLs', () => {
+      const { unmount } = render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=summarize']) });
+      expect(screen.getByText('Ask questions about your knowledge base')).toBeInTheDocument();
+      unmount();
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=quality']) });
+      expect(screen.getByText('Ask questions about your knowledge base')).toBeInTheDocument();
     });
 
     it('enables improve button when page is loaded and model is available', async () => {
@@ -1379,10 +1349,8 @@ describe('AiAssistantPage', () => {
       expect(screen.getByText('seeded outside the page')).toBeInTheDocument();
     });
 
-    // #1126: this used to default to Improve. With Improve gone from the
-    // tablist that would strand the user in a mode they can leave but never
-    // return to. A page context is still an input to Ask, so Ask is the
-    // default; only an explicit ?mode= reaches a document screen.
+    // A page context is still an input to Q&A, so it remains the default;
+    // only an explicit ?mode= reaches another assistant action.
     it('defaults to Q&A when a pageId is present but no mode is given', () => {
       mockPageData = {
         data: { id: 'p1', title: 'My Article', bodyHtml: '<p>Content</p>', bodyText: 'Content' },
@@ -1392,7 +1360,7 @@ describe('AiAssistantPage', () => {
         wrapper: createWrapper(['/ai?pageId=p1']),
       });
 
-      expect(screen.getByRole('tab', { selected: true })).toHaveTextContent('Q&A');
+      expect(screen.getByTestId('assistant-action-select')).toHaveAccessibleName('Selected action: Q&A');
       expect(screen.getByText('Ask questions about your knowledge base')).toBeInTheDocument();
     });
   });
@@ -1425,81 +1393,6 @@ describe('AiAssistantPage', () => {
   });
 
   describe('narrow-viewport reachability', () => {
-    // jsdom does not implement scrollIntoView, and the tablist's arrow-key
-    // handler calls it. Stub for this block only and put the prototype back —
-    // assigning without restoring would leak into every later test in the file.
-    const originalScrollIntoView = Element.prototype.scrollIntoView;
-    let scrollIntoViewMock: ReturnType<typeof vi.fn>;
-
-    beforeEach(() => {
-      scrollIntoViewMock = vi.fn();
-      Element.prototype.scrollIntoView = scrollIntoViewMock;
-    });
-
-    afterEach(() => {
-      Element.prototype.scrollIntoView = originalScrollIntoView;
-    });
-
-    // At 390px the six-mode row cut off after "Summar…", leaving Diagram and
-    // Quality unreachable with no scroll cue. The row is two tabs since #1126
-    // and no longer overflows, but the scroll affordance stays: it is what
-    // stops a future tab from being silently unreachable again.
-    it('lets the mode row scroll horizontally instead of clipping', () => {
-      render(<AiAssistantPage />, { wrapper: createWrapper() });
-
-      const tablist = screen.getByTestId('ai-mode-tablist');
-      expect(tablist.className).toContain('overflow-x-auto');
-      expect(tablist.className).toContain('max-w-full');
-      expect(tablist.className).not.toContain('overflow-hidden');
-    });
-
-    it('keeps every offered mode present in the tablist', () => {
-      render(<AiAssistantPage />, { wrapper: createWrapper() });
-
-      const tabs = screen.getAllByRole('tab');
-      expect(tabs).toHaveLength(2);
-      for (const tab of tabs) {
-        // shrink-0 stops the flex row squashing tabs into unreadable slivers
-        // instead of scrolling.
-        expect(tab.className).toContain('shrink-0');
-      }
-    });
-
-    it('moves focus with the selection when arrowing through modes', () => {
-      // The tabs use a roving tabindex, so selecting a tab without focusing it
-      // leaves focus on one that just became tabIndex={-1}. Once the row
-      // scrolls on a narrow viewport, that stranded tab is also off-screen —
-      // the highlighted tab and the focused tab were different tabs.
-      render(<AiAssistantPage />, { wrapper: createWrapper() });
-
-      const tabs = screen.getAllByRole('tab');
-      const first = tabs[0]!;
-      first.focus();
-      expect(document.activeElement).toBe(first);
-
-      fireEvent.keyDown(screen.getByTestId('ai-mode-tablist'), { key: 'ArrowRight' });
-
-      const second = screen.getAllByRole('tab')[1]!;
-      expect(second).toHaveAttribute('aria-selected', 'true');
-      expect(document.activeElement).toBe(second);
-      // Focus is the only tab reachable by Tab; the old one steps aside.
-      expect(second).toHaveAttribute('tabindex', '0');
-      expect(screen.getAllByRole('tab')[0]!).toHaveAttribute('tabindex', '-1');
-      expect(scrollIntoViewMock).toHaveBeenCalled();
-    });
-
-    it('wraps focus round the ends of the mode row', () => {
-      render(<AiAssistantPage />, { wrapper: createWrapper() });
-
-      const tablist = screen.getByTestId('ai-mode-tablist');
-      // ArrowLeft from the first tab wraps to the last, which is the tab most
-      // likely to be off-screen at 390px.
-      fireEvent.keyDown(tablist, { key: 'ArrowLeft' });
-
-      const tabs = screen.getAllByRole('tab');
-      expect(document.activeElement).toBe(tabs[tabs.length - 1]);
-    });
-
     it('scrolls the message pane rather than hiding overflow', () => {
       // At viewport heights <= 768px the empty-state prompt cards were clipped
       // with no way to reach them; on mobile they rendered behind the composer.

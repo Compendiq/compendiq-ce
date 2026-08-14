@@ -2,6 +2,7 @@ import { useState, useCallback, useMemo, useRef } from 'react';
 import { AlertTriangle, Send, Loader2, Save, Search, ChevronDown, X, FolderOpen, Globe } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { useAiContext, nextMessageId } from '../AiContext';
+import { AssistantActionSelect } from '../AssistantActionSelect';
 import { useSpaces } from '../../../shared/hooks/use-spaces';
 import { useLocalSpaces } from '../../../shared/hooks/use-standalone';
 import { usePages, useCreatePage, type PageFilters } from '../../../shared/hooks/use-pages';
@@ -539,6 +540,7 @@ export function GenerateModeInput() {
             isPreparing={attachments.isPreparing}
             disabled={isStreaming}
           />
+          <AssistantActionSelect includeGenerate disabled={isStreaming} className="self-end" />
           <textarea
             ref={promptRef}
             value={input}

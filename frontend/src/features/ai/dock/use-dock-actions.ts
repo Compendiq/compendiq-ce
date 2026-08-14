@@ -6,21 +6,19 @@ import { chipUserMessage, type DockChipId } from './dock-chips';
 
 export interface DockActionOptions {
   /**
-   * Text of a document attached in the composer (#1131). Improve is the one
-   * action that can use it, so it is the one action that sends it. Passed in
-   * rather than read from AiContext because the attachment belongs to the dock
-   * that holds it, not to the conversation.
+   * Text of a document attached in the composer (#1131). Q&A and rewrite
+   * skills can use it. Passed in rather than read from AiContext because the
+   * attachment belongs to the dock that holds it, not to the conversation.
    */
   referenceText?: string;
   /**
    * #1154: handle of an image staged by `POST /llm/prepare-image`, from the same
-   * composer and for the same one action.
+   * composer and for the same attachment-aware actions.
    */
   imageHandle?: string;
   /**
    * True while either attachment slot is still being prepared — the panel's
-   * `isBusy`. Improve is the one action that reads an attachment, so it is the
-   * one action that has to wait for it.
+   * `isBusy`. Q&A and rewrite requests both wait for it.
    *
    * The chip's own `disabled` is not enough. `runChip` is also reached from
    * `DockDiffCard`'s "Re-run Improve", which carries no disabled state — so the
@@ -51,10 +49,9 @@ export interface DockActionOptions {
    * in this app lives (`thinkingMode` writes localStorage, `includeSubPages`
    * survives every ask), so putting it there is how it would become one.
    *
-   * Only `ask()` sends it. The four chips are app-authored jobs over the open
-   * document, not knowledge-base questions the user phrased, so there is no
-   * vocabulary gap for expansion to close — and `improve` / `summarize` /
-   * `diagram` do not post to `/llm/ask` at all.
+   * Only `ask()` sends it. Rewrite and Diagram are document jobs rather than
+   * knowledge-base questions, so there is no vocabulary gap for expansion to
+   * close and they do not post to `/llm/ask`.
    */
   deepSearch?: boolean;
   /**
@@ -69,7 +66,7 @@ export interface DockActionOptions {
    * reset placed after the `await` would be skipped on abort and on error,
    * leaving the toggle lit for the next question.
    *
-   * `runChip()` CANNOT consume it — none of the four routes it posts to takes
+   * `runChip()` CANNOT consume it — neither route it posts to takes
    * the flag — so it CLEARS it instead. Leaving it lit through a run that
    * ignores it is the one option ruled out: the control would then be showing a
    * mode the request it just started is not in. Placed after the same guards
@@ -80,13 +77,10 @@ export interface DockActionOptions {
 }
 
 /**
- * Submit handlers for the docked assistant: the free-text question and the four
- * seeding chips (#1126).
+ * Submit handlers for the docked assistant: Q&A, rewrite, and Diagram.
  *
  * Everything a chip needs — the page body, the model, the sub-page flag,
- * thinking mode, the improvement / diagram type — already lives in AiContext.
- * None of it was ever mode-local state, which is why four modes could collapse
- * into four chips without moving any data.
+ * thinking mode, and the rewrite / diagram type — already lives in AiContext.
  */
 export function useDockActions({
   referenceText, imageHandle, isBusy = false, onImageExpired, onImageConsumed,
@@ -136,6 +130,7 @@ export function useDockActions({
         pageId: pageId ?? undefined,
         includeSubPages,
         ...(imageHandle && { imageHandle }),
+        ...(referenceText && { referenceText }),
         ...(thinkingMode && { thinking: true }),
         // Omitted when off, like `thinking` — an untouched toggle sends the body
         // this composer has always sent.
@@ -154,7 +149,7 @@ export function useDockActions({
     );
   }, [
     input, canRun, isBusy, setInput, onDeepSearchConsumed, imageHandle, onImageConsumed, setMessages, runStream,
-    model, conversationId, pageId, includeSubPages, thinkingMode, deepSearch, onImageExpired,
+    model, conversationId, pageId, includeSubPages, thinkingMode, deepSearch, referenceText, onImageExpired,
   ]);
 
   const runChip = useCallback(async (id: DockChipId) => {
@@ -190,9 +185,8 @@ export function useDockActions({
         // moves before the diff is applied, that mismatch is what turns Apply
         // into an offer to re-run instead of a silent overwrite.
         const baseVersion = page.version;
-        // Only Improve can carry the composer's free text, so only Improve
-        // consumes it. The other three leave it in place rather than swallowing
-        // a prompt they cannot use.
+        // Rewrite consumes the composer's optional instruction. Diagram does
+        // the same in its own branch below.
         if (instruction) setInput('');
         if (imageHandle) onImageConsumed?.();
         setShowDiffView(false);
@@ -255,29 +249,24 @@ export function useDockActions({
         );
         return;
       }
-      case 'summarize':
-        await runStream(
-          '/llm/summarize',
-          { content: page.bodyHtml, model, pageId, includeSubPages, ...thinking },
-          { userMessage },
-        );
-        return;
       case 'diagram':
+        if (instruction) setInput('');
         setDiagramCode('');
         await runStream(
           // /llm/generate-diagram takes no includeSubPages — a diagram is drawn
           // from the open document only.
           '/llm/generate-diagram',
-          { content: page.bodyHtml, model, diagramType, pageId, ...thinking },
+          {
+            content: page.bodyHtml,
+            model,
+            diagramType,
+            pageId,
+            ...(instruction && { instruction }),
+            ...thinking,
+          },
           { userMessage, onComplete: (accumulated) => setDiagramCode(accumulated) },
         );
         return;
-      case 'quality':
-        await runStream(
-          '/llm/analyze-quality',
-          { content: page.bodyHtml, model, pageId, includeSubPages, ...thinking },
-          { userMessage },
-        );
     }
   }, [
     page, pageId, canRun, input, improvementType, diagramType, thinkingMode, model,

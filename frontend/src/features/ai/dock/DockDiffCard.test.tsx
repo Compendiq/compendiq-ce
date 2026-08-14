@@ -94,8 +94,11 @@ async function produceDiff() {
   act(() => {
     useAiDockStore.getState().openDock();
   });
-  await waitFor(() => expect(screen.getByTestId('ai-dock-chip-improve')).not.toBeDisabled());
-  fireEvent.click(screen.getByTestId('ai-dock-chip-improve'));
+  await waitFor(() => expect(screen.getByTestId('assistant-action-select')).not.toBeDisabled());
+  fireEvent.pointerDown(screen.getByTestId('assistant-action-select'), { button: 0 });
+  fireEvent.click(await screen.findByTestId('assistant-action-grammar'));
+  await waitFor(() => expect(screen.getByTestId('ai-dock-send')).not.toBeDisabled());
+  fireEvent.click(screen.getByTestId('ai-dock-send'));
   await waitFor(() => expect(screen.getByTestId('dock-diff-card')).toBeInTheDocument());
 }
 
