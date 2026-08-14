@@ -881,7 +881,7 @@ describe('EditorBlockMenu — lifecycle', () => {
 describe('EditorBlockMenu — nested blocks in column containers', () => {
   it('configures NESTED_DRAG_OPTIONS with sensible defaults and excludes column containers', () => {
     expect(NESTED_DRAG_OPTIONS.defaultRules).toBe(true);
-    expect(NESTED_DRAG_OPTIONS.edgeDetection).toBe('left');
+    expect(NESTED_DRAG_OPTIONS.edgeDetection).toBe('none');
     const containerRule = NESTED_DRAG_OPTIONS.rules?.find((r) => r.id === 'excludeLayoutContainers');
     expect(containerRule).toBeDefined();
 

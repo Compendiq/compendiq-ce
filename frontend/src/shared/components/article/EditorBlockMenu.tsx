@@ -181,12 +181,13 @@ export function EditorBlockMenu({
           parent.type.name === 'confluenceLayoutCell' ||
           parent.type.name === 'panel');
 
-      if (isSoleBlockInContainer && editor.schema.nodes.paragraph) {
+      const paragraphType = editor.schema.nodes.paragraph;
+      if (isSoleBlockInContainer && paragraphType) {
         editor
           .chain()
           .focus()
           .command(({ tr }) => {
-            tr.replaceWith(range.from, range.to, editor.schema.nodes.paragraph.create());
+            tr.replaceWith(range.from, range.to, paragraphType.create());
             return true;
           })
           .run();
@@ -395,7 +396,7 @@ export function EditorBlockMenu({
  */
 export const NESTED_DRAG_OPTIONS: NestedOptions = {
   defaultRules: true,
-  edgeDetection: 'left',
+  edgeDetection: 'none',
   rules: [
     {
       id: 'excludeLayoutContainers',
@@ -441,7 +442,7 @@ export function EditorBlockHandle({ editor }: { editor: EditorType }) {
       <Popover.Root open={open} onOpenChange={(next) => { if (!next) closeMenu(); }}>
         <Popover.Anchor asChild>
           <span
-            className="flex h-full w-full items-center justify-center cursor-pointer"
+            className="flex h-full w-full items-center justify-center cursor-pointer relative before:absolute before:-inset-1.5 before:content-['']"
             data-block-menu-open={open ? 'true' : undefined}
             data-testid="drag-handle-trigger"
             title="Drag to move · Click for block actions"
