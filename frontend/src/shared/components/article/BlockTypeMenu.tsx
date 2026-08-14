@@ -23,7 +23,7 @@ const menuTriggerClass = (open: boolean) =>
     'inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition-colors select-none',
     'outline-2 outline-offset-2 outline-transparent focus-visible:outline-ring',
     open
-      ? 'border-border-interactive bg-accent text-foreground shadow-sm'
+      ? 'border-border-interactive bg-accent text-foreground'
       : 'border-border/60 bg-muted/40 text-foreground/90 hover:border-border hover:bg-accent/70 hover:text-foreground',
   );
 

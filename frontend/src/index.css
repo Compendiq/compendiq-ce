@@ -2047,6 +2047,48 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   border-color: oklch(from var(--color-primary) l c h / 0.35);
 }
 
+/* Nested blocks inside columns and layout cells */
+.confluence-column > :first-child,
+.confluence-layout-cell > :first-child {
+  margin-top: 0;
+}
+
+.confluence-column > :last-child,
+.confluence-layout-cell > :last-child {
+  margin-bottom: 0;
+}
+
+.prose .confluence-column table,
+.tiptap .confluence-column table,
+.prose .confluence-layout-cell table,
+.tiptap .confluence-layout-cell table {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.confluence-column pre,
+.confluence-layout-cell pre,
+.confluence-column .panel-info,
+.confluence-column .panel-warning,
+.confluence-column .panel-note,
+.confluence-column .panel-tip,
+.confluence-layout-cell .panel-info,
+.confluence-layout-cell .panel-warning,
+.confluence-layout-cell .panel-note,
+.confluence-layout-cell .panel-tip,
+.confluence-column details,
+.confluence-layout-cell details,
+.confluence-column .figure-block,
+.confluence-layout-cell .figure-block,
+.confluence-column .confluence-drawio,
+.confluence-layout-cell .confluence-drawio,
+.confluence-column .mermaid-block,
+.confluence-layout-cell .mermaid-block {
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
 /* Responsive stacking for narrow viewports */
 @media (max-width: 640px) {
   .prose .confluence-section,

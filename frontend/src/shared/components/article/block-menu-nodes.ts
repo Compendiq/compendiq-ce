@@ -126,6 +126,14 @@ export function blockLabel(node: PMNode): string {
     const level = node.attrs.level as number | undefined;
     return level ? `Heading ${level}` : 'Heading';
   }
+  if (name === 'panel') {
+    const type = node.attrs.panelType as string | undefined;
+    if (type) {
+      const capitalized = type.charAt(0).toUpperCase() + type.slice(1);
+      return `${capitalized} panel`;
+    }
+    return 'Panel';
+  }
   if (name === 'details') {
     const macroName = node.attrs.macroName as string | undefined;
     if (macroName === 'ui-expand') return 'UI Expand';

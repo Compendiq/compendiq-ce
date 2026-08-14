@@ -10,8 +10,7 @@ import { TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
 import TextAlign from '@tiptap/extension-text-align';
 import { Highlight } from '@tiptap/extension-highlight';
 import { toast } from 'sonner';
-import { ConfluenceStatus, ConfluenceUserMention, ExtendedTable } from './article-extensions';
-import { Link } from '@tiptap/extension-link';
+import { ConfluenceSection, ConfluenceColumn, Panel, ConfluenceStatus, ConfluenceUserMention, ExtendedTable } from './article-extensions';
 import type { Editor as EditorType } from '@tiptap/react';
 
 // Mock the SSE transport so "Improve" never hits the network. Capturing the
@@ -21,7 +20,7 @@ vi.mock('../../lib/sse', () => ({
   streamSSE: (...args: unknown[]) => streamSSE(...args),
 }));
 
-import { EditorBlockMenu } from './EditorBlockMenu';
+import { EditorBlockMenu, NESTED_DRAG_OPTIONS } from './EditorBlockMenu';
 import {
   blockMenuTargetKey,
   createBlockMenuTargetPlugin,
@@ -90,9 +89,11 @@ function Harness({
   onClose,
   mounted = true,
   trailingNode = true,
+  customPos,
 }: {
   content: string;
-  blockIndex: number;
+  blockIndex?: number;
+  customPos?: (editor: EditorType) => number;
   onReady: (editor: EditorType) => void;
   onClose: () => void;
   mounted?: boolean;
@@ -116,11 +117,11 @@ function Harness({
       }),
       Highlight.configure({ multicolor: true }),
       DrawioDiagram,
-      // The REAL inline Confluence atoms — the macro-loss guard below is about
-      // these exact node types, so a stand-in would prove nothing.
       ConfluenceStatus,
       ConfluenceUserMention,
-      Link,
+      ConfluenceSection,
+      ConfluenceColumn,
+      Panel,
     ],
     content,
     immediatelyRender: false,
@@ -132,12 +133,12 @@ function Harness({
     // Mirrors what `EditorBlockHandle` does on click: register the marker
     // plugin, then mark the block the pointer was over.
     editor.registerPlugin(createBlockMenuTargetPlugin());
-    const pos = topLevelPos(editor, blockIndex);
+    const pos = customPos ? customPos(editor) : topLevelPos(editor, blockIndex ?? 0);
     setBlockMenuTarget(editor, pos);
     setTarget({ pos });
     onReady(editor);
     return () => { editor.unregisterPlugin(blockMenuTargetKey); };
-  }, [editor, blockIndex, onReady]);
+  }, [editor, blockIndex, customPos, onReady]);
 
   if (!editor || !target) return null;
   const node = editor.state.doc.nodeAt(target.pos);
@@ -153,7 +154,8 @@ function Harness({
 
 interface HarnessProps {
   content: string;
-  blockIndex: number;
+  blockIndex?: number;
+  customPos?: (editor: EditorType) => number;
   onReady: (e: EditorType) => void;
   onClose: () => void;
   trailingNode?: boolean;
@@ -169,7 +171,7 @@ interface Mounted {
 async function mountMenu(
   content: string,
   blockIndex = 0,
-  extra: { trailingNode?: boolean } = {},
+  extra: { trailingNode?: boolean; customPos?: (editor: EditorType) => number } = {},
 ): Promise<Mounted> {
   let editor: EditorType | null = null;
   const onReady = (e: EditorType) => { editor = e; };
@@ -875,3 +877,219 @@ describe('EditorBlockMenu — lifecycle', () => {
     expect(screen.queryByTestId('block-menu-delete')).toBeNull();
   });
 });
+
+describe('EditorBlockMenu — nested blocks in column containers', () => {
+  it('configures NESTED_DRAG_OPTIONS with sensible defaults and excludes column containers', () => {
+    expect(NESTED_DRAG_OPTIONS.defaultRules).toBe(true);
+    expect(NESTED_DRAG_OPTIONS.edgeDetection).toBe('left');
+    const containerRule = NESTED_DRAG_OPTIONS.rules?.find((r) => r.id === 'excludeLayoutContainers');
+    expect(containerRule).toBeDefined();
+
+    // Structural containers should be excluded from drag targeting
+    expect(containerRule?.evaluate({ node: { type: { name: 'confluenceColumn' } } } as any)).toBe(1000);
+    expect(containerRule?.evaluate({ node: { type: { name: 'confluenceLayoutCell' } } } as any)).toBe(1000);
+    expect(containerRule?.evaluate({ node: { type: { name: 'confluenceLayoutSection' } } } as any)).toBe(1000);
+
+    // Regular content blocks should not be deducted
+    expect(containerRule?.evaluate({ node: { type: { name: 'paragraph' } } } as any)).toBe(0);
+    expect(containerRule?.evaluate({ node: { type: { name: 'heading' } } } as any)).toBe(0);
+    expect(containerRule?.evaluate({ node: { type: { name: 'table' } } } as any)).toBe(0);
+  });
+
+  it('targets a paragraph inside a confluenceColumn and offers block actions', async () => {
+    const content = `
+      <div class="confluence-section">
+        <div class="confluence-column">
+          <p>Column 1 Paragraph</p>
+        </div>
+      </div>
+    `;
+
+    // Find pos of the inner paragraph
+    const findInnerPos = (editor: EditorType) => {
+      let foundPos = 0;
+      editor.state.doc.descendants((node, pos) => {
+        if (node.type.name === 'paragraph' && node.textContent.includes('Column 1 Paragraph')) {
+          foundPos = pos;
+          return false;
+        }
+        return true;
+      });
+      return foundPos;
+    };
+
+    await mountMenu(content, 0, { customPos: findInnerPos });
+
+    expect(screen.getByTestId('block-menu-label')).toHaveTextContent('Paragraph');
+    expect(screen.getByTestId('block-type-trigger')).toHaveTextContent('Text');
+    expect(screen.getByTestId('block-menu-duplicate')).toBeTruthy();
+    expect(screen.getByTestId('block-menu-delete')).toBeTruthy();
+    expect(screen.getByTestId('block-ai-trigger')).toBeTruthy();
+  });
+
+  it('allows converting block type of a paragraph inside a column to a heading', async () => {
+    const content = `
+      <div class="confluence-section">
+        <div class="confluence-column">
+          <p>Convert this</p>
+        </div>
+      </div>
+    `;
+
+    const findInnerPos = (editor: EditorType) => {
+      let foundPos = 0;
+      editor.state.doc.descendants((node, pos) => {
+        if (node.type.name === 'paragraph' && node.textContent.includes('Convert this')) {
+          foundPos = pos;
+          return false;
+        }
+        return true;
+      });
+      return foundPos;
+    };
+
+    const { editor } = await mountMenu(content, 0, { customPos: findInnerPos });
+
+    fireEvent.pointerDown(screen.getByTestId('block-type-trigger'), { button: 0, pointerType: 'mouse' });
+    fireEvent.click(screen.getByTestId('block-type-trigger'));
+    const h2Option = await screen.findByRole('menuitem', { name: /Heading 2/ });
+    fireEvent.click(h2Option);
+
+    const html = editor.getHTML();
+    expect(html).toContain('<h2>Convert this</h2>');
+    expect(html).toContain('class="confluence-section"');
+    expect(html).toContain('class="confluence-column"');
+  });
+
+  it('duplicates a block inside a column from the block menu', async () => {
+    const content = `
+      <div class="confluence-section">
+        <div class="confluence-column">
+          <p>Inner content to duplicate</p>
+        </div>
+      </div>
+    `;
+
+    const findInnerPos = (editor: EditorType) => {
+      let foundPos = 0;
+      editor.state.doc.descendants((node, pos) => {
+        if (node.type.name === 'paragraph' && node.textContent.includes('Inner content to duplicate')) {
+          foundPos = pos;
+          return false;
+        }
+        return true;
+      });
+      return foundPos;
+    };
+
+    const { editor, onClose } = await mountMenu(content, 0, { customPos: findInnerPos });
+
+    fireEvent.click(screen.getByTestId('block-menu-duplicate'));
+
+    expect(onClose).toHaveBeenCalled();
+    const html = editor.getHTML();
+    expect(html).toContain('<p>Inner content to duplicate</p><p>Inner content to duplicate</p>');
+    const sectionCount = (html.match(/class="confluence-section"/g) || []).length;
+    expect(sectionCount).toBe(1);
+  });
+
+  it('deletes one block inside a column when multiple blocks exist', async () => {
+    const content = `
+      <div class="confluence-section">
+        <div class="confluence-column">
+          <p>Block A</p>
+          <p>Block B</p>
+        </div>
+      </div>
+    `;
+
+    const findBlockAPos = (editor: EditorType) => {
+      let foundPos = 0;
+      editor.state.doc.descendants((node, pos) => {
+        if (node.type.name === 'paragraph' && node.textContent.includes('Block A')) {
+          foundPos = pos;
+          return false;
+        }
+        return true;
+      });
+      return foundPos;
+    };
+
+    const { editor, onClose } = await mountMenu(content, 0, { customPos: findBlockAPos });
+
+    fireEvent.click(screen.getByTestId('block-menu-delete'));
+
+    expect(onClose).toHaveBeenCalled();
+    const html = editor.getHTML();
+    expect(html).not.toContain('Block A');
+    expect(html).toContain('Block B');
+  });
+
+  it('replaces with an empty paragraph when deleting the sole block in a column', async () => {
+    const content = `
+      <div class="confluence-section">
+        <div class="confluence-column">
+          <p>Only block</p>
+        </div>
+      </div>
+    `;
+
+    const findInnerPos = (editor: EditorType) => {
+      let foundPos = 0;
+      editor.state.doc.descendants((node, pos) => {
+        if (node.type.name === 'paragraph' && node.textContent.includes('Only block')) {
+          foundPos = pos;
+          return false;
+        }
+        return true;
+      });
+      return foundPos;
+    };
+
+    const { editor, onClose } = await mountMenu(content, 0, { customPos: findInnerPos });
+
+    fireEvent.click(screen.getByTestId('block-menu-delete'));
+
+    expect(onClose).toHaveBeenCalled();
+    const doc = editor.getJSON();
+    const section = doc.content?.find((n) => n.type === 'confluenceSection');
+    const col = section?.content?.[0];
+    expect(col?.type).toBe('confluenceColumn');
+    expect(col?.content?.length).toBe(1);
+    expect(col?.content?.[0].type).toBe('paragraph');
+  });
+
+  it('renders table controls when targeting a table inside a column', async () => {
+    const content = `
+      <div class="confluence-section">
+        <div class="confluence-column">
+          <table data-layout="default">
+            <tbody>
+              <tr><th>Col 1</th></tr>
+              <tr><td>Val 1</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+
+    const findTablePos = (editor: EditorType) => {
+      let foundPos = 0;
+      editor.state.doc.descendants((node, pos) => {
+        if (node.type.name === 'table') {
+          foundPos = pos;
+          return false;
+        }
+        return true;
+      });
+      return foundPos;
+    };
+
+    await mountMenu(content, 0, { customPos: findTablePos });
+
+    expect(screen.getByTestId('block-table-toolbar')).toBeTruthy();
+    expect(screen.getByTestId('table-toggle-header-row')).toBeTruthy();
+    expect(screen.getByTestId('table-delete')).toBeTruthy();
+  });
+});
+

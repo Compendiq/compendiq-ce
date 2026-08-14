@@ -11,6 +11,7 @@ import { ChildrenMacroView } from './ChildrenMacroView';
 import { FigureIndexView } from './FigureIndexView';
 import { TableIndexView } from './TableIndexView';
 import { createTableSelectionPerimeterPlugin } from './table-cell-selection';
+import { blockLabel } from './block-menu-nodes';
 
 const SUMMARY_INTERACTIVE_DESCENDANT =
   'a[href], button, input, select, textarea, [role="button"], [role="link"], [contenteditable="true"]';
@@ -1406,9 +1407,18 @@ declare module '@tiptap/core' {
   }
 }
 
+const NON_DUPLICABLE_CONTAINERS = new Set([
+  'confluenceColumn',
+  'confluenceLayoutCell',
+  'confluenceLayoutSection',
+  'tableRow',
+  'tableCell',
+  'tableHeader',
+]);
+
 /**
  * BlockShortcutsExtension — Global keyboard shortcuts and commands for block-level operations.
- * - Mod-d (Cmd+D / Ctrl+D): Duplicate the active block containing the selection.
+ * - Mod-d (Cmd+D / Ctrl+D): Duplicate the active block containing the selection (supports nested blocks).
  */
 export const BlockShortcutsExtension = Extension.create({
   name: 'blockShortcuts',
@@ -1422,12 +1432,20 @@ export const BlockShortcutsExtension = Extension.create({
           const $from = selection.$from;
           if ($from.depth < 1 && state.doc.childCount === 0) return false;
 
-          const depth = $from.depth >= 1 ? 1 : 0;
-          const node = depth === 0 ? state.doc.firstChild : $from.node(depth);
+          let targetDepth = $from.depth >= 1 ? 1 : 0;
+          for (let d = $from.depth; d >= 1; d--) {
+            const n = $from.node(d);
+            if (n.isBlock && !NON_DUPLICABLE_CONTAINERS.has(n.type.name)) {
+              targetDepth = d;
+              break;
+            }
+          }
+
+          const node = targetDepth === 0 ? state.doc.firstChild : $from.node(targetDepth);
           if (!node) return false;
 
-          const insertPos = depth === 0 ? (state.doc.firstChild?.nodeSize ?? 0) : $from.after(depth);
-          const label = node.type.name === 'table' ? 'Table' : (node.type.name === 'heading' ? `Heading ${node.attrs.level || ''}` : 'Block');
+          const insertPos = targetDepth === 0 ? (state.doc.firstChild?.nodeSize ?? 0) : $from.after(targetDepth);
+          const label = blockLabel(node);
 
           if (dispatch) {
             tr.insert(insertPos, node);
@@ -1451,4 +1469,5 @@ export const BlockShortcutsExtension = Extension.create({
     };
   },
 });
+
 

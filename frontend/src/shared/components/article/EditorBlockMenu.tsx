@@ -4,6 +4,7 @@ import { useEditorState } from '@tiptap/react';
 import type { Editor as EditorType } from '@tiptap/react';
 import type { Node as PMNode } from '@tiptap/pm/model';
 import DragHandle from '@tiptap/extension-drag-handle-react';
+import type { NestedOptions } from '@tiptap/extension-drag-handle';
 import {
   CopyPlus,
   GripVertical,
@@ -169,7 +170,29 @@ export function EditorBlockMenu({
     if (!range) return;
 
     try {
-      editor.chain().focus().deleteRange({ from: range.from, to: range.to }).run();
+      const $pos = editor.state.doc.resolve(range.from);
+      const parent = $pos.parent;
+      // If the node is the sole block in a container requiring block+ (e.g. column, cell, panel),
+      // replace with an empty paragraph instead of creating an invalid empty container.
+      const isSoleBlockInContainer =
+        parent &&
+        parent.childCount === 1 &&
+        (parent.type.name === 'confluenceColumn' ||
+          parent.type.name === 'confluenceLayoutCell' ||
+          parent.type.name === 'panel');
+
+      if (isSoleBlockInContainer && editor.schema.nodes.paragraph) {
+        editor
+          .chain()
+          .focus()
+          .command(({ tr }) => {
+            tr.replaceWith(range.from, range.to, editor.schema.nodes.paragraph.create());
+            return true;
+          })
+          .run();
+      } else {
+        editor.chain().focus().deleteRange({ from: range.from, to: range.to }).run();
+      }
       toast.success(`${label} deleted`, {
         action: { label: 'Undo', onClick: () => { if (!editor.isDestroyed) editor.commands.undo(); } },
       });
@@ -366,6 +389,29 @@ export function EditorBlockMenu({
 }
 
 /**
+ * Configuration for nested drag handle behavior.
+ * Enables drag handles on blocks inside columns, layout cells, panels, quotes, and expand sections,
+ * while excluding structural column/cell wrappers from being dragged as loose blocks.
+ */
+export const NESTED_DRAG_OPTIONS: NestedOptions = {
+  defaultRules: true,
+  edgeDetection: 'left',
+  rules: [
+    {
+      id: 'excludeLayoutContainers',
+      evaluate: ({ node }) => {
+        const layoutContainers = [
+          'confluenceColumn',
+          'confluenceLayoutCell',
+          'confluenceLayoutSection',
+        ];
+        return layoutContainers.includes(node.type.name) ? 1000 : 0;
+      },
+    },
+  ],
+};
+
+/**
  * The drag handle plus its context menu. Owns the marker plugin, the handle
  * lock, and the Radix popover; the menu body above owns everything else.
  */
@@ -386,7 +432,12 @@ export function EditorBlockHandle({ editor }: { editor: EditorType }) {
   }, [openTarget]);
 
   return (
-    <DragHandle editor={editor} className="drag-handle" onNodeChange={handleNodeChange}>
+    <DragHandle
+      editor={editor}
+      className="drag-handle"
+      onNodeChange={handleNodeChange}
+      nested={NESTED_DRAG_OPTIONS}
+    >
       <Popover.Root open={open} onOpenChange={(next) => { if (!next) closeMenu(); }}>
         <Popover.Anchor asChild>
           <span
