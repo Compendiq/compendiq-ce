@@ -25,13 +25,13 @@ import {
 import { cn } from '../../lib/cn';
 import { ToolbarButton, ToolbarSeparator } from './editor-toolbar-primitives';
 
-export const tableBubbleMenuPluginKey = new PluginKey('tableBubbleMenu');
+const tableBubbleMenuPluginKey = new PluginKey('tableBubbleMenu');
 
 /**
  * Hook to observe the active table node in the TipTap editor.
  * Returns the active HTMLTableElement, its wrapping container, and the current `data-layout` attribute.
  */
-export function useActiveTableElement(editor: EditorType | null) {
+function useActiveTableElement(editor: EditorType | null) {
   const [state, setState] = useState<{
     tableElement: HTMLTableElement | null;
     wrapperElement: HTMLElement | null;

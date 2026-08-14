@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { useEditor, useEditorState, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
-import { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
+import { TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
 import { TaskList, TaskItem } from '@tiptap/extension-list';
 import { Image } from '@tiptap/extension-image';
 import { TitledCodeBlock } from './TitledCodeBlock';
@@ -13,11 +13,7 @@ import { Color } from '@tiptap/extension-color';
 import { lowlight } from '../../lib/lowlight';
 import { SearchAndReplaceExtension } from './search-extension';
 import { SearchAndReplace } from './SearchAndReplace';
-import {
-  ArrowUpFromLine, ArrowDownFromLine, ArrowLeftFromLine, ArrowRightFromLine,
-  Trash2, Columns3, Rows3, Merge, SplitSquareHorizontal, Square,
-  ToggleLeft, PanelTop, TableProperties,
-} from 'lucide-react';
+import { ArrowLeftFromLine, ArrowRightFromLine, Trash2, Columns3, Square } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '../../lib/cn';
 import { apiFetch } from '../../lib/api';

@@ -2,7 +2,7 @@ import { useEffect, useRef, useCallback, useMemo, useState } from 'react';
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import TextAlign from '@tiptap/extension-text-align';
-import { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
+import { TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
 import { TaskList, TaskItem } from '@tiptap/extension-list';
 import { CodeBlockLowlight } from '@tiptap/extension-code-block-lowlight';
 import { Image } from '@tiptap/extension-image';
