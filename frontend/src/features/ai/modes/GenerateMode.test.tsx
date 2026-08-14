@@ -346,6 +346,7 @@ describe('GenerateMode', () => {
       { format: 'txt', filename: 'raw.txt', mime: 'text/plain', label: 'TXT' },
       { format: 'rtf', filename: 'memo.rtf', mime: 'application/rtf', label: 'RTF' },
       { format: 'odt', filename: 'draft.odt', mime: 'application/vnd.oasis.opendocument.text', label: 'ODT' },
+      { format: 'yaml', filename: 'config.yaml', mime: 'application/yaml', label: 'YAML' },
     ] as const;
 
     function upload(
@@ -364,16 +365,17 @@ describe('GenerateMode', () => {
       expect(screen.getByText(/Drop a document here or click to browse/)).toBeInTheDocument();
     });
 
-    it('offers all six formats in the accept attribute', () => {
+    it('offers all seven formats in the accept attribute', () => {
       render(<GenerateModeInput />, { wrapper: createWrapper() });
 
       const accept = screen.getByTestId('document-file-input').getAttribute('accept') ?? '';
-      for (const ext of ['.pdf', '.docx', '.md', '.txt', '.rtf', '.odt']) {
+      for (const ext of ['.pdf', '.docx', '.md', '.txt', '.rtf', '.odt', '.yml', '.yaml']) {
         expect(accept).toContain(ext);
       }
       // The MIME types ride along so both file-picker styles behave.
       expect(accept).toContain('application/pdf');
       expect(accept).toContain('application/vnd.oasis.opendocument.text');
+      expect(accept).toContain('application/yaml');
     });
 
     it.each(FORMATS)('accepts a $format and previews it', async ({ format, filename, mime }) => {
@@ -525,6 +527,53 @@ describe('GenerateMode', () => {
       },
     );
 
+    it('sends all documents selected in one picker action', async () => {
+      mockExtractDocument
+        .mockResolvedValueOnce({
+          format: 'pdf', text: 'Runbook source', fileSize: 5000, preview: 'Runbook source', totalPages: 1,
+        })
+        .mockResolvedValueOnce({
+          format: 'yaml', text: 'Configuration source', fileSize: 3000, preview: 'Configuration source',
+        });
+
+      async function* fakeStream() {
+        yield { content: '# Generated Article' };
+      }
+      streamSSEMock.mockReturnValue(fakeStream());
+
+      render(<GenerateModeInput />, { wrapper: createWrapper() });
+      fireEvent.change(screen.getByTestId('document-file-input'), {
+        target: {
+          files: [
+            new File(['pdf'], 'runbook.pdf', { type: 'application/pdf' }),
+            new File(['yaml'], 'config.yaml', { type: 'application/yaml' }),
+          ],
+        },
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('document-preview-card-1')).toBeInTheDocument();
+      });
+
+      const input = screen.getByPlaceholderText('Instructions for generating from these documents...');
+      fireEvent.change(input, { target: { value: 'Create a runbook' } });
+      fireEvent.click(getSendButton());
+
+      await waitFor(() => {
+        expect(streamSSEMock).toHaveBeenCalledWith(
+          '/llm/generate',
+          expect.objectContaining({
+            documentText: expect.stringContaining('--- runbook.pdf ---'),
+          }),
+          expect.any(Object),
+        );
+      });
+      const body = streamSSEMock.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+      expect(body.documentText).toEqual(expect.stringContaining('Runbook source'));
+      expect(body.documentText).toEqual(expect.stringContaining('--- config.yaml ---'));
+      expect(body.documentText).toEqual(expect.stringContaining('Configuration source'));
+    });
+
     it('names the attached file, not its format, in the user turn', async () => {
       mockExtractDocument.mockResolvedValue({
         format: 'docx',
@@ -564,7 +613,7 @@ describe('GenerateMode', () => {
       fireEvent.click(getSendButton());
 
       // The old copy said "Generate from PDF (spec.docx)", which was wrong for
-      // five of six formats and redundant for the sixth.
+      // the supported document formats and redundant for the image branch.
       await waitFor(() => {
         expect(screen.getByTestId('message-probe')).toHaveTextContent(
           'Generate from spec.docx: Create a runbook',
@@ -656,7 +705,7 @@ describe('GenerateMode', () => {
 
       await waitFor(() => {
         expect(toastErrorMock).toHaveBeenCalledWith(
-          'Unsupported file. Documents: PDF, DOCX, MD, TXT, RTF, ODT. Images: PNG, JPEG, WEBP, GIF.',
+          'Unsupported file. Documents: PDF, DOCX, MD, TXT, RTF, ODT, YAML. Images: PNG, JPEG, WEBP, GIF.',
         );
       });
 

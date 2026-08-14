@@ -78,6 +78,7 @@ const SAMPLE: Record<DocumentFormat, File> = {
   txt: new File(['plain'], 'notes.txt', { type: 'text/plain' }),
   rtf: new File(['{\\rtf1'], 'memo.rtf', { type: '' }),
   odt: new File(['PK'], 'plan.odt', { type: 'application/vnd.oasis.opendocument.text' }),
+  yaml: new File(['services:\n  - api'], 'config.yaml', { type: 'application/yaml' }),
 };
 
 describe('DocumentUploadZone', () => {
@@ -130,11 +131,23 @@ describe('DocumentUploadZone', () => {
       render(<Harness />);
       const accept = screen.getByTestId('document-file-input').getAttribute('accept') ?? '';
 
-      for (const ext of ['.pdf', '.docx', '.md', '.markdown', '.txt', '.rtf', '.odt']) {
+      for (const ext of ['.pdf', '.docx', '.md', '.markdown', '.txt', '.rtf', '.odt', '.yml', '.yaml']) {
         expect(accept).toContain(ext);
       }
       expect(accept).toContain('application/pdf');
       expect(accept).toContain('application/vnd.oasis.opendocument.text');
+      expect(accept).toContain('application/yaml');
+    });
+
+    it('reports every file selected in one picker action', () => {
+      const onPickFiles = vi.fn();
+      render(<Harness onPickFiles={onPickFiles} />);
+
+      fireEvent.change(screen.getByTestId('document-file-input'), {
+        target: { files: [SAMPLE.pdf, SAMPLE.yaml] },
+      });
+
+      expect(onPickFiles).toHaveBeenCalledWith([SAMPLE.pdf, SAMPLE.yaml]);
     });
 
     /** The `accept` list still narrows what the picker offers, even though it
@@ -171,6 +184,18 @@ describe('DocumentUploadZone', () => {
       pick(SAMPLE.docx);
       await waitFor(() => expect(screen.getByTestId('document-preview-card')).toBeInTheDocument());
       expect(screen.getByText('DOCX')).toBeInTheDocument();
+    });
+
+    it('keeps the picker available after a document is attached', async () => {
+      render(<Harness />);
+      pick(SAMPLE.pdf);
+      await screen.findByTestId('document-preview-card');
+
+      expect(screen.getByTestId('document-file-input')).toBeInTheDocument();
+      expect(screen.getByTestId('document-add-button')).toHaveTextContent('Attach another document');
+
+      pick(SAMPLE.yaml);
+      expect(onPickMock).toHaveBeenLastCalledWith(SAMPLE.yaml);
     });
 
     it('warns once the text passes the backend truncation threshold', async () => {

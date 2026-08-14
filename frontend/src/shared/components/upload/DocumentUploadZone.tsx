@@ -59,6 +59,11 @@ const FORMAT_META: Record<DocumentFormat, DocumentFormatMeta> = {
     extensions: ['odt'],
     mimeTypes: ['application/vnd.oasis.opendocument.text'],
   },
+  yaml: {
+    label: 'YAML',
+    extensions: ['yml', 'yaml'],
+    mimeTypes: ['application/yaml', 'text/yaml', 'application/x-yaml'],
+  },
 };
 
 /**
@@ -113,14 +118,18 @@ export interface DocumentUploadZoneProps {
    * this component's document-only format check and silently rejected.
    */
   onPick: (file: File) => void;
+  /** Reports all files selected in one picker action or dropped together. */
+  onPickFiles?: (files: readonly File[]) => void;
   /** `isExtracting` from the parent's `useAttachments`, for the busy state. */
   isExtracting: boolean;
   /** The extracted document currently attached, or `null`. Parent owns it. */
   extracted: ExtractDocumentResult | null;
   /** Filename of the attached document, or `null`. */
   filename: string | null;
+  /** Multiple extracted documents currently attached, in display order. */
+  documents?: readonly { result: ExtractDocumentResult; filename: string }[];
   /** Clear the attachment. */
-  onRemove: () => void;
+  onRemove: (index?: number) => void;
   /** Blocks the trigger — e.g. while a stream is in flight. */
   disabled?: boolean;
   /**
@@ -170,9 +179,11 @@ export interface DocumentUploadZoneProps {
 export function DocumentUploadZone({
   formats = SUPPORTED_DOCUMENT_FORMATS,
   onPick,
+  onPickFiles,
   isExtracting,
   extracted,
   filename,
+  documents,
   onRemove,
   disabled = false,
   variant = 'dropzone',
@@ -191,7 +202,7 @@ export function DocumentUploadZone({
 
   // A single-format surface names that format everywhere it would otherwise
   // say "document": pass `formats={['pdf']}` and every string reads "PDF". No
-  // surface does today — both take all six since #1132 — and note that this
+  // surface does today — both take all supported formats since #1132 — and note that this
   // changes only the copy and the picker's filter: since #1154 narrowing
   // `formats` does not narrow what is actually accepted. See the prop's doc.
   const only = formats.length === 1 ? formats[0] : undefined;
@@ -214,14 +225,20 @@ export function DocumentUploadZone({
     setInternalIsDragOver(false);
   }, []);
 
+  const reportFiles = useCallback((files: readonly File[]) => {
+    if (!files.length) return;
+    if (onPickFiles) {
+      onPickFiles(files);
+    } else {
+      files.forEach(onPick);
+    }
+  }, [onPick, onPickFiles]);
+
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     endDrag();
-    const file = e.dataTransfer.files[0];
-    // Straight to the parent's router: this component decides nothing about
-    // which files are acceptable (#1154).
-    if (file) onPick(file);
-  }, [endDrag, onPick]);
+    reportFiles(Array.from(e.dataTransfer.files));
+  }, [endDrag, reportFiles]);
 
   // Attached only when this component owns the drop. A parent that passes
   // `isDragOver` has a `useAttachments` drop target on an ancestor, and that
@@ -244,16 +261,21 @@ export function DocumentUploadZone({
       accept={acceptAttribute(formats)}
       className="hidden"
       onChange={(e) => {
-        const file = e.target.files?.[0];
-        if (file) onPick(file);
+        reportFiles(Array.from(e.target.files ?? []));
         // Reset so re-selecting the same file triggers onChange
         e.target.value = '';
       }}
+      multiple
       data-testid={`${testIdPrefix}-file-input`}
     />
   );
 
-  const isTruncated = (extracted?.text.length ?? 0) > DOCUMENT_TEXT_TRUNCATION_THRESHOLD;
+  const attachedDocuments = documents ?? (
+    extracted && filename ? [{ result: extracted, filename }] : []
+  );
+  const isTruncated = attachedDocuments.some(
+    (document) => document.result.text.length > DOCUMENT_TEXT_TRUNCATION_THRESHOLD,
+  );
   const truncationWarning = (
     <p
       className="mt-1 flex items-start gap-1 text-xs text-warning"
@@ -264,10 +286,10 @@ export function DocumentUploadZone({
     </p>
   );
 
-  const removeButton = (extraClass: string) => (
+  const removeButton = (index: number, noun: string, extraClass: string) => (
     <button
       type="button"
-      onClick={onRemove}
+      onClick={() => onRemove(index)}
       disabled={disabled}
       aria-label={`Remove ${noun}`}
       className={cn(
@@ -288,7 +310,7 @@ export function DocumentUploadZone({
   if (variant === 'composer') {
     return (
       <div
-        className={composerRowClass(isDragOver || Boolean(extracted && filename))}
+        className={composerRowClass(isDragOver || attachedDocuments.length > 0)}
         data-testid={`${testIdPrefix}-row`}
       >
         {fileInput}
@@ -301,29 +323,35 @@ export function DocumentUploadZone({
             <Upload size={13} aria-hidden />
             Drop to attach
           </div>
-        ) : extracted && filename ? (
-          <div
-            className="flex min-w-0 flex-1 items-start gap-2 rounded-md border border-border bg-background/40 px-2 py-1.5"
-            data-testid={`${testIdPrefix}-attachment-card`}
-          >
-            <FileText size={14} className="mt-0.5 shrink-0 text-muted-foreground" aria-hidden />
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-xs font-medium text-foreground" title={filename}>
-                {filename}
-              </p>
-              {/* Format and size are data figures, so they take the mono face.
-                  The hint after them is the honest part: this document feeds
-                  one action, and saying so beats letting the user assume the
-                  next message carries it. */}
-              <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
-                <span className="font-mono uppercase">{extracted.format}</span>
-                {' · '}
-                <span className="font-mono">{formatFileSize(extracted.fileSize)}</span>
-                {usageHint ? ` · ${usageHint}` : ''}
-              </p>
-              {isTruncated && truncationWarning}
-            </div>
-            {removeButton('-mr-0.5 -mt-0.5')}
+        ) : attachedDocuments.length > 0 ? (
+          <div className="flex min-w-0 flex-1 flex-col gap-1">
+            {attachedDocuments.map((document, index) => (
+              <div
+                key={`${document.filename}-${index}`}
+                className="flex min-w-0 items-start gap-2 rounded-md border border-border bg-background/40 px-2 py-1.5"
+                data-testid={`${testIdPrefix}-attachment-card${index === 0 ? '' : `-${index}`}`}
+              >
+                <FileText size={14} className="mt-0.5 shrink-0 text-muted-foreground" aria-hidden />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-xs font-medium text-foreground" title={document.filename}>
+                    {document.filename}
+                  </p>
+                  <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                    <span className="font-mono uppercase">{document.result.format}</span>
+                    {' · '}
+                    <span className="font-mono">{formatFileSize(document.result.fileSize)}</span>
+                    {usageHint ? ` · ${usageHint}` : ''}
+                  </p>
+                  {isTruncated && attachedDocuments.length === 1 && truncationWarning}
+                </div>
+                {removeButton(
+                  index,
+                  attachedDocuments.length === 1 ? noun : document.filename,
+                  '-mr-0.5 -mt-0.5',
+                )}
+              </div>
+            ))}
+            {isTruncated && attachedDocuments.length > 1 && truncationWarning}
           </div>
         ) : null}
 
@@ -343,7 +371,7 @@ export function DocumentUploadZone({
             'text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground',
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
             'disabled:pointer-events-none disabled:opacity-50',
-            (isDragOver || extracted) && 'text-primary-ink',
+            (isDragOver || attachedDocuments.length > 0) && 'text-primary-ink',
           )}
           data-testid={`${testIdPrefix}-attach-button`}
         >
@@ -359,33 +387,52 @@ export function DocumentUploadZone({
   // dropzone — /ai Generate
   // -------------------------------------------------------------------------
 
-  if (extracted && filename) {
+  if (attachedDocuments.length > 0) {
     return (
-      <div
-        className="flex items-start gap-3 rounded-lg border border-border bg-background/50 p-3"
-        data-testid={`${testIdPrefix}-preview-card`}
-      >
-        <FileText size={20} className="mt-0.5 shrink-0 text-primary" aria-hidden />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 text-sm font-medium">
-            <span className="truncate">{filename}</span>
-            <span className="shrink-0 text-xs text-muted-foreground">
-              {formatFileSize(extracted.fileSize)}
-            </span>
-            <span className="shrink-0 text-xs text-muted-foreground">
-              {/* Paged formats report a page count; the rest name themselves
-                  rather than claim a page count they do not have. */}
-              {extracted.totalPages === undefined
-                ? FORMAT_META[extracted.format].label
-                : `${extracted.totalPages} ${extracted.totalPages === 1 ? 'page' : 'pages'}`}
-            </span>
+      <div className="flex flex-col gap-2" data-testid={`${testIdPrefix}-preview-list`}>
+        {fileInput}
+        {attachedDocuments.map((document, index) => (
+          <div
+            key={`${document.filename}-${index}`}
+            className="flex items-start gap-3 rounded-lg border border-border bg-background/50 p-3"
+            data-testid={`${testIdPrefix}-preview-card${index === 0 ? '' : `-${index}`}`}
+          >
+            <FileText size={20} className="mt-0.5 shrink-0 text-primary" aria-hidden />
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2 text-sm font-medium">
+                <span className="truncate">{document.filename}</span>
+                <span className="shrink-0 text-xs text-muted-foreground">
+                  {formatFileSize(document.result.fileSize)}
+                </span>
+                <span className="shrink-0 text-xs text-muted-foreground">
+                  {document.result.totalPages === undefined
+                    ? FORMAT_META[document.result.format].label
+                    : `${document.result.totalPages} ${document.result.totalPages === 1 ? 'page' : 'pages'}`}
+                </span>
+              </div>
+              <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
+                {document.result.preview}
+              </p>
+              {isTruncated && attachedDocuments.length === 1 && truncationWarning}
+            </div>
+            {removeButton(index, attachedDocuments.length === 1 ? noun : document.filename, '')}
           </div>
-          <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
-            {extracted.preview}
-          </p>
-          {isTruncated && truncationWarning}
-        </div>
-        {removeButton('')}
+        ))}
+        {isTruncated && attachedDocuments.length > 1 && truncationWarning}
+        <button
+          type="button"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={blocked}
+          className={cn(
+            'flex w-full items-center justify-center gap-2 rounded-lg border border-dashed px-4 py-2 text-sm transition-colors',
+            'border-border text-muted-foreground hover:border-border hover:text-foreground',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50',
+          )}
+          data-testid={`${testIdPrefix}-add-button`}
+        >
+          {isExtracting ? <Loader2 size={16} className="animate-spin" aria-hidden /> : <Paperclip size={16} aria-hidden />}
+          Attach another {noun}
+        </button>
       </div>
     );
   }

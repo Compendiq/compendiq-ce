@@ -73,7 +73,7 @@ export const GenerateRequestSchema = z.object({
    * Was `pdfText` back when Generate accepted only PDFs. It is format-blind
    * by design — the extractor has already sniffed and decoded the bytes, so
    * what arrives here is a DOCX's or an ODT's prose exactly as much as a PDF's,
-   * and a PDF-shaped name would have been a lie for five of the six formats.
+   * and a PDF-shaped name would have been a lie for the other formats.
    */
   documentText: z.string().max(200_000).optional(),
   thinking: z.boolean().optional(),
@@ -83,11 +83,11 @@ export const GenerateRequestSchema = z.object({
 });
 
 /**
- * #1131: the document-extraction endpoint accepts six formats. This list is the
+ * #1131: the document-extraction endpoint accepts seven formats. This list is the
  * single source of truth — the backend extractor derives its sniffing table
  * from it and the upload UI derives its `accept` list from it.
  */
-export const SUPPORTED_DOCUMENT_FORMATS = ['pdf', 'docx', 'md', 'txt', 'rtf', 'odt'] as const;
+export const SUPPORTED_DOCUMENT_FORMATS = ['pdf', 'docx', 'md', 'txt', 'rtf', 'odt', 'yaml'] as const;
 
 export const DocumentFormatSchema = z.enum(SUPPORTED_DOCUMENT_FORMATS);
 

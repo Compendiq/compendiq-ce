@@ -4,7 +4,7 @@ import { AlertTriangle, Wand2, Loader2, Globe } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { useAiContext } from '../AiContext';
 import { DiffView } from '../../../shared/components/article/DiffView';
-import { useAttachments } from '../../../shared/hooks/use-attachments';
+import { buildDocumentReferenceText, useAttachments } from '../../../shared/hooks/use-attachments';
 import { useAutoGrowTextarea } from '../../../shared/hooks/use-auto-grow-textarea';
 import { DocumentUploadZone } from '../../../shared/components/upload/DocumentUploadZone';
 import { ImageAttachZone, imageDisabledReason } from '../../../shared/components/upload/ImageAttachZone';
@@ -164,7 +164,7 @@ export function ImproveModeInput() {
   // returns a fresh object literal every render, so a `useCallback` depending
   // on `attachments` itself was rebuilt on every render and memoized nothing.
   const {
-    document: attachedDocument, image: attachedImage, isBusy, removeImage,
+    documents: attachedDocuments, image: attachedImage, isBusy, removeImage,
   } = attachments;
 
   // Check if MCP docs sidecar is available (for web search toggle)
@@ -198,13 +198,14 @@ export function ImproveModeInput() {
     setOriginalMarkdown('');
     setLayoutTokensLost(undefined);
 
+    const referenceText = buildDocumentReferenceText(attachedDocuments);
     const body: Record<string, unknown> = {
       content: page.bodyHtml, type: improvementType, model, pageId: pageId ?? undefined, includeSubPages,
       ...(thinkingMode && { thinking: true }),
       // Both stay their own fields rather than being folded into `instruction`:
       // the backend sanitizes and bounds them separately, and a document folded
       // into the instruction would speak with a directive's authority.
-      ...(attachedDocument && { referenceText: attachedDocument.result.text }),
+      ...(referenceText && { referenceText }),
       ...(attachedImage && { imageHandle: attachedImage.handle }),
     };
     if (instruction.trim()) {
@@ -254,7 +255,7 @@ export function ImproveModeInput() {
     page, model, improvementType, pageId, isStreaming, includeSubPages, thinkingMode, instruction,
     searchWeb, runStream, setShowDiffView, setImprovedContent, setOriginalMarkdown,
     setLayoutTokensLost,
-    isBusy, attachedDocument, attachedImage, removeImage,
+    isBusy, attachedDocuments, attachedImage, removeImage,
   ]);
 
   return (
@@ -262,7 +263,7 @@ export function ImproveModeInput() {
       {/* An advisory, not a refusal: the backend accepts both, and only the
           resolved model knows whether they fit. Amber is the attention colour
           under ADR-010 v0.5 and this is exactly that. */}
-      {attachments.document && attachments.image && (
+      {attachedDocuments.length > 0 && attachments.image && (
         <p
           className="flex items-center gap-1.5 text-xs text-warning"
           data-testid="attachment-context-warning"
@@ -285,8 +286,10 @@ export function ImproveModeInput() {
         <DocumentUploadZone
           variant="composer"
           onPick={attachments.pickFile}
-          extracted={attachments.document?.result ?? null}
-          filename={attachments.document?.filename ?? null}
+          onPickFiles={attachments.pickFiles}
+          extracted={attachedDocuments[0]?.result ?? null}
+          filename={attachedDocuments[0]?.filename ?? null}
+          documents={attachedDocuments}
           onRemove={attachments.removeDocument}
           isExtracting={attachments.isExtracting}
           isDragOver={attachments.isDragOver}

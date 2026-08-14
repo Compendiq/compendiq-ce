@@ -6,11 +6,12 @@ import { usePrepareImage, type PreparedImage } from './use-prepare-image';
 import { refusedImageReason } from '../lib/downscale-image';
 
 /**
- * #1154: one owner for both attachment slots on the AI composer surfaces.
+ * One owner for all document attachments and the image attachment on the AI
+ * composer surfaces.
  *
- * The reason this exists rather than each surface holding its own state: with two
- * slots across three surfaces there would be six pieces of hand-rolled state and
- * three copies of the drop routing. More importantly, a shared drop target has to
+ * The reason this exists rather than each surface holding its own state: there
+ * would otherwise be several pieces of hand-rolled state and copies of the drop
+ * routing. More importantly, a shared drop target has to
  * decide *once* whether a dropped file is a document or an image. If both zones
  * listened, a PNG dropped on the composer would reach whichever of them the event
  * happened to hit first, and each zone knows only its own half — so which one won
@@ -28,6 +29,28 @@ import { refusedImageReason } from '../lib/downscale-image';
 export interface AttachedDocument {
   result: ExtractDocumentResult;
   filename: string;
+}
+
+/** Matches the server-side prompt budget for uploaded source material. */
+export const MAX_DOCUMENT_TEXT_FOR_LLM = 80_000;
+
+/** Combines attached sources while keeping filename boundaries for the model. */
+export function buildDocumentReferenceText(
+  documents: readonly AttachedDocument[],
+): string | undefined {
+  if (documents.length === 0) return undefined;
+  if (documents.length === 1) {
+    return documents[0]!.result.text.slice(0, MAX_DOCUMENT_TEXT_FOR_LLM);
+  }
+
+  let combined = '';
+  for (const document of documents) {
+    const section = `\n\n--- ${document.filename} ---\n${document.result.text}`;
+    const remaining = MAX_DOCUMENT_TEXT_FOR_LLM - combined.length;
+    if (remaining <= 0) break;
+    combined += section.slice(0, remaining);
+  }
+  return combined.trim();
 }
 
 export interface UseAttachmentsOptions {
@@ -75,7 +98,7 @@ function unsupportedMessage(): string {
 export function useAttachments(options: UseAttachmentsOptions = {}) {
   const { dropTargetRef, imageEnabled = false, imageDisabledReason, disabled = false } = options;
 
-  const [document_, setDocument] = useState<AttachedDocument | null>(null);
+  const [documents, setDocuments] = useState<AttachedDocument[]>([]);
   const [image, setImage] = useState<PreparedImage | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
 
@@ -99,20 +122,16 @@ export function useAttachments(options: UseAttachmentsOptions = {}) {
     return () => { mountedRef.current = false; };
   }, []);
   const prepareRequestIdRef = useRef(0);
-  const extractRequestIdRef = useRef(0);
+  const documentEpochRef = useRef(0);
 
   // Counted, not toggled: `dragleave` fires every time the pointer crosses into
   // a child, so a composer full of children would flicker the hint off under a
   // drag that never actually left (mirrors DocumentUploadZone.tsx).
   const dragDepthRef = useRef(0);
 
-  // Removing invalidates whatever is in flight, not just what is on screen.
-  // Bumping the request id is what makes "clear" mean cancel: `pickFile`'s
-  // guard then sees a stale id, discards the result and revokes its own object
-  // URL. Without it the only trigger was a *new* pick, so clearing during
-  // staging left the result free to arrive and re-attach itself afterwards —
-  // and `clearAll` runs from `DockPanel`'s page-change effect, so that
-  // resurrected image would land on a document the user had already left.
+  // Removing an image invalidates its in-flight staging result, and clearAll
+  // also advances the document epoch so an extraction from the previous page
+  // cannot re-attach itself after navigation.
   const removeImage = useCallback(() => {
     prepareRequestIdRef.current += 1;
     setImage((current) => {
@@ -121,103 +140,79 @@ export function useAttachments(options: UseAttachmentsOptions = {}) {
     });
   }, []);
 
-  const removeDocument = useCallback(() => {
-    extractRequestIdRef.current += 1;
-    setDocument(null);
+  const removeDocument = useCallback((index = 0) => {
+    setDocuments((current) => current.filter((_document, documentIndex) => documentIndex !== index));
   }, []);
 
   const clearAll = useCallback(() => {
     removeImage();
-    removeDocument();
-  }, [removeImage, removeDocument]);
+    documentEpochRef.current += 1;
+    setDocuments([]);
+  }, [removeImage]);
 
   useEffect(() => () => {
     if (imageRef.current) URL.revokeObjectURL(imageRef.current.previewUrl);
   }, []);
 
-  const pickFile = useCallback(async (file: File) => {
+  const pickFiles = useCallback(async (files: readonly File[]) => {
     if (disabled) return;
+    const documentEpoch = documentEpochRef.current;
 
-    if (looksLikeImage(file)) {
-      if (!imageEnabled) {
-        toast.error(imageDisabledReason ?? 'Images cannot be attached right now.');
-        return;
-      }
-      // Refused here, ahead of `prepareImage`, using the same reason function
-      // `downscaleImage` uses internally so there is exactly one copy of the
-      // message. Refusing at the door — rather than letting the real decode
-      // reject it — avoids a pointless `isPreparing` flicker for a file that
-      // never had a chance, and keeps the refusal visible in this routing
-      // layer, where a reader debugging "why didn't my SVG attach" is looking.
-      const refusal = refusedImageReason(file);
-      if (refusal) {
-        toast.error(refusal);
-        return;
-      }
-      const requestId = ++prepareRequestIdRef.current;
-      try {
-        const prepared = await prepareImage(file);
-        if (!mountedRef.current || requestId !== prepareRequestIdRef.current) {
-          // Unmounted, or superseded by a newer pick that started before this
-          // one resolved. Either way this result lost and is never stored, so
-          // its object URL must be revoked here or it leaks.
-          URL.revokeObjectURL(prepared.previewUrl);
+    await Promise.all(files.map(async (file) => {
+      if (looksLikeImage(file)) {
+        if (!imageEnabled) {
+          toast.error(imageDisabledReason ?? 'Images cannot be attached right now.');
           return;
         }
-        // Replace rather than accumulate: one image per request by design.
-        setImage((previous) => {
-          if (previous) URL.revokeObjectURL(previous.previewUrl);
-          return prepared;
-        });
-      } catch (err) {
-        if (!mountedRef.current || requestId !== prepareRequestIdRef.current) return;
-        // ImageDecodeError already carries user-facing copy (SVG, HEIC, too big).
-        const message = err instanceof Error ? err.message : 'Could not attach that image.';
-        toast.error(message);
+        const refusal = refusedImageReason(file);
+        if (refusal) {
+          toast.error(refusal);
+          return;
+        }
+        const requestId = ++prepareRequestIdRef.current;
+        try {
+          const prepared = await prepareImage(file);
+          if (!mountedRef.current || requestId !== prepareRequestIdRef.current) {
+            URL.revokeObjectURL(prepared.previewUrl);
+            return;
+          }
+          setImage((previous) => {
+            if (previous) URL.revokeObjectURL(previous.previewUrl);
+            return prepared;
+          });
+        } catch (err) {
+          if (!mountedRef.current || requestId !== prepareRequestIdRef.current) return;
+          toast.error(err instanceof Error ? err.message : 'Could not attach that image.');
+        }
+        return;
       }
-      return;
-    }
 
-    // Documents are matched by extension only, unlike `looksLikeImage`, which
-    // consults the MIME type first. That is not an oversight: browsers report
-    // `''` for `.md` and often `.rtf`, so a MIME-first rule would reject the
-    // formats most likely to be dropped here.
-    //
-    // The narrowing it does cost — an extension-less file with a correct
-    // `application/pdf` MIME used to be accepted by the component's old
-    // extension-OR-MIME check and is now refused — is knowingly accepted. The
-    // MIME table that would restore it lives in `DocumentUploadZone`'s
-    // `FORMAT_META`, and giving this hook a second copy would put the same
-    // data under two owners, which is the defect the #1154 refactor set out to
-    // remove. The user is told what is accepted and can rename the file; the
-    // server re-sniffs the bytes either way.
-    const name = file.name.toLowerCase();
-    const isDocument = SUPPORTED_DOCUMENT_FORMATS.some((f) => name.endsWith(`.${f}`))
-      || name.endsWith('.markdown') || name.endsWith('.text');
-    if (!isDocument) {
-      toast.error(unsupportedMessage());
-      return;
-    }
-    if (file.size > MAX_DOCUMENT_BYTES) {
-      toast.error('File exceeds 20 MB limit');
-      return;
-    }
+      const name = file.name.toLowerCase();
+      const isDocument = SUPPORTED_DOCUMENT_FORMATS.some((f) => name.endsWith(`.${f}`))
+        || name.endsWith('.markdown') || name.endsWith('.text') || name.endsWith('.yml');
+      if (!isDocument) {
+        toast.error(unsupportedMessage());
+        return;
+      }
+      if (file.size > MAX_DOCUMENT_BYTES) {
+        toast.error('File exceeds 20 MB limit');
+        return;
+      }
 
-    // Same two guards the image path uses, and for the same reasons: the shared
-    // drop target accepts a second file while the first is still extracting, so
-    // a slow earlier request must not clobber a newer document, and neither may
-    // write state after the surface has gone. No object URL to revoke on the
-    // losing path here — a discarded extraction is just text.
-    const requestId = ++extractRequestIdRef.current;
-    try {
-      const result = await extractDocument(file);
-      if (!mountedRef.current || requestId !== extractRequestIdRef.current) return;
-      setDocument({ result, filename: file.name });
-    } catch (err) {
-      if (!mountedRef.current || requestId !== extractRequestIdRef.current) return;
-      toast.error(err instanceof Error ? err.message : 'Document extraction failed');
-    }
+      try {
+        const result = await extractDocument(file);
+        if (!mountedRef.current || documentEpoch !== documentEpochRef.current) return;
+        setDocuments((current) => [...current, { result, filename: file.name }]);
+      } catch (err) {
+        if (!mountedRef.current || documentEpoch !== documentEpochRef.current) return;
+        toast.error(err instanceof Error ? err.message : 'Document extraction failed');
+      }
+    }));
   }, [disabled, imageEnabled, imageDisabledReason, prepareImage, extractDocument]);
+
+  const pickFile = useCallback(async (file: File) => {
+    await pickFiles([file]);
+  }, [pickFiles]);
 
   // Shared drop target + paste. Native listeners rather than React props, because
   // the element belongs to the caller's tree.
@@ -247,9 +242,9 @@ export function useAttachments(options: UseAttachmentsOptions = {}) {
       dragDepthRef.current = 0;
       setIsDragOver(false);
       if (disabled) return;
-      const file = e.dataTransfer?.files[0];
-      if (!file) return;
-      void pickFile(file);
+      const files = Array.from(e.dataTransfer?.files ?? []);
+      if (!files.length) return;
+      void pickFiles(files);
     };
     const onPaste = (e: Event) => {
       if (disabled) return;
@@ -260,7 +255,7 @@ export function useAttachments(options: UseAttachmentsOptions = {}) {
       const file = imageItem.getAsFile();
       if (!file) return;
       e.preventDefault();
-      void pickFile(file);
+      void pickFiles([file]);
     };
 
     target.addEventListener('dragenter', onDragEnter);
@@ -275,12 +270,15 @@ export function useAttachments(options: UseAttachmentsOptions = {}) {
       target.removeEventListener('drop', onDrop);
       target.removeEventListener('paste', onPaste);
     };
-  }, [dropTargetRef, disabled, pickFile]);
+  }, [dropTargetRef, disabled, pickFiles]);
 
   return {
-    document: document_,
+    documents,
+    /** Backwards-compatible first-document view for callers not yet multi-file aware. */
+    document: documents[0] ?? null,
     image,
     pickFile,
+    pickFiles,
     removeDocument,
     removeImage,
     clearAll,
