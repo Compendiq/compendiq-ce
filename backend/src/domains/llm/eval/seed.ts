@@ -7,6 +7,7 @@
  * product uses. A seeder that inserted pre-computed vectors would be
  * measuring its own fixture rather than the retrieval stack.
  */
+import pLimit from 'p-limit';
 import { query } from '../../../core/db/postgres.js';
 import { markdownToHtml, htmlToText } from '../../../core/services/content-converter.js';
 import { embedPage, CHUNK_HARD_LIMIT } from '../services/embedding-service.js';
@@ -177,38 +178,45 @@ export async function seedCorpus(
   const pageIdByFile = new Map<string, number>();
   const skipped: string[] = [];
   let embeddedPages = 0;
+  let completed = 0;
 
-  for (const [index, page] of corpus.entries()) {
-    const html = await markdownToHtml(page.markdown);
-    // body_text must be what the PRODUCT stores — htmlToText(html), not the
-    // markdown source (review r1). The migration-049 trigger builds pages.tsv
-    // from title || body_text, so storing raw markdown would index heading
-    // markers, code-fence syntax and every link URL: the keyword leg would be
-    // scored against a corpus the product never produces, while the vector leg
-    // embedded the converted text. Half of hybrid search, measured wrong.
-    const text = htmlToText(html);
-    const inserted = await query<{ id: number }>(
-      // #1111: quality_score and last_modified_at come from the manifest so
-      // the ranking prior is measurable at all. A page with no qualityScore
-      // is seeded NULL on purpose — "unscored" is a distinct case the prior
-      // must treat as neutral, and it is the common one for freshly synced
-      // content.
-      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html, page_type, visibility, embedding_dirty, embedding_status, quality_score, quality_status, last_modified_at)
-       VALUES (gen_random_uuid()::text, 'standalone', $1, $2, $3, '', $4, 'page', 'shared', TRUE, 'not_embedded', $5,
-               CASE WHEN $5::int IS NULL THEN 'pending' ELSE 'analyzed' END,
-               CASE WHEN $6::int IS NULL THEN NULL ELSE now() - ($6::int || ' days')::interval END)
-       RETURNING id`,
-      [EVAL_SPACE_KEY, page.title, text, html, page.qualityScore ?? null, page.ageDays ?? null],
-    );
-    const pageId = inserted.rows[0]!.id;
-    pageIdByFile.set(page.file, pageId);
+  const limit = pLimit(5);
+  await Promise.all(
+    corpus.map((page) =>
+      limit(async () => {
+        const html = await markdownToHtml(page.markdown);
+        // body_text must be what the PRODUCT stores — htmlToText(html), not the
+        // markdown source (review r1). The migration-049 trigger builds pages.tsv
+        // from title || body_text, so storing raw markdown would index heading
+        // markers, code-fence syntax and every link URL: the keyword leg would be
+        // scored against a corpus the product never produces, while the vector leg
+        // embedded the converted text. Half of hybrid search, measured wrong.
+        const text = htmlToText(html);
+        const inserted = await query<{ id: number }>(
+          // #1111: quality_score and last_modified_at come from the manifest so
+          // the ranking prior is measurable at all. A page with no qualityScore
+          // is seeded NULL on purpose — "unscored" is a distinct case the prior
+          // must treat as neutral, and it is the common one for freshly synced
+          // content.
+          `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html, page_type, visibility, embedding_dirty, embedding_status, quality_score, quality_status, last_modified_at)
+           VALUES (gen_random_uuid()::text, 'standalone', $1, $2, $3, '', $4, 'page', 'shared', TRUE, 'not_embedded', $5,
+                   CASE WHEN $5::int IS NULL THEN 'pending' ELSE 'analyzed' END,
+                   CASE WHEN $6::int IS NULL THEN NULL ELSE now() - ($6::int || ' days')::interval END)
+           RETURNING id`,
+          [EVAL_SPACE_KEY, page.title, text, html, page.qualityScore ?? null, page.ageDays ?? null],
+        );
+        const pageId = inserted.rows[0]!.id;
+        pageIdByFile.set(page.file, pageId);
 
-    const chunks = await embedPage(userId, pageId, page.title, EVAL_SPACE_KEY, html);
-    if (chunks > 0) embeddedPages++;
-    else skipped.push(page.file);
+        const chunks = await embedPage(userId, pageId, page.title, EVAL_SPACE_KEY, html);
+        if (chunks > 0) embeddedPages++;
+        else skipped.push(page.file);
 
-    opts.onProgress?.(index + 1, corpus.length);
-  }
+        completed++;
+        opts.onProgress?.(completed, corpus.length);
+      }),
+    ),
+  );
 
   return { pageIdByFile, embeddedPages, skipped };
 }
