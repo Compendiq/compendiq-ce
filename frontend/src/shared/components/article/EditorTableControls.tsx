@@ -118,7 +118,7 @@ function TableActionButton({
         'text-muted-foreground hover:bg-accent hover:text-foreground',
         'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring',
         'disabled:pointer-events-none disabled:opacity-40',
-        destructive && 'text-destructive hover:bg-destructive/10 hover:text-destructive',
+        destructive && 'nm-action-destructive',
       )}
     >
       <Icon size={15} strokeWidth={1.9} aria-hidden="true" />
@@ -149,7 +149,7 @@ function TableMenuItem({
       className={cn(
         'flex min-h-8 w-full items-center gap-2 rounded-md px-2 text-left text-xs transition-colors',
         'text-foreground hover:bg-accent',
-        destructive && 'text-destructive hover:bg-destructive/10',
+        destructive && 'nm-action-destructive',
       )}
     >
       <Icon size={15} strokeWidth={1.9} aria-hidden="true" />
