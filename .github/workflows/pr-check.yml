@@ -196,7 +196,7 @@ jobs:
 
       - name: Cache Ollama models
         if: steps.scope.outputs.run == 'true'
-        uses: actions/cache@d4323d4df104b026a6aa633fdb11d7715814023a # v4
+        uses: actions/cache@v4
         with:
           path: /tmp/ollama-models
           key: ollama-nomic-embed-text-v1
