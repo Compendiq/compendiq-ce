@@ -134,26 +134,9 @@ jobs:
           - 5434:5432
         options: >-
           --health-cmd "pg_isready -U kb_user -d kb_eval"
-          --health-interval 10s
-          --health-timeout 5s
+          --health-interval 5s
+          --health-timeout 3s
           --health-retries 5
-
-      # The gate's job is "did this PR regress retrieval LOGIC", which only
-      # needs the same model on both sides — not the production 8B one. Ollama
-      # because its /v1 shim is already what openai-compatible-client speaks,
-      # so this needs a provider row rather than new client code.
-      ollama:
-        image: ollama/ollama:latest
-        ports:
-          - 11434:11434
-        # Probe the HTTP API, not the CLI: `ollama --version` exits 0 whether
-        # or not the server has bound the port, so the container reported
-        # healthy immediately and the healthcheck gated nothing (review r1).
-        options: >-
-          --health-cmd "ollama ps"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
 
     env:
       POSTGRES_URL: postgresql://kb_user:changeme-postgres@localhost:5434/kb_eval
@@ -211,6 +194,19 @@ jobs:
         if: steps.scope.outputs.run == 'true'
         run: npm run build -w @compendiq/contracts
 
+      - name: Cache Ollama models
+        if: steps.scope.outputs.run == 'true'
+        uses: actions/cache@d4323d4df104b026a6aa633fdb11d7715814023a # v4
+        with:
+          path: /tmp/ollama-models
+          key: ollama-nomic-embed-text-v1
+
+      - name: Start Ollama
+        if: steps.scope.outputs.run == 'true'
+        run: |
+          mkdir -p /tmp/ollama-models
+          docker run -d --name ollama --network host -v /tmp/ollama-models:/root/.ollama ollama/ollama:latest
+
       # nomic-embed-text (~274 MB) rather than a smaller model: the corpus
       # chunks out at up to CHUNK_HARD_LIMIT (6000) characters, and all-minilm's
       # 256-token window silently embedded only the prefix — it returns
@@ -223,7 +219,7 @@ jobs:
           for i in $(seq 1 60); do
             curl -sf http://localhost:11434/api/version >/dev/null && break
             if [ "$i" = "60" ]; then echo "Ollama never became reachable"; exit 1; fi
-            sleep 2
+            sleep 1
           done
           # `| tail -1` alone would mask a failed pull behind tail's exit code,
           # and the eval would then fail later with a confusing 404 (review r1).
