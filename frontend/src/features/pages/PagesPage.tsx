@@ -1144,7 +1144,7 @@ export function PagesPage() {
             <SanitizedHtml
               className={`rounded-xl border border-border bg-card prose max-w-none p-6${isLight ? '' : ' prose-invert'}`}
               html={homeBodyHtml}
-              additionalAllowedAttrs={['data-diagram-name', 'data-drawio', 'data-color', 'data-layout-type', 'data-cell-width', 'data-border']}
+              additionalAllowedAttrs={['data-diagram-name', 'data-drawio', 'data-color', 'data-layout', 'data-layout-type', 'data-cell-width', 'data-border']}
             />
           </m.div>
         ) : null

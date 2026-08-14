@@ -59,6 +59,7 @@ import { ArticleViewer } from './ArticleViewer';
 describe('ArticleViewer', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    capturedEditorOptions.length = 0;
   });
 
   it('rewrites protected attachment images to authenticated blob URLs', async () => {
@@ -247,6 +248,16 @@ describe('ArticleViewer', () => {
 
     expect(container.querySelectorAll('th')).toHaveLength(2);
     expect(container.querySelectorAll('td')).toHaveLength(2);
+  });
+
+  it('preserves the saved full-width table attribute', async () => {
+    const html = '<table data-layout="full-width"><tbody><tr><td>Wide</td></tr></tbody></table>';
+
+    const { container } = render(<ArticleViewer content={html} />);
+
+    await waitFor(() => {
+      expect(container.querySelector('table[data-layout="full-width"]')).toBeTruthy();
+    });
   });
 
   it('renders multi-row tables with header and multiple data rows', async () => {

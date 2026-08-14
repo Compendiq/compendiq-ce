@@ -6,10 +6,11 @@ import { useEffect, useState } from 'react';
 import { useEditor, EditorContent } from '@tiptap/react';
 import { Node } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
+import { TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
 import TextAlign from '@tiptap/extension-text-align';
 import { Highlight } from '@tiptap/extension-highlight';
 import { toast } from 'sonner';
-import { ConfluenceStatus, ConfluenceUserMention } from './article-extensions';
+import { ConfluenceStatus, ConfluenceUserMention, ExtendedTable } from './article-extensions';
 import { Link } from '@tiptap/extension-link';
 import type { Editor as EditorType } from '@tiptap/react';
 
@@ -106,6 +107,10 @@ function Harness({
   const editor = useEditor({
     extensions: [
       StarterKit.configure(trailingNode ? {} : { trailingNode: false }),
+      ExtendedTable,
+      TableRow,
+      TableCell,
+      TableHeader,
       TextAlign.configure({
         types: ['heading', 'paragraph', 'blockquote'],
       }),
@@ -525,6 +530,22 @@ describe('EditorBlockMenu — atomic and macro blocks', () => {
     await mountMenu('<ul><li><p>One</p></li></ul>');
     expect(screen.queryByTitle('Bold (Ctrl+B)')).toBeNull();
     expect(screen.getByTestId('block-menu-delete')).toBeTruthy();
+  });
+});
+
+describe('EditorBlockMenu — table blocks', () => {
+  it('offers the table toolbar from the grab-handle context menu', async () => {
+    await mountMenu(
+      '<table><tbody><tr><th>Header</th><th>Value</th></tr><tr><td>A</td><td>B</td></tr></tbody></table>',
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('block-table-toolbar')).toBeInTheDocument();
+      expect(screen.getByRole('toolbar', { name: 'Table editing controls' })).toBeInTheDocument();
+    });
+    expect(screen.queryByRole('toolbar', { name: 'Block formatting' })).toBeNull();
+    expect(screen.getByTitle('Add row below')).toBeInTheDocument();
+    expect(screen.getByTestId('toggle-table-expand')).toHaveTextContent('Expand');
   });
 });
 

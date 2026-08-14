@@ -105,7 +105,7 @@ export function ArticleViewer({
   const sanitizedContent = useMemo(
     () =>
       DOMPurify.sanitize(content, {
-        ADD_ATTR: ['data-diagram-name', 'data-drawio', 'data-confluence-link', 'data-type', 'data-checked', 'data-color', 'data-title', 'data-layout-type', 'data-cell-width', 'data-border'],
+        ADD_ATTR: ['data-diagram-name', 'data-drawio', 'data-confluence-link', 'data-type', 'data-checked', 'data-color', 'data-title', 'data-layout', 'data-layout-type', 'data-cell-width', 'data-border'],
       }),
     [content],
   );
@@ -198,6 +198,43 @@ export function ArticleViewer({
     if (lastAppliedContentRef.current === sanitizedContent) return;
     lastAppliedContentRef.current = sanitizedContent;
     editor.commands.setContent(sanitizedContent);
+  }, [editor, isReady, sanitizedContent]);
+
+  // TipTap's table extension renders its own DOM wrapper and does not include
+  // custom table attributes in that rendered DOM. Re-apply the persisted
+  // layout after the view has mounted or refreshed so read-only pages keep the
+  // same width choice as the editor.
+  useEffect(() => {
+    if (!editor || !isReady) return;
+
+    const raf = requestAnimationFrame(() => {
+      editor.state.doc.descendants((node, pos) => {
+        if (node.type.name !== 'table') return true;
+
+        const dom = editor.view.nodeDOM(pos) as HTMLElement | null;
+        const table = dom?.tagName === 'TABLE' ? dom : dom?.querySelector('table');
+        if (!table) return true;
+        const wrapper = table.closest('.tableWrapper');
+        const isFullWidth = node.attrs['data-layout'] === 'full-width';
+
+        if (isFullWidth) {
+          table.setAttribute('data-layout', 'full-width');
+          wrapper?.setAttribute('data-layout', 'full-width');
+          const columns = table.querySelectorAll<HTMLTableColElement>('colgroup > col');
+          if (columns.length > 0) {
+            const columnWidth = `${100 / columns.length}%`;
+            columns.forEach((column) => column.style.setProperty('width', columnWidth, 'important'));
+          }
+        } else {
+          table.removeAttribute('data-layout');
+          wrapper?.removeAttribute('data-layout');
+        }
+
+        return true;
+      });
+    });
+
+    return () => cancelAnimationFrame(raf);
   }, [editor, isReady, sanitizedContent]);
 
   // Generate heading IDs and expose them for ToC
