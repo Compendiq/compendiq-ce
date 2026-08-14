@@ -20,7 +20,8 @@ vi.mock('../../lib/sse', () => ({
   streamSSE: (...args: unknown[]) => streamSSE(...args),
 }));
 
-import { EditorBlockMenu, NESTED_DRAG_OPTIONS } from './EditorBlockMenu';
+import { EditorBlockMenu } from './EditorBlockMenu';
+import { NESTED_DRAG_OPTIONS } from './block-menu-nodes';
 import {
   blockMenuTargetKey,
   createBlockMenuTargetPlugin,
@@ -885,15 +886,25 @@ describe('EditorBlockMenu — nested blocks in column containers', () => {
     const containerRule = NESTED_DRAG_OPTIONS.rules?.find((r) => r.id === 'excludeLayoutContainers');
     expect(containerRule).toBeDefined();
 
-    // Structural containers should be excluded from drag targeting
-    expect(containerRule?.evaluate({ node: { type: { name: 'confluenceColumn' } } } as any)).toBe(1000);
-    expect(containerRule?.evaluate({ node: { type: { name: 'confluenceLayoutCell' } } } as any)).toBe(1000);
-    expect(containerRule?.evaluate({ node: { type: { name: 'confluenceLayoutSection' } } } as any)).toBe(1000);
+    const evalRule = (nodeName: string, parentName?: string) =>
+      containerRule?.evaluate({
+        node: { type: { name: nodeName } },
+        parent: parentName ? { type: { name: parentName } } : null,
+      });
 
-    // Regular content blocks should not be deducted
-    expect(containerRule?.evaluate({ node: { type: { name: 'paragraph' } } } as any)).toBe(0);
-    expect(containerRule?.evaluate({ node: { type: { name: 'heading' } } } as any)).toBe(0);
-    expect(containerRule?.evaluate({ node: { type: { name: 'table' } } } as any)).toBe(0);
+    // Structural containers should be excluded from drag targeting
+    expect(evalRule('confluenceColumn')).toBe(1000);
+    expect(evalRule('confluenceLayoutCell')).toBe(1000);
+    expect(evalRule('confluenceLayoutSection')).toBe(1000);
+    expect(evalRule('tableRow')).toBe(1000);
+    expect(evalRule('tableCell')).toBe(1000);
+    expect(evalRule('tableHeader')).toBe(1000);
+    expect(evalRule('paragraph', 'tableCell')).toBe(1000);
+
+    // Regular content blocks outside tables should not be deducted
+    expect(evalRule('paragraph', 'confluenceColumn')).toBe(0);
+    expect(evalRule('heading')).toBe(0);
+    expect(evalRule('table')).toBe(0);
   });
 
   it('targets a paragraph inside a confluenceColumn and offers block actions', async () => {

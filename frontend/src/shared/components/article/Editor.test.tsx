@@ -1529,4 +1529,28 @@ describe('draft auto-save flush on unmount (#877)', () => {
     // The unmount flush must skip the suppressed key — no resurrection.
     expect(localStorage.getItem('draft:page-877-suppress')).toBeNull();
   });
+
+  it('renders and toggles task list items interactively', async () => {
+    let editor: EditorType | null = null;
+    render(
+      <Editor
+        content='<ul data-type="taskList"><li data-type="taskItem" data-checked="false"><label><input type="checkbox"><span></span></label><div><p>Task 1</p></div></li></ul>'
+        editable={true}
+        onEditorReady={(e) => { editor = e; }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(editor).not.toBeNull();
+    });
+
+    const checkbox = screen.getByRole('checkbox');
+    expect(checkbox).not.toBeChecked();
+
+    fireEvent.click(checkbox);
+
+    await waitFor(() => {
+      expect(editor!.getHTML()).toContain('data-checked="true"');
+    });
+  });
 });

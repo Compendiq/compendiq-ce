@@ -4,7 +4,6 @@ import { useEditorState } from '@tiptap/react';
 import type { Editor as EditorType } from '@tiptap/react';
 import type { Node as PMNode } from '@tiptap/pm/model';
 import DragHandle from '@tiptap/extension-drag-handle-react';
-import type { NestedOptions } from '@tiptap/extension-drag-handle';
 import {
   CopyPlus,
   GripVertical,
@@ -20,7 +19,7 @@ import { BlockTypeMenu } from './BlockTypeMenu';
 import { ImprovePanel, type ImprovePanelCopy } from './ImprovePanel';
 import { buildInstruction, BLOCK_INSTRUCTION, type QuickAction } from './improve-actions';
 import {
-  blockLabel, containsLossyMarks, containsStructuredInline, supportsTextActions,
+  blockLabel, containsLossyMarks, containsStructuredInline, supportsTextActions, NESTED_DRAG_OPTIONS,
 } from './block-menu-nodes';
 import { blockMenuTargetKey, blockMenuTargetRange } from './block-menu-decoration';
 import { absorbBlockMenuEscape, useBlockMenuTarget } from './use-block-menu-target';
@@ -388,29 +387,6 @@ export function EditorBlockMenu({
     </div>
   );
 }
-
-/**
- * Configuration for nested drag handle behavior.
- * Enables drag handles on blocks inside columns, layout cells, panels, quotes, and expand sections,
- * while excluding structural column/cell wrappers from being dragged as loose blocks.
- */
-export const NESTED_DRAG_OPTIONS: NestedOptions = {
-  defaultRules: true,
-  edgeDetection: 'none',
-  rules: [
-    {
-      id: 'excludeLayoutContainers',
-      evaluate: ({ node }) => {
-        const layoutContainers = [
-          'confluenceColumn',
-          'confluenceLayoutCell',
-          'confluenceLayoutSection',
-        ];
-        return layoutContainers.includes(node.type.name) ? 1000 : 0;
-      },
-    },
-  ],
-};
 
 /**
  * The drag handle plus its context menu. Owns the marker plugin, the handle

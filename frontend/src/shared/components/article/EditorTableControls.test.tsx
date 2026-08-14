@@ -132,6 +132,18 @@ describe('EditorTableControls & Table Expansion', () => {
     expect(toggleBtn).toHaveAttribute('title', 'Expand table to page width');
   });
 
+  it('preserves user-adjusted column widths (colwidth) in full-width tables', async () => {
+    const editor = await renderEditorWithContent(
+      '<table data-layout="full-width"><tbody><tr><th colwidth="120"><p>ID</p></th><th colwidth="300"><p>Title</p></th><th colwidth="150"><p>Status</p></th></tr><tr><td colwidth="120"><p>1</p></td><td colwidth="300"><p>Item</p></td><td colwidth="150"><p>Open</p></td></tr></tbody></table>',
+    );
+    focusFirstTableCell(editor);
+
+    expect(editor.getAttributes('table')['data-layout']).toBe('full-width');
+    expect(editor.getHTML()).toContain('colwidth="120"');
+    expect(editor.getHTML()).toContain('colwidth="300"');
+    expect(editor.getHTML()).toContain('colwidth="150"');
+  });
+
   it('inserts table caption directly below the table node', async () => {
     const editor = await renderEditorWithTable();
     focusFirstTableCell(editor);

@@ -177,19 +177,9 @@ export function syncTableLayoutAttributes(editor: EditorType) {
     if (node.attrs['data-layout'] === 'full-width') {
       table.setAttribute('data-layout', 'full-width');
       wrapper?.setAttribute('data-layout', 'full-width');
-
-      const columns = table.querySelectorAll<HTMLTableColElement>('colgroup > col');
-      if (columns.length > 0) {
-        const columnWidth = `${100 / columns.length}%`;
-        columns.forEach((column) => column.style.setProperty('width', columnWidth, 'important'));
-      }
     } else {
       table.removeAttribute('data-layout');
       wrapper?.removeAttribute('data-layout');
-
-      table.querySelectorAll<HTMLTableColElement>('colgroup > col').forEach((column) => {
-        column.style.removeProperty('width');
-      });
     }
 
     return true;
