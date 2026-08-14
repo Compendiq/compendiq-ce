@@ -433,6 +433,18 @@ describe('multiQuerySearch (#1112)', () => {
     expect(extras).toMatchObject({ rerankScore: 0.71, degradedReason: null, embeddingCoverage: 1 });
   });
 
+  it('does not file analytics when an internal replay opts out', async () => {
+    mockChat.mockResolvedValue('first rewrite\nsecond rewrite');
+    mockHybridSearch.mockResolvedValue([row(1)]);
+
+    await multiQuerySearch('u1', 'replayed production question', 5, undefined, {
+      ...optsIn,
+      recordAnalytics: false,
+    });
+
+    expect(mockTrackSearchAnalytics).not.toHaveBeenCalled();
+  });
+
   it('returns the merged head, sliced to the caller\'s topK', async () => {
     mockChat.mockResolvedValue('first rewrite\nsecond rewrite');
     mockHybridSearch

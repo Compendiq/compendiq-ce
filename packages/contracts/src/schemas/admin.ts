@@ -9,6 +9,37 @@ export type ReEmbedRequest = z.infer<typeof ReEmbedRequestSchema>;
 export const ReferenceActionSchema = z.enum(['flag', 'strip', 'off']);
 export type ReferenceAction = z.infer<typeof ReferenceActionSchema>;
 
+// ─── Production retrieval benchmark (#deep-search-prod-benchmark) ────────
+//
+// The committed retrieval fixture is deliberately a dev-only quality gate.
+// This request describes an admin-triggered, read-only comparison over the
+// deployment's own query distribution instead of pretending those labels fit
+// a different knowledge base.
+export const RetrievalBenchmarkQuerySchema = z.object({
+  id: z.string().trim().min(1).max(100).optional(),
+  query: z.string().trim().min(3).max(1_000),
+  /** Optional ground truth for custom suites; absent for analytics queries. */
+  expectedPageIds: z.array(z.number().int().positive()).max(10).optional(),
+});
+
+export const RetrievalBenchmarkRequestSchema = z.object({
+  source: z.enum(['recent-queries', 'custom']).default('recent-queries'),
+  days: z.number().int().min(1).max(90).default(30),
+  limit: z.number().int().min(1).max(100).default(25),
+  topK: z.number().int().min(1).max(10).default(5),
+  queries: z.array(RetrievalBenchmarkQuerySchema).min(1).max(100).optional(),
+}).superRefine((value, ctx) => {
+  if (value.source === 'custom' && !value.queries) {
+    ctx.addIssue({ code: 'custom', path: ['queries'], message: 'Custom benchmarks require queries' });
+  }
+  if (value.source === 'recent-queries' && value.queries) {
+    ctx.addIssue({ code: 'custom', path: ['queries'], message: 'Recent-query benchmarks do not accept queries' });
+  }
+});
+
+export type RetrievalBenchmarkQuery = z.infer<typeof RetrievalBenchmarkQuerySchema>;
+export type RetrievalBenchmarkRequest = z.infer<typeof RetrievalBenchmarkRequestSchema>;
+
 // ─── #1118 — retrieval knobs (epic #1100) ────────────────────────────────
 //
 // Nine `admin_settings` rows the retrieval pipeline reads through 60-second

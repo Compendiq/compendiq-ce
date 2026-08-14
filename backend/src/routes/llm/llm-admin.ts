@@ -1,10 +1,19 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { RetrievalBenchmarkRequestSchema } from '@compendiq/contracts';
 import { LlmCache } from '../../domains/llm/services/llm-cache.js';
 import { getMcpDocsSettings, upsertMcpDocsSettings } from '../../core/services/mcp-docs-settings.js';
 import { testConnection as testMcpConnection, fetchDocumentation, searchDocumentation } from '../../core/services/mcp-docs-client.js';
 import { query } from '../../core/db/postgres.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
+import { logger } from '../../core/utils/logger.js';
+import {
+  createProductionBenchmarkRun,
+  getActiveProductionBenchmark,
+  getProductionBenchmarkRun,
+  ProductionBenchmarkAlreadyRunningError,
+  runProductionBenchmark,
+} from '../../domains/llm/eval/production-benchmark.js';
 
 import { getRateLimits } from '../../core/services/rate-limit-service.js';
 const ADMIN_RATE_LIMIT = { config: { rateLimit: { max: async () => (await getRateLimits()).admin.max, timeWindow: '1 minute' } } };
@@ -36,6 +45,67 @@ export async function llmAdminRoutes(fastify: FastifyInstance) {
   }, async () => {
     const deleted = await llmCache.clearAll();
     return { message: `LLM cache cleared`, entriesDeleted: deleted };
+  });
+
+  // ─── Production retrieval benchmark ─────────────────────────────────
+
+  // Starts a paired, read-only comparison over real production queries. The
+  // work is intentionally asynchronous: a provider call plus three retrieval
+  // legs per question can outlive an HTTP request timeout.
+  fastify.post('/admin/retrieval-benchmark', {
+    preHandler: fastify.requireAdmin,
+    ...ADMIN_RATE_LIMIT,
+  }, async (request, reply) => {
+    const config = RetrievalBenchmarkRequestSchema.parse(request.body ?? {});
+    const active = await getActiveProductionBenchmark();
+    if (active) {
+      return reply.code(409).send({
+        error: 'benchmark_in_progress',
+        message: 'A production retrieval benchmark is already running',
+        runId: active.id,
+      });
+    }
+
+    let runId: string;
+    try {
+      runId = await createProductionBenchmarkRun(request.userId, config);
+    } catch (err) {
+      if (err instanceof ProductionBenchmarkAlreadyRunningError) {
+        return reply.code(409).send({
+          error: 'benchmark_in_progress',
+          message: err.message,
+          runId: err.activeRunId,
+        });
+      }
+      throw err;
+    }
+
+    await logAuditEvent(request.userId, 'RETRIEVAL_BENCHMARK_STARTED', 'llm', undefined, {
+      runId,
+      source: config.source,
+      queryLimit: config.source === 'recent-queries' ? config.limit : config.queries?.length,
+      topK: config.topK,
+    }, request);
+
+    void runProductionBenchmark(runId, request.userId).catch((err) => {
+      logger.error({ err, runId }, 'Production retrieval benchmark could not start');
+    });
+
+    return reply.code(202).send({
+      runId,
+      status: 'queued',
+      message: 'Production retrieval benchmark started',
+    });
+  });
+
+  fastify.get('/admin/retrieval-benchmark/:id', {
+    preHandler: fastify.requireAdmin,
+    ...ADMIN_RATE_LIMIT,
+  }, async (request, reply) => {
+    const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+    const run = await getProductionBenchmarkRun(id);
+    if (!run) return reply.code(404).send({ error: 'not_found', message: 'Benchmark run not found' });
+    return run;
   });
 
   // ─── MCP Docs Admin Routes ──────────────────────────────────────────

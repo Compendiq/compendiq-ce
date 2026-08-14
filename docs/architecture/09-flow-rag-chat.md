@@ -339,6 +339,16 @@ retrieval under a deep label — the silent-lie class the vector-participation
 and rerank guards exist for. Queries that skipped BY DESIGN are counted
 separately, so an all-identifier fixture is still a valid measurement.
 
+**Production measurement is a separate, non-destructive path.** The admin
+retrieval benchmark samples distinct real questions from search_analytics
+or accepts an explicitly labelled custom suite, then runs the same chat
+retrieval options once with deepSearch=false and once with deepSearch=true. It
+persists asynchronous run state in retrieval_benchmark_runs, records no
+replay analytics, and stores query text, page ids/titles plus timings. The vendored
+fixture remains the only source of Recall/MRR for the CI quality gate; unlabeled
+production questions report paired movement and latency instead of a fabricated
+quality score.
+
 ### What it measured, and why the toggle must not be sticky
 
 197 fixture queries, paired against the same corpus, with the #1104 rerank

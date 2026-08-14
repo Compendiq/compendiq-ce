@@ -48,6 +48,43 @@ interface RetrievalValues {
   ragRankingPriorWeight: number;
 }
 
+interface BenchmarkVariantSummary {
+  averageLatencyMs: number;
+  p50LatencyMs: number;
+  p95LatencyMs: number;
+  emptyResultQueries: number;
+  labeledQueryCount: number;
+  recallAtK: Record<string, number> | null;
+  mrr: number | null;
+}
+
+interface BenchmarkReport {
+  queryCount: number;
+  topK: number;
+  baseline: BenchmarkVariantSummary;
+  deepSearch: BenchmarkVariantSummary & {
+    expansionParticipatingQueries: number;
+    expansionSkippedQueries: number;
+    expansionUnavailableQueries: number;
+  };
+  paired: {
+    top1ChangedQueries: number;
+    topKChangedQueries: number;
+    averageTopKOverlap: number;
+    deepOnlyPagesAtK: number;
+    baselineOnlyPagesAtK: number;
+  };
+}
+
+interface BenchmarkRun {
+  id: string;
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  progressDone: number;
+  progressTotal: number;
+  result: BenchmarkReport | null;
+  error: string | null;
+}
+
 const DEFAULTS: RetrievalValues = {
   ragFetchWidth: 10,
   ragRerankCandidates: 30,
@@ -146,6 +183,9 @@ function round(value: number, decimals: number | undefined): number {
 
 export function RetrievalTab() {
   const queryClient = useQueryClient();
+  const [benchmarkRunId, setBenchmarkRunId] = useState<string | null>(null);
+  const [benchmarkDays, setBenchmarkDays] = useState(30);
+  const [benchmarkLimit, setBenchmarkLimit] = useState(25);
 
   const { data: settings, isLoading } = useQuery<Partial<RetrievalValues>>({
     queryKey: ['admin-settings'],
@@ -216,6 +256,33 @@ export function RetrievalTab() {
   const rerankRow = assignments?.rerank;
   const rerankActive =
     !!rerankRow && rerankRow.providerId !== null && rerankRow.resolved.providerId !== NIL_UUID;
+
+  const { data: benchmark } = useQuery<BenchmarkRun>({
+    queryKey: ['retrieval-benchmark', benchmarkRunId],
+    queryFn: () => apiFetch(`/admin/retrieval-benchmark/${benchmarkRunId}`),
+    enabled: benchmarkRunId !== null,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status === 'queued' || status === 'running' ? 2_000 : false;
+    },
+  });
+
+  const benchmarkMutation = useMutation({
+    mutationFn: () => apiFetch<{ runId: string }>('/admin/retrieval-benchmark', {
+      method: 'POST',
+      body: JSON.stringify({
+        source: 'recent-queries',
+        days: benchmarkDays,
+        limit: benchmarkLimit,
+        topK: 5,
+      }),
+    }),
+    onSuccess: (data) => {
+      setBenchmarkRunId(data.runId);
+      toast.success('Production retrieval benchmark started');
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : 'Could not start benchmark'),
+  });
 
   if (isLoading) {
     return <div className="text-sm text-muted-foreground">Loading...</div>;
@@ -463,6 +530,66 @@ export function RetrievalTab() {
         </div>
       </Section>
 
+      <Section
+        title="Production benchmark"
+        description="Replay real questions recorded by this deployment against its current pages and embeddings. The same questions run once with ordinary retrieval and once with deep search."
+      >
+        <p className="text-xs text-muted-foreground">
+          This is a read-only paired measurement. It does not seed content, change retrieval settings,
+          or add replayed questions to search analytics. Because production questions do not carry
+          ground-truth labels, this reports result movement and latency rather than Recall or MRR.
+        </p>
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="space-y-1 text-xs text-muted-foreground">
+            <span className="block">Look back (days)</span>
+            <input
+              type="number"
+              min={1}
+              max={90}
+              value={benchmarkDays}
+              onChange={(event) => setBenchmarkDays(Math.max(1, Math.min(90, Number(event.target.value) || 1)))}
+              className="w-20 rounded-md border border-border-interactive bg-background/50 px-2 py-1.5 text-sm text-foreground outline-none focus:ring-1 focus:ring-ring"
+              data-testid="retrieval-benchmark-days"
+            />
+          </label>
+          <label className="space-y-1 text-xs text-muted-foreground">
+            <span className="block">Questions</span>
+            <input
+              type="number"
+              min={1}
+              max={100}
+              value={benchmarkLimit}
+              onChange={(event) => setBenchmarkLimit(Math.max(1, Math.min(100, Number(event.target.value) || 1)))}
+              className="w-20 rounded-md border border-border-interactive bg-background/50 px-2 py-1.5 text-sm text-foreground outline-none focus:ring-1 focus:ring-ring"
+              data-testid="retrieval-benchmark-limit"
+            />
+          </label>
+          <button
+            type="button"
+            onClick={() => benchmarkMutation.mutate()}
+            disabled={benchmarkMutation.isPending || benchmark?.status === 'queued' || benchmark?.status === 'running'}
+            className="nm-button-primary"
+            data-testid="retrieval-benchmark-start"
+          >
+            {benchmarkMutation.isPending ? 'Starting...' : 'Run on production queries'}
+          </button>
+        </div>
+
+        {benchmark && (benchmark.status === 'queued' || benchmark.status === 'running') && (
+          <p className="text-xs text-muted-foreground" data-testid="retrieval-benchmark-progress">
+            Benchmark {benchmark.status} · {benchmark.progressDone}/{benchmark.progressTotal || '?'} questions
+          </p>
+        )}
+        {benchmark?.status === 'failed' && (
+          <p className="text-xs text-destructive" data-testid="retrieval-benchmark-error">
+            {benchmark.error ?? 'The benchmark failed.'}
+          </p>
+        )}
+        {benchmark?.status === 'completed' && benchmark.result && (
+          <BenchmarkSummary report={benchmark.result} />
+        )}
+      </Section>
+
       <div className="flex items-center gap-3 border-t border-border pt-4">
         <button
           onClick={handleSave}
@@ -481,6 +608,30 @@ export function RetrievalTab() {
           Reset all to defaults
         </button>
       </div>
+    </div>
+  );
+}
+
+function BenchmarkSummary({ report }: { report: BenchmarkReport }) {
+  return (
+    <div className="space-y-2 text-xs text-muted-foreground" data-testid="retrieval-benchmark-summary">
+      <p className="font-medium text-foreground">{report.queryCount} production questions compared</p>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <Metric label="Ordinary p50 / p95" value={`${report.baseline.p50LatencyMs} / ${report.baseline.p95LatencyMs} ms`} />
+        <Metric label="Deep search p50 / p95" value={`${report.deepSearch.p50LatencyMs} / ${report.deepSearch.p95LatencyMs} ms`} />
+        <Metric label={`Top-${report.topK} overlap`} value={`${Math.round(report.paired.averageTopKOverlap * 100)}%`} />
+        <Metric label="Top-1 changed" value={`${report.paired.top1ChangedQueries} questions`} />
+        <Metric label="Deep expansion ran" value={`${report.deepSearch.expansionParticipatingQueries}/${report.queryCount}`} />
+        <Metric label="Deep expansion skipped/unavailable" value={`${report.deepSearch.expansionSkippedQueries}/${report.deepSearch.expansionUnavailableQueries}`} />
+      </div>
+    </div>
+  );
+}
+
+function Metric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-border bg-background/40 px-3 py-2">
+      <span>{label}: </span><span className="font-medium text-foreground">{value}</span>
     </div>
   );
 }

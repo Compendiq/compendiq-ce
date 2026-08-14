@@ -75,6 +75,7 @@ export type AuditAction =
   | 'ENCRYPTION_KEY_ROTATED'
   | 'PROMPT_INJECTION_DETECTED'
   | 'SUMMARY_RESCAN'
+  | 'RETRIEVAL_BENCHMARK_STARTED'
   // #1131: the extraction endpoint went multi-format, so the emitted event is
   // now DOCUMENT_EXTRACTED (metadata.format names the type). PDF_EXTRACTED is
   // no longer emitted but stays in the union: `audit_log.action` is plain TEXT

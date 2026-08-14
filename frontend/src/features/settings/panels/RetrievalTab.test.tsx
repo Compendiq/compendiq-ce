@@ -53,12 +53,29 @@ function mockApi({ settings = defaultSettings, rerank = unassignedRerank() }: Mo
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
     const method = init?.method ?? (input as Request)?.method ?? 'GET';
-    const json = (body: unknown) =>
-      new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const json = (body: unknown, status = 200) =>
+      new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
     if (url.includes('/admin/llm-usecases')) {
       const row = { providerId: null, model: null, resolved: { providerId: NIL_UUID, providerName: '', model: '' } };
       return json({ chat: row, summary: row, quality: row, auto_tag: row, embedding: row, rerank });
+    }
+    if (url.includes('/admin/retrieval-benchmark')) {
+      if (method === 'POST') return json({ runId: '11111111-1111-4111-8111-111111111111', status: 'queued' }, 202);
+      return json({
+        id: '11111111-1111-4111-8111-111111111111',
+        status: 'completed',
+        progressDone: 2,
+        progressTotal: 2,
+        error: null,
+        result: {
+          queryCount: 2,
+          topK: 5,
+          baseline: { averageLatencyMs: 10, p50LatencyMs: 9, p95LatencyMs: 15, emptyResultQueries: 0, labeledQueryCount: 0, recallAtK: null, mrr: null },
+          deepSearch: { averageLatencyMs: 20, p50LatencyMs: 19, p95LatencyMs: 30, emptyResultQueries: 0, labeledQueryCount: 0, recallAtK: null, mrr: null, expansionParticipatingQueries: 1, expansionSkippedQueries: 1, expansionUnavailableQueries: 0 },
+          paired: { top1ChangedQueries: 1, topKChangedQueries: 1, averageTopKOverlap: 0.75, deepOnlyPagesAtK: 1, baselineOnlyPagesAtK: 1 },
+        },
+      });
     }
     if (url.includes('/admin/settings')) {
       if (method === 'PUT') {
@@ -403,5 +420,18 @@ describe('RetrievalTab — ADR-010: the off state is neutral, and amber is not b
     renderTab();
     await ready();
     expect(screen.getByTestId('retrieval-tab')).toHaveTextContent(/within a minute/i);
+  });
+
+  it('starts and displays a paired benchmark over production questions', async () => {
+    mockApi();
+    renderTab();
+    await ready();
+
+    expect(screen.getByTestId('retrieval-tab')).toHaveTextContent(/read-only paired measurement/i);
+    fireEvent.click(screen.getByTestId('retrieval-benchmark-start'));
+
+    await waitFor(() => expect(screen.getByTestId('retrieval-benchmark-summary')).toBeInTheDocument());
+    expect(screen.getByTestId('retrieval-benchmark-summary')).toHaveTextContent('2 production questions compared');
+    expect(screen.getByTestId('retrieval-benchmark-summary')).toHaveTextContent('19 / 30 ms');
   });
 });

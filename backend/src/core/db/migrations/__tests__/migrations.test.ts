@@ -79,6 +79,7 @@ describe.skipIf(!dbAvailable)('Database migrations', () => {
       'audit_log',
       'error_log',
       'search_analytics',
+      'retrieval_benchmark_runs',
       'page_versions',
     ];
 
