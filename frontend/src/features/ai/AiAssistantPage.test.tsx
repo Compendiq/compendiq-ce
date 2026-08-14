@@ -282,6 +282,21 @@ describe('AiAssistantPage', () => {
     expect(screen.getByTestId('ai-attachments-paused')).toHaveTextContent(
       'Attachments are kept here but are not sent to Diagram.',
     );
+    fireEvent.drop(screen.getByTestId('diagram-instruction'), {
+      dataTransfer: {
+        files: [new File(['pdf'], 'invisible.pdf', { type: 'application/pdf' })],
+      },
+    });
+    fireEvent.paste(screen.getByTestId('diagram-instruction'), {
+      clipboardData: {
+        items: [{
+          kind: 'file', type: 'image/png',
+          getAsFile: () => new File(['png'], 'invisible.png', { type: 'image/png' }),
+        }],
+      },
+    });
+    expect(mockExtractDocument).toHaveBeenCalledTimes(1);
+    expect(mockPrepareImage).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByTestId('diagram-send'));
 
     await waitFor(() => {
@@ -296,6 +311,45 @@ describe('AiAssistantPage', () => {
     fireEvent.click(await screen.findByTestId('assistant-action-ask'));
     expect(await screen.findByTestId('ask-doc-attachment-card')).toHaveTextContent('approval.pdf');
     expect(screen.getByTestId('ask-image-card')).toBeInTheDocument();
+  });
+
+  it('clears staged attachments when the page context changes', async () => {
+    mockPageData = {
+      data: {
+        id: 'p1', title: 'Runbook', bodyHtml: '<p>Original</p>', bodyText: 'Original', version: 1,
+      },
+    };
+    apiFetchMock.mockImplementation((path: string) => {
+      if (path === '/llm/usecase-default?usecase=chat') {
+        return Promise.resolve({
+          usecase: 'chat', providerId: 'p1', providerName: 'Local', model: 'llama3', vision: true,
+        });
+      }
+      if (path.startsWith('/ollama/models')) return Promise.resolve([{ name: 'llama3' }]);
+      if (path === '/llm/conversations') return Promise.resolve([]);
+      return Promise.resolve([]);
+    });
+    const revokePreview = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+
+    render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?pageId=p1']) });
+    await waitFor(() => expect(screen.getByTestId('ask-image-trigger')).not.toBeDisabled());
+    fireEvent.change(screen.getByTestId('ask-doc-file-input'), {
+      target: { files: [new File(['pdf'], 'page-one.pdf', { type: 'application/pdf' })] },
+    });
+    fireEvent.change(screen.getByTestId('ask-image-file-input'), {
+      target: { files: [new File(['png'], 'page-one.png', { type: 'image/png' })] },
+    });
+    await screen.findByTestId('ask-doc-attachment-card');
+    await screen.findByTestId('ask-image-card');
+
+    fireEvent.click(screen.getByTestId('ai-context-chip'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('ai-location')).toHaveTextContent('/ai');
+      expect(screen.queryByTestId('ask-doc-attachment-card')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('ask-image-card')).not.toBeInTheDocument();
+    });
+    expect(revokePreview).toHaveBeenCalledWith('blob:assistant-preview');
   });
 
   it('uses flex-1 column layout so the input bar anchors to the bottom of the viewport', () => {
