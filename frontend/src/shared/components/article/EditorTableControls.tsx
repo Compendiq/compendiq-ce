@@ -125,9 +125,28 @@ export function TableContextToolbar({ editor }: { editor: EditorType }) {
     return null;
   }
 
-  const toggleFullWidth = () => {
+  const toggleFullWidth = (e?: React.MouseEvent) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
     const nextLayout = isFullWidth ? 'default' : 'full-width';
-    editor.chain().focus().updateAttributes('table', { 'data-layout': nextLayout }).run();
+    const { selection } = editor.state;
+    const $pos = selection.$from;
+    let tablePos: number | null = null;
+    for (let d = $pos.depth; d > 0; d--) {
+      if ($pos.node(d).type.name === 'table') {
+        tablePos = $pos.before(d);
+        break;
+      }
+    }
+
+    if (tablePos !== null) {
+      const tr = editor.state.tr.setNodeAttribute(tablePos, 'data-layout', nextLayout);
+      editor.view.dispatch(tr);
+    } else {
+      editor.chain().focus().updateAttributes('table', { 'data-layout': nextLayout }).run();
+    }
   };
 
   return (
@@ -350,9 +369,28 @@ export function EditorTableOverlay({ editor }: { editor: EditorType }) {
     editor.chain().focus().addRowAfter().run();
   };
 
-  const toggleFullWidth = () => {
+  const toggleFullWidth = (e?: React.MouseEvent) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
     const nextLayout = isFullWidth ? 'default' : 'full-width';
-    editor.chain().focus().updateAttributes('table', { 'data-layout': nextLayout }).run();
+    const { selection } = editor.state;
+    const $pos = selection.$from;
+    let tablePos: number | null = null;
+    for (let d = $pos.depth; d > 0; d--) {
+      if ($pos.node(d).type.name === 'table') {
+        tablePos = $pos.before(d);
+        break;
+      }
+    }
+
+    if (tablePos !== null) {
+      const tr = editor.state.tr.setNodeAttribute(tablePos, 'data-layout', nextLayout);
+      editor.view.dispatch(tr);
+    } else {
+      editor.chain().focus().updateAttributes('table', { 'data-layout': nextLayout }).run();
+    }
     setPopoverOpen(false);
   };
 
