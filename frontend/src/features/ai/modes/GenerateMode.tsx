@@ -5,7 +5,7 @@ import { useAiContext, nextMessageId } from '../AiContext';
 import { useSpaces } from '../../../shared/hooks/use-spaces';
 import { useLocalSpaces } from '../../../shared/hooks/use-standalone';
 import { usePages, useCreatePage, type PageFilters } from '../../../shared/hooks/use-pages';
-import { useAttachments } from '../../../shared/hooks/use-attachments';
+import { buildDocumentReferenceText, useAttachments } from '../../../shared/hooks/use-attachments';
 import { DocumentUploadZone } from '../../../shared/components/upload/DocumentUploadZone';
 import { ImageAttachZone, imageDisabledReason } from '../../../shared/components/upload/ImageAttachZone';
 import { useAutoGrowTextarea } from '../../../shared/hooks/use-auto-grow-textarea';
@@ -366,7 +366,7 @@ export function GenerateModeInput() {
   // returns a fresh object literal every render, so a `useCallback` depending
   // on `attachments` itself was rebuilt on every render and memoized nothing.
   const {
-    document: attachedDocument, image: attachedImage, isBusy, removeImage,
+    documents: attachedDocuments, image: attachedImage, isBusy, removeImage,
   } = attachments;
 
   const handleGenerate = useCallback(async () => {
@@ -384,8 +384,8 @@ export function GenerateModeInput() {
 
     // The filename already carries the format, so naming it twice ("Generate
     // from DOCX (notes.docx)") would only be noise.
-    const displayMessage = attachedDocument
-      ? `Generate from ${attachedDocument.filename}: ${prompt}`
+    const displayMessage = attachedDocuments.length > 0
+      ? `Generate from ${attachedDocuments.map((document) => document.filename).join(', ')}: ${prompt}`
       : `Generate: ${prompt}`;
     // Append, not replace (#1126) — matching runStream's seeded turn and Ask.
     // Generate is the one mode that still builds its own user turn by hand, and
@@ -397,8 +397,9 @@ export function GenerateModeInput() {
     setShowSavePanel(false);
 
     const body: Record<string, unknown> = { prompt, model };
-    if (attachedDocument) {
-      body.documentText = attachedDocument.result.text;
+    const documentText = buildDocumentReferenceText(attachedDocuments);
+    if (documentText) {
+      body.documentText = documentText;
     }
     if (attachedImage) {
       body.imageHandle = attachedImage.handle;
@@ -439,7 +440,7 @@ export function GenerateModeInput() {
     });
   }, [
     input, model, isStreaming, searchWeb, thinkingMode, setInput, setMessages, runStream,
-    isBusy, attachedDocument, attachedImage, removeImage,
+    isBusy, attachedDocuments, attachedImage, removeImage,
   ]);
 
   const handleSubmit = () => handleGenerate();
@@ -484,8 +485,10 @@ export function GenerateModeInput() {
             tab to it, taking the typed prompt with it. */}
         <DocumentUploadZone
           onPick={attachments.pickFile}
-          extracted={attachments.document?.result ?? null}
-          filename={attachments.document?.filename ?? null}
+          onPickFiles={attachments.pickFiles}
+          extracted={attachedDocuments[0]?.result ?? null}
+          filename={attachedDocuments[0]?.filename ?? null}
+          documents={attachedDocuments}
           onRemove={attachments.removeDocument}
           isExtracting={attachments.isExtracting}
           isDragOver={attachments.isDragOver}
@@ -510,7 +513,7 @@ export function GenerateModeInput() {
             resolved model knows whether they fit. Amber is the attention
             colour under ADR-010 v0.5 and this is exactly that. It sits above
             the composer so it reads between the two attachments it is about. */}
-        {attachments.document && attachments.image && (
+        {attachedDocuments.length > 0 && attachments.image && (
           <p
             className="flex items-center gap-1.5 text-xs text-warning"
             data-testid="attachment-context-warning"
@@ -541,11 +544,15 @@ export function GenerateModeInput() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            // "this document" rather than the format's name: the six labels
+            // "this document" rather than the format's name: the format labels
             // live in DocumentUploadZone's FORMAT_META and copying them here
             // would give the same string two owners. An attached *image* keeps
             // the default: "from this document" would be a lie about a PNG.
-            placeholder={attachments.document ? 'Instructions for generating from this document...' : 'Describe the page to generate...'}
+            placeholder={attachedDocuments.length > 1
+              ? 'Instructions for generating from these documents...'
+              : attachedDocuments.length === 1
+                ? 'Instructions for generating from this document...'
+                : 'Describe the page to generate...'}
             maxLength={PROMPT_MAX_LENGTH}
             rows={1}
             disabled={isStreaming}

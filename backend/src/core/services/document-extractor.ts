@@ -86,8 +86,9 @@ export class DocumentExtractionError extends Error {
 // ---------------------------------------------------------------------------
 
 /**
- * What the *bytes* look like. `text` is deliberately coarse: a `.md` and a
- * `.txt` are the same bytes, so only the claimed extension can separate them.
+ * What the *bytes* look like. `text` is deliberately coarse: text-based
+ * formats such as `.md`, `.txt` and `.yaml` are the same bytes, so only the
+ * claimed extension can separate them.
  */
 export type SniffedFormat = 'pdf' | 'docx' | 'odt' | 'rtf' | 'text';
 
@@ -113,11 +114,13 @@ const EXTENSION_TO_FORMAT: Record<string, DocumentFormat> = {
   text: 'txt',
   rtf: 'rtf',
   odt: 'odt',
+  yml: 'yaml',
+  yaml: 'yaml',
 };
 
 /**
  * The format the caller *claims*, taken from the filename extension. Returns
- * `null` for anything outside the supported six — including a bare filename
+ * `null` for anything outside the supported formats — including a bare filename
  * with no extension, which we refuse rather than guess at.
  */
 export function claimedFormatFromFilename(filename: string | undefined): DocumentFormat | null {
@@ -127,7 +130,7 @@ export function claimedFormatFromFilename(filename: string | undefined): Documen
   return EXTENSION_TO_FORMAT[match[1].toLowerCase()] ?? null;
 }
 
-/** Human-readable list for error messages, e.g. `PDF, DOCX, MD, TXT, RTF, ODT`. */
+/** Human-readable list for error messages, e.g. `PDF, DOCX, MD, TXT, RTF, ODT, YAML`. */
 const SUPPORTED_FORMATS_LABEL = SUPPORTED_DOCUMENT_FORMATS
   .map((format) => format.toUpperCase())
   .join(', ');
@@ -178,8 +181,9 @@ export function sniffDocumentFormat(buffer: Buffer): SniffedFormat | null {
  * Resolves the format to extract with, rejecting any disagreement between what
  * the caller claimed and what the bytes are.
  *
- * `md` and `txt` are interchangeable in one direction only: plain-text bytes
- * satisfy either claim, but a `.txt` claim over RTF or zip bytes is still a
+ * text-based formats are interchangeable at the byte level: plain-text bytes
+ * satisfy an `md`, `txt` or `yaml` claim, but a `.txt` claim over RTF or zip
+ * bytes is still a
  * mismatch. Renaming a `.pdf` to `.docx` — the exact evasion the old PDF-only
  * route already guarded against — lands here as a 415.
  */
@@ -201,7 +205,7 @@ export function resolveDocumentFormat(buffer: Buffer, filename: string | undefin
   if (sniffed === null) throw mismatch;
 
   if (sniffed === 'text') {
-    if (claimed !== 'md' && claimed !== 'txt') throw mismatch;
+    if (claimed !== 'md' && claimed !== 'txt' && claimed !== 'yaml') throw mismatch;
     return claimed;
   }
 
@@ -585,6 +589,7 @@ export async function extractDocumentText(
       return { format: 'rtf', text: rtfToText(buffer.toString('utf8')) };
     case 'md':
     case 'txt':
+    case 'yaml':
       // Already text — `resolveDocumentFormat` has confirmed it decodes as
       // UTF-8 and carries no NUL.
       return { format, text: buffer.toString('utf8') };

@@ -19,7 +19,12 @@ vi.mock('./use-prepare-image', () => ({
   usePrepareImage: () => ({ prepareImage: mockPrepare, isPreparing: false, error: null }),
 }));
 
-import { useAttachments, MAX_DOCUMENT_BYTES } from './use-attachments';
+import {
+  buildDocumentReferenceText,
+  useAttachments,
+  MAX_DOCUMENT_BYTES,
+  MAX_DOCUMENT_TEXT_FOR_LLM,
+} from './use-attachments';
 
 function file(name: string, type: string): File {
   return new File(['x'], name, { type });
@@ -76,6 +81,21 @@ describe('useAttachments routing', () => {
     expect(mockExtract).toHaveBeenCalledTimes(1);
     expect(mockPrepare).not.toHaveBeenCalled();
     expect(result.current.document).toMatchObject({ filename: 'spec.pdf' });
+  });
+
+  it('keeps every document from one multi-file selection', async () => {
+    const { result } = renderHook(() => useAttachments({ imageEnabled: true }));
+    await act(async () => {
+      await result.current.pickFiles([
+        file('runbook.pdf', 'application/pdf'),
+        file('config.yaml', 'application/yaml'),
+      ]);
+    });
+
+    expect(mockExtract).toHaveBeenCalledTimes(2);
+    expect(result.current.documents.map((document) => document.filename)).toEqual([
+      'runbook.pdf', 'config.yaml',
+    ]);
   });
 
   /** Two independent slots: attaching one must not clear the other. */
@@ -150,6 +170,26 @@ describe('useAttachments routing', () => {
     expect(mockPrepare).not.toHaveBeenCalled();
     expect(mockToastError).toHaveBeenCalledWith("llama3.1 can't read images");
     expect(mockToastError).not.toHaveBeenCalledWith(expect.stringMatching(/SVG/));
+  });
+});
+
+describe('document reference text', () => {
+  it('keeps one source backward-compatible and labels multiple sources', () => {
+    const one = { filename: 'one.md', result: { text: 'first' } } as never;
+    const two = { filename: 'two.yaml', result: { text: 'second' } } as never;
+
+    expect(buildDocumentReferenceText([one])).toBe('first');
+    expect(buildDocumentReferenceText([one, two])).toContain('--- one.md ---');
+    expect(buildDocumentReferenceText([one, two])).toContain('--- two.yaml ---');
+  });
+
+  it('caps the combined source text at the server prompt budget', () => {
+    const sources = [
+      { filename: 'one.txt', result: { text: 'a'.repeat(MAX_DOCUMENT_TEXT_FOR_LLM) } },
+      { filename: 'two.txt', result: { text: 'b'.repeat(100) } },
+    ] as never;
+
+    expect(buildDocumentReferenceText(sources)!.length).toBeLessThanOrEqual(MAX_DOCUMENT_TEXT_FOR_LLM);
   });
 });
 
@@ -533,7 +573,7 @@ describe('useAttachments stale-request guard on failure', () => {
     expect(mockToastError).not.toHaveBeenCalled();
   });
 
-  it('does not toast a document extraction failure superseded by a newer pick', async () => {
+  it('keeps a newer document when an earlier extraction fails', async () => {
     const first = deferred<{ text: string; format: string }>();
     const second = deferred<{ text: string; format: string }>();
     mockExtract
@@ -558,7 +598,7 @@ describe('useAttachments stale-request guard on failure', () => {
       await firstPick;
     });
 
-    expect(mockToastError, 'the newer pick already won; the loser must stay silent').not.toHaveBeenCalled();
+    expect(mockToastError).toHaveBeenCalledWith('stale extraction failure');
     expect(result.current.document).toMatchObject({ filename: 'two.pdf' });
   });
 

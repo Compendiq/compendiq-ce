@@ -7,7 +7,7 @@ import { DiagramPreview } from '../modes';
 import { AIThinkingBlob } from '../../../shared/components/feedback/AIThinkingBlob';
 import { TypingIndicator } from '../../../shared/components/feedback/TypingIndicator';
 import { useAutoGrowTextarea } from '../../../shared/hooks/use-auto-grow-textarea';
-import { useAttachments } from '../../../shared/hooks/use-attachments';
+import { buildDocumentReferenceText, useAttachments } from '../../../shared/hooks/use-attachments';
 import { DocumentUploadZone } from '../../../shared/components/upload/DocumentUploadZone';
 import { ImageAttachZone, imageDisabledReason } from '../../../shared/components/upload/ImageAttachZone';
 import { PROMPT_MAX_LENGTH } from '../modes/prompt-limits';
@@ -107,7 +107,7 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
     disabled: isStreaming,
   });
   const {
-    document: reference, image, pickFile, removeDocument, removeImage, clearAll, isDragOver,
+    documents: references, image, pickFiles, removeDocument, removeImage, clearAll, isDragOver,
     isExtracting, isPreparing, isBusy,
   } = attachments;
 
@@ -128,7 +128,7 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
   const clearDeepSearch = useCallback(() => setDeepSearch(false), []);
 
   const { ask, runChip } = useDockActions({
-    referenceText: reference?.result.text,
+    referenceText: buildDocumentReferenceText(references),
     imageHandle: image?.handle,
     isBusy,
     onImageExpired: removeImage,
@@ -149,9 +149,9 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
     clearDeepSearch();
   }, [pageId, clearAll, clearDeepSearch]);
 
-  const handlePick = useCallback((file: File) => {
-    void pickFile(file);
-  }, [pickFile]);
+  const handlePickFiles = useCallback((files: readonly File[]) => {
+    void pickFiles(files);
+  }, [pickFiles]);
 
   const composerRef = useAutoGrowTextarea(input);
 
@@ -453,7 +453,7 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
             than either one, so it belongs beside neither zone's row — and a
             full-width paragraph among those rows would push the field away from
             the cards it describes. */}
-        {reference && image && (
+        {references.length > 0 && image && (
           <p
             className="mb-2 flex items-center gap-1.5 text-xs text-warning"
             data-testid="ai-dock-attachment-context-warning"
@@ -487,10 +487,12 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
         <div className="nm-composer flex-wrap" ref={composerBoxRef}>
           <DocumentUploadZone
             variant="composer"
-            onPick={handlePick}
+            onPick={(file) => handlePickFiles([file])}
+            onPickFiles={handlePickFiles}
             isExtracting={isExtracting}
-            extracted={reference?.result ?? null}
-            filename={reference?.filename ?? null}
+            extracted={references[0]?.result ?? null}
+            filename={references[0]?.filename ?? null}
+            documents={references}
             onRemove={removeDocument}
             disabled={isStreaming}
             triggerLabel="Attach a document as reference for Improve"
@@ -513,7 +515,7 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
             vision={chatVision}
             visionModel={chatVisionModel}
             image={image}
-            onPick={handlePick}
+            onPick={(file) => handlePickFiles([file])}
             onRemove={removeImage}
             isPreparing={isPreparing}
             disabled={isStreaming}

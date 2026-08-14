@@ -51,6 +51,9 @@ function sse(...chunks: Array<Record<string, unknown>>) {
 const DOCX = new File(['PK'], 'q3-architecture.docx', {
   type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
 });
+const YAML = new File(['services:\n  - api'], 'config.yaml', {
+  type: 'application/yaml',
+});
 
 /** One `/api/llm/extract-document` response. */
 function extractResponse(over: Record<string, unknown> = {}) {
@@ -124,7 +127,7 @@ describe('AiDock — reference document (#1131)', () => {
       return Promise.resolve({});
     });
     streamSSEMock.mockImplementation(() => sse({ content: 'ok' }, { final: true, done: true }));
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(extractResponse());
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => extractResponse());
   });
 
   afterEach(() => {
@@ -178,6 +181,23 @@ describe('AiDock — reference document (#1131)', () => {
     const body = improveBody();
     expect(body.referenceText).toBe('The service must retry three times.');
     expect(body.instruction).toBe('tighten the intro');
+  });
+
+  it('sends multiple extracted documents with filename boundaries', async () => {
+    renderDock();
+    await openAndSettle();
+    fireEvent.change(screen.getByTestId('ai-dock-doc-file-input'), {
+      target: { files: [DOCX, YAML] },
+    });
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(2));
+    await screen.findByTestId('ai-dock-doc-attachment-card-1');
+
+    fireEvent.click(screen.getByTestId('ai-dock-chip-improve'));
+    await waitFor(() => expect(streamSSEMock).toHaveBeenCalled());
+
+    const referenceText = improveBody().referenceText as string;
+    expect(referenceText).toContain('--- q3-architecture.docx ---');
+    expect(referenceText).toContain('--- config.yaml ---');
   });
 
   it('omits referenceText entirely when nothing is attached', async () => {

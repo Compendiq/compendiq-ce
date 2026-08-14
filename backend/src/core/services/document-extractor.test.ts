@@ -56,6 +56,8 @@ describe('claimedFormatFromFilename', () => {
     ['notes.txt', 'txt'],
     ['legacy.rtf', 'rtf'],
     ['plan.odt', 'odt'],
+    ['config.yml', 'yaml'],
+    ['config.YAML', 'yaml'],
     ['archive.tar.gz.pdf', 'pdf'],
   ])('maps %s to %s', (filename, expected) => {
     expect(claimedFormatFromFilename(filename)).toBe(expected);
@@ -219,7 +221,7 @@ describe('extractDocumentText', () => {
     expect(result.text).not.toContain('Riched20');
   });
 
-  it('reads md and txt through untouched', async () => {
+  it('reads markdown, text and YAML through untouched', async () => {
     const markdown = '# Title\n\n- one\n- two\n';
     const md = await extractDocumentText(Buffer.from(markdown, 'utf8'), 'notes.md');
     expect(md).toEqual({ format: 'md', text: markdown });
@@ -227,6 +229,10 @@ describe('extractDocumentText', () => {
     const plain = 'Line one.\nLine two.\n';
     const txt = await extractDocumentText(Buffer.from(plain, 'utf8'), 'notes.txt');
     expect(txt).toEqual({ format: 'txt', text: plain });
+
+    const yaml = 'services:\n  - api\n';
+    const yml = await extractDocumentText(Buffer.from(yaml, 'utf8'), 'config.yml');
+    expect(yml).toEqual({ format: 'yaml', text: yaml });
   });
 
   it('rejects a text file carrying an embedded NUL', async () => {
