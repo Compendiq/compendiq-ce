@@ -209,6 +209,26 @@ describe('DocumentUploadZone', () => {
       });
     });
 
+    it('warns when multiple individually-small documents exceed the shared prompt budget', () => {
+      const documents = [
+        { filename: 'first.txt', result: result({ text: 'a'.repeat(50_000) }) },
+        { filename: 'second.txt', result: result({ text: 'b'.repeat(50_000) }) },
+      ];
+
+      render(
+        <DocumentUploadZone
+          onPick={onPickMock}
+          isExtracting={false}
+          extracted={null}
+          filename={null}
+          documents={documents}
+          onRemove={vi.fn()}
+        />,
+      );
+
+      expect(screen.getByTestId('document-truncation-warning')).toBeInTheDocument();
+    });
+
     it('shows no truncation warning for a document under the threshold', async () => {
       render(<Harness />);
       pick(SAMPLE.pdf);

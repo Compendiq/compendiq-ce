@@ -2,6 +2,7 @@ import { useCallback, useRef, useState } from 'react';
 import { AlertTriangle, FileText, Loader2, Paperclip, Upload, X } from 'lucide-react';
 import { SUPPORTED_DOCUMENT_FORMATS, type DocumentFormat } from '@compendiq/contracts';
 import type { ExtractDocumentResult } from '../../hooks/use-extract-document';
+import { documentReferenceTextWillTruncate } from '../../hooks/use-attachments';
 import { cn } from '../../lib/cn';
 import { composerRowClass } from './composer-row';
 
@@ -23,9 +24,6 @@ import { composerRowClass } from './composer-row';
  * a PNG dropped on a shared composer target gets tested against a document-only
  * check and silently rejected, which is the bug this shape exists to prevent.
  */
-
-/** Above this the backend truncates the document for the model's context window. */
-const DOCUMENT_TEXT_TRUNCATION_THRESHOLD = 80_000;
 
 interface DocumentFormatMeta {
   /** How the format is named in copy. Uppercase — these read as file types. */
@@ -273,9 +271,7 @@ export function DocumentUploadZone({
   const attachedDocuments = documents ?? (
     extracted && filename ? [{ result: extracted, filename }] : []
   );
-  const isTruncated = attachedDocuments.some(
-    (document) => document.result.text.length > DOCUMENT_TEXT_TRUNCATION_THRESHOLD,
-  );
+  const isTruncated = documentReferenceTextWillTruncate(attachedDocuments);
   const truncationWarning = (
     <p
       className="mt-1 flex items-start gap-1 text-xs text-warning"

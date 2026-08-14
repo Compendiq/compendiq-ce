@@ -53,6 +53,24 @@ export function buildDocumentReferenceText(
   return combined.trim();
 }
 
+/** Whether source text will be cut to fit the shared LLM prompt budget. */
+export function documentReferenceTextWillTruncate(
+  documents: readonly AttachedDocument[],
+): boolean {
+  if (documents.length === 0) return false;
+  if (documents.length === 1) {
+    return documents[0]!.result.text.length > MAX_DOCUMENT_TEXT_FOR_LLM;
+  }
+
+  // Keep this in lockstep with `buildDocumentReferenceText`: every source in a
+  // multi-document request carries a filename boundary before its text.
+  const sourceLength = documents.reduce(
+    (total, document) => total + `\n\n--- ${document.filename} ---\n`.length + document.result.text.length,
+    0,
+  );
+  return sourceLength > MAX_DOCUMENT_TEXT_FOR_LLM;
+}
+
 export interface UseAttachmentsOptions {
   /** Ancestor element that accepts drops — normally the `nm-composer` box. */
   dropTargetRef?: React.RefObject<HTMLElement | null>;
