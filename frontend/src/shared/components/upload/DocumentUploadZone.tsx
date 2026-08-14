@@ -135,14 +135,14 @@ export interface DocumentUploadZoneProps {
    * card. `composer` is a paperclip button plus a compact attachment card,
    * meant to sit inside an `nm-composer` that has `flex-wrap`.
    *
-   * The `composer` variant contributes exactly one flex item: a row holding the
-   * card (or drop hint) and this zone's own trigger together, per
-   * {@link composerRowClass}. `ImageAttachZone` takes the same shape, so two
-   * zones stack as two rows instead of interleaving. That structure is what
-   * makes tab order match reading order (WCAG 2.4.3) — see `composerRowClass`
-   * for why the `order-*` convention it replaced could not.
+   * The `composer` variant contributes one flex item for its card or drop hint.
+   * Its trigger is shown by default, but a host with one shared attachment
+   * picker may hide it. The card rows still stay in document order, so tab
+   * order matches reading order (WCAG 2.4.3).
    */
   variant?: 'dropzone' | 'composer';
+  /** Hide the picker trigger when a host supplies one shared attachment control. */
+  showTrigger?: boolean;
   /** Accessible name and tooltip for the `composer` trigger. */
   triggerLabel?: string;
   /** `composer` only: one line naming what consumes the document. */
@@ -185,6 +185,7 @@ export function DocumentUploadZone({
   onRemove,
   disabled = false,
   variant = 'dropzone',
+  showTrigger = true,
   triggerLabel,
   usageHint,
   isDragOver: isDragOverProp,
@@ -304,12 +305,17 @@ export function DocumentUploadZone({
   // -------------------------------------------------------------------------
 
   if (variant === 'composer') {
+    // The dock can supply one shared Attach control for documents and images.
+    // Do not leave an empty flex item behind until this zone has something to
+    // show; it would consume space in the compact composer for no reason.
+    if (!showTrigger && !isDragOver && attachedDocuments.length === 0) return null;
+
     return (
       <div
         className={composerRowClass(isDragOver || attachedDocuments.length > 0)}
         data-testid={`${testIdPrefix}-row`}
       >
-        {fileInput}
+        {showTrigger && fileInput}
 
         {isDragOver ? (
           <div
@@ -351,7 +357,7 @@ export function DocumentUploadZone({
           </div>
         ) : null}
 
-        <button
+        {showTrigger && <button
           type="button"
           onClick={() => fileInputRef.current?.click()}
           {...dragProps}
@@ -374,7 +380,7 @@ export function DocumentUploadZone({
           {isExtracting
             ? <Loader2 size={16} className="animate-spin" aria-hidden />
             : <Paperclip size={16} aria-hidden />}
-        </button>
+        </button>}
       </div>
     );
   }

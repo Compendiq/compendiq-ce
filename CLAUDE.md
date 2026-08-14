@@ -277,10 +277,12 @@ every drop fires twice.
 The **`vision` tri-state must never collapse to a boolean**: `false` means probed and
 refused, `null` means never established (an inconclusive probe — rate limit, auth hiccup,
 open breaker), and they render different text (`VisionBadge`: "Text-only" vs
-"Unconfirmed"). Only `true` enables attachment. Each zone emits **one row carrying its own
-card and its own trigger** (`composerRowClass`), because `order-*` moves boxes without
-moving the tab sequence (WCAG 2.4.3) — don't reintroduce `order-*` anywhere in a composer;
-`expectComposerFocusOrder` fails on it.
+"Unconfirmed"). Only `true` enables image attachment. The dock's single **Attach document
+or image** control stays available for documents in every state; its shared router refuses
+an image with the verdict-specific reason when vision is not `true`. Attachment cards remain
+their own DOM rows (`composerRowClass`), and the one shared trigger follows those rows, so
+focus follows what the eye reads (WCAG 2.4.3). Don't reintroduce `order-*` anywhere in a
+composer; `expectComposerFocusOrder` fails on it.
 
 **A wrong verdict is correctable, and `probe_error` is admin-only** (#1184). Settings → AI Models
 carries a **Re-check** control on the chat row — `POST /admin/llm-usecases/chat/reprobe-vision`,

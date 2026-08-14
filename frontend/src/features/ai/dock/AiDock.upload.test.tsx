@@ -107,7 +107,7 @@ async function selectAction(action: string) {
 }
 
 async function attach(file = DOCX) {
-  fireEvent.change(screen.getByTestId('ai-dock-doc-file-input'), { target: { files: [file] } });
+  fireEvent.change(screen.getByTestId('ai-dock-attach-file-input'), { target: { files: [file] } });
   return screen.findByTestId('ai-dock-doc-attachment-card');
 }
 
@@ -140,13 +140,13 @@ describe('AiDock — reference document (#1131)', () => {
     useAiDockStore.setState({ open: false });
   });
 
-  it('offers the attach control inside the composer, not as a standing panel', async () => {
+  it('offers one combined attach control inside the composer, not as a standing panel', async () => {
     renderDock();
     await openAndSettle();
 
-    const trigger = screen.getByTestId('ai-dock-doc-attach-button');
+    const trigger = screen.getByTestId('ai-dock-attach-button');
     expect(trigger).toBeInTheDocument();
-    expect(trigger).toHaveAccessibleName('Attach a document for Q&A or a rewrite skill');
+    expect(trigger).toHaveAccessibleName('Attach a document or image');
     // Nothing occupies the column until a document is actually attached.
     expect(screen.queryByTestId('ai-dock-doc-attachment-card')).not.toBeInTheDocument();
     // The trigger shares the prompt box with the textarea and the send button.
@@ -192,7 +192,7 @@ describe('AiDock — reference document (#1131)', () => {
   it('sends multiple extracted documents with filename boundaries', async () => {
     renderDock();
     await openAndSettle();
-    fireEvent.change(screen.getByTestId('ai-dock-doc-file-input'), {
+    fireEvent.change(screen.getByTestId('ai-dock-attach-file-input'), {
       target: { files: [DOCX, YAML] },
     });
     await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(2));
@@ -269,7 +269,7 @@ describe('AiDock — reference document (#1131)', () => {
     await openAndSettle();
 
     fireEvent.change(screen.getByTestId('ai-dock-input'), { target: { value: 'what changed?' } });
-    fireEvent.change(screen.getByTestId('ai-dock-doc-file-input'), { target: { files: [DOCX] } });
+    fireEvent.change(screen.getByTestId('ai-dock-attach-file-input'), { target: { files: [DOCX] } });
 
     // Firing now would send without the reference that is still being
     // extracted, so the shared Send control waits for intake to finish.
@@ -298,7 +298,7 @@ describe('AiDock — reference document (#1131)', () => {
     renderDock();
     await openAndSettle();
 
-    fireEvent.change(screen.getByTestId('ai-dock-doc-file-input'), {
+    fireEvent.change(screen.getByTestId('ai-dock-attach-file-input'), {
       target: { files: [new File(['x'], 'diagram.png', { type: 'image/png' })] },
     });
 
@@ -318,7 +318,7 @@ describe('AiDock — reference document (#1131)', () => {
     renderDock();
     await openAndSettle();
 
-    fireEvent.change(screen.getByTestId('ai-dock-doc-file-input'), {
+    fireEvent.change(screen.getByTestId('ai-dock-attach-file-input'), {
       target: { files: [new File(['x'], 'archive.zip', { type: 'application/zip' })] },
     });
 
@@ -345,7 +345,7 @@ describe('AiDock — reference document (#1131)', () => {
 
     renderDock();
     await openAndSettle();
-    fireEvent.change(screen.getByTestId('ai-dock-doc-file-input'), { target: { files: [DOCX] } });
+    fireEvent.change(screen.getByTestId('ai-dock-attach-file-input'), { target: { files: [DOCX] } });
 
     await waitFor(() => {
       expect(toastErrorMock).toHaveBeenCalledWith('DOCX contains no extractable text');

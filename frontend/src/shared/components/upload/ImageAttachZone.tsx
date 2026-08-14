@@ -10,10 +10,11 @@ import { composerRowClass } from './composer-row';
  * #1154: the image half of the composer's attach affordance.
  *
  * Purely presentational — picking, downscaling and staging all live in
- * `useAttachments`. The trigger is always rendered, even when the model cannot
- * accept images, so the capability is discoverable: hiding it means a user on a
- * text-only model never learns image input exists or that switching models
- * unlocks it. It is disabled with a reason instead.
+ * `useAttachments`. Its standalone trigger is rendered even when the model
+ * cannot accept images, so the capability is discoverable: hiding it means a
+ * user on a text-only model never learns image input exists or that switching
+ * models unlocks it. A host with one shared attachment picker may hide that
+ * local trigger; the shared router then reports the same reason on an image.
  *
  * **Not yet a visual sibling of `DocumentUploadZone`.** The two zones sit in the
  * same composer but differ in border, radius and card treatment, because each
@@ -22,11 +23,9 @@ import { composerRowClass } from './composer-row';
  * full card gradient into a 22px control. Reconciling the rest is a design
  * decision about both components at once, not a fix — deliberately left.
  *
- * **Composer layout.** This contributes exactly one flex item: a row holding the
- * card and this zone's own trigger together, per {@link composerRowClass}. That
- * shape is what makes tab order match reading order (WCAG 2.4.3) — see that
- * function for why the earlier `order-*` convention could not, and why no
- * `order-*` may come back to a composer.
+ * **Composer layout.** This contributes one flex item for its card, and also
+ * its own trigger unless a host provides a shared picker. Card and trigger
+ * markup stays in reading order, so no `order-*` may come back to a composer.
  */
 
 /** `.png,.jpg,…` plus MIME types, so both native pickers behave. */
@@ -105,21 +104,27 @@ export interface ImageAttachZoneProps {
    * the same hint for the same asymmetry.
    */
   usageHint?: string;
+  /** Hide the picker trigger when a host supplies one shared attachment control. */
+  showTrigger?: boolean;
   testIdPrefix?: string;
 }
 
 export function ImageAttachZone({
   vision, visionModel, image, onPick, onRemove, isPreparing,
-  disabled = false, triggerLabel, usageHint, testIdPrefix = 'image-attach',
+  disabled = false, triggerLabel, usageHint, showTrigger = true, testIdPrefix = 'image-attach',
 }: ImageAttachZoneProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const reason = imageDisabledReason(vision, visionModel);
   const label = triggerLabel ?? 'Attach an image';
   const blocked = disabled || isPreparing || reason !== undefined;
 
+  // The dock keeps this presentational card but owns one picker for every
+  // attachment type. No card and no local trigger means no DOM contribution.
+  if (!showTrigger && !image) return null;
+
   return (
     <div className={composerRowClass(image !== null)} data-testid={`${testIdPrefix}-row`}>
-      <input
+      {showTrigger && <input
         ref={inputRef}
         type="file"
         accept={ACCEPT}
@@ -130,7 +135,7 @@ export function ImageAttachZone({
           e.target.value = '';   // re-selecting the same file must re-fire onChange
         }}
         data-testid={`${testIdPrefix}-file-input`}
-      />
+      />}
 
       {image && (
         <div
@@ -180,7 +185,7 @@ export function ImageAttachZone({
         </div>
       )}
 
-      <button
+      {showTrigger && <button
         type="button"
         onClick={() => inputRef.current?.click()}
         disabled={blocked}
@@ -198,7 +203,7 @@ export function ImageAttachZone({
         data-testid={`${testIdPrefix}-trigger`}
       >
         {isPreparing ? <Loader2 size={16} className="animate-spin" /> : <ImageIcon size={16} />}
-      </button>
+      </button>}
     </div>
   );
 }
