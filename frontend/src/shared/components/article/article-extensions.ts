@@ -1,14 +1,16 @@
-import { Node, mergeAttributes, type Editor } from '@tiptap/core';
+import { Extension, Node, mergeAttributes, type Editor } from '@tiptap/core';
 import { Table } from '@tiptap/extension-table';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import { ReactNodeViewRenderer } from '@tiptap/react';
+import { toast } from 'sonner';
 import { DrawioDiagramNodeView } from './DrawioDiagramNodeView';
 import { StatusBadgeView } from './StatusBadgeView';
 import { AttachmentsMacroView } from './AttachmentsMacroView';
 import { ChildrenMacroView } from './ChildrenMacroView';
 import { FigureIndexView } from './FigureIndexView';
 import { TableIndexView } from './TableIndexView';
+import { createTableSelectionPerimeterPlugin } from './table-cell-selection';
 
 const SUMMARY_INTERACTIVE_DESCENDANT =
   'a[href], button, input, select, textarea, [role="button"], [role="link"], [contenteditable="true"]';
@@ -1287,6 +1289,24 @@ export const TableCaption = Node.create({
   group: 'block',
   content: 'inline*',
 
+  addAttributes() {
+    return {
+      align: {
+        default: 'left',
+        parseHTML: (element) => element.getAttribute('data-align') || element.style.textAlign || 'left',
+        renderHTML: (attributes) => {
+          if (!attributes.align || attributes.align === 'left') {
+            return { 'data-align': 'left' };
+          }
+          return {
+            'data-align': attributes.align,
+            style: `text-align: ${attributes.align}`,
+          };
+        },
+      },
+    };
+  },
+
   parseHTML() {
     return [
       { tag: 'caption' },
@@ -1298,7 +1318,7 @@ export const TableCaption = Node.create({
     return [
       'div',
       mergeAttributes(HTMLAttributes, {
-        class: 'table-caption text-sm text-muted-foreground text-center mt-1 italic',
+        class: 'table-caption text-sm text-muted-foreground text-left mt-1.5 mb-2 italic',
       }),
       0,
     ];
@@ -1367,6 +1387,67 @@ export const ExtendedTable = Table.extend({
           return { 'data-layout': attributes['data-layout'] };
         },
       },
+    };
+  },
+
+  addProseMirrorPlugins() {
+    return [
+      ...(this.parent?.() || []),
+      createTableSelectionPerimeterPlugin(),
+    ];
+  },
+});
+
+declare module '@tiptap/core' {
+  interface Commands<ReturnType> {
+    blockShortcuts: {
+      duplicateBlock: () => ReturnType;
+    };
+  }
+}
+
+/**
+ * BlockShortcutsExtension — Global keyboard shortcuts and commands for block-level operations.
+ * - Mod-d (Cmd+D / Ctrl+D): Duplicate the active block containing the selection.
+ */
+export const BlockShortcutsExtension = Extension.create({
+  name: 'blockShortcuts',
+
+  addCommands() {
+    return {
+      duplicateBlock:
+        () =>
+        ({ tr, state, dispatch }) => {
+          const { selection } = state;
+          const $from = selection.$from;
+          if ($from.depth < 1 && state.doc.childCount === 0) return false;
+
+          const depth = $from.depth >= 1 ? 1 : 0;
+          const node = depth === 0 ? state.doc.firstChild : $from.node(depth);
+          if (!node) return false;
+
+          const insertPos = depth === 0 ? (state.doc.firstChild?.nodeSize ?? 0) : $from.after(depth);
+          const label = node.type.name === 'table' ? 'Table' : (node.type.name === 'heading' ? `Heading ${node.attrs.level || ''}` : 'Block');
+
+          if (dispatch) {
+            tr.insert(insertPos, node);
+            toast.success(`${label} duplicated`, {
+              action: {
+                label: 'Undo',
+                onClick: () => {
+                  if (!this.editor.isDestroyed) this.editor.commands.undo();
+                },
+              },
+            });
+          }
+          return true;
+        },
+    };
+  },
+
+  addKeyboardShortcuts() {
+    return {
+      'Mod-d': () => this.editor.commands.duplicateBlock(),
     };
   },
 });

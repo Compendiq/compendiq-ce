@@ -80,9 +80,9 @@ export function selectionShouldShow(editor: EditorType, aiOpen: boolean): boolea
   if (aiOpen) return true;
   if (!editor.isEditable) return false;
   if (editor.state.selection.empty) return false;
-  // Skip code blocks — formatting marks don't apply and improving code inline
-  // isn't the intent here.
-  if (editor.isActive('codeBlock')) return false;
+  // Skip tables and code blocks — dedicated table context toolbar and format
+  // controls handle tables, preventing competing Floating UI layout calculations.
+  if (editor.isActive('table') || editor.isActive('codeBlock')) return false;
   return true;
 }
 

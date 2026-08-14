@@ -185,45 +185,49 @@ export function EditorFormatBar({
       ref={rootRef}
       role="toolbar"
       aria-label={ariaLabel}
-      className={cn('flex flex-wrap items-center gap-0.5 p-1', className)}
+      className={cn('flex flex-wrap items-center gap-1 p-1', className)}
       onKeyDown={roving.onKeyDown}
       onFocus={roving.onFocus}
     >
-      {MARKS.map(({ key, title, Icon, run }, i) => (
-        <MenuButton
-          key={key}
-          onClick={() => {
-            if (!getRange) { run(editor, null); return; }
-            const range = getRange();
-            if (range) run(editor, range);
-          }}
-          active={activeState.marks[i]}
-          title={title}
-        >
-          <Icon size={15} />
-        </MenuButton>
-      ))}
+      <div className="flex items-center gap-0.5" role="group" aria-label="Text styling">
+        {MARKS.map(({ key, title, Icon, run }, i) => (
+          <MenuButton
+            key={key}
+            onClick={() => {
+              if (!getRange) { run(editor, null); return; }
+              const range = getRange();
+              if (range) run(editor, range);
+            }}
+            active={activeState.marks[i]}
+            title={title}
+          >
+            <Icon size={15} />
+          </MenuButton>
+        ))}
+      </div>
 
-      <div role="separator" aria-orientation="vertical" className="mx-0.5 h-5 w-px bg-border" />
+      <div role="separator" aria-orientation="vertical" className="mx-0.5 h-4 w-px bg-border/80" />
 
-      {ALIGNMENTS.map(({ alignment, title, Icon }, i) => (
-        <MenuButton
-          key={alignment}
-          onClick={() => {
-            const range = getRange ? getRange() : null;
-            if (scoped && !range) return;
-            setAlign(editor, range, alignment);
-          }}
-          active={activeState.aligns[i]}
-          title={title}
-        >
-          <Icon size={15} />
-        </MenuButton>
-      ))}
+      <div className="flex items-center gap-0.5" role="group" aria-label="Text alignment">
+        {ALIGNMENTS.map(({ alignment, title, Icon }, i) => (
+          <MenuButton
+            key={alignment}
+            onClick={() => {
+              const range = getRange ? getRange() : null;
+              if (scoped && !range) return;
+              setAlign(editor, range, alignment);
+            }}
+            active={activeState.aligns[i]}
+            title={title}
+          >
+            <Icon size={15} />
+          </MenuButton>
+        ))}
+      </div>
 
       {children && (
         <>
-          <div role="separator" aria-orientation="vertical" className="mx-0.5 h-5 w-px bg-border" />
+          <div role="separator" aria-orientation="vertical" className="mx-0.5 h-4 w-px bg-border/80" />
           {children}
         </>
       )}

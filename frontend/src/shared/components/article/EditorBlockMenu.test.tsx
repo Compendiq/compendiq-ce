@@ -534,7 +534,7 @@ describe('EditorBlockMenu — atomic and macro blocks', () => {
 });
 
 describe('EditorBlockMenu — table blocks', () => {
-  it('offers the table toolbar from the grab-handle context menu', async () => {
+  it('offers table configuration from the grab-handle context menu', async () => {
     await mountMenu(
       '<table><tbody><tr><th>Header</th><th>Value</th></tr><tr><td>A</td><td>B</td></tr></tbody></table>',
     );
@@ -544,8 +544,84 @@ describe('EditorBlockMenu — table blocks', () => {
       expect(screen.getByRole('toolbar', { name: 'Table editing controls' })).toBeInTheDocument();
     });
     expect(screen.queryByRole('toolbar', { name: 'Block formatting' })).toBeNull();
-    expect(screen.getByTitle('Add row below')).toBeInTheDocument();
-    expect(screen.getByTestId('toggle-table-expand')).toHaveTextContent('Expand');
+    expect(screen.getByTestId('toggle-table-expand')).toHaveAttribute('title', 'Expand table to page width');
+    expect(screen.getByTestId('table-toggle-header-row')).toBeInTheDocument();
+    expect(screen.getByTestId('table-toggle-header-column')).toBeInTheDocument();
+  });
+
+  it('toggles header row switch state in the context menu when clicked', async () => {
+    await mountMenu(
+      '<table><tbody><tr><th>Header</th><th>Value</th></tr><tr><td>A</td><td>B</td></tr></tbody></table>',
+    );
+
+    const rowSwitch = screen.getByTestId('table-toggle-header-row');
+    expect(rowSwitch).toHaveAttribute('data-state', 'checked');
+
+    fireEvent.click(rowSwitch);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('table-toggle-header-row')).toHaveAttribute('data-state', 'unchecked');
+    });
+
+    fireEvent.click(screen.getByTestId('table-toggle-header-row'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('table-toggle-header-row')).toHaveAttribute('data-state', 'checked');
+    });
+  });
+
+  it('toggles header column switch state in the context menu when clicked', async () => {
+    await mountMenu(
+      '<table><tbody><tr><td>A</td><td>B</td></tr><tr><td>C</td><td>D</td></tr></tbody></table>',
+    );
+
+    const colSwitch = screen.getByTestId('table-toggle-header-column');
+    expect(colSwitch).toHaveAttribute('data-state', 'unchecked');
+
+    fireEvent.click(colSwitch);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('table-toggle-header-column')).toHaveAttribute('data-state', 'checked');
+    });
+  });
+
+  it('keeps header row active when toggling header column off from a state where both are active', async () => {
+    await mountMenu(
+      '<table><tbody><tr><th>Header</th><th>Value</th></tr><tr><th>Row 1</th><td>Data</td></tr></tbody></table>',
+    );
+
+    const rowSwitch = screen.getByTestId('table-toggle-header-row');
+    const colSwitch = screen.getByTestId('table-toggle-header-column');
+
+    expect(rowSwitch).toHaveAttribute('data-state', 'checked');
+    expect(colSwitch).toHaveAttribute('data-state', 'checked');
+
+    // Toggle column OFF
+    fireEvent.click(colSwitch);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('table-toggle-header-row')).toHaveAttribute('data-state', 'checked');
+      expect(screen.getByTestId('table-toggle-header-column')).toHaveAttribute('data-state', 'unchecked');
+    });
+
+    // Toggle column back ON
+    fireEvent.click(colSwitch);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('table-toggle-header-row')).toHaveAttribute('data-state', 'checked');
+      expect(screen.getByTestId('table-toggle-header-column')).toHaveAttribute('data-state', 'checked');
+    });
+  });
+});
+
+describe('EditorBlockMenu — Duplicate', () => {
+  it('duplicates the target block directly below it', async () => {
+    const { editor, onClose } = await mountMenu('<p>First</p><p>Target</p><p>Last</p>', 1);
+
+    fireEvent.click(screen.getByTestId('block-menu-duplicate'));
+
+    expect(editor.getHTML()).toBe('<p>First</p><p>Target</p><p>Target</p><p>Last</p>');
+    expect(onClose).toHaveBeenCalled();
   });
 });
 

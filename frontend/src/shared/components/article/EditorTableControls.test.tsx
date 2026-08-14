@@ -1,5 +1,6 @@
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { describe, it, expect } from 'vitest';
+import { CellSelection } from '@tiptap/pm/tables';
 import { Editor } from './Editor';
 import type { Editor as EditorType } from '@tiptap/react';
 
@@ -71,7 +72,7 @@ describe('EditorTableControls & Table Expansion', () => {
     expect(editor.getAttributes('table')['data-layout']).toBe('full-width');
   });
 
-  it('renders labeled table groups when cursor is inside a table', async () => {
+  it('renders labeled table groups and icon-only buttons when cursor is inside a table', async () => {
     const editor = await renderEditorWithTable();
     focusFirstTableCell(editor);
 
@@ -91,6 +92,11 @@ describe('EditorTableControls & Table Expansion', () => {
     expect(screen.getByTitle('Add column before')).toBeInTheDocument();
     expect(screen.getByTitle('Add column after')).toBeInTheDocument();
     expect(screen.getByTitle('Delete column')).toBeInTheDocument();
+
+    expect(screen.getByTestId('table-toggle-header-row')).toBeInTheDocument();
+    expect(screen.getByTestId('table-toggle-header-column')).toBeInTheDocument();
+    expect(screen.getByTestId('table-add-caption')).toBeInTheDocument();
+    expect(screen.getByTestId('table-delete')).toBeInTheDocument();
   });
 
   it('toggles table expansion to page size (data-layout="full-width")', async () => {
@@ -102,7 +108,7 @@ describe('EditorTableControls & Table Expansion', () => {
     });
 
     const toggleBtn = screen.getByTestId('toggle-table-expand');
-    expect(toggleBtn).toHaveTextContent('Expand');
+    expect(toggleBtn).toHaveAttribute('title', 'Expand table to page width');
     expect(editor.getAttributes('table')['data-layout']).toBe('default');
 
     // Click to expand table
@@ -114,7 +120,7 @@ describe('EditorTableControls & Table Expansion', () => {
       expect(editor.view.dom.querySelector('.tableWrapper')).toHaveAttribute('data-layout', 'full-width');
     });
     expect(editor.getHTML()).toContain('data-layout="full-width"');
-    expect(toggleBtn).toHaveTextContent('Page width');
+    expect(toggleBtn).toHaveAttribute('title', 'Return table to standard width');
 
     // Click again to return to default width
     fireEvent.click(toggleBtn);
@@ -123,25 +129,22 @@ describe('EditorTableControls & Table Expansion', () => {
       expect(editor.view.dom.querySelector('table')).not.toHaveAttribute('data-layout', 'full-width');
       expect(editor.view.dom.querySelector('.tableWrapper')).not.toHaveAttribute('data-layout', 'full-width');
     });
-    expect(toggleBtn).toHaveTextContent('Expand');
+    expect(toggleBtn).toHaveAttribute('title', 'Expand table to page width');
   });
 
-  it('keeps secondary table actions behind the labeled More menu', async () => {
+  it('inserts table caption directly below the table node', async () => {
     const editor = await renderEditorWithTable();
     focusFirstTableCell(editor);
 
     await waitFor(() => {
-      expect(screen.getByTestId('table-more-trigger')).toBeInTheDocument();
+      expect(screen.getByTestId('table-add-caption')).toBeInTheDocument();
     });
 
-    expect(screen.queryByTestId('table-toggle-header-row')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByTestId('table-more-trigger'));
+    fireEvent.click(screen.getByTestId('table-add-caption'));
 
-    expect(screen.getByText('More table actions')).toBeInTheDocument();
-    expect(screen.getByTestId('table-toggle-header-row')).toBeInTheDocument();
-    expect(screen.getByTestId('table-toggle-header-column')).toBeInTheDocument();
-    expect(screen.getByTestId('table-add-caption')).toBeInTheDocument();
-    expect(screen.getByTestId('table-delete')).toBeInTheDocument();
+    // Verify doc structure: table directly followed by tableCaption
+    expect(editor.state.doc.child(0).type.name).toBe('table');
+    expect(editor.state.doc.child(1).type.name).toBe('tableCaption');
   });
 
   it('adds a column when clicking the labeled column action', async () => {
@@ -178,5 +181,71 @@ describe('EditorTableControls & Table Expansion', () => {
 
     const updatedRows = editor.state.doc.firstChild?.childCount;
     expect(updatedRows).toBe(3);
+  });
+
+  it('deletes multiple selected rows in a single batch action', async () => {
+    const THREE_BY_THREE_HTML = [
+      '<table><tbody>',
+      '<tr><th>H1</th><th>H2</th><th>H3</th></tr>',
+      '<tr><td>R2C1</td><td>R2C2</td><td>R2C3</td></tr>',
+      '<tr><td>R3C1</td><td>R3C2</td><td>R3C3</td></tr>',
+      '</tbody></table>',
+    ].join('');
+    const editor = await renderEditorWithContent(THREE_BY_THREE_HTML);
+    expect(editor.state.doc.firstChild?.childCount).toBe(3);
+
+    // Select row 2 and row 3 cells
+    const doc = editor.state.doc;
+    const tableNode = doc.firstChild!;
+    const r2c1Pos = 1 + tableNode.child(0).nodeSize + 1; // start of row 2 cell 1
+    const r3c3Pos = 1 + tableNode.child(0).nodeSize + tableNode.child(1).nodeSize + tableNode.child(2).child(0).nodeSize + tableNode.child(2).child(1).nodeSize + 1;
+
+    const $anchor = doc.resolve(r2c1Pos);
+    const $head = doc.resolve(r3c3Pos);
+    editor.view.dispatch(editor.state.tr.setSelection(new CellSelection($anchor, $head)));
+
+    await waitFor(() => {
+      expect(screen.getByTitle('Delete row')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTitle('Delete row'));
+
+    // Verify 2 rows were deleted, leaving 1 row
+    await waitFor(() => {
+      expect(editor.state.doc.firstChild?.childCount).toBe(1);
+    });
+  });
+
+  it('deletes multiple selected columns in a single batch action', async () => {
+    const THREE_BY_THREE_HTML = [
+      '<table><tbody>',
+      '<tr><th>H1</th><th>H2</th><th>H3</th></tr>',
+      '<tr><td>R2C1</td><td>R2C2</td><td>R2C3</td></tr>',
+      '<tr><td>R3C1</td><td>R3C2</td><td>R3C3</td></tr>',
+      '</tbody></table>',
+    ].join('');
+    const editor = await renderEditorWithContent(THREE_BY_THREE_HTML);
+    expect(editor.state.doc.firstChild?.firstChild?.childCount).toBe(3);
+
+    // Select column 2 and column 3
+    const doc = editor.state.doc;
+    const tableNode = doc.firstChild!;
+    const c2Pos = 1 + tableNode.child(0).child(0).nodeSize + 1;
+    const c3Pos = 1 + tableNode.child(0).child(0).nodeSize + tableNode.child(0).child(1).nodeSize + 1;
+
+    const $anchor = doc.resolve(c2Pos);
+    const $head = doc.resolve(c3Pos);
+    editor.view.dispatch(editor.state.tr.setSelection(new CellSelection($anchor, $head)));
+
+    await waitFor(() => {
+      expect(screen.getByTitle('Delete column')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTitle('Delete column'));
+
+    // Verify 2 columns were deleted, leaving 1 column
+    await waitFor(() => {
+      expect(editor.state.doc.firstChild?.firstChild?.childCount).toBe(1);
+    });
   });
 });

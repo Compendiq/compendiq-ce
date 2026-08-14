@@ -4,7 +4,7 @@ import { resolve } from 'path';
 import { Editor } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import { Image } from '@tiptap/extension-image';
-import { Details, DetailsSummary, Panel, DrawioDiagram, ConfluenceToc, ConfluenceStatus, ConfluenceChildren, ConfluenceAttachments, ConfluenceLayout, ConfluenceLayoutSection, ConfluenceLayoutCell, ConfluenceSection, ConfluenceColumn, UnknownMacro, LAYOUT_PRESETS, Figure, Figcaption, TableCaption, FigureIndex, TableIndex } from './article-extensions';
+import { Details, DetailsSummary, Panel, DrawioDiagram, ConfluenceToc, ConfluenceStatus, ConfluenceChildren, ConfluenceAttachments, ConfluenceLayout, ConfluenceLayoutSection, ConfluenceLayoutCell, ConfluenceSection, ConfluenceColumn, UnknownMacro, LAYOUT_PRESETS, Figure, Figcaption, TableCaption, FigureIndex, TableIndex, BlockShortcutsExtension } from './article-extensions';
 
 // Helper to extract parseHTML rules from a TipTap extension config
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -919,3 +919,20 @@ describe('TableIndex node', () => {
     editor.destroy();
   });
 });
+
+describe('BlockShortcutsExtension', () => {
+  it('duplicates the active block via duplicateBlock command', () => {
+    const editor = new Editor({
+      extensions: [StarterKit, BlockShortcutsExtension],
+      content: '<p>First block</p><p>Second block</p>',
+    });
+
+    editor.commands.setTextSelection(3);
+    const result = editor.commands.duplicateBlock();
+    expect(result).toBe(true);
+
+    expect(editor.getHTML()).toBe('<p>First block</p><p>First block</p><p>Second block</p>');
+    editor.destroy();
+  });
+});
+

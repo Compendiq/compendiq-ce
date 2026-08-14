@@ -16,6 +16,7 @@ import {
 import { LAYOUT_PRESETS } from './article-extensions';
 import { ToolbarButton, ToolbarSeparator, ToolbarGroup, LayoutPreview } from './editor-toolbar-primitives';
 import { TOOLBAR_ITEM_ATTR, useToolbarRovingFocus } from './use-toolbar-roving-focus';
+import { insertTableCaption } from './table-cell-selection';
 import { cn } from '../../lib/cn';
 
 /**
@@ -415,7 +416,7 @@ function InsertMenu({ editor }: { editor: EditorType }) {
                   Caption for selected image
                 </DropdownMenu.Item>
                 <DropdownMenu.Item
-                  onSelect={() => editor.chain().focus().insertContent({ type: 'tableCaption' }).run()}
+                  onSelect={() => insertTableCaption(editor)}
                   className={MENU_ITEM}
                 >
                   <Captions size={15} className="shrink-0" />

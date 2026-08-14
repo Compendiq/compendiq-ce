@@ -121,7 +121,7 @@ export function ArticleViewer({
         },
       }),
       TextAlign.configure({
-        types: ['heading', 'paragraph', 'blockquote'],
+        types: ['heading', 'paragraph', 'blockquote', 'tableCaption'],
         alignments: ['left', 'center', 'right', 'justify'],
       }),
       ExtendedTable.configure({ resizable: false }),

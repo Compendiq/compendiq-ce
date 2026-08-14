@@ -185,7 +185,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   --color-foreground: #eceef2;          /* near-white, 16.9:1 on bg */
   --color-card: #16181d;                /* content pane, one value step up */
   --color-card-foreground: #eceef2;
-  --color-card-elevated: #1e2027;       /* popovers, dialogs, raised panes */
+  --color-card-elevated: #222630;       /* popovers, dialogs, raised panes */
   /* Teal — the single brand AND interaction accent: brand mark, primary
      buttons, links, active nav, focus ring. One hue carries both identity and
      every actionable affordance, so "is this clickable?" never depends on
@@ -2394,26 +2394,15 @@ pre:focus-within .code-copy-btn,
   outline: 1px solid var(--color-border-interactive);
 }
 
-/* Notion-style full-width table expansion */
+/* Full-width table expansion — fills 100% of the article content width, aligned with all other blocks */
 .tiptap table[data-layout="full-width"],
 .article-viewer .tiptap table[data-layout="full-width"] {
   display: table !important;
   width: 100% !important;
-  max-width: none !important;
+  max-width: 100% !important;
   margin-left: 0 !important;
   margin-right: 0 !important;
   table-layout: fixed !important;
-}
-
-/*
- * The editor's contenteditable has a 2.5rem inline gutter. A table's
- * `data-layout` attribute lives on the table itself (TipTap's `.tableWrapper`
- * is only a scrolling shell), so 100% alone still stops at the prose column.
- * Break the expanded table through both gutters so its cells use the full
- * article pane; the wrapper keeps narrow screens horizontally scrollable.
- */
-.tiptap:not([contenteditable="false"]) {
-  --editor-inline-padding: 2.5rem;
 }
 
 .tiptap:not([contenteditable="false"]) table:not([data-layout="full-width"]) {
@@ -2423,20 +2412,31 @@ pre:focus-within .code-copy-btn,
 
 .tiptap:not([contenteditable="false"]) table[data-layout="full-width"] {
   width: 100% !important;
+  max-width: 100% !important;
   margin-left: 0 !important;
   margin-right: 0 !important;
 }
 
-.tiptap:not([contenteditable="false"]) .tableWrapper[data-layout="full-width"] {
-  width: calc(100% + var(--editor-inline-padding) + var(--editor-inline-padding)) !important;
-  margin-left: calc(0px - var(--editor-inline-padding)) !important;
-  margin-right: calc(0px - var(--editor-inline-padding)) !important;
+.tiptap:not([contenteditable="false"]) .tableWrapper[data-layout="full-width"],
+.tiptap:not([contenteditable="false"]) .tableWrapper:has(> table[data-layout="full-width"]),
+.article-viewer .tiptap .tableWrapper[data-layout="full-width"],
+.article-viewer .tiptap .tableWrapper:has(> table[data-layout="full-width"]),
+.article-viewer .tableWrapper[data-layout="full-width"],
+.article-viewer .tableWrapper:has(> table[data-layout="full-width"]) {
+  width: 100% !important;
+  max-width: 100% !important;
+  margin-left: 0 !important;
+  margin-right: 0 !important;
 }
 
 .tiptap:not([contenteditable="false"]) .tableWrapper[data-layout="full-width"] > table,
-.article-viewer .tiptap .tableWrapper[data-layout="full-width"] {
+.tiptap:not([contenteditable="false"]) .tableWrapper:has(> table[data-layout="full-width"]) > table,
+.article-viewer .tiptap .tableWrapper[data-layout="full-width"] > table,
+.article-viewer .tiptap .tableWrapper:has(> table[data-layout="full-width"]) > table,
+.article-viewer .tableWrapper[data-layout="full-width"] > table,
+.article-viewer .tableWrapper:has(> table[data-layout="full-width"]) > table {
   width: 100% !important;
-  max-width: none !important;
+  max-width: 100% !important;
 }
 
 .tiptap:not([contenteditable="false"]) table[data-layout="full-width"] td,
@@ -2466,15 +2466,61 @@ pre:focus-within .code-copy-btn,
 
 .tiptap td,
 .tiptap th {
-  border: 1px solid var(--glass-border);
-  padding: 0.5rem;
-  min-width: 100px;
+  border: 1px solid var(--color-border);
+  padding: 0.35rem 0.625rem;
+  min-width: 75px;
   position: relative;
+  font-size: 0.875rem;
+  line-height: 1.45;
+}
+
+.tiptap td > p,
+.tiptap th > p {
+  margin: 0;
 }
 
 .tiptap th {
-  background: oklch(from var(--color-muted) l c h / 0.3);
-  font-weight: 600;
+  background: oklch(from var(--color-muted) l c h / 0.4);
+  font-weight: 500;
+  color: var(--color-muted-foreground);
+}
+
+/* ProseMirror multi-cell selection highlight (#1179) — Notion-style perimeter border */
+.tiptap td.selectedCell,
+.tiptap th.selectedCell,
+.tiptap .selectedCell {
+  background-color: color-mix(in srgb, var(--color-primary) 14%, transparent) !important;
+  position: relative !important;
+}
+
+.tiptap td.selectedCell::after,
+.tiptap th.selectedCell::after,
+.tiptap .selectedCell::after {
+  content: "" !important;
+  position: absolute !important;
+  inset: -1px !important;
+  box-sizing: border-box !important;
+  pointer-events: none !important;
+  z-index: 10 !important;
+  border-width: 0 !important;
+  border-style: solid !important;
+  border-color: var(--color-primary) !important;
+}
+
+.tiptap .selectedCell.selectedCell-top::after {
+  border-top-width: 2px !important;
+}
+
+.tiptap .selectedCell.selectedCell-bottom::after {
+  border-bottom-width: 2px !important;
+}
+
+.tiptap .selectedCell.selectedCell-left::after {
+  border-left-width: 2px !important;
+}
+
+.tiptap .selectedCell.selectedCell-right::after {
+  border-right-width: 2px !important;
 }
 
 /* Column resize handle (#12) */
@@ -2578,14 +2624,6 @@ pre:focus-within .code-copy-btn,
   background-color: oklch(from var(--color-primary) l c h / 0.05);
 }
 
-/* #1179 — the block context menu's floating surface. `nm-card-elevated` gives
-   it the elevated pane gradient and neumorphic shadow; the edge is upgraded
-   from the quiet hairline to the measured 3:1 interactive border because this
-   panel floats over arbitrary document content (WCAG 1.4.11). Unlayered, so it
-   out-ranks the `@utility` that sets the base border colour. */
-.editor-block-menu {
-  border-color: var(--color-border-interactive);
-}
 
 /* ProseMirror drop cursor — the blue line shown during drag */
 .ProseMirror-dropcursor {
@@ -2989,7 +3027,22 @@ pre:focus-within .code-copy-btn,
   font-weight: 600;
 }
 
-.ProseMirror .table-caption { counter-increment: table-counter; }
+.ProseMirror .table-caption {
+  counter-increment: table-counter;
+  display: block;
+  margin-top: 0.5rem;
+  margin-bottom: 0.75rem;
+  text-align: left;
+  font-size: 0.875rem;
+  font-style: italic;
+  color: var(--color-muted-foreground);
+}
+.ProseMirror .table-caption[data-align="center"] {
+  text-align: center;
+}
+.ProseMirror .table-caption[data-align="right"] {
+  text-align: right;
+}
 .ProseMirror .table-caption::before {
   content: "Table " counter(table-counter) ": ";
   font-weight: 600;
@@ -3004,10 +3057,35 @@ pre:focus-within .code-copy-btn,
   font-weight: 600;
 }
 
-.article-viewer .table-caption { counter-increment: table-counter; }
+.article-viewer .table-caption {
+  counter-increment: table-counter;
+  display: block;
+  margin-top: 0.5rem;
+  margin-bottom: 0.75rem;
+  text-align: left;
+  font-size: 0.875rem;
+  font-style: italic;
+  color: var(--color-muted-foreground);
+}
+.article-viewer .table-caption[data-align="center"] {
+  text-align: center;
+}
+.article-viewer .table-caption[data-align="right"] {
+  text-align: right;
+}
 .article-viewer .table-caption::before {
   content: "Table " counter(table-counter) ": ";
   font-weight: 600;
+}
+
+table caption {
+  caption-side: bottom;
+  padding-top: 0.5rem;
+  padding-bottom: 0.75rem;
+  text-align: left;
+  font-size: 0.875rem;
+  font-style: italic;
+  color: var(--color-muted-foreground);
 }
 
 /* ============================================

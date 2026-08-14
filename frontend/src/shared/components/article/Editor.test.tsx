@@ -30,7 +30,8 @@ vi.mock('sonner', () => ({
 import { Editor, clearDraft } from './Editor';
 import type { Editor as EditorType } from '@tiptap/react';
 import { TextSelection } from '@tiptap/pm/state';
-import { handleTableCellTripleClick } from './table-cell-selection';
+import { CellSelection, cellAround } from '@tiptap/pm/tables';
+import { handleTableCellClick, handleTableCellTripleClick } from './table-cell-selection';
 import { useUiStore } from '../../../stores/ui-store';
 
 /**
@@ -1001,7 +1002,7 @@ describe('Editor', () => {
     });
   });
 
-  describe('table cell triple-click (#1135)', () => {
+  describe('table cell selection (#1135)', () => {
     // What this is actually fixing: prosemirror-tables' own `tableEditing`
     // plugin already claims handleTripleClick and answers it with a
     // `CellSelection`. `CellSelection.prototype.visible === false`, so
@@ -1092,6 +1093,8 @@ describe('Editor', () => {
       });
       return view.someProp('handleTripleClick', (f) => f(view, pos, event)) === true;
     }
+
+    describe('triple-click', () => {
 
     /**
      * prosemirror-tables answers this gesture with a `CellSelection`, which
@@ -1262,6 +1265,71 @@ it('declines a click outside any table so ProseMirror\'s default runs', async ()
       expect(selectedText(editor)).toBe('First para\nSecond para');
       expect(isPlainTextSelection(editor)).toBe(true);
     });
+  });
+
+  describe('table cell click & range selection (#1135)', () => {
+    it('creates CellSelection on Shift+Click between cells in the same table', async () => {
+      const editor = await renderEditorWithTable();
+      const pos1 = posInText(editor, 'First para');
+      const pos2 = posInText(editor, 'Only para');
+
+      // Place selection in first cell
+      editor.commands.setTextSelection(pos1);
+
+      // Shift+Click in second cell
+      const shiftClickEvent = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0, shiftKey: true });
+      const handled = handleTableCellClick(editor.view, pos2, shiftClickEvent);
+
+      expect(handled).toBe(true);
+      expect(editor.state.selection instanceof CellSelection).toBe(true);
+    });
+
+    it('preserves multi-cell selection on drag release click', async () => {
+      const editor = await renderEditorWithTable();
+      const pos1 = posInText(editor, 'First para');
+      const pos2 = posInText(editor, 'Only para');
+
+      // Manually set a multi-cell selection spanning two cells
+      const $c1 = cellAround(editor.state.doc.resolve(pos1))!;
+      const $c2 = cellAround(editor.state.doc.resolve(pos2))!;
+      editor.view.dispatch(editor.state.tr.setSelection(CellSelection.create(editor.state.doc, $c1.pos, $c2.pos)));
+      expect(editor.state.selection instanceof CellSelection).toBe(true);
+
+      // Mouse release click on cell 1
+      const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 });
+      const handled = handleTableCellClick(editor.view, pos1, clickEvent);
+
+      expect(handled).toBe(true);
+      expect(editor.state.selection instanceof CellSelection).toBe(true);
+    });
+
+    it('declines normal click in a single cell so ProseMirror caret placement runs', async () => {
+      const editor = await renderEditorWithTable();
+      const pos1 = posInText(editor, 'First para');
+
+      // Regular click without Shift key or multi-cell selection
+      const normalClickEvent = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0, shiftKey: false });
+      const handled = handleTableCellClick(editor.view, pos1, normalClickEvent);
+
+      expect(handled).toBe(false);
+    });
+
+    it('attaches perimeter classes to multi-cell selection decorations for Notion-style border', async () => {
+      const editor = await renderEditorWithTable();
+      const pos1 = posInText(editor, 'First para');
+      const pos2 = posInText(editor, 'Only para');
+
+      const $c1 = cellAround(editor.state.doc.resolve(pos1))!;
+      const $c2 = cellAround(editor.state.doc.resolve(pos2))!;
+      editor.view.dispatch(editor.state.tr.setSelection(CellSelection.create(editor.state.doc, $c1.pos, $c2.pos)));
+
+      const cell1 = editor.view.dom.querySelector('td:has(p:first-child)') || editor.view.dom.querySelectorAll('td')[0];
+      const cell2 = editor.view.dom.querySelectorAll('td')[1];
+
+      expect(cell1?.classList.contains('selectedCell')).toBe(true);
+      expect(cell2?.classList.contains('selectedCell')).toBe(true);
+    });
+  });
   });
 
   describe('drag handle (#49)', () => {
