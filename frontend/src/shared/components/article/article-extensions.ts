@@ -1,4 +1,5 @@
 import { Node, mergeAttributes, type Editor } from '@tiptap/core';
+import { Table } from '@tiptap/extension-table';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import { ReactNodeViewRenderer } from '@tiptap/react';
@@ -1347,3 +1348,26 @@ export const TableIndex = Node.create({
     return ReactNodeViewRenderer(TableIndexView);
   },
 });
+
+/**
+ * ExtendedTable — TipTap Table extension with `data-layout` attribute support.
+ * Supports `data-layout="default"` (prose width) and `data-layout="full-width"` (expand to page width).
+ */
+export const ExtendedTable = Table.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      'data-layout': {
+        default: 'default',
+        parseHTML: (element) => element.getAttribute('data-layout') || 'default',
+        renderHTML: (attributes) => {
+          if (!attributes['data-layout'] || attributes['data-layout'] === 'default') {
+            return {};
+          }
+          return { 'data-layout': attributes['data-layout'] };
+        },
+      },
+    };
+  },
+});
+

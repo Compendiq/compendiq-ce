@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { useEditor, useEditorState, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
-import { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
+import { TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
 import { TaskList, TaskItem } from '@tiptap/extension-list';
 import { Image } from '@tiptap/extension-image';
 import { TitledCodeBlock } from './TitledCodeBlock';
@@ -13,11 +13,7 @@ import { Color } from '@tiptap/extension-color';
 import { lowlight } from '../../lib/lowlight';
 import { SearchAndReplaceExtension } from './search-extension';
 import { SearchAndReplace } from './SearchAndReplace';
-import {
-  ArrowUpFromLine, ArrowDownFromLine, ArrowLeftFromLine, ArrowRightFromLine,
-  Trash2, Columns3, Rows3, Merge, SplitSquareHorizontal, Square,
-  ToggleLeft, PanelTop, TableProperties,
-} from 'lucide-react';
+import { ArrowLeftFromLine, ArrowRightFromLine, Trash2, Columns3, Square } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '../../lib/cn';
 import { apiFetch } from '../../lib/api';
@@ -52,12 +48,15 @@ import {
   isInConfluenceSection,
   isInConfluenceLayout,
   LAYOUT_PRESETS,
+  ExtendedTable,
 } from './article-extensions';
 import type { Editor as EditorType } from '@tiptap/react';
 import { VimExtension, type VimState } from './vim-extension';
 import { VimModeIndicator } from './VimModeIndicator';
 import { EditorBubbleMenu } from './EditorBubbleMenu';
 import { EditorBlockHandle } from './EditorBlockMenu';
+import { TableContextToolbar, EditorTableOverlay, FloatingTableToolbar } from './EditorTableControls';
+export { TableContextToolbar, EditorTableOverlay, FloatingTableToolbar };
 import { handleTableCellTripleClick } from './table-cell-selection';
 import { ToolbarButton, ToolbarSeparator, LayoutPreview } from './editor-toolbar-primitives';
 
@@ -265,134 +264,6 @@ interface EditorProps {
   pageId?: string;
   /** Callback to trigger a server-side save (used by vim :w command). */
   onSave?: () => void;
-}
-
-export function TableContextToolbar({ editor }: { editor: EditorType }) {
-  const { isTable } = useEditorState({
-    editor,
-    selector: ({ editor: e }) => ({ isTable: e.isActive('table') }),
-  });
-  if (!isTable) return null;
-
-  return (
-    <div
-      data-testid="table-context-toolbar"
-      className="flex flex-wrap items-center gap-0.5 border-t border-action/20 bg-action/5 px-2 py-1.5"
-    >
-      <span className="mr-1 text-xs font-semibold text-action/70 select-none">Table</span>
-
-      <ToolbarSeparator />
-
-      {/* Row operations */}
-      <ToolbarButton
-        onClick={() => editor.chain().focus().addRowBefore().run()}
-        disabled={!editor.can().addRowBefore()}
-        title="Add row before"
-      >
-        <ArrowUpFromLine size={15} />
-      </ToolbarButton>
-      <ToolbarButton
-        onClick={() => editor.chain().focus().addRowAfter().run()}
-        disabled={!editor.can().addRowAfter()}
-        title="Add row after"
-      >
-        <ArrowDownFromLine size={15} />
-      </ToolbarButton>
-      <ToolbarButton
-        onClick={() => editor.chain().focus().deleteRow().run()}
-        disabled={!editor.can().deleteRow()}
-        title="Delete row"
-      >
-        <Rows3 size={15} className="text-destructive/70" />
-      </ToolbarButton>
-
-      <ToolbarSeparator />
-
-      {/* Column operations */}
-      <ToolbarButton
-        onClick={() => editor.chain().focus().addColumnBefore().run()}
-        disabled={!editor.can().addColumnBefore()}
-        title="Add column before"
-      >
-        <ArrowLeftFromLine size={15} />
-      </ToolbarButton>
-      <ToolbarButton
-        onClick={() => editor.chain().focus().addColumnAfter().run()}
-        disabled={!editor.can().addColumnAfter()}
-        title="Add column after"
-      >
-        <ArrowRightFromLine size={15} />
-      </ToolbarButton>
-      <ToolbarButton
-        onClick={() => editor.chain().focus().deleteColumn().run()}
-        disabled={!editor.can().deleteColumn()}
-        title="Delete column"
-      >
-        <Columns3 size={15} className="text-destructive/70" />
-      </ToolbarButton>
-
-      <ToolbarSeparator />
-
-      {/* Merge / Split */}
-      <ToolbarButton
-        onClick={() => editor.chain().focus().mergeCells().run()}
-        disabled={!editor.can().mergeCells()}
-        title="Merge cells"
-      >
-        <Merge size={15} />
-      </ToolbarButton>
-      <ToolbarButton
-        onClick={() => editor.chain().focus().splitCell().run()}
-        disabled={!editor.can().splitCell()}
-        title="Split cell"
-      >
-        <SplitSquareHorizontal size={15} />
-      </ToolbarButton>
-
-      <ToolbarSeparator />
-
-      {/* Header toggles */}
-      <ToolbarButton
-        onClick={() => editor.chain().focus().toggleHeaderRow().run()}
-        disabled={!editor.can().toggleHeaderRow()}
-        active={editor.isActive('tableHeader')}
-        title="Toggle header row"
-      >
-        <PanelTop size={15} />
-      </ToolbarButton>
-      <ToolbarButton
-        onClick={() => editor.chain().focus().toggleHeaderColumn().run()}
-        disabled={!editor.can().toggleHeaderColumn()}
-        title="Toggle header column"
-      >
-        <ToggleLeft size={15} />
-      </ToolbarButton>
-
-      <ToolbarSeparator />
-
-      {/* Add table caption (#13) */}
-      <ToolbarButton
-        onClick={() => {
-          // Insert a table caption node after the current table
-          editor.chain().focus().insertContent({ type: 'tableCaption' }).run();
-        }}
-        title="Add Table Caption"
-      >
-        <TableProperties size={15} />
-      </ToolbarButton>
-
-      <div className="flex-1" />
-
-      {/* Delete table */}
-      <ToolbarButton
-        onClick={() => editor.chain().focus().deleteTable().run()}
-        disabled={!editor.can().deleteTable()}
-        title="Delete table"
-      >
-        <Trash2 size={15} className="text-destructive/70" />
-      </ToolbarButton>
-    </div>
-  );
 }
 
 export function LayoutContextToolbar({ editor }: { editor: EditorType }) {
@@ -848,7 +719,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       TextStyle,
       Color,
       Highlight.configure({ multicolor: true }),
-      Table.configure({ resizable: true }),
+      ExtendedTable.configure({ resizable: true }),
       TableRow,
       TableCell,
       TableHeader,
@@ -987,7 +858,6 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       {editable && editor && !hideToolbar && (
         <div className="sticky top-0 z-30 border-b border-border bg-card px-1">
           <EditorToolbar editor={editor} headerNumbering={headerNumbering} onToggleHeaderNumbering={toggleHeaderNumbering} />
-          <TableContextToolbar editor={editor} />
           <LayoutContextToolbar editor={editor} />
           <ColumnContextToolbar editor={editor} />
         </div>
@@ -998,6 +868,8 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
           menu live together in EditorBlockMenu: they share the hovered-node
           tracking, the handle lock and the target marker. */}
       {editable && editor && <EditorBlockHandle editor={editor} />}
+      {editable && editor && <FloatingTableToolbar editor={editor} />}
+      {editable && editor && <EditorTableOverlay editor={editor} />}
       <EditorContent
         editor={editor}
         className={cn(

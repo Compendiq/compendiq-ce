@@ -41,6 +41,7 @@ export function ToolbarButton({
   return (
     <button
       type="button"
+      onMouseDown={(e) => e.preventDefault()}
       {...{ [TOOLBAR_ITEM_ATTR]: '' }}
       data-testid={testId}
       onClick={onClick}

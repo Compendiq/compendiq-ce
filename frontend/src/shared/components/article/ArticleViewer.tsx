@@ -2,7 +2,7 @@ import { useEffect, useRef, useCallback, useMemo, useState } from 'react';
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import TextAlign from '@tiptap/extension-text-align';
-import { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
+import { TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
 import { TaskList, TaskItem } from '@tiptap/extension-list';
 import { CodeBlockLowlight } from '@tiptap/extension-code-block-lowlight';
 import { Image } from '@tiptap/extension-image';
@@ -32,6 +32,7 @@ import {
   FigureIndex,
   TableIndex,
   UnknownMacro,
+  ExtendedTable,
 } from './article-extensions';
 import { MermaidBlock } from './MermaidBlockExtension';
 import { fetchAuthenticatedBlob } from '../../hooks/use-authenticated-src';
@@ -48,6 +49,7 @@ DOMPurify.addHook('uponSanitizeAttribute', (_node, data) => {
     data.attrName === 'data-confluence-link' ||
     data.attrName === 'data-type' ||
     data.attrName === 'data-checked' ||
+    data.attrName === 'data-layout' ||
     data.attrName === 'data-layout-type' ||
     data.attrName === 'data-cell-width' ||
     data.attrName === 'data-border'
@@ -122,7 +124,7 @@ export function ArticleViewer({
         types: ['heading', 'paragraph', 'blockquote'],
         alignments: ['left', 'center', 'right', 'justify'],
       }),
-      Table.configure({ resizable: false }),
+      ExtendedTable.configure({ resizable: false }),
       TableRow,
       TableCell,
       TableHeader,
