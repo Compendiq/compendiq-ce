@@ -76,7 +76,7 @@ function scrollPaddingTopSteps(): number {
   return Number(match[1]);
 }
 
-const EDIT_TOOLBAR_WRAPPER = 'className="sticky top-0 z-30 isolate"';
+const EDIT_TOOLBAR_WRAPPER = 'className="sticky -top-5 z-30 isolate -mt-5"';
 const EDIT_TOOLBAR_MASK = 'data-testid="edit-toolbar-mask"';
 
 /**

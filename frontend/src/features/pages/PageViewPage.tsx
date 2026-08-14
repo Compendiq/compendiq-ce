@@ -673,7 +673,7 @@ export function PageViewPage() {
           content scrolling under the translucent toolbar is fully occluded
           rather than showing through its rounded-corner cutouts. */}
       {editing && (
-        <div className="sticky top-0 z-30 isolate">
+        <div className="sticky -top-5 z-30 isolate -mt-5">
           {/* Under-mask: behind the toolbar (z-[-1]), covering the toolbar's
               box AND the strip of scroll-container padding above it.
 
@@ -774,7 +774,7 @@ export function PageViewPage() {
         </div>
         </div>
       )}
-      <div className={cn(editing && 'mt-4')}>
+      <div className={cn(editing && 'mt-7')}>
         {/* Breadcrumb / action strip (hidden while editing to keep top overhead to a single 44px toolbar) */}
         <div className={cn('sticky -top-5 z-20 -mx-4 -mt-5 border-b border-border bg-card sm:-mx-6', editing && 'hidden')}>
         <div className="mx-auto flex min-h-[calc(3rem-1px)] max-w-[1248px] flex-wrap items-center justify-between gap-x-4 gap-y-1.5 px-9 py-2 sm:px-16">

@@ -78,10 +78,12 @@ describe('the 48px line across the top of every pane', () => {
 
   it('keeps the edit toolbar on the article strip’s 48px line', () => {
     // The view-mode strip owns its hairline on the sticky parent; the editor
-    // toolbar does the same. Both inner rows therefore need the 47px minimum
-    // so their parent border completes the shared 48px header height.
+    // toolbar does the same. Both inner rows therefore need the 47px height
+    // so their parent border completes the shared 48px header height. The edit
+    // row is explicitly non-wrapping, so its height must be exact rather than
+    // merely a minimum that actions can expand.
     expect(read('features/pages/PageViewPage.tsx')).toContain('min-h-[calc(3rem-1px)]');
-    expect(read(EDIT_TOOLBAR)).toContain('min-h-[calc(3rem-1px)]');
+    expect(read(EDIT_TOOLBAR)).toContain('h-[calc(3rem-1px)] min-h-[calc(3rem-1px)]');
   });
 
   it('no bordered chrome row falls back to vertical padding for its height', () => {
