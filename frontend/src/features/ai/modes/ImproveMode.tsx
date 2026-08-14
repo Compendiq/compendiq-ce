@@ -1,60 +1,17 @@
 /* eslint-disable react-refresh/only-export-components */
-import { useCallback, useRef, useState } from 'react';
-import { AlertTriangle, Wand2, Loader2, Globe } from 'lucide-react';
+import { useCallback, useState } from 'react';
+import { AlertTriangle, Send, Loader2, Globe } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { useAiContext } from '../AiContext';
 import { DiffView } from '../../../shared/components/article/DiffView';
-import { buildDocumentReferenceText, useAttachments } from '../../../shared/hooks/use-attachments';
+import { buildDocumentReferenceText } from '../../../shared/hooks/use-attachments';
 import { useAutoGrowTextarea } from '../../../shared/hooks/use-auto-grow-textarea';
 import { DocumentUploadZone } from '../../../shared/components/upload/DocumentUploadZone';
-import { ImageAttachZone, imageDisabledReason } from '../../../shared/components/upload/ImageAttachZone';
-import { cn } from '../../../shared/lib/cn';
+import { ImageAttachZone } from '../../../shared/components/upload/ImageAttachZone';
 import { apiFetch, ApiError } from '../../../shared/lib/api';
 import { toast } from 'sonner';
-import { IMPROVEMENT_TYPES, IMPROVEMENT_DESCRIPTIONS } from '../improvement-types';
-
-/**
- * Improvement type selector rendered just under the mode segmented control.
- * Visual grammar matches the AI sub-header: a single `rounded-xl border` card
- * with h-7 outlined chips so all of the AI surfaces feel like one toolbar
- * stack rather than three different controls.
- *
- * Still the `/ai?mode=improve` control only. The dock has its own (#1177) —
- * this card's proportions are wrong for a 420px column — but both read the same
- * `IMPROVEMENT_TYPES` / `IMPROVEMENT_DESCRIPTIONS`, so the list and the copy
- * cannot disagree between them.
- */
-export function ImproveTypeSelector() {
-  const { improvementType, setImprovementType } = useAiContext();
-  return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-border bg-card px-3 py-2">
-      <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground/80">
-        Improvement type
-      </span>
-      <div className="flex flex-wrap items-center gap-1.5">
-        {IMPROVEMENT_TYPES.map((type) => (
-          <button
-            key={type}
-            onClick={() => setImprovementType(type)}
-            title={IMPROVEMENT_DESCRIPTIONS[type]}
-            aria-pressed={improvementType === type}
-            className={cn(
-              'flex h-7 items-center rounded-md border px-2.5 text-xs capitalize transition-colors',
-              improvementType === type
-                ? 'border-primary/45 bg-primary/15 text-primary-ink font-medium'
-                : 'border-border text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
-            )}
-          >
-            {type}
-          </button>
-        ))}
-      </div>
-      <p className="basis-full text-xs text-muted-foreground/80">
-        {IMPROVEMENT_DESCRIPTIONS[improvementType]}
-      </p>
-    </div>
-  );
-}
+import { AssistantActionSelect } from '../AssistantActionSelect';
+import { AssistantAttachmentsScope, useAssistantAttachments } from '../AssistantAttachments';
 
 /**
  * Diff view shown after an improve stream completes.
@@ -135,32 +92,32 @@ export function ImproveDiffView() {
  * action button.
  */
 export function ImproveModeInput() {
+  return (
+    <AssistantAttachmentsScope>
+      <ImproveModeInputContent />
+    </AssistantAttachmentsScope>
+  );
+}
+
+function ImproveModeInputContent() {
   const {
-    isStreaming, page, isPageLoading, model, pageId, includeSubPages, thinkingMode, runStream,
+    input, setInput, isStreaming, page, isPageLoading, model, pageId, includeSubPages, thinkingMode, runStream,
     improvementType, setShowDiffView, setImprovedContent, setOriginalMarkdown, setLayoutTokensLost,
     chatVision,
     chatVisionModel,
   } = useAiContext();
-  const [instruction, setInstruction] = useState('');
   const [searchWeb, setSearchWeb] = useState(false);
-  const textareaRef = useAutoGrowTextarea(instruction);
+  const textareaRef = useAutoGrowTextarea(input);
 
   // Both attachment slots, all intake routing, the shared drop target and paste
-  // live in `useAttachments` (#1154) — including the format and 20 MB gates the
-  // upload component used to apply.
+  // live in the page-owned `useAttachments` controller (#1154), including the
+  // format and 20 MB gates the upload component used to apply.
   //
-  // The ref goes on the whole Improve block rather than the composer box alone:
-  // the block is short, and a file dropped on the gap beside the Improve button
-  // would otherwise reach no handler at all, letting the browser navigate the
-  // tab to the dropped file and take the typed instruction with it.
-  const surfaceRef = useRef<HTMLDivElement>(null);
-  const attachments = useAttachments({
-    dropTargetRef: surfaceRef,
-    imageEnabled: chatVision === true,
-    imageDisabledReason: imageDisabledReason(chatVision, chatVisionModel),
-    disabled: isStreaming,
-  });
-  // Destructured for the improve callback's dependency array: `useAttachments`
+  // `/ai` owns this controller above the action switch, so selecting a rewrite
+  // skill keeps the files the user prepared while Q&A was selected. Focused
+  // mode tests get the same owner from the nested scope above.
+  const attachments = useAssistantAttachments();
+  // Destructured for the improve callback's dependency array: the controller
   // returns a fresh object literal every render, so a `useCallback` depending
   // on `attachments` itself was rebuilt on every render and memoized nothing.
   const {
@@ -183,8 +140,8 @@ export function ImproveModeInput() {
     // slots by #1154).
     if (isStreaming || isBusy) return;
     if (!page) {
-      // #1176 renamed the article-pane control this used to name: it opens the
-      // assistant now, and Improve happens at the chip inside it.
+      // The article-pane control opens the assistant; the selected rewrite
+      // skill then runs from the shared Send button inside it.
       toast.error('No page selected. Open a page first, then open the AI Assistant.');
       return;
     }
@@ -198,6 +155,7 @@ export function ImproveModeInput() {
     setOriginalMarkdown('');
     setLayoutTokensLost(undefined);
 
+    const instruction = input.trim();
     const referenceText = buildDocumentReferenceText(attachedDocuments);
     const body: Record<string, unknown> = {
       content: page.bodyHtml, type: improvementType, model, pageId: pageId ?? undefined, includeSubPages,
@@ -208,8 +166,8 @@ export function ImproveModeInput() {
       ...(referenceText && { referenceText }),
       ...(attachedImage && { imageHandle: attachedImage.handle }),
     };
-    if (instruction.trim()) {
-      body.instruction = instruction.trim();
+    if (instruction) {
+      body.instruction = instruction;
     }
     if (searchWeb) {
       body.searchWeb = true;
@@ -227,8 +185,8 @@ export function ImproveModeInput() {
         // was improved, so the send is rolled back rather than left as a dead
         // turn with an error under it. Only the image slot is cleared here:
         // this mode seeds no turn of its own (it passes `userMessage`, so
-        // runStream owns and withdraws both rows it added) and it never clears
-        // the instruction, so there is nothing else of ours to put back.
+        // runStream owns and withdraws both rows it added) and it keeps the
+        // shared instruction for another pass, so only the dead handle clears.
         // Guarded on the image the way the dock's handler is: only the image
         // path can produce a 410 today, and a 410 from anywhere else is
         // somebody else's error, which keeps its normal inline treatment.
@@ -252,14 +210,20 @@ export function ImproveModeInput() {
       },
     );
   }, [
-    page, model, improvementType, pageId, isStreaming, includeSubPages, thinkingMode, instruction,
+    input, page, model, improvementType, pageId, isStreaming, includeSubPages, thinkingMode,
     searchWeb, runStream, setShowDiffView, setImprovedContent, setOriginalMarkdown,
     setLayoutTokensLost,
     isBusy, attachedDocuments, attachedImage, removeImage,
   ]);
 
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key !== 'Enter' || event.shiftKey) return;
+    event.preventDefault();
+    void handleImprove();
+  };
+
   return (
-    <div ref={surfaceRef} className="mt-3 flex flex-col gap-3 border-t border-border pt-3">
+    <div className="mt-3 flex flex-col gap-3 border-t border-border pt-3">
       {/* An advisory, not a refusal: the backend accepts both, and only the
           resolved model knows whether they fit. Amber is the attention colour
           under ADR-010 v0.5 and this is exactly that. */}
@@ -306,11 +270,13 @@ export function ImproveModeInput() {
           isPreparing={attachments.isPreparing}
           disabled={isStreaming}
         />
+        <AssistantActionSelect includeGenerate disabled={isStreaming} className="self-end" />
         <textarea
           ref={textareaRef}
-          value={instruction}
-          onChange={(e) => setInstruction(e.target.value)}
-          placeholder="Additional instructions (optional) — e.g. 'Focus on the intro' or paste draft notes to merge"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder={`Additional instructions for ${improvementType} (optional)`}
           maxLength={10000}
           rows={2}
           disabled={isStreaming}
@@ -321,6 +287,25 @@ export function ImproveModeInput() {
           // narrow viewport.
           className="min-w-0 grow basis-40 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
         />
+        <button
+          type="button"
+          onClick={() => void handleImprove()}
+          disabled={isStreaming || !page || isPageLoading || !model || attachments.isBusy}
+          aria-label={isStreaming
+            ? 'Processing improvement'
+            : isPageLoading
+              ? 'Loading page...'
+              : !model
+                ? 'Loading models...'
+                : `Improve Page with ${improvementType}`}
+          className="flex shrink-0 self-end items-center rounded-md border border-primary bg-primary px-2.5 py-1.5 text-sm font-medium text-primary-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+          data-testid="improve-send"
+        >
+          {isStreaming || isPageLoading ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+          <span className="sr-only">
+            {isPageLoading ? 'Loading page...' : !model ? 'Loading models...' : 'Improve Page'}
+          </span>
+        </button>
       </div>
       {mcpEnabled && (
         <label className="flex items-center gap-2 text-sm text-muted-foreground" data-testid="improve-search-web-toggle">
@@ -335,21 +320,6 @@ export function ImproveModeInput() {
           Search web for reference material
         </label>
       )}
-      <button
-        onClick={handleImprove}
-        disabled={isStreaming || !page || isPageLoading || !model || attachments.isBusy}
-        className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
-      >
-        {isStreaming ? (
-          <><Loader2 size={14} className="animate-spin" /> Processing...</>
-        ) : isPageLoading ? (
-          <><Loader2 size={14} className="animate-spin" /> Loading page...</>
-        ) : !model ? (
-          <><Loader2 size={14} className="animate-spin" /> Loading models...</>
-        ) : (
-          <><Wand2 size={14} /> Improve Page</>
-        )}
-      </button>
     </div>
   );
 }

@@ -540,6 +540,7 @@ describe('Generate composer focus order (#1154)', () => {
     expectComposerFocusOrder(composerBox(), [
       'image-attach-remove',
       'image-attach-trigger',
+      'assistant-action-select',
       'textarea',
       'button',
     ]);

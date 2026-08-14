@@ -133,6 +133,13 @@ export const AskRequestSchema = z.object({
    * thing, and `false` must reach retrieval as today's single-query path.
    */
   deepSearch: z.boolean().optional(),
+  /**
+   * Text extracted from a document attached to this question. Like Improve's
+   * `referenceText`, this is user-supplied reference content rather than a
+   * system-level instruction, so the route sanitizes it separately and keeps
+   * it in the user turn.
+   */
+  referenceText: z.string().max(200_000).optional(),
   imageHandle: ImageHandleSchema.optional(), // #1154: staged image handle from POST /llm/prepare-image
 });
 
@@ -141,6 +148,8 @@ export const GenerateDiagramRequestSchema = z.object({
   model: z.string().min(1).optional(), // #929: optional — resolved server-side per ADR-021, body value ignored
   diagramType: z.enum(['flowchart', 'sequence', 'state', 'mindmap']).default('flowchart'),
   pageId: z.string().optional(),
+  /** Optional user guidance for this diagram; kept separate from page content. */
+  instruction: z.string().max(10_000).optional(),
   thinking: z.boolean().optional(),
 });
 

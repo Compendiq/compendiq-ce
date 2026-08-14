@@ -98,7 +98,12 @@ async function openAndSettle() {
     useAiDockStore.getState().openDock();
   });
   await waitFor(() => expect(screen.getByTestId('ai-dock-send')).toBeInTheDocument());
-  await waitFor(() => expect(screen.getByTestId('ai-dock-chip-improve')).not.toBeDisabled());
+  await waitFor(() => expect(screen.getByTestId('assistant-action-select')).not.toBeDisabled());
+}
+
+async function selectAction(action: string) {
+  fireEvent.pointerDown(screen.getByTestId('assistant-action-select'), { button: 0 });
+  fireEvent.click(await screen.findByTestId(`assistant-action-${action}`));
 }
 
 async function attach(file = DOCX) {
@@ -141,7 +146,7 @@ describe('AiDock — reference document (#1131)', () => {
 
     const trigger = screen.getByTestId('ai-dock-doc-attach-button');
     expect(trigger).toBeInTheDocument();
-    expect(trigger).toHaveAccessibleName('Attach a document as reference for Improve');
+    expect(trigger).toHaveAccessibleName('Attach a document for Q&A or a rewrite skill');
     // Nothing occupies the column until a document is actually attached.
     expect(screen.queryByTestId('ai-dock-doc-attachment-card')).not.toBeInTheDocument();
     // The trigger shares the prompt box with the textarea and the send button.
@@ -166,16 +171,17 @@ describe('AiDock — reference document (#1131)', () => {
     const card = await attach();
     expect(card).toHaveTextContent('q3-architecture.docx');
     expect(card).toHaveTextContent('docx');
-    expect(card).toHaveTextContent('reference for Improve');
+    expect(card).toHaveTextContent('context for Q&A or rewriting');
   });
 
   it('sends the extracted text as referenceText, never folded into instruction', async () => {
     renderDock();
     await openAndSettle();
     await attach();
+    await selectAction('grammar');
 
     fireEvent.change(screen.getByTestId('ai-dock-input'), { target: { value: 'tighten the intro' } });
-    fireEvent.click(screen.getByTestId('ai-dock-chip-improve'));
+    fireEvent.click(screen.getByTestId('ai-dock-send'));
 
     await waitFor(() => expect(streamSSEMock).toHaveBeenCalled());
     const body = improveBody();
@@ -191,8 +197,9 @@ describe('AiDock — reference document (#1131)', () => {
     });
     await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(2));
     await screen.findByTestId('ai-dock-doc-attachment-card-1');
+    await selectAction('grammar');
 
-    fireEvent.click(screen.getByTestId('ai-dock-chip-improve'));
+    fireEvent.click(screen.getByTestId('ai-dock-send'));
     await waitFor(() => expect(streamSSEMock).toHaveBeenCalled());
 
     const referenceText = improveBody().referenceText as string;
@@ -203,16 +210,15 @@ describe('AiDock — reference document (#1131)', () => {
   it('omits referenceText entirely when nothing is attached', async () => {
     renderDock();
     await openAndSettle();
+    await selectAction('grammar');
 
-    fireEvent.click(screen.getByTestId('ai-dock-chip-improve'));
+    fireEvent.click(screen.getByTestId('ai-dock-send'));
 
     await waitFor(() => expect(streamSSEMock).toHaveBeenCalled());
     expect(improveBody().referenceText).toBeUndefined();
   });
 
-  // Ask has no reference field, so the attachment must not silently ride along
-  // on a question. The card says "reference for Improve" for this reason.
-  it('does not attach the document to a plain question', async () => {
+  it('attaches the document as reference context to a Q&A request', async () => {
     renderDock();
     await openAndSettle();
     await attach();
@@ -223,18 +229,19 @@ describe('AiDock — reference document (#1131)', () => {
     await waitFor(() => expect(streamSSEMock).toHaveBeenCalled());
     const askCall = streamSSEMock.mock.calls.find((c) => c[0] === '/llm/ask');
     expect(askCall).toBeDefined();
-    expect(askCall![1]).not.toHaveProperty('referenceText');
+    expect(askCall![1]).toHaveProperty('referenceText', 'The service must retry three times.');
   });
 
   it('drops the reference again when it is removed', async () => {
     renderDock();
     await openAndSettle();
     await attach();
+    await selectAction('grammar');
 
     fireEvent.click(screen.getByRole('button', { name: 'Remove document' }));
     expect(screen.queryByTestId('ai-dock-doc-attachment-card')).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByTestId('ai-dock-chip-improve'));
+    fireEvent.click(screen.getByTestId('ai-dock-send'));
     await waitFor(() => expect(streamSSEMock).toHaveBeenCalled());
     expect(improveBody().referenceText).toBeUndefined();
   });
@@ -252,7 +259,7 @@ describe('AiDock — reference document (#1131)', () => {
     });
   });
 
-  it('holds Improve back while an extraction is still in flight', async () => {
+  it('holds attachment-aware actions back while extraction is in flight', async () => {
     let release: ((r: Response) => void) | undefined;
     vi.mocked(globalThis.fetch).mockReturnValue(
       new Promise<Response>((resolve) => { release = resolve; }),
@@ -261,18 +268,17 @@ describe('AiDock — reference document (#1131)', () => {
     renderDock();
     await openAndSettle();
 
+    fireEvent.change(screen.getByTestId('ai-dock-input'), { target: { value: 'what changed?' } });
     fireEvent.change(screen.getByTestId('ai-dock-doc-file-input'), { target: { files: [DOCX] } });
 
-    // Firing now would send an Improve without the reference that is still
-    // being extracted — the #940 failure, in the other surface.
-    await waitFor(() => expect(screen.getByTestId('ai-dock-chip-improve')).toBeDisabled());
-    // The other three chips do not read the attachment, so they stay live.
-    expect(screen.getByTestId('ai-dock-chip-summarize')).not.toBeDisabled();
+    // Firing now would send without the reference that is still being
+    // extracted, so the shared Send control waits for intake to finish.
+    await waitFor(() => expect(screen.getByTestId('ai-dock-send')).toBeDisabled());
 
     await act(async () => {
       release!(extractResponse());
     });
-    await waitFor(() => expect(screen.getByTestId('ai-dock-chip-improve')).not.toBeDisabled());
+    await waitFor(() => expect(screen.getByTestId('ai-dock-send')).not.toBeDisabled());
   });
 
   /**

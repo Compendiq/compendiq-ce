@@ -143,7 +143,7 @@ async function openAndSettle() {
     useAiDockStore.getState().openDock();
   });
   await waitFor(() => expect(screen.getByTestId('ai-dock-send')).toBeInTheDocument());
-  await waitFor(() => expect(screen.getByTestId('ai-dock-chip-improve')).not.toBeDisabled());
+  await waitFor(() => expect(screen.getByTestId('assistant-action-select')).not.toBeDisabled());
 }
 
 async function attachImage() {
@@ -158,10 +158,12 @@ async function attachDocument() {
   });
 }
 
-async function clickChip(id: string) {
+async function sendRewrite() {
   await act(async () => {
-    fireEvent.click(screen.getByTestId(`ai-dock-chip-${id}`));
+    fireEvent.pointerDown(screen.getByTestId('assistant-action-select'), { button: 0 });
   });
+  fireEvent.click(await screen.findByTestId('assistant-action-grammar'));
+  await act(async () => { fireEvent.click(screen.getByTestId('ai-dock-send')); });
 }
 
 function composerBox(): HTMLElement {
@@ -209,11 +211,11 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('dock image attach (#1154)', () => {
-  it('sends imageHandle when the Improve chip runs', async () => {
+  it('sends imageHandle when a rewrite skill runs', async () => {
     renderDock({ chatVision: true });
     await openAndSettle();
     await attachImage();
-    await clickChip('improve');
+    await sendRewrite();
 
     expect(improveBody()).toMatchObject({ imageHandle: HANDLE });
   });
@@ -223,7 +225,7 @@ describe('dock image attach (#1154)', () => {
     await openAndSettle();
     await attachDocument();
     await attachImage();
-    await clickChip('improve');
+    await sendRewrite();
 
     expect(improveBody()).toMatchObject({
       imageHandle: HANDLE,
@@ -234,7 +236,7 @@ describe('dock image attach (#1154)', () => {
   it('omits imageHandle when no image is attached', async () => {
     renderDock({ chatVision: true });
     await openAndSettle();
-    await clickChip('improve');
+    await sendRewrite();
 
     expect(improveBody()).not.toHaveProperty('imageHandle');
   });
@@ -366,17 +368,14 @@ describe('dock image attach (#1154)', () => {
     expect(mockPrepareImage).not.toHaveBeenCalled();
   });
 
-  it('warns when both slots are filled, naming Improve as the sender', async () => {
+  it('warns when both attachment slots are filled', async () => {
     renderDock({ chatVision: true });
     await openAndSettle();
     await attachDocument();
     await attachImage();
 
-    // The dock's Send button never reaches an attachment — only the Improve
-    // chip does — so this copy must name Improve rather than reuse the other
-    // two surfaces' "will be sent" wording, which would misstate what Send does.
     expect(screen.getByTestId('ai-dock-attachment-context-warning')).toHaveTextContent(
-      'Both attachments will be sent to Improve — a small model may not fit them.',
+      'Both attachments will be sent — a small model may not fit them.',
     );
   });
 
@@ -391,24 +390,13 @@ describe('dock image attach (#1154)', () => {
     expect(screen.queryByTestId('ai-dock-attachment-context-warning')).not.toBeInTheDocument();
   });
 
-  /**
-   * #940's lesson widened to the image slot: firing Improve while a staging
-   * round-trip is in flight sends the request without the attachment being
-   * prepared for it. The other three chips do not read attachments, so they
-   * stay live.
-   */
-  it('holds Improve back while an image is being staged', async () => {
+  it('holds attachment-aware Send back while an image is being staged', async () => {
     mockIsPreparing.value = true;
     renderDock({ chatVision: true });
     act(() => { useAiDockStore.getState().openDock(); });
     await waitFor(() => expect(screen.getByTestId('ai-dock-send')).toBeInTheDocument());
-    // Summarize reads no attachment, so it goes live as soon as the page and
-    // the model resolve. Waiting on it is what makes the assertion below mean
-    // "held back by the staging" rather than "nothing has loaded yet" — the
-    // state every chip starts in.
-    await waitFor(() => expect(screen.getByTestId('ai-dock-chip-summarize')).not.toBeDisabled());
-
-    expect(screen.getByTestId('ai-dock-chip-improve')).toBeDisabled();
+    await waitFor(() => expect(screen.getByTestId('assistant-action-select')).not.toBeDisabled());
+    expect(screen.getByTestId('ai-dock-send')).toBeDisabled();
   });
 });
 
@@ -434,6 +422,7 @@ describe('dock composer focus order (#1154)', () => {
       'ai-dock-doc-attach-button',
       'ai-dock-image-remove',
       'ai-dock-image-trigger',
+      'assistant-action-select',
       'ai-dock-input',
       'ai-dock-send',
     ]);
@@ -489,7 +478,7 @@ describe('dock lapsed image handle (#1154)', () => {
     fireEvent.change(screen.getByTestId('ai-dock-input'), { target: { value: 'tighten the intro' } });
 
     gone();
-    await clickChip('improve');
+    await sendRewrite();
 
     await waitFor(() => {
       expect(screen.queryByTestId('ai-dock-image-card')).not.toBeInTheDocument();
@@ -509,7 +498,7 @@ describe('dock lapsed image handle (#1154)', () => {
     await attachImage();
 
     gone();
-    await clickChip('improve');
+    await sendRewrite();
 
     await waitFor(() => {
       expect(toastErrorMock).toHaveBeenCalledWith('The image expired — attach it again.');
@@ -524,14 +513,14 @@ describe('dock lapsed image handle (#1154)', () => {
     await attachImage();
 
     streamSSEMock.mockImplementation(() => { throw new ApiError(500, 'LLM connection lost'); });
-    await clickChip('improve');
+    await sendRewrite();
 
     await waitFor(() => expect(threadText()).toContain('LLM connection lost'));
   });
 
   /**
-   * `runChip` is reached from two places and only one of them — the chip itself
-   * — is disabled while an attachment is staging. `DockDiffCard`'s "Re-run
+   * `runChip` is reached from two places and only one of them — the composer
+   * Send button — is disabled while an attachment is staging. `DockDiffCard`'s "Re-run
    * Improve" calls it directly, so the wait has to live inside the handler or
    * Improve goes out with `imageHandle` undefined while the image card is still
    * on screen. That is #940's shape, and it is why `/ai`'s Generate and Improve
@@ -544,7 +533,7 @@ describe('dock lapsed image handle (#1154)', () => {
     renderDock({ chatVision: true });
     await openAndSettle();
     await attachImage();
-    await clickChip('improve');
+    await sendRewrite();
     await waitFor(() => expect(screen.getByTestId('dock-diff-card')).toBeInTheDocument());
 
     // The page moved under the pending diff, so the card offers a re-run in
@@ -589,7 +578,7 @@ describe('dock lapsed image handle (#1154)', () => {
     await openAndSettle();
 
     gone();
-    await clickChip('improve');
+    await sendRewrite();
 
     await waitFor(() => {
       expect(threadText()).toContain('The staged image has expired.');

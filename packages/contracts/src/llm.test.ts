@@ -80,6 +80,18 @@ describe('streaming request schemas treat model as optional (#929)', () => {
     const parsed = AskRequestSchema.parse({ question: 'hi', imageHandle: 'a'.repeat(64) });
     expect(parsed.imageHandle).toBe('a'.repeat(64));
   });
+  it('AskRequestSchema accepts extracted reference text up to 200K characters', () => {
+    const referenceText = 'a'.repeat(200_000);
+    const parsed = AskRequestSchema.parse({ question: 'hi', referenceText });
+    expect(parsed.referenceText).toBe(referenceText);
+    expect(() => AskRequestSchema.parse({ question: 'hi', referenceText: `${referenceText}a` })).toThrow();
+  });
+  it('GenerateDiagramRequestSchema accepts an optional instruction up to 10K characters', () => {
+    const instruction = 'a'.repeat(10_000);
+    const parsed = GenerateDiagramRequestSchema.parse({ content: 'text', instruction });
+    expect(parsed.instruction).toBe(instruction);
+    expect(() => GenerateDiagramRequestSchema.parse({ content: 'text', instruction: `${instruction}a` })).toThrow();
+  });
 });
 
 describe('UsecaseAssignmentsSchema', () => {

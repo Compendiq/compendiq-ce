@@ -50,7 +50,7 @@ interface Conversation {
   createdAt: string;
 }
 
-export type Mode = 'ask' | 'improve' | 'generate' | 'summarize' | 'diagram' | 'quality';
+export type Mode = 'ask' | 'improve' | 'generate' | 'diagram';
 
 interface PageData {
   id: string;
@@ -358,7 +358,7 @@ export function resolveAiPageId(pathname: string, searchParams: URLSearchParams)
 // Provider
 // ---------------------------------------------------------------------------
 
-const VALID_MODES: Mode[] = ['ask', 'improve', 'generate', 'summarize', 'diagram', 'quality'];
+const VALID_MODES: Mode[] = ['ask', 'improve', 'generate', 'diagram'];
 
 export function AiProvider({ children }: { children: ReactNode }) {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -384,13 +384,9 @@ export function AiProvider({ children }: { children: ReactNode }) {
 
   const rawMode = searchParams.get('mode');
   const urlMode = VALID_MODES.includes(rawMode as Mode) ? (rawMode as Mode) : null;
-  // `/ai` offers Ask and Generate only, now that the four document actions are
-  // chips in the dock (#1126). The old default — `pageId ? 'improve' : 'ask'` —
-  // would land `/ai?pageId=…` (which SidebarTreeView still produces) on Improve:
-  // a mode with no tab, which the user could leave but never return to. A page
-  // context is still an *input* to Ask, so Ask is the honest default here; only
-  // an explicit `?mode=` reaches a document mode, which is what keeps existing
-  // deep links rendering.
+  // A page context is still an input to Q&A, so it remains the honest default.
+  // An explicit valid `?mode=` can deep-link to another selectable action;
+  // retired Summarize and Quality values deliberately fall back to Q&A.
   const [mode, setMode] = useState<Mode>(urlMode ?? 'ask');
   // Conversations keyed by page and retained (#1126). Changing pages swaps
   // which thread is on screen; it never destroys one.

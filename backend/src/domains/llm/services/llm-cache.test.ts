@@ -97,6 +97,22 @@ describe('buildRagCacheKey', () => {
     expect(at(undefined)).toBe(at(false));
   });
 
+  it('keys on attached reference text so different documents never share an answer', () => {
+    const withoutReference = buildRagCacheKey('m', 'q', ['d1'], { provider: 'p1' });
+    const firstReference = buildRagCacheKey('m', 'q', ['d1'], {
+      provider: 'p1', referenceText: 'first document',
+    });
+    const secondReference = buildRagCacheKey('m', 'q', ['d1'], {
+      provider: 'p1', referenceText: 'second document',
+    });
+
+    expect(firstReference).not.toBe(withoutReference);
+    expect(firstReference).not.toBe(secondReference);
+    expect(firstReference).toBe(buildRagCacheKey('m', 'q', ['d1'], {
+      provider: 'p1', referenceText: 'first document',
+    }));
+  });
+
   it('keys on the REALIZED outcome — a soft-failed chunk-level answer never occupies the assembled key (#1270 F9)', () => {
     const at = (assembledPages: number) =>
       buildRagCacheKey('m', 'q', ['d1'], { provider: 'p1', contextChars: 6000, assembledPages });

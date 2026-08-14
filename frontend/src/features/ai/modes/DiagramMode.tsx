@@ -1,11 +1,14 @@
 /* eslint-disable react-refresh/only-export-components */
 import { useCallback } from 'react';
-import { GitBranch, FileInput, Loader2 } from 'lucide-react';
+import { Send, FileInput, Loader2 } from 'lucide-react';
 import { useAiContext } from '../AiContext';
+import { AssistantActionSelect } from '../AssistantActionSelect';
 import { MermaidDiagram } from '../../../shared/components/diagrams/MermaidDiagram';
 import { cn } from '../../../shared/lib/cn';
 import { apiFetch } from '../../../shared/lib/api';
 import { toast } from 'sonner';
+import { useAutoGrowTextarea } from '../../../shared/hooks/use-auto-grow-textarea';
+import { AssistantAttachmentsScope, useAssistantAttachments } from '../AssistantAttachments';
 
 /** HTML-encode a string so it is safe to interpolate inside HTML elements. */
 function escapeHtml(str: string): string {
@@ -27,7 +30,7 @@ const DIAGRAM_DESCRIPTIONS: Record<(typeof DIAGRAM_TYPES)[number], string> = {
 };
 
 /**
- * Diagram type selector rendered just under the mode segmented control.
+ * Diagram type selector rendered under the assistant context toolbar.
  * Visual grammar matches the AI sub-header: a single `rounded-xl border` card
  * with h-7 outlined chips so all of the AI surfaces feel like one toolbar
  * stack rather than three different controls.
@@ -123,7 +126,20 @@ export function DiagramPreview() {
  * Input bar for diagram mode: a single action button.
  */
 export function DiagramModeInput() {
-  const { isStreaming, page, model, pageId, thinkingMode, runStream, diagramType, setDiagramCode } = useAiContext();
+  return (
+    <AssistantAttachmentsScope>
+      <DiagramModeInputContent />
+    </AssistantAttachmentsScope>
+  );
+}
+
+function DiagramModeInputContent() {
+  const {
+    input, setInput, isStreaming, page, model, pageId, thinkingMode,
+    runStream, diagramType, setDiagramCode,
+  } = useAiContext();
+  const attachments = useAssistantAttachments();
+  const inputRef = useAutoGrowTextarea(input);
 
   const handleDiagram = useCallback(async () => {
     if (isStreaming) return;
@@ -137,6 +153,7 @@ export function DiagramModeInput() {
     }
 
     setDiagramCode('');
+    const instruction = input.trim();
 
     await runStream(
       '/llm/generate-diagram',
@@ -145,32 +162,57 @@ export function DiagramModeInput() {
         model,
         diagramType,
         pageId: pageId ?? undefined,
+        ...(instruction && { instruction }),
         ...(thinkingMode && { thinking: true }),
       },
       {
-        userMessage: `Generate ${diagramType} diagram: ${page.title}`,
+        userMessage: instruction || `Generate ${diagramType} diagram: ${page.title}`,
         onComplete: (accumulated) => {
           setDiagramCode(accumulated);
         },
       },
     );
-  }, [page, model, diagramType, pageId, thinkingMode, isStreaming, runStream, setDiagramCode]);
+  }, [input, page, model, diagramType, pageId, thinkingMode, isStreaming, runStream, setDiagramCode]);
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key !== 'Enter' || event.shiftKey) return;
+    event.preventDefault();
+    void handleDiagram();
+  };
 
   return (
-    <div className="mt-3 flex items-center gap-3 border-t border-border pt-3">
+    <div className="mt-3 border-t border-border pt-3">
+      {(attachments.documents.length > 0 || attachments.image) && (
+        <p className="mb-2 text-xs text-muted-foreground" data-testid="ai-attachments-paused">
+          Attachments are kept here but are not sent to Diagram.
+        </p>
+      )}
+      <div className="nm-composer">
+        <AssistantActionSelect includeGenerate disabled={isStreaming} className="self-end" />
+        <textarea
+          ref={inputRef}
+          value={input}
+          onChange={(event) => setInput(event.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder="Diagram instructions (optional)"
+          maxLength={10000}
+          rows={1}
+          disabled={isStreaming}
+          className="min-w-0 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
+          data-testid="diagram-instruction"
+        />
       <button
-        onClick={handleDiagram}
+        type="button"
+        onClick={() => void handleDiagram()}
         disabled={isStreaming || !page || !model}
-        className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
+        aria-label={isStreaming ? 'Processing diagram' : 'Generate Diagram'}
+        className="flex shrink-0 self-end items-center rounded-md border border-primary bg-primary px-2.5 py-1.5 text-sm font-medium text-primary-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+        data-testid="diagram-send"
       >
-        {isStreaming ? (
-          <><Loader2 size={14} className="animate-spin" /> Processing...</>
-        ) : !model ? (
-          <><Loader2 size={14} className="animate-spin" /> Loading models...</>
-        ) : (
-          <><GitBranch size={14} /> Generate Diagram</>
-        )}
+        {isStreaming ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+        <span className="sr-only">Generate Diagram</span>
       </button>
+      </div>
     </div>
   );
 }

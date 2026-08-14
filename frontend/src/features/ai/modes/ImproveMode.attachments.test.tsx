@@ -114,7 +114,7 @@ function renderImproveMode({ chatVision }: { chatVision: boolean | null }) {
  */
 function instructionInput(): HTMLTextAreaElement {
   return screen.getByPlaceholderText(
-    /^Additional instructions \(optional\)/,
+    /^Additional instructions for .+ \(optional\)/,
   ) as HTMLTextAreaElement;
 }
 
@@ -474,7 +474,7 @@ describe('ImproveMode lapsed image handle (#1154)', () => {
 /**
  * The reading-order property is load-bearing on all three composer surfaces, not
  * just the dock's (#1154). Improve's box holds both zones and the instruction
- * field, and no send button — the Improve button sits outside it.
+ * field, the selected skill, and its shared Send button.
  */
 describe('Improve composer focus order (#1154)', () => {
   function composerBox(): HTMLElement {
@@ -492,7 +492,9 @@ describe('Improve composer focus order (#1154)', () => {
       'document-attach-button',
       'image-attach-remove',
       'image-attach-trigger',
+      'assistant-action-select',
       'textarea',
+      'improve-send',
     ]);
   });
 

@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
-import { AlertTriangle, ChevronDown, Loader2, PanelRightClose, Send, Sparkles, X } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { AlertTriangle, Loader2, PanelRightClose, Send, Sparkles, X } from 'lucide-react';
 import { useAiContext, type Message } from '../AiContext';
 import { StreamingMessage } from '../StreamingMessage';
 import { CitationChips } from '../CitationChips';
@@ -11,15 +11,11 @@ import { buildDocumentReferenceText, useAttachments } from '../../../shared/hook
 import { DocumentUploadZone } from '../../../shared/components/upload/DocumentUploadZone';
 import { ImageAttachZone, imageDisabledReason } from '../../../shared/components/upload/ImageAttachZone';
 import { PROMPT_MAX_LENGTH } from '../modes/prompt-limits';
-import {
-  DEFAULT_IMPROVEMENT_TYPE, IMPROVEMENT_DESCRIPTIONS, IMPROVEMENT_TYPES, type ImprovementType,
-} from '../improvement-types';
-import { cn } from '../../../shared/lib/cn';
 import { DeepSearchToggle } from '../DeepSearchToggle';
 import { RefusalMark, RefusalSourcesLabel, REFUSAL_ANNOUNCEMENT } from '../refusal';
-import { DOCK_CHIPS, improveChipHint } from './dock-chips';
 import { DockDiffCard } from './DockDiffCard';
 import { useDockActions } from './use-dock-actions';
+import { AssistantActionSelect, resolveAssistantAction } from '../AssistantActionSelect';
 
 /**
  * The assistant's contents — everything between the header and the composer.
@@ -47,46 +43,16 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
   const {
     page, pageId, messages, messagesEndRef, isStreaming, isThinking, thinkingElapsed,
     streamingContent, input, setInput, modelsError, refetchModels, model, chatVision,
-    chatVisionModel, improvementType, setImprovementType,
+    chatVisionModel, mode, setMode, improvementType,
   } = useAiContext();
+  const selectedAction = resolveAssistantAction(mode === 'generate' ? 'ask' : mode, improvementType);
 
-  // Which improvement pass Improve will run is a *setting*, so it hides behind a
-  // disclosure on the Improve chip rather than spending a permanent line of a
-  // 420px column on five options most runs leave at `grammar` (#1177). Open
-  // state is per-mount and deliberately not restored: a drawer that reopened
-  // itself would cost the height it was designed to save.
-  const [typesOpen, setTypesOpen] = useState(false);
-  const typesPanelId = useId();
-  const typesToggleRef = useRef<HTMLButtonElement>(null);
-  const collapseTypes = useCallback(() => {
-    setTypesOpen(false);
-    typesToggleRef.current?.focus();
-  }, []);
-
-  // While the drawer is open, Escape belongs to the drawer: fold it away, hand
-  // focus back to the caret, and let the *next* Escape close the assistant.
-  //
-  // Mounted on the split chip as well as on the drawer, because focus is
-  // usually on neither's contents but on the caret itself — clicking a button
-  // focuses it in every real browser (jsdom does not, which is why the first
-  // version of this passed its test while failing in Chrome). A handler that
-  // only listens inside the drawer misses the commonest route by construction,
-  // and the panel root's Escape wins: the user presses it to tidy away a drawer
-  // and loses the whole conversation.
-  const handleTypesEscape = useCallback((e: React.KeyboardEvent) => {
-    if (e.key !== 'Escape' || !typesOpen) return;
-    e.stopPropagation();
-    collapseTypes();
-  }, [typesOpen, collapseTypes]);
-
-  // The retry chip replaces the whole row when the model list fails, taking the
-  // caret with it. Drop the open state at the same time, or a later recovery
-  // brings the drawer back unasked — the one thing the comment above promises
-  // it will not do. The render guard below still stands: it covers the frame
-  // between the failure and this effect.
+  // Generate belongs only to `/ai`. If that selection survives navigation to
+  // an article, normalize the dock to knowledge chat before the composer can
+  // describe an action it cannot run.
   useEffect(() => {
-    if (modelsError) setTypesOpen(false);
-  }, [modelsError]);
+    if (mode === 'generate') setMode('ask');
+  }, [mode, setMode]);
 
   // Source material attached in the composer (#1131, #1154). Dock-local rather
   // than AiContext state: it is material for the *next* action, not part of the
@@ -104,7 +70,7 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
     dropTargetRef: composerBoxRef,
     imageEnabled: chatVision === true,
     imageDisabledReason: imageDisabledReason(chatVision, chatVisionModel),
-    disabled: isStreaming,
+    disabled: isStreaming || selectedAction === 'diagram',
   });
   const {
     documents: references, image, pickFiles, removeDocument, removeImage, clearAll, isDragOver,
@@ -136,6 +102,12 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
     deepSearch,
     onDeepSearchConsumed: clearDeepSearch,
   });
+
+  const sendSelectedAction = useCallback(() => {
+    if (selectedAction === 'ask') return ask();
+    if (selectedAction === 'diagram') return runChip('diagram');
+    return runChip('improve');
+  }, [selectedAction, ask, runChip]);
 
   // A document or image attached while reading one page is not background for
   // the next one. Threads are retained per page; an attachment silently
@@ -207,7 +179,7 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
     // established for the Ask composer, in the surface where it matters most.
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      void ask();
+      void sendSelectedAction();
     }
   };
 
@@ -319,131 +291,18 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
         )}
       </div>
 
-      {/* Composer block: chips, then the prompt. Chips are steel-outlined —
-          steel is what "you can operate this" means under ADR-010 v0.5 — and
-          take --color-border-interactive rather than the quiet hairline, which
-          separators and pane edges use (WCAG 1.4.11). */}
+      {/* One selector, one composer, one Send path. The selected action is
+          visible beside Send so the request cannot quietly fall back to Q&A. */}
       <div className="shrink-0 border-t border-border px-3 pb-3 pt-2.5">
-        <div className="mb-2 flex flex-wrap gap-1.5">
-          {modelsError ? (
-            <button
-              type="button"
-              onClick={() => refetchModels()}
-              title="Failed to load models from the LLM provider — click to retry"
-              className="flex h-7 items-center gap-1.5 rounded-md border border-destructive/60 px-2.5 text-xs text-destructive transition-colors hover:bg-destructive/10"
-            >
-              <AlertTriangle size={12} aria-hidden /> Models unavailable — retry
-            </button>
-          ) : (
-            DOCK_CHIPS.map(({ id, label, Icon, hint }) => {
-              // Improve alone waits out an in-flight attachment: firing it now
-              // would send the request without the reference text still being
-              // extracted or the image still being staged (#940's lesson,
-              // widened to both slots by #1154). The other three read no
-              // attachment, so they stay live.
-              const isImprove = id === 'improve';
-              const disabled = isStreaming || !page || !model || (isImprove && isBusy);
-              const chip = (
-                <button
-                  // Carries the array key for the other three chips; ignored
-                  // for Improve, which returns it inside the keyed <div> below.
-                  key={id}
-                  type="button"
-                  onClick={() => {
-                    // The choice is committed the moment the run starts, so the
-                    // drawer folds away with it and the column goes back to one
-                    // row of chips. The thread jumps at the same instant (user
-                    // turn plus placeholder), which absorbs the reflow.
-                    if (isImprove) setTypesOpen(false);
-                    void runChip(id);
-                  }}
-                  disabled={disabled}
-                  title={isImprove ? improveChipHint(improvementType) : hint}
-                  className={cn(
-                    'flex h-7 items-center gap-1.5 rounded-md border border-border-interactive px-2.5 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50',
-                    // Half of a split control: the caret picks up the right end.
-                    isImprove && 'relative rounded-r-none hover:z-10 focus-visible:z-10',
-                  )}
-                  data-testid={`ai-dock-chip-${id}`}
-                >
-                  <Icon size={12} aria-hidden /> {label}
-                  {/* The type is spelled out exactly when it is news. Saying
-                      "grammar" on every dock in the product would cost the row's
-                      one spare line to repeat the documented default; saying
-                      nothing after the user picked `structure` would leave a
-                      chip that rewrites a page differently than it reads.
-
-                      Steel marks the choice here and in the drawer, but by
-                      different means, because the substrate differs: this is
-                      bare text on the panel, so it takes `--color-primary-ink`,
-                      the system's steel-as-a-text-colour token. The selected
-                      option down there sits on a steel tint already and keeps
-                      the neutral `text-action` — steel ink on a steel wash
-                      loses the contrast the token exists to guarantee. */}
-                  {isImprove && improvementType !== DEFAULT_IMPROVEMENT_TYPE && (
-                    <span className="font-medium text-primary-ink" data-testid="ai-dock-improve-type-label">
-                      · {improvementType}
-                    </span>
-                  )}
-                </button>
-              );
-              if (!isImprove) return chip;
-              return (
-                // One flex item, so the row's `gap-1.5` never opens a seam
-                // between the two halves and wrapping never splits them — and
-                // one Escape handler, so the drawer absorbs the key from either
-                // half rather than only from its own contents.
-                <div key={id} className="flex" onKeyDown={handleTypesEscape}>
-                  {chip}
-                  <button
-                    ref={typesToggleRef}
-                    type="button"
-                    onClick={() => setTypesOpen((open) => !open)}
-                    // The caret shares Improve's disabled state rather than
-                    // computing its own. They are one control, a half-lit split
-                    // chip reads as a rendering fault, and every reason Improve
-                    // is unavailable — no page, no model, an attachment still
-                    // staging, a stream in flight — is a moment when there is
-                    // nothing yet to configure.
-                    disabled={disabled}
-                    aria-expanded={typesOpen}
-                    // Only while the drawer exists. `aria-controls` pointing at
-                    // an unrendered id is a dangling reference, and the two
-                    // other AI disclosures in the app (`bubble-ai-trigger`,
-                    // `block-ai-trigger`) already gate it the same way.
-                    aria-controls={typesOpen ? typesPanelId : undefined}
-                    aria-label={`Improvement type: ${improvementType}`}
-                    title={`${improvementType} — ${IMPROVEMENT_DESCRIPTIONS[improvementType]}`}
-                    // -ml-px collapses the two 1px borders into the single hairline
-                    // that makes the pair read as one chip; z-10 on hover/focus
-                    // lifts whichever half is being addressed so its own border
-                    // and ring win over its neighbour's.
-                    className="relative -ml-px flex h-7 w-7 items-center justify-center rounded-md rounded-l-none border border-border-interactive text-muted-foreground transition-colors hover:z-10 hover:bg-foreground/5 hover:text-foreground focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-                    data-testid="ai-dock-improve-types-toggle"
-                  >
-                    <ChevronDown
-                      size={12}
-                      aria-hidden
-                      className={cn(
-                        'transition-transform duration-200 motion-reduce:transition-none',
-                        typesOpen && 'rotate-180',
-                      )}
-                    />
-                  </button>
-                </div>
-              );
-            })
-          )}
-        </div>
-
-        {!modelsError && typesOpen && (
-          <ImprovementTypeDrawer
-            id={typesPanelId}
-            value={improvementType}
-            onChange={setImprovementType}
-            disabled={isStreaming || !page || !model || isBusy}
-            onKeyDown={handleTypesEscape}
-          />
+        {modelsError && (
+          <button
+            type="button"
+            onClick={() => refetchModels()}
+            title="Failed to load models from the LLM provider — click to retry"
+            className="mb-2 flex h-7 items-center gap-1.5 rounded-md border border-destructive/60 px-2.5 text-xs text-destructive transition-colors hover:bg-destructive/10"
+          >
+            <AlertTriangle size={12} aria-hidden /> Models unavailable — retry
+          </button>
         )}
 
         {/* An advisory, not a refusal: the backend accepts both, and only the
@@ -453,28 +312,35 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
             than either one, so it belongs beside neither zone's row — and a
             full-width paragraph among those rows would push the field away from
             the cards it describes. */}
-        {references.length > 0 && image && (
+        {selectedAction !== 'diagram' && references.length > 0 && image && (
           <p
             className="mb-2 flex items-center gap-1.5 text-xs text-warning"
             data-testid="ai-dock-attachment-context-warning"
           >
             <AlertTriangle size={12} className="shrink-0" aria-hidden />
-            Both attachments will be sent to Improve — a small model may not fit them.
+            Both attachments will be sent — a small model may not fit them.
+          </p>
+        )}
+
+        {selectedAction === 'diagram' && (references.length > 0 || image) && (
+          <p className="mb-2 text-xs text-muted-foreground" data-testid="ai-dock-attachments-paused">
+            Attachments are kept here but are not sent to Diagram.
           </p>
         )}
 
         {/* Per-question retrieval option, in the same slot as `/ai`'s so the
-            two Ask composers read the same way. Above the box rather than in
-            it: the attachments inside are Improve's material, this is Send's,
-            and the chip row above belongs to the four actions — a toggle among
-            four buttons reads as a fifth button. */}
-        <DeepSearchToggle
-          checked={deepSearch}
-          onChange={setDeepSearch}
-          disabled={isStreaming}
-          testId="ai-dock-deep-search"
-          className="mb-2"
-        />
+            two Q&A composers read the same way. It stays above the box because
+            it modifies only the next knowledge question, not every selectable
+            action in the composer. */}
+        {selectedAction === 'ask' && (
+          <DeepSearchToggle
+            checked={deepSearch}
+            onChange={setDeepSearch}
+            disabled={isStreaming}
+            testId="ai-dock-deep-search"
+            className="mb-2"
+          />
+        )}
 
         {/* flex-wrap so each zone's row — its card or drop hint plus its own
             trigger — stacks above the prompt inside the same box. An attachment
@@ -494,23 +360,12 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
             filename={references[0]?.filename ?? null}
             documents={references}
             onRemove={removeDocument}
-            disabled={isStreaming}
-            triggerLabel="Attach a document as reference for Improve"
-            usageHint="reference for Improve"
+            disabled={isStreaming || selectedAction === 'diagram'}
+            triggerLabel="Attach a document for Q&A or a rewrite skill"
+            usageHint="context for Q&A or rewriting"
             isDragOver={isDragOver}
             testIdPrefix="ai-dock-doc"
           />
-          {/* Prefixed like the document zone above it: within one composer the
-              two halves should be selectable the same way, and the dock is the
-              one surface where a zone can sit beside an unrelated one. `/ai`'s
-              two modes keep the components' defaults.
-
-              Both zones name Improve, because in this composer neither
-              attachment reaches Send: `ask()` posts to `/llm/ask`, which takes
-              a reference text and an image handle from nobody — wiring either
-              in would be a 400, not a feature. So the honesty is in the copy,
-              on the trigger and again on the card, the way #1131 already
-              handled the identical asymmetry for the document half. */}
           <ImageAttachZone
             vision={chatVision}
             visionModel={chatVisionModel}
@@ -518,28 +373,43 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
             onPick={(file) => handlePickFiles([file])}
             onRemove={removeImage}
             isPreparing={isPreparing}
-            disabled={isStreaming}
+            disabled={isStreaming || selectedAction === 'diagram'}
             testIdPrefix="ai-dock-image"
           />
+          <AssistantActionSelect disabled={isStreaming || modelsError} className="self-end" />
           <textarea
             ref={composerRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={page ? 'Ask about this page…' : 'Ask a question…'}
+            placeholder={selectedAction === 'ask'
+              ? (page ? 'Ask about this page…' : 'Ask your knowledge base…')
+              : selectedAction === 'diagram'
+                ? 'Diagram instructions (optional)'
+                : `Additional ${selectedAction} instructions (optional)`}
             maxLength={PROMPT_MAX_LENGTH}
             rows={1}
             disabled={isStreaming}
-            aria-label="Ask the assistant about this page"
+            aria-label={selectedAction === 'ask'
+              ? 'Ask the assistant'
+              : selectedAction === 'diagram'
+                ? 'Diagram instructions'
+                : `${selectedAction} rewrite instructions`}
             // The composer wrapper owns the inset surface, border and focus
             // ring; resize-none because the auto-grow hook owns the height.
             className="min-w-0 grow basis-40 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
             data-testid="ai-dock-input"
           />
           <button
-            onClick={() => void ask()}
-            disabled={isStreaming || !input.trim() || !model}
-            aria-label={isStreaming ? 'Sending…' : 'Send message'}
+            onClick={() => void sendSelectedAction()}
+            disabled={
+              isStreaming
+              || !model
+              || (selectedAction === 'ask' && !input.trim())
+              || (selectedAction !== 'ask' && !page)
+              || (selectedAction !== 'diagram' && isBusy)
+            }
+            aria-label={isStreaming ? 'Sending…' : `Send with ${selectedAction}`}
             className="flex shrink-0 self-end items-center rounded-md border border-primary bg-primary px-2.5 py-1.5 text-sm font-medium text-primary-foreground transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
             data-testid="ai-dock-send"
           >
@@ -547,97 +417,6 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
           </button>
         </div>
       </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Improvement type
-// ---------------------------------------------------------------------------
-
-interface ImprovementTypeDrawerProps {
-  id: string;
-  value: ImprovementType;
-  onChange: (value: ImprovementType) => void;
-  disabled: boolean;
-  /**
-   * Escape handling, owned by `DockPanel` and mounted on the split chip too —
-   * the drawer is only one of the two places focus can be while it is open.
-   */
-  onKeyDown: (e: React.KeyboardEvent) => void;
-}
-
-/**
- * The five improvement passes, restored to the dock (#1177).
- *
- * `/ai`'s `ImproveTypeSelector` is a card with a heading, h-7 chips and a
- * caption — the proportions of a control that owns its own screen. Here the
- * same five options are a drawer that opens out of the Improve chip and closes
- * when the run starts, so the resting state of a 420px column is still one row
- * of chips.
- *
- * The border grammar is the dock's, not the selector's: unselected options take
- * `--color-border-interactive` like every other operable edge in the panel
- * (WCAG 1.4.11), and the selected one takes `nm-pill-active` — the same pressed
- * steel the sidebar and the article rail use for "this is the one", which also
- * brings its own `forced-colors: active` treatment. The quiet `--color-border`
- * appears once, around the drawer itself, because that is a grouping surface
- * rather than something you press.
- *
- * `nm-pill-active text-action` is the pairing every selected pill in the app
- * uses (`SidebarTreeView`, `DndLocalSpaceTree`, `ArticleRightPane`,
- * `CommentsSidebar`). The steel is the tint and the border; the label stays
- * neutral, because `nm-pill-active`'s own `color: var(--color-primary)` would
- * put steel ink on a steel wash.
- */
-function ImprovementTypeDrawer({ id, value, onChange, disabled, onKeyDown }: ImprovementTypeDrawerProps) {
-  return (
-    <div
-      id={id}
-      role="group"
-      aria-label="Improvement type"
-      onKeyDown={onKeyDown}
-      className="mb-2 rounded-lg border border-border bg-foreground/[0.03] px-2 py-2"
-      data-testid="ai-dock-improve-types"
-    >
-      <div className="flex flex-wrap gap-1">
-        {IMPROVEMENT_TYPES.map((type) => {
-          const selected = value === type;
-          return (
-            <button
-              key={type}
-              type="button"
-              onClick={() => onChange(type)}
-              disabled={disabled}
-              // Kept from `ImproveTypeSelector` verbatim: five toggles reporting
-              // their own pressed state, each carrying its description, is what
-              // a screen reader gets on `/ai` and there is no reason for the
-              // dock to announce the same choice differently.
-              aria-pressed={selected}
-              title={IMPROVEMENT_DESCRIPTIONS[type]}
-              className={cn(
-                'flex h-6 items-center rounded-md px-2 text-[11px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50',
-                selected
-                  ? 'nm-pill-active font-medium text-action'
-                  : 'border border-border-interactive text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
-              )}
-              data-testid={`ai-dock-improve-type-${type}`}
-            >
-              {/* Lower case, like the turn these produce in the thread
-                  ("Improve this page (structure).") and like the chip's own
-                  suffix. They are parameters, not headings. */}
-              {type}
-            </button>
-          );
-        })}
-      </div>
-      {/* Five one-word options need the sentence that `/ai` prints under them —
-          "technical" and "completeness" are not self-explanatory, and a `title`
-          alone is unreachable by touch. It costs one line, and only while the
-          drawer the user opened is open. */}
-      <p className="mt-2 text-[11px] leading-snug text-muted-foreground">
-        {IMPROVEMENT_DESCRIPTIONS[value]}
-      </p>
     </div>
   );
 }
